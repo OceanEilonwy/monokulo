@@ -423,22 +423,6 @@ async fn build_checkout_view(
     };
 
     let (status_text, _, is_terminal) = crate::views::order_state(detail.order.status);
-    // A subtle, progressive color shift as expiry nears (research on real
-    // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
-    // quiet color change at 5 minutes, then 2, communicates urgency without
-    // it) - computed here, server-side, same reasoning as `progress_percent`
-    // above: values are correct in the initial HTML, including when
-    // JavaScript is disabled.
-    let seconds_until_expiry = detail.order.expires_at - crate::now_unix();
-    let expiry_urgency_class = if is_terminal {
-        String::new()
-    } else if seconds_until_expiry <= 120 {
-        "expiry-urgent".to_string()
-    } else if seconds_until_expiry <= 300 {
-        "expiry-soon".to_string()
-    } else {
-        String::new()
-    };
     // Computed server-side so the progress bar is correct in the initial
     // HTML and after a status refresh. `confirmations_required ==
     // 0` (zero-conf trusted) means any receipt already counts as done.
@@ -485,7 +469,8 @@ async fn build_checkout_view(
             detail.order.expires_at,
             crate::now_unix(),
         ),
-        expiry_urgency_class,
+        created_at: detail.order.created_at,
+        expires_at: detail.order.expires_at,
         refund_address: detail.order.refund_address.clone(),
         refund_address_error,
         is_compact: options.is_compact(),
@@ -1166,7 +1151,7 @@ mod tests {
         // disabled, so nothing on it may rely on `data-timestamp` +
         // client-side formatting any more.
         assert!(
-            html.contains(" left</span>"),
+            html.contains(" left to pay</span>"),
             "expected a server-rendered payment deadline, got: {html}"
         );
         assert!(
@@ -1544,7 +1529,7 @@ mod tests {
             [
                 r##"{"target":"#live-status","swap":"outerHTML"}"##,
                 r##"{"target":"#live-pay","swap":"outerHTML"}"##,
-                r##"{"target":"#address-label","swap":"outerHTML"}"##,
+                r##"{"target":"#live-address","swap":"outerHTML"}"##,
                 r##"{"target":"#live-progress","swap":"outerHTML"}"##,
                 r##"{"target":"#live-payments","swap":"outerHTML"}"##,
             ]

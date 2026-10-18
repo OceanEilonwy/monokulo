@@ -67,12 +67,12 @@ pub struct CheckoutViewModel {
     /// A moment.js-style relative duration ("12h", "4h 15m", "2d 4h"),
     /// pre-rendered server-side (`crate::templates::format_duration_until`) -
     /// this page is customer-facing and must stay fully meaningful with
-    /// JavaScript disabled. Only shown when `!is_terminal`.
+    /// JavaScript disabled. Only shown while the order can be paid.
     pub expires_in_display: String,
-    /// `""`, `"expiry-soon"`, or `"expiry-urgent"` - a CSS class picked
-    /// server-side from how much time is actually left, so the timer can
-    /// shift color as expiry nears with no client-side timer/JS of its own.
-    pub expiry_urgency_class: String,
+    /// When the order was made and when it expires (Unix seconds): the
+    /// countdown's whole span, and with `clock`, what's left of it.
+    pub created_at: i64,
+    pub expires_at: i64,
     /// `Some` once a customer (or their storefront, on their behalf) has set
     /// one via the form below - shown read-only from then on. `None` shows
     /// the form instead.
@@ -115,20 +115,18 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
   .pay-col-primary { text-align: center; }
   .qr-wrap svg { width: min(208px, 46vh); height: auto; }
 }
-.stage-expiry { white-space: nowrap; }
-.stage-expiry.expiry-soon { color: var(--warning); font-weight: 800; }
-.stage-expiry.expiry-urgent { color: var(--error); font-weight: 800; }
 /* One line, number and unit together: the size follows the column's width
    (cqi), between a floor that still fits a 280px frame and the full size. */
 .amount { font-size: clamp(1.15rem, 9cqi, 2.2rem); font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; white-space: nowrap; }
 .amount-unit { font-size: 0.7em; font-weight: 700; color: var(--muted); }
 .amount-label { display: block; color: var(--muted); font-size: 0.8em; }
 .fiat-amount { color: var(--muted); margin-bottom: 1.2em; }
+/* The time left belongs to the amount: under it, before the code. */
+.countdown-slot { margin: -.6em 0 1.2em; text-align: left; }
 .qr-wrap { margin: 0 auto 1.2em; display: flex; justify-content: center; }
 .qr-wrap svg { width: 208px; height: 208px; }
 .address-block { text-align: left; margin: 0 0 1.4em; }
 .address-label { display: block; color: var(--muted); font-size: 0.8em; margin: 0 0 0.35em; }
-[data-address] { font-size: 0.85em; }
 .section {
   text-align: left;
   margin-top: 1.6em;
@@ -146,10 +144,8 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .qr-wrap svg { background: var(--qr-bg); }
 /* A code that shouldn't be paid (the payment is in, or the order is over):
    still plainly the same order, too faint for a wallet's camera. The address
-   fades with it and loses its copy button. */
+   is struck through with it (GroupedValue's `void`). */
 .qr-wrap.is-spent svg { opacity: .14; filter: grayscale(1); }
-#checkout-root:has(.qr-wrap.is-spent) .address-block { opacity: .55; }
-#checkout-root:has(.qr-wrap.is-spent) [data-address] button { display: none; }
 /* Partial: a new code for the rest. */
 .qr-new svg { outline: 2px solid var(--state-partial-border); outline-offset: 6px; border-radius: 2px; animation: qr-new 1.4s ease-out 2; }
 @keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
@@ -190,7 +186,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
 .checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
 .checkout-compact .address-block { margin-bottom: .5em; }
-.checkout-compact [data-address] { font-size: .75em; }
+.checkout-compact .countdown-slot { margin-bottom: .5em; }
 .checkout-compact .field-help { font-size: .7em; }
 "#;
 
@@ -256,18 +252,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                 div class="pay-col-primary" {
                     (live_pay(data))
 
-                    // Faded with the code once it shouldn't be paid.
-                    div class="address-block" {
-                        (address_label(data))
-                        div data-address {
-                            (ui::CopyValue::new(data.address.as_str())
-                                .copy_label("Copy payment address")
-                                .labelled_by("address-label")
-                                .truncate(ui::Truncate::Middle)
-                                .head(12usize)
-                                .tail(12usize))
-                        }
-                    }
+                    (live_address(data))
                 }
                 div class="pay-col-secondary" {
                     (live_progress(data))
@@ -326,7 +311,7 @@ pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
     html! {
         (live_status(data))
         (live_pay(data))
-        (address_label(data))
+        (live_address(data))
         (live_progress(data))
         (live_payments(data))
     }
@@ -338,7 +323,7 @@ pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
     [
         ("live-status", live_status(data)),
         ("live-pay", live_pay(data)),
-        ("address-label", address_label(data)),
+        ("live-address", live_address(data)),
         ("live-progress", live_progress(data)),
         ("live-payments", live_payments(data)),
     ]
@@ -403,13 +388,12 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
     let received = super::trim_xmr(&data.amount_received_xmr);
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
-    let left = html! { span class=(format!("stage-expiry {}", data.expiry_urgency_class)) { (data.expires_in_display) " left" } };
     if let Some(at) = data.double_spend_detected_at {
         let when = html! { span id="double-spend-time" { @if data.local_times { (data.clock.time_local(at)) } @else { (data.clock.time(at)) } } };
         return if awaiting_payment(data) {
             (
                 "A payment was reversed".to_string(),
-                html! { "A double spend was detected at " (when) ", so it doesn't count. Send " (due) " XMR to pay this order. " (left) },
+                html! { "A double spend was detected at " (when) ", so it doesn't count. Send " (due) " XMR to pay this order." },
             )
         } else {
             (
@@ -420,12 +404,12 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
     }
     match data.status {
         DisplayStatus::Order(OrderStatus::Pending) => (
-            format!("Send {total} XMR"),
-            html! { "Scan the code or copy the address. " (left) },
+            "Send the exact amount below".to_string(),
+            html! { "Scan the code with your wallet, or copy the address." },
         ),
         DisplayStatus::Order(OrderStatus::Partial) => (
             format!("Send the remaining {due} XMR"),
-            html! { (received) " of " (total) " XMR received. This new code asks for the rest. " (left) },
+            html! { (received) " of " (total) " XMR received. This new code asks for the rest." },
         ),
         DisplayStatus::Order(OrderStatus::Unconfirmed) => (
             "Waiting for confirmation".to_string(),
@@ -530,8 +514,11 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
                 span class="amount-value" { (amount) } " " span class="amount-unit" { "XMR" }
             }
             // A fiat equivalent only for an order priced in fiat.
-            @if !partial && !data.currency.is_empty() && data.currency != "XMR" {
+            @if !partial && priced_in_fiat(data) {
                 div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
+            }
+            @if awaiting_payment(data) {
+                div class="countdown-slot" { (countdown(data)) }
             }
             @if partial {
                 div class="qr-wrap qr-new" { (data.qr_code_svg) }
@@ -545,12 +532,66 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
     }
 }
 
-fn address_label(data: &CheckoutViewModel) -> Markup {
+/// Whether the order was priced in a currency other than XMR: the amount
+/// then has its fiat equivalent, and its XMR price is what time runs out on.
+fn priced_in_fiat(data: &CheckoutViewModel) -> bool {
+    !data.currency.is_empty() && data.currency != "XMR"
+}
+
+/// The time left to pay: counted down on the page, stepping the bar each
+/// minute; without JavaScript, the server's words, moved on by the refresh.
+/// It turns the warning colour at five minutes and the error colour at two.
+fn countdown(data: &CheckoutViewModel) -> ui::Countdown {
+    let remaining = u64::try_from(data.expires_at - data.clock.now()).unwrap_or(0);
+    let total = u64::try_from(data.expires_at - data.created_at)
+        .unwrap_or(0)
+        .max(remaining);
+    let at = if data.local_times {
+        data.clock.time_local(data.expires_at)
+    } else {
+        data.clock.time(data.expires_at)
+    };
+    let note = if priced_in_fiat(data) {
+        html! { "Price held until " (at) }
+    } else {
+        html! { "Until " (at) }
+    };
+    ui::Countdown::new(total, remaining, data.expires_in_display.as_str())
+        .suffix("left to pay")
+        .note(note)
+        .urgent(120u64)
+        .toned()
+}
+
+/// The address, whole, in groups to check by eye, under what to send to
+/// it. Struck through, with nothing to copy it with, once it shouldn't be
+/// paid: a live part, so that follows the order.
+fn live_address(data: &CheckoutViewModel) -> Markup {
+    const GROUP: usize = 6;
+    let open = awaiting_payment(data);
+    let chars: Vec<char> = data.address.chars().collect();
+    let last = match chars.len() % GROUP {
+        0 => GROUP,
+        rest => rest,
+    };
+    let first: String = chars.iter().take(GROUP).collect();
+    let end: String = chars[chars.len().saturating_sub(last)..].iter().collect();
+    let mut address = ui::GroupedValue::of(data.address.as_str(), GROUP)
+        .copy_label("Copy address")
+        .void(!open);
+    if open {
+        address = address.hint(html! {
+            "Check your wallet shows " strong { (first) } " at the start and " strong { (end) } " at the end."
+        });
+    }
     html! {
-        span class="address-label" id="address-label" data-live {
-            @if data.status == DisplayStatus::Order(OrderStatus::Partial) { "Send the remaining amount to" }
-            @else if data.status == DisplayStatus::Order(OrderStatus::Pending) { "Send exactly this amount to" }
-            @else { "Payment address" }
+        div class="address-block" id="live-address" data-live {
+            span class="address-label" id="address-label" {
+                @if data.status == DisplayStatus::Order(OrderStatus::Partial) { "Send the remaining amount to" }
+                @else if data.status == DisplayStatus::Order(OrderStatus::Pending) { "Send exactly this amount to" }
+                @else { "Payment address" }
+            }
+            (address)
         }
     }
 }
@@ -778,7 +819,8 @@ mod tests {
             clock: crate::views::time::Clock::utc(0),
             local_times: true,
             expires_in_display: "30m".to_string(),
-            expiry_urgency_class: String::new(),
+            created_at: -1800,
+            expires_at: 1800,
             refund_address: None,
             refund_address_error: None,
             is_compact: false,
@@ -799,9 +841,12 @@ mod tests {
         assert!(html.contains(r#"id="scan-refund" hidden="""#), "{html}");
         assert!(html.contains(r#"id="upload-refund" hidden="""#), "{html}");
         assert!(html.contains(&crate::assets::url("jsQR.js")));
-        // The address whole, to select without JavaScript; its Copy button
-        // comes with the islands.
-        assert!(html.contains(r#"data-copy-value tabindex="0" aria-labelledby="address-label" data-mk="1">86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC</span>"#), "{html}");
+        // The address whole, read whole to a screen reader and shown in
+        // groups of six to check by eye, the ends named to check; its Copy
+        // button comes with the islands.
+        assert!(html.contains(r#"<span class="visually-hidden">86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC</span>"#), "{html}");
+        assert!(html.contains(r#"<span class="mk-grouped-value mk-mono" aria-hidden="true" data-mk="1"><span>86hiL7</span><span>n5RcVJ</span>"#), "{html}");
+        assert!(html.contains("Check your wallet shows <strong>86hiL7</strong> at the start and <strong>GCnfC</strong> at the end."), "{html}");
         assert!(html.contains(&crate::assets::url("ui-islands.js")));
         assert!(html.contains(
             r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
@@ -885,7 +930,7 @@ mod tests {
         for id in [
             "live-status",
             "live-pay",
-            "address-label",
+            "live-address",
             "live-progress",
             "live-payments",
         ] {
@@ -926,7 +971,16 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains(r#"id="payment-state""#) && !html.contains(r#"class="receipt"#));
-        assert!(html.contains(r#"data-island="CopyValue""#), "{html}");
+        // Paid: the address is struck through, with nothing to copy it with.
+        assert!(
+            html.contains(r#"<div class="mk-grouped" data-void="" data-island="GroupedValue""#),
+            "{html}"
+        );
+        assert!(!html.contains("Check your wallet shows"), "{html}");
+        assert!(
+            !html.contains("mk-countdown"),
+            "no time left on a paid order: {html}"
+        );
         assert!(html.contains("class=\"address-block\""));
         assert!(html.contains("id=\"refund_address\""));
         assert!(html.contains("refund-address?view=compact"));
@@ -954,8 +1008,13 @@ mod tests {
         assert!(html.contains(r#"<li class="step-part">"#));
         assert!(html.contains("<strong>Send the remaining 0.3 XMR.</strong>"));
         assert!(html.contains("0.2 of 0.5 XMR received. This new code asks for the rest."));
+        // The time left is under the amount, not in the stage's words.
         assert!(
-            html.contains(r#"<span class="stage-expiry ">30m left</span>"#),
+            html.contains(r#"<strong data-mk="2">30m</strong><!--mk:3--> left to pay</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.find("mk-countdown") > html.find(r#"id="xmr-amount""#),
             "{html}"
         );
         // The amount is what's left, under a new code for it.
