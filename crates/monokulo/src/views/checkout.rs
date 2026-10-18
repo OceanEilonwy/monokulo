@@ -118,11 +118,13 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .pay-grid > * { min-width: 0; }
 .stage-slot { grid-area: stage; margin-bottom: .9em; }
 /* Who is asking, over everything, as wide as the column(s) under it. */
-.merchant { max-width: 460px; margin: 0 auto .9em; padding-bottom: .8em; border-bottom: 1px solid var(--line); text-align: left; }
-.merchant h2 { display: flex; align-items: center; gap: var(--space-sm); margin: 0; font-size: var(--text-lg); overflow-wrap: anywhere; }
-.merchant .hint { margin: .2em 0 0; overflow-wrap: anywhere; }
+.merchant { display: flex; align-items: center; gap: var(--space-md); max-width: 460px; margin: 0 auto .9em; padding: var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); text-align: left; }
+.merchant:has(.merchant-for) { align-items: flex-start; }
+.merchant-about { display: grid; gap: 2px; min-width: 0; }
+.merchant h2 { margin: 0; padding: 0; border: 0; font-size: var(--text-base); font-weight: 800; overflow-wrap: anywhere; }
+.merchant .hint { margin: 0; font-size: var(--text-xs); overflow-wrap: anywhere; }
 .merchant .hint svg { width: 1em; height: 1em; color: var(--success); vertical-align: -.1em; }
-.merchant-for { margin: .3em 0 0; overflow-wrap: anywhere; }
+.merchant-for { margin: 0; font-size: var(--text-sm); overflow-wrap: anywhere; }
 /* The amount sizes itself to this column (`cqi`). */
 .pay-col-primary { grid-area: primary; container-type: inline-size; }
 .pay-col-secondary { grid-area: secondary; }
@@ -195,8 +197,8 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact { max-width: 100%; }
 .checkout-compact .pay-grid { grid-template-columns: 1fr; grid-template-areas: "stage" "primary" "secondary"; gap: 0; max-width: none; text-align: center; }
 .checkout-compact .stage-slot { margin-bottom: .5em; }
-.checkout-compact .merchant { max-width: none; margin-bottom: .5em; padding-bottom: .4em; }
-.checkout-compact .merchant .hint { margin: 0; }
+.checkout-compact .merchant { max-width: none; margin-bottom: .5em; padding: var(--space-sm) var(--space-md); }
+.checkout-compact .merchant .hint { font-size: var(--text-sm); }
 .checkout-compact .pay-col-secondary { font-size: .9em; }
 .checkout-compact .qr-wrap { margin-bottom: .5em; }
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
@@ -225,18 +227,25 @@ fn merchant_header(data: &CheckoutViewModel) -> Markup {
                     @if let Some(reference) = &data.merchant_reference { " · " (reference) }
                 }))
             } @else {
-                (ui::Heading::new(html! { (PreEscaped(ui::assets::icons::STORE)) (data.store_name) }))
-                @if let Some(site) = &data.merchant_site {
-                    (ui::Hint::new(html! {
-                        (site) " " (PreEscaped(ui::assets::icons::CHECK))
-                        span class="visually-hidden" { " (a verified domain)" }
-                    }).attr("data-merchant", "site"))
-                }
-                @if let Some(description) = &data.description {
-                    p class="merchant-for" { (description) }
-                }
-                @if let Some(reference) = &data.merchant_reference {
-                    (ui::Hint::new(html! { "Reference " span class="mk-mono" { (reference) } }))
+                // The site's own icon once a verified domain covers it, its
+                // name's letter until then (or if it has none).
+                (ui::Avatar::of(&data.store_name).maybe_src(data.merchant_site.as_deref().map(|site| {
+                    format!("{}/favicon.ico", crate::stores::site_link(site))
+                })))
+                div class="merchant-about" {
+                    (ui::Heading::new(data.store_name.as_str()))
+                    @if let Some(site) = &data.merchant_site {
+                        (ui::Hint::new(html! {
+                            (site) " " (PreEscaped(ui::assets::icons::CHECK))
+                            span class="visually-hidden" { " (a verified domain)" }
+                        }).attr("data-merchant", "site"))
+                    }
+                    @if let Some(description) = &data.description {
+                        p class="merchant-for" { (description) }
+                    }
+                    @if let Some(reference) = &data.merchant_reference {
+                        (ui::Hint::new(html! { "Reference " span class="mk-mono" { (reference) } }))
+                    }
                 }
             }
         }
@@ -1029,7 +1038,16 @@ mod tests {
             .find(r#"<header class="merchant">"#)
             .expect("the header");
         assert!(header < html.find(r#"class="pay-grid""#).unwrap(), "{html}");
-        assert!(html.contains("</svg>Corner shop</h2>"), "{html}");
+        assert!(html.contains("<h2>Corner shop</h2>"), "{html}");
+        // The store's letter, and its verified site's icon to show once it loads.
+        assert!(
+            html.contains(r#"<span class="mk-avatar-initial">C</span>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains("https://corner.example/favicon.ico"),
+            "{html}"
+        );
         assert!(
             html.contains(r#"<p class="hint" data-merchant="site">corner.example "#),
             "{html}"
@@ -1043,9 +1061,14 @@ mod tests {
             "{html}"
         );
 
-        // Nothing set but the store: just its name.
+        // Nothing set but the store: its letter and its name, no lines for
+        // what isn't there, and no icon to fetch without a verified site.
         let html = checkout_page(&chrome(), &test_checkout_view_model(false)).into_string();
-        assert!(html.contains("</svg>Corner shop</h2></header>"), "{html}");
+        assert!(
+            html.contains(r#"<div class="merchant-about"><h2>Corner shop</h2></div></header>"#),
+            "{html}"
+        );
+        assert!(!html.contains("favicon.ico"), "{html}");
 
         // A compact frame: one line, the name and the reference.
         data.is_compact = true;

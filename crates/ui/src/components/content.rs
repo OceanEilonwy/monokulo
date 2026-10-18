@@ -725,6 +725,87 @@ pub(super) fn empty_state_examples() -> Vec<(&'static str, EmptyState)> {
     ]
 }
 
+component! {
+    /// A small square that stands for someone or something beside its
+    /// name: a letter, or a picture of theirs (a site's icon) once it has
+    /// loaded. Build it with [`Avatar::of`], which takes the letter from
+    /// the name. Only decoration: the name beside it says who it is. The
+    /// picture needs JavaScript; without it, or when the picture won't
+    /// load, the letter stays.
+    pub struct Avatar {
+        /// One letter of the name, shown until the picture loads.
+        initial: String,
+        /// A picture to show instead (`https://example.com/favicon.ico`).
+        src: Option<String>,
+        rest: Attrs,
+    }
+    behaviour "avatar.behaviour.ts" {
+        uses(),
+        /// The picture has loaded: it shows in place of the letter.
+        loaded: bool,
+        fn load,
+    }
+    html {
+        span class="mk-avatar" data-loaded="" if b.loaded aria-hidden="true" ..rest {
+            span class="mk-avatar-initial" { (initial) }
+            @if enhanced {
+                @if let Some(src) = src {
+                    img class="mk-avatar-image" src=(src) alt="" referrerpolicy="no-referrer" decoding="async" on:load=load;
+                }
+            }
+        }
+    }
+}
+
+impl Avatar {
+    /// The first letter or digit of the name's first word ("Kafe Kolo"
+    /// is K), or of the name if the first word has none.
+    pub fn of(name: &str) -> Self {
+        let first = |text: &str| text.chars().find(|c| c.is_alphanumeric());
+        let initial = name
+            .split_whitespace()
+            .next()
+            .and_then(first)
+            .or_else(|| first(name))
+            .or_else(|| name.trim().chars().next())
+            .map(|c| c.to_uppercase().collect::<String>())
+            .unwrap_or_default();
+        Self::new(initial)
+    }
+}
+
+/// A globe, as a site's icon for the examples.
+const SITE_ICON: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18'/%3E%3C/svg%3E";
+
+pub(super) fn avatar_examples() -> Vec<(&'static str, Avatar)> {
+    vec![
+        ("A store's letter", Avatar::of("Kafe Kolo")),
+        (
+            "A site's icon, once it loads",
+            Avatar::of("Kafe Kolo").src(SITE_ICON),
+        ),
+        (
+            "A picture that won't load: the letter stays",
+            Avatar::of("corner shop").src("data:image/png;base64,bm90IGFuIGltYWdl"),
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::Avatar;
+
+    #[test]
+    fn the_letter_is_the_first_word_s_first_letter_or_digit() {
+        let initial = |name: &str| Avatar::of(name).render().into_string();
+        assert!(initial("Kafe Kolo").contains(">K<"));
+        assert!(initial("corner shop").contains(">C<"));
+        assert!(initial("(The) Shop").contains(">T<"));
+        assert!(initial("— 7 Seas").contains(">7<"));
+        assert!(initial("ésprit").contains(">É<"));
+    }
+}
+
 /// How a table changes on a phone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
 pub enum TableLook {

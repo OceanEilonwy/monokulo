@@ -1365,6 +1365,32 @@
     "title": "Just the words"
   },
   {
+    "component": "Avatar",
+    "html": "<span class=\"mk-avatar\" aria-hidden=\"true\" data-mk=\"1\" data-island=\"Avatar\" data-props=\"{}\"><span class=\"mk-avatar-initial\">K</span><!--mk:2--></span>",
+    "props": {
+      "initial": "K"
+    },
+    "title": "A store's letter"
+  },
+  {
+    "component": "Avatar",
+    "html": "<span class=\"mk-avatar\" aria-hidden=\"true\" data-mk=\"1\" data-island=\"Avatar\" data-props=\"{&quot;src&quot;:&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18'/%3E%3C/svg%3E&quot;}\"><span class=\"mk-avatar-initial\">K</span><!--mk:2--></span>",
+    "props": {
+      "initial": "K",
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18'/%3E%3C/svg%3E"
+    },
+    "title": "A site's icon, once it loads"
+  },
+  {
+    "component": "Avatar",
+    "html": "<span class=\"mk-avatar\" aria-hidden=\"true\" data-mk=\"1\" data-island=\"Avatar\" data-props=\"{&quot;src&quot;:&quot;data:image/png;base64,bm90IGFuIGltYWdl&quot;}\"><span class=\"mk-avatar-initial\">C</span><!--mk:2--></span>",
+    "props": {
+      "initial": "C",
+      "src": "data:image/png;base64,bm90IGFuIGltYWdl"
+    },
+    "title": "A picture that won't load: the letter stays"
+  },
+  {
     "component": "Table",
     "html": "<div class=\"table-scroll\"><table class=\"table-cards\"><thead><tr><th>Order</th><th>Status</th><th>Amount</th></tr></thead><tbody><tr><td class=\"card-title\">Coffee</td><td class=\"card-status\"><span class=\"tag state-paid\">Paid</span></td><td class=\"card-amount\">0.02 XMR</td></tr><tr><td class=\"card-title\">Tea</td><td class=\"card-status\"><span class=\"tag state-pending\"><span class=\"label-long\">Waiting for payment</span><span class=\"label-short\" aria-hidden=\"true\">Waiting</span></span></td><td class=\"card-amount\">0.01 XMR</td></tr></tbody></table></div>",
     "props": {
@@ -4032,6 +4058,42 @@
       "urgent": 60
     },
     "title": "Running low"
+  },
+  {
+    "component": "StepScale",
+    "html": "<div class=\"mk-scale\" aria-hidden=\"true\"><div class=\"mk-scale-step\"><span class=\"mk-scale-bar\">1 conf</span><span class=\"mk-scale-from\">0 EUR</span></div><div class=\"mk-scale-step\"><span class=\"mk-scale-bar\">5 conf</span><span class=\"mk-scale-from\">100</span></div><div class=\"mk-scale-step\"><span class=\"mk-scale-bar\">10 conf</span><span class=\"mk-scale-from\">500</span></div><span class=\"mk-scale-end\">and up</span></div>",
+    "props": {
+      "end": "and up",
+      "steps": [
+        {
+          "from": "0 EUR",
+          "label": "1 conf"
+        },
+        {
+          "from": "100",
+          "label": "5 conf"
+        },
+        {
+          "from": "500",
+          "label": "10 conf"
+        }
+      ]
+    },
+    "title": "Confirmations by order amount"
+  },
+  {
+    "component": "StepScale",
+    "html": "<div class=\"mk-scale\" aria-hidden=\"true\"><div class=\"mk-scale-step\"><span class=\"mk-scale-bar\">1 conf</span><span class=\"mk-scale-from\">0 EUR</span></div><span class=\"mk-scale-end\">and up</span></div>",
+    "props": {
+      "end": "and up",
+      "steps": [
+        {
+          "from": "0 EUR",
+          "label": "1 conf"
+        }
+      ]
+    },
+    "title": "One step"
   },
   {
     "component": "Tabs",

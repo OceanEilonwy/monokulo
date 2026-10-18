@@ -51,3 +51,18 @@
 .mk-countdown-bar::-webkit-progress-bar { background: var(--line); }
 .mk-countdown-bar::-webkit-progress-value { background: var(--countdown); }
 .mk-countdown-bar::-moz-progress-bar { background: var(--countdown); }
+
+/* A range in steps (StepScale): equal steps, each shade stronger than the
+   last (up to six), where each starts under it and the end at the right. */
+.mk-scale { --scale-strength: 0%; position: relative; display: flex; font-size: var(--text-xs); }
+.mk-scale-step { flex: 1 1 0; min-width: 0; display: grid; }
+.mk-scale-bar { overflow: hidden; padding: var(--space-xs) var(--space-sm); border: 1px solid var(--line); border-inline-start-width: 0; background: color-mix(in oklab, var(--accent) var(--scale-strength), var(--surface-sunken)); color: var(--ink); font-weight: 700; white-space: nowrap; text-overflow: ellipsis; }
+.mk-scale-step:first-child .mk-scale-bar { border-inline-start-width: 1px; border-start-start-radius: var(--radius-sm); border-end-start-radius: var(--radius-sm); }
+.mk-scale-step:last-of-type .mk-scale-bar { border-start-end-radius: var(--radius-sm); border-end-end-radius: var(--radius-sm); }
+.mk-scale-step:nth-child(2) { --scale-strength: 18%; }
+.mk-scale-step:nth-child(3) { --scale-strength: 32%; }
+.mk-scale-step:nth-child(4) { --scale-strength: 44%; }
+.mk-scale-step:nth-child(5) { --scale-strength: 54%; }
+.mk-scale-step:nth-child(n + 6) { --scale-strength: 62%; }
+.mk-scale-from, .mk-scale-end { overflow: hidden; padding-top: 2px; color: var(--muted); white-space: nowrap; text-overflow: ellipsis; }
+.mk-scale-end { position: absolute; inset-inline-end: 0; bottom: 0; padding-inline-start: var(--space-sm); background: var(--card-bg, var(--paper-raised)); }

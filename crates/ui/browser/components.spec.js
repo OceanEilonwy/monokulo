@@ -412,3 +412,19 @@ test('a countdown counts on from the seconds it was given, and turns as time run
   await expect(low.getByRole('status')).toHaveText('Time is up.');
   await expect(low.locator('progress')).toHaveAttribute('value', '0');
 });
+
+test('an avatar shows its letter until its picture loads, and keeps it when the picture won\'t', async ({ page }) => {
+  await page.goto('/#component-avatar');
+  const letter = page.locator('#component-avatar-1 .mk-avatar');
+  await expect(letter).toHaveText('K');
+  await expect(letter.locator('img')).toHaveCount(0);
+  const picture = page.locator('#component-avatar-2 .mk-avatar');
+  await expect(picture).toHaveAttribute('data-loaded', '');
+  await expect(picture.locator('img')).toBeVisible();
+  await expect(picture.locator('.mk-avatar-initial')).toBeHidden();
+  const broken = page.locator('#component-avatar-3 .mk-avatar');
+  await expect(broken.locator('img')).toHaveCount(1);
+  await expect(broken).not.toHaveAttribute('data-loaded', '');
+  await expect(broken.locator('.mk-avatar-initial')).toHaveText('C');
+  await expect(broken.locator('img')).toBeHidden();
+});
