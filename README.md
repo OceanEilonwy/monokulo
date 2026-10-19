@@ -20,6 +20,7 @@
 </p>
 
 <p align="center">
+  <a href="https://monokulo.com"><b>Website</b></a> ·
   <a href="https://oceaneilonwy.github.io/monokulo/#install"><b>Install</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
   <a href="https://oceaneilonwy.github.io/monokulo/"><b>Docs</b></a> ·
