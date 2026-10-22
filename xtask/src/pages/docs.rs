@@ -25,7 +25,7 @@ pub(super) struct Page {
 }
 
 /// The docs, in the order of their tabs.
-pub(super) const PAGES: [Page; 6] = [
+pub(super) const PAGES: [Page; 7] = [
     Page {
         source: "index.md",
         dir: "",
@@ -55,6 +55,11 @@ pub(super) const PAGES: [Page; 6] = [
         source: "plugins.md",
         dir: "plugins",
         tab: "Shop plugins",
+    },
+    Page {
+        source: "apps.md",
+        dir: "apps",
+        tab: "Connected apps",
     },
 ];
 

@@ -48,6 +48,7 @@ pub mod abuse;
 mod account;
 mod admin_settings;
 mod admin_setup;
+pub(crate) mod apps;
 mod checkout;
 mod connect;
 mod connections;
@@ -220,6 +221,9 @@ pub struct AppState {
     /// Wakes the webhook delivery worker (`crate::webhooks`) when a
     /// merchant sends a delivery again.
     pub webhooks: Arc<crate::webhooks::Webhooks>,
+    /// Sale events for connected apps' event streams (`crate::apps`),
+    /// announced by the order API and the order-event subscriber.
+    pub apps: Arc<crate::apps::AppEvents>,
     /// Tor inside monokulo (`crate::tor`): its status and onion address.
     pub tor: crate::tor::Tor,
 }
@@ -289,6 +293,7 @@ impl AppState {
             settings: Self::test_settings(None),
             log_store: None,
             webhooks: Arc::default(),
+            apps: Arc::default(),
             tor: crate::tor::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
@@ -562,6 +567,18 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(store_site::website_form).post(store_site::website_submit),
         )
         .route(
+            "/dashboard/stores/{id}/apps/connect",
+            axum::routing::get(apps::connect_form).post(apps::connect_submit),
+        )
+        .route(
+            "/dashboard/stores/{id}/apps/connect/{code_hash}",
+            axum::routing::get(apps::connect_status),
+        )
+        .route(
+            "/dashboard/stores/{id}/apps/{app_id}/disconnect",
+            post(apps::disconnect_submit),
+        )
+        .route(
             "/dashboard/stores/{id}/settings/connections/{integration}/disconnect",
             axum::routing::get(store_site::disconnect_form).post(store_site::disconnect_submit),
         )
@@ -653,6 +670,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/plugins/connect/{platform}/finish", post(connect::finish))
         .route(
+            "/apps/connect",
+            axum::routing::get(apps::landing).post(apps::redeem),
+        )
+        .route(
             "/telemetry/client",
             post(telemetry_client::client_report).layer(axum::extract::DefaultBodyLimit::max(
                 telemetry_client::MAX_BODY_BYTES,
@@ -668,6 +689,13 @@ pub fn build_router(state: AppState) -> Router {
     // IP-keyed limit - see `http::rate_limit`'s own module doc comment.
     let pay_router = Router::new()
         .route("/pay/{pk}/orders", post(pay::create_order))
+        // A connected app's store-wide stream, and its own disconnect
+        // (`crate::apps`).
+        .route("/pay/{pk}/events", axum::routing::get(apps::events))
+        .route(
+            "/pay/{pk}/app",
+            axum::routing::delete(apps::disconnect_self),
+        )
         .route(
             "/pay/{pk}/orders/{order_id}",
             axum::routing::get(checkout::checkout_page),

@@ -214,13 +214,21 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // Stores' webhooks: the engine's order events read into deliveries,
     // and the deliveries sent (docs/DESIGN.md §11).
     let webhooks = Arc::new(monokulo::webhooks::Webhooks::default());
+    // Connected apps' event streams hear of their orders from the same log.
+    let apps = Arc::new(monokulo::apps::AppEvents::default());
     {
-        let (db, engine, webhooks) = (db.clone(), engine_client.clone(), webhooks.clone());
+        let (db, engine, webhooks, apps) = (
+            db.clone(),
+            engine_client.clone(),
+            webhooks.clone(),
+            apps.clone(),
+        );
         shared::supervise::supervise("order-event subscriber", move || {
             monokulo::webhooks::subscriber::run_subscriber(
                 db.clone(),
                 engine.clone(),
                 webhooks.clone(),
+                apps.clone(),
             )
         });
     }
@@ -249,6 +257,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         settings: monokulo_settings.clone(),
         log_store,
         webhooks,
+        apps,
         tor: tor.clone(),
         engine: monokulo::http::Engine::new(engine_client),
     };

@@ -17,8 +17,10 @@ use crate::fx_provider_settings::FxProviderSettings;
 use crate::plugins::{Plugin, PluginName, PluginSlug};
 use crate::stores::Site;
 
+mod apps;
 mod order_changes;
 mod webhooks;
+pub use apps::{AppConnection, AppOrder, NewApp};
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
     Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewWebhook,
@@ -159,6 +161,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         42,
         include_str!("../migrations/0042_store_integration_name.sql"),
     ),
+    (43, include_str!("../migrations/0043_connected_apps.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

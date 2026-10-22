@@ -4,6 +4,7 @@
 //! `/plugins/connect/{plugin}` under a slug of its own choosing, and may give a
 //! name to show for it. The shop's host, which the connect flow checks, is
 //! what identifies a plugin to the merchant; the name is only a label.
+//! Connected apps (`crate::apps`) name themselves by the same rules.
 //!
 //! What a plugin sends is parsed once, where it arrives, into a
 //! [`PluginSlug`] and a [`PluginName`]; past that, code holds a [`Plugin`],

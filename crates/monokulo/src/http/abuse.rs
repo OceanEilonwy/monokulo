@@ -58,7 +58,7 @@ use crate::abuse::{identity, ClientIdentity, Tier, TrustedProxies};
 use crate::views;
 
 use super::embed_domains::public_key_of_pay_path;
-use super::store_key::{self, KeyCheck, StoreKeyAuthenticated};
+use super::store_key::{self, AppKeyAuthenticated, KeyCheck, StoreKeyAuthenticated};
 use super::AppState;
 
 /// The request header carrying a solved challenge.
@@ -120,7 +120,10 @@ fn pay_route_class(method: &Method, path: &str) -> RouteClass {
         ("POST", ["pay", _, "orders"]) | ("GET", ["pay", _, "orders", _, "status"]) => {
             RouteClass::Api
         }
-        ("GET", ["pay", _, "orders", _, "events"]) => RouteClass::Stream,
+        ("GET", ["pay", _, "orders", _, "events"]) | ("GET", ["pay", _, "events"]) => {
+            RouteClass::Stream
+        }
+        ("DELETE", ["pay", _, "app"]) => RouteClass::Api,
         ("POST", ["pay", _, "logs"]) => RouteClass::Logs,
         _ => RouteClass::Other,
     }
@@ -165,6 +168,13 @@ pub async fn pay_middleware(
             .or(anonymous),
         KeyCheck::Valid => {
             request.extensions_mut().insert(StoreKeyAuthenticated);
+            pk.map(ClientIdentity::Store)
+        }
+        // A connected app's key does what the store's own does on these
+        // routes, and says which app it is.
+        KeyCheck::App(app) => {
+            request.extensions_mut().insert(StoreKeyAuthenticated);
+            request.extensions_mut().insert(AppKeyAuthenticated(app));
             pk.map(ClientIdentity::Store)
         }
         KeyCheck::Invalid => {

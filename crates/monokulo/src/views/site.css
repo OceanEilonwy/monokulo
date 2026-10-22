@@ -450,6 +450,8 @@ table[data-table="wallets"] .card-unit { display: none; }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
 /* A store's plugins (`views::store_site`): the Connections card, one row each. */
 .int-rows { list-style: none; margin: 0; padding: 0; }
+.connect-app-qr { display: grid; place-items: center; margin: var(--space-md) 0; }
+.connect-app-qr svg { width: min(280px, 100%); height: auto; }
 .int-rows li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
 .int-rows li:first-child { border-top: 0; padding-top: 0; }
 .int-rows .int-name { font-weight: 700; }
