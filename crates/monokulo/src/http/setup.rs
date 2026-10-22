@@ -43,7 +43,7 @@ pub struct StoreDraft {
     #[serde(default)]
     pub base_currency: String,
     /// The plugin's platform, its shop's address, where to send its key,
-    /// and its nonce (`/connect/{platform}`).
+    /// and its nonce (`/plugins/connect/{platform}`).
     #[serde(default)]
     pub plugin: String,
     /// What the plugin calls itself, when it said (its connect link's
@@ -85,7 +85,7 @@ impl StoreDraft {
     }
 
     /// The plugin that sent the merchant here, if one did: only a slug
-    /// `/connect` would take counts, so a hand-made link can't name one.
+    /// `/plugins/connect` would take counts, so a hand-made link can't name one.
     fn plugin(&self) -> Option<Plugin> {
         Plugin::parse(&self.plugin, &self.plugin_name)
     }

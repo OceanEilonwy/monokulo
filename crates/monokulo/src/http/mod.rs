@@ -31,16 +31,16 @@
 //! Done) on top of `connections::create_connection_for_user`, the same
 //! logic `/connections` itself calls.
 //!
-//! `/connect/{platform}` and `/connect/{platform}/finish` (`connect` module,
+//! `/plugins/connect/{platform}` and `/plugins/connect/{platform}/finish` (`connect` module,
 //! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
 //! for any shop plugin, which names itself (`crate::plugins`): a plugin sends the merchant's
-//! browser to `GET /connect/{platform}`, which redirects to
+//! browser to `GET /plugins/connect/{platform}`, which redirects to
 //! `/dashboard/login` (carrying a validated `next`, see
 //! `dashboard::login_submit`) if there's no session yet; with one, the
 //! store with the shop's site gets the plugin, or setup makes one, and
 //! the plugin's `return_url` gets a short-lived, single-use connect token
 //! instead of a raw `sk_...`.
-//! `POST /connect/{platform}/finish` is deliberately *not* behind
+//! `POST /plugins/connect/{platform}/finish` is deliberately *not* behind
 //! [`AuthedUser`] — it's called server-to-server by the plugin, which has no
 //! monokulo session at all — and redeems that token exactly once.
 
@@ -648,10 +648,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(orders::order_detail_events),
         )
         .route(
-            "/connect/{platform}",
+            "/plugins/connect/{platform}",
             axum::routing::get(connect::start).post(connect::confirm_submit),
         )
-        .route("/connect/{platform}/finish", post(connect::finish))
+        .route("/plugins/connect/{platform}/finish", post(connect::finish))
         .route(
             "/telemetry/client",
             post(telemetry_client::client_report).layer(axum::extract::DefaultBodyLimit::max(
@@ -1061,7 +1061,7 @@ fn store_alerts(
 /// extractor uses - factored out so a handler that needs to know *whether*
 /// the caller has a valid session, without failing the request outright when
 /// they don't, can reuse the exact same header/cookie parsing and lookup
-/// instead of a parallel reimplementation. `GET /connect/{platform}`
+/// instead of a parallel reimplementation. `GET /plugins/connect/{platform}`
 /// (`http/connect.rs`, WBS 1.4.1) is the first such caller: an unauthenticated
 /// request there is a normal, expected case handled with a redirect to
 /// `/dashboard/login`, not a bare `401` - genuinely different handling from

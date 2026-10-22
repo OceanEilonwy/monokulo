@@ -1,4 +1,4 @@
-//! A shop plugin's connect flow (`/connect/{platform}`,
+//! A shop plugin's connect flow (`/plugins/connect/{platform}`,
 //! `http::connect`), where it isn't setup: connecting the plugin to the
 //! merchant's store that already has the shop's site, or saying why it
 //! can't connect. A shop with no store yet goes through setup (`/setup`,
@@ -53,7 +53,7 @@ pub struct PluginRequestView {
     pub host: Site,
 }
 
-/// `GET /connect/{platform}` for a shop whose site one of the merchant's
+/// `GET /plugins/connect/{platform}` for a shop whose site one of the merchant's
 /// stores already has: connect the plugin to that store. With an onion
 /// address (`onion`), it says that customers shopping on the shop's own
 /// onion address pay there.
@@ -80,7 +80,7 @@ pub fn existing_store_page(
         div class="step-foot" {
             (ui::LinkButton::new("Cancel", request.host.link()))
             span class="spacer" {}
-            form method="post" action=(format!("/connect/{}", request.plugin.slug())) class="inline-form" {
+            form method="post" action=(format!("/plugins/connect/{}", request.plugin.slug())) class="inline-form" {
                 input type="hidden" name="connection_id" value=(store_id);
                 input type="hidden" name="site_url" value=(request.site_url);
                 input type="hidden" name="return_url" value=(request.return_url);
@@ -97,7 +97,7 @@ pub fn existing_store_page(
     super::Page::new("Connect Monero payments - Monokulo", header).render(chrome, body)
 }
 
-/// `GET`/`POST /connect/{platform}` when the plugin can't connect: why, and
+/// `GET`/`POST /plugins/connect/{platform}` when the plugin can't connect: why, and
 /// no form.
 pub fn cannot_connect_page(
     chrome: &PageChrome,
@@ -147,7 +147,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("The Acme Cart plugin on <strong>shop.example.com</strong>"));
-        assert!(html.contains(r#"action="/connect/acme-cart""#));
+        assert!(html.contains(r#"action="/plugins/connect/acme-cart""#));
         assert!(html.contains(r#"name="connection_id" value="c_1""#));
         assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));

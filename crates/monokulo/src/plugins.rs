@@ -1,7 +1,7 @@
 //! Shop plugins, as they describe themselves (migration 0042). monokulo
 //! keeps no list of plugins: any plugin that speaks the plugin API
 //! (`docs/plugins.md` on the Pages site) connects through
-//! `/connect/{plugin}` under a slug of its own choosing, and may give a
+//! `/plugins/connect/{plugin}` under a slug of its own choosing, and may give a
 //! name to show for it. The shop's host, which the connect flow checks, is
 //! what identifies a plugin to the merchant; the name is only a label.
 //!

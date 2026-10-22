@@ -255,7 +255,7 @@ mod tests {
             &LoginViewModel {
                 connecting_site: None,
                 error: None,
-                next: Some("/connect/acme-cart?nonce=abc".to_string()),
+                next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
             },
         )
         .into_string();
@@ -264,7 +264,7 @@ mod tests {
             "expected a hidden next field, got: {html}"
         );
         assert!(
-            html.contains("/connect/acme-cart?nonce"),
+            html.contains("/plugins/connect/acme-cart?nonce"),
             "expected the next value's content present, got: {html}"
         );
         assert!(
@@ -280,7 +280,7 @@ mod tests {
             &LoginViewModel {
                 connecting_site: None,
                 error: None,
-                next: Some("/connect/acme-cart?a=1&b=2".to_string()),
+                next: Some("/plugins/connect/acme-cart?a=1&b=2".to_string()),
             },
         )
         .into_string();
@@ -306,7 +306,7 @@ mod tests {
                     site: crate::stores::Site::parse("shop.example").unwrap(),
                 }),
                 error: None,
-                next: Some("/connect/acme-cart?nonce=abc".to_string()),
+                next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
             },
         )
         .into_string();

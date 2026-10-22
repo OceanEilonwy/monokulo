@@ -2508,7 +2508,7 @@ mod tests {
         let state = test_app_state_over_http(shared::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let confirm = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
+        let confirm = "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
         let before = body_text(get(&router, confirm, Some(&cookie)).await).await;
         assert!(
             before.contains("can't connect plugins yet")

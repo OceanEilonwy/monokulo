@@ -23,7 +23,7 @@ in the plugin.
 Send the merchant's browser to:
 
 ```
-GET {monokulo}/connect/{slug}?site_url=…&return_url=…&nonce=…&name=…
+GET {monokulo}/plugins/connect/{slug}?site_url=…&return_url=…&nonce=…&name=…
 ```
 
 - `slug` names your plugin: a lowercase letter, then 1 to 31 lowercase
@@ -44,7 +44,7 @@ The merchant signs in and confirms, and the browser comes back to
 server, within 10 minutes:
 
 ```
-POST {monokulo}/connect/{slug}/finish
+POST {monokulo}/plugins/connect/{slug}/finish
 Monokulo-Client: {slug}/{your version}
 Content-Type: application/json
 

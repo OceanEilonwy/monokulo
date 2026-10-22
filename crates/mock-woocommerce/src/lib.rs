@@ -16,7 +16,7 @@
 //!
 //! ## Why the nonce check matters
 //!
-//! The `nonce` that rides along the whole flow (`GET /connect/{platform}`'s
+//! The `nonce` that rides along the whole flow (`GET /plugins/connect/{platform}`'s
 //! query param -> the confirm form's hidden field -> the `return_url`
 //! redirect's query param) exists so the callback can tell "this redirect
 //! really came from the connect flow I started" from "someone (or something)
@@ -40,7 +40,7 @@ use serde::Deserialize;
 use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
-/// The real, working credentials `POST /connect/{platform}/finish` hands
+/// The real, working credentials `POST /plugins/connect/{platform}/finish` hands
 /// back on success - see `monokulo/src/http/connect.rs::FinishResponse`,
 /// which this mirrors field-for-field (the two crates only ever talk over
 /// HTTP, same convention `monokulo::engine_client` already uses for the
@@ -388,12 +388,12 @@ fn encode_query_value(s: &str) -> String {
 ///
 /// 1. Binds this driver's own callback server (standing in for the plugin's
 ///    settings-page callback route) and generates a fresh nonce.
-/// 2. `GET /connect/woocommerce?...` with no session - auto-followed by the
+/// 2. `GET /plugins/connect/woocommerce?...` with no session - auto-followed by the
 ///    cookie-persisting client to `/dashboard/login`.
 /// 3. `POST /dashboard/signup` with a fresh, unique email.
 /// 4. `POST /dashboard/login` with `next` set to the exact original
 ///    connect-start path - auto-followed all the way to the confirm form.
-/// 5. `POST /connect/woocommerce` with the confirm form's fields (the fixed
+/// 5. `POST /plugins/connect/woocommerce` with the confirm form's fields (the fixed
 ///    test wallet material above) - auto-followed to the common store settings.
 /// 6. Skip the optional settings, keeping the submitted wallet defaults -
 ///    auto-followed to this driver's own callback server, whose handler does
@@ -575,7 +575,7 @@ async fn run_connect_flow_inner(
     // response, so it can be handed straight to `/dashboard/login`'s `next`
     // field in step 4 below.
     let connect_next_path = format!(
-        "/connect/{platform}?site_url={}&return_url={}&nonce={}",
+        "/plugins/connect/{platform}?site_url={}&return_url={}&nonce={}",
         encode_query_value(site_url),
         encode_query_value(&callback_url),
         encode_query_value(nonce),
@@ -715,7 +715,7 @@ async fn walk_setup(
 
     // Step 5c: Done's button back to the plugin mints its key.
     let back = client
-        .post(format!("{monokulo_base_url}/connect/{platform}"))
+        .post(format!("{monokulo_base_url}/plugins/connect/{platform}"))
         .form(&[
             ("connection_id", store_id.as_str()),
             ("site_url", site_url.as_str()),
@@ -818,7 +818,7 @@ pub async fn create_order(
     })
 }
 
-/// Server-to-server `POST {monokulo_base_url}/connect/{platform}/finish`,
+/// Server-to-server `POST {monokulo_base_url}/plugins/connect/{platform}/finish`,
 /// deliberately a plain, separate `reqwest` call sharing no state (and no
 /// cookie jar) with the browser-acting client in [`run_connect_flow_inner`],
 /// exactly like the real plugin's backend has no monokulo session at
@@ -837,7 +837,9 @@ async fn call_finish(
 ) -> Result<FinishedCredentials, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{monokulo_base_url}/connect/{platform}/finish"))
+        .post(format!(
+            "{monokulo_base_url}/plugins/connect/{platform}/finish"
+        ))
         .header("Monokulo-Client", "woocommerce/mock")
         .json(&serde_json::json!({ "token": token, "webhook_url": webhook_url }))
         .send()
@@ -863,7 +865,7 @@ async fn call_finish(
 }
 
 /// Query parameters the callback route receives on the redirect back from
-/// `POST /connect/{platform}` - `token` is the single-use connect token;
+/// `POST /plugins/connect/{platform}` - `token` is the single-use connect token;
 /// `nonce` is checked against the one this driver generated before starting
 /// the flow (see [`callback_handler`]).
 #[derive(Debug, Deserialize)]
@@ -1319,7 +1321,7 @@ mod tests {
             .unwrap();
 
         let connect_next_path = format!(
-            "/connect/{platform}?site_url={}&return_url={}&nonce={}",
+            "/plugins/connect/{platform}?site_url={}&return_url={}&nonce={}",
             encode_query_value(site_url),
             encode_query_value(return_url),
             encode_query_value(&correct_nonce),
@@ -1418,7 +1420,9 @@ mod tests {
         // server (no nonce involved at that layer at all), must still
         // succeed - which could only be true if it was never consumed above.
         let finish_response = raw_client
-            .post(format!("{monokulo_base_url}/connect/{platform}/finish"))
+            .post(format!(
+                "{monokulo_base_url}/plugins/connect/{platform}/finish"
+            ))
             .json(&serde_json::json!({ "token": token }))
             .send()
             .await

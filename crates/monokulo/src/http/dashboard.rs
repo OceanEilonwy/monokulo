@@ -491,9 +491,9 @@ mod tests {
 
     #[test]
     fn a_genuine_relative_path_is_accepted() {
-        assert!(is_safe_redirect_path("/connect/woocommerce"));
+        assert!(is_safe_redirect_path("/plugins/connect/woocommerce"));
         assert!(is_safe_redirect_path(
-            "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"
+            "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"
         ));
         assert!(is_safe_redirect_path("/dashboard/connect"));
     }
