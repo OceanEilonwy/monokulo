@@ -60,6 +60,9 @@ pub struct OptionsFile {
     leaves: Option<String>,
     /// What to add when a key under this table isn't a setting.
     hint: Option<(String, String)>,
+    /// Settings that were renamed, old key and new: a file still holding
+    /// an old key is refused with the new name, so the fix is plain.
+    renamed: &'static [(&'static str, &'static str)],
 }
 
 /// Which file, and which part of it: not its text.
@@ -97,6 +100,7 @@ impl OptionsFile {
             scope: None,
             leaves: None,
             hint: None,
+            renamed: &[],
         }
     }
 
@@ -110,6 +114,7 @@ impl OptionsFile {
             scope: Some(table.to_string()),
             leaves: None,
             hint: None,
+            renamed: &[],
         }
     }
 
@@ -128,12 +133,20 @@ impl OptionsFile {
         self
     }
 
+    /// This handle, refusing each `(old, new)` key in `renamed` with the
+    /// name it has now rather than as an unknown key.
+    pub fn with_renamed(mut self, renamed: &'static [(&'static str, &'static str)]) -> Self {
+        self.renamed = renamed;
+        self
+    }
+
     /// How [`parse`] reads the file for this handle.
     fn reading(&self) -> Reading<'_> {
         Reading {
             scope: self.scope.as_deref(),
             leaves: self.leaves.as_deref(),
             hint: self.hint.as_ref().map(|(t, h)| (t.as_str(), h.as_str())),
+            renamed: self.renamed,
         }
     }
 
@@ -351,6 +364,7 @@ struct Reading<'a> {
     scope: Option<&'a str>,
     leaves: Option<&'a str>,
     hint: Option<(&'a str, &'a str)>,
+    renamed: &'static [(&'static str, &'static str)],
 }
 
 /// The values in `text`, by key: one table per key prefix, or the whole
@@ -457,6 +471,14 @@ impl Walk<'_, '_> {
                 Item::Table(table) => self.table(table, &key),
                 Item::Value(Value::InlineTable(inline)) => self.table(inline, &key),
                 _ => {
+                    if let Some((_, new)) =
+                        self.reading.renamed.iter().find(|(old, _)| *old == shown)
+                    {
+                        self.problems.push(format!(
+                            "{at}{shown} is now called {new}: rename it in the options file"
+                        ));
+                        return;
+                    }
                     let hint = self
                         .reading
                         .hint

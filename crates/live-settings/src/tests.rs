@@ -2703,6 +2703,24 @@ url = \"http://node:18081\"
         );
     }
 
+    /// A file still holding a renamed setting's old key is refused, and
+    /// the problem names the key it has now.
+    #[test]
+    fn a_renamed_key_is_refused_with_its_new_name() {
+        const RENAMED: &[(&str, &str)] = &[("listen", "server.bind")];
+        let file = OptionsFile::in_memory("listen = \"0.0.0.0:8081\"\n").with_renamed(RENAMED);
+        let problem = read(&file, ALL).unwrap_err();
+        assert!(
+            problem.contains(
+                "line 1: listen is now called server.bind: rename it in the options file"
+            ),
+            "{problem}"
+        );
+        let renamed =
+            OptionsFile::in_memory("[server]\nbind = \"0.0.0.0:8081\"\n").with_renamed(RENAMED);
+        read(&renamed, ALL).unwrap();
+    }
+
     /// Both services save into the one file, each keeping the other's
     /// keys, with no "changed since it was loaded" between them: they share
     /// what was last read and written.

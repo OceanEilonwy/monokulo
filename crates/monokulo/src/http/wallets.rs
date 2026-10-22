@@ -1115,7 +1115,7 @@ mod tests {
             engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         }
-        .with_options("public_url = \"https://pay.example.test\"\n[signup]\nmode = \"public\"\n")
+        .with_options("public_uri = \"https://pay.example.test\"\n[signup]\nmode = \"public\"\n")
         .await;
         (state, engine)
     }

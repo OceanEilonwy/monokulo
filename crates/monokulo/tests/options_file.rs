@@ -178,6 +178,26 @@ fn init_writes_the_options_file_where_xdg_says_and_never_overwrites_it() {
     assert!(dir.0.join("monokulo.toml").exists());
 }
 
+/// A file from before `public_url` became `public_uri` stops monokulo,
+/// saying what to rename.
+#[test]
+fn monokulo_does_not_start_on_a_renamed_setting_and_names_the_new_one() {
+    let dir = TempDir::new("renamed");
+    let path = dir.0.join("monokulo.toml");
+    std::fs::write(&path, "public_url = \"https://pay.example.com\"\n").unwrap();
+    let output = with_secrets(&dir.0)
+        .arg("--options")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    let said = text(&output);
+    assert!(
+        said.contains("line 1: public_url is now called public_uri: rename it in the options file"),
+        "{said}"
+    );
+}
+
 /// A file with anything wrong in it, one it can't read, or a missing
 /// secret stops monokulo before it opens a database.
 #[test]
@@ -186,7 +206,7 @@ fn monokulo_does_not_start_on_a_file_it_cannot_use() {
     let path = dir.0.join("monokulo.toml");
     std::fs::write(
         &path,
-        "public_url = \"not a url\"\n[abuse]\nunder_attack = true\n[engine]\ntoken = \"x\"\n",
+        "public_uri = \"not a url\"\n[abuse]\nunder_attack = true\n[engine]\ntoken = \"x\"\n",
     )
     .unwrap();
     let output = with_secrets(&dir.0)
@@ -196,7 +216,7 @@ fn monokulo_does_not_start_on_a_file_it_cannot_use() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", text(&output));
     let said = text(&output);
-    assert!(said.contains("line 1: public_url"), "{said}");
+    assert!(said.contains("line 1: public_uri"), "{said}");
     assert!(
         said.contains(
             "line 3: abuse.under_attack can't be in the options file: the admin page keeps it"

@@ -45,6 +45,10 @@ choice_value! {
 /// settings: `[engine.payment]` holds its `payment.…`.
 pub const ENGINE_TABLE: &str = "engine";
 
+/// Settings renamed since an earlier release, old key and new. An options
+/// file still holding an old key stops monokulo, naming the new key.
+pub const RENAMED: &[(&str, &str)] = &[("public_url", "public_uri")];
+
 /// Why `[engine.*]` tables are refused with a remote engine.
 pub const ENGINE_TABLE_HINT: &str = "the engine's own settings go here only when it runs inside monokulo (engine.mode = \"embedded\"); a remote engine keeps them in its own options file";
 
@@ -84,11 +88,11 @@ pub fn engine_mode(early: &Snapshot, env: &live_settings::Env) -> Result<EngineM
     Ok(mode)
 }
 
-fn check_public_url(value: &str) -> Result<(), String> {
+fn check_public_uri(value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         Ok(())
     } else {
-        validate_public_url(value).map(|_| ())
+        validate_public_uri(value).map(|_| ())
     }
 }
 
@@ -300,10 +304,10 @@ settings! {
         description: "How many SEV-SNP key entry forms one account may open per minute. Past this, the form shows an alert asking them to wait a minute, and no challenge is taken from the engine.",
         example: "30",
     },
-    PUBLIC_URL: String {
-        key: "public_url",
+    PUBLIC_URI: String {
+        key: "public_uri",
         default: String::new(),
-        check: |v: &String| check_public_url(v),
+        check: |v: &String| check_public_uri(v),
         description: "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't connect until it is set.",
         example: "https://pay.example.com",
     },
@@ -491,14 +495,14 @@ impl Section for LoggingConfig {
     }
 }
 
-/// Checks a `public_url` value: this instance's external base URL, the one
+/// Checks a `public_uri` value: this instance's external base URL, the one
 /// address plugins and customers use (clearnet or `.onion`). It must be an
 /// absolute `http`/`https` URL with a host and nothing after it but an
 /// optional `/` - no path, query, fragment or login - since callers append
 /// paths like `/pay/{pk}/orders` to it. Returns it without the trailing
 /// `/`. The empty string is not valid here; an empty setting just means
-/// "not set" ([`MonokuloSettings::public_url`]).
-pub fn validate_public_url(value: &str) -> Result<String, String> {
+/// "not set" ([`MonokuloSettings::public_uri`]).
+pub fn validate_public_uri(value: &str) -> Result<String, String> {
     let value = value.trim();
     let problem = "Enter this instance's public address, like https://pay.example.com or http://abc...xyz.onion, with no path after it.";
     let parsed = url::Url::parse(value).map_err(|_| problem.to_string())?;
@@ -588,11 +592,11 @@ impl Section for EngineConnection {
 }
 
 /// Read on each request that needs them ([`MonokuloSettings::signup_mode`],
-/// [`MonokuloSettings::public_url`]); a save or reload applies at once.
+/// [`MonokuloSettings::public_uri`]); a save or reload applies at once.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PerRequest {
     pub signup_mode: SignupMode,
-    pub public_url: String,
+    pub public_uri: String,
 }
 
 /// Where merchants get key-custody-cli (`http::key_entry`): URL templates,
@@ -867,12 +871,12 @@ impl Section for AdminTools {
 impl Section for PerRequest {
     const NAME: &'static str = "per request";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SIGNUP_MODE, &PUBLIC_URL]
+        &[&SIGNUP_MODE, &PUBLIC_URI]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(PerRequest {
             signup_mode: snapshot.get(&SIGNUP_MODE),
-            public_url: snapshot.get(&PUBLIC_URL),
+            public_uri: snapshot.get(&PUBLIC_URI),
         })
     }
 }
@@ -1238,7 +1242,7 @@ impl MonokuloSettings {
     pub fn defaults() -> Arc<Self> {
         Self::fixed(PerRequest {
             signup_mode: SIGNUP_MODE.default_value(),
-            public_url: PUBLIC_URL.default_value(),
+            public_uri: PUBLIC_URI.default_value(),
         })
     }
 
@@ -1311,12 +1315,12 @@ impl MonokuloSettings {
 
     /// This instance's public base URL (no trailing `/`), or `None` while
     /// it isn't set.
-    pub fn public_url(&self) -> Option<String> {
-        let value = &self.per_request.load().public_url;
+    pub fn public_uri(&self) -> Option<String> {
+        let value = &self.per_request.load().public_uri;
         if value.trim().is_empty() {
             return None;
         }
-        validate_public_url(value).ok()
+        validate_public_uri(value).ok()
     }
 
     /// Loads every setting, from the options file, the database and `env`,
@@ -1404,7 +1408,7 @@ mod tests {
     use crate::db::Db;
 
     #[test]
-    fn a_public_url_must_be_an_http_base_url_with_nothing_after_it() {
+    fn a_public_uri_must_be_an_http_base_url_with_nothing_after_it() {
         for (input, expected) in [
             ("https://pay.example.com", "https://pay.example.com"),
             ("https://pay.example.com/", "https://pay.example.com"),
@@ -1418,7 +1422,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                validate_public_url(input).as_deref(),
+                validate_public_uri(input).as_deref(),
                 Ok(expected),
                 "{input}"
             );
@@ -1434,22 +1438,22 @@ mod tests {
             "https://",
         ] {
             assert!(
-                validate_public_url(bad).is_err(),
+                validate_public_uri(bad).is_err(),
                 "{bad:?} should be refused"
             );
         }
     }
 
     #[test]
-    fn public_url_is_none_until_set_and_then_normalized() {
-        let with = |public_url: &str| {
+    fn public_uri_is_none_until_set_and_then_normalized() {
+        let with = |public_uri: &str| {
             MonokuloSettings::fixed(PerRequest {
                 signup_mode: SignupMode::InviteOnly,
-                public_url: public_url.to_string(),
+                public_uri: public_uri.to_string(),
             })
-            .public_url()
+            .public_uri()
         };
-        assert_eq!(MonokuloSettings::defaults().public_url(), None);
+        assert_eq!(MonokuloSettings::defaults().public_uri(), None);
         assert_eq!(
             with("https://pay.example.com/").as_deref(),
             Some("https://pay.example.com")
