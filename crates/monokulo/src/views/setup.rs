@@ -9,6 +9,8 @@
 use maud::{html, Markup, PreEscaped};
 
 use super::PageChrome;
+use crate::plugins::{ConnectingPlugin, Plugin};
+use crate::stores::Site;
 use ui::{WizardState, WizardStep as Segment, WizardSteps};
 
 /// The three steps of setup.
@@ -153,12 +155,10 @@ pub enum SiteError {
 pub struct StoreStepViewModel {
     pub name: String,
     pub site: String,
-    /// The plugin's request, when a shop plugin sent the merchant here:
-    /// its shop's host, which is the site and can't be changed, and its
-    /// fields, carried through.
-    pub plugin_host: Option<String>,
-    /// What that plugin is called, as it's shown.
-    pub plugin: String,
+    /// The plugin and its shop, when a shop plugin sent the merchant here:
+    /// the shop's site is the store's and can't be changed, and the
+    /// plugin's fields are carried through.
+    pub from_plugin: Option<ConnectingPlugin>,
     /// What the store prices in: the answer, or a guess from the browser.
     pub currency: String,
     pub currencies: Vec<crate::currencies::CurrencyOptionView>,
@@ -171,15 +171,15 @@ pub struct StoreStepViewModel {
 /// Any store takes payments at the till; a website lets it show the
 /// checkout on its pages and connect a shop plugin too.
 pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
-    let title = if data.plugin_host.is_some() {
-        format!("Connect your {} shop", data.plugin)
+    let title = if let Some(from) = &data.from_plugin {
+        format!("Connect your {} shop", from.plugin)
     } else {
         "Set up a store".to_owned()
     };
     let header = ui::PageHeader::new(title).progress(steps(Step::Store, None));
     let body = html! {
-        @if let Some(host) = &data.plugin_host {
-            p { "The " (data.plugin) " plugin on " strong { (host) } " asked to connect to your account. Name the store, then choose where its money goes." }
+        @if let Some(from) = &data.from_plugin {
+            p { "The " (from.plugin) " plugin on " strong { (from.site) } " asked to connect to your account. Name the store, then choose where its money goes." }
         }
         form method="post" action="/setup" class="store-form" novalidate {
             @for (name, value) in &data.carried {
@@ -217,7 +217,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
             div class="setting-field site-field" {
                 div class="setting-label-row" {
                     label class="setting-label" for="store-site" { "Your website" }
-                    @if data.plugin_host.is_none() { (ui::Hint::new("(optional)").inline(true)) }
+                    @if data.from_plugin.is_none() { (ui::Hint::new("(optional)").inline(true)) }
                 }
                 (field_help("Needed for the checkout on your pages or for a shop plugin. Leave it empty to take payments at the till only."))
                 (ui::Input::new("store_site")
@@ -225,7 +225,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                     .value(data.site.clone())
                     .placeholder("shop.example")
                     .autocomplete("url")
-                    .readonly(data.plugin_host.is_some())
+                    .readonly(data.from_plugin.is_some())
                     .invalid(data.site_error.is_some())
                     .maybe_described_by(data.site_error.as_ref().map(|_| "store-site-error".to_string()))
                     .attr("inputmode", "url"))
@@ -262,8 +262,8 @@ fn field_help(text: &str) -> ui::FieldNote {
 pub struct DoneViewModel {
     pub store_id: String,
     pub name: String,
-    /// Its host, or empty when it has none.
-    pub site: String,
+    /// Its site, if it has one.
+    pub site: Option<Site>,
     /// Whether any order has been made for it yet: until then, a store
     /// with a site isn't taking payments on it.
     pub has_orders: bool,
@@ -280,19 +280,10 @@ pub struct DoneViewModel {
 /// Going back to the plugin: a form that mints its key
 /// (`POST /connect/{platform}`).
 pub struct PluginReturn {
-    pub platform: String,
-    /// The name the plugin sent, as sent (empty for none).
-    pub name: String,
+    pub plugin: Plugin,
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
-}
-
-impl PluginReturn {
-    /// What the plugin is called, as it's shown.
-    pub fn display_name(&self) -> String {
-        crate::plugins::display_name(&self.platform, &self.name)
-    }
 }
 
 fn settings_link(id: &str) -> String {
@@ -308,7 +299,7 @@ fn summary(data: &DoneViewModel) -> Markup {
         term: term.into(),
         value: value.into(),
     };
-    let not_yet = !data.site.is_empty() && !data.has_orders;
+    let not_yet = data.site.is_some() && !data.has_orders;
     let facts: Vec<ui::Fact> = not_yet
         .then(|| {
             fact(
@@ -342,13 +333,13 @@ fn summary(data: &DoneViewModel) -> Markup {
 /// it there.
 pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) -> Markup {
     html! {
-        form method="post" action=(format!("/connect/{}", plugin.platform)) class="inline-form" {
+        form method="post" action=(format!("/connect/{}", plugin.plugin.slug())) class="inline-form" {
             input type="hidden" name="connection_id" value=(store_id);
             input type="hidden" name="site_url" value=(plugin.site_url);
             input type="hidden" name="return_url" value=(plugin.return_url);
             input type="hidden" name="nonce" value=(plugin.nonce);
-            @if !plugin.name.is_empty() {
-                input type="hidden" name="name" value=(plugin.name);
+            @if let Some(name) = plugin.plugin.name() {
+                input type="hidden" name="name" value=(name.as_str());
             }
             (ui::Button::new(label).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
         }
@@ -364,7 +355,8 @@ pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) ->
 /// doesn't.
 pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
     let id = &data.store_id;
-    let has_site = !data.site.is_empty();
+    let site = crate::stores::stored_site(data.site.as_ref());
+    let has_site = data.site.is_some();
     let primary = |on: bool| on.then_some(ui::ButtonVariant::Primary);
     let till_primary = data.plugin.is_none() && !has_site;
     let guide_primary = data.plugin.is_none() && has_site;
@@ -383,7 +375,7 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                 p {
                     strong { "Add the checkout to your site" }
                     @if has_site {
-                        (ui::Hint::new(format!("A script tag and a button on {}, or a call from your server. The guide shows both, and how to verify the domain.", data.site)).inline(true))
+                        (ui::Hint::new(format!("A script tag and a button on {}, or a call from your server. The guide shows both, and how to verify the domain.", site)).inline(true))
                     } @else {
                         (ui::Hint::new("It runs on your website: add your site in the store's settings first.").inline(true))
                     }
@@ -399,13 +391,13 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
             }
             li {
                 @if let Some(plugin) = &data.plugin {
-                    @let name = plugin.display_name();
+                    @let name = plugin.plugin.to_string();
                     p {
                         strong { "Connect " (name) }
                         (ui::Hint::new(format!(
                             "Go back to {name} to give the plugin on {} its key. Monero then shows at checkout once you \
                              turn it on in the shop's payment settings.",
-                            data.site
+                            site
                         )).inline(true))
                     }
                     (plugin_return_form(id, plugin, &format!("Back to {name}")))
@@ -530,8 +522,7 @@ mod tests {
             currency: "XMR".into(),
             currencies: Vec::new(),
             site: "shop.example".into(),
-            plugin_host: None,
-            plugin: String::new(),
+            from_plugin: None,
             carried: vec![],
             name_error: None,
             site_error: None,
@@ -595,8 +586,10 @@ mod tests {
         let html = store_page(
             &chrome(),
             &StoreStepViewModel {
-                plugin_host: Some("bakery.example".into()),
-                plugin: "Acme Cart".into(),
+                from_plugin: Some(ConnectingPlugin {
+                    plugin: Plugin::parse("acme-cart", "Acme Cart").unwrap(),
+                    site: Site::parse("bakery.example").unwrap(),
+                }),
                 site: "bakery.example".into(),
                 carried: vec![("return_url", "https://bakery.example/wp-admin".into())],
                 ..store_data()
@@ -617,7 +610,7 @@ mod tests {
         DoneViewModel {
             store_id: "c_1".into(),
             name: "Bakery".into(),
-            site: site.into(),
+            site: Site::parse(site).ok(),
             has_orders: false,
             public_key: "pk_abc".into(),
             base_currency: "XMR".into(),
@@ -630,8 +623,7 @@ mod tests {
 
     fn plugin() -> PluginReturn {
         PluginReturn {
-            platform: "acme-cart".into(),
-            name: "Acme Cart".into(),
+            plugin: Plugin::parse("acme-cart", "Acme Cart").unwrap(),
             site_url: "https://bakery.example".into(),
             return_url: "https://bakery.example/wp-admin/x".into(),
             nonce: "n1".into(),

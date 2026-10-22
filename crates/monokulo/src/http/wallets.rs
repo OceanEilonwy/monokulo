@@ -822,7 +822,7 @@ fn wallet_store(store: &crate::db::StoreConnectionRow, until: Option<String>) ->
     WalletStore {
         id: store.id.to_string(),
         name: store.name.clone(),
-        site: (!store.site.is_empty()).then(|| store.site.clone()),
+        site: store.site.as_ref().map(ToString::to_string),
         until,
     }
 }

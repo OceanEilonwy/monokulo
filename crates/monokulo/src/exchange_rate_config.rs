@@ -481,7 +481,7 @@ mod tests {
             id: shared::ids::ConnectionId::new("conn-1".to_string()),
             user_id: shared::ids::UserId::new("user-1".to_string()),
             name: "Shop".to_string(),
-            site: "shop.example.com".to_string(),
+            site: crate::stores::Site::parse("shop.example.com").ok(),
             tenant_public_key: "pk_test".to_string(),
             tenant_secret_token_encrypted: "sk_test".to_string(),
             created_at: 0,

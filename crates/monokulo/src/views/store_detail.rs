@@ -9,8 +9,8 @@ use super::PageChrome;
 pub struct StoreDetailData {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
-    /// The host its checkout runs on; empty for a store with no site.
-    pub site: String,
+    /// The host its checkout runs on, if it has one.
+    pub site: Option<crate::stores::Site>,
     pub public_key: String,
     pub base_currency: String,
     pub health: String,
@@ -195,11 +195,11 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 // rather than broken mid-word; the link keeps the full URL.
                 span class="store-header-status" {
                     (health_tag(&store.health, &store.health_label))
-                    // The site is a host (`crate::stores::normalize_site`),
+                    // The site is a host (`crate::stores::Site`),
                     // so the link is built, never the merchant's text.
-                    @if !store.site.is_empty() {
+                    @if let Some(site) = &store.site {
                         span class="muted" aria-hidden="true" { "·" }
-                        a class="store-site" href=(crate::stores::site_link(&store.site)) title=(store.site) { (store.site) }
+                        a class="store-site" href=(site.link()) title=(site) { (site) }
                     }
                 }
                 (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::SETTINGS)) "Settings" }, format!("/dashboard/stores/{}/settings", store.connection_id))
@@ -281,7 +281,7 @@ mod tests {
             wallet: None,
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "Corner shop".to_string(),
-            site: "shop.example.com".to_string(),
+            site: crate::stores::Site::parse("shop.example.com").ok(),
             public_key: "pk_abc123".to_string(),
             base_currency: "XMR".to_string(),
             health: "ok".to_string(),
@@ -412,7 +412,7 @@ mod tests {
             &chrome(),
             &StoreDetailViewModel {
                 store: Some(StoreDetailData {
-                    site: String::new(),
+                    site: None,
                     ..base_store()
                 }),
             },

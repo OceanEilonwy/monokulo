@@ -1171,7 +1171,10 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
         .unwrap()
         .unwrap();
     assert_eq!(row.name, "Bakery");
-    assert_eq!(row.site, "bakery.example");
+    assert_eq!(
+        row.site.as_ref().map(crate::stores::Site::as_str),
+        Some("bakery.example")
+    );
     assert_eq!(
         row.base_currency, "AUD",
         "the currency chosen on the store step"
@@ -1315,7 +1318,10 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
         .unwrap()
         .unwrap();
     assert_eq!(row.name, "Market stall & café");
-    assert_eq!(row.site, "stall.example");
+    assert_eq!(
+        row.site.as_ref().map(crate::stores::Site::as_str),
+        Some("stall.example")
+    );
     let domains = state.db.lock().list_store_domains(&row.id).unwrap();
     assert_eq!(domains[0].domain, "stall.example", "waits to be verified");
 
@@ -1344,6 +1350,8 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
             .unwrap()
             .unwrap()
             .site
+            .map(|site| site.to_string())
+            .unwrap_or_default()
     };
     assert_eq!(site_of(&state), "stall.example", "not yet");
     let page = body_text(cookie_get(&router, &format!("{website}?remove=1"), &cookie).await).await;
@@ -1457,7 +1465,7 @@ async fn a_store_with_no_site_has_a_name_only() {
         .get_store_connection_by_id(&shared::ids::ConnectionId::new(store_id.clone()))
         .unwrap()
         .unwrap();
-    assert_eq!(row.site, "");
+    assert_eq!(row.site, None);
     assert!(
         state
             .db

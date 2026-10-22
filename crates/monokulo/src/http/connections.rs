@@ -29,13 +29,14 @@ use crate::crypto;
 use crate::db::UserRow;
 use crate::engine_client::{CreateTenantOnWalletRequest, EngineClientError};
 use crate::now_unix;
+use crate::stores::Site;
 
 use super::{ApiError, AppState, AuthedUser};
 
 #[derive(Deserialize)]
 pub struct CreateConnectionRequest {
     /// The store's site: a host or any URL on it (only its host is kept,
-    /// `crate::stores::normalize_site`). Optional: a store with no site
+    /// `crate::stores::Site`). Optional: a store with no site
     /// takes payments at the till.
     #[serde(default)]
     pub site_url: String,
@@ -95,9 +96,8 @@ pub struct CreateConnectionResponse {
 pub(super) struct CreateConnectionFields {
     /// Already tidied (`crate::stores::clean_name`).
     pub name: String,
-    /// Already a host (`crate::stores::normalize_site`), or empty for a
-    /// store with no site.
-    pub site: String,
+    /// The store's site, if it has one.
+    pub site: Option<Site>,
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     /// The keys encrypted to the engine's SEV-SNP key storage, instead of
@@ -154,7 +154,7 @@ impl SiteTaken {
     pub(crate) fn of(
         db: &crate::db::Db,
         user_id: &crate::db::UserId,
-        site: &str,
+        site: &Site,
     ) -> Result<Option<Self>, crate::db::DbError> {
         Ok(db.find_store_by_site(site)?.map(|store| {
             if &store.user_id == user_id {
@@ -169,7 +169,7 @@ impl SiteTaken {
     }
 
     /// What the merchant is told, in plain text (the API's error).
-    pub(crate) fn message(&self, site: &str) -> String {
+    pub(crate) fn message(&self, site: &Site) -> String {
         match self {
             SiteTaken::Yours { name, .. } => format!(
                 "Your store {name} already uses {site}. Open it, or use a different site."
@@ -212,14 +212,16 @@ pub(super) async fn create_connection_for_user(
         })?;
 
     // A site another store has is refused before anything is made.
-    let (user_id, site) = (user.id.clone(), req.site.clone());
-    if let Some(taken) = state
-        .db
-        .read(move |db| SiteTaken::of(db, &user_id, &site))
-        .await
-        .map_err(|_| CreateConnectionError::Internal)?
-    {
-        return Err(CreateConnectionError::SiteTaken(taken));
+    if let Some(site) = req.site.clone() {
+        let user_id = user.id.clone();
+        if let Some(taken) = state
+            .db
+            .read(move |db| SiteTaken::of(db, &user_id, &site))
+            .await
+            .map_err(|_| CreateConnectionError::Internal)?
+        {
+            return Err(CreateConnectionError::SiteTaken(taken));
+        }
     }
 
     // The wallet the store takes payments into: the one picked, or the
@@ -305,7 +307,7 @@ pub(super) async fn create_connection_for_user(
                 &connection_id,
                 &user_id,
                 &req.name,
-                &req.site,
+                req.site.as_ref(),
                 &public_key,
                 &encrypted_secret_token,
                 now_unix(),
@@ -315,7 +317,12 @@ pub(super) async fn create_connection_for_user(
             // The site's domain, and any extra domains an API caller passed,
             // join the store's domains waiting for DNS
             // (`crate::embed_domains`).
-            crate::embed_domains::suggest_site_domain(db, &connection_id, &req.site, now_unix());
+            crate::embed_domains::suggest_site_domain(
+                db,
+                &connection_id,
+                req.site.as_ref(),
+                now_unix(),
+            );
             for domain in &req.domains {
                 crate::embed_domains::suggest_domain(db, &connection_id, domain, now_unix());
             }
@@ -356,21 +363,22 @@ pub async fn create_connection(
     Json(req): Json<CreateConnectionRequest>,
 ) -> Result<(StatusCode, Json<CreateConnectionResponse>), ApiError> {
     let site = if req.site_url.trim().is_empty() {
-        String::new()
+        None
     } else {
-        crate::stores::normalize_site(&req.site_url)
-            .map_err(|why| ApiError::BadRequest(why.to_owned()))?
+        Some(Site::parse(&req.site_url).map_err(|why| ApiError::BadRequest(why.to_string()))?)
     };
     let name = match req.name.as_deref() {
         Some(name) => {
             crate::stores::clean_name(name).map_err(|why| ApiError::BadRequest(why.to_owned()))?
         }
-        None if !site.is_empty() => site.clone(),
-        None => {
-            return Err(ApiError::BadRequest(
-                "A store with no site needs a name.".to_owned(),
-            ))
-        }
+        None => match &site {
+            Some(site) => site.to_string(),
+            None => {
+                return Err(ApiError::BadRequest(
+                    "A store with no site needs a name.".to_owned(),
+                ))
+            }
+        },
     };
     let fields = CreateConnectionFields {
         name,
@@ -391,7 +399,11 @@ pub async fn create_connection(
         .await
         .map_err(|e| match e {
             CreateConnectionError::BadRequest(message) => ApiError::BadRequest(message),
-            CreateConnectionError::SiteTaken(taken) => ApiError::BadRequest(taken.message(&site)),
+            // Only a store with a site can find it taken.
+            CreateConnectionError::SiteTaken(taken) => match &site {
+                Some(site) => ApiError::BadRequest(taken.message(site)),
+                None => ApiError::Internal,
+            },
             CreateConnectionError::Internal => ApiError::Internal,
         })?;
 
@@ -506,7 +518,11 @@ mod tests {
             .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
             .unwrap()
             .unwrap();
-        assert_eq!(row.site, "shop.example.com", "a site is kept as its host");
+        assert_eq!(
+            row.site.as_ref().map(crate::stores::Site::as_str),
+            Some("shop.example.com"),
+            "a site is kept as its host"
+        );
         assert_eq!(
             row.name, "shop.example.com",
             "named after its site when no name is given"

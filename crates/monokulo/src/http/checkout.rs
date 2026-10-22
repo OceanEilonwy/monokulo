@@ -524,7 +524,7 @@ struct MerchantHeader {
     store_name: String,
     description: Option<String>,
     merchant_reference: Option<String>,
-    merchant_site: Option<String>,
+    merchant_site: Option<crate::stores::Site>,
 }
 
 /// The header for `order` of `row`: the order's description, else the
@@ -549,7 +549,11 @@ fn merchant_header(
             .merchant_order_id
             .clone()
             .filter(|reference| shown && !reference.is_empty()),
-        merchant_site: crate::embed_domains::verified_site(&row.site, domains, crate::now_unix()),
+        merchant_site: crate::embed_domains::verified_site(
+            row.site.as_ref(),
+            domains,
+            crate::now_unix(),
+        ),
     }
 }
 
@@ -1239,7 +1243,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            view(described).await.merchant_site.as_deref(),
+            view(described)
+                .await
+                .merchant_site
+                .as_ref()
+                .map(crate::stores::Site::as_str),
             Some("shop.example.com")
         );
     }

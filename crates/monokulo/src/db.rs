@@ -14,6 +14,8 @@ use shared::xmr_amount::Piconero;
 use std::sync::Arc;
 
 use crate::fx_provider_settings::FxProviderSettings;
+use crate::plugins::{Plugin, PluginName, PluginSlug};
+use crate::stores::Site;
 
 mod order_changes;
 mod webhooks;
@@ -684,7 +686,7 @@ fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRo
     Ok(StoreConnectionRow {
         id: row.get(0)?,
         user_id: row.get(1)?,
-        site: row.get(2)?,
+        site: Site::stored(&row.get::<_, String>(2)?),
         tenant_public_key: row.get(3)?,
         tenant_secret_token_encrypted: row.get(4)?,
         created_at: row.get(5)?,
@@ -721,12 +723,18 @@ pub struct StoreIntegrationRow {
     pub disconnected_at: Option<i64>,
 }
 
+impl StoreIntegrationRow {
+    /// The plugin, as it named itself.
+    pub fn plugin(&self) -> Plugin {
+        Plugin::stored(&self.kind, &self.name)
+    }
+}
+
 /// A plugin that just connected, for [`Db::connect_integration`].
 pub struct NewStoreIntegration<'a> {
     pub store_id: &'a ConnectionId,
-    pub kind: &'a str,
-    pub name: &'a str,
-    pub site: &'a str,
+    pub plugin: &'a Plugin,
+    pub site: Option<&'a Site>,
     pub version: &'a str,
     pub webhook_id: Option<&'a str>,
     pub webhook_url: Option<&'a str>,
@@ -740,10 +748,10 @@ pub struct StoreConnectionRow {
     /// (migration 0034).
     pub name: String,
     /// The host its checkout runs on (`shop.example`, `shop.example:8443`
-    /// for a port other than the scheme's), never a path; empty for a
+    /// for a port other than the scheme's), never a path; `None` for a
     /// store with no site (the till only). No two stores on this instance
-    /// share one (`crate::stores::normalize_site`).
-    pub site: String,
+    /// share one.
+    pub site: Option<Site>,
     pub tenant_public_key: String,
     pub tenant_secret_token_encrypted: String,
     pub created_at: i64,
@@ -1338,13 +1346,14 @@ impl Db {
         id: &ConnectionId,
         user_id: &UserId,
         name: &str,
-        site: &str,
+        site: Option<&Site>,
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
         created_at: i64,
         base_currency: &str,
         wallet_id: &WalletId,
     ) -> Result<()> {
+        let site = crate::stores::stored_site(site);
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
@@ -1390,12 +1399,17 @@ impl Db {
         Ok(())
     }
 
-    /// A store's name, and its site (a host, or empty for none). Another
-    /// store with the site is a unique violation.
-    pub fn set_store_name_and_site(&self, id: &ConnectionId, name: &str, site: &str) -> Result<()> {
+    /// A store's name, and its site, if it has one. Another store with the
+    /// site is a unique violation.
+    pub fn set_store_name_and_site(
+        &self,
+        id: &ConnectionId,
+        name: &str,
+        site: Option<&Site>,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE store_connections SET name = ?2, site = ?3 WHERE id = ?1",
-            params![id, name, site],
+            params![id, name, crate::stores::stored_site(site)],
         )?;
         Ok(())
     }
@@ -1440,13 +1454,13 @@ impl Db {
             params![
                 id,
                 new.store_id,
-                new.kind,
-                new.site,
+                new.plugin.slug().as_str(),
+                crate::stores::stored_site(new.site),
                 new.version,
                 new.webhook_id,
                 new.webhook_url,
                 new.at,
-                new.name
+                new.plugin.name().map_or("", PluginName::as_str)
             ],
         )?;
         tx.commit()?;
@@ -1492,18 +1506,22 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// The name the store's newest integration of `kind` gave, or `''`.
-    pub fn last_integration_name(&self, store_id: &ConnectionId, kind: &str) -> Result<String> {
+    /// The name the store's newest integration of `plugin` gave, if any.
+    pub fn last_integration_name(
+        &self,
+        store_id: &ConnectionId,
+        plugin: &PluginSlug,
+    ) -> Result<Option<PluginName>> {
         Ok(self
             .conn
             .query_row(
                 "SELECT name FROM store_integrations WHERE store_id = ?1 AND kind = ?2
                  ORDER BY connected_at_utc DESC, rowid DESC LIMIT 1",
-                params![store_id, kind],
-                |row| row.get(0),
+                params![store_id, plugin.as_str()],
+                |row| row.get::<_, String>(0),
             )
             .optional()?
-            .unwrap_or_default())
+            .and_then(|name| PluginName::clean(&name)))
     }
 
     /// An order from a plugin: its active integration of `kind` was seen
@@ -2205,18 +2223,14 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// The store on this instance, of any account, whose site is `site` (as
-    /// `crate::stores::normalize_site` writes it): there is at most one.
-    /// `None` for an empty `site`, which a store without a site has.
-    pub fn find_store_by_site(&self, site: &str) -> Result<Option<StoreConnectionRow>> {
-        if site.is_empty() {
-            return Ok(None);
-        }
+    /// The store on this instance, of any account, whose site is `site`:
+    /// there is at most one.
+    pub fn find_store_by_site(&self, site: &Site) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
                 "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
                  FROM store_connections WHERE site = ?1",
-                params![site],
+                params![site.as_str()],
                 store_from_row,
             )
             .optional()
@@ -3043,7 +3057,7 @@ pub(crate) mod test_rows {
             id,
             user_id,
             site,
-            site,
+            Site::stored(site).as_ref(),
             tenant_public_key,
             tenant_secret_token_encrypted,
             created_at,
@@ -3615,7 +3629,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.user_id, shared::ids::UserId::new("user-1"));
-        assert_eq!(row.site, "https://shop.example.com");
+        assert_eq!(
+            row.site.as_ref().map(crate::stores::Site::as_str),
+            Some("https://shop.example.com")
+        );
         assert_eq!(row.tenant_public_key, "pk_abc");
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
         assert_eq!(row.created_at, 3000);
@@ -3667,7 +3684,10 @@ mod tests {
             "the saved order is the order read back"
         );
         // Nothing else changed.
-        assert_eq!(row.site, "https://shop.example.com");
+        assert_eq!(
+            row.site.as_ref().map(crate::stores::Site::as_str),
+            Some("https://shop.example.com")
+        );
         assert_eq!(row.tenant_public_key, "pk_abc");
     }
 
@@ -4103,11 +4123,17 @@ mod tests {
         store("conn-4", "user-1", "").unwrap();
         store("conn-5", "user-2", "").unwrap();
 
-        let found = db.find_store_by_site("shop.example").unwrap().unwrap();
+        let site = |s: &str| Site::parse(s).unwrap();
+        let found = db
+            .find_store_by_site(&site("shop.example"))
+            .unwrap()
+            .unwrap();
         assert_eq!(found.id.as_str(), "conn-1");
-        assert_eq!(found.site, "shop.example");
-        assert!(db.find_store_by_site("other.example").unwrap().is_none());
-        assert!(db.find_store_by_site("").unwrap().is_none());
+        assert_eq!(found.site, Some(site("shop.example")));
+        assert!(db
+            .find_store_by_site(&site("other.example"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

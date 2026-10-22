@@ -222,9 +222,8 @@ pub mod plugin {
         // The plugin, by the slug it names itself with; any other client
         // is just a plugin.
         let source = crate::http::pay::client(&headers)
-            .map(|(name, _)| name.to_ascii_lowercase())
-            .filter(|name| crate::plugins::valid_slug(name))
-            .unwrap_or_else(|| "plugin".to_owned());
+            .and_then(|(name, _)| crate::plugins::PluginSlug::parse(&name.to_ascii_lowercase()))
+            .map_or_else(|| "plugin".to_owned(), |slug| slug.to_string());
         for entry in logs.entries {
             let span = tracing::info_span!(parent: None, "plugin report", source = %source, store.id = %store.id);
             if let Some(trace_id) = entry

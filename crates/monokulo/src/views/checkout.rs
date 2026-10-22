@@ -45,7 +45,7 @@ pub struct CheckoutViewModel {
     pub merchant_reference: Option<String>,
     /// The store's site (`shop.example`), only while a verified domain
     /// covers it (`crate::embed_domains::verified_site`).
-    pub merchant_site: Option<String>,
+    pub merchant_site: Option<crate::stores::Site>,
     /// Whether the page may show the site's own icon, loaded from the site:
     /// never for a visitor on Tor, who would be sent off Tor for it.
     pub merchant_icon: bool,
@@ -233,8 +233,8 @@ fn merchant_header(data: &CheckoutViewModel) -> Markup {
                 // The site's own icon once a verified domain covers it, its
                 // name's letter until then (or if it has none, or the
                 // visitor is on Tor).
-                (ui::Avatar::of(&data.store_name).maybe_src(data.merchant_site.as_deref().filter(|_| data.merchant_icon).map(|site| {
-                    format!("{}/favicon.ico", crate::stores::site_link(site))
+                (ui::Avatar::of(&data.store_name).maybe_src(data.merchant_site.as_ref().filter(|_| data.merchant_icon).map(|site| {
+                    format!("{}/favicon.ico", site.link())
                 })))
                 div class="merchant-about" {
                     (ui::Heading::new(data.store_name.as_str()))
@@ -1037,7 +1037,7 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         data.description = Some("2× Yirgacheffe <250g>".to_string());
         data.merchant_reference = Some("INV-2041".to_string());
-        data.merchant_site = Some("corner.example".to_string());
+        data.merchant_site = crate::stores::Site::parse("corner.example").ok();
         let html = checkout_page(&chrome(), &data).into_string();
         let header = html
             .find(r#"<header class="merchant">"#)

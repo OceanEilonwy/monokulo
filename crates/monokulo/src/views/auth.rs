@@ -55,7 +55,7 @@ pub struct LoginViewModel {
     pub next: Option<String>,
     /// What the plugin is called and its shop's host, when `next` is a
     /// plugin's connect page.
-    pub connecting_site: Option<(String, String)>,
+    pub connecting_site: Option<crate::plugins::ConnectingPlugin>,
 }
 
 fn with_next(path: &str, next: Option<&str>) -> String {
@@ -105,7 +105,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
 pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
     let header = ui::PageHeader::new("Log in");
     let body = html! {
-        @if let Some((plugin, site)) = &data.connecting_site {
+        @if let Some(crate::plugins::ConnectingPlugin { plugin, site }) = &data.connecting_site {
             (Alert::new(html! {
                 p { strong { (site) " wants to connect to Monokulo." } }
                 p {
@@ -301,7 +301,10 @@ mod tests {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
-                connecting_site: Some(("Acme Cart".into(), "shop.example".into())),
+                connecting_site: Some(crate::plugins::ConnectingPlugin {
+                    plugin: crate::plugins::Plugin::parse("acme-cart", "Acme Cart").unwrap(),
+                    site: crate::stores::Site::parse("shop.example").unwrap(),
+                }),
                 error: None,
                 next: Some("/connect/acme-cart?nonce=abc".to_string()),
             },

@@ -37,6 +37,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::now_unix;
+use crate::plugins::{ConnectingPlugin, Plugin, PluginName, PluginSlug};
+use crate::stores::Site;
 use crate::views::connect::PluginRequestView;
 
 use super::dashboard::redirect_302;
@@ -62,6 +64,39 @@ pub struct ConnectQuery {
     pub name: String,
 }
 
+/// Why a plugin's request can't be answered. Shown (`Display`) to the
+/// merchant on the page that says so.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ConnectRefusal {
+    /// The shop's address isn't a web address.
+    BadSite,
+    /// The return address isn't https (or loopback, or onion).
+    BadReturn,
+    /// The return address is on another website than the shop.
+    OtherSite,
+    /// This instance has no public address to give the plugin.
+    NoPublicUri,
+    /// The store posted isn't the merchant's, or isn't the shop's.
+    NotTheShopsStore,
+    /// The connect token couldn't be stored.
+    Failed,
+}
+
+impl std::fmt::Display for ConnectRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::BadSite => "The shop's address isn't a valid web address.",
+            Self::BadReturn => "The plugin's return address isn't a valid https address.",
+            Self::OtherSite => "The plugin asked for this store's credentials to be sent to a different website than the shop's. Start connecting again from the shop's own settings page.",
+            Self::NoPublicUri => "This Monokulo instance can't connect plugins yet: its operator hasn't set its public \
+                 address (the public URI setting on the admin settings page). Plugins need it to create orders and send \
+                 customers to the checkout. Ask the operator to set it, then try connecting again.",
+            Self::NotTheShopsStore => "That store could not be found, or isn't the shop's.",
+            Self::Failed => "Something went wrong. Please try again.",
+        })
+    }
+}
+
 /// Where a connecting plugin's store credentials may be sent: its
 /// `return_url`, checked against the `site_url` the merchant is shown. Made
 /// only by [`ConnectTarget::parse`], so the redirect carrying the connect
@@ -69,6 +104,8 @@ pub struct ConnectQuery {
 /// `return_url` a crafted link pointed somewhere else.
 pub(super) struct ConnectTarget {
     pub(super) return_to: Url,
+    /// The shop's site, as its store has it.
+    pub(super) site: Site,
 }
 
 impl ConnectTarget {
@@ -77,13 +114,13 @@ impl ConnectTarget {
     /// credentials of its own; it must name the same host as the shop's
     /// address, which may itself be plain http (WordPress can serve its admin
     /// pages over https while the shop is on http).
-    pub(super) fn parse(site_url: &str, return_url: &str) -> Result<Self, &'static str> {
+    pub(super) fn parse(site_url: &str, return_url: &str) -> Result<Self, ConnectRefusal> {
         let site = Url::parse(site_url.trim())
             .ok()
             .filter(|site| matches!(site.scheme(), "http" | "https"))
-            .ok_or("The shop's address isn't a valid web address.")?;
-        let return_to = web_url(return_url)
-            .ok_or("The plugin's return address isn't a valid https address.")?;
+            .ok_or(ConnectRefusal::BadSite)?;
+        let store_site = Site::parse(site_url).map_err(|_| ConnectRefusal::BadSite)?;
+        let return_to = web_url(return_url).ok_or(ConnectRefusal::BadReturn)?;
         // Same host, and the same port when both use one scheme (the admin
         // may be on https while the shop is on plain http, where the
         // default ports differ for that reason alone).
@@ -96,9 +133,12 @@ impl ConnectTarget {
             _ => false,
         };
         if !same_host {
-            return Err("The plugin asked for this store's credentials to be sent to a different website than the shop's. Start connecting again from the shop's own settings page.");
+            return Err(ConnectRefusal::OtherSite);
         }
-        Ok(ConnectTarget { return_to })
+        Ok(ConnectTarget {
+            return_to,
+            site: store_site,
+        })
     }
 }
 
@@ -129,54 +169,43 @@ fn plain_http_allowed(url: &Url) -> bool {
     }
 }
 
-/// Why plugins can't connect while this instance has no public address.
-const NO_PUBLIC_URI: &str = "This Monokulo instance can't connect plugins yet: its operator hasn't set its public \
-     address (the public URI setting on the admin settings page). Plugins need it to create orders and send \
-     customers to the checkout. Ask the operator to set it, then try connecting again.";
-
 /// This instance's public address, which is what a plugin is given as its
-/// `endpoint` - or, while it isn't set, the message explaining that
-/// connecting can't work yet. Checked before any form is shown, again when
-/// the plugin's key is minted, and in `/finish`, so a plugin is never
-/// handed a wrong address.
-async fn public_uri_for_plugins(state: &AppState) -> Result<String, String> {
+/// `endpoint`. Checked before any form is shown, again when the plugin's
+/// key is minted, and in `/finish`, so a plugin is never handed a wrong
+/// address.
+async fn public_uri_for_plugins(state: &AppState) -> Result<String, ConnectRefusal> {
     state
         .settings
         .public_uri()
-        .ok_or_else(|| NO_PUBLIC_URI.to_string())
+        .ok_or(ConnectRefusal::NoPublicUri)
 }
 
-/// Why a plugin's request can't be answered, if it can't: a return address
-/// that isn't the shop's, or no public address to give it.
-pub(super) async fn plugin_problem(
+/// Where a plugin's request may send the store's key, if it can be
+/// answered: a return address that is the shop's, and a public address to
+/// give the plugin.
+pub(super) async fn check_request(
     state: &AppState,
     site_url: &str,
     return_url: &str,
-) -> Option<String> {
-    match ConnectTarget::parse(site_url, return_url) {
-        Err(reason) => Some(reason.to_string()),
-        Ok(_) => public_uri_for_plugins(state).await.err(),
-    }
+) -> Result<ConnectTarget, ConnectRefusal> {
+    let target = ConnectTarget::parse(site_url, return_url)?;
+    public_uri_for_plugins(state).await?;
+    Ok(target)
 }
 
 /// The plugin and its shop, when `next` is a plugin's connect page (the
-/// merchant is logging in on the way to connecting a shop): what the
-/// plugin is called, and the shop's host.
-pub(crate) fn connecting_site(next: Option<&str>) -> Option<(String, String)> {
+/// merchant is logging in on the way to connecting a shop).
+pub(crate) fn connecting_site(next: Option<&str>) -> Option<ConnectingPlugin> {
     let (slug, query) = next?.strip_prefix("/connect/")?.split_once('?')?;
-    if !crate::plugins::valid_slug(slug) {
-        return None;
-    }
     let field = |name: &str| {
         url::form_urlencoded::parse(query.as_bytes())
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.into_owned())
     };
-    let site = crate::stores::normalize_site(&field("site_url")?).ok()?;
-    Some((
-        crate::plugins::display_name(slug, &field("name").unwrap_or_default()),
-        site,
-    ))
+    Some(ConnectingPlugin {
+        plugin: Plugin::parse(slug, &field("name").unwrap_or_default())?,
+        site: Site::parse(&field("site_url")?).ok()?,
+    })
 }
 
 /// Percent-encodes `s` for safe embedding as one query-string value - the
@@ -196,9 +225,9 @@ pub async fn start(
     Query(query): Query<ConnectQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if !crate::plugins::valid_slug(&platform) {
+    let Some(slug) = PluginSlug::parse(&platform) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     let Some((user, _)) = super::resolve_authed_user(&state, &headers).await else {
         let mut this_url = format!(
             "/connect/{}?site_url={}&return_url={}&nonce={}",
@@ -215,30 +244,28 @@ pub async fn start(
             encode_query_value(&this_url)
         ));
     };
-    let plugin = crate::plugins::display_name(&platform, &query.name);
+    let plugin = Plugin::new(slug, PluginName::clean(&query.name));
     let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
-    let host = crate::stores::normalize_site(&query.site_url).ok();
     // A link that can't work says why first.
-    if let Some(why) = plugin_problem(&state, &query.site_url, &query.return_url).await {
-        return crate::views::connect::cannot_connect_page(&chrome, &plugin, host.as_deref(), &why)
+    let target = match check_request(&state, &query.site_url, &query.return_url).await {
+        Ok(target) => target,
+        Err(why) => {
+            let host = Site::parse(&query.site_url).ok();
+            return crate::views::connect::cannot_connect_page(
+                &chrome,
+                &plugin,
+                host.as_ref(),
+                &why.to_string(),
+            )
             .into_response();
-    }
-    let Some(host) = host else {
-        return crate::views::connect::cannot_connect_page(
-            &chrome,
-            &plugin,
-            None,
-            "The shop's address isn't a valid web address.",
-        )
-        .into_response();
+        }
     };
+    let host = target.site;
     let site = host.clone();
     let store = state.db.read(move |db| db.find_store_by_site(&site)).await;
     match store {
         Ok(Some(store)) if store.user_id == user.id => {
             let request = PluginRequestView {
-                platform,
-                name: query.name,
                 plugin,
                 site_url: query.site_url,
                 return_url: query.return_url,
@@ -264,12 +291,12 @@ pub async fn start(
         Ok(None) => {
             let mut setup = url::form_urlencoded::Serializer::new(String::new());
             setup
-                .append_pair("plugin", &platform)
+                .append_pair("plugin", plugin.slug().as_str())
                 .append_pair("site_url", &query.site_url)
                 .append_pair("return_url", &query.return_url)
                 .append_pair("nonce", &query.nonce);
-            if !query.name.is_empty() {
-                setup.append_pair("plugin_name", &query.name);
+            if let Some(name) = plugin.name() {
+                setup.append_pair("plugin_name", name.as_str());
             }
             redirect_302(&format!("/setup?{}", setup.finish()))
         }
@@ -303,23 +330,24 @@ pub async fn confirm_submit(
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    if !crate::plugins::valid_slug(&platform) {
+    let Some(plugin) = Plugin::parse(&platform, &form.name) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
-    let plugin = crate::plugins::display_name(&platform, &form.name);
-    let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
-    let host = crate::stores::normalize_site(&form.site_url).ok();
-    let refuse = |why: &str| {
-        crate::views::connect::cannot_connect_page(&chrome, &plugin, host.as_deref(), why)
-            .into_response()
     };
-    let target = match ConnectTarget::parse(&form.site_url, &form.return_url) {
+    let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
+    let host = Site::parse(&form.site_url).ok();
+    let refuse = |why: ConnectRefusal| {
+        crate::views::connect::cannot_connect_page(
+            &chrome,
+            &plugin,
+            host.as_ref(),
+            &why.to_string(),
+        )
+        .into_response()
+    };
+    let target = match check_request(&state, &form.site_url, &form.return_url).await {
         Ok(target) => target,
         Err(why) => return refuse(why),
     };
-    if let Err(why) = public_uri_for_plugins(&state).await {
-        return refuse(&why);
-    }
     let (id, user_id) = (
         crate::db::ConnectionId::new(form.connection_id.as_str()),
         user.id.clone(),
@@ -331,12 +359,12 @@ pub async fn confirm_submit(
         .ok()
         .flatten()
         .and_then(|row| super::OwnedStore::check(row, &user_id));
-    let Some(store) = store.filter(|s| Some(&s.site) == host.as_ref()) else {
-        return refuse("That store could not be found, or isn't the shop's.");
+    let Some(store) = store.filter(|s| s.site.as_ref() == Some(&target.site)) else {
+        return refuse(ConnectRefusal::NotTheShopsStore);
     };
     mint_token_and_redirect(&state, &store.id, &form.nonce, &target)
         .await
-        .unwrap_or_else(|| refuse("Something went wrong. Please try again."))
+        .unwrap_or_else(|| refuse(ConnectRefusal::Failed))
 }
 
 /// Mints a single-use connect token for `connection_id` and redirects to
@@ -444,15 +472,15 @@ pub async fn finish(
     headers: axum::http::HeaderMap,
     Json(req): Json<FinishRequest>,
 ) -> Response {
-    if !crate::plugins::valid_slug(&platform) {
+    let Some(slug) = PluginSlug::parse(&platform) else {
         return StatusCode::NOT_FOUND.into_response();
-    }
+    };
     let endpoint = match public_uri_for_plugins(&state).await {
         Ok(url) => url,
-        Err(message) => {
+        Err(why) => {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "error": message })),
+                Json(serde_json::json!({ "error": why.to_string() })),
             )
                 .into_response()
         }
@@ -548,28 +576,22 @@ pub async fn finish(
         }
     }
 
-    let version = super::pay::client_version(&headers, &platform).unwrap_or_default();
-    let name = req
-        .name
-        .as_deref()
-        .and_then(crate::plugins::clean_name)
-        .unwrap_or_default();
+    let version = super::pay::client_version(&headers, slug.as_str()).unwrap_or_default();
+    let name = req.name.as_deref().and_then(PluginName::clean);
     let (store_id, site, webhook_url) = (row.id.clone(), row.site.clone(), req.webhook_url.clone());
     let recorded = state
         .db
         .write(move |db| {
             // A plugin that gave no name (one built before plugins named
             // themselves) keeps the name it had on this store before.
-            let name = if name.is_empty() {
-                db.last_integration_name(&store_id, &platform)?
-            } else {
-                name
+            let name = match name {
+                Some(name) => Some(name),
+                None => db.last_integration_name(&store_id, &slug)?,
             };
             db.connect_integration(&crate::db::NewStoreIntegration {
                 store_id: &store_id,
-                kind: &platform,
-                name: &name,
-                site: &site,
+                plugin: &Plugin::new(slug, name),
+                site: site.as_ref(),
                 version: &version,
                 webhook_id: webhook_id.as_deref(),
                 webhook_url: webhook_url.as_deref(),
@@ -880,7 +902,10 @@ mod tests {
             .unwrap();
         assert_eq!(stores.len(), 1);
         assert_eq!(stores[0].name, "Shop");
-        assert_eq!(stores[0].site, "shop.example.com");
+        assert_eq!(
+            stores[0].site.as_ref().map(crate::stores::Site::as_str),
+            Some("shop.example.com")
+        );
 
         // Step 5: the token at /finish - server-to-server, no session.
         let finish_response = finish(&router, serde_json::json!({ "token": token })).await;
@@ -1214,8 +1239,10 @@ mod tests {
                 .get_store_connection_by_id(&id)
                 .unwrap()
                 .unwrap()
-                .site,
-            "shop.example.com"
+                .site
+                .as_ref()
+                .map(crate::stores::Site::as_str),
+            Some("shop.example.com")
         );
         let website = format!("{settings}/website");
         let blocked =
@@ -1812,6 +1839,28 @@ mod tests {
     }
 
     #[test]
+    fn a_refused_target_says_which_rule_it_broke_and_a_good_one_names_the_site() {
+        use super::{ConnectRefusal, ConnectTarget};
+        let refused = |site: &str, back: &str| ConnectTarget::parse(site, back).err();
+        assert_eq!(
+            refused("not a url", "https://shop.example/cb"),
+            Some(ConnectRefusal::BadSite)
+        );
+        assert_eq!(
+            refused("https://shop.example/", "http://shop.example/cb"),
+            Some(ConnectRefusal::BadReturn)
+        );
+        assert_eq!(
+            refused("https://shop.example/", "https://evil.example/cb"),
+            Some(ConnectRefusal::OtherSite)
+        );
+        let target =
+            ConnectTarget::parse("https://Shop.Example/checkout", "https://shop.example/cb")
+                .unwrap();
+        assert_eq!(target.site.as_str(), "shop.example");
+    }
+
+    #[test]
     fn a_connect_target_must_send_credentials_back_to_the_shop_itself() {
         let ok = |site: &str, back: &str| super::ConnectTarget::parse(site, back).is_ok();
         assert!(ok(
@@ -1939,13 +1988,16 @@ mod tests {
         let next =
             "/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
         let plugin_and_site = |next: &str| super::connecting_site(Some(next));
+        let shown = |next: &str| {
+            plugin_and_site(next).map(|from| (from.plugin.to_string(), from.site.to_string()))
+        };
         assert_eq!(
-            plugin_and_site(next),
+            shown(next),
             Some(("Acme-cart".to_owned(), "shop.example.com".to_owned()))
         );
         // The name the plugin gave, when it gave one.
         assert_eq!(
-            plugin_and_site(&format!("{next}&name=Acme%20Cart")).map(|(name, _)| name),
+            shown(&format!("{next}&name=Acme%20Cart")).map(|(name, _)| name),
             Some("Acme Cart".to_owned())
         );
         // A path that can't name a plugin is no connect link.
