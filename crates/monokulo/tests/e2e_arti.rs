@@ -107,8 +107,8 @@ where
 }
 
 #[tokio::test]
-#[ignore = "needs tor on PATH and the live Tor network"]
-async fn tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shops() {
+#[ignore = "needs tor and the live Tor network"]
+async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shops() {
     let run = std::env::temp_dir().join(format!("monokulo-e2e-arti-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&run);
     let (shop_dir, client_data) = (
