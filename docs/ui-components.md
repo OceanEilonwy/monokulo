@@ -260,5 +260,7 @@ saves is the case to revisit, one page at a time.
 fixi, ssexi and the glue are 6.4 KB gzipped. The islands script is 1.8 KB
 brotli on its own; a page with a Select adds Solid's runtime and the
 Select's behaviour, 20.6 KB in all. monokulo sends every script, style and
-module brotli- or gzip-compressed to a browser that takes it
-(`crate::assets`).
+module brotli- or gzip-compressed to a browser that takes it, in copies
+made when the binary is built (`static_assets::bake!`, kept between builds
+in `target/<profile>/static-assets-cache/`), so serving compresses
+nothing.

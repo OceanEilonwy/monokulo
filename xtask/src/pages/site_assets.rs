@@ -88,6 +88,9 @@ fn islands() -> Asset {
         name: "ui-islands.js",
         content_type: JS,
         bytes,
+        // GitHub Pages compresses what it serves.
+        brotli: None,
+        gzip: None,
         digest: String::from_utf8(hex.to_vec()).unwrap().leak(),
         policy: static_assets::Policy::Fingerprinted,
     }

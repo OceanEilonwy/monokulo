@@ -1,0 +1,23 @@
+[package]
+name = "static-assets-macros"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+publish = false
+
+# `bake!` for `static-assets`: reads a file a page links when the crate that
+# lists it is compiled, and bakes in its brotli and gzip copies beside it, so
+# a server sends them compressed without compressing anything itself.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+brotli = "7.0.0"
+flate2 = "1.1.10"
+
+[lints]
+workspace = true

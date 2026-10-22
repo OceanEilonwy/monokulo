@@ -7,39 +7,30 @@
 //! script does.
 
 /// Every colour, spacing, radius and type token, light and dark: the only
-/// place a colour is defined.
-pub const TOKENS_CSS: &str = include_str!("../web/tokens.css");
+/// place a colour is defined. Baked with its compressed copies, for a
+/// server to send ([`TOKENS_CSS`] is the text).
+pub const TOKENS: static_assets::Baked = static_assets::bake!("web/tokens.css");
+pub const TOKENS_CSS: &str = TOKENS.text();
 
 /// Every component's stylesheet, in cascade order, painted with
-/// [`TOKENS_CSS`]'s roles. The POS's artwork (`status.css`) is left out:
-/// only the POS shows it.
-pub const COMPONENTS_CSS: &str = concat!(
-    include_str!("../web/components/primitives.css"),
-    "\n",
-    include_str!("../web/components/select.css"),
-    "\n",
-    include_str!("../web/components/content.css"),
-    "\n",
-    include_str!("../web/components/dialog.css"),
-    "\n",
-    include_str!("../web/components/forms.css"),
-    "\n",
-    include_str!("../web/components/sortable.css"),
-    "\n",
-    include_str!("../web/components/navigation.css"),
-    "\n",
-    include_str!("../web/components/steps.css"),
-    "\n",
-    include_str!("../web/components/action-card.css"),
-    "\n",
-    include_str!("../web/components/settings.css"),
-    "\n",
-    include_str!("../web/components/patterns.css"),
-    "\n",
-    include_str!("../web/components/monitoring.css"),
-    "\n",
-    include_str!("../web/components/chrome.css"),
-);
+/// [`TOKENS_CSS`]'s roles, baked with its compressed copies. The POS's
+/// artwork (`status.css`) is left out: only the POS shows it.
+pub const COMPONENTS: static_assets::Baked = static_assets::bake!(join "\n" [
+    "web/components/primitives.css",
+    "web/components/select.css",
+    "web/components/content.css",
+    "web/components/dialog.css",
+    "web/components/forms.css",
+    "web/components/sortable.css",
+    "web/components/navigation.css",
+    "web/components/steps.css",
+    "web/components/action-card.css",
+    "web/components/settings.css",
+    "web/components/patterns.css",
+    "web/components/monitoring.css",
+    "web/components/chrome.css",
+]);
+pub const COMPONENTS_CSS: &str = COMPONENTS.text();
 
 /// The UI typeface, Manrope, Latin subset, by weight.
 pub const MANROPE_500: &[u8] = include_bytes!("../web/fonts/manrope-500.woff2");

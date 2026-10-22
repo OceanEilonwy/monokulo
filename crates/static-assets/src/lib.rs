@@ -34,12 +34,56 @@ pub struct Asset {
     pub name: &'static str,
     pub content_type: &'static str,
     pub bytes: &'static [u8],
+    /// The same, brotli- and gzip-compressed when the binary was built
+    /// ([`bake!`]): `None` where that wouldn't make it smaller, or the file
+    /// is compressed already.
+    pub brotli: Option<&'static [u8]>,
+    pub gzip: Option<&'static [u8]>,
     /// Sixteen hex characters naming this version of the file: FNV-1a of
     /// its bytes, computed when the binary was built. A version label, not
     /// an integrity check.
     pub digest: &'static str,
     pub policy: Policy,
 }
+
+/// A file's bytes and its compressed copies, as [`bake!`] reads and makes
+/// them when the crate listing the file is compiled.
+#[derive(Clone, Copy, Debug)]
+pub struct Baked {
+    pub bytes: &'static [u8],
+    pub brotli: Option<&'static [u8]>,
+    pub gzip: Option<&'static [u8]>,
+}
+
+impl Baked {
+    /// Bytes with no compressed copies: a font, an image, or text a test
+    /// makes up.
+    pub const fn plain(bytes: &'static [u8]) -> Self {
+        Baked {
+            bytes,
+            brotli: None,
+            gzip: None,
+        }
+    }
+
+    /// The bytes as text, for a stylesheet a page also inlines. A file that
+    /// isn't UTF-8 is a mistake, caught when the crate compiles.
+    pub const fn text(&self) -> &'static str {
+        match core::str::from_utf8(self.bytes) {
+            Ok(text) => text,
+            Err(_) => panic!("a baked text file isn't UTF-8"),
+        }
+    }
+}
+
+/// A file's [`Baked`] bytes and copies, read when the calling crate
+/// compiles: `bake!("static/", "app.js")` under its directory,
+/// `bake!(out_dir "/web/app.js")` from its build script's output,
+/// `bake!(join "\n" ["a.css", "b.css"])` several files one after another.
+pub use static_assets_macros::bake;
+
+// `bake!` names this crate by its path, from here too.
+extern crate self as static_assets;
 
 impl Asset {
     /// The name the file is linked and published at: `name.<digest>.ext`,
@@ -125,9 +169,10 @@ pub const fn hex16(x: u64) -> [u8; 16] {
     out
 }
 
-/// One file of a table: its bytes and their digest, both baked in. Paths
-/// are the calling crate's: under its `static/` folder, from its manifest
-/// directory, or in its build's `OUT_DIR`.
+/// One file of a table: its bytes, their digest and, for a text file, its
+/// compressed copies ([`bake!`]), all baked in. Paths are the calling
+/// crate's: under its `static/` folder, from its manifest directory, or in
+/// its build's `OUT_DIR`.
 ///
 /// - `asset!("name.ext", TYPE)`: a file under `static/`, fingerprinted.
 /// - `asset!(from "name.ext", "path/from/the/crate", TYPE)`: a file
@@ -136,42 +181,47 @@ pub const fn hex16(x: u64) -> [u8; 16] {
 ///   script makes, fingerprinted.
 /// - `asset!(named "name-hash.ext", "/path/in/out-dir", TYPE)`: a chunk the
 ///   build script's bundler makes, its hash already in its name.
-/// - `asset!(text "name.ext", TEXT, TYPE)`: a file another module holds
-///   as a string, fingerprinted.
+/// - `asset!(baked "name.ext", BAKED, TYPE)`: a file another module bakes
+///   ([`bake!`], a stylesheet it also uses), fingerprinted.
+/// - `asset!(text "name.ext", TEXT, TYPE)` and `asset!(bytes …)`: a
+///   string or bytes another module holds, fingerprinted, not compressed.
 /// - `asset!(public "name.ext", TYPE)` and
 ///   `asset!(public from "name.ext", "path", TYPE)`: a file whose bare name
 ///   others link.
 #[macro_export]
 macro_rules! asset {
     ($name:literal, $content_type:expr) => {
-        $crate::asset!(from $name, concat!("static/", $name), $content_type)
+        $crate::asset!(@entry $name, $crate::bake!("static/", $name), $content_type, $crate::Policy::Fingerprinted)
     };
-    (from $name:literal, $path:expr, $content_type:expr) => {
-        $crate::asset!(@entry $name, include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $path)), $content_type, $crate::Policy::Fingerprinted)
+    (from $name:literal, $path:literal, $content_type:expr) => {
+        $crate::asset!(@entry $name, $crate::bake!($path), $content_type, $crate::Policy::Fingerprinted)
     };
     (bytes $name:literal, $bytes:expr, $content_type:expr) => {
-        $crate::asset!(@entry $name, $bytes, $content_type, $crate::Policy::Fingerprinted)
+        $crate::asset!(@entry $name, $crate::Baked::plain($bytes), $content_type, $crate::Policy::Fingerprinted)
     };
     (text $name:literal, $text:expr, $content_type:expr) => {
-        $crate::asset!(@entry $name, $text.as_bytes(), $content_type, $crate::Policy::Fingerprinted)
+        $crate::asset!(@entry $name, $crate::Baked::plain($text.as_bytes()), $content_type, $crate::Policy::Fingerprinted)
+    };
+    (baked $name:literal, $baked:expr, $content_type:expr) => {
+        $crate::asset!(@entry $name, $baked, $content_type, $crate::Policy::Fingerprinted)
     };
     (named $name:literal, $path:literal, $content_type:expr) => {
-        $crate::asset!(@entry $name, include_bytes!(concat!(env!("OUT_DIR"), $path)), $content_type, $crate::Policy::Hashed)
+        $crate::asset!(@entry $name, $crate::bake!(out_dir $path), $content_type, $crate::Policy::Hashed)
     };
     (built $name:literal, $path:literal, $content_type:expr) => {
-        $crate::asset!(@entry $name, include_bytes!(concat!(env!("OUT_DIR"), $path)), $content_type, $crate::Policy::Fingerprinted)
+        $crate::asset!(@entry $name, $crate::bake!(out_dir $path), $content_type, $crate::Policy::Fingerprinted)
     };
     (public $name:literal, $content_type:expr) => {
-        $crate::asset!(public from $name, concat!("static/", $name), $content_type)
+        $crate::asset!(@entry $name, $crate::bake!("static/", $name), $content_type, $crate::Policy::Public)
     };
-    (public from $name:literal, $path:expr, $content_type:expr) => {
-        $crate::asset!(@entry $name, include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $path)), $content_type, $crate::Policy::Public)
+    (public from $name:literal, $path:literal, $content_type:expr) => {
+        $crate::asset!(@entry $name, $crate::bake!($path), $content_type, $crate::Policy::Public)
     };
-    (@entry $name:literal, $bytes:expr, $content_type:expr, $policy:expr) => {{
-        const BYTES: &[u8] = $bytes;
+    (@entry $name:literal, $baked:expr, $content_type:expr, $policy:expr) => {{
+        const BAKED: $crate::Baked = $baked;
         // A bundle or a WebAssembly module can run to a megabyte.
         #[allow(long_running_const_eval)]
-        const HEX: [u8; 16] = $crate::hex16($crate::fnv1a64(BYTES));
+        const HEX: [u8; 16] = $crate::hex16($crate::fnv1a64(BAKED.bytes));
         const DIGEST: &str = match ::core::str::from_utf8(&HEX) {
             Ok(digest) => digest,
             Err(_) => panic!("hex is ASCII"),
@@ -179,7 +229,9 @@ macro_rules! asset {
         $crate::Asset {
             name: $name,
             content_type: $content_type,
-            bytes: BYTES,
+            bytes: BAKED.bytes,
+            brotli: BAKED.brotli,
+            gzip: BAKED.gzip,
             digest: DIGEST,
             policy: $policy,
         }
@@ -224,6 +276,37 @@ mod tests {
         assert!(published(TABLE, "page.0123456789abcdef.css").is_none());
         assert!(published(TABLE, "").is_none());
         assert!(find(TABLE, "nothing.js").is_none());
+    }
+
+    #[test]
+    fn a_text_file_is_baked_with_smaller_copies_and_other_files_without() {
+        const CSS_FILE: Baked = bake!("tests/sample.css");
+        let css = include_bytes!("../tests/sample.css");
+        assert_eq!(CSS_FILE.bytes, css);
+        let (brotli, gzip) = (CSS_FILE.brotli.unwrap(), CSS_FILE.gzip.unwrap());
+        assert!(brotli.len() < css.len() / 2, "{}", brotli.len());
+        assert!(gzip.len() < css.len() / 2, "{}", gzip.len());
+        // gzip's header: the copy is a gzip stream.
+        assert_eq!(&gzip[..2], &[0x1f, 0x8b]);
+        // A Rust file, like a font or an image, isn't one a page compresses.
+        const RUST: Baked = bake!("src/", "lib.rs");
+        assert_eq!(RUST.bytes, include_bytes!("lib.rs"));
+        assert!(RUST.brotli.is_none() && RUST.gzip.is_none());
+        let table = asset!(baked "sample.css", CSS_FILE, CSS);
+        assert_eq!(table.brotli, CSS_FILE.brotli);
+    }
+
+    #[test]
+    fn files_joined_are_one_after_another_with_the_separator() {
+        const BOTH: Baked = bake!(join "\n/* next */\n" ["tests/sample.css", "Cargo.toml"]);
+        let joined = [
+            &include_bytes!("../tests/sample.css")[..],
+            b"\n/* next */\n",
+            include_bytes!("../Cargo.toml"),
+        ]
+        .concat();
+        assert_eq!(BOTH.bytes, joined);
+        assert_eq!(BOTH.text(), std::str::from_utf8(&joined).unwrap());
     }
 
     #[test]
