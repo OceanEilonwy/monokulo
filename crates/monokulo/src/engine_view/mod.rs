@@ -1,9 +1,15 @@
-//! The engine page (`docs/engine_visualizer.md`): what the engine's scanner
-//! is doing, live, for admins.
+//! The engine page's data (`docs/engine_visualizer.md`): what the engine's
+//! scanner is doing, live, for admins. The page itself is an app
+//! (`apps/engine`) that draws and words what this sends.
 //!
-//! - [`machine`]: the page's logic, a pure state machine from the engine's
-//!   activity events to the page's state, what to animate, and sentences.
+//! - [`machine`]: a pure state machine from the engine's activity events to
+//!   the page's state, what to animate, and marks (what happened, as data).
+//! - [`history`]: a network's events, with keyframes, for the state at any
+//!   moment and the frames between two.
+//! - [`relay`]: one engine stream per network, shared by every viewer.
 pub mod history;
 pub mod machine;
-pub mod present;
 pub mod relay;
+
+#[cfg(test)]
+mod app_fixtures;

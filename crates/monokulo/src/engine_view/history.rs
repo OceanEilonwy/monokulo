@@ -1,7 +1,9 @@
 //! A network's history for the engine page: the engine's events, the state
 //! machine run over them with a keyframe every [`KEYFRAME_EVERY_MS`], and
 //! the marks. It answers the live state, the state at any moment (the
-//! timeline's scrubbing) and the frames between two moments (replay).
+//! timeline's scrubbing) and the frames between two moments (replay). A
+//! frame is data: the state, the tuning its rounds are drawn to, the
+//! effects and the marks; the page's app (`apps/engine`) writes every word.
 //!
 //! No I/O: the relay (`engine_view::relay`) feeds it the pages the engine
 //! streams.
@@ -12,7 +14,6 @@ use serde::Serialize;
 use shared::activity::{ActivityPage, Event, Recorded, Tuning};
 
 use super::machine::{step, Effect, Mark, State};
-use super::present::{mark_view, present, present_round, MarkView, Presented, RoundView};
 
 /// How far back the history reaches: the engine keeps as much.
 pub const KEEP_MS: i64 = 30 * 60_000;
@@ -50,13 +51,15 @@ struct Keyframe {
     state: State,
 }
 
-/// What the page draws at one moment, and what led there.
+/// The state at one moment, and what led there.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Frame {
     pub at_ms: i64,
-    pub view: Presented,
+    pub state: State,
+    /// How the scanner's rounds are sized: what a round is drawn to.
+    pub tuning: Tuning,
     pub effects: Vec<Timed>,
-    pub marks: Vec<MarkView>,
+    pub marks: Vec<Mark>,
 }
 
 /// An effect at the time of the event that caused it.
@@ -120,9 +123,10 @@ impl History {
         }
         Update::Frame(Box::new(Frame {
             at_ms: self.live.at_ms,
-            view: present(&self.live, &self.tuning),
+            state: self.live.clone(),
+            tuning: self.tuning,
             effects,
-            marks: marks.iter().map(mark_view).collect(),
+            marks,
         }))
     }
 
@@ -223,14 +227,9 @@ impl History {
         &self.live
     }
 
-    /// What the page draws now.
+    /// The state now.
     pub fn live_frame(&self) -> Frame {
-        Frame {
-            at_ms: self.live.at_ms,
-            view: present(&self.live, &self.tuning),
-            effects: Vec::new(),
-            marks: Vec::new(),
-        }
+        self.frame(self.live.at_ms, &self.live, Vec::new(), Vec::new())
     }
 
     /// Every mark kept, oldest first.
@@ -257,9 +256,9 @@ impl History {
         state
     }
 
-    /// Round `number` as the round card draws it once it ended (or as far
-    /// as it has got): `None` once it has left the history.
-    pub fn round(&self, number: u64) -> Option<RoundView> {
+    /// The state as round `number` ended (or as far as it has got): what
+    /// the round card draws it from. `None` once it has left the history.
+    pub fn round(&self, number: u64) -> Option<Frame> {
         let starts = |recorded: &Recorded| matches!(recorded.event, Event::RoundStarted { round, budget_ms: _, tip: _ } if round == number);
         let start = self.events.iter().find(|recorded| starts(recorded))?.seq;
         let index = self.keyframes.iter().rposition(|k| k.next_seq <= start)?;
@@ -284,17 +283,12 @@ impl History {
                 break;
             }
         }
-        present_round(&state, &self.tuning)
+        Some(self.frame(state.at_ms, &state, Vec::new(), Vec::new()))
     }
 
-    /// What the page draws at `at_ms`.
+    /// The state at `at_ms`.
     pub fn frame_at(&self, at_ms: i64) -> Frame {
-        Frame {
-            at_ms,
-            view: present(&self.state_at(at_ms), &self.tuning),
-            effects: Vec::new(),
-            marks: Vec::new(),
-        }
+        self.frame(at_ms, &self.state_at(at_ms), Vec::new(), Vec::new())
     }
 
     /// Replay from `from_ms` to `to_ms` (at most [`MAX_REPLAY_MS`] of it):
@@ -342,9 +336,10 @@ impl History {
     fn frame(&self, at_ms: i64, state: &State, effects: Vec<Timed>, marks: Vec<Mark>) -> Frame {
         Frame {
             at_ms,
-            view: present(state, &self.tuning),
+            state: state.clone(),
+            tuning: self.tuning,
             effects,
-            marks: marks.iter().map(mark_view).collect(),
+            marks,
         }
     }
 }

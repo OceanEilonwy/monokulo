@@ -544,8 +544,8 @@ mod tests {
             .unwrap();
         assert_eq!(marks.len(), 1);
         assert_eq!(
-            crate::engine_view::present::mark_text(&marks[0].what),
-            "Started scanning this network at block 100."
+            marks[0].what,
+            crate::engine_view::machine::MarkKind::Seeded { height: 100 }
         );
         let requests = engine.request_count();
 
@@ -553,7 +553,7 @@ mod tests {
         let frame = next_frame(&mut watch).await;
         assert_eq!(frame.marks.len(), 1, "{frame:?}");
         assert!(frame.marks[0].key);
-        assert_eq!(frame.view.summary[5].value, "Reorg");
+        assert_eq!(frame.state.reorg.map(|reorg| reorg.fork), Some(100));
 
         let other = relay.watch("stagenet").await.unwrap();
         let live = relay
@@ -724,7 +724,7 @@ mod tests {
                 Message::Restarted => panic!("the same engine came back"),
             }
         };
-        assert_eq!(frame.view.summary[5].value, "Reorg");
+        assert_eq!(frame.state.reorg.map(|reorg| reorg.fork), Some(100));
     }
 
     /// The default timing is valid; nothing that would never let go, retry

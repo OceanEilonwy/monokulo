@@ -24,7 +24,7 @@ const vite = path.join(root, 'node_modules/vite/bin/vite.js');
 if (!fs.existsSync(vite)) throw new Error(`missing prerequisite: ${vite}`);
 for (const [app, bundle, counted] of [
   ['pos', 'pos-app.js', 'src/main.tsx'],
-  ['engine', 'engine-view.js', 'src/events.tsx'],
+  ['engine', 'engine-view.js', 'src/present.ts'],
 ]) {
   const build = spawnSync(process.execPath, [vite, 'build', '--config', 'coverage.vite.config.mjs'],
     { cwd: path.join(root, 'apps', app), stdio: 'inherit' });

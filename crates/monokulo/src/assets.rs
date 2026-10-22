@@ -55,6 +55,7 @@ pub static ASSETS: &[Asset] = &[
     // The engine page (`docs/engine_visualizer.md`; `apps/engine`, built
     // by `build.rs` with the islands, sharing their copy of Solid).
     asset!(built "engine-view.js", "/web/engine-view.js", JS),
+    asset!(built "engine-view.css", "/web/engine-view.css", CSS),
     // A store's key entry, and making a wallet in the browser, each with
     // the WebAssembly module its script fetches (`build.rs`).
     asset!("key-custody.js", JS),

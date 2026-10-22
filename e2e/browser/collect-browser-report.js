@@ -46,8 +46,22 @@ async function main() {
     'crates/monokulo/static/checkout.js',
     'crates/monokulo/static/challenge.js',
     'crates/monokulo/static/monokulo-client.js',
-    'apps/engine/src/engine-view.js',
-    'apps/engine/src/events.tsx',
+    'apps/engine/src/engine-view.tsx',
+    'apps/engine/src/App.tsx',
+    'apps/engine/src/Chain.tsx',
+    'apps/engine/src/Events.tsx',
+    'apps/engine/src/Help.tsx',
+    'apps/engine/src/MachineStrip.tsx',
+    'apps/engine/src/Panels.tsx',
+    'apps/engine/src/Round.tsx',
+    'apps/engine/src/Summary.tsx',
+    'apps/engine/src/Timeline.tsx',
+    'apps/engine/src/format.ts',
+    'apps/engine/src/layout.ts',
+    'apps/engine/src/machine.ts',
+    'apps/engine/src/present.ts',
+    'apps/engine/src/state.ts',
+    'apps/engine/src/wire.ts',
     'apps/pos/src/main.tsx',
     'apps/pos/src/timeline.ts',
   ];
@@ -61,7 +75,9 @@ async function main() {
     const file = finalMap.files().find(file => file.endsWith(name));
     if (!file) throw new Error(`browser coverage is missing required source ${name}`);
     const summary = finalMap.fileCoverageFor(file).toSummary();
-    if (!summary.lines.total || !summary.branches.total || !summary.lines.covered || !summary.branches.covered) {
+    // A file with no branches (the app's signals, its wire types) has
+    // only lines to run.
+    if (!summary.lines.total || !summary.lines.covered || (summary.branches.total && !summary.branches.covered)) {
       throw new Error(`browser coverage has no executed lines or branches for ${name}`);
     }
   }

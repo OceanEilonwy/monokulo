@@ -6,8 +6,8 @@
 //! state is drawn: [`State`] is what the page shows, [`Effect`]s are the
 //! movements that lead to it, and a [`Mark`] says what happened, as data,
 //! for the timeline and the events table. Everything that draws, live,
-//! replayed or scrubbed, and with or without JavaScript, is drawn from
-//! these; every word is written from them in `present`.
+//! replayed or scrubbed, is drawn from these, by the page's app
+//! (`apps/engine`), which writes every word.
 //!
 //! The engine's snapshots ([`Event::Snapshot`]) are the truth; between them
 //! the state follows the events. A snapshot overrides whatever the events
@@ -22,8 +22,6 @@ use shared::activity::{
     UnitProgress, Wait, Wake, Work,
 };
 use shared::order_status::OrderStatus;
-
-use crate::views::scaling::thousands;
 
 /// Rounds and sleeps kept for the recent-rounds ribbon.
 pub const RIBBON: usize = 90;
@@ -373,7 +371,7 @@ pub struct Mark {
     pub round: u64,
     pub tier: Tier,
     pub key: bool,
-    /// What happened; `present::mark_text` writes it as a sentence.
+    /// What happened; the page's app writes it as a sentence.
     pub what: MarkKind,
 }
 
@@ -1243,20 +1241,6 @@ impl State {
     fn forget_before(&mut self, since: i64) {
         self.saves.forget_before(since);
         self.pool.fast_passes.forget_before(since);
-    }
-}
-
-/// "1 store", "3 stores".
-pub fn stores_phrase(stores: u64) -> String {
-    plural(stores, "store")
-}
-
-/// `n` and `noun`, plural unless one: "1 payment", "1,204 payments".
-pub fn plural(n: u64, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{} {noun}s", thousands(n))
     }
 }
 

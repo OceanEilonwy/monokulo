@@ -3,7 +3,8 @@
 // replaying and going live again, moving and resizing the timeline's window,
 // the legend, the chain strip's cells at each width, the round's lanes, the
 // network picker, the live "Machine and links" strip, and the page without
-// JavaScript.
+// JavaScript, which says it needs it. The page is an app (apps/engine): it
+// draws and words everything from the data monokulo sends.
 // The fixture plays a scripted story into the engine's activity record
 // (`POST /__coverage/engine/story`): a block with a payment, a pool payment
 // settling, a store catching up and joining the frontier, and a reorg.
@@ -185,13 +186,13 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   // A click on a recent round shows it in the round card, paused; the chip
   // goes back to the live round. The lanes add up to the round.
   await mode().selectOption('live');
-  const firstRound = page.locator('#ribbon a.rbar').first();
+  const firstRound = page.locator('#ribbon .rbar').first();
   const number = await firstRound.getAttribute('data-round');
   await firstRound.click();
   const card = page.locator('#engine-round');
   await expect(card.locator('#round-resume')).toHaveText('× Paused');
   await expect(card.locator('#h-round')).toHaveText(`Round ${Number(number).toLocaleString('en-GB')}`);
-  await expect(card.locator('a.rbar.pinned')).toHaveCount(1);
+  await expect(card.locator('.rbar.pinned')).toHaveCount(1);
   const times = await card.locator('.lane-time').allTextContents();
   const total = await card.locator('.ruler-label').textContent();
   // A part under a millisecond ("<1ms") counts as none.
@@ -538,17 +539,15 @@ test('on a phone a gap between the thresholds is joined', async ({ page, context
 
 // Shapes back to back in a segment are one run, `(    ][****)`: Chain's
 // tip request (outlined) runs straight into its unit (solid). Where they
-// meet, both are square and touch; the run's own ends stay rounded. The
-// page draws it on the server and again in its script: both, on a wide
-// track and a phone's.
+// meet, both are square and touch; the run's own ends stay rounded: on a
+// wide track and a phone's.
 for (const width of [1280, 390]) {
-  for (const javaScriptEnabled of [false, true]) {
-    test(`${width}px, ${javaScriptEnabled ? 'drawn by the script' : 'as served'}: an outline and a unit back to back are one run`, async ({ browser }) => {
-      const context = await browser.newContext({ viewport: { width, height: 900 }, javaScriptEnabled });
+  {
+    test(`${width}px: an outline and a unit back to back are one run`, async ({ browser }) => {
+      const context = await browser.newContext({ viewport: { width, height: 900 } });
       const page = await context.newPage();
       await openAsAdmin(page, context);
       await expect(page.locator('#engine-round .track.t-chain .bar').first()).toBeVisible();
-      if (javaScriptEnabled) await expect(page.locator('#engine-timeline')).toBeVisible();
       const runs = await page.evaluate(() => [...document.querySelectorAll('#engine-round .bar')].flatMap((bar) => {
         const shapes = [...bar.children].map((el) => {
           const s = getComputedStyle(el), box = el.getBoundingClientRect();
@@ -573,21 +572,6 @@ for (const width of [1280, 390]) {
     });
   }
 }
-
-// The script's label rule, run on the cases the server's is tested with
-// (views/label_levels.json): one rule, two places, kept in step.
-test('the script stacks labels by the same rule as the server', async () => {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const root = path.resolve(__dirname, '../../../crates/monokulo');
-  const source = fs.readFileSync(path.join(root, '../../apps/engine/src/engine-view.js'), 'utf8');
-  const gap = source.match(/const LABEL_GAP_PX = \d+;/)[0];
-  const body = source.match(/function stackLabels\(spans\) \{[\s\S]*?\n {2}\}\n/)[0];
-  const stackLabels = new Function(`${gap}\n${body}\nreturn stackLabels;`)();
-  const cases = JSON.parse(fs.readFileSync(path.join(root, 'src/views/label_levels.json'), 'utf8'));
-  expect(cases.length).toBeGreaterThanOrEqual(7);
-  for (const c of cases) expect(stackLabels(c.spans), c.case).toEqual([c.levels, c.used]);
-});
 
 test('the chain strip labels take as few levels as they can, with 1px leaders', async ({ page, context }) => {
   await openAsAdmin(page, context);
@@ -687,21 +671,23 @@ test('the timeline scrub bar reaches the playback control', async ({ page, conte
   expect(m.modes.top).toBeGreaterThan(m.bar.bottom);
 });
 
-test('without JavaScript the engine page is the network as of now', async ({ browser }) => {
+// Without JavaScript the page says it needs it, and the network picker
+// still goes (Go submits it); none of the live view is drawn.
+test('without JavaScript the engine page says it needs it', async ({ browser }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
   const page = await context.newPage();
   await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
-  await expect(page.locator('#engine-timeline')).toBeHidden();
-  await expect(page.locator('.engine-page a[data-reload]')).toBeVisible();
-  await expect(page.locator('#engine-summary')).toContainText('Node tip');
-  await expect(page.locator('#engine-events tbody tr').first()).toBeVisible();
-  // The server stacks the labels by the same rule: only the frontier,
-  // on the node tip's block, goes up a level.
-  await expect(page.locator('#strip')).toHaveAttribute('style', '--levels:2');
-  await expect(page.locator('#chain-marks .m-tip')).toHaveAttribute('style', /--level:0$/);
-  await expect(page.locator('#pills .pill.frontier')).toHaveAttribute('style', /--level:1$/);
-  await expect(page.locator('#pills .pill.catchup')).toHaveAttribute('style', /--level:0$/);
+  // (Playwright's locators don't look inside `noscript`: the page is asked.)
+  const shown = await page.evaluate(() => {
+    const message = document.querySelector('#engine-app noscript [role]');
+    return message && { text: message.textContent, height: message.getBoundingClientRect().height };
+  });
+  expect(shown.text).toContain('The engine page needs JavaScript');
+  expect(shown.height).toBeGreaterThan(0);
+  await expect(page.locator('#engine-timeline')).toHaveCount(0);
+  await expect(page.locator('#engine-summary')).toHaveCount(0);
+  await expect(page.locator('.engine-network').getByRole('button', { name: 'Go' })).toBeVisible();
   await captureCoverageStage(page, 'engine-no-js', test.info(), shot);
   await context.close();
 });

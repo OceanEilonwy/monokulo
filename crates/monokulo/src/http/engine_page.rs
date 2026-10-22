@@ -1,22 +1,28 @@
 //! The engine page's handlers (`docs/engine_visualizer.md`), admins only:
-//! it shows node addresses and every store's progress.
+//! it shows node addresses and every store's progress. The page is an app
+//! (`apps/engine`) that needs JavaScript; these send it data, and it draws
+//! and words everything.
 //!
-//! - `GET /status/engine?network=`: the page, whole, as of now.
-//! - `GET /status/engine/events?network=`: what the page's script follows:
-//!   a `history` event (the network's live frame and every mark kept), then
+//! - `GET /status/engine?network=`: the app's shell: the page's header and
+//!   network picker, and where the app goes.
+//! - `GET /status/engine/events?network=`: what the app follows: a
+//!   `history` event (the network's live frame and every mark kept), then
 //!   a `frame` event each time the engine records something, `restarted`
-//!   when the history started over (the script reconnects) and
-//!   `unreachable` while the engine doesn't answer. Beside them, a
-//!   `machine` event at once and then every [`MACHINE_EVERY`] at most: the
+//!   when the history started over (the app reconnects) and `unreachable`
+//!   while the engine doesn't answer. Beside them, a `machine` event at
+//!   once and then every [`MACHINE_EVERY`] at most: the figures behind the
 //!   "Machine and links" strip and the Scanning panel, from monokulo's
 //!   cached `/status` (decision D38 in docs/engine_visualizer_decisions.md).
-//! - `GET /status/engine/at?network=&ms=`: what the page drew at a moment
-//!   (the timeline's scrubbing).
+//! - `GET /status/engine/at?network=&ms=`: the frame at a moment (the
+//!   timeline's scrubbing).
 //! - `GET /status/engine/replay?network=&from=&to=`: the frames between two
 //!   moments (replay), at most a minute of them.
-//! - `GET /status/engine/round?network=&number=`: a past round as the round
-//!   card draws it (a click on the recent rounds). Without JavaScript the
-//!   recent rounds link to the page with `&round=`.
+//! - `GET /status/engine/round?network=&number=`: the frame a past round
+//!   ended on (a click on the recent rounds).
+//!
+//! A frame is the state machine's state at a moment, the tuning its rounds
+//! are drawn to, and the effects and marks that led there
+//! (`engine_view::history::Frame`).
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -28,14 +34,15 @@ use axum::response::sse::Event;
 use axum::response::{Html, IntoResponse, Json, Response};
 use futures_util::stream::{self, StreamExt as _};
 use serde::{Deserialize, Serialize};
+use shared::resources::ResourceReport;
+use shared::scaling::{LinkSnapshot, NetworkScaling};
 
 use super::{AppState, AuthedAdmin};
 use crate::engine_client::{EngineClient, EngineStatusResponse};
 use crate::engine_view::history::Frame;
-use crate::engine_view::present::{mark_view, MarkView};
+use crate::engine_view::machine::Mark;
 use crate::engine_view::relay::Message;
 use crate::views;
-use crate::views::scaling::{self, MachineView, ResourcesView};
 
 /// The `machine` event comes at most this often: it is built from
 /// monokulo's cached `/status` (itself at most one engine request every
@@ -45,13 +52,6 @@ pub const MACHINE_EVERY: Duration = Duration::from_secs(5);
 #[derive(Debug, Deserialize)]
 pub struct NetworkQuery {
     network: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PageQuery {
-    network: Option<String>,
-    /// A past round to show in the round card.
-    round: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,16 +73,16 @@ pub struct ReplayQuery {
     to: i64,
 }
 
-/// What the script starts from.
+/// What the app starts from.
 #[derive(Serialize)]
 struct Start<'a> {
     epoch: &'a str,
-    /// The engine's clock, so the script can tell how far behind it plays.
+    /// The engine's clock, so the app can tell how far behind it plays.
     engine_now_ms: i64,
     /// The oldest moment that can be shown.
     oldest_ms: Option<i64>,
     frame: Frame,
-    marks: Vec<MarkView>,
+    marks: Vec<&'a Mark>,
 }
 
 /// The networks the engine scans, in its order.
@@ -96,23 +96,57 @@ fn network_names(status: &EngineStatusResponse) -> Vec<String> {
     status.networks.iter().map(|n| n.network.clone()).collect()
 }
 
+/// The figures behind the "Machine and links" strip and the Scanning
+/// panel for one network, from monokulo's cached `/status`: the app
+/// charts and words them.
+#[derive(Debug, Serialize)]
+pub(crate) struct Machine<'a> {
+    network: &'a str,
+    /// When the engine wrote the `/status` this is from (its clock).
+    at_unix: i64,
+    /// Now, by monokulo's clock: where the charts' hour ends.
+    now_unix: i64,
+    resources: Resources,
+    /// The node the engine reads the network's chain from right now.
+    node: Option<NodeInUse<'a>>,
+    scaling: Option<&'a NetworkScaling>,
+}
+
+/// Both processes' CPU and memory (docs/engine_scaling.md section 6).
+#[derive(Debug, Serialize)]
+struct Resources {
+    /// `None` when the engine didn't report its own (or didn't answer).
+    engine: Option<ResourceReport>,
+    monokulo: ResourceReport,
+    /// The engine runs inside monokulo: one process, its CPU split by
+    /// thread (`ResourceReport::hosted`) and its memory shared.
+    one_process: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct NodeInUse<'a> {
+    /// The engine's label for it (`host:port`).
+    label: &'a str,
+    /// Not the network's primary: the engine fell back to it.
+    fallback: bool,
+    link: Option<&'a LinkSnapshot>,
+}
+
 /// Both processes' CPU and memory. Inside monokulo, the engine's
 /// `/status` reports the same process as monokulo's own sampler, so the
 /// one report is split by thread instead: counted twice, it would double.
-fn resources_view(client: &EngineClient, status: &EngineStatusResponse, now: i64) -> ResourcesView {
+fn resources(client: &EngineClient, status: &EngineStatusResponse) -> Resources {
     let process = shared::resources::sampler().report();
     if client.is_embedded() {
-        ResourcesView {
+        Resources {
             engine: Some(process.hosted()),
             monokulo: process.without_hosted(),
-            now_unix: now,
             one_process: true,
         }
     } else {
-        ResourcesView {
+        Resources {
             engine: status.resources.clone(),
             monokulo: process,
-            now_unix: now,
             one_process: false,
         }
     }
@@ -121,42 +155,29 @@ fn resources_view(client: &EngineClient, status: &EngineStatusResponse, now: i64
 /// What the "Machine and links" strip and the Scanning panel show for
 /// `network`: the machine's CPU and memory, the link to the node the
 /// engine is using right now (a fallback said so; standby nodes have no
-/// figures), the blocks' size and the scan.
-pub(crate) fn machine_view(
+/// figures), and the network's scan.
+pub(crate) fn machine<'a>(
     client: &EngineClient,
-    status: &EngineStatusResponse,
-    network: &str,
-) -> MachineView {
-    let now = shared::time::now_unix();
-    let mut tiles = scaling::resource_tiles(&resources_view(client, status, now));
-    let stacked = tiles.iter().any(
-        |tile| matches!(&tile.chart, scaling::TileChart::Stack { layers, .. } if layers.len() > 1),
-    );
+    status: &'a EngineStatusResponse,
+    network: &'a str,
+) -> Machine<'a> {
     let reported = status.networks.iter().find(|n| n.network == network);
-    let in_use = reported.and_then(|reported| {
+    let node = reported.and_then(|reported| {
         let at = reported.nodes.iter().position(|node| node.is_active)?;
         let node = &reported.nodes[at];
-        Some(scaling::InUseNode {
+        Some(NodeInUse {
             label: &node.label,
             fallback: at > 0,
             link: node.link.as_ref(),
         })
     });
-    tiles.extend(scaling::link_tiles(in_use, now));
-    let scaling_of = reported.and_then(|reported| reported.scaling.as_ref());
-    tiles.push(scaling::block_size_tile(scaling_of));
-    let active = in_use.map(|node| scaling::ActiveNode {
-        label: node.label,
-        rate_bytes_per_sec: node
-            .link
-            .filter(|link| link.measured)
-            .map(|link| link.rate_bytes_per_sec),
-    });
-    MachineView {
-        tiles,
-        stacked,
-        scanning: scaling_of.map(|scan| scaling::scanning(network, scan, active)),
+    Machine {
+        network,
         at_unix: status.generated_at,
+        now_unix: shared::time::now_unix(),
+        resources: resources(client, status),
+        node,
+        scaling: reported.and_then(|reported| reported.scaling.as_ref()),
     }
 }
 
@@ -172,7 +193,7 @@ async fn machine_event(state: &AppState, network: &str) -> Option<Event> {
     .ok()?;
     Event::default()
         .event("machine")
-        .json_data(machine_view(&state.engine.client, &status, network))
+        .json_data(machine(&state.engine.client, &status, network))
         .ok()
 }
 
@@ -184,11 +205,11 @@ fn known(networks: &[String], network: &str) -> Option<String> {
 pub async fn page(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
-    Query(query): Query<PageQuery>,
+    Query(query): Query<NetworkQuery>,
 ) -> Response {
     let chrome = super::page_chrome(&state, Some(&admin), "/status/engine".to_owned()).await;
-    let status = match super::status_page::get_status_cached(&state.engine).await {
-        Ok(status) => status,
+    let networks = match networks(&state).await {
+        Ok(networks) => networks,
         Err(error) => {
             return Html(
                 views::engine::page(
@@ -196,10 +217,6 @@ pub async fn page(
                     &views::engine::EnginePage {
                         networks: Vec::new(),
                         network: String::new(),
-                        view: None,
-                        machine: None,
-                        pinned: None,
-                        marks: Vec::new(),
                         error: Some(error),
                     },
                 )
@@ -208,7 +225,6 @@ pub async fn page(
             .into_response();
         }
     };
-    let networks = network_names(&status);
     let network = match query.network.as_deref() {
         Some(asked) => match known(&networks, asked) {
             Some(network) => network,
@@ -216,41 +232,15 @@ pub async fn page(
         },
         None => networks.first().cloned().unwrap_or_default(),
     };
-    let read = if network.is_empty() {
-        Err("no Monero node is configured on this engine".to_owned())
-    } else {
-        state
-            .engine
-            .activity
-            .read(&network, |history| {
-                let marks: Vec<MarkView> = history
-                    .marks()
-                    .rev()
-                    .take(views::engine::MARKS_SHOWN)
-                    .map(mark_view)
-                    .collect();
-                let pinned = query.round.and_then(|number| history.round(number));
-                (history.live_frame().view, pinned, marks)
-            })
-            .await
-            .map_err(|error| error.to_string())
-    };
-    let (view, pinned, marks, error) = match read {
-        Ok((view, pinned, marks)) => (Some(view), pinned, marks, None),
-        Err(error) => (None, None, Vec::new(), Some(error)),
-    };
-    let machine =
-        (!network.is_empty()).then(|| machine_view(&state.engine.client, &status, &network));
+    let error = network
+        .is_empty()
+        .then(|| "no Monero node is configured on this engine".to_owned());
     Html(
         views::engine::page(
             &chrome,
             &views::engine::EnginePage {
                 networks,
                 network,
-                view,
-                machine,
-                pinned,
-                marks,
                 error,
             },
         )
@@ -294,7 +284,7 @@ pub async fn events(
                 engine_now_ms: history.engine_now_ms(),
                 oldest_ms: history.oldest_ms(),
                 frame: history.live_frame(),
-                marks: history.marks().map(mark_view).collect(),
+                marks: history.marks().collect(),
             })
         })
         .await;
@@ -362,8 +352,8 @@ pub async fn at(
     }
 }
 
-/// A past round, as the round card draws it: 404 once it has left the
-/// history.
+/// The frame a past round ended on, which the round card draws: 404 once
+/// it has left the history.
 pub async fn round(
     State(state): State<AppState>,
     AuthedAdmin(_, _): AuthedAdmin,
@@ -508,29 +498,33 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    /// Without JavaScript, the page is the network as of now: the summary,
-    /// the chain with its groups, the round and the events in words, and a
-    /// Reload button. Its script and timeline come with it.
+    /// The page is the app's shell: the header with the network picker, a
+    /// Reload button the app shows when its stream breaks off, where the
+    /// app goes and its script, and, without JavaScript, a line saying the
+    /// page needs it. Nothing of the live view is drawn by the server.
     #[tokio::test]
-    async fn the_page_shows_the_network_as_of_now() {
+    async fn the_page_is_the_app_s_shell() {
         let (_engine, router, cookie) = site().await;
         let response = get(&router, "/status/engine", Some(&cookie)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         for expected in [
-            "3,412,881",
-            "Frontier, 41 stores",
-            "Round 7",
-            "Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.",
-            "The node has a new block: 3,412,881.",
-            "id=\"tl\"",
+            r#"<div class="engine-app" id="engine-app" data-network="stagenet""#,
+            "The engine page needs JavaScript",
+            &crate::assets::url("engine-view.js"),
+            &crate::assets::url("engine-view.css"),
             "Refresh page",
-            "data-network=\"stagenet\"",
             // The switcher: the network scanned is a link, the others say why not.
             "<option value=\"stagenet\" selected>",
             "Mainnet - no node configured",
         ] {
             assert!(html.contains(expected), "no {expected:?} in the page");
+        }
+        for live_view in ["3,412,881", "Frontier, 41 stores", "Round 7", "id=\"tl\""] {
+            assert!(
+                !html.contains(live_view),
+                "{live_view} is the app's to draw"
+            );
         }
         let unknown = get(&router, "/status/engine?network=mainnet", Some(&cookie)).await;
         assert_eq!(
@@ -540,10 +534,10 @@ mod tests {
         );
     }
 
-    /// A past round: as JSON for the script, and in the page's round card
-    /// with a chip back to live for a page asked for with `&round=`.
+    /// A past round: the frame it ended on, with the tuning it is drawn to;
+    /// 404 once it has left the history.
     #[tokio::test]
-    async fn a_past_round_is_shown_on_request() {
+    async fn a_past_round_is_its_last_frame() {
         let (_engine, router, cookie) = site().await;
         let response = get(
             &router,
@@ -552,7 +546,9 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(body_json(response).await["title"], "Round 7");
+        let frame = body_json(response).await;
+        assert_eq!(frame["state"]["round"]["number"], 7);
+        assert_eq!(frame["tuning"]["round_ms"], 10_000);
         let gone = get(
             &router,
             "/status/engine/round?network=stagenet&number=99",
@@ -560,20 +556,6 @@ mod tests {
         )
         .await;
         assert_eq!(gone.status(), StatusCode::NOT_FOUND);
-
-        let pinned = body_text(
-            get(
-                &router,
-                "/status/engine?network=stagenet&round=7",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
-        assert!(pinned.contains("× Paused"), "{pinned}");
-        assert!(pinned.contains("id=\"round-resume\" href=\"/status/engine?network=stagenet\""));
-        let live = body_text(get(&router, "/status/engine", Some(&cookie)).await).await;
-        assert!(!live.contains("id=\"round-resume\""), "live: no chip");
     }
 
     /// An engine that can't be reached is said so on the page, not a 500.
@@ -626,7 +608,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(data["marks"].as_array().unwrap().len(), 2);
-        assert_eq!(data["frame"]["view"]["summary"][0]["value"], "3,412,881");
+        assert_eq!(data["marks"][1]["what"]["kind"], "committed");
+        assert_eq!(data["frame"]["state"]["chain"]["tip"], 3_412_881);
+        assert_eq!(
+            data["frame"]["tuning"]["shares"].as_array().unwrap().len(),
+            5
+        );
         assert!(data["epoch"]
             .as_str()
             .is_some_and(|epoch| !epoch.is_empty()));
@@ -649,7 +636,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(before["view"]["summary"][1]["value"], "3,412,880");
+        assert_eq!(before["state"]["chain"]["high_water"], 3_412_880);
         let after = body_json(
             get(
                 &router,
@@ -659,7 +646,7 @@ mod tests {
             .await,
         )
         .await;
-        assert_eq!(after["view"]["summary"][1]["value"], "3,412,881");
+        assert_eq!(after["state"]["chain"]["high_water"], 3_412_881);
         let frames = body_json(
             get(
                 &router,
@@ -674,15 +661,13 @@ mod tests {
         .await;
         let frames = frames.as_array().unwrap();
         assert!(!frames.is_empty());
-        let marks: Vec<&str> = frames
+        let found: Vec<&serde_json::Value> = frames
             .iter()
             .flat_map(|f| f["marks"].as_array().unwrap())
-            .map(|m| m["text"].as_str().unwrap())
+            .filter(|m| m["what"]["kind"] == "committed")
+            .map(|m| &m["what"]["found"])
             .collect();
-        assert!(
-            marks.iter().any(|m| m.contains("1 payment found")),
-            "{marks:?}"
-        );
+        assert_eq!(found, [&serde_json::json!(1)], "{frames:?}");
         let unknown = get(
             &router,
             "/status/engine/at?network=mainnet&ms=0",
@@ -692,13 +677,11 @@ mod tests {
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
-    /// The page reads top down in one column: the back link above the
-    /// title, whose row holds the help, the network picker and Reload;
-    /// then the summary, the "Machine and links" strip, Chain, Round and
-    /// the panels, Scanning first and open, no Webhooks panel. Without
-    /// JavaScript the picker's Go submits it.
+    /// The shell's header: the back link above the title, whose row holds
+    /// the help's place (the app fills it), the network picker and Reload.
+    /// Without JavaScript the picker's Go submits it.
     #[tokio::test]
-    async fn the_page_reads_top_down_in_one_column() {
+    async fn the_shell_s_header_holds_the_picker_and_reload() {
         let (_engine, router, cookie) = site().await;
         let html = body_text(get(&router, "/status/engine", Some(&cookie)).await).await;
         let at = |needle: &str| {
@@ -706,18 +689,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("no {needle:?} in the page"))
         };
         let order = [
-            r#"<header class="mk-page-header"><nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status" title="Status">Status</a></nav><div class="mk-page-title"><h1>Engine</h1><details class="help-tip" id="engine-help" data-size="wide""#,
+            r#"<header class="mk-page-header"><nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status" title="Status">Status</a></nav><div class="mk-page-title"><h1>Engine</h1><span id="engine-help-slot"></span>"#,
             r#"<div class="mk-page-actions"><form class="engine-network" method="get" action="/status/engine">"#,
             r#"<button class="mk-btn" type="submit" data-only="no-script">Go</button></form><a class="mk-btn icon-only" href="/status/engine?network=stagenet" aria-label="Refresh page" title="Refresh page" data-reload"#,
-            r#"id="engine-summary""#,
-            r#"id="engine-machine""#,
-            r#"id="engine-chain""#,
-            r#"id="engine-round""#,
-            r#"<section class="engine-panels" id="engine-panels""#,
-            r#"<details class="disclosure-compact" open id="d-scanning"><summary><span class="tierchip t-blocks">Scanning</span>"#,
-            r#"id="d-reorg""#,
-            r#"id="d-restart""#,
-            r#"id="h-events""#,
+            r#"id="engine-app""#,
         ];
         let places: Vec<usize> = order.iter().map(|needle| at(needle)).collect();
         assert!(
@@ -726,35 +701,6 @@ mod tests {
         );
         assert!(html.contains(r#"<label for="engine-network" class="visually-hidden">Network</label><div class="mk-select" data-compact data-mk="1" data-island="Select""#));
         assert!(html.contains(r#"<select class="mk-input" data-size="compact" name="network" id="engine-network" data-mk="2">"#));
-        // The breakdown's summary says what it is; the round is the card's
-        // heading.
-        assert!(
-            html.contains(r#"<details class="disclosure" data-round-breakdown=""><summary>Timing details</summary>"#)
-        );
-        for gone in [
-            "engine-side",
-            "engine-main",
-            "d-webhooks",
-            ">Webhooks<",
-            "(snapshot)",
-        ] {
-            assert!(!html.contains(gone), "{gone} is gone");
-        }
-        // The strip's tiles, as loaded.
-        for tile in [
-            "cpu",
-            "memory",
-            "transfer",
-            "round-trip",
-            "first-byte",
-            "block-size",
-        ] {
-            assert!(
-                html.contains(&format!(r#"data-tile="{tile}""#)),
-                "no {tile} tile"
-            );
-        }
-        assert!(html.contains(r#"<span id="machine-age">as loaded</span>"#));
     }
 
     /// A `/status` with stagenet's two nodes, the one in use at `active`,
@@ -790,48 +736,37 @@ mod tests {
         .unwrap()
     }
 
-    /// Transfer, Round trip and First byte follow the node the engine is
-    /// using now, named on the tile, a fallback said so; the standby node
-    /// has no figures.
+    /// The machine figures follow the node the engine is using now, a
+    /// fallback said so; the standby node's figures aren't sent.
     #[test]
-    fn the_link_tiles_follow_the_node_in_use_a_fallback_too() {
+    fn the_machine_figures_follow_the_node_in_use_a_fallback_too() {
         let client = EngineClient::for_tests("http://engine.invalid");
-        let tile = |view: &MachineView, key: &str| {
-            view.tiles
-                .iter()
-                .find(|t| t.key == key)
-                .cloned()
-                .unwrap_or_else(|| panic!("no {key} tile"))
+        let json = |status: &EngineStatusResponse, network: &str| {
+            serde_json::to_value(machine(&client, status, network)).unwrap()
         };
-        let primary = machine_view(&client, &status_with_nodes(0), "stagenet");
-        let transfer = tile(&primary, "transfer");
-        assert_eq!(
-            (transfer.value.as_str(), transfer.note.as_str()),
-            ("3.1 Mbit/s", "node.example.com:38081")
-        );
-        assert_eq!(tile(&primary, "round-trip").value, "120 ms");
-        assert_eq!(primary.at_unix, 1_800_000_000);
+        let primary_status = status_with_nodes(0);
+        let primary = json(&primary_status, "stagenet");
+        assert_eq!(primary["node"]["label"], "node.example.com:38081");
+        assert_eq!(primary["node"]["fallback"], false);
+        assert_eq!(primary["node"]["link"]["rate_bytes_per_sec"], 387_500);
+        assert_eq!(primary["at_unix"], 1_800_000_000);
+        assert!(primary["resources"]["monokulo"]["samples"].is_array());
 
-        let fallback = machine_view(&client, &status_with_nodes(1), "stagenet");
-        assert_eq!(
-            tile(&fallback, "first-byte").note,
-            "backup.example.org:38089 · fallback"
-        );
-        assert_eq!(tile(&fallback, "first-byte").value, "45 ms");
-        let html: String = fallback
-            .tiles
-            .iter()
-            .map(|t| views::engine::tile_markup(t).into_string())
-            .collect();
+        let fallback_status = status_with_nodes(1);
+        let fallback = json(&fallback_status, "stagenet");
+        assert_eq!(fallback["node"]["label"], "backup.example.org:38089");
+        assert_eq!(fallback["node"]["fallback"], true);
+        assert_eq!(fallback["node"]["link"]["ttfb_per_block_ms"], 45);
+        let text = fallback.to_string();
         assert!(
-            !html.contains("node.example.com"),
-            "the standby node has no figures: {html}"
+            !text.contains("node.example.com"),
+            "the standby node: {text}"
         );
-        assert!(!html.contains("999 ms"), "{html}");
+        assert!(!text.contains("999"), "{text}");
 
-        let elsewhere = machine_view(&client, &status_with_nodes(0), "mainnet");
-        assert_eq!(tile(&elsewhere, "transfer").note, "no node in use");
-        assert_eq!(elsewhere.scanning, None);
+        let elsewhere = json(&primary_status, "mainnet");
+        assert!(elsewhere["node"].is_null());
+        assert!(elsewhere["scaling"].is_null());
     }
 
     /// Reads the stream's next event: its name and data.
@@ -886,23 +821,9 @@ mod tests {
         let (name, data) = read(&mut body, &mut buffer).await;
         assert_eq!(name, "machine");
         let machine: serde_json::Value = serde_json::from_str(&data).unwrap();
-        let keys: Vec<&str> = machine["tiles"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|t| t["key"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            keys,
-            [
-                "cpu",
-                "memory",
-                "transfer",
-                "round-trip",
-                "first-byte",
-                "block-size"
-            ]
-        );
+        assert_eq!(machine["network"], "stagenet");
+        assert!(machine["resources"]["monokulo"].is_object());
+        assert_eq!(machine["resources"]["one_process"], true);
         let first = tokio::time::Instant::now();
 
         // Frames as the engine records things; no machine event among them.
