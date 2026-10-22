@@ -114,3 +114,8 @@ tokio-socks = "0.5"
 
 [lints]
 workspace = true
+
+# The Arti spike builds only with its feature.
+[[example]]
+name = "arti_onion"
+required-features = ["arti"]

@@ -722,7 +722,7 @@ impl Group {
         match owner {
             SettingOwner::Monokulo => match prefix {
                 "signup" => Group::Signup,
-                "public_url" => Group::PublicAddress,
+                "public_uri" => Group::PublicAddress,
                 "engine" => Group::EngineConnection,
                 "exchange_rate" => Group::ExchangeRates,
                 "webhooks" => Group::Webhooks,
@@ -2088,7 +2088,7 @@ mod tests {
         use SettingsTab::*;
         &[
             ("signup.mode", M, General, "signup"),
-            ("public_url", M, General, "public-address"),
+            ("public_uri", M, General, "public-address"),
             (
                 "exchange_rate.coingecko_enabled",
                 M,

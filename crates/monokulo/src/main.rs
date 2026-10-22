@@ -51,7 +51,7 @@ fn main() {
     // wrong in it stops monokulo here, line by line. The engine's tables
     // are left to the engine at first; they are refused below if there is
     // no engine here to read them.
-    let file = OptionsFile::at(&start.options);
+    let file = OptionsFile::at(&start.options).with_renamed(settings::RENAMED);
     let own_options = file.clone().leaving(settings::ENGINE_TABLE);
     let values = own_options.read(settings::ALL).unwrap_or_else(|e| stop(e));
     let early = Snapshot::new(values, env.clone());

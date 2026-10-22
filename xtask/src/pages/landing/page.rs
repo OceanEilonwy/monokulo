@@ -276,7 +276,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 ". The first-run wizard creates your admin account. On the admin page, add a Monero node for the network you’ll accept payments on, then set up a wallet (make a new one in your browser, or bring your own view key) and add a store that takes payments into it. You can use your own reachable node or a remote node over HTTPS."
                             }
                             p style="margin-top:var(--space-md)" {
-                                "Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URL customers will use."
+                                "Monokulo listens on this computer only by default. To serve customers over the internet, configure its listen address in Server settings, put it behind an HTTPS reverse proxy, and set the public URI customers will use."
                             }
                             p style="margin-top:var(--space-md)" {
                                 "Press "
@@ -667,7 +667,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                             }, ui::Tone::Notice).quiet(true))
                             p style="margin-top:var(--space-md)" {
                                 "Then set the "
-                                strong { "public URL" }
+                                strong { "public URI" }
                                 " on Monokulo’s admin page (Settings) to the address customers use, for example "
                                 code { "https://pay.example.com" }
                                 ". Behind CGNAT, or to keep your address private, serve it as a Tor onion service instead: set "

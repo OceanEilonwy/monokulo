@@ -333,7 +333,7 @@ fn ready_view(
         .key_bundles
         .insert(user, per_user, json.clone());
     let path = format!("/key-custody/bundles/{id}");
-    let public = state.settings.public_url();
+    let public = state.settings.public_uri();
     let bundle_arg = match &public {
         Some(base) => format!("{base}{path}"),
         None => "key-custody-bundle.json".to_owned(),
@@ -646,7 +646,7 @@ mod tests {
         state.settings = MonokuloSettings::fixed_with_snp_entry(
             PerRequest {
                 signup_mode: crate::settings::SignupMode::Public,
-                public_url: String::new(),
+                public_uri: String::new(),
             },
             SnpEntryPolicy { trust, required },
         );
@@ -845,7 +845,7 @@ mod tests {
         let base = crate::settings::MonokuloSettings::fixed_with_snp_entry(
             crate::settings::PerRequest {
                 signup_mode: crate::settings::SignupMode::Public,
-                public_url: String::new(),
+                public_uri: String::new(),
             },
             crate::settings::SnpEntryPolicy {
                 trust: Some(engine_test_support::snp_test_trust()),

@@ -285,12 +285,12 @@ impl AppState {
 
     /// Settings for tests: no registry, and anyone may sign up (signup is
     /// invite-only by default, which would stop every test's ordinary
-    /// signups; the invite tests ask for it themselves), with `public_url`
+    /// signups; the invite tests ask for it themselves), with `public_uri`
     /// set or not.
-    pub fn test_settings(public_url: Option<&str>) -> Arc<crate::settings::MonokuloSettings> {
+    pub fn test_settings(public_uri: Option<&str>) -> Arc<crate::settings::MonokuloSettings> {
         crate::settings::MonokuloSettings::fixed(crate::settings::PerRequest {
             signup_mode: crate::settings::SignupMode::Public,
-            public_url: public_url.unwrap_or_default().to_string(),
+            public_uri: public_uri.unwrap_or_default().to_string(),
         })
     }
 }

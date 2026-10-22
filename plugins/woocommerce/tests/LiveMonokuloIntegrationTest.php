@@ -18,7 +18,7 @@
  * ## What this test needs
  *
  * 1. A running engine and Monokulo, e.g. `scripts/dev-run.sh` from the repo
- *    root, with Monokulo's `public_url` set to the address the tests
+ *    root, with Monokulo's `public_uri` set to the address the tests
  *    container reaches it at (below).
  * 2. A store connected on that Monokulo (the dashboard's "Advanced setup"
  *    works), and its public and secret key. The secret key is what the

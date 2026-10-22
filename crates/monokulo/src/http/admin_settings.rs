@@ -2172,7 +2172,7 @@ mod tests {
             ("abuse.under_attack", "true"),
             ("admin.query_enabled", "false"),
             ("rate_limit.per_store_key_per_min", "444"),
-            ("public_url", "https://pay.example.com"),
+            ("public_uri", "https://pay.example.com"),
             ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
             ("abuse.onion_listener", "127.0.0.1:8082"),
             ("abuse.stream_cap", "9"),
@@ -2480,7 +2480,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_saved_public_url_applies_to_the_next_plugin_connection() {
+    async fn a_saved_public_uri_applies_to_the_next_plugin_connection() {
         let state = test_app_state_over_http(shared::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2498,7 +2498,7 @@ mod tests {
                 "POST",
                 "/dashboard/admin/settings",
                 &cookie,
-                &[("public_url", "https://pay.example.com")],
+                &[("public_uri", "https://pay.example.com")],
             ))
             .await
             .unwrap();
@@ -2881,7 +2881,7 @@ mod tests {
                 "Enter a whole number from 1 to 100000.",
             ),
             (
-                "public_url",
+                "public_uri",
                 "not a url",
                 "Enter this instance's public address",
             ),
@@ -4046,7 +4046,7 @@ mod tests {
             "{files}"
         );
         let page = unescaped(&body_text(get_settings_page(&router, &cookie).await).await);
-        assert!(page.contains(r#"name="public_url""#), "editable: {page}");
+        assert!(page.contains(r#"name="public_uri""#), "editable: {page}");
 
         let saved = post_settings(
             &router,

@@ -563,7 +563,7 @@ pub async fn order_detail_events(
 /// A real, absolute, copy-pasteable URL for paying an order - not just the
 /// path - since the whole point is something a merchant can paste into an
 /// email or chat to someone who isn't already looking at this dashboard.
-/// Built on this instance's configured public URL (`site.public_url`) when
+/// Built on this instance's configured public URI (`site.public_uri`) when
 /// it has one: a link sent to a customer must not depend on what the
 /// request that made it said its host was. Without one (local/dev use) it
 /// falls back to the request's own `Host`, with `X-Forwarded-Proto` taken
@@ -575,7 +575,7 @@ async fn payment_link_for(
     order_id: &crate::db::OrderId,
 ) -> String {
     let path = format!("/pay/{public_key}/orders/{order_id}/share");
-    let configured = state.settings.public_url();
+    let configured = state.settings.public_uri();
     if let Some(base) = configured {
         return format!("{base}{path}");
     }
@@ -3303,7 +3303,7 @@ mod tests {
             settings: crate::settings::MonokuloSettings::fixed_with_snp_entry(
                 crate::settings::PerRequest {
                     signup_mode: crate::settings::SignupMode::Public,
-                    public_url: String::new(),
+                    public_uri: String::new(),
                 },
                 crate::settings::SnpEntryPolicy {
                     trust: Some(trust),

@@ -126,8 +126,8 @@ fn plain_http_allowed(url: &Url) -> bool {
 }
 
 /// Why plugins can't connect while this instance has no public address.
-const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: its operator hasn't set its public \
-     address (the public URL setting on the admin settings page). Plugins need it to create orders and send \
+const NO_PUBLIC_URI: &str = "This Monokulo instance can't connect plugins yet: its operator hasn't set its public \
+     address (the public URI setting on the admin settings page). Plugins need it to create orders and send \
      customers to the checkout. Ask the operator to set it, then try connecting again.";
 
 /// This instance's public address, which is what a plugin is given as its
@@ -135,11 +135,11 @@ const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: i
 /// connecting can't work yet. Checked before any form is shown, again when
 /// the plugin's key is minted, and in `/finish`, so a plugin is never
 /// handed a wrong address.
-async fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
+async fn public_uri_for_plugins(state: &AppState) -> Result<String, String> {
     state
         .settings
-        .public_url()
-        .ok_or_else(|| NO_PUBLIC_URL.to_string())
+        .public_uri()
+        .ok_or_else(|| NO_PUBLIC_URI.to_string())
 }
 
 /// Why a plugin's request can't be answered, if it can't: a return address
@@ -151,7 +151,7 @@ pub(super) async fn plugin_problem(
 ) -> Option<String> {
     match ConnectTarget::parse(site_url, return_url) {
         Err(reason) => Some(reason.to_string()),
-        Ok(_) => public_url_for_plugins(state).await.err(),
+        Ok(_) => public_uri_for_plugins(state).await.err(),
     }
 }
 
@@ -289,7 +289,7 @@ pub async fn confirm_submit(
         Ok(target) => target,
         Err(why) => return refuse(why),
     };
-    if let Err(why) = public_url_for_plugins(&state).await {
+    if let Err(why) = public_uri_for_plugins(&state).await {
         return refuse(&why);
     }
     let (id, user_id) = (
@@ -355,7 +355,7 @@ pub struct FinishRequest {
 pub struct FinishResponse {
     pub public_key: String,
     pub secret_token: String,
-    /// This instance's public address (`crate::settings::public_url`): where
+    /// This instance's public address (`crate::settings::public_uri`): where
     /// the plugin creates orders (`POST {endpoint}/pay/{pk}/orders` with the
     /// secret key) and sends customers (`{endpoint}/pay/{pk}/orders/{id}`).
     /// Never the engine's address - the engine is private.
@@ -406,7 +406,7 @@ pub async fn finish(
     if !PLATFORMS.contains(&platform.as_str()) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let endpoint = match public_url_for_plugins(&state).await {
+    let endpoint = match public_uri_for_plugins(&state).await {
         Ok(url) => url,
         Err(message) => {
             return (
@@ -557,7 +557,7 @@ mod tests {
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     /// This test instance's configured public address - what `/finish`
     /// must hand plugins as `endpoint`.
-    const TEST_PUBLIC_URL: &str = "https://pay.example.test";
+    const TEST_PUBLIC_URI: &str = "https://pay.example.test";
     const PASSWORD: &str = "correct horse battery staple";
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
@@ -569,7 +569,7 @@ mod tests {
             ..AppState::for_tests()
         }
         .with_options(&format!(
-            "public_url = \"{TEST_PUBLIC_URL}\"\n[signup]\nmode = \"public\"\n"
+            "public_uri = \"{TEST_PUBLIC_URI}\"\n[signup]\nmode = \"public\"\n"
         ))
         .await;
         (state, engine)
@@ -831,7 +831,7 @@ mod tests {
         assert!(secret_token.starts_with("sk_"));
         let endpoint = obj.get("endpoint").unwrap().as_str().unwrap();
         assert_eq!(
-            endpoint, TEST_PUBLIC_URL,
+            endpoint, TEST_PUBLIC_URI,
             "plugins get monokulo's public address"
         );
         assert_ne!(
@@ -1557,11 +1557,11 @@ mod tests {
     /// `/finish` answers `503` *without* spending the token - which then
     /// works once the operator sets the address.
     #[tokio::test]
-    async fn plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why() {
+    async fn plugins_cannot_connect_until_the_public_uri_is_set_and_are_told_why() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
         let cookie =
-            signed_up_and_logged_in_session_cookie(&router, "no-public-url@example.com").await;
+            signed_up_and_logged_in_session_cookie(&router, "no-public-uri@example.com").await;
 
         // Get a real token with the address set, then unset it.
         let submit = connect_through_setup(
@@ -1574,7 +1574,7 @@ mod tests {
         )
         .await;
         let token = parse_query_params(&location(&submit))["token"].clone();
-        state.save_setting("public_url", "").await;
+        state.save_setting("public_uri", "").await;
 
         let start = get(
             &router,
@@ -1617,11 +1617,11 @@ mod tests {
             "{body}"
         );
 
-        state.save_setting("public_url", TEST_PUBLIC_URL).await;
+        state.save_setting("public_uri", TEST_PUBLIC_URI).await;
         let response = finish(&router, serde_json::json!({ "token": token })).await;
         assert_eq!(response.status(), StatusCode::OK, "the token was not spent");
         let body = body_json(response).await;
-        assert_eq!(body["endpoint"], TEST_PUBLIC_URL);
+        assert_eq!(body["endpoint"], TEST_PUBLIC_URI);
         assert!(!body.to_string().contains(&engine.addr.to_string()));
     }
 
