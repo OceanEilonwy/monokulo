@@ -80,7 +80,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
                 @for store in &data.stores { (store_card(chrome, store)) }
                 (ui::LaunchTile::new(
                     "Add another store",
-                    "Connect a WooCommerce shop, or your own site.",
+                    "Connect a shop plugin, or your own site.",
                     html! { (PreEscaped(icons::PLUS)) },
                 )
                 .href("/setup"))
@@ -114,7 +114,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
                 div class="card-body" {
                     p {
                         "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
-                        "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
+                        "guided flow for a shop plugin, or the advanced form if you're integrating something custom."
                     }
                     (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add a store" }, "/setup").variant(ui::ButtonVariant::Primary)))
                 }

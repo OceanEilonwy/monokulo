@@ -255,7 +255,7 @@ async fn guard(
             // ids and keys a flood could vary).
             let path = request.uri().path();
             let source = if path.starts_with("/pay/") {
-                "woocommerce"
+                "plugin"
             } else if path.ends_with("/pos/logs") {
                 "pos"
             } else {

@@ -153,10 +153,12 @@ pub enum SiteError {
 pub struct StoreStepViewModel {
     pub name: String,
     pub site: String,
-    /// The plugin's request, when a WooCommerce plugin sent the merchant
-    /// here: its shop's host, which is the site and can't be changed, and
-    /// its fields, carried through.
+    /// The plugin's request, when a shop plugin sent the merchant here:
+    /// its shop's host, which is the site and can't be changed, and its
+    /// fields, carried through.
     pub plugin_host: Option<String>,
+    /// What that plugin is called, as it's shown.
+    pub plugin: String,
     /// What the store prices in: the answer, or a guess from the browser.
     pub currency: String,
     pub currencies: Vec<crate::currencies::CurrencyOptionView>,
@@ -167,17 +169,17 @@ pub struct StoreStepViewModel {
 
 /// `GET`/`POST /setup`: the store's name and, optionally, its website.
 /// Any store takes payments at the till; a website lets it show the
-/// checkout on its pages and connect the WooCommerce plugin too.
+/// checkout on its pages and connect a shop plugin too.
 pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
     let title = if data.plugin_host.is_some() {
-        "Connect your WooCommerce shop"
+        format!("Connect your {} shop", data.plugin)
     } else {
-        "Set up a store"
+        "Set up a store".to_owned()
     };
     let header = ui::PageHeader::new(title).progress(steps(Step::Store, None));
     let body = html! {
         @if let Some(host) = &data.plugin_host {
-            p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account. Name the store, then choose where its money goes." }
+            p { "The " (data.plugin) " plugin on " strong { (host) } " asked to connect to your account. Name the store, then choose where its money goes." }
         }
         form method="post" action="/setup" class="store-form" novalidate {
             @for (name, value) in &data.carried {
@@ -217,7 +219,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                     label class="setting-label" for="store-site" { "Your website" }
                     @if data.plugin_host.is_none() { (ui::Hint::new("(optional)").inline(true)) }
                 }
-                (field_help("Needed for the checkout on your pages or for the WooCommerce plugin. Leave it empty to take payments at the till only."))
+                (field_help("Needed for the checkout on your pages or for a shop plugin. Leave it empty to take payments at the till only."))
                 (ui::Input::new("store_site")
                     .id("store-site")
                     .value(data.site.clone())
@@ -279,9 +281,18 @@ pub struct DoneViewModel {
 /// (`POST /connect/{platform}`).
 pub struct PluginReturn {
     pub platform: String,
+    /// The name the plugin sent, as sent (empty for none).
+    pub name: String,
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
+}
+
+impl PluginReturn {
+    /// What the plugin is called, as it's shown.
+    pub fn display_name(&self) -> String {
+        crate::plugins::display_name(&self.platform, &self.name)
+    }
 }
 
 fn settings_link(id: &str) -> String {
@@ -336,6 +347,9 @@ pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) ->
             input type="hidden" name="site_url" value=(plugin.site_url);
             input type="hidden" name="return_url" value=(plugin.return_url);
             input type="hidden" name="nonce" value=(plugin.nonce);
+            @if !plugin.name.is_empty() {
+                input type="hidden" name="name" value=(plugin.name);
+            }
             (ui::Button::new(label).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
         }
     }
@@ -343,8 +357,8 @@ pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) ->
 
 /// `GET /setup/done/{id}`: every way the store can start taking payments,
 /// its state deciding what's ready. The checkout needs a site; the plugin
-/// goes back to WooCommerce when it sent the merchant here; the till is
-/// always there. One orange button: Back to WooCommerce from the plugin,
+/// goes back to its shop when it sent the merchant here; the till is
+/// always there. One orange button: Back to the plugin's shop from it,
 /// else Open the guide when there's a site, else Open the till. Nothing
 /// claims the store takes payments: a site with no orders yet says it
 /// doesn't.
@@ -384,25 +398,26 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                 }
             }
             li {
-                p {
-                    strong { "Install the WooCommerce plugin" }
-                    @if data.plugin.is_some() {
+                @if let Some(plugin) = &data.plugin {
+                    @let name = plugin.display_name();
+                    p {
+                        strong { "Connect " (name) }
                         (ui::Hint::new(format!(
-                            "Go back to WooCommerce to give the plugin on {} its key. Monero then shows at checkout once you \
-                             turn it on in WooCommerce → Settings → Payments.",
+                            "Go back to {name} to give the plugin on {} its key. Monero then shows at checkout once you \
+                             turn it on in the shop's payment settings.",
                             data.site
                         )).inline(true))
-                    } @else {
+                    }
+                    (plugin_return_form(id, plugin, &format!("Back to {name}")))
+                } @else {
+                    p {
+                        strong { "Connect a shop plugin" }
                         (ui::Hint::new(
-                            "In WordPress: Plugins, Add New, search for Monokulo, then Connect it from WooCommerce → Settings → Payments. \
+                            "Install Monokulo's plugin for your shop, then connect it from the shop's payment settings. \
                              It finds this store by its site."
                         ).inline(true))
                     }
-                }
-                @if let Some(plugin) = &data.plugin {
-                    (plugin_return_form(id, plugin, "Back to WooCommerce"))
-                } @else {
-                    (ui::LinkButton::new(html! { "Plugin guide " (super::external_link_icon()) }, super::docs_url("woocommerce/"))
+                    (ui::LinkButton::new(html! { "Find your plugin " (super::external_link_icon()) }, super::docs_url("plugins/"))
                         .attr("target", "_blank")
                         .attr("rel", "noopener"))
                 }
@@ -516,6 +531,7 @@ mod tests {
             currencies: Vec::new(),
             site: "shop.example".into(),
             plugin_host: None,
+            plugin: String::new(),
             carried: vec![],
             name_error: None,
             site_error: None,
@@ -538,7 +554,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("Needed for the checkout on your pages or for the WooCommerce plugin."),
+            html.contains("Needed for the checkout on your pages or for a shop plugin."),
             "{html}"
         );
         assert!(!html.to_lowercase().contains("in person"), "{html}");
@@ -580,13 +596,18 @@ mod tests {
             &chrome(),
             &StoreStepViewModel {
                 plugin_host: Some("bakery.example".into()),
+                plugin: "Acme Cart".into(),
                 site: "bakery.example".into(),
                 carried: vec![("return_url", "https://bakery.example/wp-admin".into())],
                 ..store_data()
             },
         )
         .into_string();
-        assert!(html.contains("<h1>Connect your WooCommerce shop</h1>"));
+        assert!(
+            html.contains("<h1>Connect your Acme Cart shop</h1>"),
+            "{html}"
+        );
+        assert!(html.contains("The Acme Cart plugin on <strong>bakery.example</strong>"));
         assert!(html.contains(r#"name="return_url" value="https://bakery.example/wp-admin""#));
         assert!(html.contains("readonly"));
         assert!(!html.contains("(optional)"), "{html}");
@@ -609,7 +630,8 @@ mod tests {
 
     fn plugin() -> PluginReturn {
         PluginReturn {
-            platform: "woocommerce".into(),
+            platform: "acme-cart".into(),
+            name: "Acme Cart".into(),
             site_url: "https://bakery.example".into(),
             return_url: "https://bakery.example/wp-admin/x".into(),
             nonce: "n1".into(),
@@ -633,13 +655,16 @@ mod tests {
     /// the till.
     #[test]
     fn done_lists_the_checkout_the_plugin_and_the_till() {
-        for data in [
-            done("bakery.example"),
-            done(""),
-            DoneViewModel {
-                plugin: Some(plugin()),
-                ..done("bakery.example")
-            },
+        for (data, plugin_step) in [
+            (done("bakery.example"), "Connect a shop plugin"),
+            (done(""), "Connect a shop plugin"),
+            (
+                DoneViewModel {
+                    plugin: Some(plugin()),
+                    ..done("bakery.example")
+                },
+                "Connect Acme Cart",
+            ),
         ] {
             let html = done_page(&chrome(), &data).into_string();
             assert!(
@@ -647,7 +672,7 @@ mod tests {
                 "{html}"
             );
             assert!(
-                html.contains("<strong>Install the WooCommerce plugin</strong>"),
+                html.contains(&format!("<strong>{plugin_step}</strong>")),
                 "{html}"
             );
             assert!(
@@ -726,10 +751,22 @@ mod tests {
         assert!(!html.contains("Not taking payments yet"), "{html}");
     }
 
-    /// From the plugin: Back to WooCommerce is the primary, a form that
-    /// mints the store's key.
+    /// With no plugin: a link to find the shop's plugin, which no list in
+    /// monokulo names.
     #[test]
-    fn from_the_plugin_back_to_woocommerce_is_the_primary() {
+    fn with_no_plugin_done_links_to_the_plugins_page() {
+        let html = done_page(&chrome(), &done("bakery.example")).into_string();
+        assert!(
+            html.contains(&format!(r#"href="{}""#, crate::views::docs_url("plugins/"))),
+            "{html}"
+        );
+        assert!(!html.to_lowercase().contains("woocommerce"), "{html}");
+    }
+
+    /// From the plugin: Back to it is the primary, a form that mints the
+    /// store's key and carries the plugin's name on.
+    #[test]
+    fn from_the_plugin_back_to_it_is_the_primary() {
         let html = done_page(
             &chrome(),
             &DoneViewModel {
@@ -738,8 +775,9 @@ mod tests {
             },
         )
         .into_string();
-        assert!(primary(&html).contains("Back to WooCommerce"), "{html}");
-        assert!(html.contains(r#"action="/connect/woocommerce""#));
+        assert!(primary(&html).contains("Back to Acme Cart"), "{html}");
+        assert!(html.contains(r#"action="/connect/acme-cart""#));
+        assert!(html.contains(r#"name="name" value="Acme Cart""#));
         assert!(html.contains(r#"name="connection_id" value="c_1""#));
         assert!(html.contains("<h1>Bakery is connected</h1>"), "{html}");
         assert!(

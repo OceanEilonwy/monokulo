@@ -1,0 +1,112 @@
+{
+  "about": "Webhook deliveries as monokulo sends them, for testing a plugin's receiver. Check each with your clock at `sent_at` and the webhook's `signing_secret`: every one under `deliveries` verifies, every one under `refuse` must not. See https://oceaneilonwy.github.io/monokulo/docs/webhooks/.",
+  "api_version": 2,
+  "deliveries": [
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000001\",\"event\":\"order.unconfirmed\",\"created_at\":1760020321,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"unconfirmed\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.unconfirmed",
+        "X-Monokulo-Event-Id": "evt_0000000000000001",
+        "X-Monokulo-Signature": "t=1760020380,v1=3ac8ccbcd8d88bf7c47ca5a952d1499d48ab4fffe766745745c1968f05473495"
+      },
+      "name": "order.unconfirmed"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000002\",\"event\":\"order.confirming\",\"created_at\":1760020322,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"confirming\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.confirming",
+        "X-Monokulo-Event-Id": "evt_0000000000000002",
+        "X-Monokulo-Signature": "t=1760020380,v1=f7f7ed55eb6f5a6be70c97f40eca9a2de945c183907e60aa80c25adc3cbcc77c"
+      },
+      "name": "order.confirming"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000003\",\"event\":\"order.partial\",\"created_at\":1760020323,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"partial\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.partial",
+        "X-Monokulo-Event-Id": "evt_0000000000000003",
+        "X-Monokulo-Signature": "t=1760020380,v1=3653dfdf3ac545feac90c52af87cbde1ceffc33a7602b9f3c650c07554f66e11"
+      },
+      "name": "order.partial"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000004\",\"event\":\"order.paid\",\"created_at\":1760020324,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"paid\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.paid",
+        "X-Monokulo-Event-Id": "evt_0000000000000004",
+        "X-Monokulo-Signature": "t=1760020380,v1=d97f7fcd8e925090ac7ae79c870aa7d0d4180a126f38c65a5112e1b1daa0534b"
+      },
+      "name": "order.paid"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000005\",\"event\":\"order.overpaid\",\"created_at\":1760020325,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"overpaid\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.overpaid",
+        "X-Monokulo-Event-Id": "evt_0000000000000005",
+        "X-Monokulo-Signature": "t=1760020380,v1=a8d9caf01187521faa75d71b04fe7b1816f0351be8b4552e29ee27e965cdd374"
+      },
+      "name": "order.overpaid"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000006\",\"event\":\"order.expired\",\"created_at\":1760020326,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"expired\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.expired",
+        "X-Monokulo-Event-Id": "evt_0000000000000006",
+        "X-Monokulo-Signature": "t=1760020380,v1=3ca60933e337951b63d11c085536e34fef94c5edfa8f5b01d9526a5b89dfe970"
+      },
+      "name": "order.expired"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000007\",\"event\":\"order.double_spend_detected\",\"created_at\":1760020327,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"txid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.double_spend_detected",
+        "X-Monokulo-Event-Id": "evt_0000000000000007",
+        "X-Monokulo-Signature": "t=1760020380,v1=350ea8a2eb56e839572570334d75a8fde856020e749254f47e670eca33b40771"
+      },
+      "name": "order.double_spend_detected"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000008\",\"event\":\"order.double_spend_reversed\",\"created_at\":1760020328,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"txid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.double_spend_reversed",
+        "X-Monokulo-Event-Id": "evt_0000000000000008",
+        "X-Monokulo-Signature": "t=1760020380,v1=9a53c5c6b183818a57469b28185dc1345a37503e2a8a50d7e239373faa5fd92f"
+      },
+      "name": "order.double_spend_reversed"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000009\",\"event\":\"order.paid\",\"created_at\":1760020329,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"paid\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"0.08124531\",\"currency\":\"XMR\",\"xmr_amount\":\"0.081245310000\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.paid",
+        "X-Monokulo-Event-Id": "evt_0000000000000009",
+        "X-Monokulo-Signature": "t=1760020380,v1=8ed6f3e14d644bd0f8d50672299acd44df36c6196e9cded075c9ee754fc69d66"
+      },
+      "name": "order.paid priced in XMR"
+    }
+  ],
+  "refuse": [
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000004\",\"event\":\"order.paid\",\"created_at\":1760020324,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"paid\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"1.25\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Signature": "t=1760020380,v1=d97f7fcd8e925090ac7ae79c870aa7d0d4180a126f38c65a5112e1b1daa0534b"
+      },
+      "why": "The body was changed after it was signed."
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000004\",\"event\":\"order.paid\",\"created_at\":1760020324,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"paid\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Signature": "t=1760020380,v1=8f81bde94d0f8938152fcc36d68e5ff50bec867bdea1106b4db60b2cc11c409b"
+      },
+      "why": "Signed with another webhook's secret."
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000004\",\"event\":\"order.paid\",\"created_at\":1760020324,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"paid\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Signature": "t=1760020079,v1=18651cefe4d185fabd816f04a5b7dc0fd4123fa10bbe2dedc180642d54d3a655"
+      },
+      "why": "Signed more than five minutes before `sent_at`."
+    }
+  ],
+  "sent_at": 1760020380,
+  "signing_secret": "whsec_0000000000000000000000000000000000000000000000000000000000000000"
+}

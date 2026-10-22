@@ -164,7 +164,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.getByRole('heading', { name: 'Geomart is set up' })).toBeVisible();
   await expect(page.getByRole('list', { name: 'Setup progress' }).locator('[aria-current="step"]')).toHaveText('DoneComplete');
   await expect(page.getByText('Not taking payments yet')).toBeVisible();
-  await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Install the WooCommerce plugin', 'Open the till (POS)']);
+  await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Connect a shop plugin', 'Open the till (POS)']);
   const guide = page.getByRole('link', { name: /Open the guide/ });
   await expect(guide).toHaveAttribute('href', /oceaneilonwy\.github\.io\/monokulo\/docs\//);
   await expect(page.locator('[data-variant="primary"]')).toHaveCount(1);

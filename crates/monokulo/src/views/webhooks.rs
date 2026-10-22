@@ -46,7 +46,7 @@ pub struct WebhookEntry {
     /// There are older deliveries than these.
     pub has_more: bool,
     /// The plugin that registered it, while it's connected
-    /// ("WooCommerce").
+    /// ("PrestaShop").
     pub plugin: Option<String>,
 }
 

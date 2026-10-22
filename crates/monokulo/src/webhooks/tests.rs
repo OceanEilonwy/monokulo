@@ -776,6 +776,68 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
     );
 }
 
+/// The contract plugins test against: what a real store delivers for each
+/// way an order goes has exactly the fields its published vector has
+/// (`vectors.rs`), so a plugin passing on the vectors handles what
+/// monokulo really sends.
+#[tokio::test]
+async fn real_deliveries_have_the_fields_of_their_published_vectors() {
+    let shop = shop().await;
+    let (webhook, _) =
+        add_webhook(&shop.state.db, &shop.store, "https://bakery.example/hook").await;
+    let order = || {
+        shop.order(serde_json::json!({
+            "amount": "25.00",
+            "currency": "USD",
+            "merchant_order_id": "1042",
+            "description": "Order #1042: Blue mug + 2 more",
+        }))
+    };
+    let pay = |order: &str, piconero: u64, confirmations: Option<u64>| {
+        shop.engine
+            .record_order_payment(order, shared::xmr_amount::Piconero(piconero), confirmations)
+            .unwrap();
+    };
+    let seen = order().await;
+    pay(&seen, 156_250_000_000, None);
+    let partly = order().await;
+    pay(&partly, 1, Some(101));
+    let paid = order().await;
+    shop.engine.mark_order_paid(&paid).unwrap();
+    let over = order().await;
+    pay(&over, 1_000_000_000_000_000, Some(101));
+    let expired = order().await;
+    shop.engine.mark_order_expired(&expired).unwrap();
+    // The double-spend events come only from the scanner voiding a real
+    // payment, which no test engine fakes: their vectors are checked
+    // against the body builder alone (`vectors.rs`).
+
+    let reading = shop.subscribe();
+    let engine_events = shop.engine.store().lock().order_events_for_test().unwrap();
+    let delivered = shop.deliveries(&webhook, engine_events.len()).await;
+    reading.abort();
+
+    let mut events = std::collections::BTreeSet::new();
+    for delivery in &delivered {
+        let body: serde_json::Value = serde_json::from_str(&delivery.body).unwrap();
+        let event = body["event"].as_str().unwrap().to_owned();
+        let expected = super::vectors::fields_of(&event)
+            .unwrap_or_else(|| panic!("no published vector for {event}"));
+        let fields: Vec<String> = body.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(fields, expected, "{event}: {body}");
+        events.insert(event);
+    }
+    for event in [
+        "order.unconfirmed",
+        "order.partial",
+        "order.paid",
+        "order.overpaid",
+        "order.expired",
+    ] {
+        assert!(events.contains(event), "{event} delivered: {events:?}");
+    }
+}
+
 /// An event for a store monokulo doesn't have, or one without webhooks,
 /// still moves the position on; an event already read is left alone.
 #[tokio::test]

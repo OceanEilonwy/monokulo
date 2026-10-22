@@ -153,6 +153,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         41,
         include_str!("../migrations/0041_store_payment_description.sql"),
     ),
+    (
+        42,
+        include_str!("../migrations/0042_store_integration_name.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -699,8 +703,11 @@ fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRo
 pub struct StoreIntegrationRow {
     pub id: String,
     pub store_id: ConnectionId,
-    /// The plugin: `woocommerce`.
+    /// The plugin's slug, from its connect path: `woocommerce`.
     pub kind: String,
+    /// What the plugin calls itself ("WooCommerce"); empty when it gave
+    /// no name (`crate::plugins::display_name`).
+    pub name: String,
     /// The store's site when it connected.
     pub site: String,
     /// The plugin's version, from its `Monokulo-Client` header; empty when
@@ -718,6 +725,7 @@ pub struct StoreIntegrationRow {
 pub struct NewStoreIntegration<'a> {
     pub store_id: &'a ConnectionId,
     pub kind: &'a str,
+    pub name: &'a str,
     pub site: &'a str,
     pub version: &'a str,
     pub webhook_id: Option<&'a str>,
@@ -1399,6 +1407,7 @@ impl Db {
             id: row.get("id")?,
             store_id: row.get("store_id")?,
             kind: row.get("kind")?,
+            name: row.get("name")?,
             site: row.get("site")?,
             version: row.get("version")?,
             webhook_id: row.get("webhook_id")?,
@@ -1425,8 +1434,8 @@ impl Db {
         )?;
         tx.execute(
             "INSERT INTO store_integrations
-                (id, store_id, kind, site, version, webhook_id, webhook_url, connected_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (id, store_id, kind, name, site, version, webhook_id, webhook_url, connected_at_utc)
+             VALUES (?1, ?2, ?3, ?9, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 new.store_id,
@@ -1435,7 +1444,8 @@ impl Db {
                 new.version,
                 new.webhook_id,
                 new.webhook_url,
-                new.at
+                new.at,
+                new.name
             ],
         )?;
         tx.commit()?;
@@ -2034,7 +2044,7 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// The store's orders that came from `source` (`woocommerce`, ...).
+    /// The store's orders that came from `source` (`pos`, a plugin's slug, ...).
     pub fn order_ids_from_source(
         &self,
         connection_id: &ConnectionId,
@@ -3804,6 +3814,41 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
+    }
+
+    /// Before plugins named themselves, every connected plugin was the
+    /// WooCommerce plugin's, which keeps its name; any other row has none.
+    #[test]
+    fn migration_0042_names_existing_woocommerce_connections() {
+        let conn = Connection::open_in_memory().unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..41]).unwrap();
+        // Only the integrations matter here, not the stores they belong to.
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        for (id, kind) in [("int_1", "woocommerce"), ("int_2", "custom")] {
+            conn.execute(
+                "INSERT INTO store_integrations (id, store_id, kind, site, connected_at_utc)
+                 VALUES (?1, 'conn-1', ?2, 'shop.example.com', 1000)",
+                params![id, kind],
+            )
+            .unwrap();
+        }
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+
+        let names: Vec<(String, String)> = conn
+            .prepare("SELECT kind, name FROM store_integrations ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            names,
+            [
+                ("woocommerce".to_owned(), "WooCommerce".to_owned()),
+                ("custom".to_owned(), String::new())
+            ]
+        );
     }
 
     #[test]

@@ -1,0 +1,120 @@
+# Shop plugins
+
+A shop plugin takes Monero in a shop platform's own checkout. You install
+it in the shop, not in Monokulo, and connect it with one button. Monokulo
+keeps no list of plugins: any plugin that follows the steps on this page
+works with any Monokulo.
+
+## Plugins
+
+| Shop | Plugin |
+| --- | --- |
+| WooCommerce | [The WooCommerce plugin](../woocommerce/) |
+
+Each plugin's own page says how to install it and what it needs.
+
+## Writing a plugin
+
+A plugin does five things. Everything else about its shop platform stays
+in the plugin.
+
+### 1. Connect
+
+Send the merchant's browser to:
+
+```
+GET {monokulo}/connect/{slug}?site_url=…&return_url=…&nonce=…&name=…
+```
+
+- `slug` names your plugin: a lowercase letter, then 1 to 31 lowercase
+  letters, digits or hyphens (`prestashop`, `open-cart`). Anything else is
+  not found.
+- `site_url` is the shop's address. Monokulo finds the merchant's store by
+  its host, or sets one up for it. One host is one store.
+- `return_url` is where Monokulo sends the browser back. It must be on the
+  same host as `site_url`, over https (plain http only for `localhost` or a
+  `.onion` address).
+- `nonce` is yours: keep it, and check it when the browser comes back.
+- `name` is optional: what Monokulo calls your plugin on its pages
+  ("Connect your PrestaShop shop"), up to 40 characters. Without it,
+  Monokulo shows the slug.
+
+The merchant signs in and confirms, and the browser comes back to
+`return_url` with `token` and `nonce` added. Check the nonce, then, from your
+server, within 10 minutes:
+
+```
+POST {monokulo}/connect/{slug}/finish
+Monokulo-Client: {slug}/{your version}
+Content-Type: application/json
+
+{ "token": "…", "webhook_url": "https://shop.example/your-receiver", "name": "PrestaShop" }
+```
+
+It answers once per token:
+
+```json
+{
+  "public_key": "pk_…",
+  "secret_token": "sk_…",
+  "endpoint": "https://pay.example.com",
+  "webhook_signing_secret": "whsec_…"
+}
+```
+
+Keep all four. `endpoint` is where everything below goes. A `503` with
+`{"error": …}` means the Monokulo can't connect plugins yet; show the error.
+Any other failure is a `401`: start again.
+
+### 2. Create an order
+
+```
+POST {endpoint}/pay/{public_key}/orders
+Authorization: Bearer {secret_token}
+Monokulo-Client: {slug}/{your version}
+Content-Type: application/json
+
+{
+  "amount": "12.50",
+  "currency": "EUR",
+  "merchant_order_id": "1042",
+  "show_merchant_order_id": true,
+  "description": "Order #1042: Blue mug + 2 more",
+  "idempotency_key": "ps:1042:12.50:EUR"
+}
+```
+
+Monokulo prices fiat in XMR itself. A retry with the same `idempotency_key`
+gets the same order. While your plugin is the store's connected one, orders
+it makes this way show as yours on the dashboard.
+
+### 3. Send the customer to pay
+
+To `{endpoint}/pay/{public_key}/orders/{order_id}`, or show that page in an
+iframe on yours. The [JS library](../js-library/) can mount it too.
+
+### 4. Take webhooks
+
+Monokulo posts each change to `webhook_url`, signed. [Webhooks](../webhooks/)
+has the body and how to check it. Mark the shop's order paid on
+`order.paid` and `order.overpaid`; never undo a payment on your own.
+
+### 5. Forward your errors (optional)
+
+```
+POST {endpoint}/pay/{public_key}/logs
+Authorization: Bearer {secret_token}
+Monokulo-Client: {slug}/{your version}
+
+{ "entries": [ { "level": "error", "message": "…", "trace_id": "…" } ] }
+```
+
+Kept only when the store turned on client logs. Levels are PSR-3's
+(`error`, `warning`, …).
+
+## Test your receiver
+
+[webhook-vectors.json](webhook-vectors.json) holds one signed delivery for
+each event, and deliveries a receiver must refuse. Monokulo's own tests
+build it from the code that sends real webhooks and check real deliveries
+against it, so a receiver that passes on it handles what Monokulo sends.

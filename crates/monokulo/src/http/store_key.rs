@@ -2,7 +2,7 @@
 //! routes with its store's secret key (`Authorization: Bearer sk_...`), the
 //! same `sk_` the store's engine tenant was created with and monokulo keeps
 //! encrypted in `store_connections.tenant_secret_token_encrypted`. The
-//! WooCommerce plugin is the first such caller: it creates orders with the
+//! store's shop plugin is such a caller: it creates orders with the
 //! key, so a store that restricts embedding to its verified domains
 //! (`http::embed_domains::embed_policy_middleware`) can still take orders
 //! from its own server, and those orders are recorded as created with the

@@ -40,7 +40,7 @@ pub(super) fn public_key_of_pay_path(path: &str) -> Option<&str> {
 ///   verified domain;
 /// - `POST /pay/{pk}/orders` must come either from a browser page on a
 ///   verified domain (its `Origin`) or from someone holding the store's
-///   secret key (`super::store_key`, e.g. the WooCommerce plugin on the
+///   secret key (`super::store_key`, e.g. a shop plugin on the
 ///   shop's server). Anything else gets `403`, including a request with no
 ///   `Origin` and no key, which could otherwise come from any script
 ///   anywhere.

@@ -53,8 +53,9 @@ pub struct LoginViewModel {
     /// happens in `login_submit`, right before it's ever used as a
     /// redirect location, never here at render time).
     pub next: Option<String>,
-    /// The plugin's site, when `next` is a WooCommerce connect page.
-    pub connecting_site: Option<String>,
+    /// What the plugin is called and its shop's host, when `next` is a
+    /// plugin's connect page.
+    pub connecting_site: Option<(String, String)>,
 }
 
 fn with_next(path: &str, next: Option<&str>) -> String {
@@ -104,11 +105,11 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
 pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
     let header = ui::PageHeader::new("Log in");
     let body = html! {
-        @if let Some(site) = &data.connecting_site {
+        @if let Some((plugin, site)) = &data.connecting_site {
             (Alert::new(html! {
                 p { strong { (site) " wants to connect to Monokulo." } }
                 p {
-                    "Its WooCommerce plugin sent you here. Log in to choose which wallet its payments go to. "
+                    "Its " (plugin) " plugin sent you here. Log in to choose which wallet its payments go to. "
                     "New to Monokulo? Sign up instead: you'll set up a wallet, then come straight back to this."
                 }
             }, Tone::Notice).block(true).quiet(true))
@@ -254,7 +255,7 @@ mod tests {
             &LoginViewModel {
                 connecting_site: None,
                 error: None,
-                next: Some("/connect/woocommerce?nonce=abc".to_string()),
+                next: Some("/connect/acme-cart?nonce=abc".to_string()),
             },
         )
         .into_string();
@@ -263,7 +264,7 @@ mod tests {
             "expected a hidden next field, got: {html}"
         );
         assert!(
-            html.contains("/connect/woocommerce?nonce"),
+            html.contains("/connect/acme-cart?nonce"),
             "expected the next value's content present, got: {html}"
         );
         assert!(
@@ -279,7 +280,7 @@ mod tests {
             &LoginViewModel {
                 connecting_site: None,
                 error: None,
-                next: Some("/connect/woocommerce?a=1&b=2".to_string()),
+                next: Some("/connect/acme-cart?a=1&b=2".to_string()),
             },
         )
         .into_string();
@@ -290,6 +291,29 @@ mod tests {
         assert!(
             !html.contains("a=1&b=2"),
             "a raw, unescaped & would be a template-injection smell, got: {html}"
+        );
+    }
+
+    /// On the way to connecting a shop, the login page names the shop and
+    /// the plugin that sent the merchant.
+    #[test]
+    fn login_page_names_the_connecting_shop_and_its_plugin() {
+        let html = login_page(
+            &chrome(),
+            &LoginViewModel {
+                connecting_site: Some(("Acme Cart".into(), "shop.example".into())),
+                error: None,
+                next: Some("/connect/acme-cart?nonce=abc".to_string()),
+            },
+        )
+        .into_string();
+        assert!(
+            html.contains("shop.example wants to connect to Monokulo."),
+            "{html}"
+        );
+        assert!(
+            html.contains("Its Acme Cart plugin sent you here."),
+            "{html}"
         );
     }
 

@@ -2,7 +2,7 @@
 //! (`docs/design/user-testing/store-site-integrations.html`: A3, B1, C1).
 //!
 //! - The Store card's website is locked while a plugin is connected
-//!   ("Set by WooCommerce · see Connections").
+//!   ("Set by PrestaShop · see Connections").
 //! - The Connections card lists each plugin: its site, version, when it
 //!   connected and its last order, with "Disconnect…"; past ones fold
 //!   under "Before".
@@ -22,7 +22,7 @@ use super::{DialogContent, PageChrome};
 /// A plugin connected to the store, now or before.
 pub struct IntegrationView {
     pub id: String,
-    /// What it's called: "WooCommerce".
+    /// What it's called, as it named itself: "PrestaShop".
     pub name: String,
     /// The store's site when it connected.
     pub site: String,
@@ -88,15 +88,17 @@ pub enum WebsiteChange {
     Remove,
 }
 
-/// WooCommerce's mark: its speech bubble with "Woo" in it.
-fn woo_mark() -> Markup {
+/// A plugin's mark: the first letter of its name on a tile. monokulo
+/// knows no plugin, so it draws no plugin's logo.
+fn plugin_mark(name: &str) -> Markup {
+    let initial: String = name
+        .chars()
+        .next()
+        .into_iter()
+        .flat_map(char::to_uppercase)
+        .collect();
     html! {
-        span class="int-mark" aria-hidden="true" {
-            svg viewBox="0 0 32 24" focusable="false" {
-                path class="woo-bubble" d="M4 3h24a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H17l-5 4 1-4H4a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3z" {}
-                text class="woo-text" x="16" y="14.6" text-anchor="middle" { "Woo" }
-            }
-        }
+        span class="int-mark" aria-hidden="true" { (initial) }
     }
 }
 
@@ -116,7 +118,7 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
         None => html! {
             (super::settings::Field::new("Your website (optional)", "store-site")
                 .help(None, html! {
-                    "Needed for the checkout on your pages or for the WooCommerce plugin, which finds this store by it. "
+                    "Needed for the checkout on your pages or for a shop plugin, which finds this store by it. "
                     "Any page on the site works."
                     @if !view.site.is_empty() { " Changing or removing it asks first." }
                 })
@@ -145,7 +147,7 @@ pub fn connections_card(view: &SiteView) -> Markup {
                     Some(active) => {
                         ul class="int-rows" {
                             li {
-                                (woo_mark())
+                                (plugin_mark(&active.name))
                                 span {
                                     span class="int-name" { (active.name) } " " span class="tag-active" { "active" }
                                     span class="int-meta" { (integration_meta(active)) }
@@ -156,12 +158,12 @@ pub fn connections_card(view: &SiteView) -> Markup {
                         }
                     }
                     None if view.site.is_empty() => {
-                        (ui::Hint::new("The WooCommerce plugin needs your website: add it above first."))
+                        (ui::Hint::new("A shop plugin needs your website: add it above first."))
                     }
                     None => {
                         (ui::Hint::new(html! {
                             "No plugin is connected. "
-                            a href=(super::docs_url("woocommerce/")) target="_blank" rel="noopener" { "Install the WooCommerce plugin" }
+                            a href=(super::docs_url("plugins/")) target="_blank" rel="noopener" { "Install the plugin for your shop" }
                             "; it finds this store by " (view.site) "."
                         }))
                     }
@@ -171,7 +173,7 @@ pub fn connections_card(view: &SiteView) -> Markup {
                     ul class="int-rows past" {
                         @for past in &view.past {
                             li {
-                                (woo_mark())
+                                (plugin_mark(&past.name))
                                 span {
                                     span class="int-name" { (past.name) }
                                     span class="int-meta" {
@@ -494,16 +496,16 @@ pub fn disconnect_page(
 mod tests {
     use super::*;
 
-    fn woo(until: Option<&str>) -> IntegrationView {
+    fn plugin(until: Option<&str>) -> IntegrationView {
         IntegrationView {
             id: "int_1".into(),
-            name: "WooCommerce".into(),
+            name: "Acme Cart".into(),
             site: "shop.example".into(),
             version: "0.4.0".into(),
             connected: "3 Oct".into(),
             last_order: Some("today".into()),
             until: until.map(str::to_owned),
-            webhook_url: Some("https://shop.example/?wc-api=monokulo".into()),
+            webhook_url: Some("https://shop.example/monokulo-webhook".into()),
         }
     }
 
@@ -518,8 +520,8 @@ mod tests {
             store_id: "c_1".into(),
             store_name: "Bakery".into(),
             site: "shop.example".into(),
-            active: active.then(|| woo(None)),
-            past: vec![woo(Some("12 Sep"))],
+            active: active.then(|| plugin(None)),
+            past: vec![plugin(Some("12 Sep"))],
             open_orders: Some(OpenOrders {
                 count: 3,
                 until: Some("14:20".into()),
@@ -532,6 +534,21 @@ mod tests {
         }
     }
 
+    /// No plugin's logo: each one's mark is the first letter of its name.
+    #[test]
+    fn a_plugins_mark_is_its_initial() {
+        let card = connections_card(&view(true, Some(0))).into_string();
+        assert!(
+            card.contains(r#"<span class="int-mark" aria-hidden="true">A</span>"#),
+            "{card}"
+        );
+        assert!(!card.contains("<svg"), "{card}");
+        assert_eq!(
+            plugin_mark("élan").into_string(),
+            r#"<span class="int-mark" aria-hidden="true">É</span>"#
+        );
+    }
+
     #[test]
     fn a_connected_plugin_locks_the_website_and_lists_in_connections() {
         let v = view(true, Some(0));
@@ -542,7 +559,7 @@ mod tests {
         );
         assert!(
             field.contains(
-                r##"Set by WooCommerce · <a href="/dashboard/stores/c_1/settings?tab=connections#card-connections">see Connections</a>"##
+                r##"Set by Acme Cart · <a href="/dashboard/stores/c_1/settings?tab=connections#card-connections">see Connections</a>"##
             ),
             "{field}"
         );
@@ -588,7 +605,7 @@ mod tests {
         })
         .into_string();
         assert!(
-            none.contains("The WooCommerce plugin needs your website: add it above first."),
+            none.contains("A shop plugin needs your website: add it above first."),
             "{none}"
         );
     }
@@ -607,7 +624,7 @@ mod tests {
             html.contains("Change the website of \u{201c}Bakery\u{201d}?"),
             "{html}"
         );
-        assert!(html.contains(r#"No plugin is connected to it<span class="fix">WooCommerce on shop.example is · <a href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">disconnect it first</a>"#), "{html}");
+        assert!(html.contains(r#"No plugin is connected to it<span class="fix">Acme Cart on shop.example is · <a href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">disconnect it first</a>"#), "{html}");
         assert!(
             html.contains(r#"data-variant="danger" disabled"#) && !html.contains("<form"),
             "{html}"
@@ -670,7 +687,7 @@ mod tests {
     fn disconnecting_is_blocked_while_an_order_from_the_shop_can_be_paid() {
         let html = disconnect_html(&view(true, Some(3)));
         assert!(html.contains(r#"No order from shop.example can still be paid<span class="fix">3 can be paid until about 14:20</span>"#), "{html}");
-        assert!(html.contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled aria-describedby="disconnect-why">Disconnect WooCommerce</button>"#), "{html}");
+        assert!(html.contains(r#"<button class="mk-btn" type="button" data-variant="danger" disabled aria-describedby="disconnect-why">Disconnect Acme Cart</button>"#), "{html}");
         assert!(
             !html.contains("webhook") && !html.contains("<form"),
             "{html}"
@@ -686,9 +703,9 @@ mod tests {
     #[test]
     fn disconnecting_says_the_webhook_goes_then_asks_for_the_name() {
         let html = disconnect_html(&view(true, Some(0)));
-        assert!(html.contains("<h2 id=\"disconnect-title\" class=\"dialog-title\">Disconnect WooCommerce from \u{201c}Bakery\u{201d}?<button"), "{html}");
+        assert!(html.contains("<h2 id=\"disconnect-title\" class=\"dialog-title\">Disconnect Acme Cart from \u{201c}Bakery\u{201d}?<button"), "{html}");
         assert!(html.contains(r#"<li class="ok">"#), "{html}");
-        assert!(html.contains(r#"The plugin's webhook is removed<span class="fix">https://shop.example/?wc-api=monokulo</span>"#), "{html}");
+        assert!(html.contains(r#"The plugin's webhook is removed<span class="fix">https://shop.example/monokulo-webhook</span>"#), "{html}");
         assert!(
             html.contains("New Monero orders on shop.example stop")
                 && html.contains("The website unlocks"),
@@ -697,7 +714,7 @@ mod tests {
         assert!(html.contains(r#"<form method="post" action="/dashboard/stores/c_1/settings/connections/int_1/disconnect">"#), "{html}");
         assert!(
             html.contains(
-                r#"<button class="mk-btn" type="submit" data-variant="danger">Disconnect WooCommerce</button>"#
+                r#"<button class="mk-btn" type="submit" data-variant="danger">Disconnect Acme Cart</button>"#
             ),
             "{html}"
         );

@@ -50,14 +50,14 @@ pub struct CreateOrderRequest {
     pub description: Option<String>,
     /// Whether the checkout shows the payer `merchant_order_id`. `true`
     /// when omitted; a shop whose reference means nothing to its customers
-    /// (the WooCommerce plugin's post ID) sends `false`. The dashboard and
+    /// (a shop plugin's internal post ID) sends `false`. The dashboard and
     /// webhooks show the reference either way.
     #[serde(default)]
     pub show_merchant_order_id: Option<bool>,
     /// The caller's key for this one purchase (up to 100 visible ASCII
     /// characters): a retry with the same key gets the order the first
-    /// attempt made, never a second one. The WooCommerce plugin sends one
-    /// per order and total.
+    /// attempt made, never a second one. A shop plugin sends one per order
+    /// and total.
     #[serde(default)]
     pub idempotency_key: Option<String>,
 }
@@ -85,13 +85,13 @@ pub struct CreateOrderResponse {
     pub expires_at: i64,
 }
 
-/// The header a client names itself in, `name/version`: the WooCommerce
-/// plugin sends `Monokulo-Client: woocommerce/1.2.3`.
+/// The header a client names itself in, `name/version`: a shop plugin
+/// sends its slug, `Monokulo-Client: prestashop/1.2.3`.
 pub const CLIENT_HEADER: &str = "monokulo-client";
 
-/// The version a request's [`CLIENT_HEADER`] gives for the client `name`:
-/// `woocommerce/0.4.0` is version `0.4.0` of `woocommerce`. `None` when the
-/// header names another client, or none.
+/// The version a request's [`CLIENT_HEADER`] gives for the client `name`
+/// (any case): `prestashop/0.4.0` is version `0.4.0` of `prestashop`.
+/// `None` when the header names another client, or none.
 pub(crate) fn client_version(headers: &axum::http::HeaderMap, name: &str) -> Option<String> {
     let value = headers.get(CLIENT_HEADER)?.to_str().ok()?;
     let (client, version) = value.split_once('/').unwrap_or((value, ""));
@@ -101,19 +101,26 @@ pub(crate) fn client_version(headers: &axum::http::HeaderMap, name: &str) -> Opt
         .then(|| version.trim().chars().take(40).collect())
 }
 
+/// The client a request's [`CLIENT_HEADER`] names, without its version.
+pub(crate) fn client_name(headers: &axum::http::HeaderMap) -> Option<String> {
+    let value = headers.get(CLIENT_HEADER)?.to_str().ok()?;
+    let name = value.split('/').next()?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
 /// Where an order made through `POST /pay/{pk}/orders` came from, for its
-/// page and the orders table: `woocommerce` (the plugin, with the store's
-/// key), `api` (anything else with the key) or `website` (a browser).
-fn order_source(created_with_key: bool, headers: &axum::http::HeaderMap) -> &'static str {
-    let client = headers
-        .get(CLIENT_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split('/').next())
-        .map(str::trim);
-    match (created_with_key, client) {
-        (true, Some(name)) if name.eq_ignore_ascii_case("woocommerce") => "woocommerce",
-        (true, _) => "api",
-        (false, _) => "website",
+/// page and the orders table: the store's connected plugin (its slug) when
+/// it was made with the store's key by the client that plugin connected as
+/// (`Monokulo-Client: <slug>/...`, any case), `api` for anything else with
+/// the key, or `website` (a browser). `plugin` is the slug of the store's
+/// active integration, if it has one.
+fn order_source(created_with_key: bool, client: Option<&str>, plugin: Option<&str>) -> String {
+    match (created_with_key, client, plugin) {
+        (true, Some(client), Some(plugin)) if client.eq_ignore_ascii_case(plugin) => {
+            plugin.to_owned()
+        }
+        (true, _, _) => "api".to_owned(),
+        (false, _, _) => "website".to_owned(),
     }
 }
 
@@ -125,8 +132,9 @@ pub const MAX_MERCHANT_ORDER_ID_CHARS: usize = 120;
 /// (`super::store_key`, checked before this runs), which is recorded on the
 /// order (`created_with_key`) and is how a restricted store takes orders
 /// from outside a browser (`super::embed_domains::embed_policy_middleware`).
-/// A key-made order's source is the WooCommerce plugin's when the request
-/// says so in [`CLIENT_HEADER`], else the Store API's.
+/// A key-made order's source is the store's connected plugin's when the
+/// request names it in [`CLIENT_HEADER`], else the Store API's
+/// ([`order_source`]).
 pub async fn create_order(
     State(state): State<AppState>,
     Path(pk): Path<String>,
@@ -287,9 +295,11 @@ pub async fn create_order(
             // payment address. Losing this one local record is a strictly
             // smaller problem than telling a customer their real order
             // failed when it didn't.
-            let source = order_source(created_with_key, &headers);
-            // An order from the plugin: its integration was seen now.
-            let version = client_version(&headers, "woocommerce").unwrap_or_default();
+            let client = client_name(&headers);
+            let version = client
+                .as_deref()
+                .and_then(|name| client_version(&headers, name))
+                .unwrap_or_default();
             let (id, order_id, currency, amount, provider) = (
                 row.id.clone(),
                 order.order_id.clone(),
@@ -305,6 +315,9 @@ pub async fn create_order(
             let recorded = state
                 .db
                 .write(move |db| {
+                    let plugin = db.active_integration(&id)?.map(|i| i.kind);
+                    let source =
+                        order_source(created_with_key, client.as_deref(), plugin.as_deref());
                     db.create_order_currency_metadata(
                         &id,
                         &order_id,
@@ -317,11 +330,12 @@ pub async fn create_order(
                         base_rate,
                         confirmations,
                         created_with_key,
-                        Some(source),
+                        Some(&source),
                         show_merchant_order_id,
                     )?;
-                    if source == "woocommerce" {
-                        db.integration_seen(&id, "woocommerce", &version, now_unix())?;
+                    // An order from the plugin: its integration was seen now.
+                    if plugin.as_deref() == Some(source.as_str()) {
+                        db.integration_seen(&id, &source, &version, now_unix())?;
                     }
                     Ok::<_, crate::db::DbError>(())
                 })
@@ -394,6 +408,28 @@ mod tests {
     use crate::engine_client::EngineClient;
 
     use super::super::{build_router, AppState};
+
+    /// A keyed order is the store's plugin's only when the client names
+    /// that plugin, in any case; no plugin, another client or none is the
+    /// Store API; without the key it's the website, whatever it claims.
+    #[test]
+    fn an_orders_source_is_the_connected_plugin_only_when_it_names_itself() {
+        use super::order_source;
+        assert_eq!(
+            order_source(true, Some("Acme-Cart"), Some("acme-cart")),
+            "acme-cart"
+        );
+        assert_eq!(
+            order_source(true, Some("opencart"), Some("acme-cart")),
+            "api"
+        );
+        assert_eq!(order_source(true, Some("acme-cart"), None), "api");
+        assert_eq!(order_source(true, None, Some("acme-cart")), "api");
+        assert_eq!(
+            order_source(false, Some("acme-cart"), Some("acme-cart")),
+            "website"
+        );
+    }
 
     /// Same fixed-scalar construction every other module's own tests use -
     /// see `connections.rs` for why these particular values pass the
