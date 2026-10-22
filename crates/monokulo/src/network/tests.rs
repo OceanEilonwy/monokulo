@@ -101,6 +101,25 @@ async fn onion_location_is_left_out_when_switched_off_tor_is_off_or_not_up_yet()
     }
 }
 
+#[test]
+fn the_address_is_used_while_tor_publishes_it() {
+    let tor = Tor::default();
+    tor.set_status(crate::tor::TorStatus::Publishing {
+        address: ONION.to_string(),
+    });
+    let state = AppState {
+        tor,
+        ..state_with(TorConfig {
+            mode: TorMode::Inside,
+            ..TorConfig::defaults()
+        })
+    };
+    assert_eq!(
+        onion_uri(&state.settings, &state.tor),
+        Some(format!("http://{ONION}"))
+    );
+}
+
 #[tokio::test]
 async fn tor_inside_monokulo_gives_its_own_address_once_it_has_one() {
     let state = AppState {

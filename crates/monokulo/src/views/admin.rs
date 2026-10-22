@@ -2039,6 +2039,11 @@ fn tor_panel(panel: &TorPanel) -> Markup {
         }, ui::Tone::Success)
         .title("Onion service running.")
         .icon(html! { (PreEscaped(ui::assets::icons::CHECK)) }),
+        TorPanel::Inside(TorStatus::Publishing { address: onion }) => ui::Alert::new(html! {
+            "Tor is telling the network about " (address(onion)) ". It is usually reachable within a minute; Tor marks it running once every directory has it."
+        }, ui::Tone::Notice)
+        .title("Publishing the onion address…")
+        .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) }),
         TorPanel::Inside(TorStatus::Degraded { address: onion, problem }) => ui::Alert::new(html! {
             "Tor is still trying to keep " (address(onion)) " reachable: " (problem)
         }, ui::Tone::Warning)
@@ -2652,6 +2657,14 @@ mod tests {
         })));
         assert!(
             html.contains("Starting Tor") && html.contains("(45%)"),
+            "{html}"
+        );
+
+        let html = tor_tab(Some(TorPanel::Inside(TorStatus::Publishing {
+            address: ONION.to_string(),
+        })));
+        assert!(
+            html.contains("Publishing the onion address") && html.contains(ONION),
             "{html}"
         );
 
