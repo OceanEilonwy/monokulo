@@ -56,7 +56,14 @@ pub fn script(name: &'static str, load: Load) -> Markup {
     match load {
         Load::Now => html! { script src=(src) {} },
         Load::Defer => html! { script src=(src) defer {} },
-        Load::Module => html! { script type="module" src=(src) {} },
+        // With the chunks it imports, asked for at once rather than once
+        // it has run.
+        Load::Module => html! {
+            script type="module" src=(src) {}
+            @for chunk in assets::preloads(name) {
+                link rel="modulepreload" href=(chunk);
+            }
+        },
     }
 }
 
@@ -379,6 +386,25 @@ pub fn layout_bare_with_head(
     page_shell(chrome, title, viewport, Some(extra_head), None, body)
 }
 
+/// The chunks the islands in `parts` need, each once: their components'
+/// behaviours and what those import (`assets::preloads`).
+fn island_preloads<'a>(parts: impl Iterator<Item = &'a Markup>) -> Vec<String> {
+    let mut chunks = Vec::new();
+    for part in parts {
+        for rest in part.0.split("data-island=\"").skip(1) {
+            let Some((name, _)) = rest.split_once('"') else {
+                continue;
+            };
+            for chunk in assets::preloads(name) {
+                if !chunks.contains(&chunk) {
+                    chunks.push(chunk);
+                }
+            }
+        }
+    }
+    chunks
+}
+
 fn page_shell(
     chrome: &PageChrome,
     title: &str,
@@ -423,6 +449,11 @@ fn page_shell(
                     // The shared components' islands: every Select, settings
                     // form, copy value and tabs (`ui`).
                     (script("ui-islands.js", Load::Module))
+                    // And the behaviours of the islands on this page, so
+                    // each attaches as soon as the script runs.
+                    @for chunk in island_preloads(nav.iter().chain([&body])) {
+                        link rel="modulepreload" href=(chunk);
+                    }
                 }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)
@@ -786,6 +817,33 @@ mod theme_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_asks_for_its_islands_behaviours_with_the_script_each_once() {
+        let nav = html! { div data-island="Menu" {} };
+        let body = html! {
+            div data-island="Select" {} div data-island="Select" {} p { "data-island" }
+        };
+        let chunks = island_preloads([&nav, &body].into_iter());
+        let menu: Vec<String> = assets::preloads("Menu").collect();
+        let select: Vec<String> = assets::preloads("Select").collect();
+        assert!(chunks.starts_with(&menu), "{chunks:?}");
+        for chunk in &select {
+            assert_eq!(chunks.iter().filter(|c| *c == chunk).count(), 1, "{chunk}");
+        }
+        assert_eq!(
+            island_preloads([&html! { p { "no islands" } }].into_iter()),
+            Vec::<String>::new()
+        );
+        // A module's own imports come with its script.
+        let engine = script("engine-view.js", Load::Module).into_string();
+        for chunk in assets::preloads("engine-view.js") {
+            assert!(
+                engine.contains(&format!(r#"<link rel="modulepreload" href="{chunk}">"#)),
+                "{engine}"
+            );
+        }
+    }
 
     #[test]
     fn a_network_badge_always_says_the_network_and_marks_mainnet_apart() {

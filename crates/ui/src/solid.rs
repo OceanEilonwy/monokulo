@@ -18,14 +18,30 @@ pub fn files(components: &[&'static ComponentInfo]) -> BTreeMap<String, String> 
         .iter()
         .filter(|i| i.behaviour.is_some())
         .collect();
+    // Each behaviour is its own chunk, fetched when a page first has its
+    // island: a page loads only the behaviours it uses.
+    islands.push_str("/** An island's behaviour: attaches it and returns what lets it go. */\nexport type Attach = (root: Element, props: never) => () => void;\n\n/** Each interactive component's attach, by the name its island gives,\n *  loaded on first use. */\nexport const islands: Record<string, () => Promise<Attach>> = {\n");
     for info in &interactive {
-        let _ = writeln!(islands, "import {{ attach{0} }} from './{0}';", info.name);
-    }
-    islands.push_str("\n/** Each interactive component's attach, by the name its island gives. */\nexport const islands: Record<string, (root: Element, props: never) => () => void> = {\n");
-    for info in &interactive {
-        let _ = writeln!(islands, "  {0}: attach{0},", info.name);
+        let _ = writeln!(
+            islands,
+            "  {0}: () => import('./{0}').then(module => module.attach{0}),",
+            info.name
+        );
     }
     islands.push_str("};\n");
+    // The same, every behaviour in one module: for a script published as
+    // one file (the GitHub Pages site's, `vite.islands.config.js`).
+    let mut eager = String::from(HEADER);
+    eager.push_str("import type { Attach } from './islands';\n");
+    for info in &interactive {
+        let _ = writeln!(eager, "import {{ attach{0} }} from './{0}';", info.name);
+    }
+    eager.push_str("\n/** Each interactive component's attach, by the name its island gives,\n *  all in this module. */\nexport const islands: Record<string, () => Promise<Attach>> = {\n");
+    for info in &interactive {
+        let _ = writeln!(eager, "  {0}: () => Promise.resolve(attach{0}),", info.name);
+    }
+    eager.push_str("};\n");
+    files.insert("islands.eager.ts".into(), eager);
     for info in components {
         let source = component(info, &mut types);
         files.insert(format!("{}.tsx", info.name), source);

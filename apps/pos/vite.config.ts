@@ -24,9 +24,15 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
       assetsDir: '.',
       minify: !development,
-      lib: { entry: 'src/main.tsx', formats: ['es'], fileName: () => 'pos-app.js' },
+      // One script and one stylesheet. An app build rather than library
+      // mode, which leaves ES output's whitespace in.
       cssCodeSplit: false,
-      rollupOptions: { output: { assetFileNames: 'pos-app[extname]' } },
+      modulePreload: false,
+      rollupOptions: {
+        input: { 'pos-app': 'src/main.tsx' },
+        preserveEntrySignatures: false,
+        output: { entryFileNames: '[name].js', assetFileNames: 'pos-app[extname]' },
+      },
     },
   };
 });

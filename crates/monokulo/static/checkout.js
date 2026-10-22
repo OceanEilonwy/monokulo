@@ -182,6 +182,24 @@
     return true;
   }
 
+  // The QR decoder is fetched the first time a customer scans or picks an
+  // image, not with the page: most never do. The form says where it is.
+  var decoderUrl = refundForm && refundForm.dataset.qrDecoder;
+  var decoderLoading = null;
+  function loadDecoder() {
+    if (typeof window.jsQR === 'function') return Promise.resolve();
+    if (!decoderLoading) {
+      decoderLoading = new Promise(function (resolve, reject) {
+        var script = document.createElement('script');
+        script.src = decoderUrl;
+        script.onload = function () { typeof window.jsQR === 'function' ? resolve() : reject(new Error('QR decoder unavailable')); };
+        script.onerror = function () { decoderLoading = null; reject(new Error('QR decoder unavailable')); };
+        document.head.appendChild(script);
+      });
+    }
+    return decoderLoading;
+  }
+
   // true: a Monero address was used; false: a QR code without one (already
   // explained); null: no QR code found.
   function decode(width, height) {
@@ -209,14 +227,25 @@
     frameTimer = setTimeout(scanFrame, 200);
   }
 
-  if (refundInput && context && typeof window.jsQR === 'function') {
+  if (refundInput && context && decoderUrl) {
     uploadButton.hidden = false;
-    uploadButton.addEventListener('click', function () { fileInput.click(); });
+    uploadButton.addEventListener('click', function () {
+      // Fetched while the customer picks the file.
+      loadDecoder().catch(function () {});
+      fileInput.click();
+    });
     fileInput.addEventListener('change', async function () {
       var file = fileInput.files && fileInput.files[0];
       if (!file) return;
       stopCamera();
       error('');
+      try {
+        await loadDecoder();
+      } catch (_) {
+        error('Could not load the QR reader. Try again.');
+        fileInput.value = '';
+        return;
+      }
       try {
         if (typeof createImageBitmap === 'function') {
           var image = await createImageBitmap(file);
@@ -247,7 +276,11 @@
         // up front collapses the message, then a repeat failure re-shows it and
         // the layout jumps on every click.
         try {
+          // The decoder comes while the camera starts.
+          var decoder = loadDecoder();
+          decoder.catch(function () {});
           stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+          await decoder;
           video.srcObject = stream;
           video.hidden = false;
           await video.play();

@@ -28,7 +28,8 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 WORKDIR /src
 # The POS app's dependencies first, so they stay cached until its lockfile changes.
 COPY package.json package-lock.json ./
-COPY crates/monokulo/pos-ui/package.json crates/monokulo/pos-ui/
+COPY apps/pos/package.json apps/pos/
+COPY apps/engine/package.json apps/engine/
 COPY crates/ui/package.json crates/ui/
 COPY apps/stylebook/package.json apps/stylebook/
 RUN npm ci --no-audit --no-fund

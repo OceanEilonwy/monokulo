@@ -1,6 +1,6 @@
 // @ts-check
 // Real stagenet + real browser e2e for the POS terminal screen
-// (views/pos.rs + the pos-ui app). See ../README.md for what this needs and how to
+// (views/pos.rs + the POS app, apps/pos). See ../README.md for what this needs and how to
 // run it - deliberately never wired into any default `npm test`/CI.
 //
 // The backend (a real, network-bound engine against the real public

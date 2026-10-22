@@ -63,8 +63,8 @@ fn stylesheets() -> Vec<(String, String)> {
             ui::assets::COMPONENTS_CSS.to_string(),
         ),
         (
-            "pos-ui/src/pos.css".to_string(),
-            read(&crate_dir().join("pos-ui/src/pos.css")),
+            "apps/pos/src/pos.css".to_string(),
+            read(&crate_dir().join("../../apps/pos/src/pos.css")),
         ),
     ];
     for path in files_with_extension(&crate_dir().join("src/views"), "rs") {
@@ -94,8 +94,9 @@ fn markup_sources() -> Vec<(String, String)> {
     let mut sources = Vec::new();
     for (dir, ext) in [
         ("src/views", "rs"),
-        ("pos-ui/src", "tsx"),
-        ("pos-ui/src", "ts"),
+        ("../../apps/pos/src", "tsx"),
+        ("../../apps/engine/src", "tsx"),
+        ("../../apps/pos/src", "ts"),
         ("../../xtask/src/pages/render", "rs"),
         ("../../xtask/src/pages/landing", "rs"),
         ("../../xtask/src/pages/assets/coverage", "js"),

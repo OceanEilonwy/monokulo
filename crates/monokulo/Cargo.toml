@@ -63,6 +63,9 @@ thiserror = "2.0.20"
 time = "0.3.55"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 tower-http = { version = "0.7.1", features = ["cors"] }
+# The static files' compressed copies (`crate::assets`), made once each.
+brotli = "7.0.0"
+flate2 = "1.1.10"
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 live-settings = { path = "../live-settings" }
@@ -101,6 +104,8 @@ hyper-util = { version = "0.1.20", optional = true, features = ["tokio"] }
 # Cargo fetch everything that build needs first.
 key-custody = { path = "../key-custody", default-features = false, features = ["wasm"] }
 wallet-setup = { path = "../wallet-setup", features = ["wasm"] }
+# Reads the pages' build's manifest (`web/preloads.rs`).
+serde_json = "1.0.151"
 
 [dev-dependencies]
 # Turns on `test-support` for this crate's own integration tests and examples.

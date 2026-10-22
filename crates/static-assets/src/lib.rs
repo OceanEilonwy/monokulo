@@ -7,7 +7,8 @@
 //! carrying the digest, `logo.3f9a1c2b4d5e6f70.svg` ([`Asset::file_name`]),
 //! which a browser may keep for a year: new content is a new name. The only
 //! files linked by their bare name are [`Policy::Public`] ones, whose name
-//! others link and keep.
+//! others link and keep, and [`Policy::Hashed`] ones, a bundler's chunks
+//! whose names carry a hash of their own.
 //!
 //! Two crates use it. monokulo serves its table from `GET /static/{*file}`
 //! (`monokulo::assets`); `cargo xtask pages` writes its table into the
@@ -21,6 +22,10 @@ pub enum Policy {
     /// Linked by others at its bare name, so that name is theirs to keep:
     /// checked on every use.
     Public,
+    /// A bundler's chunk, its name already carrying its hash
+    /// (`solid-CoMz0tzw.js`), linked by other chunks at that name: kept for a
+    /// year like a fingerprinted file.
+    Hashed,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -48,7 +53,7 @@ impl Asset {
                     .expect("an asset's name has an extension");
                 format!("{stem}.{}.{extension}", self.digest)
             }
-            Policy::Public => self.name.to_string(),
+            Policy::Public | Policy::Hashed => self.name.to_string(),
         }
     }
 }
@@ -129,6 +134,8 @@ pub const fn hex16(x: u64) -> [u8; 16] {
 ///   elsewhere, fingerprinted.
 /// - `asset!(built "name.ext", "/path/in/out-dir", TYPE)`: a file the build
 ///   script makes, fingerprinted.
+/// - `asset!(named "name-hash.ext", "/path/in/out-dir", TYPE)`: a chunk the
+///   build script's bundler makes, its hash already in its name.
 /// - `asset!(text "name.ext", TEXT, TYPE)`: a file another module holds
 ///   as a string, fingerprinted.
 /// - `asset!(public "name.ext", TYPE)` and
@@ -147,6 +154,9 @@ macro_rules! asset {
     };
     (text $name:literal, $text:expr, $content_type:expr) => {
         $crate::asset!(@entry $name, $text.as_bytes(), $content_type, $crate::Policy::Fingerprinted)
+    };
+    (named $name:literal, $path:literal, $content_type:expr) => {
+        $crate::asset!(@entry $name, include_bytes!(concat!(env!("OUT_DIR"), $path)), $content_type, $crate::Policy::Hashed)
     };
     (built $name:literal, $path:literal, $content_type:expr) => {
         $crate::asset!(@entry $name, include_bytes!(concat!(env!("OUT_DIR"), $path)), $content_type, $crate::Policy::Fingerprinted)

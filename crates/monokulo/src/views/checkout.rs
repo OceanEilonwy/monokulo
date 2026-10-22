@@ -327,7 +327,10 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     @if data.refund_enabled { div class="section" {
                         form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
                             fx-action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
-                            fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors {
+                            fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors
+                            // The QR decoder, fetched by checkout.js only
+                            // when a customer scans or picks an image.
+                            data-qr-decoder=(crate::assets::url("jsQR.js")) {
                                 label for="refund_address" { "Refund address " (ui::Hint::new("(optional)").inline(true)) }
                                 @if let Some(error) = &data.refund_address_error {
                                     (ui::Alert::new(error.as_str(), ui::Tone::Error))
@@ -358,7 +361,6 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                 }
             }
         }
-        @if data.refund_enabled { (script("jsQR.js", Load::Now)) }
         (script("checkout.js", Load::Now))
     };
     layout_bare_with_head(

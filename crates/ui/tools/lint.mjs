@@ -106,7 +106,7 @@ function files(dir) {
   });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const roots = ['crates/ui/web', 'crates/ui/src', 'apps/stylebook', 'crates/monokulo/pos-ui/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
+  const roots = ['crates/ui/web', 'crates/ui/src', 'apps/stylebook', 'apps/pos/src', 'crates/monokulo/src/views', 'crates/monokulo/static'];
   const findings = roots.flatMap(dir => files(resolve(root, dir))).flatMap(path => inspect(relative(root, path), readFileSync(path, 'utf8')));
   const record = list => {
     const baseline = {};

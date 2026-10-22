@@ -1,6 +1,6 @@
 //! The engine page (`docs/engine_visualizer.md`): the engine's scanner, for
 //! admins. Rendered here whole, so without JavaScript it is a point-in-time
-//! page with a Reload button; `engine-ui/src/engine-view.js` then follows the
+//! page with a Reload button; `apps/engine/src/engine-view.js` then follows the
 //! network live, drawing each frame's [`Presented`] into the same elements,
 //! and each `machine` event's [`MachineView`] into the "Machine and links"
 //! strip and the Scanning panel.

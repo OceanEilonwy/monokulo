@@ -580,7 +580,7 @@ test('the script stacks labels by the same rule as the server', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const root = path.resolve(__dirname, '../../../crates/monokulo');
-  const source = fs.readFileSync(path.join(root, 'engine-ui/src/engine-view.js'), 'utf8');
+  const source = fs.readFileSync(path.join(root, '../../apps/engine/src/engine-view.js'), 'utf8');
   const gap = source.match(/const LABEL_GAP_PX = \d+;/)[0];
   const body = source.match(/function stackLabels\(spans\) \{[\s\S]*?\n {2}\}\n/)[0];
   const stackLabels = new Function(`${gap}\n${body}\nreturn stackLabels;`)();

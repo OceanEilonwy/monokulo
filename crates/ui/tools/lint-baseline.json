@@ -1,9 +1,9 @@
 {
-  "crates/monokulo/pos-ui/src/main.tsx:shared-control:2f964e236553e427": {
+  "apps/pos/src/main.tsx:shared-control:2f964e236553e427": {
     "count": 1,
     "snippet": "<input ref={el => { fileInput = el; }} type=\"file\" accept=\"image/*\" hidden onChange={event => void chooseImage(event.currentTarget.files?.[0])}/>"
   },
-  "crates/monokulo/pos-ui/src/main.tsx:shared-control:da08e919b0b2e62c": {
+  "apps/pos/src/main.tsx:shared-control:da08e919b0b2e62c": {
     "count": 1,
     "snippet": "<button type=\"button\" class={['pos-stack-card', `state-${stateOf(order(), offline())}`]} title={`${fullLabel(order())} · ${statusName[stateOf(order(), offline())]} · ${shownAmount(order())} ${order().currency}`} aria-label={`Open ${fullLabel(order())}, ${statusName[stateOf(order(), offline())]}, ${shownAmount(order())} ${order().currency}`} onClick={() => void openOrder(order())}>"
   },

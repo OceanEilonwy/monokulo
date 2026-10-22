@@ -1,5 +1,5 @@
 {
-  "name": "monokulo-pos-ui",
+  "name": "@monokulo/pos",
   "private": true,
   "type": "module",
   "scripts": {
