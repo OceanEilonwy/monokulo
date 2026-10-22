@@ -52,6 +52,11 @@ pub enum TorStatus {
     Off,
     /// Joining the Tor network: how far, out of 100, and what it is on.
     Starting { percent: u8, doing: String },
+    /// The service runs at `address` and Tor is publishing it: usually
+    /// reachable within a minute, though Arti only calls it running once
+    /// every directory has it, which can take minutes. The address is fixed
+    /// by the service's key, so links can use it already.
+    Publishing { address: String },
     /// Reachable on Tor at `address` (`….onion`) since `since`.
     Running { address: String, since: i64 },
     /// Its onion address is known, but Tor says visitors may not reach it
@@ -65,9 +70,9 @@ impl TorStatus {
     /// The onion address (`….onion`), whenever one is known.
     pub fn address(&self) -> Option<&str> {
         match self {
-            TorStatus::Running { address, .. } | TorStatus::Degraded { address, .. } => {
-                Some(address)
-            }
+            TorStatus::Running { address, .. }
+            | TorStatus::Publishing { address }
+            | TorStatus::Degraded { address, .. } => Some(address),
             _ => None,
         }
     }

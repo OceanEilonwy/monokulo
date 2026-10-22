@@ -144,9 +144,8 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
         .ok_or("The onion service has no address.")?
         .display_unredacted()
         .to_string();
-    tor.set_status(TorStatus::Starting {
-        percent: 100,
-        doing: "Publishing the onion address".to_string(),
+    tor.set_status(TorStatus::Publishing {
+        address: address.clone(),
     });
     tracing::info!(tor.address = %address, "tor: onion service started, publishing its address");
     // Where C tor keeps it too, for the operator and the OpenWrt app.
@@ -161,6 +160,7 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
         let mut events = running.status_events();
         AbortOnDrop(tokio::spawn(async move {
             while let Some(status) = events.next().await {
+                tracing::debug!(state = ?status.state(), problem = ?status.current_problem(), "tor: onion service status");
                 let problem = status
                     .current_problem()
                     .map_or_else(|| "Tor is retrying".to_string(), |p| format!("{p:?}"));
@@ -172,9 +172,8 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
                             _ => crate::now_unix(),
                         },
                     },
-                    State::Bootstrapping => TorStatus::Starting {
-                        percent: 100,
-                        doing: "Publishing the onion address".to_string(),
+                    State::Bootstrapping => TorStatus::Publishing {
+                        address: address.clone(),
                     },
                     State::Shutdown => continue,
                     _ => TorStatus::Degraded {
