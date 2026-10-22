@@ -328,6 +328,14 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
         .await
         .unwrap();
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+    // Its open stream ends, so the app learns at once.
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(frame) = body.frame().await {
+            frame.unwrap();
+        }
+    })
+    .await;
+    assert!(ended.is_ok(), "the disconnected app's stream should end");
 }
 
 /// An app disconnects itself with its own key; the store's key can't do it
