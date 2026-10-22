@@ -86,6 +86,7 @@ class TraceContextTest extends WP_UnitTestCase {
 		$args = WC_Gateway_Monokulo::flush_forwarded( 'http://monokulo.test/pay/pk_test_abc123/logs', 'sk_test_secret' );
 		$this->assertNotNull( $args );
 		$this->assertSame( 'Bearer sk_test_secret', $args['headers']['Authorization'] );
+		$this->assertSame( WC_Gateway_Monokulo::CLIENT, $args['headers']['Monokulo-Client'], 'Monokulo labels the reports with the plugin.' );
 		$this->assertFalse( $args['blocking'], 'The page never waits for it.' );
 		$body = json_decode( $args['body'], true );
 		$this->assertSame( 'warning', $body['entries'][0]['level'] );

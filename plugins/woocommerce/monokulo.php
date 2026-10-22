@@ -6,7 +6,7 @@
  *                     non-custodial payment gateway built on scanner.
  *                     No spend key ever touches this server or ours - only a
  *                     view key, used to watch for incoming payments.
- * Version:            0.2.0
+ * Version:            0.3.0
  * Requires at least:  6.4
  * Requires PHP:       8.1
  * Requires Plugins:   woocommerce

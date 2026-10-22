@@ -524,16 +524,17 @@ pub async fn finish(
         None => (None, None),
     };
 
-    // Connecting again while still connected: the earlier connection's
-    // webhook goes, so the shop isn't sent each event twice.
-    let (store_id, kind) = (row.id.clone(), platform.clone());
+    // Connecting while a plugin is still connected (this one again, or
+    // another replacing it): the earlier connection's webhook goes, so the
+    // shop isn't sent each event twice, and the earlier plugin is closed
+    // below (`connect_integration`). A store has one plugin.
+    let store_id = row.id.clone();
     let earlier = state
         .db
         .read(move |db| db.active_integration(&store_id))
         .await
         .ok()
         .flatten()
-        .filter(|i| i.kind == kind)
         .and_then(|i| i.webhook_id);
     if let Some(earlier) = earlier {
         let store_id = row.id.clone();
@@ -557,6 +558,13 @@ pub async fn finish(
     let recorded = state
         .db
         .write(move |db| {
+            // A plugin that gave no name (one built before plugins named
+            // themselves) keeps the name it had on this store before.
+            let name = if name.is_empty() {
+                db.last_integration_name(&store_id, &platform)?
+            } else {
+                name
+            };
             db.connect_integration(&crate::db::NewStoreIntegration {
                 store_id: &store_id,
                 kind: &platform,
@@ -1036,6 +1044,93 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         body_json(response).await
+    }
+
+    /// A store has one shop, so one plugin: another plugin connecting
+    /// closes the one before and takes the place of its webhook, and a
+    /// plugin that gives no name (one built before plugins named
+    /// themselves) keeps the name it had on the store.
+    #[tokio::test]
+    async fn another_plugin_replaces_the_connected_one_and_an_unnamed_one_keeps_its_name() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "replace@example.com").await;
+        let back = connect_through_setup(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-1",
+            &[],
+        )
+        .await;
+        let token = parse_query_params(&location(&back))["token"].clone();
+        let pk = finish_as_plugin(&router, &token, "0.4.0").await["public_key"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let id = state
+            .db
+            .lock()
+            .get_store_connection_by_public_key(&pk)
+            .unwrap()
+            .unwrap()
+            .id;
+        // Connects `slug` to the store again, through its confirm form and a
+        // `/finish` that names no plugin.
+        let connect = |slug: &'static str, nonce: &'static str| {
+            let (router, cookie, id) = (router.clone(), cookie.clone(), id.to_string());
+            async move {
+                let confirmed = router
+                    .clone()
+                    .oneshot(form_request(
+                        &format!("/connect/{slug}"),
+                        Some(&cookie),
+                        &[
+                            ("site_url", "https://shop.example.com/"),
+                            ("return_url", "https://shop.example.com/settings"),
+                            ("nonce", nonce),
+                            ("connection_id", &id),
+                        ],
+                    ))
+                    .await
+                    .unwrap();
+                let token = parse_query_params(&location(&confirmed))["token"].clone();
+                let finished = router
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(format!("/connect/{slug}/finish"))
+                            .header("content-type", "application/json")
+                            .header("monokulo-client", format!("{slug}/1.0.0"))
+                            .body(Body::from(
+                                serde_json::json!({ "token": token, "webhook_url": "https://shop.example.com/hook" })
+                                    .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(finished.status(), StatusCode::OK);
+            }
+        };
+        let active = || {
+            let rows = state.db.lock().list_integrations(&id).unwrap();
+            let active: Vec<(String, String)> = rows
+                .iter()
+                .filter(|r| r.disconnected_at.is_none())
+                .map(|r| (r.kind.clone(), r.name.clone()))
+                .collect();
+            (active, state.db.lock().list_webhooks(&id).unwrap().len())
+        };
+
+        connect("other-cart", "nonce-2").await;
+        assert_eq!(active(), (vec![("other-cart".into(), String::new())], 1));
+        connect("acme-cart", "nonce-3").await;
+        assert_eq!(
+            active(),
+            (vec![("acme-cart".into(), PLUGIN_NAME.into())], 1)
+        );
     }
 
     /// A store's plugin, from connecting to disconnecting and back: the

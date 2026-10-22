@@ -221,8 +221,8 @@ pub mod plugin {
         }
         // The plugin, by the slug it names itself with; any other client
         // is just a plugin.
-        let source = crate::http::pay::client_name(&headers)
-            .map(|name| name.to_ascii_lowercase())
+        let source = crate::http::pay::client(&headers)
+            .map(|(name, _)| name.to_ascii_lowercase())
             .filter(|name| crate::plugins::valid_slug(name))
             .unwrap_or_else(|| "plugin".to_owned());
         for entry in logs.entries {

@@ -118,7 +118,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * `order_source`). A store has no platform of its own; the order says
 	 * where it came from. Keep the version with the plugin header's.
 	 */
-	const CLIENT = 'woocommerce/0.2.0';
+	const CLIENT = 'woocommerce/0.3.0';
 
 	/**
 	 * The longest order description Monokulo accepts, in characters
@@ -2318,9 +2318,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		}
 		$args                = array(
 			'headers'  => array(
-				'Content-Type'  => 'application/json',
-				'Authorization' => 'Bearer ' . $secret,
-				'traceparent'   => self::traceparent(),
+				'Content-Type'    => 'application/json',
+				'Authorization'   => 'Bearer ' . $secret,
+				// Monokulo labels the reports with the plugin that sent them.
+				'Monokulo-Client' => self::CLIENT,
+				'traceparent'     => self::traceparent(),
 			),
 			'body'     => wp_json_encode( array( 'entries' => self::$forward_queue ) ),
 			'timeout'  => 3,

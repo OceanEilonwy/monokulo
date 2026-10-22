@@ -82,8 +82,10 @@ impl StoreDraft {
         .collect()
     }
 
+    /// Whether a plugin sent the merchant here: only a slug `/connect`
+    /// would take counts, so a hand-made link can't name one.
     fn has_plugin(&self) -> bool {
-        !self.plugin.is_empty()
+        crate::plugins::valid_slug(&self.plugin)
     }
 
     /// What the plugin is called, as it's shown.
@@ -586,15 +588,16 @@ pub async fn done(
         }
         None => None,
     };
-    let plugin = (!query.plugin.is_empty() && !query.return_url.is_empty()).then(|| {
-        views::setup::PluginReturn {
-            platform: query.plugin.clone(),
-            name: query.plugin_name.clone(),
-            site_url: query.site_url.clone(),
-            return_url: query.return_url.clone(),
-            nonce: query.nonce.clone(),
-        }
-    });
+    let plugin =
+        (crate::plugins::valid_slug(&query.plugin) && !query.return_url.is_empty()).then(|| {
+            views::setup::PluginReturn {
+                platform: query.plugin.clone(),
+                name: query.plugin_name.clone(),
+                site_url: query.site_url.clone(),
+                return_url: query.return_url.clone(),
+                nonce: query.nonce.clone(),
+            }
+        });
     // A store with a site isn't said to take payments on it until an order
     // was made; an engine that can't say leaves that unsaid.
     let has_orders = match super::orders::decrypt_sk(&state.encryption_key, &row) {
