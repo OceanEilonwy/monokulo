@@ -224,15 +224,16 @@ pub async fn disconnect_submit(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let store_id = row.id.clone();
+    let (store_id, gone) = (row.id.clone(), app_id.clone());
     if let Err(e) = state
         .db
-        .write(move |db| db.delete_app(&store_id, &app_id))
+        .write(move |db| db.delete_app(&store_id, &gone))
         .await
     {
         tracing::error!(store.id = %id, error = %e, "an app could not be disconnected");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
+    state.apps.disconnected(&app_id);
     super::dashboard::redirect_303(&format!(
         "/dashboard/stores/{id}/settings?tab=connections#card-apps"
     ))
@@ -423,6 +424,7 @@ pub async fn disconnect_self(
         .await
     {
         Ok(_) => {
+            state.apps.disconnected(&app.id);
             tracing::info!(store.id = %app.store_id, app.id = %app.id, "an app disconnected itself");
             StatusCode::NO_CONTENT.into_response()
         }
@@ -437,11 +439,13 @@ pub async fn disconnect_self(
 /// as server-sent events, for a connected app or the store's own key. Each
 /// is an `event:` named after it (`sale.waiting`, …) with its JSON as data;
 /// `lagged` means some were missed (the app should re-read its orders'
-/// status). Starts with a `ready` event.
+/// status). Starts with a `ready` event. An app's stream ends when it's
+/// disconnected, so it learns its key has stopped working.
 pub async fn events(
     State(state): State<AppState>,
     Path(pk): Path<String>,
     key: Option<Extension<StoreKeyAuthenticated>>,
+    app: Option<Extension<AppKeyAuthenticated>>,
     extensions: axum::http::Extensions,
 ) -> Response {
     if key.is_none() {
@@ -460,27 +464,36 @@ pub async fn events(
         None => None,
     };
     let receiver = state.apps.subscribe();
+    let disconnects = state.apps.subscribe_disconnects();
+    let app_id = app.map(|Extension(AppKeyAuthenticated(app))| app.id);
     let ready = Event::default()
         .event("ready")
         .data(serde_json::json!({ "at": now_unix() }).to_string());
     let events = stream::unfold(
-        (receiver, pk, permit),
-        |(mut receiver, pk, permit)| async move {
+        (receiver, disconnects, pk, app_id, permit),
+        |(mut receiver, mut disconnects, pk, app_id, permit)| async move {
             loop {
-                match receiver.recv().await {
-                    Ok(announced) if announced.public_key == pk => {
-                        let data = serde_json::to_string(&announced.event).unwrap_or_default();
-                        let event = Event::default().event(announced.event.event).data(data);
-                        return Some((Ok::<_, Infallible>(event), (receiver, pk, permit)));
-                    }
-                    Ok(_) => {}
-                    Err(RecvError::Lagged(missed)) => {
-                        let event = Event::default()
-                            .event("lagged")
-                            .data(serde_json::json!({ "missed": missed }).to_string());
-                        return Some((Ok(event), (receiver, pk, permit)));
-                    }
-                    Err(RecvError::Closed) => return None,
+                tokio::select! {
+                    gone = disconnects.recv() => match gone {
+                        Ok(gone) if Some(&gone) == app_id.as_ref() => return None,
+                        Ok(_) | Err(RecvError::Lagged(_)) => {}
+                        Err(RecvError::Closed) => return None,
+                    },
+                    announced = receiver.recv() => match announced {
+                        Ok(announced) if announced.public_key == pk => {
+                            let data = serde_json::to_string(&announced.event).unwrap_or_default();
+                            let event = Event::default().event(announced.event.event).data(data);
+                            return Some((Ok::<_, Infallible>(event), (receiver, disconnects, pk, app_id, permit)));
+                        }
+                        Ok(_) => {}
+                        Err(RecvError::Lagged(missed)) => {
+                            let event = Event::default()
+                                .event("lagged")
+                                .data(serde_json::json!({ "missed": missed }).to_string());
+                            return Some((Ok(event), (receiver, disconnects, pk, app_id, permit)));
+                        }
+                        Err(RecvError::Closed) => return None,
+                    },
                 }
             }
         },

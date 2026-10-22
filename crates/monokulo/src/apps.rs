@@ -101,12 +101,15 @@ pub struct StoreSaleEvent {
 /// app orders instead (`http::apps::events`).
 pub struct AppEvents {
     sender: broadcast::Sender<Arc<StoreSaleEvent>>,
+    /// Apps just disconnected, by id: their open streams end.
+    disconnected: broadcast::Sender<String>,
 }
 
 impl Default for AppEvents {
     fn default() -> Self {
         Self {
             sender: broadcast::channel(CHANNEL_CAPACITY).0,
+            disconnected: broadcast::channel(CHANNEL_CAPACITY).0,
         }
     }
 }
@@ -128,6 +131,15 @@ impl AppEvents {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<StoreSaleEvent>> {
         self.sender.subscribe()
+    }
+
+    /// Ends the open streams of the app with `app_id`: its key no longer works.
+    pub fn disconnected(&self, app_id: &str) {
+        let _ = self.disconnected.send(app_id.to_owned());
+    }
+
+    pub fn subscribe_disconnects(&self) -> broadcast::Receiver<String> {
+        self.disconnected.subscribe()
     }
 }
 
