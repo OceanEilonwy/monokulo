@@ -1,0 +1,10 @@
+/* A stylesheet for `bake!`'s tests: long and repetitive, so it compresses. */
+.card { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.card .title { font-weight: 700; font-size: 1rem; color: var(--ink); }
+.card .detail { font-weight: 500; font-size: 0.875rem; color: var(--muted); }
+.panel { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.panel .title { font-weight: 700; font-size: 1rem; color: var(--ink); }
+.panel .detail { font-weight: 500; font-size: 0.875rem; color: var(--muted); }
+.notice { padding: 8px 12px; border: 1px solid var(--line); border-radius: 6px; }
+.notice .title { font-weight: 700; font-size: 1rem; color: var(--ink); }
+.notice .detail { font-weight: 500; font-size: 0.875rem; color: var(--muted); }

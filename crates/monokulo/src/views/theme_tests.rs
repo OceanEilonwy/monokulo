@@ -7,7 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use super::{SITE_CSS, THEME_CSS};
+/// Every colour, and the spacing, radius and type tokens: the `ui`
+/// package's, the only place a colour is defined.
+const THEME_CSS: &str = ui::assets::TOKENS_CSS;
+/// This site's own components and pages.
+const SITE_CSS: &str = super::SITE.text();
 
 fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -116,13 +116,12 @@ pub mod webhooks;
 
 pub use shorten::{short_address, short_address_text, short_id, short_id_text};
 
-/// Every colour, and the spacing, radius and type tokens: the only place a
-/// colour is defined (`theme_tests`). The `ui` package's.
-pub(crate) const THEME_CSS: &str = ui::assets::TOKENS_CSS;
-/// This site's own components and pages, painted with `THEME_CSS`'s roles.
-/// The shared components' styles are the `ui` package's (`ui.css`), linked
-/// after it.
-pub(crate) const SITE_CSS: &str = include_str!("site.css");
+/// This site's own components and pages (`site.css`), painted with the
+/// `ui` package's colour roles (`theme.css`, the only place a colour is
+/// defined: `theme_tests`). The shared components' styles are the `ui`
+/// package's (`ui.css`), linked after it. Baked with its compressed copies
+/// (`crate::assets`).
+pub(crate) const SITE: static_assets::Baked = static_assets::bake!("src/views/site.css");
 
 /// Where a page sits (`ui::PageHeader`'s crumbs): links to the pages
 /// above it, nearest last; one link is a back link.

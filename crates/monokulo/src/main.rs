@@ -292,9 +292,6 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let dashboard_url = format!("http://{host}:{}/", address.port());
     eprintln!("Open Monokulo: {dashboard_url}");
     tracing::info!(server.address = %address, server.url = %dashboard_url, "monokulo listening");
-    // The static files' compressed copies, made now rather than by the
-    // first browser to ask for each (a few seconds' work, once).
-    tokio::task::spawn_blocking(monokulo::assets::compress_all);
     // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail
     // open for every request (the "no signal at all" case that should only

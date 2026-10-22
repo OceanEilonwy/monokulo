@@ -19,9 +19,6 @@
 //! included.
 
 use axum::extract::Path;
-use std::collections::HashMap;
-use std::sync::{LazyLock, OnceLock};
-
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 
@@ -33,9 +30,9 @@ pub static ASSETS: &[Asset] = &[
     // Every page's style, linked in this order: the colours and other
     // tokens (the `ui` package's), this site's own components and pages
     // (`views/site.css`), and the shared components (the `ui` package's).
-    asset!(text "theme.css", crate::views::THEME_CSS, CSS),
-    asset!(text "site.css", crate::views::SITE_CSS, CSS),
-    asset!(text "ui.css", ui::assets::COMPONENTS_CSS, CSS),
+    asset!(baked "theme.css", ui::assets::TOKENS, CSS),
+    asset!(baked "site.css", crate::views::SITE, CSS),
+    asset!(baked "ui.css", ui::assets::COMPONENTS, CSS),
     // Partial page updates and server-sent events on the server-rendered
     // pages (`http::fx`). fixi and ssexi are vendored, pinned copies (see
     // their `.SOURCE` files); fx-glue is what they leave out on purpose.
@@ -105,11 +102,6 @@ pub static ASSETS: &[Asset] = &[
 /// and they're served at those names (`build.rs` lists them).
 pub static CHUNKS: &[Asset] = include!(concat!(env!("OUT_DIR"), "/web/chunks.rs"));
 
-/// Every asset: the table, then the chunks.
-fn all() -> impl Iterator<Item = &'static Asset> {
-    ASSETS.iter().chain(CHUNKS)
-}
-
 /// The chunks an entry imports (by its name, `"engine-view.js"`) or an
 /// island's behaviour needs (by its component's, `"Select"`), from the
 /// build's manifest (`build.rs`).
@@ -165,17 +157,13 @@ pub fn respond_named(headers: &HeaderMap, name: &str) -> Response {
 
 /// The asset, with `Cache-Control` and an `ETag` of its content: a browser
 /// that already has it is answered `304 Not Modified` with no body. A text
-/// file goes compressed to a browser that takes it: brotli, else gzip.
+/// file goes compressed to a browser that takes it, brotli else gzip, in
+/// the copy baked in with it (`static_assets::bake!`).
 fn respond(headers: &HeaderMap, asset: &'static Asset, cache_control: &'static str) -> Response {
-    let encoding = match accepted(headers) {
-        Some(encoding) if compressible(asset) => {
-            compressed(asset, encoding).map(|bytes| (encoding, bytes))
-        }
-        _ => None,
-    };
+    let encoding = chosen(headers, asset);
     // Each encoding is its own version of the file, with its own tag.
     let etag = match encoding {
-        Some((encoding, _)) => format!("\"{}-{}\"", asset.digest, encoding.token()),
+        Some((token, _)) => format!("\"{}-{token}\"", asset.digest),
         None => format!("\"{}\"", asset.digest),
     };
     let fresh = headers
@@ -189,7 +177,7 @@ fn respond(headers: &HeaderMap, asset: &'static Asset, cache_control: &'static s
         StatusCode::NOT_MODIFIED.into_response()
     } else {
         let (body, content_encoding) = match encoding {
-            Some((encoding, bytes)) => (bytes, Some(encoding.token())),
+            Some((token, bytes)) => (bytes, Some(token)),
             None => (asset.bytes, None),
         };
         let mut response = ([(header::CONTENT_TYPE, asset.content_type)], body).into_response();
@@ -206,32 +194,16 @@ fn respond(headers: &HeaderMap, asset: &'static Asset, cache_control: &'static s
         HeaderValue::from_static(cache_control),
     );
     response_headers.insert(header::ETAG, HeaderValue::from_str(&etag).expect("an ETag"));
-    if compressible(asset) {
+    if asset.brotli.is_some() || asset.gzip.is_some() {
         response_headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding"));
     }
     response
 }
 
-/// A compressed copy of a file, in one of the encodings browsers take.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Encoding {
-    Brotli,
-    Gzip,
-}
-
-impl Encoding {
-    /// Its name in `Accept-Encoding` and `Content-Encoding`.
-    fn token(self) -> &'static str {
-        match self {
-            Encoding::Brotli => "br",
-            Encoding::Gzip => "gzip",
-        }
-    }
-}
-
-/// The encoding to send: brotli if the browser takes it, else gzip, else
-/// none. One it lists with `q=0` it refuses.
-fn accepted(headers: &HeaderMap) -> Option<Encoding> {
+/// The copy to send, by its `Content-Encoding`: brotli if the browser takes
+/// it, else gzip, else none (the file as it is). One it lists with `q=0`
+/// it refuses.
+fn chosen(headers: &HeaderMap, asset: &'static Asset) -> Option<(&'static str, &'static [u8])> {
     let value = headers.get(header::ACCEPT_ENCODING)?.to_str().ok()?;
     let takes = |token: &str| {
         value.split(',').any(|offer| {
@@ -246,88 +218,9 @@ fn accepted(headers: &HeaderMap) -> Option<Encoding> {
             name.eq_ignore_ascii_case(token) && !refused
         })
     };
-    [Encoding::Brotli, Encoding::Gzip]
+    [("br", asset.brotli), ("gzip", asset.gzip)]
         .into_iter()
-        .find(|encoding| takes(encoding.token()))
-}
-
-/// Text: scripts, styles, SVG and WebAssembly. Fonts and images are
-/// compressed already.
-fn compressible(asset: &Asset) -> bool {
-    [JS, CSS, SVG, WASM].contains(&asset.content_type)
-}
-
-/// Each file's compressed copies, made the first time one is asked for (or
-/// by [`compress_all`]) and kept: `None` where it came out no smaller.
-type Copies = [OnceLock<Option<Vec<u8>>>; 2];
-
-fn copies(asset: &'static Asset) -> &'static Copies {
-    static COPIES: LazyLock<HashMap<usize, Copies>> = LazyLock::new(|| {
-        all()
-            .filter(|asset| compressible(asset))
-            .map(|asset| (std::ptr::from_ref(asset) as usize, Default::default()))
-            .collect()
-    });
-    &COPIES[&(std::ptr::from_ref(asset) as usize)]
-}
-
-/// The file in `encoding`, if that makes it smaller and the copy is made.
-/// A browser never waits for one: until it's ready the file goes as it is,
-/// and the copy is made in the background (the first ask starts it).
-fn compressed(asset: &'static Asset, encoding: Encoding) -> Option<&'static [u8]> {
-    let slot = &copies(asset)[encoding as usize];
-    if let Some(copy) = slot.get() {
-        return copy.as_deref();
-    }
-    static STARTED: LazyLock<std::sync::Mutex<std::collections::HashSet<(usize, usize)>>> =
-        LazyLock::new(Default::default);
-    let key = (std::ptr::from_ref(asset) as usize, encoding as usize);
-    if STARTED.lock().expect("not poisoned").insert(key) {
-        tokio::task::spawn_blocking(move || compress_into(asset, encoding));
-    }
-    None
-}
-
-fn compress_into(asset: &'static Asset, encoding: Encoding) -> Option<&'static [u8]> {
-    copies(asset)[encoding as usize]
-        .get_or_init(|| {
-            let copy = compress(asset.bytes, encoding);
-            (copy.len() < asset.bytes.len()).then_some(copy)
-        })
-        .as_deref()
-}
-
-fn compress(bytes: &[u8], encoding: Encoding) -> Vec<u8> {
-    use std::io::Write;
-    match encoding {
-        Encoding::Brotli => {
-            let mut out = Vec::new();
-            // The smallest copy, except for the WebAssembly modules (most of
-            // a megabyte), where it would take seconds and save little.
-            let params = brotli::enc::BrotliEncoderParams {
-                quality: if bytes.len() <= 256 * 1024 { 11 } else { 9 },
-                ..Default::default()
-            };
-            brotli::BrotliCompress(&mut &bytes[..], &mut out, &params).expect("brotli in memory");
-            out
-        }
-        Encoding::Gzip => {
-            let mut encoder =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-            encoder.write_all(bytes).expect("gzip in memory");
-            encoder.finish().expect("gzip in memory")
-        }
-    }
-}
-
-/// Makes every file's compressed copies, so no browser waits for one: run
-/// once in the background as the server starts.
-pub fn compress_all() {
-    for asset in all().filter(|asset| compressible(asset)) {
-        for encoding in [Encoding::Brotli, Encoding::Gzip] {
-            compress_into(asset, encoding);
-        }
-    }
+        .find_map(|(token, copy)| copy.filter(|_| takes(token)).map(|copy| (token, copy)))
 }
 
 #[cfg(test)]
@@ -480,13 +373,6 @@ mod tests {
         let asset = find("jsQR.js").unwrap();
         let file = asset.file_name();
 
-        // The first browser to ask isn't kept waiting: the file as it is,
-        // and the copy made meanwhile.
-        let (headers, body) = fetch(&file, Some("gzip, deflate, br, zstd")).await;
-        assert!(headers.get(header::CONTENT_ENCODING).is_none());
-        assert_eq!(body, asset.bytes);
-        made(asset, Encoding::Brotli).await;
-
         let (headers, body) = fetch(&file, Some("gzip, deflate, br, zstd")).await;
         assert_eq!(headers[header::CONTENT_ENCODING], "br");
         assert_eq!(headers[header::VARY], "Accept-Encoding");
@@ -502,8 +388,6 @@ mod tests {
         assert_eq!(unpacked, asset.bytes);
 
         // Brotli refused, gzip it is.
-        fetch(&file, Some("br;q=0, gzip")).await;
-        made(asset, Encoding::Gzip).await;
         let (headers, body) = fetch(&file, Some("br;q=0, gzip")).await;
         assert_eq!(headers[header::CONTENT_ENCODING], "gzip");
         let mut unpacked = Vec::new();
@@ -523,22 +407,9 @@ mod tests {
         assert_eq!(body, asset.bytes);
     }
 
-    /// Once the background has made `asset`'s copy in `encoding`.
-    async fn made(asset: &'static Asset, encoding: Encoding) {
-        for _ in 0..3000 {
-            if copies(asset)[encoding as usize].get().is_some() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        panic!("{} was never compressed", asset.name);
-    }
-
     #[tokio::test]
     async fn the_compressed_copy_has_its_own_tag_for_a_browser_that_has_it() {
         let file = fixi();
-        fetch(&file, Some("br")).await;
-        made(find("fixi.js").unwrap(), Encoding::Brotli).await;
         let (headers, _) = fetch(&file, Some("br")).await;
         assert_eq!(headers[header::CONTENT_ENCODING], "br");
         let mut again = HeaderMap::new();
@@ -580,12 +451,43 @@ mod tests {
     }
 
     #[test]
-    fn every_text_file_compresses_once_up_front() {
-        compress_all();
-        for asset in all().filter(|asset| compressible(asset)) {
-            for slot in copies(asset) {
-                assert!(slot.get().is_some(), "{}", asset.name);
+    fn every_script_style_and_module_is_baked_with_its_compressed_copies() {
+        use std::io::Read;
+        for asset in ASSETS.iter().chain(CHUNKS) {
+            let text = [JS, CSS, SVG, WASM].contains(&asset.content_type);
+            if !text {
+                // Fonts and images are compressed already.
+                assert!(
+                    asset.brotli.is_none() && asset.gzip.is_none(),
+                    "{}",
+                    asset.name
+                );
+                continue;
             }
+            // Every text file here comes out smaller, bar the tiniest.
+            if asset.bytes.len() < 512 {
+                continue;
+            }
+            let brotli = asset
+                .brotli
+                .unwrap_or_else(|| panic!("{} has no brotli copy", asset.name));
+            let gzip = asset
+                .gzip
+                .unwrap_or_else(|| panic!("{} has no gzip copy", asset.name));
+            assert!(
+                brotli.len() <= gzip.len() && gzip.len() < asset.bytes.len(),
+                "{}",
+                asset.name
+            );
+            let mut unpacked = Vec::new();
+            brotli::Decompressor::new(brotli, 4096)
+                .read_to_end(&mut unpacked)
+                .unwrap();
+            assert_eq!(unpacked, asset.bytes, "{}", asset.name);
+        }
+        // The stylesheets made of several files, and the one from this crate.
+        for name in ["ui.css", "theme.css", "site.css"] {
+            assert!(find(name).unwrap().brotli.is_some(), "{name}");
         }
     }
 }

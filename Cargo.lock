@@ -5657,6 +5657,20 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 [[package]]
 name = "static-assets"
 version = "0.1.0"
+dependencies = [
+ "static-assets-macros",
+]
+
+[[package]]
+name = "static-assets-macros"
+version = "0.1.0"
+dependencies = [
+ "brotli",
+ "flate2",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "static_assertions"
@@ -7465,6 +7479,7 @@ version = "0.1.0"
 dependencies = [
  "maud",
  "serde_json",
+ "static-assets",
  "ui-macros",
 ]
 
