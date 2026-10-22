@@ -1,12 +1,22 @@
-## Monokulo onion service. Add to /etc/tor/torrc (or a file it %includes),
-## adjust the directory, then reload tor. Every line is explained in
-## docs/TOR.md. Needs tor >= 0.4.8 built with the proof-of-work module:
-## `tor --list-modules` must print `pow: yes`.
+## Monokulo onion service, served by a tor you run yourself. Simpler: let
+## monokulo run Tor itself (tor.mode = inside), with nothing to install.
 ##
-## Monokulo side: set the admin setting `abuse.onion_listener` (or
-## --abuse-onion-listener) to 127.0.0.1:8082; it applies when saved.
-## `public_uri` should be this service's http://<address>.onion (see
-## <HiddenServiceDir>/hostname once tor has started).
+## To use this instead, add it to /etc/tor/torrc (or a file it %includes),
+## adjust the directory, then reload tor. Needs tor >= 0.4.8 built with the
+## proof-of-work module: `tor --list-modules` must print `pow: yes`.
+##
+## Monokulo side, saved together on the admin page's Tor tab (or given as
+## --tor-mode, --abuse-onion-listener, --onion-uri):
+##   tor.mode = external
+##   abuse.onion_listener = 127.0.0.1:8082
+##   onion_uri = http://<address>.onion (<HiddenServiceDir>/hostname once
+##   tor has started)
+## public_uri stays the web address: one instance serves both.
+##
+## Moving to Tor inside monokulo with the same address: copy the
+## HiddenServiceDir to a folder monokulo's user owns, set
+## tor.hidden_service_dir to it and tor.mode = inside, clear the two
+## settings above, and stop this tor.
 
 HiddenServiceDir /var/lib/tor/monokulo/
 HiddenServiceVersion 3

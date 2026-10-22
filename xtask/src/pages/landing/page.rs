@@ -670,9 +670,11 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                 strong { "public URI" }
                                 " on Monokulo’s admin page (Settings) to the address customers use, for example "
                                 code { "https://pay.example.com" }
-                                ". Behind CGNAT, or to keep your address private, serve it as a Tor onion service instead: set "
+                                ". Behind CGNAT, or to keep your address private, turn on "
+                                em { "Onion service" }
+                                " instead: Tor runs inside Monokulo and customers on Tor reach the checkout with no port opened, even with "
                                 em { "Listen on" }
-                                " to "
+                                " set to "
                                 em { "This router only" }
                                 "."
                             }

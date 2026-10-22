@@ -1,7 +1,9 @@
 //! The onion listener: a second, loopback-only listener for tor's onion
 //! service, which prefixes every connection with a PROXY protocol v1 header
 //! naming the Tor circuit it arrived on (`HiddenServiceExportCircuitID
-//! haproxy` in `torrc`; see `deploy/tor/` and `docs/TOR.md`).
+//! haproxy` in `torrc`; see `deploy/tor/torrc.snippet`). Used with an
+//! external tor (`tor.mode = external`); Tor inside monokulo hands its
+//! streams over directly (`crate::tor::TorListener`).
 //!
 //! From the tor manual: the header looks like
 //! `PROXY TCP6 fc00:dead:beef:4dad::ffff:ffff ::1 65535 42\r\n`, and the
