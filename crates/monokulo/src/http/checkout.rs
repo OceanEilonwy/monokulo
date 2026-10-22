@@ -30,6 +30,7 @@ use std::str::FromStr;
 
 use crate::db::StoreConnectionRow;
 use crate::engine_client::{EngineClientError, OrderDetailResponse, OrderView};
+use crate::network::{NetworkKind, OnNetwork};
 use crate::views;
 use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
@@ -195,6 +196,11 @@ pub struct CheckoutOptions {
     /// with one this build doesn't know), times are UTC, and the page's
     /// script shows them in the customer's own zone.
     timezone: Option<String>,
+    /// Set from the network the request arrived on, never from the query:
+    /// the visitor is on Tor, so the page loads nothing from other sites
+    /// (`crate::network::Network::may_load_external`).
+    #[serde(skip)]
+    onion: bool,
 }
 
 impl CheckoutOptions {
@@ -265,9 +271,11 @@ impl CheckoutOptions {
 pub async fn checkout_page(
     State(state): State<AppState>,
     Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
-    Query(options): Query<CheckoutOptions>,
+    Query(mut options): Query<CheckoutOptions>,
+    on: OnNetwork,
     headers: HeaderMap,
 ) -> Response {
+    options.onion = on.kind == NetworkKind::Onion;
     let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
@@ -455,6 +463,7 @@ async fn build_checkout_view(
         description: header.description,
         merchant_reference: header.merchant_reference,
         merchant_site: header.merchant_site,
+        merchant_icon: !options.onion,
         status_label: status_text.to_string(),
         status: detail.order.status.into(),
         address: detail.order.address.clone(),
@@ -563,10 +572,12 @@ pub struct SetRefundAddressForm {
 pub async fn set_refund_address(
     State(state): State<AppState>,
     Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
-    Query(options): Query<CheckoutOptions>,
+    Query(mut options): Query<CheckoutOptions>,
+    on: OnNetwork,
     headers: HeaderMap,
     Form(form): Form<SetRefundAddressForm>,
 ) -> Response {
+    options.onion = on.kind == NetworkKind::Onion;
     let wants_json = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
@@ -733,9 +744,11 @@ pub async fn checkout_status(
 pub async fn checkout_events(
     State(state): State<AppState>,
     Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
-    Query(options): Query<CheckoutOptions>,
+    Query(mut options): Query<CheckoutOptions>,
+    on: OnNetwork,
     extensions: axum::http::Extensions,
 ) -> Response {
+    options.onion = on.kind == NetworkKind::Onion;
     let (row, sk, _) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),

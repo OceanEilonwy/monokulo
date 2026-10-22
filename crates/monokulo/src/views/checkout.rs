@@ -46,6 +46,9 @@ pub struct CheckoutViewModel {
     /// The store's site (`shop.example`), only while a verified domain
     /// covers it (`crate::embed_domains::verified_site`).
     pub merchant_site: Option<String>,
+    /// Whether the page may show the site's own icon, loaded from the site:
+    /// never for a visitor on Tor, who would be sent off Tor for it.
+    pub merchant_icon: bool,
     pub status_label: String,
     pub status: super::DisplayStatus,
     pub address: String,
@@ -228,8 +231,9 @@ fn merchant_header(data: &CheckoutViewModel) -> Markup {
                 }))
             } @else {
                 // The site's own icon once a verified domain covers it, its
-                // name's letter until then (or if it has none).
-                (ui::Avatar::of(&data.store_name).maybe_src(data.merchant_site.as_deref().map(|site| {
+                // name's letter until then (or if it has none, or the
+                // visitor is on Tor).
+                (ui::Avatar::of(&data.store_name).maybe_src(data.merchant_site.as_deref().filter(|_| data.merchant_icon).map(|site| {
                     format!("{}/favicon.ico", crate::stores::site_link(site))
                 })))
                 div class="merchant-about" {
@@ -869,6 +873,7 @@ mod tests {
             description: None,
             merchant_reference: None,
             merchant_site: None,
+            merchant_icon: true,
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
             status: if is_terminal { shared::order_status::OrderStatus::Paid.into() } else { shared::order_status::OrderStatus::Pending.into() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),

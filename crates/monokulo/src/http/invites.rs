@@ -17,11 +17,11 @@
 //! narrow slice of `Db`/`crypto`, with no real seam between them.
 
 use axum::extract::{Form, Path, Query, State};
-use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::db::{InviteRequestRow, UserRow};
+use crate::network::OnNetwork;
 use crate::now_unix;
 use crate::views;
 use crate::views::admin::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
@@ -174,23 +174,6 @@ fn build_mailto_href(email: &str, raw_invite_link: &str) -> String {
     )
 }
 
-/// Same "reconstruct the real external origin from what the browser itself
-/// used to reach us, falling back to plain `http` for local/dev use" scheme
-/// `http::orders::render_order_detail_page`'s own `payment_link` uses - see
-/// that call site's doc comment for the reasoning (a reverse proxy in front
-/// of real TLS termination communicates it via `X-Forwarded-Proto`).
-fn base_url(headers: &HeaderMap) -> String {
-    let host = headers
-        .get(axum::http::header::HOST)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("http");
-    format!("{scheme}://{host}")
-}
-
 /// The full, absolute signup URL a raw invite token resolves to -
 /// `GET /dashboard/signup?invite=<token>` carries it straight into the
 /// form's hidden field (`http::dashboard::signup_form`).
@@ -257,7 +240,7 @@ pub struct InvitesPageQuery {
 async fn render_invites_page(
     state: &AppState,
     admin_user: &UserRow,
-    headers: &HeaderMap,
+    on: &OnNetwork,
     requested_page: u32,
     deleted_id: Option<&str>,
     created_link: Option<String>,
@@ -265,7 +248,9 @@ async fn render_invites_page(
     success: Option<String>,
     fx: FxRequest,
 ) -> Response {
-    let base = base_url(headers);
+    // Built on the address the admin is using: the onion address for an
+    // admin on Tor, so a link they pass on works where they got it.
+    let base = on.link("");
     let clock = crate::views::time::Clock::for_user(admin_user);
     let deleted_id = deleted_id.map(str::to_string);
     let (total_pages, page, rows, just_deleted) = state
@@ -318,14 +303,14 @@ pub async fn invites_page(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    headers: HeaderMap,
+    on: OnNetwork,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
     let success = query.cleared.map(cleared_message);
     render_invites_page(
         &state,
         &admin_user,
-        &headers,
+        &on,
         query.page.unwrap_or(1),
         query.deleted.as_deref(),
         None,
@@ -344,7 +329,7 @@ pub async fn create_invite_link(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    headers: HeaderMap,
+    on: OnNetwork,
 ) -> Response {
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = raw_token.hash();
@@ -357,7 +342,7 @@ pub async fn create_invite_link(
         return render_invites_page(
             &state,
             &admin_user,
-            &headers,
+            &on,
             1,
             None,
             None,
@@ -370,10 +355,10 @@ pub async fn create_invite_link(
     render_invites_page(
         &state,
         &admin_user,
-        &headers,
+        &on,
         1,
         None,
-        Some(invite_signup_url(&base_url(&headers), raw_token.expose())),
+        Some(invite_signup_url(&on.link(""), raw_token.expose())),
         None,
         None,
         fx,
@@ -391,7 +376,7 @@ pub async fn delete_invite_request(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    headers: HeaderMap,
+    on: OnNetwork,
     Path(id): Path<String>,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
@@ -407,7 +392,7 @@ pub async fn delete_invite_request(
         return render_invites_page(
             &state,
             &admin_user,
-            &headers,
+            &on,
             page,
             None,
             None,
@@ -421,7 +406,7 @@ pub async fn delete_invite_request(
         return render_invites_page(
             &state,
             &admin_user,
-            &headers,
+            &on,
             page,
             Some(&id),
             None,
@@ -447,7 +432,7 @@ pub async fn delete_all_invite_requests(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    headers: HeaderMap,
+    on: OnNetwork,
 ) -> Response {
     let cleared = state
         .db
@@ -458,7 +443,7 @@ pub async fn delete_all_invite_requests(
         return render_invites_page(
             &state,
             &admin_user,
-            &headers,
+            &on,
             1,
             None,
             None,

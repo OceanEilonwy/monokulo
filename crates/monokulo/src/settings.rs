@@ -37,6 +37,11 @@ choice_value! {
 }
 
 choice_value! {
+    /// How visitors on Tor reach this instance, beside its web address.
+    pub enum TorMode { Inside = "inside", External = "external", Off = "off" }
+}
+
+choice_value! {
     /// Where the engine runs (docs/engine_as_library.md).
     pub enum EngineMode { Embedded = "embedded", Remote = "remote" }
 }
@@ -104,6 +109,14 @@ fn check_trusted_proxies(value: &str) -> Result<(), String> {
 
 fn check_onion_listener(value: &str) -> Result<(), String> {
     crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ())
+}
+
+fn check_onion_uri(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Ok(())
+    } else {
+        crate::onion::validate_onion_uri(value).map(|_| ())
+    }
 }
 
 /// 64 hex characters: the 32 bytes of an AES-256-GCM key.
@@ -308,7 +321,7 @@ settings! {
         key: "public_uri",
         default: String::new(),
         check: |v: &String| check_public_uri(v),
-        description: "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't connect until it is set.",
+        description: "This instance's web address, e.g. https://pay.example.com. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout; visitors on Tor get the onion address instead (onion_uri). Plugins can't connect until it is set.",
         example: "https://pay.example.com",
     },
     ABUSE_TRUSTED_PROXIES: String {
@@ -322,8 +335,40 @@ settings! {
         key: "abuse.onion_listener",
         default: String::new(),
         check: |v: &String| check_onion_listener(v),
-        description: "A loopback address:port for tor's onion service to connect to, with HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns it off. Only loopback is accepted.",
+        description: "With tor.mode = external: a loopback address:port for your tor's onion service to connect to, with HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Only loopback is accepted. Tor inside monokulo needs no port: leave it empty.",
         example: "127.0.0.1:8082",
+    },
+    TOR_MODE: TorMode {
+        key: "tor.mode",
+        default: TorMode::Off,
+        description: "How visitors on Tor reach this instance, beside its web address. inside: monokulo runs Tor itself and makes an onion address, nothing else to install. external: a tor you run sends its onion service to abuse.onion_listener, and onion_uri is its address. off: the web address only.",
+        example: "inside",
+    },
+    TOR_STATE_DIR: PathBuf {
+        key: "tor.state_dir",
+        default: live_settings::paths::data_file("tor").unwrap_or_else(|| PathBuf::from("tor")),
+        description: "With tor.mode = inside: the folder Tor keeps the onion address's key and its directory cache in, by default ~/.local/share/monokulo/tor. Back it up with the secrets: without the key, the onion address changes.",
+        example: "/var/lib/monokulo/tor",
+    },
+    TOR_HIDDEN_SERVICE_DIR: String {
+        key: "tor.hidden_service_dir",
+        default: String::new(),
+        description: "With tor.mode = inside: keep the onion address an external tor served. A copy of its HiddenServiceDir (the folder holding hs_ed25519_secret_key), owned and readable only by monokulo's user. Its key is used instead of one Tor would make; empty makes a new address.",
+        example: "/var/lib/monokulo/tor-hidden-service",
+    },
+    ONION_URI: String {
+        key: "onion_uri",
+        default: String::new(),
+        check: |v: &String| check_onion_uri(v),
+        description: "With tor.mode = external: this instance's onion address, from the hostname file in your tor's HiddenServiceDir. Visitors on Tor get links to it. With Tor inside monokulo, Tor makes it: leave it empty.",
+        example: "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+    },
+    TOR_ONION_LOCATION: bool {
+        key: "tor.onion_location",
+        default: true,
+        description: "Tell Tor Browser visitors on the web address that the onion address exists (the Onion-Location header), so it offers to switch to it.",
+        example: "true",
+        sources: [Database],
     },
     WEBHOOKS_ALLOW_PRIVATE_URLS: bool {
         key: "webhooks.allow_private_urls",
@@ -495,8 +540,8 @@ impl Section for LoggingConfig {
     }
 }
 
-/// Checks a `public_uri` value: this instance's external base URL, the one
-/// address plugins and customers use (clearnet or `.onion`). It must be an
+/// Checks a `public_uri` value: this instance's web address, the one
+/// plugins and web visitors use (an onion address is `onion_uri`). It must be an
 /// absolute `http`/`https` URL with a host and nothing after it but an
 /// optional `/` - no path, query, fragment or login - since callers append
 /// paths like `/pay/{pk}/orders` to it. Returns it without the trailing
@@ -504,8 +549,12 @@ impl Section for LoggingConfig {
 /// "not set" ([`MonokuloSettings::public_uri`]).
 pub fn validate_public_uri(value: &str) -> Result<String, String> {
     let value = value.trim();
-    let problem = "Enter this instance's public address, like https://pay.example.com or http://abc...xyz.onion, with no path after it.";
+    let problem =
+        "Enter this instance's web address, like https://pay.example.com, with no path after it.";
     let parsed = url::Url::parse(value).map_err(|_| problem.to_string())?;
+    if parsed.host_str().is_some_and(crate::onion::is_onion_host) {
+        return Err("That's an onion address: put it in onion_uri (with tor.mode = external), and set this to the web address or leave it empty.".to_string());
+    }
     let ok = matches!(parsed.scheme(), "http" | "https")
         && parsed.host_str().is_some_and(|host| !host.is_empty())
         && parsed.path() == "/"
@@ -975,6 +1024,111 @@ impl Section for OnionListenerConfig {
     }
 }
 
+/// How visitors on Tor reach this instance (`crate::tor`, `crate::network`):
+/// started, moved and stopped when saved, and read per request for the
+/// onion address and the Onion-Location switch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TorConfig {
+    pub mode: TorMode,
+    /// With Tor inside monokulo: where it keeps its keys and cache.
+    pub state_dir: PathBuf,
+    /// With Tor inside monokulo: an external tor's HiddenServiceDir whose
+    /// key (and so onion address) to keep.
+    pub hidden_service_dir: Option<PathBuf>,
+    /// With an external tor: its onion address (`http://….onion`).
+    pub onion_uri: Option<String>,
+    pub onion_location: bool,
+}
+
+impl TorConfig {
+    /// Every setting at its default: Tor off.
+    pub fn defaults() -> Self {
+        TorConfig {
+            mode: TOR_MODE.default_value(),
+            state_dir: TOR_STATE_DIR.default_value(),
+            hidden_service_dir: None,
+            onion_uri: None,
+            onion_location: TOR_ONION_LOCATION.default_value(),
+        }
+    }
+}
+
+impl Section for TorConfig {
+    const NAME: &'static str = "tor";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &TOR_MODE,
+            &TOR_STATE_DIR,
+            &TOR_HIDDEN_SERVICE_DIR,
+            &ONION_URI,
+            &ABUSE_ONION_LISTENER,
+            &TOR_ONION_LOCATION,
+        ]
+    }
+    /// Refuses a setting that means nothing in the chosen mode, so nothing
+    /// is set and silently ignored: an external tor needs its port and its
+    /// address, and Tor inside monokulo takes neither.
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        let mode = snapshot.get(&TOR_MODE);
+        let onion_uri = snapshot.get(&ONION_URI);
+        let onion_uri = (!onion_uri.trim().is_empty())
+            .then(|| crate::onion::validate_onion_uri(&onion_uri))
+            .transpose()
+            .map_err(|e| vec![FieldError::new(ONION_URI.key, e)])?;
+        let listener = !snapshot.get(&ABUSE_ONION_LISTENER).trim().is_empty();
+        let hidden_service_dir = snapshot.get(&TOR_HIDDEN_SERVICE_DIR);
+        let hidden_service_dir = (!hidden_service_dir.trim().is_empty())
+            .then(|| PathBuf::from(hidden_service_dir.trim()));
+        let mut errors = Vec::new();
+        let mut refuse = |key: &str, why: &str| errors.push(FieldError::new(key, why.to_string()));
+        match mode {
+            TorMode::Inside => {
+                if !crate::tor::BUILT_IN {
+                    refuse(TOR_MODE.key, "This monokulo was built without Tor inside it (its tor feature). Run tor yourself and set tor.mode = external.");
+                }
+                if onion_uri.is_some() {
+                    refuse(ONION_URI.key, "Tor inside monokulo makes the onion address itself: leave onion_uri empty.");
+                }
+                if listener {
+                    refuse(
+                        ABUSE_ONION_LISTENER.key,
+                        "Tor inside monokulo needs no port: leave abuse.onion_listener empty.",
+                    );
+                }
+            }
+            TorMode::External => {
+                if onion_uri.is_none() {
+                    refuse(ONION_URI.key, "With an external tor, set onion_uri to its onion address (the hostname file in its HiddenServiceDir), so visitors on Tor get links to it.");
+                }
+                if !listener {
+                    refuse(ABUSE_ONION_LISTENER.key, "With an external tor, set abuse.onion_listener to the port its HiddenServicePort points at, e.g. 127.0.0.1:8082.");
+                }
+            }
+            TorMode::Off => {
+                if onion_uri.is_some() {
+                    refuse(ONION_URI.key, "Tor is off (tor.mode = off): set tor.mode = external to use this onion address, or leave onion_uri empty.");
+                }
+                if listener {
+                    refuse(ABUSE_ONION_LISTENER.key, "Tor is off (tor.mode = off): set tor.mode = external to serve your tor here, or leave abuse.onion_listener empty.");
+                }
+            }
+        }
+        if hidden_service_dir.is_some() && mode != TorMode::Inside {
+            refuse(TOR_HIDDEN_SERVICE_DIR.key, "Only Tor inside monokulo (tor.mode = inside) uses a HiddenServiceDir's key: leave tor.hidden_service_dir empty.");
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        Ok(TorConfig {
+            mode,
+            state_dir: snapshot.get(&TOR_STATE_DIR),
+            hidden_service_dir,
+            onion_uri,
+            onion_location: snapshot.get(&TOR_ONION_LOCATION),
+        })
+    }
+}
+
 /// monokulo's store for the runtime switches (`sources: [Database]`), over
 /// its own `settings` table, through the
 /// same reading and writing connections as everything else (so a save
@@ -1120,25 +1274,24 @@ impl OnionReloadable {
             *self.inner.waiting.lock() = Some(listener);
             return;
         };
-        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        let (stop, stopped) = tokio::sync::watch::channel(false);
         let address = listener.bound_address();
         tokio::spawn(async move {
-            let serve = axum::serve(
-                listener,
-                router
-                    .into_make_service_with_connect_info::<crate::abuse::proxy_protocol::OnionPeer>(
-                    ),
-            )
-            .with_graceful_shutdown(async move {
-                let _ = stopped.wait_for(|s| *s).await;
-            });
-            if let Err(e) = serve.await {
+            if let Err(e) = crate::tor::serve(listener, router, stopped).await {
                 tracing::error!(server.address = %address, error = %e, "onion listener stopped");
             }
         });
         tracing::info!(server.address = %address, "onion listener (PROXY protocol, for tor) started");
         *self.inner.running.lock() = Some(stop);
     }
+}
+
+/// What serves the onion address, started, moved and stopped by its
+/// settings: the listener an external tor connects to, and Tor inside
+/// monokulo.
+pub struct OnionServing {
+    pub listener: OnionReloadable,
+    pub tor: crate::tor::Tor,
 }
 
 /// What saving the onion listener's address does.
@@ -1234,6 +1387,8 @@ pub struct MonokuloSettings {
     pub webhooks: live_settings::Live<WebhookConfig>,
     /// Which admin tools are on: read per request.
     pub admin_tools: live_settings::Live<AdminTools>,
+    /// How visitors on Tor reach this instance: read per request.
+    pub tor: live_settings::Live<TorConfig>,
 }
 
 impl MonokuloSettings {
@@ -1284,6 +1439,7 @@ impl MonokuloSettings {
             admin_tools: live_settings::Live::new(AdminTools {
                 query_enabled: ADMIN_QUERY_ENABLED.default_value(),
             }),
+            tor: live_settings::Live::new(TorConfig::defaults()),
         })
     }
 
@@ -1300,6 +1456,24 @@ impl MonokuloSettings {
             snp_bundle_limits: self.snp_bundle_limits.clone(),
             webhooks: live_settings::Live::new(webhooks),
             admin_tools: self.admin_tools.clone(),
+            tor: self.tor.clone(),
+        })
+    }
+
+    /// These settings with `tor` in place of their Tor settings: for tests
+    /// of what visitors on Tor get.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_tor(&self, tor: TorConfig) -> Arc<Self> {
+        Arc::new(MonokuloSettings {
+            registry: None,
+            server: self.server.clone(),
+            per_request: self.per_request.clone(),
+            cli_links: self.cli_links.clone(),
+            snp_entry: self.snp_entry.clone(),
+            snp_bundle_limits: self.snp_bundle_limits.clone(),
+            webhooks: self.webhooks.clone(),
+            admin_tools: self.admin_tools.clone(),
+            tor: live_settings::Live::new(tor),
         })
     }
 
@@ -1332,7 +1506,7 @@ impl MonokuloSettings {
         engine_client: EngineClient,
         exchange_rates: Arc<ExchangeRateProviders>,
         abuse: Arc<AbuseProtection>,
-        onion: Option<OnionReloadable>,
+        onion: Option<OnionServing>,
         env: live_settings::Env,
         options: live_settings::OptionsFile,
     ) -> Result<Arc<Self>, String> {
@@ -1345,14 +1519,18 @@ impl MonokuloSettings {
             providers: exchange_rates,
         });
         builder.reloadable(AbuseReloadable { abuse });
-        match onion {
-            Some(onion) => {
-                builder.reloadable(onion);
+        // The onion listener and Tor inside monokulo start and stop with
+        // their settings; the rest of the Tor settings are read per request.
+        let tor = match onion {
+            Some(OnionServing { listener, tor }) => {
+                builder.reloadable(listener);
+                builder.reloadable(crate::tor::TorReloadable::new(tor))
             }
             None => {
                 builder.section::<OnionListenerConfig>();
+                builder.section::<TorConfig>()
             }
-        }
+        };
         // Read per request: nothing to rebuild when they change.
         let per_request = builder.section::<PerRequest>();
         let cli_links = builder.section::<CliLinks>();
@@ -1386,6 +1564,7 @@ impl MonokuloSettings {
             snp_bundle_limits,
             webhooks,
             admin_tools,
+            tor,
         }))
     }
 }
@@ -1416,10 +1595,6 @@ mod tests {
                 "  http://pay.example.com:8081/ ",
                 "http://pay.example.com:8081",
             ),
-            (
-                "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion",
-                "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion",
-            ),
         ] {
             assert_eq!(
                 validate_public_uri(input).as_deref(),
@@ -1436,6 +1611,8 @@ mod tests {
             "https://pay.example.com/#top",
             "https://user:pass@pay.example.com",
             "https://",
+            // The onion address is `onion_uri`'s.
+            "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion",
         ] {
             assert!(
                 validate_public_uri(bad).is_err(),
@@ -1628,6 +1805,7 @@ mod tests {
             ExchangeRateConfig::keys(),
             AbuseConfig::keys(),
             OnionListenerConfig::keys(),
+            TorConfig::keys(),
             LoggingConfig::keys(),
             DatabaseConfig::keys(),
             BootConfig::keys(),
@@ -1697,7 +1875,10 @@ mod tests {
             engine.clone(),
             rates.clone(),
             abuse.clone(),
-            onion,
+            onion.map(|listener| OnionServing {
+                listener,
+                tor: crate::tor::Tor::default(),
+            }),
             test_secrets(),
             live_settings::OptionsFile::in_memory(""),
         )
@@ -1708,6 +1889,35 @@ mod tests {
 
     fn change(key: &str, value: &str) -> live_settings::Changes {
         vec![(key.to_string(), Some(value.to_string()))]
+    }
+
+    /// An external tor serving its onion service to `listener`: the mode,
+    /// its port and its address, saved together.
+    fn external_tor(listener: &str) -> live_settings::Changes {
+        [
+            ("tor.mode", "external"),
+            ("abuse.onion_listener", listener),
+            (
+                "onion_uri",
+                "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+            ),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), Some(value.to_string())))
+        .collect()
+    }
+
+    /// Tor turned off, with the external tor's port and address cleared.
+    fn tor_off() -> live_settings::Changes {
+        ["tor.mode", "abuse.onion_listener", "onion_uri"]
+            .into_iter()
+            .map(|key| {
+                (
+                    key.to_string(),
+                    Some(if key == "tor.mode" { "off" } else { "" }.to_string()),
+                )
+            })
+            .collect()
     }
 
     #[tokio::test]
@@ -1775,7 +1985,7 @@ mod tests {
             .local_addr()
             .unwrap();
         registry
-            .save(change("abuse.onion_listener", &free.to_string()))
+            .save(external_tor(&free.to_string()))
             .await
             .unwrap();
         // The save binds before it returns (`prepare`): a connection is
@@ -1792,11 +2002,11 @@ mod tests {
             .local_addr()
             .unwrap();
         registry
-            .save(change("abuse.onion_listener", &other.to_string()))
+            .save(external_tor(&other.to_string()))
             .await
             .unwrap();
         registry
-            .save(change("abuse.onion_listener", &free.to_string()))
+            .save(external_tor(&free.to_string()))
             .await
             .expect("moving back to the first address");
         assert!(
@@ -1804,10 +2014,7 @@ mod tests {
             "listening on the first address again"
         );
 
-        registry
-            .save(change("abuse.onion_listener", ""))
-            .await
-            .unwrap();
+        registry.save(tor_off()).await.unwrap();
         // The old listener goes as its task is stopped: waited for, with a
         // deadline that bounds only a hung stop.
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -1823,10 +2030,7 @@ mod tests {
 
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let refused = registry
-            .save(change(
-                "abuse.onion_listener",
-                &taken.local_addr().unwrap().to_string(),
-            ))
+            .save(external_tor(&taken.local_addr().unwrap().to_string()))
             .await;
         assert!(
             refused.is_err(),

@@ -177,12 +177,16 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only());
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
+    let tor = monokulo::tor::Tor::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
         db.clone(),
         engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),
-        Some(onion.clone()),
+        Some(settings::OnionServing {
+            listener: onion.clone(),
+            tor: tor.clone(),
+        }),
         env.clone(),
         own_options,
     )
@@ -240,6 +244,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         settings: monokulo_settings.clone(),
         log_store,
         webhooks,
+        tor: tor.clone(),
         engine: monokulo::http::Engine::new(engine_client),
     };
     let router = build_router(app_state);
@@ -247,6 +252,9 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // but every connection must start with tor's PROXY header, which names
     // the Tor circuit - each circuit is then its own client.
     onion.router_ready(router.clone());
+    // Tor inside monokulo (`monokulo::tor`): the same router again, each
+    // visitor's rendezvous circuit its own client.
+    tor.router_ready(router.clone());
 
     // Read once: the listen address applies on restart.
     let bind = monokulo_settings.server.load().bind;

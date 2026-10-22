@@ -85,7 +85,7 @@ pub async fn setup_form(State(state): State<AppState>) -> Response {
 /// account.
 pub async fn setup_submit(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    on: crate::network::OnNetwork,
     Form(form): Form<SetupForm>,
 ) -> Response {
     if setup_complete(&state).await {
@@ -114,7 +114,7 @@ pub async fn setup_submit(
         Ok(_user_id) => {
             match login::authenticate(&state, &form.email, &form.password).await {
                 Ok((_user, raw_token)) => {
-                    let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
+                    let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
                     let jar = CookieJar::new().add(cookie);
                     (
                         jar,
