@@ -3,15 +3,14 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "jsx": "preserve",
     "jsxImportSource": "@solidjs/web",
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "allowJs": true,
-    "checkJs": false,
+    "allowImportingTsExtensions": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts", "chunks.config.ts"]
 }

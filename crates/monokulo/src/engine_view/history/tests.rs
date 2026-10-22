@@ -213,7 +213,8 @@ fn new_events_make_a_frame_and_old_ones_nothing() {
     };
     let expected = brute_force(&events, i64::MAX);
     assert_eq!(frame.at_ms, expected.at_ms);
-    assert_eq!(frame.view, present(&expected, &TUNING));
+    assert_eq!(frame.state, expected);
+    assert_eq!(frame.tuning, TUNING);
     let mut stepped = brute_force(first, i64::MAX);
     let mut effects = Vec::new();
     for recorded in rest {
@@ -272,10 +273,7 @@ fn replay_frames_carry_their_events_and_end_on_the_right_state() {
         .iter()
         .all(|f| (f.at_ms - from) % FRAME_MS == 0 || f.at_ms == to));
     let last = frames.last().unwrap();
-    assert_eq!(
-        last.view,
-        present(&brute_force(&events, last.at_ms), &TUNING)
-    );
+    assert_eq!(last.state, brute_force(&events, last.at_ms));
     let mut state = brute_force(&events, from);
     let mut effects = Vec::new();
     let mut marks = Vec::new();
@@ -300,22 +298,16 @@ fn replay_frames_carry_their_events_and_end_on_the_right_state() {
             .flat_map(|f| f.marks.clone())
             .collect::<Vec<_>>(),
         marks
-            .iter()
-            .map(crate::engine_view::present::mark_view)
-            .collect::<Vec<_>>()
     );
     let long = history.frames(events[0].at_ms, events[0].at_ms + 10 * MAX_REPLAY_MS);
     assert!(long.last().unwrap().at_ms <= events[0].at_ms + MAX_REPLAY_MS);
-    assert_eq!(
-        history.frame_at(to).view,
-        present(&brute_force(&events, to), &TUNING)
-    );
-    assert_eq!(history.live_frame().view, present(history.live(), &TUNING));
+    assert_eq!(history.frame_at(to).state, brute_force(&events, to));
+    assert_eq!(&history.live_frame().state, history.live());
 }
 
 /// A past round, chosen from the recent rounds, is rebuilt as it ended:
-/// what stepping every event up to its end gives. Once it has left the
-/// history it can't be.
+/// what stepping every event up to its end gives, with the tuning it is
+/// drawn to. Once it has left the history it can't be.
 #[test]
 fn a_past_round_is_rebuilt_as_it_ended() {
     let events = network(3);
@@ -325,9 +317,11 @@ fn a_past_round_is_rebuilt_as_it_ended() {
             .iter()
             .find(|e| matches!(e.event, Event::RoundFinished { round, ms: _, backlogged: _ } if round == number))
             .unwrap();
-        let expected = present_round(&brute_force(&events, finished.at_ms), &TUNING);
-        assert_eq!(history.round(number), expected, "round {number}");
-        assert_eq!(expected.unwrap().number, number);
+        let expected = brute_force(&events, finished.at_ms);
+        let frame = history.round(number).expect("a round in the history");
+        assert_eq!(frame.state, expected, "round {number}");
+        assert_eq!(frame.tuning, TUNING);
+        assert_eq!(frame.state.round.as_ref().unwrap().number, number);
     }
     assert_eq!(history.round(999), None, "never happened");
 

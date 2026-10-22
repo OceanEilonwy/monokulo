@@ -1,11 +1,11 @@
 import { defineConfig } from 'vite';
 import solid from '@solidjs/vite-plugin';
-import { chunks, entries } from './chunks.config.mjs';
+import { chunks, entries } from './chunks.config.ts';
 
 // monokulo's server-rendered pages' scripts, built by
 // crates/monokulo/build.rs into Cargo's OUT_DIR (`--outDir`): the shared
 // components' islands (`ui-islands.js`, every page with a nav) and the
-// engine page's live view (`engine-view.js`, src/engine-view.js). One build,
+// engine page's live view (`engine-view.js`, src/engine-view.tsx). One build,
 // so the engine page loads one copy of Solid with the islands rather than
 // two. `--mode development` for debug builds (Solid's development build,
 // with its diagnostics, unminified), `--mode production` for release builds.

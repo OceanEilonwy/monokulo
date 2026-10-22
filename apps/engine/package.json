@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.ts",
     "build": "vite build --mode production"
   },
   "dependencies": {

@@ -88,7 +88,7 @@ fn main() {
         mode,
     );
     let entries = ["ui-islands.js", "engine-view.js"];
-    for file in entries {
+    for file in entries.iter().chain(&["engine-view.css"]) {
         assert!(
             web.join(file).exists(),
             "the pages' build did not produce {file}"
@@ -124,7 +124,7 @@ fn build_app(app: &Path, out: &Path, vite: &Path, tsc: &Path, mode: &str) -> Pat
         "package.json",
         "vite.config.ts",
         "tsconfig.json",
-        "chunks.config.mjs",
+        "chunks.config.ts",
     ] {
         // Only what the app has: Cargo takes a path that doesn't exist for
         // one that changed, and would build again every time.
@@ -177,18 +177,26 @@ fn write_preloads(web: &Path) {
         }
     }
     let mut rows = String::new();
-    for (key, chunk) in manifest {
-        let (name, mut files) = if chunk["isEntry"].as_bool() == Some(true) {
-            (file(key), Vec::new())
-        } else if chunk["isDynamicEntry"].as_bool() == Some(true)
-            && key.contains("crates/ui/solid/")
-        {
-            (chunk["name"].as_str().unwrap().to_string(), vec![file(key)])
-        } else {
-            continue;
-        };
+    let mut row = |name: String, key: &str, mut files: Vec<String>| {
         imports(manifest, key, &mut files);
         rows.push_str(&format!("    ({name:?}, &{files:?}),\n"));
+    };
+    for (key, chunk) in manifest {
+        if chunk["isEntry"].as_bool() == Some(true) {
+            row(file(key), key, Vec::new());
+        }
+    }
+    // Each island's behaviour, as the islands' script imports it: its own
+    // chunk, which another entry may import too (the engine page's Select).
+    let islands = manifest
+        .iter()
+        .find(|(_, chunk)| chunk["file"] == "ui-islands.js")
+        .map(|(_, chunk)| chunk)
+        .expect("the islands' script in the manifest");
+    for key in islands["dynamicImports"].as_array().into_iter().flatten() {
+        let key = key.as_str().unwrap();
+        let name = manifest[key]["name"].as_str().unwrap().to_string();
+        row(name, key, vec![file(key)]);
     }
     std::fs::write(web.join("preloads.rs"), format!("&[\n{rows}]\n")).expect("web/preloads.rs");
 }

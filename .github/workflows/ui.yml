@@ -11,7 +11,8 @@ on:
       - 'crates/monokulo/static/**'
       - 'xtask/src/logo.rs'
       - 'apps/pos/src/**'
-      - 'apps/engine/src/**'
+      - 'apps/engine/**'
+      - 'crates/monokulo/src/engine_view/**'
       - '.github/workflows/ui.yml'
   push:
     branches: [main]
@@ -25,7 +26,8 @@ on:
       - 'crates/monokulo/static/**'
       - 'xtask/src/logo.rs'
       - 'apps/pos/src/**'
-      - 'apps/engine/src/**'
+      - 'apps/engine/**'
+      - 'crates/monokulo/src/engine_view/**'
       - '.github/workflows/ui.yml'
 permissions:
   contents: read
@@ -43,6 +45,9 @@ jobs:
       - run: npm run lint:ui
       - run: npm run typecheck -w @monokulo/ui
       - run: npm run test:ui:unit
+      # The engine page's app: its types, and its words and layout rules.
+      - run: npm run typecheck -w @monokulo/engine
+      - run: npm run test:engine
       - run: npm run build:ui
       - run: npm run test:ui
       - uses: actions/upload-artifact@v4

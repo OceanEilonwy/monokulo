@@ -102,17 +102,8 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
 [data-node-rows] .setting-field input[type="text"] { width: 100%; }
 .node-status { margin: var(--space-xs) 0; color: var(--muted); }
 .node-status.is-problem { color: var(--error); }
-/* How the engine is performing (`views::scaling`), on the engine page: the
-   "Machine and links" strip's stacked charts and sparklines, the Scanning
-   panel's figures. The Monero nodes tab links there from each network. */
+/* The Monero nodes tab links to the engine page from each network. */
 .card-head .engine-link { font-size: var(--text-sm); }
-.scan-figures { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; }
-.scan-figures dt { color: var(--muted); }
-.scan-figures dd { margin: 0; min-width: 0; }
-@media (max-width: 30rem) {
-  .scan-figures { grid-template-columns: 1fr; }
-  .scan-figures dd { margin-bottom: var(--space-xs); }
-}
 .dns-record { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--space-sm); margin: var(--space-sm) 0 0; }
 /* The one-time "just deleted" row an admin table shows right after a real
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
@@ -236,18 +227,10 @@ button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px
 [data-reload] { flex: none; }
 
 
+/* The engine page's network picker, in its header (`views::engine`). */
 .engine-network { display: flex; align-items: center; gap: .5rem; margin: 0; }
-.engine-network label, .tl-modes label { margin: 0; }
-.engine-network select, .tl-modes select { width: auto; margin: 0; padding: .25rem .5rem; }
-.tl-modes { border: 0 !important; overflow: visible !important; height: auto !important; align-items: center; }
-
-.sync-motion-note { display: none; }
-.catching-up .sync-motion-note { display: block; }
-.catching-up .cell, .catching-up .cell .fill, .catching-up .cell .pool,
-.catching-up .pill, .catching-up .bar, .catching-up .ruler-label { transition: none; }
-.engine-summary .v, .engine-summary .s, .lane-time, .round-state { font-variant-numeric: tabular-nums; }
-.engine-summary .v { min-height: 1.6em; }
-.engine-page .node .call { min-height: 1.3em; }
+.engine-network label { margin: 0; }
+.engine-network select { width: auto; margin: 0; padding: .25rem .5rem; }
 
 /* Step footer: Back on the left, the one way on to the right. */
 .step-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-lg); padding-top: var(--space-md); border-top: 1px solid var(--line); }

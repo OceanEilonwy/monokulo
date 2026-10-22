@@ -1,5 +1,5 @@
 // The engine page's events table when the tab was hidden. A hidden page
-// keeps only its newest frame (engine-view.js), so a mark can come in a
+// keeps only its newest frame (apps/engine/src/engine-view.tsx), so a mark can come in a
 // frame that is never played: the fixture's reorg story ends with
 // "Rewound", then round 4's frames, which carry no marks. Shown again, the
 // page plays only the last of those, and the table still has to list the
@@ -30,7 +30,7 @@ test('a tab hidden while the reorg plays lists its last mark when shown again', 
         this.addEventListener('history', () => { window.engineHistory = true; });
         this.addEventListener('frame', (e) => {
           const frame = JSON.parse(e.data);
-          if (frame.marks.some((mark) => mark.text.startsWith('Rewound'))) window.framesAfterRewound = 0;
+          if (frame.marks.some((mark) => mark.what.kind === 'rewound')) window.framesAfterRewound = 0;
           else if (window.framesAfterRewound >= 0) window.framesAfterRewound++;
         });
       }

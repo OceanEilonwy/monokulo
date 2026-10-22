@@ -3,14 +3,31 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import solid from '@solidjs/vite-plugin';
-import { chunks, entries } from './chunks.config.mjs';
+import { chunks, entries } from './chunks.config.ts';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, '../..');
 const requireFromTests = createRequire(path.join(root, 'e2e/browser/package.json'));
 const { createInstrumenter } = requireFromTests('istanbul-lib-instrument');
 // The engine page's authored sources, each counted under its repository path.
-const sources = ['engine-view.js', 'events.tsx'];
+const sources = [
+  'engine-view.tsx',
+  'App.tsx',
+  'Chain.tsx',
+  'Events.tsx',
+  'Help.tsx',
+  'MachineStrip.tsx',
+  'Panels.tsx',
+  'Round.tsx',
+  'Summary.tsx',
+  'Timeline.tsx',
+  'format.ts',
+  'layout.ts',
+  'machine.ts',
+  'present.ts',
+  'state.ts',
+  'wire.ts',
+];
 
 function coverageInstrument() {
   return {

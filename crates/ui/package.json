@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "sideEffects": [
+    "**/*.css",
+    "./web/islands.ts"
+  ],
   "exports": {
     "./styles.css": "./web/styles.css",
     "./tokens.css": "./web/tokens.css",

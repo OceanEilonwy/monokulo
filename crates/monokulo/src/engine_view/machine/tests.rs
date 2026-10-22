@@ -62,9 +62,10 @@ impl Feed {
     }
 }
 
-/// The mark's sentence, as the page writes it (`present::mark_text`).
-fn text(output: &Output) -> String {
-    crate::engine_view::present::mark_text(&output.mark.as_ref().expect("a mark").what)
+/// What the mark says happened: the page's app writes it as a sentence
+/// (`apps/engine/src/present.ts`).
+fn what(output: &Output) -> &MarkKind {
+    &output.mark.as_ref().expect("a mark").what
 }
 
 fn key(output: &Output) -> bool {
@@ -393,11 +394,11 @@ fn new_blocks_arrive_when_a_round_reads_a_higher_tip() {
             Effect::Flash { at: Anchor::Node }
         ]
     );
-    assert_eq!(text(&one), "The node has a new block: 101.");
+    assert_eq!(what(&one), &MarkKind::NewBlocks { tip: 101, count: 1 });
     assert!(!key(&one));
     let three = feed.feed(started(3, Some(104)));
     assert_eq!(three.effects[0], Effect::NewBlocks { from: 102, to: 104 });
-    assert_eq!(text(&three), "The node has 3 new blocks, up to 104.");
+    assert_eq!(what(&three), &MarkKind::NewBlocks { tip: 104, count: 3 });
     assert_eq!(feed.feed(started(4, None)), Output::default());
     assert_eq!(
         feed.state.chain.tip,
@@ -444,8 +445,10 @@ fn failing_units_are_key_events_and_strays_are_ignored() {
     let failed = feed.feed(unit(Tier::Settlement, 0, 1, UnitProgress::Failed));
     assert!(key(&failed));
     assert_eq!(
-        text(&failed),
-        "The settlement tier failed and stopped for this round; it is retried next round."
+        what(&failed),
+        &MarkKind::TierFailed {
+            tier: Tier::Settlement
+        }
     );
     let node = feed.feed(unit(
         Tier::Blocks,
@@ -453,10 +456,7 @@ fn failing_units_are_key_events_and_strays_are_ignored() {
         1,
         UnitProgress::Blocked(Wait::NodeFailed),
     ));
-    assert_eq!(
-        text(&node),
-        "The blocks tier stopped for this round: the node failed."
-    );
+    assert_eq!(what(&node), &MarkKind::NodeFailed { tier: Tier::Blocks });
     for quiet in [
         UnitProgress::Advanced,
         UnitProgress::Idle,
@@ -525,7 +525,15 @@ fn a_frontier_commit_moves_its_group_and_the_high_water_mark() {
             }
         ]
     );
-    assert_eq!(text(&out), "Block 101 scanned for 4 stores and committed.");
+    assert_eq!(
+        what(&out),
+        &MarkKind::Committed {
+            height: 101,
+            stores: 4,
+            found: 0,
+            how: CommitHow::Frontier
+        }
+    );
     assert!(!key(&out));
 }
 
@@ -536,8 +544,13 @@ fn payments_found_in_a_block_fly_to_order_status() {
     let mut feed = Feed::new().after([snapshot(100, &[(100, 1)])]);
     let one = feed.feed(committed(101, Group::Frontier, 1, 1, 0));
     assert_eq!(
-        text(&one),
-        "Block 101 scanned for 1 store and committed, 1 payment found in it."
+        what(&one),
+        &MarkKind::Committed {
+            height: 101,
+            stores: 1,
+            found: 1,
+            how: CommitHow::Frontier
+        }
     );
     assert!(key(&one));
     let many = feed.feed(committed(102, Group::Frontier, 1, 40, 0));
@@ -553,7 +566,7 @@ fn payments_found_in_a_block_fly_to_order_status() {
         })
         .count();
     assert_eq!(flown, MAX_TOKENS);
-    assert!(text(&many).ends_with("40 payments found in it."));
+    assert!(matches!(what(&many), MarkKind::Committed { found: 40, .. }));
 }
 
 /// A block nobody was scanned for reads as recorded from its header.
@@ -569,10 +582,14 @@ fn a_header_only_commit_reads_as_recorded_from_its_header() {
         header_only: true,
     });
     assert_eq!(feed.cursors(), [(101, 3)]);
-    assert_eq!(
-        text(&out),
-        "Block 101 recorded from its header: no store had anything to look for in it."
-    );
+    assert!(matches!(
+        what(&out),
+        MarkKind::Committed {
+            height: 101,
+            how: CommitHow::HeaderOnly,
+            ..
+        }
+    ));
 }
 
 /// Catching up, the scanned stores move one block and the idle ones jump
@@ -601,7 +618,15 @@ fn a_catch_up_commit_moves_scanned_stores_and_sends_idle_ones_ahead() {
         }),
         "the idle store flies to the frontier: {out:?}"
     );
-    assert_eq!(text(&out), "Block 51 scanned for 3 stores catching up.");
+    assert_eq!(
+        what(&out),
+        &MarkKind::Committed {
+            height: 51,
+            stores: 3,
+            found: 0,
+            how: CommitHow::CatchingUp
+        }
+    );
 
     // Blocks fetched ahead for the group are let go of as it passes them.
     feed.feed(Event::Fetched {
@@ -638,8 +663,13 @@ fn catching_up_onto_the_frontier_is_a_key_event() {
     assert_eq!(feed.cursors(), [(100, 7)]);
     assert!(key(&out));
     assert_eq!(
-        text(&out),
-        "Block 100 scanned for 2 stores catching up: they caught up and joined the frontier."
+        what(&out),
+        &MarkKind::Committed {
+            height: 100,
+            stores: 2,
+            found: 0,
+            how: CommitHow::Joined
+        }
     );
 }
 
@@ -663,8 +693,12 @@ fn idle_stores_fly_to_where_they_land() {
         }]
     );
     assert_eq!(
-        text(&out),
-        "1 store with nothing that could have been paid moved straight from block 30 to 100."
+        what(&out),
+        &MarkKind::IdleAdvanced {
+            from: 30,
+            to: 100,
+            stores: 1
+        }
     );
     assert_eq!(
         feed.feed(Event::IdleAdvanced {
@@ -747,8 +781,13 @@ fn a_scan_follows_its_block_and_a_checkpoint_saves_it() {
     );
     assert!(key(&out));
     assert_eq!(
-        text(&out),
-        "Out of time partway through block 7: 1,200 of 3,000 transactions scanned for 2 stores, saved."
+        what(&out),
+        &MarkKind::Checkpointed {
+            height: 7,
+            stores: 2,
+            done_txs: 1_200,
+            total_txs: 3_000
+        }
     );
     assert_eq!(feed.state.saved.checkpoints, 1);
 }
@@ -770,10 +809,7 @@ fn the_first_run_s_seed_is_a_key_event() {
     let out = feed.feed(Event::Seeded { height: 3_412_879 });
     assert_eq!(feed.state.chain.high_water, Some(3_412_879));
     assert_eq!(feed.state.chain.tip, Some(3_412_879));
-    assert_eq!(
-        text(&out),
-        "Started scanning this network at block 3,412,879."
-    );
+    assert_eq!(what(&out), &MarkKind::Seeded { height: 3_412_879 });
     assert!(key(&out));
 }
 
@@ -806,13 +842,22 @@ fn a_reorg_runs_from_detection_to_rewind() {
         ]
     );
     assert!(key(&found));
-    assert!(text(&found).starts_with("The node's chain differs from block 99 on"));
+    assert_eq!(
+        what(&found),
+        &MarkKind::ReorgFound {
+            fork: 99,
+            deeper: false
+        }
+    );
 
     let deeper = feed.feed(Event::ReorgFound { fork: 98 });
     assert_eq!(feed.state.reorg.unwrap().fork, 98);
     assert_eq!(
-        text(&deeper),
-        "The reorganisation goes deeper: it is reconciled from block 98 now."
+        what(&deeper),
+        &MarkKind::ReorgFound {
+            fork: 98,
+            deeper: true
+        }
     );
 
     feed.feed(Event::ReorgCollected);
@@ -824,8 +869,12 @@ fn a_reorg_runs_from_detection_to_rewind() {
     });
     assert!(!key(&processed));
     assert_eq!(
-        text(&processed),
-        "Re-examined 2 payments against the node's chain: 1 changed, 0 voided as double-spent."
+        what(&processed),
+        &MarkKind::ReorgProcessed {
+            examined: 2,
+            changed: 1,
+            voided: 0
+        }
     );
     let voided = feed.feed(Event::ReorgProcessed {
         examined: 1,
@@ -852,8 +901,12 @@ fn a_reorg_runs_from_detection_to_rewind() {
     assert!(feed.state.chain.replaced.is_empty());
     assert_eq!(feed.state.reorg, None);
     assert_eq!(
-        text(&rewound),
-        "Rewound: blocks 98 to 100 deleted, stores moved back to block 97. The replacement blocks are scanned next."
+        what(&rewound),
+        &MarkKind::Rewound {
+            fork: 98,
+            deleted_to: Some(100),
+            ancestor: 97
+        }
     );
     assert_eq!(
         feed.state.saved.reorg, 6,
@@ -866,10 +919,14 @@ fn a_reorg_runs_from_detection_to_rewind() {
 fn a_one_block_rewind_reads_in_the_singular() {
     let mut feed = Feed::new().after([snapshot(100, &[(100, 1)]), Event::ReorgFound { fork: 100 }]);
     let out = feed.feed(Event::ReorgRewound { fork: 100 });
-    assert_eq!(
-        text(&out),
-        "Rewound: block 100 deleted, stores moved back to block 99. The replacement block is scanned next."
-    );
+    assert!(matches!(
+        what(&out),
+        MarkKind::Rewound {
+            fork: 100,
+            ancestor: 99,
+            ..
+        }
+    ));
 }
 
 /// A snapshot taken during a reorg keeps the page's counts for the same
@@ -965,10 +1022,7 @@ fn pool_passes_flash_count_and_call() {
             scanned: 2,
         },
     );
-    assert_eq!(
-        text(&busy),
-        "The fast path scanned 2 transactions new in the pool."
-    );
+    assert_eq!(what(&busy), &MarkKind::FastScanned { transactions: 2 });
     assert_eq!(feed.state.pool.fast_passes.count(), 2);
     assert_eq!(
         feed.state.node_pool.map(|pool| pool.txs),
@@ -1077,16 +1131,22 @@ fn a_paying_pool_transaction_flies_to_order_status() {
     );
     assert!(key(&fast));
     assert_eq!(
-        text(&fast),
-        "Transaction deadbeef in the pool pays an order: recorded at once by the fast path."
+        what(&fast),
+        &MarkKind::TxMatched {
+            path: PoolPath::Fast,
+            txid: "deadbeef".into()
+        }
     );
     let round = feed.feed(Event::TxMatched {
         path: PoolPath::Round,
         txid: "deadbeef".into(),
     });
     assert_eq!(
-        text(&round),
-        "Transaction deadbeef in the pool pays an order: found by the round's rotation."
+        what(&round),
+        &MarkKind::TxMatched {
+            path: PoolPath::Round,
+            txid: "deadbeef".into()
+        }
     );
     assert_eq!(
         feed.state.pool.txs.len(),
@@ -1125,8 +1185,12 @@ fn recomputes_list_their_changes() {
         transitions: vec![transition(OrderStatus::Pending, OrderStatus::Unconfirmed)],
     });
     assert_eq!(
-        text(&one),
-        "An order went from pending to unconfirmed; its order event is written."
+        what(&one),
+        &MarkKind::Recomputed {
+            orders: 1,
+            from: OrderStatus::Pending,
+            to: OrderStatus::Unconfirmed
+        }
     );
     assert!(!key(&one));
 
@@ -1141,8 +1205,12 @@ fn recomputes_list_their_changes() {
     });
     assert!(key(&many), "an order was paid");
     assert_eq!(
-        text(&many),
-        "4 orders changed status (one from confirming to paid); their order events are written."
+        what(&many),
+        &MarkKind::Recomputed {
+            orders: 4,
+            from: OrderStatus::Confirming,
+            to: OrderStatus::Paid
+        }
     );
     assert_eq!(
         many.effects,
@@ -1167,7 +1235,7 @@ fn the_vanished_check_and_upkeep_are_noted() {
     assert_eq!(quiet.effects, [Effect::Flash { at: Anchor::Upkeep }]);
     assert_eq!(quiet.mark, None);
     let pruned = feed.feed(Event::Upkeep { pruned: 1_200 });
-    assert_eq!(text(&pruned), "Pruned 1,200 old block hashes.");
+    assert_eq!(what(&pruned), &MarkKind::Pruned { hashes: 1_200 });
     assert_eq!(
         feed.state.upkeep,
         Upkeep {
@@ -1471,9 +1539,5 @@ fn random_run(mut seed: u64, steps: usize) {
                 .count()
                 <= MAX_TOKENS
         );
-        if let Some(mark) = &out.mark {
-            let text = crate::engine_view::present::mark_text(&mark.what);
-            assert!(text.ends_with('.'), "a sentence: {text}");
-        }
     }
 }
