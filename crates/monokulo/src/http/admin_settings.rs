@@ -2175,6 +2175,16 @@ mod tests {
             ("public_uri", "https://pay.example.com"),
             ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
             ("abuse.onion_listener", "127.0.0.1:8082"),
+            // An external tor: its port above, and its address. Tor inside
+            // monokulo's own HiddenServiceDir key means nothing then.
+            ("tor.mode", "external"),
+            (
+                "onion_uri",
+                "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+            ),
+            ("tor.state_dir", "/srv/monokulo/tor-saved"),
+            ("tor.hidden_service_dir", ""),
+            ("tor.onion_location", "false"),
             ("abuse.stream_cap", "9"),
             ("logging.level", "warn,monokulo::http=debug"),
             ("logging.dev_mode_until", "4102444800"),
@@ -2883,7 +2893,27 @@ mod tests {
             (
                 "public_uri",
                 "not a url",
-                "Enter this instance's public address",
+                "Enter this instance's web address",
+            ),
+            (
+                "public_uri",
+                "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+                "put it in onion_uri",
+            ),
+            (
+                "onion_uri",
+                "https://pay.example.com",
+                "Enter this instance's onion address",
+            ),
+            (
+                "onion_uri",
+                "http://2gzzxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+                "a character is mistyped",
+            ),
+            (
+                "abuse.onion_listener",
+                "127.0.0.1:8082",
+                "set tor.mode = external",
             ),
         ] {
             let save = router

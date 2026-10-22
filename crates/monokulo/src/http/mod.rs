@@ -132,41 +132,22 @@ pub(crate) use signup::MIN_PASSWORD_LEN;
 /// The session cookie as it is set and cleared: `HttpOnly` (never readable
 /// from page JS), `SameSite=Lax` (sent on top-level navigation, not on
 /// cross-site subrequests; `http::csrf` covers the rest), `Path=/` (every
-/// route `AuthedUser` guards), and `Secure` when the request arrived over
-/// HTTPS - directly or through a proxy that says so - so a session is never
-/// sent back over plain HTTP once it was made over TLS. Not `Secure` on a
-/// plain-HTTP (local, development) instance, where it would never be sent
+/// route `AuthedUser` guards), and `Secure` when the visitor's connection is
+/// `https` (`crate::network::OnNetwork::secure`), so a session is never sent
+/// back over plain HTTP once it was made over TLS. Not `Secure` on a
+/// plain-HTTP instance or an onion address, where it would never be sent
 /// at all.
 pub(crate) fn session_cookie(
-    headers: &axum::http::HeaderMap,
+    secure: bool,
     value: String,
 ) -> axum_extra::extract::cookie::Cookie<'static> {
     use axum_extra::extract::cookie::{Cookie, SameSite};
     Cookie::build((SESSION_COOKIE_NAME, value))
         .http_only(true)
         .same_site(SameSite::Lax)
-        .secure(request_is_https(headers))
+        .secure(secure)
         .path("/")
         .build()
-}
-
-/// Whether the request came in over HTTPS: the proxy in front says so
-/// (`X-Forwarded-Proto`), or, with no proxy header, the browser's own
-/// `Origin`/`Referer` names an `https` page.
-fn request_is_https(headers: &axum::http::HeaderMap) -> bool {
-    let value = |name: &str| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-    };
-    if let Some(proto) = value("x-forwarded-proto") {
-        return proto.split(',').next().is_some_and(|p| p.trim() == "https");
-    }
-    value("origin")
-        .or_else(|| value("referer"))
-        .is_some_and(|url| url.starts_with("https://"))
 }
 
 /// The engine as monokulo talks to it.
@@ -238,6 +219,32 @@ pub struct AppState {
     /// Wakes the webhook delivery worker (`crate::webhooks`) when a
     /// merchant sends a delivery again.
     pub webhooks: Arc<crate::webhooks::Webhooks>,
+    /// Tor inside monokulo (`crate::tor`): its status and onion address.
+    pub tor: crate::tor::Tor,
+}
+
+impl AppState {
+    /// The network a request with these extensions arrived on
+    /// (`crate::network`), reading this state's settings.
+    pub fn network(&self, extensions: &axum::http::Extensions) -> crate::network::Reached<'_> {
+        self.network_of(crate::network::NetworkKind::of(extensions))
+    }
+
+    /// The network `kind`, reading this state's settings.
+    pub fn network_of(&self, kind: crate::network::NetworkKind) -> crate::network::Reached<'_> {
+        use crate::network::{NetworkKind, Onion, Reached, Web};
+        match kind {
+            NetworkKind::Web => Reached::Web(Web {
+                settings: &self.settings,
+                tor: &self.tor,
+                trusted_proxies: self.abuse.config().trusted_proxies,
+            }),
+            NetworkKind::Onion => Reached::Onion(Onion {
+                settings: &self.settings,
+                tor: &self.tor,
+            }),
+        }
+    }
 }
 
 /// The encryption key [`AppState::for_tests`] uses.
@@ -276,6 +283,7 @@ impl AppState {
             settings: Self::test_settings(None),
             log_store: None,
             webhooks: Arc::default(),
+            tor: crate::tor::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
                 shared::unreachable::address()
@@ -717,18 +725,15 @@ pub fn build_router(state: AppState) -> Router {
     // state-changing request to any of them that a browser says came from
     // another site is refused first (`http::csrf`).
     let router = router
-        // Baseline headers for the site's own pages: no MIME sniffing, no
-        // full URLs (which can carry order ids) in the Referer to other
-        // sites. The checkout pages set their own framing policy.
+        // Baseline headers for the site's own pages: no MIME sniffing. The
+        // Referer policy depends on the network (`network_headers`), and
+        // the checkout pages set their own framing policy.
         .layer(middleware::map_response(
             |mut response: Response| async move {
-                let headers = response.headers_mut();
-                headers
+                response
+                    .headers_mut()
                     .entry(header::X_CONTENT_TYPE_OPTIONS)
                     .or_insert(axum::http::HeaderValue::from_static("nosniff"));
-                headers.entry(header::REFERRER_POLICY).or_insert(
-                    axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
-                );
                 response
             },
         ))
@@ -764,9 +769,34 @@ pub fn build_router(state: AppState) -> Router {
     // policy) carries the request's span (structured_logging.md 2.1), with
     // the store it concerns recorded first.
     router
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            network_headers,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), record_store))
         .layer(middleware::from_fn(telemetry::http::server))
         .with_state(state)
+}
+
+/// Adds the headers every response carries on the network its request
+/// arrived on (`crate::network::Network::response_headers`): the Referer
+/// policy, and on the web address a page's `Onion-Location`.
+async fn network_headers(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    let kind = crate::network::NetworkKind::of(request.extensions());
+    let target = request
+        .uri()
+        .path_and_query()
+        .map_or("/", |target| target.as_str())
+        .to_string();
+    let mut response = next.run(request).await;
+    state
+        .network_of(kind)
+        .response_headers(&target, response.headers_mut());
+    response
 }
 
 /// Resolves a session token to the user that session belongs to - either

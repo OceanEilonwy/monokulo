@@ -218,7 +218,7 @@ fn signup_theme(chosen: Option<&str>) -> Theme {
 
 pub async fn signup_submit(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    on: crate::network::OnNetwork,
     Form(form): Form<SignupForm>,
 ) -> Response {
     let theme = signup_theme(form.theme.as_deref());
@@ -250,7 +250,7 @@ pub async fn signup_submit(
             let Ok(raw_token) = login::start_session(&state, &user_id).await else {
                 return redirect_302("/dashboard/login");
             };
-            let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
+            let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
             let setup = match form.next.as_deref().and_then(SafePath::parse) {
                 Some(next) => next.as_str().to_owned(),
@@ -319,7 +319,7 @@ pub async fn login_form(
 /// for the JSON API, wrong for a browser form submission).
 pub async fn logout_submit(
     State(db): State<Database>,
-    headers: axum::http::HeaderMap,
+    on: crate::network::OnNetwork,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Response {
     // The cookie goes either way; a session row that stays is logged, as
@@ -327,7 +327,7 @@ pub async fn logout_submit(
     if let Err(e) = db.write(move |db| db.delete_session(&token_hash)).await {
         tracing::error!(error = %e, "logging out failed to delete the session");
     }
-    let mut cookie = super::session_cookie(&headers, String::new());
+    let mut cookie = super::session_cookie(on.secure, String::new());
     cookie.set_max_age(time::Duration::ZERO);
     let jar = CookieJar::new().add(cookie);
     (jar, redirect_302("/dashboard/login")).into_response()
@@ -400,13 +400,13 @@ mod theme_selector_tests {
 /// before this task: the same inline confirmation, unchanged.
 pub async fn login_submit(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    on: crate::network::OnNetwork,
     Form(form): Form<LoginForm>,
 ) -> Response {
     match login::authenticate(&state, &form.email, &form.password).await {
         Ok((_user, raw_token)) => {
             // See `http::session_cookie` for the cookie's attributes.
-            let cookie = super::session_cookie(&headers, raw_token.expose().to_string());
+            let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
 
             // A validated `next` wins over the default confirmation - see

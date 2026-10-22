@@ -860,6 +860,7 @@ mod tests {
             cli_links: base.cli_links.clone(),
             webhooks: base.webhooks.clone(),
             admin_tools: base.admin_tools.clone(),
+            tor: base.tor.clone(),
             snp_bundle_limits: live_settings::Live::new(crate::settings::SnpBundleLimits {
                 per_user: 20,
                 per_user_per_min: 2,

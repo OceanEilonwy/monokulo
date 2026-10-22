@@ -10,7 +10,7 @@ edition = "2021"
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
 test-support = ["shared/test-support"]
-default = ["embedded-engine"]
+default = ["embedded-engine", "tor"]
 # The engine's own router as a transport for `EngineClient`
 # (docs/engine_as_library.md): the engine runs inside monokulo's process.
 # Without it the client only reaches an engine over HTTP.
@@ -19,9 +19,10 @@ embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
 # feature), and in a test build the test engine's stand-in for it. Off by
 # default; every test build turns it on (`--features monokulo/snp`).
 snp = ["engine?/snp", "engine-test-support/snp"]
-# Spike: the onion service run in-process by Arti instead of a tor daemon
-# (`examples/arti_onion.rs`). Off by default.
-arti = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:safelog"]
+# Tor inside monokulo (`crate::tor`, `tor.mode = inside`): Arti, the Rust
+# Tor, serves the onion service from this process. Without it only an
+# external tor can serve one.
+tor = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:tor-keymgr", "dep:safelog"]
 
 [dependencies]
 engine = { path = "../engine", optional = true }
@@ -55,6 +56,8 @@ subtle = "2.6.1"
 # checks and a per-process random signing key.
 hmac = "0.13.0"
 sha2 = "0.11.0"
+# Onion address checksums (`onion`).
+sha3 = "0.10.9"
 rand = "0.10.2"
 thiserror = "2.0.20"
 time = "0.3.55"
@@ -79,13 +82,14 @@ short-id = { path = "../short-id" }
 # Every file the pages link, baked in and named by its content (`assets`).
 static-assets = { path = "../static-assets" }
 
-# Arti, the Rust Tor: the `arti` feature's embedded onion service. rustls
-# and the workspace's rusqlite, so no OpenSSL and one SQLite.
-arti-client = { version = "0.47.0", optional = true, default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "vanguards"] }
+# Arti, the Rust Tor, for the `tor` feature: rustls and the workspace's
+# rusqlite, so no OpenSSL and one SQLite.
+arti-client = { version = "0.47.0", optional = true, default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "vanguards"] }
 tor-hsservice = { version = "0.47.0", optional = true }
 tor-cell = { version = "0.47.0", optional = true }
 safelog = { version = "0.10.0", optional = true }
 tor-proto = { version = "0.47.0", optional = true, features = ["tokio"] }
+tor-keymgr = { version = "0.47.0", optional = true }
 
 [build-dependencies]
 # Not used by the build script's own code: it builds this crate for
@@ -114,8 +118,3 @@ tokio-socks = "0.5"
 
 [lints]
 workspace = true
-
-# The Arti spike builds only with its feature.
-[[example]]
-name = "arti_onion"
-required-features = ["arti"]

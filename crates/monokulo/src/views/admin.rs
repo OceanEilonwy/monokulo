@@ -549,6 +549,8 @@ pub enum SettingsTab {
     Payments,
     Custody,
     Abuse,
+    /// How visitors on Tor reach this instance (`crate::tor`).
+    Tor,
     Server,
     Logging,
     /// The options files the settings are kept in, each with its Reload.
@@ -561,12 +563,13 @@ pub enum SettingsTab {
 impl SettingsTab {
     /// Every tab, in the order the tab bar shows them. General comes first:
     /// the engine's tabs stay empty until its connection there works.
-    pub const ALL: [SettingsTab; 9] = [
+    pub const ALL: [SettingsTab; 10] = [
         SettingsTab::General,
         SettingsTab::Nodes,
         SettingsTab::Payments,
         SettingsTab::Custody,
         SettingsTab::Abuse,
+        SettingsTab::Tor,
         SettingsTab::Server,
         SettingsTab::Logging,
         SettingsTab::Files,
@@ -581,6 +584,7 @@ impl SettingsTab {
             SettingsTab::Payments => "payments",
             SettingsTab::Custody => "custody",
             SettingsTab::Abuse => "abuse",
+            SettingsTab::Tor => "tor",
             SettingsTab::Server => "server",
             SettingsTab::Logging => "logging",
             SettingsTab::Files => "files",
@@ -595,6 +599,7 @@ impl SettingsTab {
             SettingsTab::Payments => "Payments",
             SettingsTab::Custody => "Key custody",
             SettingsTab::Abuse => "Abuse protection",
+            SettingsTab::Tor => "Tor",
             SettingsTab::Server => "Server",
             SettingsTab::Logging => "Logging",
             SettingsTab::Files => "Files",
@@ -642,6 +647,7 @@ impl SettingsTab {
                 Group::AbuseChallenge,
                 Group::AbuseVisitors,
             ],
+            SettingsTab::Tor => &[Group::TorService, Group::TorVisitors],
             SettingsTab::Server => &[Group::Server(Monokulo), Group::Server(Engine)],
             SettingsTab::Logging => &[Group::Logging(Monokulo), Group::Logging(Engine)],
             SettingsTab::Files => &[],
@@ -700,6 +706,10 @@ pub enum Group {
     AbuseLimits,
     AbuseChallenge,
     AbuseVisitors,
+    /// How Tor runs: inside monokulo, an external tor, or off.
+    TorService,
+    /// What visitors on the web hear about the onion address.
+    TorVisitors,
     /// One process's server settings.
     Server(SettingOwner),
     /// One process's logging.
@@ -722,16 +732,18 @@ impl Group {
         match owner {
             SettingOwner::Monokulo => match prefix {
                 "signup" => Group::Signup,
-                "public_uri" => Group::PublicAddress,
+                "public_uri" | "onion_uri" => Group::PublicAddress,
+                "tor" if rest == "onion_location" => Group::TorVisitors,
+                "tor" => Group::TorService,
                 "engine" => Group::EngineConnection,
                 "exchange_rate" => Group::ExchangeRates,
                 "webhooks" => Group::Webhooks,
                 "abuse" if matches!(rest, "challenge_bits" | "under_attack") => {
                     Group::AbuseChallenge
                 }
-                "abuse" if matches!(rest, "trusted_proxies" | "onion_listener") => {
-                    Group::AbuseVisitors
-                }
+                // Where an external tor connects: part of how Tor runs.
+                "abuse" if rest == "onion_listener" => Group::TorService,
+                "abuse" if rest == "trusted_proxies" => Group::AbuseVisitors,
                 "abuse" | "rate_limit" => Group::AbuseLimits,
                 "http_cache" | "database" | "server" | "crypto" => Group::Server(owner),
                 // The Query page's switch, beside the server's own settings.
@@ -778,6 +790,7 @@ impl Group {
             }
             Group::CustodyBackends | Group::Custody(_) | Group::CustodyCli => SettingsTab::Custody,
             Group::AbuseLimits | Group::AbuseChallenge | Group::AbuseVisitors => SettingsTab::Abuse,
+            Group::TorService | Group::TorVisitors => SettingsTab::Tor,
             Group::Server(_) => SettingsTab::Server,
             Group::Logging(_) => SettingsTab::Logging,
             Group::Other(_) => SettingsTab::Other,
@@ -792,7 +805,7 @@ impl Group {
         };
         match self {
             Group::Signup => "Sign-up".into(),
-            Group::PublicAddress => "Public address".into(),
+            Group::PublicAddress => "Public addresses".into(),
             Group::EngineConnection => "Engine connection".into(),
             Group::Network(network) => capitalized(shared::network::network_str(network)),
             Group::AllNodes => "Every node".into(),
@@ -807,6 +820,8 @@ impl Group {
             Group::AbuseLimits => "Request limits".into(),
             Group::AbuseChallenge => "Challenge".into(),
             Group::AbuseVisitors => "Telling visitors apart".into(),
+            Group::TorService => "Onion service".into(),
+            Group::TorVisitors => "Visitors on Tor".into(),
             Group::Server(o) | Group::Logging(o) | Group::Other(o) => owner(o).into(),
         }
     }
@@ -817,6 +832,7 @@ impl Group {
             Group::Orders => Some("Defaults for new stores. Each store's own settings win for its orders."),
             Group::ExchangeRates => Some("Which providers stores may price fiat orders with. Each store still chooses whether to use one, and in what order."),
             Group::AbuseLimits => Some("Requests a minute, per visitor, merchant or shop."),
+            Group::PublicAddress => Some("Each visitor gets links on the address they came in on: web visitors the web address, visitors on Tor the onion address."),
             Group::Webhooks => Some("How stores' webhooks are sent, and how long the engine keeps the order events they're sent from."),
             _ => None,
         }
@@ -870,6 +886,8 @@ impl std::fmt::Display for Group {
             Group::AbuseLimits => f.write_str("abuse-limits"),
             Group::AbuseChallenge => f.write_str("abuse-challenge"),
             Group::AbuseVisitors => f.write_str("abuse-visitors"),
+            Group::TorService => f.write_str("tor-service"),
+            Group::TorVisitors => f.write_str("tor-visitors"),
             Group::Server(o) => write!(f, "server-{}", owner(o)),
             Group::Logging(o) => write!(f, "logging-{}", owner(o)),
             Group::Other(o) => write!(f, "other-{}", owner(o)),
@@ -899,6 +917,10 @@ const FIELD_ORDER: &[&str] = &[
     "abuse.client_logs_per_min",
     "abuse.signed_in_per_min",
     "rate_limit.per_store_key_per_min",
+    "tor.mode",
+    "tor.state_dir",
+    "tor.hidden_service_dir",
+    "abuse.onion_listener",
     "server.bind",
     "server.worker_threads",
     "server.cpus",
@@ -1996,6 +2018,9 @@ fn settings_tab(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
                 "plugins using their store's secret key are never checked."
             }))
         }
+        @if tab == SettingsTab::Tor {
+            (ui::Hint::new("Monokulo can serve an onion address beside its web address. Visitors on Tor reach the same stores and checkouts without leaving Tor; everyone else keeps using the web address."))
+        }
         @if tab == SettingsTab::Nodes {
             (ui::Hint::new(html! {
                 "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
@@ -2089,6 +2114,11 @@ mod tests {
         &[
             ("signup.mode", M, General, "signup"),
             ("public_uri", M, General, "public-address"),
+            ("onion_uri", M, General, "public-address"),
+            ("tor.mode", M, Tor, "tor-service"),
+            ("tor.state_dir", M, Tor, "tor-service"),
+            ("tor.hidden_service_dir", M, Tor, "tor-service"),
+            ("tor.onion_location", M, Tor, "tor-visitors"),
             (
                 "exchange_rate.coingecko_enabled",
                 M,
@@ -2148,7 +2178,7 @@ mod tests {
             ("abuse.challenge_bits", M, Abuse, "abuse-challenge"),
             ("abuse.under_attack", M, Abuse, "abuse-challenge"),
             ("abuse.trusted_proxies", M, Abuse, "abuse-visitors"),
-            ("abuse.onion_listener", M, Abuse, "abuse-visitors"),
+            ("abuse.onion_listener", M, Tor, "tor-service"),
             ("abuse.stream_cap", M, Abuse, "abuse-limits"),
             ("rate_limit.per_store_key_per_min", M, Abuse, "abuse-limits"),
             ("logging.level", M, Logging, "logging-monokulo"),
