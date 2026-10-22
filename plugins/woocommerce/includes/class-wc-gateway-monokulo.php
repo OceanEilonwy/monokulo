@@ -82,6 +82,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	const CONNECT_PLATFORM = 'woocommerce';
 
 	/**
+	 * What this plugin calls itself on Monokulo's connect pages and
+	 * dashboard: Monokulo keeps no list of plugins, so each one names
+	 * itself (`crates/monokulo/src/plugins.rs`), sent as `name` on the
+	 * connect link and in `/finish`.
+	 */
+	const CONNECT_NAME = 'WooCommerce';
+
+	/**
 	 * The version of the connection this plugin stores, written to the
 	 * `connection_version` setting by `process_connect_return()` whenever
 	 * the connect flow succeeds.
@@ -1179,12 +1187,13 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 */
 	private function build_connect_start_url( $nonce ) {
 		return sprintf(
-			'%s/connect/%s?site_url=%s&return_url=%s&nonce=%s',
+			'%s/connect/%s?site_url=%s&return_url=%s&nonce=%s&name=%s',
 			rtrim( $this->get_control_plane_base_url(), '/' ),
 			rawurlencode( self::CONNECT_PLATFORM ),
 			rawurlencode( home_url( '/' ) ),
 			rawurlencode( $this->get_connect_return_url() ),
-			rawurlencode( $nonce )
+			rawurlencode( $nonce ),
+			rawurlencode( self::CONNECT_NAME )
 		);
 	}
 
@@ -1490,6 +1499,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 					array(
 						'token'       => $token,
 						'webhook_url' => $this->get_webhook_receiver_url(),
+						'name'        => self::CONNECT_NAME,
 					)
 				),
 				// Same generous, untuned headroom `create_monokulo_order()`

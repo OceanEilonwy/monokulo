@@ -256,7 +256,7 @@ settings! {
         key: "rate_limit.per_store_key_per_min",
         default: 600,
         check: range(1, 10_000_000),
-        description: "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin creating orders). These are never challenged.",
+        description: "Requests a minute a shop's server may make with its store's secret key (for example a shop plugin creating orders). These are never challenged.",
         example: "600",
     },
     KEY_CUSTODY_CLI_DOWNLOAD_URL: String {
@@ -321,7 +321,7 @@ settings! {
         key: "public_uri",
         default: String::new(),
         check: |v: &String| check_public_uri(v),
-        description: "This instance's web address, e.g. https://pay.example.com. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout; visitors on Tor get the onion address instead (onion_uri). Plugins can't connect until it is set.",
+        description: "This instance's web address, e.g. https://pay.example.com. Shop plugins are given it when they connect, and send customers to its checkout; visitors on Tor get the onion address instead (onion_uri). Plugins can't connect until it is set.",
         example: "https://pay.example.com",
     },
     ABUSE_TRUSTED_PROXIES: String {
@@ -436,7 +436,7 @@ settings! {
         key: "abuse.client_logs_per_min",
         default: 30,
         check: range(1, 100_000),
-        description: "Log reports a minute one client may send (browser problem reports, POS session timelines, WooCommerce plugin errors). Past it, reports are dropped with a 429 - never a challenge - and the client's other requests are unaffected.",
+        description: "Log reports a minute one client may send (browser problem reports, POS session timelines, shop plugin errors). Past it, reports are dropped with a 429 - never a challenge - and the client's other requests are unaffected.",
         example: "30",
     },
     ABUSE_CHALLENGE_BITS: u32 {

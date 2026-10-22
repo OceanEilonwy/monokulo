@@ -1,10 +1,11 @@
-//! The plugin connect flow (WBS 1.4.1, `docs/WOOCOMMERCE_ROADMAP.md`
-//! Stage 6): "OAuth-style one-click install" for a platform's plugin,
-//! written once for every platform (WooCommerce first). `platform` is a path
-//! parameter naming the plugin; the store itself has no platform.
+//! The plugin connect flow: "OAuth-style one-click install" for any shop
+//! plugin, written once for all of them. `platform` is a path parameter
+//! naming the plugin, a slug of its own choosing (`crate::plugins`): monokulo
+//! keeps no list of plugins, and the store itself has no platform. The
+//! plugin may add `name=` to say what to call it ("PrestaShop").
 //!
-//! 1. `GET /connect/{platform}?site_url=...&return_url=...&nonce=...` - the
-//!    plugin sends the merchant's browser here.
+//! 1. `GET /connect/{platform}?site_url=...&return_url=...&nonce=...[&name=...]`
+//!    - the plugin sends the merchant's browser here.
 //! 2. No session yet: redirect to `/dashboard/login?next=<this same URL>`
 //!    (`next` is checked to be a path on this site before it's followed,
 //!    `dashboard::SafePath`); signing up or logging in comes back here.
@@ -56,6 +57,9 @@ pub struct ConnectQuery {
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
+    /// What the plugin calls itself, to show the merchant; optional.
+    #[serde(default)]
+    pub name: String,
 }
 
 /// Where a connecting plugin's store credentials may be sent: its
@@ -155,13 +159,24 @@ pub(super) async fn plugin_problem(
     }
 }
 
-/// The plugin's shop, when `next` is a plugin's connect page (the merchant
-/// is logging in on the way to connecting a shop): its host.
-pub(crate) fn connecting_site(next: Option<&str>) -> Option<String> {
-    let query = next?.strip_prefix("/connect/")?.split_once('?')?.1;
-    url::form_urlencoded::parse(query.as_bytes())
-        .find(|(k, _)| k == "site_url")
-        .and_then(|(_, v)| crate::stores::normalize_site(&v).ok())
+/// The plugin and its shop, when `next` is a plugin's connect page (the
+/// merchant is logging in on the way to connecting a shop): what the
+/// plugin is called, and the shop's host.
+pub(crate) fn connecting_site(next: Option<&str>) -> Option<(String, String)> {
+    let (slug, query) = next?.strip_prefix("/connect/")?.split_once('?')?;
+    if !crate::plugins::valid_slug(slug) {
+        return None;
+    }
+    let field = |name: &str| {
+        url::form_urlencoded::parse(query.as_bytes())
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.into_owned())
+    };
+    let site = crate::stores::normalize_site(&field("site_url")?).ok()?;
+    Some((
+        crate::plugins::display_name(slug, &field("name").unwrap_or_default()),
+        site,
+    ))
 }
 
 /// Percent-encodes `s` for safe embedding as one query-string value - the
@@ -171,46 +186,47 @@ fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// The plugins the connect flow takes (the path names the plugin, not the
-/// store): anything else is not found.
-const PLATFORMS: [&str; 2] = ["woocommerce", "custom"];
-
-/// `GET /connect/{platform}` (WBS 1.4.1, steps 1-3). No valid session:
-/// redirect to `/dashboard/login` carrying a `next` that reconstructs this
-/// exact URL. A valid session: the store with the shop's host decides (see
-/// the module doc comment).
+/// `GET /connect/{platform}` (steps 1-3). No valid session: redirect to
+/// `/dashboard/login` carrying a `next` that reconstructs this exact URL.
+/// A valid session: the store with the shop's host decides (see the module
+/// doc comment). A path that can't name a plugin is not found.
 pub async fn start(
     State(state): State<AppState>,
     Path(platform): Path<String>,
     Query(query): Query<ConnectQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if !PLATFORMS.contains(&platform.as_str()) {
+    if !crate::plugins::valid_slug(&platform) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let Some((user, _)) = super::resolve_authed_user(&state, &headers).await else {
-        let this_url = format!(
+        let mut this_url = format!(
             "/connect/{}?site_url={}&return_url={}&nonce={}",
             platform,
             encode_query_value(&query.site_url),
             encode_query_value(&query.return_url),
             encode_query_value(&query.nonce),
         );
+        if !query.name.is_empty() {
+            this_url.push_str(&format!("&name={}", encode_query_value(&query.name)));
+        }
         return redirect_302(&format!(
             "/dashboard/login?next={}",
             encode_query_value(&this_url)
         ));
     };
+    let plugin = crate::plugins::display_name(&platform, &query.name);
     let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
     let host = crate::stores::normalize_site(&query.site_url).ok();
     // A link that can't work says why first.
     if let Some(why) = plugin_problem(&state, &query.site_url, &query.return_url).await {
-        return crate::views::connect::cannot_connect_page(&chrome, host.as_deref(), &why)
+        return crate::views::connect::cannot_connect_page(&chrome, &plugin, host.as_deref(), &why)
             .into_response();
     }
     let Some(host) = host else {
         return crate::views::connect::cannot_connect_page(
             &chrome,
+            &plugin,
             None,
             "The shop's address isn't a valid web address.",
         )
@@ -222,6 +238,8 @@ pub async fn start(
         Ok(Some(store)) if store.user_id == user.id => {
             let request = PluginRequestView {
                 platform,
+                name: query.name,
+                plugin,
                 site_url: query.site_url,
                 return_url: query.return_url,
                 nonce: query.nonce,
@@ -238,18 +256,22 @@ pub async fn start(
         }
         Ok(Some(_)) => crate::views::connect::cannot_connect_page(
             &chrome,
+            &plugin,
             Some(&host),
             &super::connections::SiteTaken::Someone.message(&host),
         )
         .into_response(),
         Ok(None) => {
-            let query = url::form_urlencoded::Serializer::new(String::new())
+            let mut setup = url::form_urlencoded::Serializer::new(String::new());
+            setup
                 .append_pair("plugin", &platform)
                 .append_pair("site_url", &query.site_url)
                 .append_pair("return_url", &query.return_url)
-                .append_pair("nonce", &query.nonce)
-                .finish();
-            redirect_302(&format!("/setup?{query}"))
+                .append_pair("nonce", &query.nonce);
+            if !query.name.is_empty() {
+                setup.append_pair("plugin_name", &query.name);
+            }
+            redirect_302(&format!("/setup?{}", setup.finish()))
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -264,6 +286,9 @@ pub struct ConfirmForm {
     pub nonce: String,
     #[serde(default)]
     pub connection_id: String,
+    /// What the plugin calls itself, carried from its connect link.
+    #[serde(default)]
+    pub name: String,
 }
 
 /// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4):
@@ -278,13 +303,15 @@ pub async fn confirm_submit(
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    if !PLATFORMS.contains(&platform.as_str()) {
+    if !crate::plugins::valid_slug(&platform) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let plugin = crate::plugins::display_name(&platform, &form.name);
     let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
     let host = crate::stores::normalize_site(&form.site_url).ok();
     let refuse = |why: &str| {
-        crate::views::connect::cannot_connect_page(&chrome, host.as_deref(), why).into_response()
+        crate::views::connect::cannot_connect_page(&chrome, &plugin, host.as_deref(), why)
+            .into_response()
     };
     let target = match ConnectTarget::parse(&form.site_url, &form.return_url) {
         Ok(target) => target,
@@ -350,6 +377,11 @@ pub struct FinishRequest {
     /// as it always has been for every caller before this field existed.
     #[serde(default)]
     pub webhook_url: Option<String>,
+    /// What the plugin calls itself ("PrestaShop"), kept on the store's
+    /// integration for the dashboard. Optional: without it the dashboard
+    /// shows the plugin's slug (`crate::plugins::display_name`).
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -402,17 +434,17 @@ pub struct FinishResponse {
 /// token, so the same token still works once the operator sets it.
 ///
 /// Once it succeeds, the store has an active integration
-/// (`store_integrations`): the plugin, the store's site, the plugin's
-/// version (its `Monokulo-Client` header, `woocommerce/<version>`) and the
-/// webhook it registered. While it's active the store's site is locked;
-/// connecting again adds a new row.
+/// (`store_integrations`): the plugin's slug and name, the store's site,
+/// the plugin's version (its `Monokulo-Client` header, `<slug>/<version>`)
+/// and the webhook it registered. While it's active the store's site is
+/// locked; connecting again adds a new row.
 pub async fn finish(
     State(state): State<AppState>,
     Path(platform): Path<String>,
     headers: axum::http::HeaderMap,
     Json(req): Json<FinishRequest>,
 ) -> Response {
-    if !PLATFORMS.contains(&platform.as_str()) {
+    if !crate::plugins::valid_slug(&platform) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let endpoint = match public_uri_for_plugins(&state).await {
@@ -516,6 +548,11 @@ pub async fn finish(
     }
 
     let version = super::pay::client_version(&headers, &platform).unwrap_or_default();
+    let name = req
+        .name
+        .as_deref()
+        .and_then(crate::plugins::clean_name)
+        .unwrap_or_default();
     let (store_id, site, webhook_url) = (row.id.clone(), row.site.clone(), req.webhook_url.clone());
     let recorded = state
         .db
@@ -523,6 +560,7 @@ pub async fn finish(
             db.connect_integration(&crate::db::NewStoreIntegration {
                 store_id: &store_id,
                 kind: &platform,
+                name: &name,
                 site: &site,
                 version: &version,
                 webhook_id: webhook_id.as_deref(),
@@ -647,9 +685,14 @@ mod tests {
             .append_pair("site_url", site_url)
             .append_pair("return_url", return_url)
             .append_pair("nonce", nonce)
+            .append_pair("name", PLUGIN_NAME)
             .finish();
-        format!("/connect/woocommerce?{query}")
+        format!("/connect/acme-cart?{query}")
     }
+
+    /// What the test plugin calls itself: monokulo knows no plugin, so a
+    /// made-up one connects like any real one.
+    const PLUGIN_NAME: &str = "Acme Cart";
 
     fn query_of(location: &str) -> Vec<(String, String)> {
         let query = location.split_once('?').map(|(_, q)| q).unwrap_or("");
@@ -723,20 +766,21 @@ mod tests {
             .unwrap();
         let store_id = crate::http::test_support::store_made(&made);
         let done = body_text(get(router, &location(&made), cookie).await).await;
-        assert!(done.contains("Back to WooCommerce"), "{done}");
+        assert!(done.contains("Back to Acme Cart"), "{done}");
         assert!(
             done.contains(r#"<li aria-current="step"><span>Done<small>Complete</small></span>"#)
         );
         router
             .clone()
             .oneshot(form_request(
-                "/connect/woocommerce",
+                "/connect/acme-cart",
                 Some(cookie),
                 &[
                     ("connection_id", &store_id),
                     ("site_url", site_url),
                     ("return_url", return_url),
                     ("nonce", nonce),
+                    ("name", PLUGIN_NAME),
                 ],
             ))
             .await
@@ -757,7 +801,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/connect/woocommerce/finish")
+                    .uri("/connect/acme-cart/finish")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -787,7 +831,7 @@ mod tests {
         )
         .await;
         let html = body_text(get(&router, &location(&start), &cookie).await).await;
-        assert!(html.contains("Connect your WooCommerce shop"), "{html}");
+        assert!(html.contains("Connect your Acme Cart shop"), "{html}");
         assert!(
             html.contains(r#"name="store_site" id="store-site" value="shop.example.com""#),
             "{html}"
@@ -814,7 +858,7 @@ mod tests {
         assert_eq!(params.get("nonce").map(String::as_str), Some("nonce-xyz"));
 
         // The store is the shop's: named as the merchant named it, its site
-        // the shop's host, made by the WooCommerce plugin.
+        // the shop's host, made by the plugin.
         let user = state
             .db
             .lock()
@@ -979,11 +1023,11 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/connect/woocommerce/finish")
+                    .uri("/connect/acme-cart/finish")
                     .header("content-type", "application/json")
-                    .header("monokulo-client", format!("woocommerce/{version}"))
+                    .header("monokulo-client", format!("acme-cart/{version}"))
                     .body(Body::from(
-                        serde_json::json!({ "token": token, "webhook_url": "https://shop.example.com/?wc-api=monokulo" })
+                        serde_json::json!({ "token": token, "webhook_url": "https://shop.example.com/?wc-api=monokulo", "name": PLUGIN_NAME })
                             .to_string(),
                     ))
                     .unwrap(),
@@ -1032,8 +1076,9 @@ mod tests {
                 rows[0].site.as_str(),
                 rows[0].version.as_str()
             ),
-            ("woocommerce", "shop.example.com", "0.4.0")
+            ("acme-cart", "shop.example.com", "0.4.0")
         );
+        assert_eq!(rows[0].name, PLUGIN_NAME, "the plugin's own name is kept");
         assert!(rows[0].webhook_id.is_some() && rows[0].disconnected_at.is_none());
         assert_eq!(
             rows[0].webhook_url.as_deref(),
@@ -1045,7 +1090,7 @@ mod tests {
         let page = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
             page.contains(&format!(
-                r##"Set by WooCommerce · <a href="{settings}?tab=connections#card-connections">see Connections</a>"##
+                r##"Set by Acme Cart · <a href="{settings}?tab=connections#card-connections">see Connections</a>"##
             )),
             "{page}"
         );
@@ -1158,7 +1203,7 @@ mod tests {
         let again = router
             .clone()
             .oneshot(form_request(
-                "/connect/woocommerce",
+                "/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com/"),
@@ -1181,7 +1226,7 @@ mod tests {
         let once_more = router
             .clone()
             .oneshot(form_request(
-                "/connect/woocommerce",
+                "/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com/"),
@@ -1212,7 +1257,7 @@ mod tests {
                     .uri(format!("/pay/{pk}/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {}", new_sk.expose()))
-                    .header("monokulo-client", "woocommerce/0.4.1")
+                    .header("monokulo-client", "acme-cart/0.4.1")
                     .body(Body::from(
                         serde_json::json!({ "amount": "1.00", "currency": "XMR" }).to_string(),
                     ))
@@ -1273,7 +1318,7 @@ mod tests {
     {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let original_uri = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=detour-nonce";
+        let original_uri = "/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=detour-nonce";
         let get_response = router
             .clone()
             .oneshot(
@@ -1338,7 +1383,7 @@ mod tests {
             .to_owned();
         let start = get(&router, original_uri, &cookie).await;
         assert!(
-            location(&start).starts_with("/setup?plugin=woocommerce&"),
+            location(&start).starts_with("/setup?plugin=acme-cart&"),
             "{}",
             location(&start)
         );
@@ -1373,7 +1418,7 @@ mod tests {
                 "/setup",
                 Some(&cookie),
                 &[
-                    ("plugin", "woocommerce"),
+                    ("plugin", "acme-cart"),
                     ("site_url", "https://shop.example.com"),
                     ("return_url", "https://shop.example.com/settings"),
                     ("nonce", "nonce-abc"),
@@ -1443,7 +1488,7 @@ mod tests {
         let post_response = router
             .clone()
             .oneshot(form_request(
-                "/connect/woocommerce",
+                "/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com/"),
@@ -1517,7 +1562,7 @@ mod tests {
             html.contains("shop.example.com is already connected to Monokulo here"),
             "{html}"
         );
-        assert!(!html.contains(r#"action="/connect/woocommerce""#), "{html}");
+        assert!(!html.contains(r#"action="/connect/acme-cart""#), "{html}");
     }
 
     /// The real security boundary: a signed-in user must not be able to get
@@ -1544,7 +1589,7 @@ mod tests {
             let response = router
                 .clone()
                 .oneshot(form_request(
-                    "/connect/woocommerce",
+                    "/connect/acme-cart",
                     Some(&attacker),
                     &[
                         ("site_url", site),
@@ -1599,7 +1644,7 @@ mod tests {
         let html = body_text(start).await;
         assert!(html.contains("hasn't set its public"), "got: {html}");
         assert!(
-            !html.contains(r#"action="/connect/woocommerce""#),
+            !html.contains(r#"action="/connect/acme-cart""#),
             "no form, got: {html}"
         );
         let setup = router
@@ -1608,7 +1653,7 @@ mod tests {
                 "/setup",
                 Some(&cookie),
                 &[
-                    ("plugin", "woocommerce"),
+                    ("plugin", "acme-cart"),
                     ("site_url", "https://other.example.com"),
                     ("return_url", "https://other.example.com/cb"),
                     ("nonce", "n2"),
@@ -1729,13 +1774,89 @@ mod tests {
         assert!(!ok("not a url", "https://shop.example.com/cb"));
     }
 
+    /// monokulo keeps no list of plugins: any slug a plugin picks reaches
+    /// the flow, named as it names itself, and a path that can't be a slug
+    /// is not found at every step.
+    #[tokio::test]
+    async fn any_plugin_connects_under_its_own_slug_and_only_slugs_are_found() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "any-plugin@example.com").await;
+        let query = "site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fback&nonce=n1";
+        let start = get(
+            &router,
+            &format!("/connect/never-heard-of-it?{query}&name=Never%20Heard"),
+            &cookie,
+        )
+        .await;
+        assert_eq!(start.status(), StatusCode::FOUND);
+        let setup = location(&start);
+        assert!(
+            setup.starts_with("/setup?plugin=never-heard-of-it&"),
+            "{setup}"
+        );
+        let html = body_text(get(&router, &setup, &cookie).await).await;
+        assert!(
+            html.contains("<h1>Connect your Never Heard shop</h1>"),
+            "{html}"
+        );
+        // No name: the slug stands in.
+        let start = get(&router, &format!("/connect/whmcs?{query}"), &cookie).await;
+        let html = body_text(get(&router, &location(&start), &cookie).await).await;
+        assert!(html.contains("<h1>Connect your Whmcs shop</h1>"), "{html}");
+
+        for slug in ["Acme", "a", "1cart", "my_cart", "-cart"] {
+            let start = get(&router, &format!("/connect/{slug}?{query}"), &cookie).await;
+            assert_eq!(start.status(), StatusCode::NOT_FOUND, "{slug}");
+            let confirm = router
+                .clone()
+                .oneshot(form_request(
+                    &format!("/connect/{slug}"),
+                    Some(&cookie),
+                    &[
+                        ("site_url", "https://shop.example.com"),
+                        ("return_url", "https://shop.example.com/back"),
+                        ("nonce", "n1"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(confirm.status(), StatusCode::NOT_FOUND, "{slug}");
+            let finish = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/connect/{slug}/finish"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"token":"x"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(finish.status(), StatusCode::NOT_FOUND, "{slug}");
+        }
+    }
+
     #[test]
     fn the_connecting_site_is_read_from_a_connect_link_only() {
         let next =
-            "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
+            "/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
+        let plugin_and_site = |next: &str| super::connecting_site(Some(next));
         assert_eq!(
-            super::connecting_site(Some(next)).as_deref(),
-            Some("shop.example.com")
+            plugin_and_site(next),
+            Some(("Acme-cart".to_owned(), "shop.example.com".to_owned()))
+        );
+        // The name the plugin gave, when it gave one.
+        assert_eq!(
+            plugin_and_site(&format!("{next}&name=Acme%20Cart")).map(|(name, _)| name),
+            Some("Acme Cart".to_owned())
+        );
+        // A path that can't name a plugin is no connect link.
+        assert_eq!(
+            plugin_and_site("/connect/Acme?site_url=https%3A%2F%2Fshop.example.com"),
+            None
         );
         assert_eq!(super::connecting_site(Some("/setup")), None);
         assert_eq!(super::connecting_site(None), None);
@@ -1764,12 +1885,12 @@ mod tests {
         )
         .await;
         assert!(html.contains("a different website than the shop"), "{html}");
-        assert!(!html.contains(r#"action="/connect/woocommerce""#), "{html}");
+        assert!(!html.contains(r#"action="/connect/acme-cart""#), "{html}");
 
         let response = router
             .clone()
             .oneshot(form_request(
-                "/connect/woocommerce",
+                "/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("connection_id", &connection_id),

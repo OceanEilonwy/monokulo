@@ -113,6 +113,7 @@ pub const COLUMNS: Classification = Classification {
         ("store_integrations", "id", Visible),
         ("store_integrations", "store_id", Visible),
         ("store_integrations", "kind", Visible),
+        ("store_integrations", "name", Visible),
         ("store_integrations", "site", Visible),
         ("store_integrations", "version", Visible),
         ("store_integrations", "webhook_id", Visible),

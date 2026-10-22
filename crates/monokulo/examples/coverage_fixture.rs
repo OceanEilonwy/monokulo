@@ -551,6 +551,7 @@ async fn connect_plugin(
         .connect_integration(&monokulo::db::NewStoreIntegration {
             store_id: &store,
             kind: "woocommerce",
+            name: "WooCommerce",
             site: "shop.localhost",
             version: "0.4.0",
             webhook_id: Some(&webhook_id),

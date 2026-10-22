@@ -25,7 +25,7 @@ pub(super) struct Page {
 }
 
 /// The docs, in the order of their tabs.
-pub(super) const PAGES: [Page; 6] = [
+pub(super) const PAGES: [Page; 7] = [
     Page {
         source: "index.md",
         dir: "",
@@ -52,6 +52,11 @@ pub(super) const PAGES: [Page; 6] = [
         tab: "Webhooks",
     },
     Page {
+        source: "plugins.md",
+        dir: "plugins",
+        tab: "Shop plugins",
+    },
+    Page {
         source: "woocommerce.md",
         dir: "woocommerce",
         tab: "WooCommerce",
@@ -60,6 +65,10 @@ pub(super) const PAGES: [Page; 6] = [
 
 /// The sample shop's files, from `examples/geomart/` to `geomart/`.
 const GEOMART: [&str; 2] = ["index.html", "done.html"];
+
+/// The webhook test vectors plugins test against (monokulo's
+/// `webhooks::vectors` keeps them true), beside the plugins page.
+const VECTORS: &str = "webhook-vectors.json";
 
 /// `cargo xtask pages docs --out DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -99,6 +108,8 @@ pub(super) fn write(root: &Path, out: &Path) -> io::Result<()> {
     for (from, to) in copies {
         fs::copy(&from, &to).map_err(|e| at(&from, e))?;
     }
+    let vectors = root.join("xtask/src/pages/docs").join(VECTORS);
+    fs::copy(&vectors, out.join("plugins").join(VECTORS)).map_err(|e| at(&vectors, e))?;
     Ok(())
 }
 
@@ -292,6 +303,16 @@ mod tests {
         );
         assert!(out.join("geomart/index.html").is_file());
         assert!(out.join("geomart/done.html").is_file());
+        // The plugins page links the webhook vectors beside it.
+        let plugins = fs::read_to_string(out.join("plugins/index.html")).unwrap();
+        assert!(
+            plugins.contains(r#"href="webhook-vectors.json""#),
+            "{plugins}"
+        );
+        let vectors = fs::read_to_string(out.join("plugins/webhook-vectors.json")).unwrap();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&vectors).unwrap()["deliveries"].is_array()
+        );
         // Every page links its files from the site's assets/, however deep
         // it is.
         for page in &PAGES {

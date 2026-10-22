@@ -646,7 +646,7 @@ fn wallets_label(n: usize) -> String {
 
 /// "Store": its name, its website, optional, and its payment description,
 /// optional. Any store takes payments at the till; a website lets it show
-/// the checkout on its pages and connect the WooCommerce plugin.
+/// the checkout on its pages and connect a shop plugin.
 fn store_card(store: &StoreSettingsData) -> Markup {
     let name = store.shown("store_name", &store.display_name);
     let site = store.shown("store_site", &store.site);
@@ -992,10 +992,10 @@ fn diagnostics_card(store: &StoreSettingsData) -> Markup {
         "Diagnostics",
         Field::new("Send diagnostic logs", "client-logging")
             .help(Some("client-logging-help"), html! {
-                "Turn this on while tracking down a problem with the POS, the checkout or the WooCommerce plugin. "
+                "Turn this on while tracking down a problem with the POS, the checkout or a shop plugin. "
                 "Script errors from this store's dashboard pages and checkout, a timeline of each POS session (connection "
                 "drops, the app going to the background, orders created, backgrounded and completed), and the "
-                "WooCommerce plugin's errors when its \"Send errors to Monokulo\" option is on, then go to this "
+                "errors from a shop plugin whose \"Send errors to Monokulo\" option is on, then go to this "
                 "instance's logs, where its admins can read them. Customer notes, addresses and keys are never included."
             })
             .render(super::controls::switch(

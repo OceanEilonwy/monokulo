@@ -26,17 +26,9 @@ use crate::views::store_site::{IntegrationView, OpenOrders, SiteView, WebsiteCha
 use super::orders::{decrypt_sk, load_owned_connection};
 use super::{AppState, AuthedUser, OwnedStore};
 
-/// What a plugin is called.
-pub(super) fn integration_name(kind: &str) -> String {
-    match kind {
-        "woocommerce" => "WooCommerce".to_owned(),
-        other => {
-            let mut chars = other.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(chars).collect()
-            })
-        }
-    }
+/// What a connected plugin is called: the name it gave, else its slug.
+pub(super) fn integration_name(row: &StoreIntegrationRow) -> String {
+    crate::plugins::display_name(&row.kind, &row.name)
 }
 
 fn integration_view(
@@ -45,7 +37,7 @@ fn integration_view(
 ) -> IntegrationView {
     IntegrationView {
         id: row.id.clone(),
-        name: integration_name(&row.kind),
+        name: integration_name(row),
         site: row.site.clone(),
         version: row.version.clone(),
         connected: clock.text(row.connected_at),
@@ -94,11 +86,13 @@ pub(super) async fn site_view(
     let (integrations, domains, from_plugin) = state
         .db
         .read(move |db| {
-            Ok::<_, crate::db::DbError>((
-                db.list_integrations(&id)?,
-                db.list_store_domains(&id)?,
-                db.order_ids_from_source(&id, "woocommerce")?,
-            ))
+            let integrations = db.list_integrations(&id)?;
+            // The active plugin's orders, which disconnecting it waits on.
+            let from_plugin = match integrations.iter().find(|i| i.disconnected_at.is_none()) {
+                Some(active) => db.order_ids_from_source(&id, &active.kind)?,
+                None => Default::default(),
+            };
+            Ok::<_, crate::db::DbError>((integrations, db.list_store_domains(&id)?, from_plugin))
         })
         .await
         .unwrap_or_default();

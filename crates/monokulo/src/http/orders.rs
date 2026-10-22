@@ -114,9 +114,13 @@ pub(super) async fn order_rows(
 ) -> Vec<OrderRowViewModel> {
     let ids: Vec<crate::db::OrderId> = orders.iter().map(|o| o.order_id.clone()).collect();
     let id = row.id.clone();
-    let (fiat_metadata, details) = state
+    let (fiat_metadata, details, plugins) = state
         .db
         .read(move |db| {
+            let plugins = db
+                .list_integrations(&id)
+                .inspect_err(|e| tracing::error!(error = %e, "could not read the store's plugins"))
+                .unwrap_or_default();
             // Missing metadata shows as "—"; the failure is logged rather
             // than hidden.
             let metadata = db
@@ -129,7 +133,7 @@ pub(super) async fn order_rows(
                 .order_listing_details(&id, &ids)
                 .inspect_err(|e| tracing::error!(error = %e, "could not read order details"))
                 .unwrap_or_default();
-            Ok::<_, crate::db::DbError>((metadata, details))
+            Ok::<_, crate::db::DbError>((metadata, details, plugins))
         })
         .await
         .unwrap_or_default();
@@ -156,7 +160,7 @@ pub(super) async fn order_rows(
             OrderRowViewModel {
                 order_id: o.order_id,
                 reference: o.merchant_order_id,
-                source: source_label(detail.source.as_deref()).to_string(),
+                source: source_label(detail.source.as_deref(), &plugins),
                 status,
                 amount,
                 currency,
@@ -166,17 +170,24 @@ pub(super) async fn order_rows(
         .collect()
 }
 
-/// How an order's source reads in the orders table. An order made with
-/// the store's secret key is the WooCommerce plugin's when the plugin said
-/// so (`Monokulo-Client: woocommerce/…`), else the Store API's.
-fn source_label(source: Option<&str>) -> &'static str {
+/// How an order's source reads in the orders table. Any other source is a
+/// plugin's slug (`http::pay`'s `order_source`), shown by the name the
+/// store's newest integration of that plugin gave (`plugins`, newest
+/// first), else by the slug.
+fn source_label(source: Option<&str>, plugins: &[crate::db::StoreIntegrationRow]) -> String {
     match source {
-        Some("pos") => "POS",
-        Some("dashboard") => "Dashboard",
-        Some("woocommerce") => "WooCommerce",
-        Some("api") => "Store API",
-        Some("website") => "Website",
-        _ => "—",
+        Some("pos") => "POS".to_owned(),
+        Some("dashboard") => "Dashboard".to_owned(),
+        Some("api") => "Store API".to_owned(),
+        Some("website") => "Website".to_owned(),
+        Some(slug) => {
+            let name = plugins
+                .iter()
+                .find(|i| i.kind == slug)
+                .map_or("", |i| i.name.as_str());
+            crate::plugins::display_name(slug, name)
+        }
+        None => "—".to_owned(),
     }
 }
 
@@ -5315,9 +5326,10 @@ mod tests {
     /// guess - the real-match/no-match cases are already exhaustively covered
     /// at the engine's own `http/tests.rs` level.
     /// The store's Orders page is the full history: every order with its
-    /// reference and where it came from (POS, dashboard, the WooCommerce
-    /// plugin with the store key and its `Monokulo-Client` header, any
-    /// other caller with the key, a browser on the website), a POS
+    /// reference and where it came from (POS, dashboard, the store's
+    /// connected plugin with the store key and its slug in the
+    /// `Monokulo-Client` header, any other caller with the key, a browser
+    /// on the website), a POS
     /// cancellation shown as cancelled, a search by reference or order id,
     /// and pages of 50 newest first.
     #[tokio::test]
@@ -5419,16 +5431,50 @@ mod tests {
             &row.tenant_secret_token_encrypted,
         )
         .unwrap();
-        let mut from_plugin = json_post(
-            format!("/pay/{pk}/orders"),
-            Some(format!("Bearer {secret}")),
-            serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": "wc-1042" }),
-        );
-        from_plugin.headers_mut().insert(
-            crate::http::pay::CLIENT_HEADER,
-            "woocommerce/0.4.0".parse().unwrap(),
-        );
-        let plugin = created_id(router.clone().oneshot(from_plugin).await.unwrap()).await;
+        // The store's connected plugin, which named itself.
+        state
+            .db
+            .lock()
+            .connect_integration(&crate::db::NewStoreIntegration {
+                store_id: &row.id,
+                kind: "acme-cart",
+                name: "Acme Cart",
+                site: &row.site,
+                version: "0.3.0",
+                webhook_id: None,
+                webhook_url: None,
+                at: 1_000,
+            })
+            .unwrap();
+        let keyed = |reference: &str, client: &str| {
+            let mut request = json_post(
+                format!("/pay/{pk}/orders"),
+                Some(format!("Bearer {secret}")),
+                serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": reference }),
+            );
+            request
+                .headers_mut()
+                .insert(crate::http::pay::CLIENT_HEADER, client.parse().unwrap());
+            request
+        };
+        // The plugin's slug in the header, in any case, is the plugin's.
+        let plugin = created_id(
+            router
+                .clone()
+                .oneshot(keyed("ac-1042", "Acme-Cart/0.4.0"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        // A client the store hasn't connected is the Store API.
+        let other = created_id(
+            router
+                .clone()
+                .oneshot(keyed("oc-7", "opencart/1.0.0"))
+                .await
+                .unwrap(),
+        )
+        .await;
         let api = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
             serde_json::json!({ "amount": "2.50", "currency": "XMR", "merchant_order_id": "srv-9" }))).await.unwrap()).await;
         // The header alone, from a browser, names nothing.
@@ -5439,7 +5485,7 @@ mod tests {
         );
         claimed.headers_mut().insert(
             crate::http::pay::CLIENT_HEADER,
-            "woocommerce/0.4.0".parse().unwrap(),
+            "acme-cart/0.4.0".parse().unwrap(),
         );
         let claimed = created_id(router.clone().oneshot(claimed).await.unwrap()).await;
         let website = created_id(
@@ -5488,7 +5534,8 @@ mod tests {
             (&pos, "POS", "Table 4", "Waiting for payment"),
             (&cancelled, "POS", "Table 9", "Cancelled"),
             (&dashboard, "Dashboard", "invoice-7", "Waiting for payment"),
-            (&plugin, "WooCommerce", "wc-1042", "Waiting for payment"),
+            (&plugin, "Acme Cart", "ac-1042", "Waiting for payment"),
+            (&other, "Store API", "oc-7", "Waiting for payment"),
             (&api, "Store API", "srv-9", "Waiting for payment"),
             (&claimed, "Website", "web-3", "Waiting for payment"),
             (&website, "Website", "—", "Waiting for payment"),
@@ -5529,8 +5576,8 @@ mod tests {
         let html = page("?q=nothing-like-this").await;
         assert!(html.contains("No orders match “nothing-like-this”."));
 
-        // 7 so far; 44 more make 51: the first page has 50 and an Older link.
-        for i in 0..44 {
+        // 8 so far; 43 more make 51: the first page has 50 and an Older link.
+        for i in 0..43 {
             router
                 .clone()
                 .oneshot(json_post(

@@ -12,10 +12,10 @@ use super::{DisplayStatus, OrderStatus, PageChrome};
 /// the full engine `OrderView`.
 pub struct OrderRowViewModel {
     pub order_id: crate::db::OrderId,
-    /// The shop's own reference (a POS note, a WooCommerce order number) -
+    /// The shop's own reference (a POS note, a shop plugin's order number) -
     /// caller-supplied text, always escaped.
     pub reference: Option<String>,
-    /// Where the order came from: "POS", "WooCommerce", "Website", ...
+    /// Where the order came from: "POS", a plugin's name, "Website", ...
     pub source: String,
     /// The engine's status, or "cancelled" for an unpaid order the POS
     /// cancelled (the engine does not know about POS cancellations).

@@ -33,7 +33,7 @@
 //!
 //! `/connect/{platform}` and `/connect/{platform}/finish` (`connect` module,
 //! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
-//! (`docs/WOOCOMMERCE_ROADMAP.md` Stage 6): a plugin sends the merchant's
+//! for any shop plugin, which names itself (`crate::plugins`): a plugin sends the merchant's
 //! browser to `GET /connect/{platform}`, which redirects to
 //! `/dashboard/login` (carrying a validated `next`, see
 //! `dashboard::login_submit`) if there's no session yet; with one, the
@@ -691,7 +691,7 @@ pub fn build_router(state: AppState) -> Router {
             "/pay/{pk}/orders/{order_id}/share",
             axum::routing::get(checkout::checkout_share_page),
         )
-        // Errors the WooCommerce plugin forwards (structured_logging.md 2.4).
+        // Errors a shop plugin forwards (structured_logging.md 2.4).
         .route(
             "/pay/{pk}/logs",
             post(telemetry_client::plugin::forward).layer(axum::extract::DefaultBodyLimit::max(

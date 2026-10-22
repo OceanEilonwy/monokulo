@@ -80,7 +80,7 @@ fn entries(
                 plugin: plugin
                     .as_ref()
                     .filter(|p| p.webhook_id.as_deref() == Some(webhook.id.as_str()))
-                    .map(|p| super::store_site::integration_name(&p.kind)),
+                    .map(super::store_site::integration_name),
                 webhook,
             })
         })

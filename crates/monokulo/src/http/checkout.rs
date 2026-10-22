@@ -302,7 +302,7 @@ pub async fn checkout_page(
 /// "Framed" is judged by `Sec-Fetch-Dest`, which browsers set and pages
 /// can't: `iframe` or `frame` pass. A request without the header (an older
 /// browser, or anything that isn't a browser) is let through, as are
-/// orders created with the key (WooCommerce, the dashboard, the POS and
+/// orders created with the key (a shop plugin, the dashboard, the POS and
 /// payment links shared from it), orders monokulo has no record of, and
 /// every order of an unrestricted store.
 async fn must_open_from_shop(

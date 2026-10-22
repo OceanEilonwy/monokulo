@@ -1,4 +1,4 @@
-//! The WooCommerce plugin's connect flow (`/connect/{platform}`,
+//! A shop plugin's connect flow (`/connect/{platform}`,
 //! `http::connect`), where it isn't setup: connecting the plugin to the
 //! merchant's store that already has the shop's site, or saying why it
 //! can't connect. A shop with no store yet goes through setup (`/setup`,
@@ -44,6 +44,10 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
 /// gives it the store's key.
 pub struct PluginRequestView {
     pub platform: String,
+    /// The name the plugin sent, as sent (empty for none), carried on.
+    pub name: String,
+    /// What the plugin is called, as it's shown.
+    pub plugin: String,
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
@@ -62,10 +66,10 @@ pub fn existing_store_page(
     store_name: &str,
     onion: Option<&str>,
 ) -> Markup {
-    let header = ui::PageHeader::new("Connect your WooCommerce shop");
+    let header = ui::PageHeader::new(format!("Connect your {} shop", request.plugin));
     let body = html! {
         p {
-            "The WooCommerce plugin on " strong { (request.host) } " asked to connect. Your store "
+            "The " (request.plugin) " plugin on " strong { (request.host) } " asked to connect. Your store "
             a href=(format!("/dashboard/stores/{store_id}")) { (store_name) } " already uses that site, so it "
             "connects to that store: the same orders, settings and wallet."
         }
@@ -83,6 +87,9 @@ pub fn existing_store_page(
                 input type="hidden" name="site_url" value=(request.site_url);
                 input type="hidden" name="return_url" value=(request.return_url);
                 input type="hidden" name="nonce" value=(request.nonce);
+                @if !request.name.is_empty() {
+                    input type="hidden" name="name" value=(request.name);
+                }
                 (ui::Button::new(format!("Connect to {store_name}"))
                     .variant(ui::ButtonVariant::Primary)
                     .kind(ui::ButtonType::Submit))
@@ -94,11 +101,16 @@ pub fn existing_store_page(
 
 /// `GET`/`POST /connect/{platform}` when the plugin can't connect: why, and
 /// no form.
-pub fn cannot_connect_page(chrome: &PageChrome, host: Option<&str>, why: &str) -> Markup {
-    let header = ui::PageHeader::new("Connect your WooCommerce shop");
+pub fn cannot_connect_page(
+    chrome: &PageChrome,
+    plugin: &str,
+    host: Option<&str>,
+    why: &str,
+) -> Markup {
+    let header = ui::PageHeader::new(format!("Connect your {plugin} shop"));
     let body = html! {
         @if let Some(host) = host {
-            p { "The WooCommerce plugin on " strong { (host) } " asked to connect to your account." }
+            p { "The " (plugin) " plugin on " strong { (host) } " asked to connect to your account." }
         }
         (ui::Alert::new(why, ui::Tone::Error))
         p { a href="/" { "Go to your dashboard" } }
@@ -116,7 +128,9 @@ mod tests {
 
     fn request() -> PluginRequestView {
         PluginRequestView {
-            platform: "woocommerce".into(),
+            platform: "acme-cart".into(),
+            name: "Acme Cart".into(),
+            plugin: "Acme Cart".into(),
             site_url: "https://shop.example.com".into(),
             return_url: "https://shop.example.com/settings".into(),
             nonce: "nonce-abc".into(),
@@ -128,10 +142,16 @@ mod tests {
     fn a_shop_your_store_already_has_connects_to_it_with_one_button() {
         let html =
             existing_store_page(&chrome(), &request(), "c_1", "Corner shop", None).into_string();
-        assert!(html.contains(r#"action="/connect/woocommerce""#));
+        assert!(
+            html.contains("<h1>Connect your Acme Cart shop</h1>"),
+            "{html}"
+        );
+        assert!(html.contains("The Acme Cart plugin on <strong>shop.example.com</strong>"));
+        assert!(html.contains(r#"action="/connect/acme-cart""#));
         assert!(html.contains(r#"name="connection_id" value="c_1""#));
         assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
+        assert!(html.contains(r#"name="name" value="Acme Cart""#));
         assert!(html.contains("Connect to Corner shop"));
         assert_eq!(html.matches(r#"data-variant="primary""#).count(), 1);
         assert!(!html.contains(".onion"), "nothing about Tor without it");
@@ -144,14 +164,33 @@ mod tests {
         );
     }
 
+    /// A plugin's name is its own word for itself, shown as text: markup in
+    /// it is escaped.
+    #[test]
+    fn a_plugins_name_is_shown_as_text() {
+        let request = PluginRequestView {
+            plugin: "<b>Shop</b>".into(),
+            ..request()
+        };
+        let html =
+            existing_store_page(&chrome(), &request, "c_1", "Corner shop", None).into_string();
+        assert!(
+            html.contains("The &lt;b&gt;Shop&lt;/b&gt; plugin"),
+            "{html}"
+        );
+        assert!(!html.contains("<b>Shop</b>"));
+    }
+
     #[test]
     fn a_shop_that_cant_connect_says_why_and_shows_no_form() {
         let html = cannot_connect_page(
             &chrome(),
+            "Acme Cart",
             Some("shop.example.com"),
             "No public address yet.",
         )
         .into_string();
+        assert!(html.contains("Connect your Acme Cart shop"));
         assert!(html.contains("No public address yet."));
         assert!(!html.contains("<form"));
     }

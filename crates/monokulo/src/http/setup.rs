@@ -1,7 +1,7 @@
 //! Setting up a store (`/setup`): Store, then Wallet, then Done.
 //!
 //! Sign-up lands here, the dashboard's "add a store" comes here, and so
-//! does a WooCommerce plugin connecting a shop that has no store yet
+//! does a shop plugin connecting a shop that has no store yet
 //! (`http::connect`). The store step's answers ([`StoreDraft`]) ride along
 //! as hidden fields and query parameters through the wallet step's
 //! screens, and are checked again at each one: nothing is made until the
@@ -44,6 +44,10 @@ pub struct StoreDraft {
     /// and its nonce (`/connect/{platform}`).
     #[serde(default)]
     pub plugin: String,
+    /// What the plugin calls itself, when it said (its connect link's
+    /// `name`).
+    #[serde(default)]
+    pub plugin_name: String,
     #[serde(default)]
     pub site_url: String,
     #[serde(default)]
@@ -65,6 +69,7 @@ impl StoreDraft {
     fn carried(&self) -> Vec<(&'static str, String)> {
         [
             ("plugin", &self.plugin),
+            ("plugin_name", &self.plugin_name),
             ("site_url", &self.site_url),
             ("return_url", &self.return_url),
             ("nonce", &self.nonce),
@@ -79,6 +84,11 @@ impl StoreDraft {
 
     fn has_plugin(&self) -> bool {
         !self.plugin.is_empty()
+    }
+
+    /// What the plugin is called, as it's shown.
+    fn plugin_display_name(&self) -> String {
+        crate::plugins::display_name(&self.plugin, &self.plugin_name)
     }
 }
 
@@ -128,6 +138,7 @@ async fn store_page(
             .clone()
             .unwrap_or_else(|| draft.store_site.clone()),
         plugin_host,
+        plugin: draft.plugin_display_name(),
         carried: draft.carried(),
         name_error,
         site_error,
@@ -152,11 +163,18 @@ pub(super) async fn check(
             let chrome = super::page_chrome(state, Some(user), "/setup").await;
             let host = crate::stores::normalize_site(&draft.site_url).ok();
             return Err(Box::new(
-                views::connect::cannot_connect_page(&chrome, host.as_deref(), &why).into_response(),
+                views::connect::cannot_connect_page(
+                    &chrome,
+                    &draft.plugin_display_name(),
+                    host.as_deref(),
+                    &why,
+                )
+                .into_response(),
             ));
         }
         Some(views::setup::PluginReturn {
             platform: draft.plugin.clone(),
+            name: draft.plugin_name.clone(),
             site_url: draft.site_url.clone(),
             return_url: draft.return_url.clone(),
             nonce: draft.nonce.clone(),
@@ -354,6 +372,9 @@ async fn make_store(
                     .append_pair("site_url", &plugin.site_url)
                     .append_pair("return_url", &plugin.return_url)
                     .append_pair("nonce", &plugin.nonce);
+                if !plugin.name.is_empty() {
+                    query.append_pair("plugin_name", &plugin.name);
+                }
             }
             if skipped_backup {
                 query.append_pair("skipped", "1");
@@ -530,6 +551,8 @@ pub struct DoneQuery {
     #[serde(default)]
     plugin: String,
     #[serde(default)]
+    plugin_name: String,
+    #[serde(default)]
     site_url: String,
     #[serde(default)]
     return_url: String,
@@ -566,6 +589,7 @@ pub async fn done(
     let plugin = (!query.plugin.is_empty() && !query.return_url.is_empty()).then(|| {
         views::setup::PluginReturn {
             platform: query.plugin.clone(),
+            name: query.plugin_name.clone(),
             site_url: query.site_url.clone(),
             return_url: query.return_url.clone(),
             nonce: query.nonce.clone(),

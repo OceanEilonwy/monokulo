@@ -152,8 +152,8 @@ mod tests {
     }
 }
 
-/// `POST /pay/{pk}/logs`: warnings and errors the WooCommerce plugin
-/// forwards when its "Send errors to Monokulo" option is on
+/// `POST /pay/{pk}/logs`: warnings and errors a shop plugin forwards
+/// when its "Send errors to Monokulo" option is on
 /// (structured_logging.md 2.4), kept only when the store opted in to
 /// client logs. Authenticated with the store's secret key,
 /// so the store is known and the level can be trusted as far as `error`;
@@ -180,7 +180,8 @@ pub mod plugin {
 
     #[derive(Deserialize)]
     struct PluginEntry {
-        /// WooCommerce's level names (`WC_Log_Levels`).
+        /// A PSR-3 level name (`error`, `warning`, ...), as WordPress's
+        /// `WC_Log_Levels` and most PHP shops use.
         level: String,
         message: String,
         trace_id: Option<String>,
@@ -218,8 +219,14 @@ pub mod plugin {
         {
             return StatusCode::FORBIDDEN;
         }
+        // The plugin, by the slug it names itself with; any other client
+        // is just a plugin.
+        let source = crate::http::pay::client_name(&headers)
+            .map(|name| name.to_ascii_lowercase())
+            .filter(|name| crate::plugins::valid_slug(name))
+            .unwrap_or_else(|| "plugin".to_owned());
         for entry in logs.entries {
-            let span = tracing::info_span!(parent: None, "woocommerce report", source = "woocommerce", store.id = %store.id);
+            let span = tracing::info_span!(parent: None, "plugin report", source = %source, store.id = %store.id);
             if let Some(trace_id) = entry
                 .trace_id
                 .as_deref()

@@ -156,6 +156,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 			$html,
 			'return_url must be this site\'s own admin-post.php callback, url-encoded as a single query value.'
 		);
+		$this->assertStringContainsString( 'name=WooCommerce', $html, 'The link names the plugin, which Monokulo shows the merchant.' );
 
 		// The real proof this isn't just cosmetically present in the markup:
 		// the exact transient key `process_connect_return()` will later read
@@ -211,6 +212,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 			'webhook_url should be this plugin\'s own real woocommerce_api_{id} URL (WC()->api_request_url()), ' .
 			'registered now for WBS 1.5.4\'s receiver to pick up later - see call_connect_finish()\'s own doc comment.'
 		);
+		$this->assertSame( 'WooCommerce', $sent_body['name'], 'The plugin names itself: Monokulo keeps no list of plugins.' );
 
 		// --- The redirect back to this gateway's own settings screen. ---
 		$this->assertStringContainsString( 'page=wc-settings', $redirect_url );
