@@ -1,5 +1,5 @@
 [package]
-name = "static-assets-macros"
+name = "bakery"
 version.workspace = true
 repository.workspace = true
 edition = "2021"

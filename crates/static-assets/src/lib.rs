@@ -80,7 +80,7 @@ impl Baked {
 /// compiles: `bake!("static/", "app.js")` under its directory,
 /// `bake!(out_dir "/web/app.js")` from its build script's output,
 /// `bake!(join "\n" ["a.css", "b.css"])` several files one after another.
-pub use static_assets_macros::bake;
+pub use bakery::bake;
 
 // `bake!` names this crate by its path, from here too.
 extern crate self as static_assets;

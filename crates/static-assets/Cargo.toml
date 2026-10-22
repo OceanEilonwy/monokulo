@@ -8,11 +8,11 @@ edition = "2021"
 # `/static/` files (`monokulo::assets`) and the GitHub Pages site's
 # `assets/` (`xtask pages`). One digest, one naming rule and one `asset!`
 # table, so a browser may keep any of them for as long as it likes. Its one
-# dependency, `bake!` (static-assets-macros), compresses the text files when
-# the crate listing them compiles.
+# dependency, the `bakery` crate's `bake!`, compresses the text files when the
+# crate listing them compiles.
 
 [dependencies]
-static-assets-macros = { path = "../static-assets-macros" }
+bakery = { path = "../bakery" }
 
 [lints]
 workspace = true
