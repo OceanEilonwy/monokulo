@@ -19,6 +19,9 @@ embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
 # feature), and in a test build the test engine's stand-in for it. Off by
 # default; every test build turns it on (`--features monokulo/snp`).
 snp = ["engine?/snp", "engine-test-support/snp"]
+# Spike: the onion service run in-process by Arti instead of a tor daemon
+# (`examples/arti_onion.rs`). Off by default.
+arti = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:safelog"]
 
 [dependencies]
 engine = { path = "../engine", optional = true }
@@ -75,6 +78,14 @@ key-custody = { path = "../key-custody", default-features = false }
 short-id = { path = "../short-id" }
 # Every file the pages link, baked in and named by its content (`assets`).
 static-assets = { path = "../static-assets" }
+
+# Arti, the Rust Tor: the `arti` feature's embedded onion service. rustls
+# and the workspace's rusqlite, so no OpenSSL and one SQLite.
+arti-client = { version = "0.47.0", optional = true, default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "vanguards"] }
+tor-hsservice = { version = "0.47.0", optional = true }
+tor-cell = { version = "0.47.0", optional = true }
+safelog = { version = "0.10.0", optional = true }
+tor-proto = { version = "0.47.0", optional = true, features = ["tokio"] }
 
 [build-dependencies]
 # Not used by the build script's own code: it builds this crate for
