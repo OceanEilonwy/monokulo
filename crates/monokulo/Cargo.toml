@@ -22,7 +22,7 @@ snp = ["engine?/snp", "engine-test-support/snp"]
 # Tor inside monokulo (`crate::tor`, `tor.mode = inside`): Arti, the Rust
 # Tor, serves the onion service from this process. Without it only an
 # external tor can serve one.
-tor = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:tor-keymgr", "dep:safelog"]
+tor = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:tor-keymgr", "dep:tor-rtcompat", "dep:safelog", "dep:hyper", "dep:hyper-util", "dep:http-body-util"]
 
 [dependencies]
 engine = { path = "../engine", optional = true }
@@ -84,12 +84,16 @@ static-assets = { path = "../static-assets" }
 
 # Arti, the Rust Tor, for the `tor` feature: rustls and the workspace's
 # rusqlite, so no OpenSSL and one SQLite.
-arti-client = { version = "0.47.0", optional = true, default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "vanguards"] }
+arti-client = { version = "0.47.0", optional = true, default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "vanguards"] }
 tor-hsservice = { version = "0.47.0", optional = true }
 tor-cell = { version = "0.47.0", optional = true }
 safelog = { version = "0.10.0", optional = true }
 tor-proto = { version = "0.47.0", optional = true, features = ["tokio"] }
 tor-keymgr = { version = "0.47.0", optional = true }
+tor-rtcompat = { version = "0.47.0", optional = true }
+# Fetching an onion shop's verification file over a Tor stream.
+hyper = { version = "1.11.1", optional = true, features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", optional = true, features = ["tokio"] }
 
 [build-dependencies]
 # Not used by the build script's own code: it builds this crate for

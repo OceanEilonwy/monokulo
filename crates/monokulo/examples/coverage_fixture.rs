@@ -1230,7 +1230,12 @@ async fn main() {
                 ..Default::default()
             },
         )),
-        dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
+        proofs: monokulo::embed_domains::Proofs {
+            dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
+            onion: Arc::new(monokulo::embed_domains::UnavailableTor(
+                "Tor is unavailable in browser tests".into(),
+            )),
+        },
         engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };

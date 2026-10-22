@@ -229,9 +229,15 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // real-stagenet test.
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Arc::default(),
-        dns: Arc::new(monokulo::embed_domains::UnavailableDns(
-            "DNS is not available in tests".to_owned(),
-        )),
+        proofs: monokulo::embed_domains::Proofs {
+            dns: Arc::new(monokulo::embed_domains::UnavailableDns(
+                "DNS is not available in tests".to_owned(),
+            )),
+            onion: Arc::new(monokulo::embed_domains::UnavailableTor(
+                "Tor is not available in tests".to_owned(),
+            )),
+        },
+        tor: monokulo::tor::Tor::default(),
         log_store: None,
         webhooks: Arc::default(),
         // Public signup: `signup.mode` defaults to invite-only, which would

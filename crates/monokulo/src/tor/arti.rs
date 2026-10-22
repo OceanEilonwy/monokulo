@@ -37,6 +37,13 @@ const MAX_STREAMS_PER_CIRCUIT: u32 = 64;
 /// Tor, which encrypts and authenticates the connection itself.
 const PORT: u16 = 80;
 
+/// How long fetching an onion shop's verification file may take, finding
+/// the shop on Tor included.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The running Tor client.
+pub type Client = std::sync::Arc<TorClient<tor_rtcompat::PreferredRuntime>>;
+
 /// Runs the onion service until `stopped` changes or its sender is dropped,
 /// starting it again [`RETRY`] after each error.
 pub async fn run(
@@ -119,6 +126,8 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
         .await
         .map_err(|e| format!("Tor couldn't join the network: {e}"))?;
     drop(progress);
+    tor.set_client(Some(client.clone()));
+    let _client = ClearOnDrop(tor.clone());
 
     let service = OnionServiceConfigBuilder::default()
         .nickname(nickname)
@@ -140,6 +149,11 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
         doing: "Publishing the onion address".to_string(),
     });
     tracing::info!(tor.address = %address, "tor: onion service started, publishing its address");
+    // Where C tor keeps it too, for the operator and the OpenWrt app.
+    let hostname = wanted.state_dir.join(super::HOSTNAME_FILE);
+    if let Err(e) = std::fs::write(&hostname, format!("{address}\n")) {
+        tracing::warn!(path = %hostname.display(), error = %e, "tor: couldn't write the onion address to a file");
+    }
 
     let _status = {
         let tor = tor.clone();
@@ -223,6 +237,70 @@ async fn hand_over(request: StreamRequest, peer: OnionPeer, connections: TorConn
             connections.send(stream, peer).await;
         }
         Err(e) => tracing::debug!(error = %e, "tor: a visitor's stream closed before it opened"),
+    }
+}
+
+/// `domain`'s verification file (`embed_domains::WELL_KNOWN_PATH`), fetched
+/// over Tor on a circuit of its own: `Ok(None)` for any answer but a 200
+/// (redirects aren't followed) or one bigger than
+/// `embed_domains::WELL_KNOWN_MAX_BYTES`.
+pub async fn fetch_well_known(client: Client, domain: &str) -> Result<Option<String>, String> {
+    use http_body_util::BodyExt;
+    let fetch = async {
+        let mut prefs = arti_client::StreamPrefs::new();
+        prefs.connect_to_onion_services(arti_client::config::BoolOrAuto::Explicit(true));
+        prefs.new_isolation_group();
+        let stream = client
+            .connect_with_prefs((domain, 80), &prefs)
+            .await
+            .map_err(|e| format!("the shop couldn't be reached on Tor ({e})"))?;
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
+                .await
+                .map_err(|e| format!("the shop didn't answer HTTP ({e})"))?;
+        let connection = AbortOnDrop(tokio::spawn(async move {
+            let _ = connection.await;
+        }));
+        let request = axum::http::Request::get(crate::embed_domains::WELL_KNOWN_PATH)
+            .header(axum::http::header::HOST, domain)
+            .header(axum::http::header::USER_AGENT, "monokulo")
+            .body(http_body_util::Empty::<bytes::Bytes>::new())
+            .map_err(|e| e.to_string())?;
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|e| format!("the shop didn't answer ({e})"))?;
+        if response.status() != axum::http::StatusCode::OK {
+            drop(connection);
+            return Ok(None);
+        }
+        let body = http_body_util::Limited::new(
+            response.into_body(),
+            crate::embed_domains::WELL_KNOWN_MAX_BYTES,
+        )
+        .collect()
+        .await;
+        drop(connection);
+        Ok(body
+            .ok()
+            .map(|body| String::from_utf8_lossy(&body.to_bytes()).into_owned()))
+    };
+    tokio::time::timeout(FETCH_TIMEOUT, fetch)
+        .await
+        .map_err(|_| {
+            format!(
+                "the shop didn't answer within {} seconds",
+                FETCH_TIMEOUT.as_secs()
+            )
+        })?
+}
+
+/// Forgets the Tor client when the service it came with stops.
+struct ClearOnDrop(Tor);
+
+impl Drop for ClearOnDrop {
+    fn drop(&mut self) {
+        self.0.set_client(None);
     }
 }
 

@@ -5,7 +5,10 @@
 			"ubus": {
 				"service": [ "list" ]
 			},
-			"uci": [ "monokulo" ]
+			"uci": [ "monokulo" ],
+			"file": {
+				"*/tor/hostname": [ "read" ]
+			}
 		},
 		"write": {
 			"ubus": {

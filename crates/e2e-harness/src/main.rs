@@ -303,9 +303,15 @@ async fn main() {
         encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Arc::default(),
-        dns: Arc::new(monokulo::embed_domains::UnavailableDns(
-            "DNS is not available in tests".to_owned(),
-        )),
+        proofs: monokulo::embed_domains::Proofs {
+            dns: Arc::new(monokulo::embed_domains::UnavailableDns(
+                "DNS is not available in tests".to_owned(),
+            )),
+            onion: Arc::new(monokulo::embed_domains::UnavailableTor(
+                "Tor is not available in tests".to_owned(),
+            )),
+        },
+        tor: monokulo::tor::Tor::default(),
         log_store: None,
         // Public signup: `signup.mode` defaults to invite-only, which would
         // refuse the plain `/dashboard/signup` below (a re-rendered `200`

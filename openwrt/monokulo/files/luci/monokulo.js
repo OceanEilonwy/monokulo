@@ -4,6 +4,7 @@
 'require rpc';
 'require uci';
 'require ui';
+'require fs';
 
 // Services > Monokulo: whether monokulo (with the engine inside it) is
 // running, and the settings it starts with. Everything else (Monero nodes, stores, abuse
@@ -36,11 +37,18 @@ function state(instances, name) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([ uci.load('monokulo'), instances() ]);
+		return Promise.all([ uci.load('monokulo'), instances() ]).then(function(data) {
+			// The onion address Tor inside monokulo wrote, once it has one.
+			var dir = uci.get('monokulo', 'main', 'data_dir') || '/srv/monokulo';
+			return L.resolveDefault(fs.read(dir + '/tor/hostname'), '').then(function(hostname) {
+				return data.concat([ (hostname || '').trim() ]);
+			});
+		});
 	},
 
 	render: function(data) {
 		var running = data[1];
+		var onion = data[2];
 		var m, s, o;
 
 		m = new form.Map('monokulo', _('Monokulo'),
@@ -62,6 +70,19 @@ return view.extend({
 			return text;
 		};
 
+		o = s.option(form.DummyValue, '_onion', _('Onion service'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			if (uci.get('monokulo', 'main', 'onion') !== '1')
+				return _('Off here: turn on “Onion service” below, or set it on monokulo’s admin page (Tor tab).');
+			if (!(running.monokulo && running.monokulo.running))
+				return _('Starts with monokulo.');
+			if (!onion)
+				return '<strong>' + _('Starting Tor') + '</strong> &middot; ' + _('a first start takes up to a minute; on a slow router, up to three.');
+			return '<strong>' + _('Reachable on Tor') + '</strong> &middot; <code>http://' + onion + '</code><br>' +
+				_('Customers on Tor reach the checkout at this address. No firewall rule or port forward is needed: Tor connects out.');
+		};
+
 		o = s.option(form.Button, '_restart', _('Restart'),
 			_('Stops monokulo and starts it again with the settings saved here. Checkouts open in a browser reconnect on their own.'));
 		o.inputtitle = _('Restart monokulo');
@@ -79,7 +100,9 @@ return view.extend({
 		o = s.option(form.DummyValue, '_secrets', _('Secrets'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
-			return _('The encryption key for monokulo’s data is in <code>/etc/monokulo/secrets</code>, made on first start. <strong>Back it up</strong> (for example <code>scp root@router:/etc/monokulo/secrets .</code>): without it, monokulo’s data can’t be read.');
+			var dir = uci.get('monokulo', 'main', 'data_dir') || '/srv/monokulo';
+			return _('The encryption key for monokulo’s data is in <code>/etc/monokulo/secrets</code>, made on first start. <strong>Back it up</strong> (for example <code>scp root@router:/etc/monokulo/secrets .</code>): without it, monokulo’s data can’t be read.') +
+				' ' + _('The onion address’s key is in <code>%s/tor</code>: back it up too, or the address changes.').format(dir);
 		};
 
 		s = m.section(form.NamedSection, 'main', 'monokulo', _('Settings'));
@@ -98,8 +121,14 @@ return view.extend({
 		o = s.option(form.ListValue, 'listen', _('Listen on'));
 		o.value('lan', _('LAN only'));
 		o.value('all', _('All interfaces'));
-		o.value('loopback', _('This router only (127.0.0.1), e.g. behind tor'));
+		o.value('loopback', _('This router only (127.0.0.1)'));
 		o.default = 'lan';
+		o.description = _('With the onion service on, “This router only” still serves customers on Tor: Tor reaches monokulo inside the process.');
+
+		o = s.option(form.Flag, 'onion', _('Onion service'),
+			_('Run Tor inside monokulo and serve an onion address beside the port above, so customers on Tor can pay without the router being reachable from the internet. Uses about 80 MB of memory, and some CPU while Tor starts. Off: as set on monokulo’s own admin page.'));
+		o.default = '0';
+		o.rmempty = false;
 
 		o = s.option(form.Value, 'data_dir', _('Data folder'),
 			_('Databases, logs and the options file monokulo’s admin page saves. Must be on storage, not /tmp. Kept across firmware upgrades if left at the default.'));

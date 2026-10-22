@@ -207,9 +207,10 @@ pub struct AppState {
     /// Rate limits, the open-stream cap and (later) challenges, per client
     /// (`crate::abuse`, `http::abuse`).
     pub abuse: Arc<crate::abuse::AbuseProtection>,
-    /// TXT lookups for verified embed domains (`crate::embed_domains`) -
-    /// the machine's own resolver in the real binary, a fake in tests.
-    pub dns: Arc<dyn crate::embed_domains::TxtLookup>,
+    /// How verified embed domains are proved (`crate::embed_domains`): TXT
+    /// lookups for a web domain, an onion shop's file fetched over Tor
+    /// inside monokulo - the real ones in the binary, fakes in tests.
+    pub proofs: crate::embed_domains::Proofs,
     /// monokulo's settings registry (admin_settings_v2.md part 1): saves from
     /// the admin page go through it and apply to the running process.
     pub settings: Arc<crate::settings::MonokuloSettings>,
@@ -277,9 +278,14 @@ impl AppState {
             encryption_key: TEST_ENCRYPTION_KEY,
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Default::default(),
-            dns: Arc::new(crate::embed_domains::UnavailableDns(
-                "DNS is not available in tests".to_string(),
-            )),
+            proofs: crate::embed_domains::Proofs {
+                dns: Arc::new(crate::embed_domains::UnavailableDns(
+                    "DNS is not available in tests".to_string(),
+                )),
+                onion: Arc::new(crate::embed_domains::UnavailableTor(
+                    "Tor is not available in tests".to_string(),
+                )),
+            },
             settings: Self::test_settings(None),
             log_store: None,
             webhooks: Arc::default(),
