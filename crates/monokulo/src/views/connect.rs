@@ -52,12 +52,15 @@ pub struct PluginRequestView {
 }
 
 /// `GET /connect/{platform}` for a shop whose site one of the merchant's
-/// stores already has: connect the plugin to that store.
+/// stores already has: connect the plugin to that store. With an onion
+/// address (`onion`), it says that customers shopping on the shop's own
+/// onion address pay there.
 pub fn existing_store_page(
     chrome: &PageChrome,
     request: &PluginRequestView,
     store_id: &str,
     store_name: &str,
+    onion: Option<&str>,
 ) -> Markup {
     let header = ui::PageHeader::new("Connect your WooCommerce shop");
     let body = html! {
@@ -65,6 +68,12 @@ pub fn existing_store_page(
             "The WooCommerce plugin on " strong { (request.host) } " asked to connect. Your store "
             a href=(format!("/dashboard/stores/{store_id}")) { (store_name) } " already uses that site, so it "
             "connects to that store: the same orders, settings and wallet."
+        }
+        @if let Some(onion) = onion {
+            (ui::Hint::new(html! {
+                "Customers shopping on the shop's own .onion address pay at " code { (onion) } ", so they stay on Tor. "
+                "Everyone else pays on the web address."
+            }))
         }
         div class="step-foot" {
             (ui::LinkButton::new("Cancel", crate::stores::site_link(&request.host)))
@@ -117,13 +126,22 @@ mod tests {
 
     #[test]
     fn a_shop_your_store_already_has_connects_to_it_with_one_button() {
-        let html = existing_store_page(&chrome(), &request(), "c_1", "Corner shop").into_string();
+        let html =
+            existing_store_page(&chrome(), &request(), "c_1", "Corner shop", None).into_string();
         assert!(html.contains(r#"action="/connect/woocommerce""#));
         assert!(html.contains(r#"name="connection_id" value="c_1""#));
         assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
         assert!(html.contains("Connect to Corner shop"));
         assert_eq!(html.matches(r#"data-variant="primary""#).count(), 1);
+        assert!(!html.contains(".onion"), "nothing about Tor without it");
+        let onion = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let html = existing_store_page(&chrome(), &request(), "c_1", "Corner shop", Some(onion))
+            .into_string();
+        assert!(
+            html.contains(onion) && html.contains("stay on Tor"),
+            "{html}"
+        );
     }
 
     #[test]

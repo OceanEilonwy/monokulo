@@ -205,6 +205,18 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private $api_base_url;
 
 	/**
+	 * Monokulo's onion address, e.g. `http://abc...xyz.onion` - the
+	 * `onion_endpoint` `/finish` returned, when Monokulo has one
+	 * (`connect.rs::FinishResponse::onion_endpoint`). A customer shopping on
+	 * this shop's own `.onion` address is sent to its checkout there, so
+	 * they never leave Tor; orders are still created at `$api_base_url`,
+	 * from this server. Empty when Monokulo has no onion address.
+	 *
+	 * @var string
+	 */
+	private $onion_base_url;
+
+	/**
 	 * The store's public key (`pk_...`) this gateway creates orders under,
 	 * saved by the connect flow.
 	 *
@@ -385,6 +397,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// outbound call in a way that looks identical to a genuinely wrong
 		// key.
 		$this->api_base_url     = trim( (string) $this->get_option( 'endpoint', '' ) );
+		$this->onion_base_url   = trim( (string) $this->get_option( 'onion_endpoint', '' ) );
 		$this->tenant_public_key = trim( (string) $this->get_option( 'public_key', '' ) );
 		$this->secret_token      = trim( (string) $this->get_option( 'secret_token', '' ) );
 		$this->webhook_signing_secret = trim( (string) $this->get_option( 'webhook_signing_secret', '' ) );
@@ -562,6 +575,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				'description' => __( 'The public address of the Monokulo instance this store uses. Filled in automatically by Connect above.', 'monokulo' ),
 				'default'     => '',
 				'placeholder' => 'https://pay.example.com',
+				'desc_tip'    => true,
+			),
+			'onion_endpoint' => array(
+				'title'       => __( 'Monokulo onion address', 'monokulo' ),
+				'type'        => 'text',
+				'description' => __( 'Where customers shopping on this shop\'s own .onion address are sent to pay, so they stay on Tor. Filled in automatically by Connect above; empty when Monokulo has no onion address.', 'monokulo' ),
+				'default'     => '',
+				'placeholder' => 'http://abc...xyz.onion',
 				'desc_tip'    => true,
 			),
 			'public_key'  => array(
@@ -998,6 +1019,40 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
+	 * Where this customer is sent to pay: Monokulo's onion address when they
+	 * are shopping on this shop's own `.onion` address and Monokulo has one,
+	 * so they never leave Tor; its web address otherwise.
+	 *
+	 * @return string
+	 */
+	private function customer_base_url() {
+		if ( '' !== $this->onion_base_url && self::is_onion_host( self::request_host() ) ) {
+			return $this->onion_base_url;
+		}
+		return $this->api_base_url;
+	}
+
+	/**
+	 * The host the customer's browser asked for, without a port.
+	 *
+	 * @return string
+	 */
+	private static function request_host() {
+		$host = isset( $_SERVER['HTTP_HOST'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) : '';
+		return strtolower( (string) preg_replace( '/:\d+$/', '', $host ) );
+	}
+
+	/**
+	 * Whether `$host` is an onion address.
+	 *
+	 * @param string $host A host name.
+	 * @return bool
+	 */
+	private static function is_onion_host( $host ) {
+		return '.onion' === substr( rtrim( strtolower( $host ), '.' ), -6 );
+	}
+
+	/**
 	 * `{endpoint}/pay/{pk}/orders/{order_id}` - Monokulo's checkout page for
 	 * the order, where the customer is sent to pay. `rawurlencode()` on
 	 * `order_id` is cheap defence against its shape ever changing.
@@ -1009,7 +1064,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private function get_checkout_url( $order_id ) {
 		return sprintf(
 			'%s/pay/%s/orders/%s',
-			rtrim( $this->api_base_url, '/' ),
+			rtrim( $this->customer_base_url(), '/' ),
 			rawurlencode( $this->tenant_public_key ),
 			rawurlencode( $order_id )
 		);
@@ -1345,6 +1400,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		}
 
 		$this->update_option( 'endpoint', $finish['endpoint'] );
+		// Only ever an `http://….onion` address: anything else is not where a
+		// customer on Tor should be sent.
+		$onion = isset( $finish['onion_endpoint'] ) ? (string) $finish['onion_endpoint'] : '';
+		$host  = (string) wp_parse_url( $onion, PHP_URL_HOST );
+		$this->update_option( 'onion_endpoint', 0 === strpos( $onion, 'http://' ) && self::is_onion_host( $host ) ? $onion : '' );
 		$this->update_option( 'public_key', $finish['public_key'] );
 		$this->update_option( 'secret_token', $finish['secret_token'] );
 		if ( ! empty( $finish['webhook_signing_secret'] ) ) {
@@ -1412,7 +1472,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *                            with (0 on a transport failure), so the
 	 *                            caller can tell "not ready yet" (503) apart.
 	 * @return array{public_key: string, secret_token: string, endpoint: string,
-	 *               webhook_signing_secret?: string}|null
+	 *               onion_endpoint?: string, webhook_signing_secret?: string}|null
 	 */
 	private function call_connect_finish( $token, &$status_code = 0 ) {
 		$url = rtrim( $this->get_control_plane_base_url(), '/' ) . '/connect/' . self::CONNECT_PLATFORM . '/finish';

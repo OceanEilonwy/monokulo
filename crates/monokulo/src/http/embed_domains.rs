@@ -508,7 +508,7 @@ pub async fn check_domain(
         .map(|last| embed_domains::MIN_CHECK_GAP_SECS - (now - last))
         .filter(|wait| *wait > 0);
     if wait.is_none()
-        && embed_domains::check_and_record(&state.db, state.dns.as_ref(), &domain, now)
+        && embed_domains::check_and_record(&state.db, &state.proofs, &domain, now)
             .await
             .is_err()
     {
@@ -670,7 +670,7 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            dns,
+            proofs: crate::embed_domains::test_support::proofs(dns, Arc::default()),
             engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
             ..AppState::for_tests()
         };
@@ -1131,7 +1131,7 @@ mod tests {
             "_monokulo.store-home.example",
             &embed_domains::record_value(&row.token),
         );
-        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix())
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
             .await
             .unwrap();
         state
@@ -1251,7 +1251,7 @@ mod tests {
             "_monokulo.store-home.example",
             &embed_domains::record_value(&row.token),
         );
-        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix())
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
             .await
             .unwrap();
         state
@@ -1504,7 +1504,7 @@ mod tests {
             "_monokulo.store-home.example",
             &embed_domains::record_value(&row.token),
         );
-        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix())
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, crate::now_unix())
             .await
             .unwrap();
         assert_eq!(
@@ -1628,7 +1628,7 @@ mod tests {
         assert!(!warnings.shown_nowhere);
         dns.remove("_monokulo.store-home.example");
         let later = crate::now_unix() + embed_domains::RECHECK_EVERY_SECS;
-        embed_domains::recheck_due(&state.db, dns.as_ref(), later).await;
+        embed_domains::recheck_due(&state.db, &state.proofs, later).await;
         let failing_since = state
             .db
             .lock()
@@ -1665,6 +1665,87 @@ mod tests {
                 .status(),
             StatusCode::OK
         );
+    }
+
+    /// An onion shop is added by its address, told to serve a file rather
+    /// than publish a record, and verified when Tor fetches the file; until
+    /// then the check says what the shop answered.
+    #[tokio::test]
+    async fn an_onion_shop_is_verified_by_the_file_it_serves_over_tor() {
+        const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let (dns, onion) = (
+            Arc::new(FakeDns::default()),
+            Arc::new(crate::embed_domains::test_support::FakeOnion::default()),
+        );
+        let (state, _engine) = test_state(dns.clone()).await;
+        let state = AppState {
+            proofs: crate::embed_domains::test_support::proofs(dns, onion.clone()),
+            ..state
+        };
+        let router = build_router(state.clone());
+        let session = session_for(&router, "onion-domains@example.com").await;
+        let id = create_store(&router, &session).await;
+        let settings = format!("/dashboard/stores/{id}/settings");
+
+        let to = post_location(
+            &router,
+            &format!("{settings}/domains"),
+            &session,
+            &format!("domain=http%3A%2F%2F{ONION}%2Fshop"),
+        )
+        .await;
+        let row = state
+            .db
+            .lock()
+            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .unwrap()
+            .into_iter()
+            .find(|d| d.domain == ONION)
+            .expect("the onion shop, as its service address");
+        let (status, html) = send(&router, "GET", &to, &session, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("<h1>Serve the file</h1>"), "got: {html}");
+        assert!(
+            html.contains(&format!("http://{ONION}/.well-known/monokulo-verify")),
+            "got: {html}"
+        );
+        assert!(
+            html.contains(&format!("monokulo-verify={}", row.token)),
+            "got: {html}"
+        );
+        assert!(
+            !html.contains("_monokulo."),
+            "no DNS record for an onion shop: {html}"
+        );
+
+        // Not served yet: the check says where the file should be.
+        let check = format!("{settings}/domains/{}/check", row.id);
+        post_location(&router, &check, &session, "from=check").await;
+        let (_, html) = send(&router, "GET", &check, &session, None).await;
+        assert!(html.contains("<h1>Check the file</h1>"), "got: {html}");
+        assert!(html.contains("The shop answered, but"), "got: {html}");
+        assert!(!html.contains("DNS changes"), "got: {html}");
+
+        // Served, among another store's line: verified.
+        onion.serve(
+            ONION,
+            &format!(
+                "monokulo-verify=someone-else\n{}\n",
+                embed_domains::record_value(&row.token)
+            ),
+        );
+        state
+            .db
+            .lock()
+            .record_store_domain_check(&row.id, 0, None)
+            .unwrap();
+        post_location(&router, &check, &session, "from=check").await;
+        let (_, html) = send(&router, "GET", &check, &session, None).await;
+        assert!(
+            html.contains(&format!("{ONION} is verified.")),
+            "got: {html}"
+        );
+        assert!(html.contains("Keep the file"), "got: {html}");
     }
 
     #[tokio::test]
@@ -1756,8 +1837,8 @@ mod tests {
         );
         assert!(html.contains(">Not verified</span>"), "got: {html}");
 
-        // The same domain twice, and an onion address, are refused on the
-        // domain's page, keeping what was typed.
+        // The same domain twice, and an old (v2) onion address, are refused
+        // on the domain's page, keeping what was typed.
         let (status, html) = send(
             &router,
             "POST",
@@ -1781,7 +1862,7 @@ mod tests {
             Some("domain=abcdefghijklmnop.onion"),
         )
         .await;
-        assert!(html.contains("Onion addresses can"), "got: {html}");
+        assert!(html.contains("isn't a valid onion address"), "got: {html}");
 
         // No record yet: the check page says so, with the reason, and
         // nothing claims it was saved.
@@ -1817,7 +1898,7 @@ mod tests {
             &embed_domains::record_value(&row.token),
         );
         let now = crate::now_unix();
-        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, now)
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
             .unwrap();
         let (_, html) = send(&router, "GET", &connections, &session, None).await;
@@ -1830,7 +1911,7 @@ mod tests {
         // The record disappears: the daily re-check finds it missing and the
         // store page warns, with no way to dismiss that warning.
         dns.remove("_monokulo.shop.example");
-        embed_domains::recheck_due(&state.db, dns.as_ref(), now + RECHECK_EVERY_SECS).await;
+        embed_domains::recheck_due(&state.db, &state.proofs, now + RECHECK_EVERY_SECS).await;
         let row = shop(&state);
         assert!(row.failing_since.is_some());
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
@@ -2102,7 +2183,7 @@ mod tests {
         // restricted to it.
         dns.publish(name, &embed_domains::record_value(&row.token));
         let now = crate::now_unix();
-        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, now)
+        embed_domains::check_and_record(&state.db, &state.proofs, &row, now)
             .await
             .unwrap();
         state
@@ -2113,7 +2194,7 @@ mod tests {
 
         // A day later the re-check lands in an outage.
         dns.fail(name, "SERVFAIL");
-        embed_domains::recheck_due(&state.db, dns.as_ref(), now + RECHECK_EVERY_SECS).await;
+        embed_domains::recheck_due(&state.db, &state.proofs, now + RECHECK_EVERY_SECS).await;
         let failing_since = state
             .db
             .lock()
@@ -2149,7 +2230,7 @@ mod tests {
         // records at the time it was run for, not the wall clock).
         embed_domains::recheck_due(
             &state.db,
-            dns.as_ref(),
+            &state.proofs,
             failing_since + embed_domains::FAILING_RECHECK_EVERY_SECS + 1,
         )
         .await;

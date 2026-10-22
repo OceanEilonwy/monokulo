@@ -42,6 +42,13 @@ pub struct DomainView {
     pub wait: Option<i64>,
 }
 
+impl DomainView {
+    /// An onion shop: proved by a file it serves over Tor, not DNS.
+    fn onion(&self) -> bool {
+        crate::embed_domains::is_onion(&self.domain)
+    }
+}
+
 /// The store a domain page belongs to, for its crumbs and links.
 pub struct StoreRef<'a> {
     pub id: &'a str,
@@ -94,6 +101,17 @@ fn tag(status: DomainStatus) -> ui::Tag {
 }
 
 fn record(domain: &DomainView) -> Markup {
+    if domain.onion() {
+        let address = crate::embed_domains::well_known_url(&domain.domain);
+        return html! {
+            dl class="dns-record well-known-file" {
+                dt { "Address" }
+                dd { (ui::CopyValue::new(address.as_str()).copy_label(format!("Copy the file's address for {}", domain.domain))) }
+                dt { "Contents" }
+                dd { (ui::CopyValue::new(domain.record_value.as_str()).copy_label(format!("Copy the file's contents for {}", domain.domain))) }
+            }
+        };
+    }
     html! {
         (ui::DnsRecord::new(
             "TXT",
@@ -151,7 +169,10 @@ pub fn card(store: &StoreRef, domain: &DomainView) -> Markup {
         (card_only(store, domain))
         (ui::Dialog::new(remove_dialog.as_str(), format!("{remove_dialog}-title"), html! {
             (ui::DialogTitle::new(format!("{remove_dialog}-title"), html! { "Remove " (domain.domain) "?" }))
-            p { "You would need a new DNS record to verify it again." }
+            p {
+                @if domain.onion() { "You would need to serve a new file to verify it again." }
+                @else { "You would need a new DNS record to verify it again." }
+            }
             (ui::DialogActions::new(html! {
                 (ui::Button::new("Keep it").attr("data-closes-dialog", ""))
                 (ui::Button::new(with_icon(icons::TRASH, "Remove domain")).variant(ui::ButtonVariant::Danger).kind(ui::ButtonType::Submit)
@@ -193,7 +214,10 @@ pub fn card_only(store: &StoreRef, domain: &DomainView) -> Markup {
         .attr("data-domain", domain.domain.as_str());
     let card = match &domain.reason {
         Some(reason) if domain.status != DomainStatus::Verified => card.body(html! {
-            p class="record-intro" { "Publish this record, then check again:" }
+            p class="record-intro" {
+                @if domain.onion() { "Serve this file on the shop, then check again:" }
+                @else { "Publish this record, then check again:" }
+            }
             (record(domain))
             (ui::FieldNote::new(html! { (icon(icons::WARNING)) " " (reason) }).tone(ui::NoteTone::Pending))
             (wait_note(domain.wait))
@@ -299,7 +323,7 @@ pub fn domains_body(
     can_restrict: bool,
 ) -> Markup {
     html! {
-        (ui::Hint::new("Prove you own the websites that show this store's checkout. A verified domain covers all of its subdomains."))
+        (ui::Hint::new("Prove you own the websites that show this store's checkout. A verified domain covers all of its subdomains. A web domain is proved with a DNS record; an onion shop with a file it serves over Tor."))
         (restriction_banner(store, restricted, can_restrict))
         @if domains.is_empty() {
             div class="box domains-empty" {
@@ -316,8 +340,10 @@ pub fn domains_body(
     }
 }
 
-/// The steps of adding a domain, `at` the current one (0 to 2).
+/// The steps of adding a domain, `at` the current one (0 to 2): an onion
+/// shop serves a file rather than publishing a record.
 fn steps(at: usize, domain: Option<&str>) -> Markup {
+    let onion = domain.is_some_and(crate::embed_domains::is_onion);
     let step = |i: usize, label: &str, detail: &str| ui::WizardStep {
         label: label.into(),
         detail: detail.into(),
@@ -329,11 +355,22 @@ fn steps(at: usize, domain: Option<&str>) -> Markup {
             _ => ui::WizardState::Next,
         },
     };
+    let (proof, how) = if onion {
+        (
+            ("Serve the file", "on the shop"),
+            ("Check", "we fetch it over Tor"),
+        )
+    } else {
+        (
+            ("Add the record", "at your DNS provider"),
+            ("Check", "we ask its name servers"),
+        )
+    };
     html! {
         (ui::WizardSteps::new("Adding a domain", vec![
             step(0, "Domain", domain.unwrap_or("the website")),
-            step(1, "Add the record", "at your DNS provider"),
-            step(2, "Check", "we ask its name servers"),
+            step(1, proof.0, proof.1),
+            step(2, how.0, how.1),
         ]))
     }
 }
@@ -374,7 +411,7 @@ pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Optio
                         (ui::FieldNote::new(error).tone(ui::NoteTone::Problem).id("new-domain-problem"))
                     }
                 })
-                .help("The website that shows your checkout, like shop.example. Its subdomains are covered too. Onion addresses can't be verified: they have no DNS.")
+                .help("The website that shows your checkout, like shop.example, or an onion shop's .onion address. Its subdomains are covered too.")
                 .help_id("new-domain-help"))
             }))
             (ui::FormActions::new(ui::Slot::many([
@@ -397,8 +434,12 @@ const PROVIDERS: [(&str, &str); 4] = [
     ("GoDaddy", "My Products › the domain › DNS › Add New Record"),
 ];
 
-/// `GET .../domains/{id}/record`: the TXT record to publish, and the check.
+/// `GET .../domains/{id}/record`: the TXT record to publish (for an onion
+/// shop, the file to serve), and the check.
 pub fn record_page(chrome: &PageChrome, store: &StoreRef, domain: &DomainView) -> Markup {
+    if domain.onion() {
+        return onion_file_page(chrome, store, domain);
+    }
     let full_name = format!("{}.{}", domain.record_host, domain.domain);
     let body = html! {
         p { "Sign in where you manage " strong { (domain.domain) } "'s DNS, add a new record, and fill it in like this:" }
@@ -426,28 +467,84 @@ pub fn record_page(chrome: &PageChrome, store: &StoreRef, domain: &DomainView) -
     )
 }
 
+/// The record page for an onion shop: the file to serve, how, and the check.
+fn onion_file_page(chrome: &PageChrome, store: &StoreRef, domain: &DomainView) -> Markup {
+    let body = html! {
+        p { "An onion address has no DNS, so it's proved by the shop itself: put this file on " strong { (domain.domain) } ", exactly at this address, holding exactly this text:" }
+        (record(domain))
+        (ui::Hint::new("Plain text, served with status 200 and no redirect. One shop can list several stores' lines in the same file, one per line."))
+        (ui::Disclosure::new("How to serve it", html! {
+            ul {
+                li { strong { "WordPress" } ": upload a file named " code { "monokulo-verify" } " into a " code { ".well-known" } " folder at the top of the site, next to wp-config.php." }
+                li { strong { "nginx" } ": " code { "location = /.well-known/monokulo-verify { default_type text/plain; return 200 \"" (domain.record_value) "\\n\"; }" } }
+                li { strong { "Any other server" } ": a static file at that path works." }
+            }
+        }))
+        (ui::Alert::new(
+            "Anyone who can change files on the shop can publish this file, so keep the shop's admin login safe. Monokulo checks it again every day, over Tor.",
+            ui::Tone::Notice,
+        ).quiet(true))
+        (ui::Hint::new("You can leave and come back: the domain waits in Settings as Not verified, showing this file and Check again."))
+        form method="post" action=(format!("{}/check", store.domain(&domain.id))) {
+            input type="hidden" name="from" value="check";
+            (ui::FormActions::new(ui::Slot::many([
+                ui::Slot::from(ui::LinkButton::new(with_icon(icons::ARROW_LEFT, "Back"), format!("{}/domains/add", store.settings()))),
+                ui::Slot::from(ui::Button::new(then_icon("I've added it, check now", icons::ARROW_RIGHT)).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
+            ])))
+        }
+    };
+    domain_page(
+        chrome,
+        store,
+        "Serve the file",
+        1,
+        Some(&domain.domain),
+        body,
+    )
+}
+
 /// The check page's result (`#domain-check`): verified, or why not yet with
 /// Check again, or not checked yet. While a check runs with JavaScript the
 /// result gives way to "Checking…" (`aria-busy`, site.css).
 pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Markup {
+    let onion = domain.onion();
     let back = ui::Slot::from(ui::LinkButton::new(
-        with_icon(icons::ARROW_LEFT, "Back to the record"),
+        with_icon(
+            icons::ARROW_LEFT,
+            if onion {
+                "Back to the file"
+            } else {
+                "Back to the record"
+            },
+        ),
         format!("{}/record", store.domain(&domain.id)),
     ));
     let full_name = format!("{}.{}", domain.record_host, domain.domain);
+    let busy = if onion {
+        format!(
+            "Fetching {} over Tor… Finding an onion shop can take up to a minute.",
+            crate::embed_domains::WELL_KNOWN_PATH
+        )
+    } else {
+        format!("Asking its name servers for the record at {full_name}…")
+    };
     html! {
         div id="domain-check" class="domain-check" {
             div class="box check-busy" role="status" {
                 span class="check-spinner" aria-hidden="true" {}
                 div {
                     strong { "Checking " (domain.domain) }
-                    (ui::Hint::new(format!("Asking its name servers for the record at {full_name}…")))
+                    (ui::Hint::new(busy))
                 }
             }
             div class="check-result" {
                 @if domain.status == DomainStatus::Verified {
                     (ui::Alert::new(
-                        "It covers its subdomains too. Keep the record: Monokulo checks it every day.",
+                        if onion {
+                            "It covers its subdomains too. Keep the file: Monokulo checks it every day."
+                        } else {
+                            "It covers its subdomains too. Keep the record: Monokulo checks it every day."
+                        },
                         ui::Tone::Success,
                     )
                     .title(format!("{} is verified.", domain.domain))
@@ -462,7 +559,7 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                         @if let Some(reason) = &domain.reason {
                             (reason) @if !reason.ends_with(['.', '!', '?']) { "." } " "
                         }
-                        "DNS changes can take up to an hour to show."
+                        @if !onion { "DNS changes can take up to an hour to show." }
                     }, ui::Tone::Error)
                     .title("Not found yet.")
                     .icon(icon(icons::WARNING))
@@ -471,9 +568,15 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                     (ui::Hint::new("Checking again by itself every 30 seconds while this page is open.").attr("data-only", "script"))
                     (ui::Disclosure::new("Still not found?", html! {
                         ul {
-                            li { "Most providers add the domain to the Host for you: type just " code { (domain.record_host) } ". Typing the full name there makes " code { (full_name) "." (domain.domain) } "." }
-                            li { "Paste the value exactly, without quotes." }
-                            li { "Check you edited the DNS of the provider the domain points to." }
+                            @if onion {
+                                li { "Open " code { (crate::embed_domains::well_known_url(&domain.domain)) } " in Tor Browser: it should show the line, and nothing asks to log in." }
+                                li { "Paste the contents exactly, without quotes." }
+                                li { "A redirect isn't followed: serve the file at that exact address." }
+                            } @else {
+                                li { "Most providers add the domain to the Host for you: type just " code { (domain.record_host) } ". Typing the full name there makes " code { (full_name) "." (domain.domain) } "." }
+                                li { "Paste the value exactly, without quotes." }
+                                li { "Check you edited the DNS of the provider the domain points to." }
+                            }
                         }
                     }))
                     (ui::FormActions::new(ui::Slot::many([
@@ -481,7 +584,11 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                         ui::Slot::from(check_form(store, domain, "#domain-check", with_icon(icons::REFRESH, "Check again"), true)),
                     ])))
                 } @else {
-                    (ui::Hint::new(format!("{} hasn't been checked yet. Publish its record, then check.", domain.domain)))
+                    (ui::Hint::new(if onion {
+                        format!("{} hasn't been checked yet. Serve its file, then check.", domain.domain)
+                    } else {
+                        format!("{} hasn't been checked yet. Publish its record, then check.", domain.domain)
+                    }))
                     (ui::FormActions::new(ui::Slot::many([
                         back,
                         ui::Slot::from(check_form(store, domain, "#domain-check", with_icon(icons::REFRESH, "Check now"), true)),
@@ -507,7 +614,11 @@ pub fn check_page(
     domain_page(
         chrome,
         store,
-        "Check the record",
+        if domain.onion() {
+            "Check the file"
+        } else {
+            "Check the record"
+        },
         2,
         Some(&domain.domain),
         body,

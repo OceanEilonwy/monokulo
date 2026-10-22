@@ -79,7 +79,7 @@ prepare_data_dir() {
 }
 
 start_service() {
-	local enabled port listen data_dir engine_cpus engine_nice addr
+	local enabled port listen data_dir engine_cpus engine_nice onion addr
 
 	config_load monokulo
 	config_get_bool enabled main enabled 1
@@ -89,6 +89,7 @@ start_service() {
 	config_get data_dir main data_dir /srv/monokulo
 	config_get engine_cpus main engine_cpus '2,3'
 	config_get engine_nice main engine_nice 10
+	config_get_bool onion main onion 0
 
 	case "$listen" in
 	all) addr=0.0.0.0 ;;
@@ -125,7 +126,11 @@ start_service() {
 		--database-path "$data_dir/monokulo.db" \
 		--engine-database-path "$data_dir/engine.db" \
 		--engine-server-cpus "$engine_cpus" \
-		--engine-server-nice "$engine_nice"
+		--engine-server-nice "$engine_nice" \
+		--tor-state-dir "$data_dir/tor"
+	# The onion service: Tor inside monokulo, reachable with no port open
+	# or forwarded. Off leaves it to monokulo's own admin page.
+	[ "$onion" = 1 ] && procd_append_param command --tor-mode inside
 	procd_set_param env MONOKULO_ENCRYPTION_KEY="$(secret MONOKULO_ENCRYPTION_KEY)"
 	procd_set_param user "$RUN_AS"
 	procd_set_param respawn 3600 5 5

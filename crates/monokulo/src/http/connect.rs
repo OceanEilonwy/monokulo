@@ -232,6 +232,7 @@ pub async fn start(
                 &request,
                 store.id.as_str(),
                 &store.name,
+                crate::network::onion_uri(&state.settings, &state.tor).as_deref(),
             )
             .into_response()
         }
@@ -360,6 +361,14 @@ pub struct FinishResponse {
     /// secret key) and sends customers (`{endpoint}/pay/{pk}/orders/{id}`).
     /// Never the engine's address - the engine is private.
     pub endpoint: String,
+    /// This instance's onion address, while it has one
+    /// (`crate::network::onion_uri`): where the plugin sends a customer
+    /// who is shopping on the shop's own onion address, so they never
+    /// leave Tor. Orders are still created at `endpoint`, from the shop's
+    /// server. Left out when there's none, so the wire shape is unchanged
+    /// for an instance without Tor and a plugin that doesn't know it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onion_endpoint: Option<String>,
     /// Present only when `webhook_url` was supplied and registration succeeded.
     /// `skip_serializing_if` keeps the wire shape for a caller with no webhook
     /// exactly what it always was — a bare `{public_key, secret_token, endpoint}` —
@@ -532,6 +541,7 @@ pub async fn finish(
         public_key: row.tenant_public_key,
         secret_token: secret_token.expose().to_string(),
         endpoint,
+        onion_endpoint: crate::network::onion_uri(&state.settings, &state.tor),
         webhook_signing_secret,
     })
     .into_response()
@@ -1623,6 +1633,42 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["endpoint"], TEST_PUBLIC_URI);
         assert!(!body.to_string().contains(&engine.addr.to_string()));
+        assert!(body.get("onion_endpoint").is_none(), "no Tor here: {body}");
+    }
+
+    /// With an onion address, the plugin is given it too, for customers who
+    /// shop on the shop's own onion address; orders are still created at
+    /// the web address.
+    #[tokio::test]
+    async fn a_plugin_is_given_the_onion_address_beside_the_web_one() {
+        const ONION: &str = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let (state, _engine) = test_state_with_real_engine().await;
+        let state = AppState {
+            settings: state.settings.with_tor(crate::settings::TorConfig {
+                mode: crate::settings::TorMode::External,
+                onion_uri: Some(ONION.to_string()),
+                ..crate::settings::TorConfig::defaults()
+            }),
+            ..state
+        };
+        let router = build_router(state);
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "onion-shop@example.com").await;
+        let submit = connect_through_setup(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/cb",
+            "n1",
+            &[],
+        )
+        .await;
+        let token = parse_query_params(&location(&submit))["token"].clone();
+        let response = finish(&router, serde_json::json!({ "token": token })).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["endpoint"], TEST_PUBLIC_URI);
+        assert_eq!(body["onion_endpoint"], ONION);
     }
 
     #[test]

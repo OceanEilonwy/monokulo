@@ -168,6 +168,12 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // (`shared::dns`), so a record shows the moment it is published.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
         Arc::new(monokulo::embed_domains::LiveDns::new());
+    // Onion shops are proved by a file fetched over Tor inside monokulo.
+    let tor = monokulo::tor::Tor::default();
+    let proofs = monokulo::embed_domains::Proofs {
+        dns,
+        onion: Arc::new(monokulo::tor::WellKnownOverTor(tor.clone())),
+    };
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
     // client, exchange-rate providers, abuse protection and onion listener
@@ -177,7 +183,6 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only());
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
-    let tor = monokulo::tor::Tor::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
         db.clone(),
         engine_client.clone(),
@@ -196,7 +201,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         Err(e) => stop(format!("failed to load settings: {e}")),
     };
 
-    monokulo::embed_domains::spawn_rechecks(db.clone(), dns.clone());
+    monokulo::embed_domains::spawn_rechecks(db.clone(), proofs.clone());
     if let Err(e) = db
         .write(|db| {
             monokulo::embed_domains::import_existing_domains(db);
@@ -240,7 +245,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         encryption_key,
         exchange_rate,
         abuse,
-        dns,
+        proofs,
         settings: monokulo_settings.clone(),
         log_store,
         webhooks,

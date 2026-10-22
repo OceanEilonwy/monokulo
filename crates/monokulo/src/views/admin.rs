@@ -1061,6 +1061,18 @@ pub struct AdminSettingsViewModel {
     pub unreachable_networks: Vec<String>,
     /// monokulo's options file, then the engine's (when it answered).
     pub options_files: Vec<OptionsFileView>,
+    /// What the Tor tab says about the onion service, above its cards;
+    /// `None` while Tor is off.
+    pub tor: Option<TorPanel>,
+}
+
+/// The onion service, as the Tor tab shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TorPanel {
+    /// Tor inside monokulo, and what it is doing.
+    Inside(crate::tor::TorStatus),
+    /// An external tor serving `onion_uri`.
+    External { onion_uri: String },
 }
 
 impl AdminSettingsViewModel {
@@ -2006,6 +2018,51 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
     }
 }
 
+/// The onion service's state, above the Tor tab's cards.
+fn tor_panel(panel: &TorPanel) -> Markup {
+    use crate::tor::TorStatus;
+    let address = |address: &str| {
+        let uri = format!("http://{address}");
+        html! {
+            (ui::CopyValue::new(uri.as_str()).copy_label("Copy the onion address"))
+        }
+    };
+    let alert = match panel {
+        TorPanel::External { onion_uri } => ui::Alert::new(html! {
+            "Visitors on Tor are sent to "
+            (ui::CopyValue::new(onion_uri.as_str()).copy_label("Copy the onion address"))
+        }, ui::Tone::Notice)
+        .title("An external tor serves the onion address.")
+        .icon(html! { (PreEscaped(ui::assets::icons::INFO)) }),
+        TorPanel::Inside(TorStatus::Running { address: onion, .. }) => ui::Alert::new(html! {
+            "Visitors on Tor reach this instance at " (address(onion))
+        }, ui::Tone::Success)
+        .title("Onion service running.")
+        .icon(html! { (PreEscaped(ui::assets::icons::CHECK)) }),
+        TorPanel::Inside(TorStatus::Degraded { address: onion, problem }) => ui::Alert::new(html! {
+            "Tor is still trying to keep " (address(onion)) " reachable: " (problem)
+        }, ui::Tone::Warning)
+        .title("Onion service may be unreachable.")
+        .icon(html! { (PreEscaped(ui::assets::icons::WARNING)) }),
+        TorPanel::Inside(TorStatus::Starting { percent, doing }) => ui::Alert::new(html! {
+            (doing) " (" (percent) "%). A first start takes up to a minute; later starts are quicker. The web address isn't affected."
+        }, ui::Tone::Notice)
+        .title("Starting Tor…")
+        .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) }),
+        TorPanel::Inside(TorStatus::Failed { error, .. }) => ui::Alert::new(html! {
+            (error) " It starts again by itself every 30 seconds; the web address isn't affected."
+        }, ui::Tone::Error)
+        .title("Tor stopped.")
+        .icon(html! { (PreEscaped(ui::assets::icons::WARNING)) }),
+        TorPanel::Inside(TorStatus::Off) => ui::Alert::new(
+            "Save to start Tor inside monokulo.",
+            ui::Tone::Notice,
+        )
+        .title("Tor isn't running yet."),
+    };
+    html! { div id="tor-status" { (alert.block(true).quiet(true)) } }
+}
+
 /// A tab of settings: its cards in the settings form, and the save bar.
 fn settings_tab(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
     html! {
@@ -2020,6 +2077,9 @@ fn settings_tab(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
         }
         @if tab == SettingsTab::Tor {
             (ui::Hint::new("Monokulo can serve an onion address beside its web address. Visitors on Tor reach the same stores and checkouts without leaving Tor; everyone else keeps using the web address."))
+            @if let Some(panel) = &data.tor {
+                (tor_panel(panel))
+            }
         }
         @if tab == SettingsTab::Nodes {
             (ui::Hint::new(html! {
@@ -2566,6 +2626,53 @@ mod tests {
 
     fn page(data: &AdminSettingsViewModel) -> String {
         admin_settings_page(&chrome(), data).into_string()
+    }
+
+    #[test]
+    fn the_tor_tab_says_what_the_onion_service_is_doing() {
+        use crate::tor::TorStatus;
+        const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+        let tor_tab = |panel: Option<TorPanel>| {
+            page(&AdminSettingsViewModel {
+                tor: panel,
+                ..full_view(SettingsTab::Tor)
+            })
+        };
+        let html = tor_tab(Some(TorPanel::Inside(TorStatus::Running {
+            address: ONION.to_string(),
+            since: 0,
+        })));
+        assert!(html.contains("Onion service running."), "{html}");
+        assert!(html.contains(&format!("http://{ONION}")), "{html}");
+        assert!(html.contains("card-tor-service") && html.contains("card-tor-visitors"));
+
+        let html = tor_tab(Some(TorPanel::Inside(TorStatus::Starting {
+            percent: 45,
+            doing: "Fetching the directory".to_string(),
+        })));
+        assert!(
+            html.contains("Starting Tor") && html.contains("(45%)"),
+            "{html}"
+        );
+
+        let html = tor_tab(Some(TorPanel::Inside(TorStatus::Failed {
+            error: "Tor couldn't join the network.".to_string(),
+            since: 0,
+        })));
+        assert!(
+            html.contains("Tor stopped.") && html.contains("join the network"),
+            "{html}"
+        );
+
+        let html = tor_tab(Some(TorPanel::External {
+            onion_uri: format!("http://{ONION}"),
+        }));
+        assert!(html.contains("An external tor serves"), "{html}");
+
+        assert!(
+            !tor_tab(None).contains("tor-status"),
+            "nothing while Tor is off"
+        );
     }
 
     /// The tab bar's link to `tab`, with `aria-current` or not.

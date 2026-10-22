@@ -38,6 +38,10 @@ pub const BUILT_IN: bool = cfg!(feature = "tor");
 /// The one onion service monokulo runs: its name in Arti's key store.
 pub const NICKNAME: &str = "monokulo";
 
+/// The file in `tor.state_dir` the onion address is written to once known,
+/// as a C tor writes its HiddenServiceDir's `hostname`.
+pub const HOSTNAME_FILE: &str = "hostname";
+
 /// The file in a C tor HiddenServiceDir that holds the service's key.
 pub const CTOR_SECRET_KEY_FILE: &str = "hs_ed25519_secret_key";
 
@@ -84,6 +88,10 @@ struct Inner {
     running: parking_lot::Mutex<Option<Running>>,
     /// A start asked for before the router existed.
     waiting: parking_lot::Mutex<Option<Wanted>>,
+    /// The running Tor client, for fetching onion shops' verification
+    /// files (`WellKnownOverTor`).
+    #[cfg(feature = "tor")]
+    client: parking_lot::Mutex<Option<arti::Client>>,
 }
 
 /// What a running service was started with, and how to stop it.
@@ -176,6 +184,11 @@ impl Tor {
         });
     }
 
+    #[cfg(feature = "tor")]
+    pub(crate) fn set_client(&self, client: Option<arti::Client>) {
+        *self.inner.client.lock() = client;
+    }
+
     fn stop(&self) {
         // Dropping the sender tells the service to stop.
         self.inner.running.lock().take();
@@ -189,6 +202,38 @@ impl Tor {
             .as_ref()
             .map(|running| running.wanted.clone())
             .or_else(|| self.inner.waiting.lock().clone())
+    }
+}
+
+/// Fetches onion shops' verification files (`embed_domains::Proofs`) over
+/// Tor inside monokulo, never over the web: only while it runs.
+pub struct WellKnownOverTor(pub Tor);
+
+/// Why an onion shop can't be checked without Tor inside monokulo.
+const NO_TOR: &str = "onion shops can be checked only while Tor runs inside monokulo (Admin settings, Tor: tor.mode = inside)";
+
+impl crate::embed_domains::WellKnownFetch for WellKnownOverTor {
+    fn fetch<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send + 'a>,
+    > {
+        #[cfg(feature = "tor")]
+        {
+            let client = self.0.inner.client.lock().clone();
+            Box::pin(async move {
+                match client {
+                    Some(client) => arti::fetch_well_known(client, domain).await,
+                    None => Err(NO_TOR.to_string()),
+                }
+            })
+        }
+        #[cfg(not(feature = "tor"))]
+        {
+            let _ = domain;
+            Box::pin(async { Err(NO_TOR.to_string()) })
+        }
     }
 }
 

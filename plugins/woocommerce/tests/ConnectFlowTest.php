@@ -93,6 +93,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 			'public_key'              => 'pk_connect_test_123',
 			'secret_token'            => 'sk_connect_test_456',
 			'endpoint'                => 'http://monokulo.connect-test',
+			'onion_endpoint'          => 'http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion',
 			'webhook_signing_secret'  => 'whsec_connect_test_789',
 		);
 	}
@@ -220,6 +221,11 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		// --- instance, exactly like a real next request would.       ---
 		$saved = new WC_Gateway_Monokulo();
 		$this->assertSame( 'http://monokulo.connect-test', $saved->get_option( 'endpoint' ) );
+		$this->assertSame(
+			'http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion',
+			$saved->get_option( 'onion_endpoint' ),
+			'Monokulo\'s onion address is kept, for customers shopping on the shop\'s own .onion address.'
+		);
 		$this->assertSame( WC_Gateway_Monokulo::CONNECTION_VERSION, $saved->get_option( 'connection_version' ), 'A new connection records the plugin\'s connection version.' );
 		$this->assertSame( 'pk_connect_test_123', $saved->get_option( 'public_key' ) );
 		$this->assertSame(

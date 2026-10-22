@@ -14,7 +14,12 @@
 //! a failing or lapsed domain from its first failed check, and that warning
 //! can't be dismissed.
 //!
-//! `.onion` addresses have no DNS, so they can't be added at all.
+//! An onion address has no DNS, so a shop on one proves itself instead:
+//! it serves the same token at `/.well-known/monokulo-verify`, which
+//! monokulo fetches over Tor inside monokulo, never over the web
+//! ([`WellKnownFetch`]). That is weaker than DNS - whoever can change the
+//! shop's files can publish it - but it is the strongest proof an onion
+//! shop can give, and only the shop's own key can serve its address.
 //!
 //! A store can then turn on "Only my verified domains can show this
 //! checkout" ([`EmbedPolicy`]): its checkout pages tell browsers only its
@@ -77,8 +82,12 @@ pub fn normalize_domain(input: &str) -> Result<String, &'static str> {
     if !domain.is_ascii() {
         return Err("Enter the domain in its ASCII form (the xn-- version) - international characters can't be checked.");
     }
-    if domain.ends_with(".onion") {
-        return Err("Onion addresses can't be verified: they have no DNS records to check.");
+    if crate::onion::is_onion_host(&domain) {
+        // The service itself: its subdomains are the same service, and
+        // covered anyway.
+        return crate::onion::v3_host(&domain)
+            .map(|host| crate::onion::service_of(&host).to_string())
+            .map_err(|_| "That isn't a valid onion address: v3 addresses have 56 letters and digits before .onion. Check it for a typo.");
     }
     if domain.parse::<std::net::Ipv4Addr>().is_ok() {
         return Err("Enter a domain name, not an IP address.");
@@ -99,6 +108,32 @@ pub fn normalize_domain(input: &str) -> Result<String, &'static str> {
         return Err("That isn't a valid domain name. Use letters, digits, hyphens and dots, like shop.example.");
     }
     Ok(domain)
+}
+
+/// Where an onion shop serves its verification file.
+pub const WELL_KNOWN_PATH: &str = "/.well-known/monokulo-verify";
+
+/// The largest verification file read: a few tokens, one per line.
+pub const WELL_KNOWN_MAX_BYTES: usize = 4096;
+
+/// Whether `domain` is an onion address, proved by its file rather than DNS.
+pub fn is_onion(domain: &str) -> bool {
+    crate::onion::is_onion_host(domain)
+}
+
+/// The scheme a page on `domain` is served over: onion services are plain
+/// `http` (Tor encrypts them itself), everything else must be `https`.
+fn page_scheme(domain: &str) -> &'static str {
+    if is_onion(domain) {
+        "http"
+    } else {
+        "https"
+    }
+}
+
+/// Where an onion shop's verification file is.
+pub fn well_known_url(domain: &str) -> String {
+    format!("http://{domain}{WELL_KNOWN_PATH}")
 }
 
 /// Where the TXT record for `domain` lives.
@@ -174,12 +209,13 @@ impl EmbedPolicy {
 
     /// Whether a browser page on `origin` (an `Origin` header value) may use
     /// this store's checkout: always when unrestricted, otherwise only an
-    /// `https://` page on a counting domain or one of its subdomains.
+    /// `https://` page (`http://` for an onion shop) on a counting domain
+    /// or one of its subdomains.
     pub fn allows_origin(&self, origin: &str, now: i64) -> bool {
         if !self.restricted {
             return true;
         }
-        let Some(authority) = origin.strip_prefix("https://") else {
+        let Some((scheme, authority)) = origin.split_once("://") else {
             return false;
         };
         let host = authority
@@ -189,7 +225,7 @@ impl EmbedPolicy {
             .trim_end_matches('.')
             .to_ascii_lowercase();
         self.counting_domains(now)
-            .any(|domain| covers(domain, &host))
+            .any(|domain| covers(domain, &host) && scheme == page_scheme(domain))
     }
 
     /// The `Content-Security-Policy` a restricted store's pages are sent
@@ -201,7 +237,8 @@ impl EmbedPolicy {
         }
         let mut policy = "frame-ancestors 'self'".to_string();
         for domain in self.counting_domains(now) {
-            policy.push_str(&format!(" https://{domain} https://*.{domain}"));
+            let scheme = page_scheme(domain);
+            policy.push_str(&format!(" {scheme}://{domain} {scheme}://*.{domain}"));
         }
         Some(policy)
     }
@@ -324,11 +361,19 @@ impl CheckOutcome {
     pub fn error_message(&self, domain: &str, token: &str) -> Option<String> {
         match self {
             CheckOutcome::Found => None,
+            CheckOutcome::Missing if is_onion(domain) => Some(format!(
+                "The shop answered, but {} doesn't hold {}.",
+                well_known_url(domain),
+                record_value(token)
+            )),
             CheckOutcome::Missing => Some(format!(
                 "No TXT record at {} with the value {} was found.",
                 record_name(domain),
                 record_value(token)
             )),
+            CheckOutcome::LookupFailed(error) if is_onion(domain) => {
+                Some(format!("Fetching the file over Tor failed: {error}"))
+            }
             CheckOutcome::LookupFailed(error) => Some(format!("The DNS lookup failed: {error}")),
         }
     }
@@ -389,10 +434,53 @@ impl TxtLookup for UnavailableDns {
     }
 }
 
-/// Looks up `domain`'s record and compares it with `token`.
-pub async fn check(dns: &dyn TxtLookup, domain: &str, token: &str) -> CheckOutcome {
+/// An onion shop's verification file, fetched over Tor: `Ok(Some(text))`
+/// when the shop served it, `Ok(None)` when it answered without it (not
+/// found, a redirect, too big), `Err` when it couldn't be reached. A trait
+/// so tests answer without Tor.
+pub trait WellKnownFetch: Send + Sync {
+    fn fetch<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>>;
+}
+
+/// A fetch that always fails, saying why: for a server without Tor inside
+/// it, and tests that don't need one.
+pub struct UnavailableTor(pub String);
+
+impl WellKnownFetch for UnavailableTor {
+    fn fetch<'a>(
+        &'a self,
+        _domain: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>> {
+        let error = self.0.clone();
+        Box::pin(async move { Err(error) })
+    }
+}
+
+/// How a domain is proved: DNS for a web domain, the file over Tor for an
+/// onion one.
+#[derive(Clone)]
+pub struct Proofs {
+    pub dns: Arc<dyn TxtLookup>,
+    pub onion: Arc<dyn WellKnownFetch>,
+}
+
+/// Looks up `domain`'s proof (its TXT record, or an onion shop's file)
+/// and compares it with `token`.
+pub async fn check(proofs: &Proofs, domain: &str, token: &str) -> CheckOutcome {
     let expected = record_value(token);
-    match dns.txt_values(&record_name(domain)).await {
+    if is_onion(domain) {
+        return match proofs.onion.fetch(domain).await {
+            Ok(Some(text)) if text.lines().any(|line| line.trim() == expected) => {
+                CheckOutcome::Found
+            }
+            Ok(_) => CheckOutcome::Missing,
+            Err(error) => CheckOutcome::LookupFailed(error),
+        };
+    }
+    match proofs.dns.txt_values(&record_name(domain)).await {
         Ok(values) if values.iter().any(|value| value.trim() == expected) => CheckOutcome::Found,
         Ok(_) => CheckOutcome::Missing,
         Err(error) => CheckOutcome::LookupFailed(error),
@@ -402,11 +490,11 @@ pub async fn check(dns: &dyn TxtLookup, domain: &str, token: &str) -> CheckOutco
 /// Checks one domain and records the result on its row.
 pub async fn check_and_record(
     db: &Database,
-    dns: &dyn TxtLookup,
+    proofs: &Proofs,
     row: &StoreDomainRow,
     now: i64,
 ) -> Result<CheckOutcome, crate::db::DbError> {
-    let outcome = check(dns, &row.domain, &row.token).await;
+    let outcome = check(proofs, &row.domain, &row.token).await;
     let error = outcome.error_message(&row.domain, &row.token);
     let id = row.id.clone();
     db.write(move |db| db.record_store_domain_check(&id, now, error.as_deref()))
@@ -415,7 +503,7 @@ pub async fn check_and_record(
 }
 
 /// Re-checks every verified domain that is due, one at a time.
-pub async fn recheck_due(db: &Database, dns: &dyn TxtLookup, now: i64) {
+pub async fn recheck_due(db: &Database, proofs: &Proofs, now: i64) {
     let due = match db
         .read(move |db| {
             db.list_store_domains_due_for_recheck(
@@ -433,14 +521,14 @@ pub async fn recheck_due(db: &Database, dns: &dyn TxtLookup, now: i64) {
         }
     };
     for row in due {
-        if let Err(e) = check_and_record(db, dns, &row, now).await {
+        if let Err(e) = check_and_record(db, proofs, &row, now).await {
             tracing::warn!(domain = %row.domain, error = %e, "could not record a domain re-check");
         }
     }
 }
 
 /// Runs [`recheck_due`] every few minutes for the life of the process.
-pub fn spawn_rechecks(db: Database, dns: Arc<dyn TxtLookup>) -> tokio::task::JoinHandle<()> {
+pub fn spawn_rechecks(db: Database, proofs: Proofs) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(5 * 60));
         loop {
@@ -448,9 +536,9 @@ pub fn spawn_rechecks(db: Database, dns: Arc<dyn TxtLookup>) -> tokio::task::Joi
             // Each pass on a task of its own: a panic in one is logged and
             // the next pass still runs, rather than ending the re-checks
             // for the life of the process.
-            let (db, dns) = (db.clone(), dns.clone());
+            let (db, proofs) = (db.clone(), proofs.clone());
             let pass = tokio::spawn(async move {
-                recheck_due(&db, dns.as_ref(), crate::now_unix()).await;
+                recheck_due(&db, &proofs, crate::now_unix()).await;
             });
             if let Err(e) = pass.await {
                 tracing::error!(error = %e, "a domain re-check pass failed");
@@ -503,11 +591,47 @@ pub mod test_support {
             Box::pin(async move { answer })
         }
     }
+
+    /// Answers onion shops' verification files from a table the test
+    /// fills in; a shop set to `Err` can't be reached, one not in it
+    /// answers without the file.
+    #[derive(Default)]
+    pub struct FakeOnion {
+        pub files: Mutex<HashMap<String, Result<Option<String>, String>>>,
+    }
+
+    impl FakeOnion {
+        pub fn serve(&self, domain: &str, text: &str) {
+            self.files
+                .lock()
+                .insert(domain.to_string(), Ok(Some(text.to_string())));
+        }
+        pub fn fail(&self, domain: &str, error: &str) {
+            self.files
+                .lock()
+                .insert(domain.to_string(), Err(error.to_string()));
+        }
+    }
+
+    impl WellKnownFetch for FakeOnion {
+        fn fetch<'a>(
+            &'a self,
+            domain: &'a str,
+        ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>> {
+            let answer = self.files.lock().get(domain).cloned().unwrap_or(Ok(None));
+            Box::pin(async move { answer })
+        }
+    }
+
+    /// Proofs answered by `dns` and `onion`.
+    pub fn proofs(dns: Arc<FakeDns>, onion: Arc<FakeOnion>) -> Proofs {
+        Proofs { dns, onion }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::FakeDns;
+    use super::test_support::{FakeDns, FakeOnion};
     use super::*;
 
     #[test]
@@ -621,7 +745,7 @@ mod tests {
         assert!(
             normalize_domain("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuv.onion")
                 .unwrap_err()
-                .contains("Onion")
+                .contains("isn't a valid onion address")
         );
         assert!(normalize_domain("192.0.2.1")
             .unwrap_err()
@@ -634,21 +758,88 @@ mod tests {
         assert!(normalize_domain("").is_err());
     }
 
+    const ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+
+    #[test]
+    fn an_onion_shop_is_added_as_its_service_and_a_typo_is_caught() {
+        assert_eq!(
+            normalize_domain(&format!("http://{ONION}/shop")).unwrap(),
+            ONION
+        );
+        assert_eq!(normalize_domain(&format!("www.{ONION}")).unwrap(), ONION);
+        let typo = ONION.replacen("2gzy", "2gzz", 1);
+        assert!(normalize_domain(&typo).unwrap_err().contains("typo"));
+    }
+
+    #[tokio::test]
+    async fn an_onion_shop_is_proved_by_its_file_over_tor_never_by_dns() {
+        let (dns, onion) = (Arc::new(FakeDns::default()), Arc::new(FakeOnion::default()));
+        let proofs = test_support::proofs(dns.clone(), onion.clone());
+        // A TXT record means nothing for an onion shop.
+        dns.publish(&record_name(ONION), "monokulo-verify=abc");
+        assert_eq!(check(&proofs, ONION, "abc").await, CheckOutcome::Missing);
+        // One store's line among others'.
+        onion.serve(ONION, "monokulo-verify=other\r\n  monokulo-verify=abc  \n");
+        assert_eq!(check(&proofs, ONION, "abc").await, CheckOutcome::Found);
+        onion.fail(ONION, "the onion service couldn't be found");
+        let failed = check(&proofs, ONION, "abc").await;
+        assert_eq!(
+            failed.error_message(ONION, "abc").unwrap(),
+            "Fetching the file over Tor failed: the onion service couldn't be found"
+        );
+        assert!(CheckOutcome::Missing
+            .error_message(ONION, "abc")
+            .unwrap()
+            .contains("/.well-known/monokulo-verify"));
+    }
+
+    #[test]
+    fn a_restricted_store_allows_its_onion_shop_over_http_only() {
+        let policy = EmbedPolicy {
+            restricted: true,
+            domains: vec![
+                StoreDomainRow {
+                    domain: ONION.to_string(),
+                    ..row(Some(1), None)
+                },
+                row(Some(1), None),
+            ],
+        };
+        assert!(policy.allows_origin(&format!("http://{ONION}"), 10));
+        assert!(policy.allows_origin(&format!("http://shop.{ONION}"), 10));
+        assert!(!policy.allows_origin(&format!("https://{ONION}"), 10));
+        assert!(policy.allows_origin("https://shop.example", 10));
+        assert!(
+            !policy.allows_origin("http://shop.example", 10),
+            "the web needs https"
+        );
+        let ancestors = policy.frame_ancestors(10).unwrap();
+        assert!(
+            ancestors.contains(&format!(" http://{ONION} http://*.{ONION}")),
+            "{ancestors}"
+        );
+        assert!(
+            ancestors.contains(" https://shop.example https://*.shop.example"),
+            "{ancestors}"
+        );
+    }
+
     #[tokio::test]
     async fn check_finds_the_token_only_at_the_right_name() {
-        let dns = FakeDns::default();
+        let fake = Arc::new(FakeDns::default());
+        let dns = test_support::proofs(fake.clone(), Arc::default());
         assert_eq!(
             check(&dns, "shop.example", "abc").await,
             CheckOutcome::Missing
         );
 
-        dns.publish("_monokulo.shop.example", "monokulo-verify=wrong");
+        fake.publish("_monokulo.shop.example", "monokulo-verify=wrong");
         assert_eq!(
             check(&dns, "shop.example", "abc").await,
             CheckOutcome::Missing
         );
 
-        dns.publish("_monokulo.shop.example", "monokulo-verify=abc");
+        fake.publish("_monokulo.shop.example", "monokulo-verify=abc");
         assert_eq!(
             check(&dns, "shop.example", "abc").await,
             CheckOutcome::Found
@@ -658,7 +849,7 @@ mod tests {
             CheckOutcome::Missing
         );
 
-        dns.fail("_monokulo.shop.example", "timed out");
+        fake.fail("_monokulo.shop.example", "timed out");
         assert_eq!(
             check(&dns, "shop.example", "abc").await,
             CheckOutcome::LookupFailed("timed out".to_string())

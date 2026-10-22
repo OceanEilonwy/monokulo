@@ -414,6 +414,19 @@ async fn build_view_model(
         })
         .into_iter()
         .collect();
+    let tor = {
+        let config = state.settings.tor.load();
+        match config.mode {
+            crate::settings::TorMode::Inside => {
+                Some(crate::views::admin::TorPanel::Inside(state.tor.status()))
+            }
+            crate::settings::TorMode::External => config
+                .onion_uri
+                .clone()
+                .map(|onion_uri| crate::views::admin::TorPanel::External { onion_uri }),
+            crate::settings::TorMode::Off => None,
+        }
+    };
     let mut view = AdminSettingsViewModel {
         tab,
         notices,
@@ -421,6 +434,7 @@ async fn build_view_model(
         outcome,
         monokulo_fields,
         options_files,
+        tor,
         ..Default::default()
     };
     match fetch_engine_settings(&state.engine.client).await {

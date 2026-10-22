@@ -255,6 +255,61 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 	}
 
 	/**
+	 * A customer shopping on the shop's own `.onion` address is sent to
+	 * Monokulo's onion address to pay, so they never leave Tor; the order is
+	 * still created at the web address, from the shop's server. A customer
+	 * on the web address is sent to the web checkout.
+	 */
+	public function test_a_customer_on_the_shops_onion_address_pays_on_monokulos() {
+		$onion = 'http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion';
+		$seed  = new WC_Gateway_Monokulo();
+		$seed->update_option( 'onion_endpoint', $onion );
+		$gateway = $this->create_configured_gateway( 'https://pay.example.com', 'pk_test_abc123' );
+
+		$created = array(
+			'headers'  => array(),
+			'body'     => wp_json_encode(
+				array(
+					'order_id'            => 'pay_onion',
+					'address'             => '4Axxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+					'xmr_amount_piconero' => 1,
+					'amount'              => '42.50',
+					'currency'            => 'USD',
+					'expires_at'          => 4102444800,
+				)
+			),
+			'response' => array(
+				'code'    => 200,
+				'message' => 'OK',
+			),
+			'cookies'  => array(),
+		);
+		$host = isset( $_SERVER['HTTP_HOST'] ) ? $_SERVER['HTTP_HOST'] : null;
+		try {
+			$_SERVER['HTTP_HOST'] = 'shopabcd.onion';
+			$this->mock_next_http_response( $created );
+			$result = $gateway->process_payment( $this->create_real_order()->get_id() );
+			$this->assertSame(
+				'https://pay.example.com/pay/pk_test_abc123/orders',
+				$this->captured_request['url'],
+				'The order is created from the shop\'s server, at the web address.'
+			);
+			$this->assertSame( $onion . '/pay/pk_test_abc123/orders/pay_onion', $result['redirect'] );
+
+			$_SERVER['HTTP_HOST'] = 'shop.example.com';
+			$this->mock_next_http_response( $created );
+			$result = $gateway->process_payment( $this->create_real_order()->get_id() );
+			$this->assertSame( 'https://pay.example.com/pay/pk_test_abc123/orders/pay_onion', $result['redirect'] );
+		} finally {
+			if ( null === $host ) {
+				unset( $_SERVER['HTTP_HOST'] );
+			} else {
+				$_SERVER['HTTP_HOST'] = $host;
+			}
+		}
+	}
+
+	/**
 	 * The description names the order by the number the customer knows and
 	 * its first item, counting the rest, and is cut to Monokulo's 140
 	 * characters with "…".
