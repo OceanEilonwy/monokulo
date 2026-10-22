@@ -71,6 +71,9 @@ type Mode = 'live' | 'paused' | 'replay';
   let lastDraw = 0, lastTimelineDraw = 0;
   let lastFrame: Frame | null = null; // the newest frame the stream sent
   let machineAt: number | null = null;
+  let unreachable = false; // the engine didn't answer the last time it was asked
+  // Each element's passing animation classes, and when each comes off.
+  const pulsing = new WeakMap<Element, Map<string, ReturnType<typeof setTimeout>>>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const pendingFetches = new Set<AbortController>();
   const engineNow = () => Date.now() + offset;
@@ -105,11 +108,22 @@ type Mode = 'live' | 'paused' | 'replay';
     let remove = Math.max(0, marks.length - MAX_MARKS);
     while (remove < marks.length && marks[remove].at_ms < keep) remove++;
     if (remove) marks.splice(0, remove);
-    if (marks.length) oldest = Math.max(oldest ?? marks[0].at_ms, marks[0].at_ms);
+    // The engine keeps the last AXIS of its record: nothing before that
+    // can be shown, whatever marks the page still holds.
+    if (oldest !== null) oldest = Math.max(oldest, keep);
+    // Paused or replaying long enough, the playback position falls out of
+    // the history: it comes up to its oldest moment.
+    if (mode !== 'live' && oldest !== null && head < oldest) void seek(oldest);
   }
-  /** Draws the state of `frame`: the views follow. */
-  function draw(frame: Frame) {
+  /** Draws the state of `frame`: the views follow. Returns whether the scan
+   *  is catching up thousands of blocks, when animations are left out. */
+  function draw(frame: Frame): boolean {
+    const chain = frame.state.chain;
+    const catching = chain.tip !== null && chain.high_water !== null && chain.tip - chain.high_water > 1000;
+    setCatchingUp(catching);
+    if (catching) clearTokens();
     setView(present(frame.state, frame.tuning));
+    return catching;
   }
 
   // ---- the stream ----
@@ -118,6 +132,7 @@ type Mode = 'live' | 'paused' | 'replay';
     source = new EventSource(`/status/engine/events?network=${encodeURIComponent(network!)}`);
     source.addEventListener('history', (e) => {
       const start: Start = JSON.parse(e.data);
+      unreachable = false;
       offset = start.engine_now_ms - Date.now();
       oldest = start.oldest_ms;
       marks = start.marks.slice(-MAX_MARKS);
@@ -129,7 +144,9 @@ type Mode = 'live' | 'paused' | 'replay';
       queue = [];
       lastFrame = start.frame;
       tlDirty = true;
-      // A reconnect while paused or replaying leaves the view where it is.
+      // A reconnect while paused or replaying leaves the view where it is;
+      // replay asks for its next stretch again from where it has got.
+      if (mode === 'replay') replayTo = head;
       if (mode !== 'live') return;
       head = start.frame.at_ms;
       setHead(head);
@@ -137,6 +154,7 @@ type Mode = 'live' | 'paused' | 'replay';
     });
     source.addEventListener('frame', (e) => {
       const frame: Frame = JSON.parse(e.data);
+      unreachable = false;
       if (oldest === null) oldest = frame.at_ms;
       const arrived = performance.now();
       // A frame can repeat marks the history already gave (it was sent while
@@ -160,9 +178,11 @@ type Mode = 'live' | 'paused' | 'replay';
     });
     source.addEventListener('machine', (e) => drawMachine(JSON.parse(e.data)));
     source.addEventListener('restarted', () => connect());
+    // Said under the playback control until the engine answers again.
     source.addEventListener('unreachable', () => {
       showRefresh(true);
-      setReadout("The engine isn't answering; showing what was last seen");
+      unreachable = true;
+      tlDirty = true;
     });
     source.addEventListener('error', () => showRefresh(true));
   }
@@ -205,10 +225,7 @@ type Mode = 'live' | 'paused' | 'replay';
   }
 
   function play(frame: Frame, quietly: boolean) {
-    const chain = frame.state.chain;
-    const catching = chain.tip !== null && chain.high_water !== null && chain.tip - chain.high_water > 1000;
-    setCatchingUp(catching);
-    if (catching) clearTokens();
+    const catching = draw(frame);
     if (!quietly && !catching && !document.hidden && !reduced) {
       const first = frame.effects.length ? frame.effects[0].at_ms : 0;
       // A catch-up can commit fifty blocks in one frame: a save or flash on
@@ -228,7 +245,6 @@ type Mode = 'live' | 'paused' | 'replay';
         later(() => animate(timed.effect), delay);
       }
     }
-    draw(frame);
   }
 
   // One request at a time: while one is out, a scrub only notes where it
@@ -247,12 +263,16 @@ type Mode = 'live' | 'paused' | 'replay';
       while (seekWanted !== null) {
         const wanted: number = seekWanted;
         seekWanted = null;
-        const response = await readFrame(`/status/engine/at?network=${encodeURIComponent(network!)}&ms=${Math.round(wanted)}`);
-        if (!response.ok) continue;
-        const frame: Frame = await response.json();
-        if (mode === 'live') break;
-        clearTokens();
-        draw(frame);
+        try {
+          const response = await readFrame(`/status/engine/at?network=${encodeURIComponent(network!)}&ms=${Math.round(wanted)}`);
+          if (!response.ok) continue;
+          const frame: Frame = await response.json();
+          if (mode === 'live') break;
+          clearTokens();
+          draw(frame);
+        } catch {
+          // Not answered (or the page is going): the next scrub asks again.
+        }
       }
     } finally {
       seeking = false;
@@ -291,6 +311,9 @@ type Mode = 'live' | 'paused' | 'replay';
     select.value = mode;
     const replay = select.querySelector<HTMLOptionElement>('[value="replay"]');
     if (replay) replay.disabled = mode === 'live';
+    // The control drawn over the select reads it again on `input` (the
+    // page acts only on `change`).
+    select.dispatchEvent(new Event('input', { bubbles: true }));
     tlDirty = true;
   }
 
@@ -317,12 +340,19 @@ type Mode = 'live' | 'paused' | 'replay';
   }
   /** A past round, from the recent rounds: the round card shows it, the
    *  recent rounds holding still with it, as they were. */
+  // The last round asked for: an answer to an earlier one is let go.
+  let pinAsked = 0;
   async function pin(number: number) {
-    const response = await readFrame(`/status/engine/round?network=${encodeURIComponent(network!)}&number=${number}`);
-    if (!response.ok) return;
-    const frame: Frame = await response.json();
-    const round = presentRound(frame.state, frame.tuning);
-    if (round) setPinned({ round, ribbon: view()?.ribbon ?? [] });
+    const asked = ++pinAsked;
+    try {
+      const response = await readFrame(`/status/engine/round?network=${encodeURIComponent(network!)}&number=${number}`);
+      if (!response.ok) return;
+      const frame: Frame = await response.json();
+      const round = presentRound(frame.state, frame.tuning);
+      if (round && asked === pinAsked) setPinned({ round, ribbon: view()?.ribbon ?? [] });
+    } catch {
+      // Not answered (or the page is going): the live round stays.
+    }
   }
   function resume() {
     setPinned(null);
@@ -383,7 +413,12 @@ type Mode = 'live' | 'paused' | 'replay';
     el.classList.remove(cls);
     void (el as HTMLElement).offsetWidth;
     el.classList.add(cls);
-    later(() => el.classList.remove(cls), PULSE_MS);
+    // Not through `later`: what clears the effects (a mode change, a hidden
+    // page) must not leave the class on for good.
+    const pulses = pulsing.get(el) ?? new Map<string, ReturnType<typeof setTimeout>>();
+    clearTimeout(pulses.get(cls));
+    pulses.set(cls, setTimeout(() => { el.classList.remove(cls); pulses.delete(cls); }, PULSE_MS));
+    pulsing.set(el, pulses);
   }
   function clearTokens() {
     stage.querySelectorAll('.token, .ghostcell').forEach((el) => el.remove());
@@ -507,6 +542,7 @@ type Mode = 'live' | 'paused' | 'replay';
   }
   const clockAt = (t: number) => new Date(t - offset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   function setReadout(text: string) { const el = $('tl-text'); if (el.textContent !== text) el.textContent = text; }
+  const UNREACHABLE = "The engine isn't answering; showing what was last seen";
   function headText() {
     if (mode === 'live') return 'Playback position: live, 1.5s behind the engine. Drag it back to pause there.';
     return `Playback position: ${ago(engineNow() - head)} ago (${clockAt(head)}). Drag it to scrub; Play replays from here.`;
@@ -622,7 +658,7 @@ type Mode = 'live' | 'paused' | 'replay';
       tip.style.left = `${Math.max(140, Math.min(w - 140, best[0]))}px`;
     }
 
-    setReadout(isLive ? '' : `${ago(engineNow() - head)} behind live`);
+    setReadout(unreachable ? UNREACHABLE : isLive ? '' : `${ago(engineNow() - head)} behind live`);
     // Five-minute marks back from the bar's right edge, which is now while
     // live and the moment playback left live otherwise.
     const end = axisStop, reallyNow = engineNow();

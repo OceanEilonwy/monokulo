@@ -1,6 +1,22 @@
 // How the engine page writes its figures. Monokulo's Status page writes some
 // of the same in Rust (views::scaling): a slow block, sizes, rates.
 
+/** `x` to `digits` decimal places, as Rust's `{:.N}` writes it: an exact
+ *  half goes to the even digit (12.5 is "12", 0.125 is "0.12"), where
+ *  `toFixed` would round it up. Anything not exactly half way rounds to the
+ *  nearer, the same either way. */
+export function fixed(x: number, digits: number): string {
+  // The number's exact decimal expansion: enough places for any double
+  // these figures reach.
+  const exact = Math.abs(x).toFixed(Math.min(100, digits + 60));
+  const point = exact.indexOf('.');
+  if (!/^50*$/.test(exact.slice(point + 1 + digits))) return x.toFixed(digits);
+  const kept = exact.slice(0, digits ? point + 1 + digits : point);
+  const sign = x < 0 ? '-' : '';
+  if (Number(kept[kept.length - 1]) % 2 === 0) return sign + kept;
+  return sign + (Number(kept) + 10 ** -digits).toFixed(digits);
+}
+
 /** `n` with thousands separators: "3,412,001". */
 export function thousands(n: number): string {
   return String(Math.trunc(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -23,7 +39,7 @@ export const DASH = '–';
 
 /** "0.42s" under a second, "7.8s" over. */
 export function seconds(ms: number): string {
-  return ms < 1000 ? `${(ms / 1000).toFixed(2)}s` : `${(ms / 1000).toFixed(1)}s`;
+  return ms < 1000 ? `${fixed(ms / 1000, 2)}s` : `${fixed(ms / 1000, 1)}s`;
 }
 
 /** "4ms", "1,204ms": the round card's times, whole milliseconds so its parts
@@ -34,7 +50,7 @@ export const milliseconds = (ms: number): string => `${thousands(ms)}ms`;
  *  millisecond (times are whole milliseconds), never "0ms". */
 export const laneTime = (ms: number): string => (ms === 0 ? '<1ms' : milliseconds(ms));
 
-export const megabytes = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+export const megabytes = (bytes: number): string => `${fixed(bytes / (1024 * 1024), 1)} MB`;
 
 /** Decimal kilobytes, as block sizes are usually given: "41 kB". */
 export const kilobytes = (bytes: number): string => `${thousands(Math.ceil(bytes / 1000))} kB`;
@@ -42,12 +58,12 @@ export const kilobytes = (bytes: number): string => `${thousands(Math.ceil(bytes
 /** A count in at most four characters: "23", "1.2k", "12k", "1.2M". */
 export function compact(n: number): string {
   if (n < 1_000) return String(n);
-  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 10_000) return `${fixed(n / 1000, 1)}k`;
   if (n < 1_000_000) return `${Math.floor(n / 1000)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${fixed(n / 1_000_000, 1)}M`;
 }
 
-export const micros = (us: number): string => (us < 1000 ? `${us}µs` : `${(us / 1000).toFixed(1)}ms`);
+export const micros = (us: number): string => (us < 1000 ? `${us}µs` : `${fixed(us / 1000, 1)}ms`);
 
 /** `x` to three places: enough to draw. */
 export const rounded = (x: number): number => Math.round(x * 1000) / 1000;
@@ -65,15 +81,15 @@ export function bytes(n: number): string {
   else if (n >= 1e6) [value, unit] = [n / 1e6, 'MB'];
   else if (n >= 1e3) [value, unit] = [n / 1e3, 'kB'];
   else return `${n} B`;
-  return value >= 100 ? `${value.toFixed(0)} ${unit}` : `${value.toFixed(1)} ${unit}`;
+  return value >= 100 ? `${fixed(value, 0)} ${unit}` : `${fixed(value, 1)} ${unit}`;
 }
 
 /** A link's rate, from bytes a second: "3.1 Mbit/s", "480 kbit/s". */
 export function rate(bytesPerSec: number): string {
   const bits = bytesPerSec * 8;
-  if (bits >= 1e9) return `${(bits / 1e9).toFixed(1)} Gbit/s`;
-  if (bits >= 1e6) return `${(bits / 1e6).toFixed(1)} Mbit/s`;
-  return `${(bits / 1e3).toFixed(0)} kbit/s`;
+  if (bits >= 1e9) return `${fixed(bits / 1e9, 1)} Gbit/s`;
+  if (bits >= 1e6) return `${fixed(bits / 1e6, 1)} Mbit/s`;
+  return `${fixed(bits / 1e3, 0)} kbit/s`;
 }
 
 /** An elapsed time to the second: "2 m 10 s", "45 s", "1 h 5 m". */

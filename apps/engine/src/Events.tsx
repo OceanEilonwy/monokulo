@@ -3,6 +3,7 @@
 import { createMemo, For } from 'solid-js';
 import { Cell, Checkbox, Row, Table } from '@monokulo/ui/solid';
 import { thousands } from './format.ts';
+import { dueCount, newestRows } from './marks.ts';
 import { markText, tierName } from './present.ts';
 import { head, live, marks, setTiers, tiers } from './state.ts';
 import type { Mark } from './wire.ts';
@@ -12,16 +13,11 @@ const ROWS = 60;
 const same = (a: readonly Mark[], b: readonly Mark[]) => a.length === b.length && a.every((mark, i) => mark === b[i]);
 
 export function Events(props: { onPick: (atMs: number) => void }) {
-  // The playback position moves every frame; the rows change only when a
-  // mark comes due, a tier is ticked, or the marks themselves change.
-  const rows = createMemo(() => {
-    const all = marks(), at = head(), shown = tiers(), found: Mark[] = [];
-    for (let i = all.length - 1; i >= 0 && found.length < ROWS; i--) {
-      const mark = all[i];
-      if (mark.at_ms <= at && shown.has(mark.tier)) found.push(mark);
-    }
-    return found;
-  }, { equals: same });
+  // The playback position moves every frame: how many marks are due follows
+  // it cheaply, and the rows change only when a mark comes due, a tier is
+  // ticked, or the marks themselves change.
+  const due = createMemo(() => dueCount(marks(), head()));
+  const rows = createMemo(() => newestRows(marks(), due(), tiers(), ROWS), { equals: same });
   const tick = (tier: (typeof TIERS)[number], checked: boolean) => {
     const next = new Set(tiers());
     if (checked) next.add(tier);

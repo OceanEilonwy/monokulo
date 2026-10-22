@@ -3,7 +3,7 @@
 // memory over the last hour, the link to the node in use, the blocks' size
 // and the scan (docs/engine_scaling.md section 6).
 
-import { DASH, bytes, duration, durationRough, networkName, rate, thousands } from './format.ts';
+import { DASH, bytes, duration, durationRough, fixed, networkName, rate, thousands } from './format.ts';
 import type {
   LinkPoint, LinkSnapshot, Machine, NetworkScaling, NodeInUse, ResourceReport, ResourceSample, SlowBlock, Trend,
 } from './wire.ts';
@@ -73,7 +73,7 @@ export function onSlots(samples: ResourceSample[], now: number, value: (s: Resou
 /** "3 minutes ago", or "just now" within the last slot. */
 const ago = (secs: number) => (secs < SLOT_SECS ? 'just now' : `${durationRough(secs)} ago`);
 
-const percent = (value: number) => `${value.toFixed(0)} %`;
+const percent = (value: number) => `${fixed(value, 0)} %`;
 const memory = (value: number) => bytes(Math.trunc(Math.max(0, value)));
 const sum = (values: number[]) => values.reduce((total, n) => total + n, 0);
 
@@ -119,11 +119,11 @@ function path(chart: Chart, drawn: (number[] | null)[], k: number): string {
     const top = (at: number) => below(at) + drawn[at]![k];
     const points: string[] = [];
     for (let at = start; at < slot; at++) {
-      const v = y(chart, top(at)).toFixed(1);
+      const v = fixed(y(chart, top(at)), 1);
       points.push(`${at},${v}`, `${at + 1},${v}`);
     }
     for (let at = slot - 1; at >= start; at--) {
-      const v = y(chart, below(at)).toFixed(1);
+      const v = fixed(y(chart, below(at)), 1);
       points.push(`${at + 1},${v}`, `${at},${v}`);
     }
     // Two slots at one height meet at a point both would add.
@@ -169,7 +169,7 @@ function chartTile(chart: Chart, key: string, capacity: string): Tile {
     chart: {
       kind: 'stack',
       layers: chart.layers.map((layer, k) => ({ class: layer.class, d: path(chart, drawn, k) })),
-      limits: chart.limits.map((limit) => ({ class: limit.class, y: y(chart, limit.value).toFixed(1), label: limit.label })),
+      limits: chart.limits.map((limit) => ({ class: limit.class, y: fixed(y(chart, limit.value), 1), label: limit.label })),
     },
   };
 }
@@ -251,7 +251,7 @@ function sparkRuns(history: LinkPoint[], now: number, value: (p: LinkPoint) => n
   const runs: string[] = [];
   let run: string[] = [];
   points.forEach((point, x) => {
-    if (point !== null) run.push(`${x},${(15 - (point / max) * 14).toFixed(1)}`);
+    if (point !== null) run.push(`${x},${fixed(15 - (point / max) * 14, 1)}`);
     else if (run.length) { runs.push(run.join(' ')); run = []; }
   });
   if (run.length) runs.push(run.join(' '));
@@ -356,7 +356,7 @@ export function scanning(network: string, scaling: NetworkScaling, node: NodeInU
   let progress: string;
   if (scaling.blocks_behind === 0) progress = "At the node's tip.";
   else {
-    progress = `${blocks(scaling.blocks_behind)} behind · ${scan.blocks_per_minute.toFixed(1)} blocks a minute`;
+    progress = `${blocks(scaling.blocks_behind)} behind · ${fixed(scan.blocks_per_minute, 1)} blocks a minute`;
     if (scaling.catch_up_secs !== null) progress += ` · caught up in about ${durationRough(scaling.catch_up_secs)}`;
   }
   // The rate the node in use was measured at, if it was.
