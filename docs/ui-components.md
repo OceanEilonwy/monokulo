@@ -102,7 +102,8 @@ order and Reference controls use them. The hand-written examples below
 cover what hasn't moved yet.
 
 The root npm workspace contains `crates/ui` (`@monokulo/ui`, also the Rust crate `ui`),
-`apps/stylebook` and the existing `crates/monokulo/pos-ui`. One root lockfile
+`apps/stylebook`, the existing `crates/monokulo/pos-ui` and the engine page's
+`crates/monokulo/engine-ui`. One root lockfile
 pins their tools. The browser integration suite in `e2e/browser` retains its
 independent install and lockfile.
 
@@ -117,6 +118,10 @@ independent install and lockfile.
   helpers emit the documented HTML; they do not define alternative controls.
 - `crates/monokulo/pos-ui`: Solid state, order workflows and terminal layout.
   It composes shared controls. The POS still requires JavaScript.
+- `crates/monokulo/engine-ui`: the engine page's live view. The page is
+  rendered in Rust and works without it; with it, the events table is a Solid
+  view of signals the stream and the playback loop set, and the rest is
+  still drawn by hand (issue #126 moves it over a step at a time).
 - `e2e/browser`: checks that components integrate with real workflows.
 
 ## Build and serving
@@ -160,7 +165,8 @@ contract.
 ## Verification
 
 Run `npm run test:ui` (install Chromium once with `npx playwright install chromium`),
-`npm run build:ui`, and `npm run typecheck -w monokulo-pos-ui`.
+`npm run build:ui`, `npm run typecheck -w monokulo-pos-ui` and
+`npm run typecheck -w monokulo-engine-ui`.
 Existing Rust palette checks also inspect the embedded package component CSS.
 For POS adoption use the existing `pos-responsive-layout` and terminal browser
 suites, plus `cargo test -p monokulo --lib http::pos::tests`.

@@ -15,6 +15,12 @@
 // (`views::scaling`), drawn here field by field.
 //
 // The page never zooms on the mouse wheel: scrolling scrolls the page.
+//
+// The events table is a Solid view (`events.tsx`) worked out from signals
+// this script sets: the marks when the stream brings them, the playback
+// position every frame, the mode and the tiers when they change.
+import { mountEvents, setHead, setLive, setMarks, setTiers } from "./events";
+
 (() => {
   "use strict";
   const page = document.getElementById("engine-stage");
@@ -52,7 +58,6 @@
   const TIMELINE_INTERVAL = 100;
   const MAX_EFFECTS = 30; // played from one frame at most
   const TIERS = ["chain", "blocks", "mempool", "settlement", "upkeep"];
-  const TIER_NAMES = { chain: "Chain", blocks: "Blocks", mempool: "Mempool", settlement: "Settlement", upkeep: "Upkeep" };
 
   const esc = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
   const fmt = (n) => Number(n).toLocaleString("en-GB");
@@ -67,7 +72,6 @@
   let mode = "live"; // live | paused | replay
   let replayTo = 0;
   let lastSeq = -1;
-  let shownSeq = -1; // the newest mark due when the events table was drawn
   let replayFetching = false;
   let source = null;
   let animationFrame = null, refreshTimer = null, stopped = false;
@@ -118,14 +122,15 @@
       clearEffects();
       showRefresh(false);
       lastSeq = marks.length ? marks[marks.length - 1].seq : -1;
-      shownSeq = -1;
+      setMarks(marks);
+      showEvents();
       queue = [];
       tlDirty = true;
       // A reconnect while paused or replaying leaves the view where it is.
       if (mode !== "live") return;
       head = start.frame.at_ms;
+      setHead(head);
       draw(start.frame.view);
-      drawEvents();
     });
     source.addEventListener("frame", (e) => {
       const frame = JSON.parse(e.data);
@@ -141,6 +146,7 @@
       }
       // What the engine no longer keeps, the page lets go of too.
       pruneMarks();
+      setMarks(marks);
       lastFrame = frame;
       if (mode === "live") {
         queue.push(frame);
@@ -189,6 +195,8 @@
       else if (head >= engineNow() - LAG) goLive();
     }
     if (tick - lastTimelineDraw >= TIMELINE_INTERVAL && (tlDirty || timelineMoved())) { drawTimeline(); lastTimelineDraw = tick; }
+    // Wherever playback moved it this frame: playing, a seek, going live.
+    setHead(head);
     animationFrame = requestAnimationFrame(frameLoop);
   }
 
@@ -217,10 +225,6 @@
       }
     }
     draw(frame.view);
-    // Not only this frame's marks: a slow machine plays only the newest of
-    // the frames due, and a hidden page keeps only its newest, so a reorg's
-    // last mark can come in a frame passed over for a round's events.
-    if (unshownMarks()) drawEvents();
   }
 
   // One request at a time: while one is out, a scrub only notes where it
@@ -245,7 +249,6 @@
         if (mode === "live") break;
         clearTokens();
         draw(frame.view);
-        drawEvents();
       }
     } finally {
       seeking = false;
@@ -279,6 +282,7 @@
     if (next === "live") frozenEnd = null;
     if (mode !== next) clearEffects();
     mode = next;
+    setLive(mode === "live");
     const select = $("tl-mode");
     select.value = mode;
     select.querySelector('[value="replay"]').disabled = mode === "live";
@@ -293,7 +297,7 @@
     setMode("live");
     setWindow(null, win.span);
     queue = [];
-    if (lastFrame) { head = Math.max(lastFrame.at_ms, engineNow() - LAG); clearTokens(); draw(lastFrame.view); drawEvents(); }
+    if (lastFrame) { head = Math.max(lastFrame.at_ms, engineNow() - LAG); clearTokens(); draw(lastFrame.view); }
   }
 
   // ---- drawing a view ----
@@ -609,28 +613,14 @@
 
   // ---- events table ----
   const filters = new Set(TIERS);
-  // Whether a mark due by now came after those the table was drawn with.
-  function unshownMarks() {
-    for (let i = marks.length - 1; i >= 0 && marks[i].seq > shownSeq; i--) {
-      if (marks[i].at_ms <= head) return true;
-    }
-    return false;
-  }
-
-  function drawEvents() {
+  // The server's rows stay until the first history: from then on the
+  // table is the marks the page holds.
+  let eventsShown = false;
+  function showEvents() {
     const body = $("engine-events")?.tBodies[0];
-    if (!body) return;
-    const rows = [];
-    shownSeq = -1;
-    for (let i = marks.length - 1; i >= 0 && rows.length < 60; i--) {
-      const mark = marks[i];
-      if (mark.at_ms > head) continue;
-      shownSeq = Math.max(shownSeq, mark.seq);
-      if (mark.tier && !filters.has(mark.tier)) continue;
-      rows.push(mark);
-    }
-    setHTML(body, rows.map((m, i) => `<tr${m.key ? ' data-key=""' : ""}${i === 0 && mode !== "live" ? ' data-now=""' : ""} data-at="${m.at_ms}"><td>${fmt(m.round)}</td><td>${m.tier ? `<span class="tierchip t-${m.tier}">${TIER_NAMES[m.tier]}</span>` : ""}</td><td>${esc(m.text)}</td></tr>`).join("") ||
-      '<tr><td colspan="3"><span class="engine-hint">Nothing recorded yet.</span></td></tr>');
+    if (eventsShown || !body) return;
+    eventsShown = true;
+    mountEvents(body);
   }
 
   // ---- animations: effects, never state ----
@@ -1069,7 +1059,7 @@
     document.querySelectorAll("#engine-filters input[data-tier]").forEach((input) => {
       input.addEventListener("change", () => {
         if (input.checked) filters.add(input.dataset.tier); else filters.delete(input.dataset.tier);
-        drawEvents();
+        setTiers(new Set(filters));
       });
     });
   }
