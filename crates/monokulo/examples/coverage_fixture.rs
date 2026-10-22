@@ -550,9 +550,11 @@ async fn connect_plugin(
     let id = db
         .connect_integration(&monokulo::db::NewStoreIntegration {
             store_id: &store,
-            kind: "woocommerce",
-            name: "WooCommerce",
-            site: "shop.localhost",
+            plugin: &monokulo::plugins::Plugin::parse("woocommerce", "WooCommerce")
+                .expect("a plugin slug"),
+            site: monokulo::stores::Site::parse("shop.localhost")
+                .ok()
+                .as_ref(),
             version: "0.4.0",
             webhook_id: Some(&webhook_id),
             webhook_url: Some(url),
@@ -1189,7 +1191,9 @@ async fn main() {
         &shared::ids::ConnectionId::new("coverage-store"),
         &shared::ids::UserId::new("coverage-merchant"),
         "shop.localhost",
-        "shop.localhost",
+        monokulo::stores::Site::parse("shop.localhost")
+            .ok()
+            .as_ref(),
         &tenant.public_key,
         &crypto::encrypt(
             &ENCRYPTION_KEY,

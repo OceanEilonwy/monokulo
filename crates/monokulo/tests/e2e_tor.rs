@@ -342,7 +342,7 @@ async fn start_monokulo(
         &shared::ids::ConnectionId::new("store-1"),
         &shared::ids::UserId::new("u1"),
         "Tor shop",
-        "shop.example",
+        monokulo::stores::Site::parse("shop.example").ok().as_ref(),
         &tenant.public_key,
         &monokulo::crypto::encrypt(
             &ENCRYPTION_KEY,

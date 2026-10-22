@@ -284,12 +284,17 @@ pub fn domain_of_site(site: &str) -> Option<String> {
 /// verified at `now` covers it: the shop the checkout may tell the payer
 /// they're paying, since its owner proved they run it. `None` for a store
 /// without a site, or one whose site isn't verified.
-pub fn verified_site(site: &str, domains: &[StoreDomainRow], now: i64) -> Option<String> {
-    let host = domain_of_site(site)?;
+pub fn verified_site(
+    site: Option<&crate::stores::Site>,
+    domains: &[StoreDomainRow],
+    now: i64,
+) -> Option<crate::stores::Site> {
+    let site = site?;
+    let host = domain_of_site(site.as_str())?;
     domains
         .iter()
         .any(|row| DomainState::of(row, now).counts() && covers(&row.domain, &host))
-        .then(|| site.to_owned())
+        .then(|| site.clone())
 }
 
 /// Adds the site's domain to a store as a domain waiting for DNS, so the
@@ -298,10 +303,10 @@ pub fn verified_site(site: &str, domains: &[StoreDomainRow], now: i64) -> Option
 pub fn suggest_site_domain(
     db: &Db,
     connection_id: &crate::db::ConnectionId,
-    site_url: &str,
+    site: Option<&crate::stores::Site>,
     now: i64,
 ) {
-    if let Some(domain) = domain_of_site(site_url) {
+    if let Some(domain) = site.and_then(|site| domain_of_site(site.as_str())) {
         suggest(db, connection_id, &domain, now);
     }
 }
@@ -336,7 +341,7 @@ pub fn import_existing_domains(db: &Db) {
         }
     };
     for store in stores {
-        suggest_site_domain(db, &store.id, &store.site, crate::now_unix());
+        suggest_site_domain(db, &store.id, store.site.as_ref(), crate::now_unix());
         if let Err(e) = db.mark_store_domains_imported(&store.id) {
             tracing::warn!(store.id = %store.id, error = %e, "could not mark the store's domains imported");
         }
@@ -697,20 +702,24 @@ mod tests {
         let now = 1_000_000;
         // `row` is a domain for shop.example.
         let verified = [row(Some(1), None)];
+        let site = |s: &str| crate::stores::Site::parse(s).ok();
+        let named = |s: &str, domains: &[StoreDomainRow]| {
+            verified_site(site(s).as_ref(), domains, now).map(|site| site.to_string())
+        };
         assert_eq!(
-            verified_site("shop.example", &verified, now).as_deref(),
+            named("shop.example", &verified).as_deref(),
             Some("shop.example")
         );
         assert_eq!(
-            verified_site("www.shop.example:8443", &verified, now).as_deref(),
+            named("www.shop.example:8443", &verified).as_deref(),
             Some("www.shop.example:8443")
         );
-        assert_eq!(verified_site("evilshop.example", &verified, now), None);
-        assert_eq!(verified_site("", &verified, now), None);
+        assert_eq!(named("evilshop.example", &verified), None);
+        assert_eq!(verified_site(None, &verified, now), None);
         let pending = [row(None, None)];
-        assert_eq!(verified_site("shop.example", &pending, now), None);
+        assert_eq!(named("shop.example", &pending), None);
         let lapsed = [row(Some(1), Some(now - GRACE_SECS))];
-        assert_eq!(verified_site("shop.example", &lapsed, now), None);
+        assert_eq!(named("shop.example", &lapsed), None);
     }
 
     #[test]

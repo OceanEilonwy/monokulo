@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::db::{ConnectionId, StoreIntegrationRow, UserRow};
+use crate::stores::Site;
 use crate::views::store_settings::StoreSection;
 use crate::views::store_site::{IntegrationView, OpenOrders, SiteView, WebsiteChange};
 
@@ -28,7 +29,7 @@ use super::{AppState, AuthedUser, OwnedStore};
 
 /// What a connected plugin is called: the name it gave, else its slug.
 pub(super) fn integration_name(row: &StoreIntegrationRow) -> String {
-    crate::plugins::display_name(&row.kind, &row.name)
+    row.plugin().to_string()
 }
 
 fn integration_view(
@@ -97,7 +98,10 @@ pub(super) async fn site_view(
         .await
         .unwrap_or_default();
     let active = integrations.iter().find(|i| i.disconnected_at.is_none());
-    let site_domain = crate::embed_domains::domain_of_site(&row.site)
+    let site_domain = row
+        .site
+        .as_ref()
+        .and_then(|site| crate::embed_domains::domain_of_site(site.as_str()))
         .is_some_and(|domain| domains.iter().any(|d| d.domain == domain));
     let open = open_orders(state, sk, None, clock).await;
     let plugin_open = match active {
@@ -107,7 +111,7 @@ pub(super) async fn site_view(
     SiteView {
         store_id: row.id.to_string(),
         store_name: row.name.clone(),
-        site: row.site.clone(),
+        site: crate::stores::stored_site(row.site.as_ref()).to_owned(),
         active: active.map(|i| integration_view(i, clock)),
         past: integrations
             .iter()
@@ -187,7 +191,7 @@ pub async fn website_form(
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
     };
-    if row.site.is_empty() {
+    if row.site.is_none() {
         return super::dashboard::redirect_303(&format!(
             "/dashboard/stores/{id}/settings#card-store"
         ));
@@ -223,11 +227,11 @@ pub async fn website_submit(
         )
             .into_response()
     };
-    if row.site.is_empty() {
+    let Some(current) = row.site.clone() else {
         return super::dashboard::redirect_303(&format!(
             "/dashboard/stores/{id}/settings#card-store"
         ));
-    }
+    };
     if let Some(active) = &view.active {
         return refuse(format!(
             "{} is connected on {}: disconnect it first.",
@@ -235,27 +239,27 @@ pub async fn website_submit(
         ));
     }
     let new_site = match &change {
-        WebsiteChange::Remove => String::new(),
-        WebsiteChange::To(typed) => match crate::stores::normalize_site(typed) {
-            Ok(site) => site,
-            Err(why) => return refuse(why.to_owned()),
+        WebsiteChange::Remove => None,
+        WebsiteChange::To(typed) => match Site::parse(typed) {
+            Ok(site) => Some(site),
+            Err(why) => return refuse(why.to_string()),
         },
     };
     if form.confirm.trim() != row.name {
         return refuse(format!(
             "Type \u{201c}{}\u{201d} exactly to {} its website.",
             row.name,
-            if new_site.is_empty() {
+            if new_site.is_none() {
                 "remove"
             } else {
                 "change"
             }
         ));
     }
-    if new_site == row.site {
+    if new_site.as_ref() == Some(&current) {
         return super::orders::saved(&id, StoreSection::Store);
     }
-    if !new_site.is_empty() {
+    if let Some(new_site) = &new_site {
         let (user_id, wanted) = (user.id.clone(), new_site.clone());
         match state
             .db
@@ -263,22 +267,22 @@ pub async fn website_submit(
             .await
         {
             Ok(None) => {}
-            Ok(Some(taken)) => return refuse(taken.message(&new_site)),
+            Ok(Some(taken)) => return refuse(taken.message(new_site)),
             Err(_) => return refuse(something_went_wrong()),
         }
     }
     let (store_id, name, old_site, site) = (
         row.id.clone(),
         row.name.clone(),
-        row.site.clone(),
+        current.clone(),
         new_site.clone(),
     );
     let written = state
         .db
         .write(move |db| {
-            db.set_store_name_and_site(&store_id, &name, &site)?;
+            db.set_store_name_and_site(&store_id, &name, site.as_ref())?;
             // The old site's domain goes; the new one's waits to be verified.
-            if let Some(old) = crate::embed_domains::domain_of_site(&old_site) {
+            if let Some(old) = crate::embed_domains::domain_of_site(old_site.as_str()) {
                 for domain in db
                     .list_store_domains(&store_id)?
                     .into_iter()
@@ -287,19 +291,29 @@ pub async fn website_submit(
                     db.delete_store_domain(&store_id, &domain.id)?;
                 }
             }
-            if !site.is_empty() {
-                crate::embed_domains::suggest_site_domain(db, &store_id, &site, crate::now_unix());
-            }
+            crate::embed_domains::suggest_site_domain(
+                db,
+                &store_id,
+                site.as_ref(),
+                crate::now_unix(),
+            );
             Ok::<_, crate::db::DbError>(())
         })
         .await;
     match written {
         Ok(()) => {
-            tracing::info!(store.id = %id, from = %row.site, to = %new_site, "store website changed");
+            tracing::info!(
+                store.id = %id,
+                from = %current,
+                to = crate::stores::stored_site(new_site.as_ref()),
+                "store website changed"
+            );
             super::orders::saved(&id, StoreSection::Store)
         }
         Err(e) if e.is_unique_violation() => {
-            refuse(super::connections::SiteTaken::Someone.message(&new_site))
+            refuse(new_site.as_ref().map_or_else(something_went_wrong, |site| {
+                super::connections::SiteTaken::Someone.message(site)
+            }))
         }
         Err(_) => refuse(something_went_wrong()),
     }

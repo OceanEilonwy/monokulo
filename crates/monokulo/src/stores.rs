@@ -10,6 +10,8 @@
 //! URL keeps its host (and a port that isn't the scheme's own), and any
 //! page on that host works.
 
+use std::fmt;
+
 /// The longest name a store may have.
 pub const MAX_NAME_LEN: usize = 60;
 
@@ -70,52 +72,97 @@ pub fn clean_description(raw: &str) -> Result<Option<String>, DescriptionProblem
     Ok(Some(description.to_owned()))
 }
 
-/// What the merchant typed as the store's site, as the host it's kept as:
-/// `https://Shop.Example/checkout?x=1` and `shop.example` are both
-/// `shop.example`; `localhost:8080` keeps its port. `Err` says why it
-/// can't be a site, for the field.
-pub fn normalize_site(input: &str) -> Result<String, &'static str> {
-    let input = input.trim();
-    if input.is_empty() {
-        return Err("Enter your site's address, like shop.example.");
+/// A store's site: a host, lowercase, with a port only when it isn't the
+/// scheme's own (`shop.example`, `localhost:8080`). Made by
+/// [`Site::parse`] from what someone typed or sent, so two spellings of
+/// one site are one value, and a site can't be mistaken for any other
+/// string. A store without a site has `None`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Site(String);
+
+/// Why something typed can't be a site, said for the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvalidSite(&'static str);
+
+impl fmt::Display for InvalidSite {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
     }
-    let with_scheme = if input.contains("://") {
-        input.to_owned()
-    } else {
-        format!("https://{input}")
-    };
-    let url = url::Url::parse(&with_scheme)
-        .map_err(|_| "That isn't a web address. Enter it like shop.example.")?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(
-            "Enter a web address, starting with https:// or just the name, like shop.example.",
-        );
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("Enter the address without a login in it, like shop.example.");
-    }
-    let host = url
-        .host_str()
-        .filter(|h| !h.is_empty())
-        .ok_or("Enter your site's address, like shop.example.")?
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    if host.is_empty() {
-        return Err("Enter your site's address, like shop.example.");
-    }
-    Ok(match url.port() {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    })
 }
 
-/// A link to the site: `https://` unless it's this machine or an onion
-/// service, which are served over plain http.
-pub fn site_link(site: &str) -> String {
-    let host = site.rsplit_once(':').map_or(site, |(host, _)| host);
-    let plain =
-        host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host.ends_with(".onion");
-    format!("{}://{site}", if plain { "http" } else { "https" })
+impl Site {
+    /// What the merchant typed as the store's site, as the host it's kept
+    /// as: `https://Shop.Example/checkout?x=1` and `shop.example` are both
+    /// `shop.example`; `localhost:8080` keeps its port.
+    pub fn parse(input: &str) -> Result<Self, InvalidSite> {
+        let input = input.trim();
+        let missing = InvalidSite("Enter your site's address, like shop.example.");
+        if input.is_empty() {
+            return Err(missing);
+        }
+        let with_scheme = if input.contains("://") {
+            input.to_owned()
+        } else {
+            format!("https://{input}")
+        };
+        let url = url::Url::parse(&with_scheme)
+            .map_err(|_| InvalidSite("That isn't a web address. Enter it like shop.example."))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(InvalidSite(
+                "Enter a web address, starting with https:// or just the name, like shop.example.",
+            ));
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(InvalidSite(
+                "Enter the address without a login in it, like shop.example.",
+            ));
+        }
+        let host = url
+            .host_str()
+            .ok_or(missing)?
+            .trim_end_matches('.')
+            .to_ascii_lowercase();
+        if host.is_empty() {
+            return Err(missing);
+        }
+        Ok(Self(match url.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host,
+        }))
+    }
+
+    /// A site as monokulo stored it, which it parsed before storing: `''`
+    /// is none.
+    pub(crate) fn stored(site: &str) -> Option<Self> {
+        (!site.is_empty()).then(|| Self(site.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// A link to the site: `https://` unless it's this machine or an onion
+    /// service, which are served over plain http.
+    pub fn link(&self) -> String {
+        let site = self.as_str();
+        let host = site.rsplit_once(':').map_or(site, |(host, _)| host);
+        let plain = host == "localhost"
+            || host == "127.0.0.1"
+            || host == "[::1]"
+            || host.ends_with(".onion");
+        format!("{}://{site}", if plain { "http" } else { "https" })
+    }
+}
+
+impl fmt::Display for Site {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// A store's site as it's stored: `''` for none.
+pub fn stored_site(site: Option<&Site>) -> &str {
+    site.map_or("", Site::as_str)
 }
 
 #[cfg(test)]
@@ -131,30 +178,37 @@ mod tests {
             "http://shop.example/",
             "  SHOP.example.  ",
         ] {
-            assert_eq!(normalize_site(typed).unwrap(), "shop.example", "{typed}");
+            assert_eq!(
+                Site::parse(typed).unwrap().as_str(),
+                "shop.example",
+                "{typed}"
+            );
         }
     }
 
     #[test]
     fn a_port_stays_only_when_it_isnt_the_schemes() {
-        assert_eq!(normalize_site("localhost:8080").unwrap(), "localhost:8080");
         assert_eq!(
-            normalize_site("https://shop.example:443/x").unwrap(),
+            Site::parse("localhost:8080").unwrap().as_str(),
+            "localhost:8080"
+        );
+        assert_eq!(
+            Site::parse("https://shop.example:443/x").unwrap().as_str(),
             "shop.example"
         );
         assert_eq!(
-            normalize_site("http://127.0.0.1:3000").unwrap(),
+            Site::parse("http://127.0.0.1:3000").unwrap().as_str(),
             "127.0.0.1:3000"
         );
     }
 
     #[test]
     fn what_cant_be_a_site_says_why() {
-        assert!(normalize_site("").is_err());
-        assert!(normalize_site("   ").is_err());
-        assert!(normalize_site("ftp://shop.example").is_err());
-        assert!(normalize_site("https://me:secret@shop.example").is_err());
-        assert!(normalize_site("http://").is_err());
+        assert!(Site::parse("").is_err());
+        assert!(Site::parse("   ").is_err());
+        assert!(Site::parse("ftp://shop.example").is_err());
+        assert!(Site::parse("https://me:secret@shop.example").is_err());
+        assert!(Site::parse("http://").is_err());
     }
 
     #[test]
@@ -188,8 +242,14 @@ mod tests {
 
     #[test]
     fn local_and_onion_sites_link_over_plain_http() {
-        assert_eq!(site_link("shop.example"), "https://shop.example");
-        assert_eq!(site_link("localhost:8080"), "http://localhost:8080");
-        assert_eq!(site_link("abc.onion"), "http://abc.onion");
+        assert_eq!(
+            Site::parse("shop.example").unwrap().link(),
+            "https://shop.example"
+        );
+        assert_eq!(
+            Site::parse("localhost:8080").unwrap().link(),
+            "http://localhost:8080"
+        );
+        assert_eq!(Site::parse("abc.onion").unwrap().link(), "http://abc.onion");
     }
 }

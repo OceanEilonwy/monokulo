@@ -185,7 +185,7 @@ fn source_label(source: Option<&str>, plugins: &[crate::db::StoreIntegrationRow]
                 .iter()
                 .find(|i| i.kind == slug)
                 .map_or("", |i| i.name.as_str());
-            crate::plugins::display_name(slug, name)
+            crate::plugins::Plugin::stored(slug, name).to_string()
         }
         None => "—".to_owned(),
     }
@@ -1006,7 +1006,7 @@ pub(super) async fn render_store_settings_page_with(
             clock: chrome.clock.clone(),
             connection_id: row.id,
             display_name: row.name.clone(),
-            site: row.site.clone(),
+            site: crate::stores::stored_site(row.site.as_ref()).to_owned(),
             payment_description: row.payment_description.clone(),
             sites,
             confirmations_required,
@@ -5437,9 +5437,8 @@ mod tests {
             .lock()
             .connect_integration(&crate::db::NewStoreIntegration {
                 store_id: &row.id,
-                kind: "acme-cart",
-                name: "Acme Cart",
-                site: &row.site,
+                plugin: &crate::plugins::Plugin::parse("acme-cart", "Acme Cart").unwrap(),
+                site: row.site.as_ref(),
                 version: "0.3.0",
                 webhook_id: None,
                 webhook_url: None,

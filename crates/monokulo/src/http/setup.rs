@@ -17,6 +17,8 @@ use axum::Form;
 use serde::Deserialize;
 
 use crate::db::{ConnectionId, UserRow, WalletId, WalletRow};
+use crate::plugins::{ConnectingPlugin, Plugin};
+use crate::stores::Site;
 use crate::views;
 use crate::views::setup::{SetupContext, SiteError, StoreStepViewModel};
 use crate::views::wallets::Flow;
@@ -82,22 +84,17 @@ impl StoreDraft {
         .collect()
     }
 
-    /// Whether a plugin sent the merchant here: only a slug `/connect`
-    /// would take counts, so a hand-made link can't name one.
-    fn has_plugin(&self) -> bool {
-        crate::plugins::valid_slug(&self.plugin)
-    }
-
-    /// What the plugin is called, as it's shown.
-    fn plugin_display_name(&self) -> String {
-        crate::plugins::display_name(&self.plugin, &self.plugin_name)
+    /// The plugin that sent the merchant here, if one did: only a slug
+    /// `/connect` would take counts, so a hand-made link can't name one.
+    fn plugin(&self) -> Option<Plugin> {
+        Plugin::parse(&self.plugin, &self.plugin_name)
     }
 }
 
 /// A store step whose answers hold: what the store will be.
 pub(super) struct ValidStore {
     name: String,
-    site: String,
+    site: Option<Site>,
     base_currency: String,
     plugin: Option<views::setup::PluginReturn>,
     confirmations_required: Option<u64>,
@@ -119,9 +116,10 @@ async fn store_page(
     name_error: Option<String>,
     site_error: Option<SiteError>,
 ) -> Response {
-    let plugin_host = draft
-        .has_plugin()
-        .then(|| crate::stores::normalize_site(&draft.site_url).unwrap_or_default());
+    let from_plugin = draft
+        .plugin()
+        .zip(Site::parse(&draft.site_url).ok())
+        .map(|(plugin, site)| ConnectingPlugin { plugin, site });
     let selected = draft.base_currency.clone();
     let currencies = state
         .db
@@ -136,11 +134,10 @@ async fn store_page(
         currency,
         currencies,
         name: draft.store_name.clone(),
-        site: plugin_host
-            .clone()
-            .unwrap_or_else(|| draft.store_site.clone()),
-        plugin_host,
-        plugin: draft.plugin_display_name(),
+        site: from_plugin
+            .as_ref()
+            .map_or_else(|| draft.store_site.clone(), |from| from.site.to_string()),
+        from_plugin,
         carried: draft.carried(),
         name_error,
         site_error,
@@ -158,31 +155,31 @@ pub(super) async fn check(
     user: &UserRow,
     draft: &StoreDraft,
 ) -> Result<ValidStore, Box<Response>> {
-    let plugin = if draft.has_plugin() {
-        if let Some(why) =
-            super::connect::plugin_problem(state, &draft.site_url, &draft.return_url).await
-        {
-            let chrome = super::page_chrome(state, Some(user), "/setup").await;
-            let host = crate::stores::normalize_site(&draft.site_url).ok();
-            return Err(Box::new(
-                views::connect::cannot_connect_page(
-                    &chrome,
-                    &draft.plugin_display_name(),
-                    host.as_deref(),
-                    &why,
-                )
-                .into_response(),
-            ));
+    let plugin = match draft.plugin() {
+        Some(plugin) => {
+            if let Err(why) =
+                super::connect::check_request(state, &draft.site_url, &draft.return_url).await
+            {
+                let chrome = super::page_chrome(state, Some(user), "/setup").await;
+                let host = Site::parse(&draft.site_url).ok();
+                return Err(Box::new(
+                    views::connect::cannot_connect_page(
+                        &chrome,
+                        &plugin,
+                        host.as_ref(),
+                        &why.to_string(),
+                    )
+                    .into_response(),
+                ));
+            }
+            Some(views::setup::PluginReturn {
+                plugin,
+                site_url: draft.site_url.clone(),
+                return_url: draft.return_url.clone(),
+                nonce: draft.nonce.clone(),
+            })
         }
-        Some(views::setup::PluginReturn {
-            platform: draft.plugin.clone(),
-            name: draft.plugin_name.clone(),
-            site_url: draft.site_url.clone(),
-            return_url: draft.return_url.clone(),
-            nonce: draft.nonce.clone(),
-        })
-    } else {
-        None
+        None => None,
     };
     let name = crate::stores::clean_name(&draft.store_name);
     let site_input = if plugin.is_some() {
@@ -191,12 +188,14 @@ pub(super) async fn check(
         draft.store_site.as_str()
     };
     let site = if site_input.trim().is_empty() && plugin.is_none() {
-        Ok(String::new())
+        Ok(None)
     } else {
-        crate::stores::normalize_site(site_input).map_err(|why| SiteError::Invalid(why.to_owned()))
+        Site::parse(site_input)
+            .map(Some)
+            .map_err(|why| SiteError::Invalid(why.to_string()))
     };
     let taken = match &site {
-        Ok(site) if !site.is_empty() => {
+        Ok(Some(site)) => {
             let (user_id, site) = (user.id.clone(), site.clone());
             state
                 .db
@@ -209,7 +208,7 @@ pub(super) async fn check(
     };
     let site = match (site, taken) {
         (Ok(site), None) => Ok(site),
-        (Ok(site), Some(taken)) => Err(site_error(taken, site)),
+        (Ok(site), Some(taken)) => Err(site_error(taken, site.as_ref())),
         (Err(e), _) => Err(e),
     };
     // The dropdown only offers known currencies: anything else is XMR.
@@ -225,7 +224,10 @@ pub(super) async fn check(
         (Ok(name), Ok(site)) => {
             let mut fields = vec![
                 ("store_name", name.clone()),
-                ("store_site", site.clone()),
+                (
+                    "store_site",
+                    crate::stores::stored_site(site.as_ref()).to_owned(),
+                ),
                 ("base_currency", base_currency.clone()),
             ];
             fields.extend(draft.carried());
@@ -255,7 +257,8 @@ pub(super) async fn check(
     }
 }
 
-fn site_error(taken: SiteTaken, site: String) -> SiteError {
+fn site_error(taken: SiteTaken, site: Option<&Site>) -> SiteError {
+    let site = crate::stores::stored_site(site).to_owned();
     match taken {
         SiteTaken::Yours { id, name } => SiteError::Yours {
             id: id.to_string(),
@@ -370,12 +373,12 @@ async fn make_store(
             let mut query = url::form_urlencoded::Serializer::new(String::new());
             if let Some(plugin) = &store.plugin {
                 query
-                    .append_pair("plugin", &plugin.platform)
+                    .append_pair("plugin", plugin.plugin.slug().as_str())
                     .append_pair("site_url", &plugin.site_url)
                     .append_pair("return_url", &plugin.return_url)
                     .append_pair("nonce", &plugin.nonce);
-                if !plugin.name.is_empty() {
-                    query.append_pair("plugin_name", &plugin.name);
+                if let Some(name) = plugin.plugin.name() {
+                    query.append_pair("plugin_name", name.as_str());
                 }
             }
             if skipped_backup {
@@ -395,7 +398,7 @@ async fn make_store(
                 user,
                 draft,
                 None,
-                Some(site_error(taken, store.site.clone())),
+                Some(site_error(taken, store.site.as_ref())),
             )
             .await
         }
@@ -588,15 +591,13 @@ pub async fn done(
         }
         None => None,
     };
-    let plugin =
-        (crate::plugins::valid_slug(&query.plugin) && !query.return_url.is_empty()).then(|| {
-            views::setup::PluginReturn {
-                platform: query.plugin.clone(),
-                name: query.plugin_name.clone(),
-                site_url: query.site_url.clone(),
-                return_url: query.return_url.clone(),
-                nonce: query.nonce.clone(),
-            }
+    let plugin = Plugin::parse(&query.plugin, &query.plugin_name)
+        .filter(|_| !query.return_url.is_empty())
+        .map(|plugin| views::setup::PluginReturn {
+            plugin,
+            site_url: query.site_url.clone(),
+            return_url: query.return_url.clone(),
+            nonce: query.nonce.clone(),
         });
     // A store with a site isn't said to take payments on it until an order
     // was made; an engine that can't say leaves that unsaid.

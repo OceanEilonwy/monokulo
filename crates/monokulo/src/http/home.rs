@@ -92,7 +92,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
         let mut store = HomeStoreRow {
             connection_id: row.id.clone(),
             display_name: display_name.clone(),
-            site: row.site.clone(),
+            site: crate::stores::stored_site(row.site.as_ref()).to_owned(),
             health,
             health_label,
             wallet: row.wallet_id.as_ref().and_then(|id| {

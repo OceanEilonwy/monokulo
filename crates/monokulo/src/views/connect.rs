@@ -10,6 +10,8 @@
 use maud::{html, Markup};
 
 use super::PageChrome;
+use crate::plugins::Plugin;
+use crate::stores::Site;
 use ui::{Choice, Select};
 
 /// One key custody backend a new wallet's keys can go to (part 5).
@@ -43,16 +45,12 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
 /// The plugin's request: what it was sent with, carried in the form that
 /// gives it the store's key.
 pub struct PluginRequestView {
-    pub platform: String,
-    /// The name the plugin sent, as sent (empty for none), carried on.
-    pub name: String,
-    /// What the plugin is called, as it's shown.
-    pub plugin: String,
+    pub plugin: Plugin,
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
-    /// The shop's host, as it's shown.
-    pub host: String,
+    /// The shop's site.
+    pub host: Site,
 }
 
 /// `GET /connect/{platform}` for a shop whose site one of the merchant's
@@ -80,15 +78,15 @@ pub fn existing_store_page(
             }))
         }
         div class="step-foot" {
-            (ui::LinkButton::new("Cancel", crate::stores::site_link(&request.host)))
+            (ui::LinkButton::new("Cancel", request.host.link()))
             span class="spacer" {}
-            form method="post" action=(format!("/connect/{}", request.platform)) class="inline-form" {
+            form method="post" action=(format!("/connect/{}", request.plugin.slug())) class="inline-form" {
                 input type="hidden" name="connection_id" value=(store_id);
                 input type="hidden" name="site_url" value=(request.site_url);
                 input type="hidden" name="return_url" value=(request.return_url);
                 input type="hidden" name="nonce" value=(request.nonce);
-                @if !request.name.is_empty() {
-                    input type="hidden" name="name" value=(request.name);
+                @if let Some(name) = request.plugin.name() {
+                    input type="hidden" name="name" value=(name.as_str());
                 }
                 (ui::Button::new(format!("Connect to {store_name}"))
                     .variant(ui::ButtonVariant::Primary)
@@ -103,8 +101,8 @@ pub fn existing_store_page(
 /// no form.
 pub fn cannot_connect_page(
     chrome: &PageChrome,
-    plugin: &str,
-    host: Option<&str>,
+    plugin: &Plugin,
+    host: Option<&Site>,
     why: &str,
 ) -> Markup {
     let header = ui::PageHeader::new(format!("Connect your {plugin} shop"));
@@ -128,14 +126,16 @@ mod tests {
 
     fn request() -> PluginRequestView {
         PluginRequestView {
-            platform: "acme-cart".into(),
-            name: "Acme Cart".into(),
-            plugin: "Acme Cart".into(),
+            plugin: acme_cart(),
             site_url: "https://shop.example.com".into(),
             return_url: "https://shop.example.com/settings".into(),
             nonce: "nonce-abc".into(),
-            host: "shop.example.com".into(),
+            host: Site::parse("shop.example.com").unwrap(),
         }
+    }
+
+    fn acme_cart() -> Plugin {
+        Plugin::parse("acme-cart", "Acme Cart").unwrap()
     }
 
     #[test]
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn a_plugins_name_is_shown_as_text() {
         let request = PluginRequestView {
-            plugin: "<b>Shop</b>".into(),
+            plugin: Plugin::parse("acme-cart", "<b>Shop</b>").unwrap(),
             ..request()
         };
         let html =
@@ -185,8 +185,8 @@ mod tests {
     fn a_shop_that_cant_connect_says_why_and_shows_no_form() {
         let html = cannot_connect_page(
             &chrome(),
-            "Acme Cart",
-            Some("shop.example.com"),
+            &acme_cart(),
+            Site::parse("shop.example.com").ok().as_ref(),
             "No public address yet.",
         )
         .into_string();

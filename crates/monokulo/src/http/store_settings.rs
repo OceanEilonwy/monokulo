@@ -24,6 +24,7 @@ use axum::response::{IntoResponse, Response};
 
 use crate::db::UserRow;
 use crate::engine_client::EngineClientError;
+use crate::stores::Site;
 use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
 
 use super::dashboard::redirect_303;
@@ -53,9 +54,9 @@ enum WebsiteRequest {
 struct Plan {
     /// The website changed or emptied: the save goes on to ask about it.
     website: Option<WebsiteRequest>,
-    /// The store's name, and its site (empty: none).
+    /// The store's name, and a site for a store that had none.
     name: Option<String>,
-    site: Option<String>,
+    site: Option<Site>,
     /// The store's payment description (empty: none).
     payment_description: Option<String>,
     base_currency: Option<String>,
@@ -228,21 +229,19 @@ async fn plan(
             .is_some()
     };
     if let Some(raw) = form.get("store_site").filter(|_| !locked) {
-        let site = if raw.trim().is_empty() {
-            String::new()
-        } else if row.site.is_empty() {
-            crate::stores::normalize_site(raw).map_err(|m| (STORE, m.to_owned()))?
-        } else {
-            raw.trim().to_owned()
-        };
-        if !row.site.is_empty() && site != row.site {
-            plan.website = Some(if site.is_empty() {
-                WebsiteRequest::Remove
-            } else {
-                WebsiteRequest::To(site)
-            });
-        } else if site != row.site {
-            if !site.is_empty() {
+        let typed = raw.trim();
+        match &row.site {
+            // Changing or removing a saved site asks first, with what was
+            // typed (`http::store_site`).
+            Some(current) if typed.is_empty() => plan.website = Some(WebsiteRequest::Remove),
+            Some(current) if typed != current.as_str() => {
+                plan.website = Some(WebsiteRequest::To(typed.to_owned()));
+            }
+            Some(_) => {}
+            None if typed.is_empty() => {}
+            // Adding one saves with the form, when no other store has it.
+            None => {
+                let site = Site::parse(raw).map_err(|m| (STORE, m.to_string()))?;
                 let (user_id, wanted) = (row.user_id.clone(), site.clone());
                 let taken = state
                     .db
@@ -252,8 +251,8 @@ async fn plan(
                 if let Some(taken) = taken {
                     return Err((STORE, taken.message(&site)));
                 }
+                plan.site = Some(site);
             }
-            plan.site = Some(site);
         }
     }
     // What the store's payments are for, which payers read: one line,
@@ -482,19 +481,19 @@ async fn apply(
 ) -> Result<(), Refusal> {
     if plan.name.is_some() || plan.site.is_some() {
         let name = plan.name.unwrap_or_else(|| row.name.clone());
-        let site = plan.site.unwrap_or_else(|| row.site.clone());
-        let new_site = site != row.site && !site.is_empty();
+        let new_site = plan.site.is_some();
+        let site = plan.site.or_else(|| row.site.clone());
         let (store_id, wanted) = (row.id.clone(), site.clone());
         let written = state
             .db
             .write(move |db| {
-                db.set_store_name_and_site(&store_id, &name, &wanted)?;
+                db.set_store_name_and_site(&store_id, &name, wanted.as_ref())?;
                 // A new site's domain waits to be verified, as at setup.
                 if new_site {
                     crate::embed_domains::suggest_site_domain(
                         db,
                         &store_id,
-                        &wanted,
+                        wanted.as_ref(),
                         crate::now_unix(),
                     );
                 }
@@ -506,7 +505,9 @@ async fn apply(
             Err(e) if e.is_unique_violation() => {
                 return Err((
                     StoreSection::Store,
-                    super::connections::SiteTaken::Someone.message(&site),
+                    site.as_ref().map_or_else(something_went_wrong, |site| {
+                        super::connections::SiteTaken::Someone.message(site)
+                    }),
                 ))
             }
             Err(_) => return Err((StoreSection::Store, something_went_wrong())),

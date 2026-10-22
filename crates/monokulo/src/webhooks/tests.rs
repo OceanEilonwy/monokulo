@@ -110,7 +110,9 @@ fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
         &store,
         &user,
         name,
-        &format!("{id}.example"),
+        crate::stores::Site::parse(&format!("{id}.example"))
+            .ok()
+            .as_ref(),
         &format!("pk_{id}"),
         "",
         0,
