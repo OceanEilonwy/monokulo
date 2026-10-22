@@ -4,7 +4,7 @@
 // none formats a number or writes a sentence of its own.
 
 import {
-  DASH, capitalised, compact, fraction, kilobytes, laneTime, megabytes, micros, plural, rounded, seconds,
+  DASH, capitalised, compact, fixed, fraction, kilobytes, laneTime, megabytes, micros, plural, rounded, seconds,
   storesPhrase, thousands,
 } from './format.ts';
 import type {
@@ -412,7 +412,7 @@ function nextBlock(pool: NodePool): NextBlock {
     over,
     count: compact(pool.txs),
     title: known
-      ? `The next block: ${transactions} waiting in the node's pool, ${kilobytes(pool.bytes!)} of the ${kilobytes(pool.penalty_free!)} a miner can fill at full reward (${((fill ?? 0) * 100).toFixed(0)} %)${over ? ': more than one block takes without a smaller reward.' : '.'}`
+      ? `The next block: ${transactions} waiting in the node's pool, ${kilobytes(pool.bytes!)} of the ${kilobytes(pool.penalty_free!)} a miner can fill at full reward (${fixed((fill ?? 0) * 100, 0)} %)${over ? ': more than one block takes without a smaller reward.' : '.'}`
       : `The next block: ${transactions} waiting in the node's pool (the node didn't say their size).`,
   };
 }
@@ -670,7 +670,7 @@ function side(state: State): Side {
       rows: [
         ["In the node's pool", nodePool ? thousands(nodePool.txs) : DASH],
         ["Of the next block's full-reward size", nodePool && nodePool.bytes !== null && nodePool.penalty_free !== null
-          ? `${((nodePool.bytes / Math.max(1, nodePool.penalty_free)) * 100).toFixed(0)} %` : DASH],
+          ? `${fixed((nodePool.bytes / Math.max(1, nodePool.penalty_free)) * 100, 0)} %` : DASH],
         ['Scanned by the engine', pool.watched ? 'yes' : 'no: no order waits to be paid'],
         ['Transactions scanned and remembered', thousands(pool.remembered)],
         ['Fast passes with something new, last minute', thousands(count(pool.fast_passes))],

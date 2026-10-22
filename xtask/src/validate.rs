@@ -281,6 +281,7 @@ fn check_sources(root: &Path) -> io::Result<()> {
         "format.ts",
         "layout.ts",
         "machine.ts",
+        "marks.ts",
         "present.ts",
         "state.ts",
         "wire.ts",

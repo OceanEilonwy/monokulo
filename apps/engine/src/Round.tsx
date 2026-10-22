@@ -20,26 +20,25 @@ function Segment(props: { bar: Bar; scale: number }) {
     left: `${at(from).toFixed(2)}%`,
     width: `${(props.bar.span_ms ? at(to) - at(from) : 100).toFixed(2)}%`,
   });
-  const run = (i: number) => ({
-    'meets-prev': meets(props.bar.shapes[i - 1], props.bar.shapes[i]),
-    'meets-next': meets(props.bar.shapes[i], props.bar.shapes[i + 1]),
-  });
-  const piece = (shape: Shape, i: number) => {
-    switch (shape.kind) {
-      case 'fill':
-        return <i class={{ fill: true, p2: shape.leftover, ...run(i) }} style={place(shape.from_ms, shape.to_ms)} />;
-      case 'thread':
-        return <i class={{ thread: true, band: shape.band }} style={place(shape.from_ms, shape.to_ms)} />;
-      case 'work': {
-        const band = shape.band_from;
-        const style = () => (band === null ? place(shape.from_ms, shape.to_ms) : {
-          ...place(shape.from_ms, shape.to_ms),
-          '--join': `${at(band).toFixed(2)}%`,
-          '--join-w': `${(at(shape.to_ms) - at(band)).toFixed(2)}%`,
-        });
-        return <i class={{ work: true, joined: shape.joined, band: !shape.joined && band !== null, ...run(i) }} style={style()} />;
-      }
+  const meetsAround = (i: number) => [
+    meets(props.bar.shapes[i - 1], props.bar.shapes[i]) ? 'meets-prev' : '',
+    meets(props.bar.shapes[i], props.bar.shapes[i + 1]) ? 'meets-next' : '',
+  ];
+  // A shape's classes in one order whatever it was before: `work band`,
+  // `fill meets-prev`.
+  const shapeClass = (shape: Shape, i: number) => {
+    const parts = shape.kind === 'fill' ? ['fill', shape.leftover ? 'p2' : '', ...meetsAround(i)]
+      : shape.kind === 'thread' ? ['thread', shape.band ? 'band' : '']
+        : ['work', shape.joined ? 'joined' : shape.band_from !== null ? 'band' : '', ...meetsAround(i)];
+    return parts.filter(Boolean).join(' ');
+  };
+  const shapeStyle = (shape: Shape) => {
+    const style: Record<string, string> = place(shape.from_ms, shape.to_ms);
+    if (shape.kind === 'work' && shape.band_from !== null) {
+      style['--join'] = `${at(shape.band_from).toFixed(2)}%`;
+      style['--join-w'] = `${(at(shape.to_ms) - at(shape.band_from)).toFixed(2)}%`;
     }
+    return style;
   };
   return (
     <div
@@ -47,8 +46,9 @@ function Segment(props: { bar: Bar; scale: number }) {
       style={{ left: `${pct(props.bar.start_ms, props.scale).toFixed(2)}%`, width: `${pct(props.bar.span_ms, props.scale).toFixed(2)}%` }}
       title={props.bar.title}
     >
-      {/* Rebuilt with the segment: a shape's place is its kind's. */}
-      <For each={props.bar.shapes}>{(shape, i) => piece(shape, untrack(i))}</For>
+      {/* By place: each shape's element stays, its kind and place
+          following the frame. */}
+      <For each={props.bar.shapes} keyed={false}>{(shape, i) => <i class={shapeClass(shape(), i)} style={shapeStyle(shape())} />}</For>
     </div>
   );
 }

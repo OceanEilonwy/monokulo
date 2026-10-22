@@ -24,6 +24,7 @@ const sources = [
   'format.ts',
   'layout.ts',
   'machine.ts',
+  'marks.ts',
   'present.ts',
   'state.ts',
   'wire.ts',

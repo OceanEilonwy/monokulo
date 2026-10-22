@@ -59,6 +59,7 @@ async function main() {
     'apps/engine/src/format.ts',
     'apps/engine/src/layout.ts',
     'apps/engine/src/machine.ts',
+    'apps/engine/src/marks.ts',
     'apps/engine/src/present.ts',
     'apps/engine/src/state.ts',
     'apps/engine/src/wire.ts',

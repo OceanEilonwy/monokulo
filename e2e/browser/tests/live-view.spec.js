@@ -2,8 +2,9 @@
 // coverage fixture's engine: following it live, scrubbing the timeline,
 // replaying and going live again, moving and resizing the timeline's window,
 // the legend, the chain strip's cells at each width, the round's lanes, the
-// network picker, the live "Machine and links" strip, and the page without
-// JavaScript, which says it needs it. The page is an app (apps/engine): it
+// network picker, the live "Machine and links" strip, the playback control
+// following the keys, and the page without JavaScript, which says it needs
+// it. The page is an app (apps/engine): it
 // draws and words everything from the data monokulo sends.
 // The fixture plays a scripted story into the engine's activity record
 // (`POST /__coverage/engine/story`): a block with a payment, a pool payment
@@ -222,6 +223,43 @@ async function stripCells(page) {
     return { left, right, cells };
   });
 }
+
+test('the playback control reads what the keys chose, and a pause leaves nothing lit', async ({ page, context }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await openAsAdmin(page, context);
+  const shown = page.locator('#tl-modes .mk-select .mk-button');
+  await expect(shown).toHaveText(/Live/);
+
+  // Paused while a block or the node is lit, the light still goes out.
+  const lit = page.locator('.engine-page :is(.flash, .probe, .lit, .spark, .enter)');
+  await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
+  await expect.poll(() => lit.count(), { timeout: 20000 }).toBeGreaterThan(0);
+  await page.locator('#tl-win').focus();
+  await page.keyboard.press(' ');
+  await expect(mode()).toHaveValue('paused');
+  await expect(shown).toHaveText(/Pause/);
+  await expect(lit).toHaveCount(0, { timeout: 3000 });
+
+  // Space plays and pauses, End goes live: the control drawn over the
+  // select says so, though from paused to playing and back no option turns
+  // on or off to give it away. The story leaves seconds to replay.
+  await page.keyboard.press('End');
+  await expect(page.locator('#engine-events')).toContainText('caught up and joined the frontier', { timeout: 20000 });
+  const first = await page.locator('#engine-events tr').last().getAttribute('data-at');
+  await page.locator(`#engine-events tr[data-at="${first}"]`).last().click();
+  await expect(mode()).toHaveValue('paused');
+  await page.locator('#tl-win').focus();
+  await page.keyboard.press(' ');
+  await expect(mode()).toHaveValue('replay');
+  await expect(shown).toHaveText(/Play/);
+  await page.keyboard.press(' ');
+  await expect(mode()).toHaveValue('paused');
+  await expect(shown).toHaveText(/Pause/);
+  await page.keyboard.press('End');
+  await expect(mode()).toHaveValue('live');
+  await expect(shown).toHaveText(/Live/);
+});
 
 test('the chain strip shows more blocks when wider, never wider blocks', async ({ page, context }) => {
   test.setTimeout(60_000);
