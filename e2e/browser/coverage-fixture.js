@@ -1,4 +1,5 @@
 const { spawn, spawnSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 const { BUILD_ARGS } = require('./real-stack');
 
@@ -55,7 +56,11 @@ async function serveInstrumentedAssets(context) {
   await context.route('**/static/*', async route => {
     // A script's URL carries its digest (crate::assets); the file is named without it.
     const name = path.basename(new URL(route.request().url()).pathname).replace(/\.[0-9a-f]{16}(?=\.(js|css)$)/, '');
-    if (!['checkout.js', 'challenge.js', 'monokulo-client.js', 'engine-view.js', 'pos-app.js', 'pos-app.css'].includes(name)) {
+    // The instrumented scripts, and the chunks the coverage builds made
+    // with them, named by that build's hashes. The islands aren't counted:
+    // they come from the server, with the chunks its page asks for up
+    // front (a chunk of the same name is the same file either way).
+    if (name === 'ui-islands.js' || !/^[\w.-]+\.(js|css)$/.test(name) || !fs.existsSync(path.join(coverageAssets, name))) {
       return route.continue();
     }
     return route.fulfill({ path: path.join(coverageAssets, name),

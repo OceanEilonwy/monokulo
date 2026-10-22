@@ -3388,7 +3388,7 @@
         }
       ]
     },
-    "crates/monokulo/pos-ui/src/main.tsx": {
+    "apps/pos/src/main.tsx": {
       "lines": [
         [
           15,

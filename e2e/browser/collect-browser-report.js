@@ -41,15 +41,15 @@ async function main() {
   const transformed = await sourceMaps.createSourceMapStore().transformCoverage(map);
   const required = stagenet ? [
     'crates/monokulo/static/checkout.js',
-    'crates/monokulo/pos-ui/src/main.tsx',
+    'apps/pos/src/main.tsx',
   ] : [
     'crates/monokulo/static/checkout.js',
     'crates/monokulo/static/challenge.js',
     'crates/monokulo/static/monokulo-client.js',
-    'crates/monokulo/engine-ui/src/engine-view.js',
-    'crates/monokulo/engine-ui/src/events.tsx',
-    'crates/monokulo/pos-ui/src/main.tsx',
-    'crates/monokulo/pos-ui/src/timeline.ts',
+    'apps/engine/src/engine-view.js',
+    'apps/engine/src/events.tsx',
+    'apps/pos/src/main.tsx',
+    'apps/pos/src/timeline.ts',
   ];
   const finalMap = stagenet ? coverage.createCoverageMap({}) : transformed;
   if (stagenet) {

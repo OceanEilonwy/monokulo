@@ -18,7 +18,7 @@ function pageHtml(initialSaved = false) {
     <div id="checkout-root" data-order-id="order-1" data-status="pending" data-confirmations="0" data-error="">
       <div id="live-status" data-live><span id="status-badge">Waiting for payment</span></div>
       <noscript><p class="refresh-toggle"><a href="/pay/pk/orders/order-1?refresh=false">Auto Refresh: ON</a></p></noscript>
-      <form id="refund-form" action="/refund-address" method="post">
+      <form id="refund-form" action="/refund-address" method="post" data-qr-decoder="/static/jsQR.js">
         <div id="refund-field" class="refund-field${initialSaved ? ' is-saved' : ''}">
           <input id="refund_address" name="refund_address" value="${initialSaved ? address : ''}">
           <span id="refund-save-state" role="status" aria-label="${initialSaved ? 'Refund address saved' : ''}"></span>
@@ -31,7 +31,7 @@ function pageHtml(initialSaved = false) {
         <noscript><button type="submit">Save</button></noscript>
       </form>
     </div>
-    <script src="/static/jsQR.js"></script><script src="/static/checkout.js"></script>
+    <script src="/static/checkout.js"></script>
   </body></html>`;
 }
 

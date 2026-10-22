@@ -10,8 +10,8 @@ on:
       - 'crates/monokulo/src/views/**'
       - 'crates/monokulo/static/**'
       - 'xtask/src/logo.rs'
-      - 'crates/monokulo/pos-ui/src/**'
-      - 'crates/monokulo/engine-ui/src/**'
+      - 'apps/pos/src/**'
+      - 'apps/engine/src/**'
       - '.github/workflows/ui.yml'
   push:
     branches: [main]
@@ -24,8 +24,8 @@ on:
       - 'crates/monokulo/src/views/**'
       - 'crates/monokulo/static/**'
       - 'xtask/src/logo.rs'
-      - 'crates/monokulo/pos-ui/src/**'
-      - 'crates/monokulo/engine-ui/src/**'
+      - 'apps/pos/src/**'
+      - 'apps/engine/src/**'
       - '.github/workflows/ui.yml'
 permissions:
   contents: read

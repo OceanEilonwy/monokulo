@@ -1,5 +1,5 @@
 {
-  "name": "monokulo-engine-ui",
+  "name": "@monokulo/engine",
   "private": true,
   "type": "module",
   "scripts": {

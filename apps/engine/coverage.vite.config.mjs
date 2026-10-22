@@ -3,23 +3,24 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import solid from '@solidjs/vite-plugin';
+import { chunks, entries } from './chunks.config.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(directory, '../../..');
+const root = path.resolve(directory, '../..');
 const requireFromTests = createRequire(path.join(root, 'e2e/browser/package.json'));
 const { createInstrumenter } = requireFromTests('istanbul-lib-instrument');
-// The authored POS sources, each counted under its repository path.
-const sources = ['main.tsx', 'timeline.ts'];
+// The engine page's authored sources, each counted under its repository path.
+const sources = ['engine-view.js', 'events.tsx'];
 
 function coverageInstrument() {
   return {
-    name: 'coverage-authored-pos',
+    name: 'coverage-authored-engine-view',
     enforce: 'post',
     apply: 'build',
     transform(code, id) {
       const file = sources.find(name => id.split('?')[0] === path.join(directory, 'src', name));
       if (!file) return null;
-      const source = `crates/monokulo/pos-ui/src/${file}`;
+      const source = `apps/engine/src/${file}`;
       const inputMap = this.getCombinedSourcemap();
       const instrumenter = createInstrumenter({ esModules: true, produceSourceMap: true, compact: false });
       const output = instrumenter.instrumentSync(code, source, inputMap.mappings ? inputMap : undefined);
@@ -28,16 +29,17 @@ function coverageInstrument() {
   };
 }
 
+// The same entries and chunks as vite.config.ts; the islands and Solid
+// are built but not counted.
 export default defineConfig({
   plugins: [solid(), coverageInstrument()],
+  define: { 'process.env.NODE_ENV': '"production"' },
+  base: './',
   build: {
     outDir: path.join(root, 'target/coverage/browser/assets'),
     emptyOutDir: false,
     sourcemap: true,
     minify: false,
-    assetsDir: '.',
-    lib: { entry: 'src/main.tsx', formats: ['es'], fileName: () => 'pos-app.js' },
-    cssCodeSplit: false,
-    rollupOptions: { output: { assetFileNames: 'pos-app[extname]' } },
+    rollupOptions: { input: entries, preserveEntrySignatures: false, output: chunks },
   },
 });

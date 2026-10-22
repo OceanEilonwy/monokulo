@@ -425,7 +425,7 @@ fn render(path: &str) -> String {
             standalone(Kind::Icon, "Monokulo", true, &STANDALONE)
         }
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
-        "crates/monokulo/pos-ui/src/logo.ts" => ts_module(),
+        "apps/pos/src/logo.ts" => ts_module(),
         "crates/ui/web/brand/full.svg" => package_svg(Kind::Full),
         "crates/ui/web/brand/small.svg" => package_svg(Kind::Small),
         "crates/ui/web/brand/icon.svg" => package_svg(Kind::Icon),
@@ -441,7 +441,7 @@ const OUTPUTS: [&str; 11] = [
     "docs/readme/logo-dark.svg",
     "crates/monokulo/static/favicon.svg",
     "crates/monokulo/src/views/logo_art.rs",
-    "crates/monokulo/pos-ui/src/logo.ts",
+    "apps/pos/src/logo.ts",
     "crates/ui/web/brand/full.svg",
     "crates/ui/web/brand/small.svg",
     "crates/ui/web/brand/icon.svg",

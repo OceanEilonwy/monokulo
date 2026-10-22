@@ -64,10 +64,14 @@ once it runs say `if enhanced`, and `b.*` is only read inside `@if enhanced`
   the behaviour attaches to, and a `<!--mk:N-->` marker where `@if enhanced`
   goes; an `@if enhanced { } @else { }`'s fallback sits between that marker
   and `<!--/mk:N-->`.
-- **The browser** runs one script, `web/islands.ts` (`ui-islands.js`, built
-  with `vite.islands.config.js`): one MutationObserver attaches every island
-  on the page and those fixi or a script add, at once, when visible or on
-  first interaction, and lets go of those taken away. Attaching calls the
+- **The browser** runs one script, `web/islands.ts` (`ui-islands.js`;
+  monokulo builds it with the engine page's script in `apps/engine`, the
+  Pages site as one file with `vite.islands.config.js`): one
+  MutationObserver attaches every island on the page and those fixi or a
+  script add, at once, when visible or on first interaction, and lets go of
+  those taken away. Each behaviour is its own chunk (the generated
+  `solid/islands.ts` imports it on first use), so a page fetches only the
+  behaviours it has, and Solid only if one of them needs it. Attaching calls the
   generated `attach<Name>`: the behaviour's handlers and refs bind to the
   server's own elements, its enhanced markup is inserted at the markers, and
   any fallback goes. Nothing else the server rendered is replaced, so a
@@ -102,8 +106,8 @@ order and Reference controls use them. The hand-written examples below
 cover what hasn't moved yet.
 
 The root npm workspace contains `crates/ui` (`@monokulo/ui`, also the Rust crate `ui`),
-`apps/stylebook`, the existing `crates/monokulo/pos-ui` and the engine page's
-`crates/monokulo/engine-ui`. One root lockfile
+`apps/stylebook`, the existing `apps/pos` and the engine page's
+`apps/engine`. One root lockfile
 pins their tools. The browser integration suite in `e2e/browser` retains its
 independent install and lockfile.
 
@@ -116,12 +120,14 @@ independent install and lockfile.
   Its examples are included in HTML at build time, not rendered by JavaScript.
 - `crates/monokulo/src/views`: Maud markup and application composition. Rust
   helpers emit the documented HTML; they do not define alternative controls.
-- `crates/monokulo/pos-ui`: Solid state, order workflows and terminal layout.
+- `apps/pos`: Solid state, order workflows and terminal layout.
   It composes shared controls. The POS still requires JavaScript.
-- `crates/monokulo/engine-ui`: the engine page's live view. The page is
+- `apps/engine`: the engine page's live view. The page is
   rendered in Rust and works without it; with it, the events table is a Solid
   view of signals the stream and the playback loop set, and the rest is
-  still drawn by hand (issue #126 moves it over a step at a time).
+  still drawn by hand (issue #126 moves it over a step at a time). Its build
+  also makes monokulo's islands script, so the engine page shares their
+  copy of Solid.
 - `e2e/browser`: checks that components integrate with real workflows.
 
 ## Build and serving
@@ -165,8 +171,8 @@ contract.
 ## Verification
 
 Run `npm run test:ui` (install Chromium once with `npx playwright install chromium`),
-`npm run build:ui`, `npm run typecheck -w monokulo-pos-ui` and
-`npm run typecheck -w monokulo-engine-ui`.
+`npm run build:ui`, `npm run typecheck -w @monokulo/pos` and
+`npm run typecheck -w @monokulo/engine`.
 Existing Rust palette checks also inspect the embedded package component CSS.
 For POS adoption use the existing `pos-responsive-layout` and terminal browser
 suites, plus `cargo test -p monokulo --lib http::pos::tests`.
@@ -251,5 +257,8 @@ use fixi for component behaviour, and don't fetch-and-swap from a
 behaviour: that is fixi again. A page that becomes one island with JSON
 saves is the case to revisit, one page at a time.
 
-fixi, ssexi and the glue are 6.4 KB gzipped; the islands script, mostly
-Solid's runtime, 28 KB.
+fixi, ssexi and the glue are 6.4 KB gzipped. The islands script is 1.8 KB
+brotli on its own; a page with a Select adds Solid's runtime and the
+Select's behaviour, 20.6 KB in all. monokulo sends every script, style and
+module brotli- or gzip-compressed to a browser that takes it
+(`crate::assets`).

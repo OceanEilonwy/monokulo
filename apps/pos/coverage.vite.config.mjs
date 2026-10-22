@@ -5,21 +5,21 @@ import { defineConfig } from 'vite';
 import solid from '@solidjs/vite-plugin';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(directory, '../../..');
+const root = path.resolve(directory, '../..');
 const requireFromTests = createRequire(path.join(root, 'e2e/browser/package.json'));
 const { createInstrumenter } = requireFromTests('istanbul-lib-instrument');
-// The engine page's authored sources, each counted under its repository path.
-const sources = ['engine-view.js', 'events.tsx'];
+// The authored POS sources, each counted under its repository path.
+const sources = ['main.tsx', 'timeline.ts'];
 
 function coverageInstrument() {
   return {
-    name: 'coverage-authored-engine-view',
+    name: 'coverage-authored-pos',
     enforce: 'post',
     apply: 'build',
     transform(code, id) {
       const file = sources.find(name => id.split('?')[0] === path.join(directory, 'src', name));
       if (!file) return null;
-      const source = `crates/monokulo/engine-ui/src/${file}`;
+      const source = `apps/pos/src/${file}`;
       const inputMap = this.getCombinedSourcemap();
       const instrumenter = createInstrumenter({ esModules: true, produceSourceMap: true, compact: false });
       const output = instrumenter.instrumentSync(code, source, inputMap.mappings ? inputMap : undefined);
@@ -35,6 +35,9 @@ export default defineConfig({
     emptyOutDir: false,
     sourcemap: true,
     minify: false,
-    lib: { entry: 'src/engine-view.js', formats: ['es'], fileName: () => 'engine-view.js' },
+    assetsDir: '.',
+    lib: { entry: 'src/main.tsx', formats: ['es'], fileName: () => 'pos-app.js' },
+    cssCodeSplit: false,
+    rollupOptions: { output: { assetFileNames: 'pos-app[extname]' } },
   },
 });

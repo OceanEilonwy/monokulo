@@ -1,5 +1,5 @@
 //! `POST /dashboard/stores/{id}/pos/logs`: the POS's session timeline
-//! (`pos-ui/src/timeline.ts`), sent in batches while the terminal runs.
+//! (`apps/pos/src/timeline.ts`), sent in batches while the terminal runs.
 //!
 //! A POS runs for hours on a tablet that loses coverage, goes to the
 //! background and gets reloaded by its browser. When something goes wrong,

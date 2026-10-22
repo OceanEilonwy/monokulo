@@ -1,16 +1,21 @@
-//! Builds the POS terminal app (`pos-ui/`, Solid 2 + Vite) into `OUT_DIR`,
-//! where `http::pay` embeds it, the shared components' islands script
-//! (`crates/ui`, the same toolchain), the engine page's script (`engine-ui/`,
-//! the same toolchain), and key custody's browser module (the
-//! `key-custody` crate for `wasm32-unknown-unknown`), which `http::key_entry`
-//! embeds; the built files are not kept in git.
+//! Builds the browser code the binary embeds into `OUT_DIR`; the built files
+//! are not kept in git:
+//!
+//! - the POS terminal app (`apps/pos`, Solid 2 + Vite), which `http::pay`
+//!   embeds;
+//! - the server-rendered pages' scripts (`apps/engine`, the same
+//!   toolchain): the shared components' islands (`crates/ui/web/islands.ts`)
+//!   and the engine page's live view, in chunks, with a list of the chunks
+//!   for `crate::assets` (`web/chunks.rs`);
+//! - key custody's browser module (the `key-custody` crate for
+//!   `wasm32-unknown-unknown`), which `http::key_entry` embeds.
 //!
 //! A debug build gets Solid's development build (its diagnostics, unminified
 //! code); a release build gets the minified production one.
 //! `MONOKULO_POS_BUILD=development|production` overrides the choice.
 //!
-//! Needs Node and the app's dependencies installed from its lockfile (`npm ci`
-//! at the repository root). This script never installs anything itself:
+//! Needs Node and the apps' dependencies installed from their lockfile (`npm
+//! ci` at the repository root). This script never installs anything itself:
 //! a build that reaches the network would break offline builds and make
 //! builds depend on the registry.
 
@@ -25,10 +30,6 @@ use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let ui = manifest.join("pos-ui");
-    for input in ["src", "package.json", "vite.config.ts", "tsconfig.json"] {
-        println!("cargo:rerun-if-changed={}", ui.join(input).display());
-    }
     println!("cargo:rerun-if-env-changed=MONOKULO_POS_BUILD");
 
     let mode = match std::env::var("MONOKULO_POS_BUILD").ok().as_deref() {
@@ -60,12 +61,82 @@ fn main() {
             workspace.display()
         );
     }
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("pos-ui");
-    run(&ui, &tsc, &["--noEmit"], mode);
-    run(
-        &ui,
+    let pos = build_app(
+        &workspace.join("apps/pos"),
+        &out_dir.join("pos"),
         &vite,
+        &tsc,
+        mode,
+    );
+    for file in ["pos-app.js", "pos-app.css"] {
+        assert!(
+            pos.join(file).exists(),
+            "the POS build did not produce {file}"
+        );
+    }
+
+    // The server-rendered pages' scripts: the entries are linked by name
+    // (`crate::assets` puts its digest in their URL), every other chunk is
+    // served at the name Vite gave it, its hash in it.
+    let web = build_app(
+        &workspace.join("apps/engine"),
+        &out_dir.join("web"),
+        &vite,
+        &tsc,
+        mode,
+    );
+    let entries = ["ui-islands.js", "engine-view.js"];
+    for file in entries {
+        assert!(
+            web.join(file).exists(),
+            "the pages' build did not produce {file}"
+        );
+    }
+    let mut chunks: Vec<String> = std::fs::read_dir(&web)
+        .expect("the pages' build output")
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .filter(|name| name.ends_with(".js") && !entries.contains(&name.as_str()))
+        .collect();
+    chunks.sort();
+    let list: String = chunks
+        .iter()
+        .map(|name| {
+            format!(
+                "    static_assets::asset!(named {name:?}, \"/web/{name}\", static_assets::JS),\n"
+            )
+        })
+        .collect();
+    std::fs::write(web.join("chunks.rs"), format!("&[\n{list}]\n")).expect("web/chunks.rs");
+    write_preloads(&web);
+
+    build_key_custody_wasm(&manifest);
+    build_wallet_setup_wasm(&manifest);
+    release_identity();
+}
+
+/// Type-checks one of `apps/` and builds it with Vite into `out`, which it
+/// returns.
+fn build_app(app: &Path, out: &Path, vite: &Path, tsc: &Path, mode: &str) -> PathBuf {
+    for input in [
+        "src",
+        "package.json",
+        "vite.config.ts",
+        "tsconfig.json",
+        "chunks.config.mjs",
+    ] {
+        // Only what the app has: Cargo takes a path that doesn't exist for
+        // one that changed, and would build again every time.
+        let path = app.join(input);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+    run(app, tsc, &["--noEmit"], mode);
+    run(
+        app,
+        vite,
         &[
             "build",
             "--mode",
@@ -76,65 +147,50 @@ fn main() {
         ],
         mode,
     );
-    for file in ["pos-app.js", "pos-app.css"] {
-        assert!(
-            out.join(file).exists(),
-            "the POS build did not produce {file}"
-        );
+    out.to_path_buf()
+}
+
+/// `web/preloads.rs`, from Vite's manifest: the chunks each entry imports
+/// (by its file, `"engine-view.js"`) and each island's behaviour needs (by
+/// the component's name, `"Select"`), its own chunk first. A page asks for
+/// them with the script, rather than once the script has run.
+fn write_preloads(web: &Path) {
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(web.join(".vite/manifest.json")).expect("the pages' build's manifest"),
+    )
+    .expect("the manifest is JSON");
+    let manifest = manifest.as_object().expect("the manifest is an object");
+    let file = |key: &str| manifest[key]["file"].as_str().unwrap().to_string();
+    // Every chunk a manifest entry imports, and what those import.
+    fn imports(
+        manifest: &serde_json::Map<String, serde_json::Value>,
+        key: &str,
+        into: &mut Vec<String>,
+    ) {
+        for import in manifest[key]["imports"].as_array().into_iter().flatten() {
+            let import = import.as_str().unwrap();
+            let file = manifest[import]["file"].as_str().unwrap().to_string();
+            if !into.contains(&file) {
+                into.push(file);
+                imports(manifest, import, into);
+            }
+        }
     }
-
-    // The shared components' islands (crates/ui/web/islands.ts): the
-    // behaviour every interactive component on the server's pages attaches.
-    let islands = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("ui-islands");
-    run(
-        &workspace.join("crates/ui"),
-        &vite,
-        &[
-            "build",
-            "--config",
-            "vite.islands.config.js",
-            "--mode",
-            mode,
-            "--outDir",
-            islands.to_str().unwrap(),
-            "--emptyOutDir",
-        ],
-        mode,
-    );
-    assert!(
-        islands.join("ui-islands.js").exists(),
-        "the islands build did not produce ui-islands.js"
-    );
-
-    // The engine page's script (engine-ui/): the live view, its events
-    // table a Solid view.
-    let engine_ui = manifest.join("engine-ui");
-    for input in ["src", "package.json", "vite.config.ts", "tsconfig.json"] {
-        println!("cargo:rerun-if-changed={}", engine_ui.join(input).display());
+    let mut rows = String::new();
+    for (key, chunk) in manifest {
+        let (name, mut files) = if chunk["isEntry"].as_bool() == Some(true) {
+            (file(key), Vec::new())
+        } else if chunk["isDynamicEntry"].as_bool() == Some(true)
+            && key.contains("crates/ui/solid/")
+        {
+            (chunk["name"].as_str().unwrap().to_string(), vec![file(key)])
+        } else {
+            continue;
+        };
+        imports(manifest, key, &mut files);
+        rows.push_str(&format!("    ({name:?}, &{files:?}),\n"));
     }
-    let engine_out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("engine-ui");
-    run(&engine_ui, &tsc, &["--noEmit"], mode);
-    run(
-        &engine_ui,
-        &vite,
-        &[
-            "build",
-            "--mode",
-            mode,
-            "--outDir",
-            engine_out.to_str().unwrap(),
-            "--emptyOutDir",
-        ],
-        mode,
-    );
-    assert!(
-        engine_out.join("engine-view.js").exists(),
-        "the engine page's build did not produce engine-view.js"
-    );
-
-    build_key_custody_wasm(&manifest);
-    build_wallet_setup_wasm(&manifest);
-    release_identity();
+    std::fs::write(web.join("preloads.rs"), format!("&[\n{rows}]\n")).expect("web/preloads.rs");
 }
 
 /// A browser module built from one of the workspace's crates.

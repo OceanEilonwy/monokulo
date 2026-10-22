@@ -138,13 +138,20 @@ test('search is shown, hidden or decided by the number of options', async ({ pag
   await login(context);
   await page.goto(fixture.base_url + '/');
   const find = await page.evaluate(async (island) => {
+    // An island attaches once its behaviour has loaded: the first time, a
+    // fetch.
+    const attached = async (holder) => {
+      for (let tries = 0; tries < 500 && !holder.querySelector('.mk-button'); tries++) {
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      return holder.querySelector('.mk-button');
+    };
     const make = async (count, search) => {
       const options = Array.from({ length: count }, (_, i) => `<option value="${i}">Option ${i}</option>`).join('');
       const holder = document.createElement('div');
       holder.innerHTML = eval(island)(`<select aria-label="${count} ${search}">${options}</select>`, search);
       document.body.append(holder);
-      await new Promise(resolve => setTimeout(resolve));
-      holder.querySelector('.mk-button').click();
+      (await attached(holder)).click();
       await new Promise(resolve => setTimeout(resolve));
       const shown = !!holder.querySelector('.mk-find');
       holder.remove();

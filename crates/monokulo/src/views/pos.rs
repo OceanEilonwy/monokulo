@@ -16,7 +16,7 @@ pub struct PosViewModel {
     pub base_currency: String,
     pub base_currency_decimals: u8,
     /// The store opted in to client logs: the POS records and sends its
-    /// session timeline (`pos-ui/src/timeline.ts`).
+    /// session timeline (`apps/pos/src/timeline.ts`).
     pub client_logging: bool,
 }
 

@@ -5,6 +5,8 @@ const { createInstrumenter } = require('istanbul-lib-instrument');
 
 const root = path.resolve(__dirname, '../..');
 const output = path.join(root, 'target/coverage/browser/assets');
+// Fresh each run: the chunks' names change with their content.
+fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
 const initial = {};
 for (const name of ['checkout', 'challenge', 'monokulo-client']) {
@@ -17,17 +19,17 @@ for (const name of ['checkout', 'challenge', 'monokulo-client']) {
 fs.writeFileSync(path.join(output, 'initial.json'), JSON.stringify(initial));
 
 // The Vite-built scripts, each instrumented in its own build: the POS and
-// the engine page.
+// the server-rendered pages' scripts (the islands and the engine page).
 const vite = path.join(root, 'node_modules/vite/bin/vite.js');
 if (!fs.existsSync(vite)) throw new Error(`missing prerequisite: ${vite}`);
 for (const [app, bundle, counted] of [
-  ['pos-ui', 'pos-app.js', 'src/main.tsx'],
-  ['engine-ui', 'engine-view.js', 'src/events.tsx'],
+  ['pos', 'pos-app.js', 'src/main.tsx'],
+  ['engine', 'engine-view.js', 'src/events.tsx'],
 ]) {
   const build = spawnSync(process.execPath, [vite, 'build', '--config', 'coverage.vite.config.mjs'],
-    { cwd: path.join(root, 'crates/monokulo', app), stdio: 'inherit' });
+    { cwd: path.join(root, 'apps', app), stdio: 'inherit' });
   if (build.status !== 0) process.exit(build.status || 1);
-  if (!fs.readFileSync(path.join(output, bundle), 'utf8').includes(`crates/monokulo/${app}/${counted}`)) {
+  if (!fs.readFileSync(path.join(output, bundle), 'utf8').includes(`apps/${app}/${counted}`)) {
     throw new Error(`${app} coverage bundle did not contain a ${counted} coverage counter`);
   }
 }

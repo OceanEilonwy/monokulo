@@ -20,6 +20,9 @@ document.documentElement.classList.add('js');
 const INTERACTION = ['pointerdown', 'focusin', 'keydown'] as const;
 const attached = new WeakMap<Element, () => void>();
 const waiting = new WeakMap<Element, () => void>();
+const loading = new WeakSet<Element>();
+// The last island in line to attach.
+let turn: Promise<void> = Promise.resolve();
 
 function attach(element: HTMLElement) {
   if (attached.has(element) || waiting.has(element)) return;
@@ -29,11 +32,25 @@ function attach(element: HTMLElement) {
     console.error(`[data-island="${name}"]: no such interactive component`);
     return;
   }
+  // The behaviour's code is fetched the first time a page has its island,
+  // every island's at once, and they attach in the order asked: an island
+  // still after the one around it. One taken away meanwhile is left alone.
   const go = () => {
     waiting.get(element)?.();
     waiting.delete(element);
-    if (attached.has(element) || !element.isConnected) return;
-    attached.set(element, start(element, JSON.parse(element.dataset.props ?? '{}') as never));
+    if (attached.has(element) || loading.has(element) || !element.isConnected) return;
+    loading.add(element);
+    const loaded = start();
+    turn = turn.then(() => loaded).then(behaviour => {
+      loading.delete(element);
+      if (attached.has(element) || !element.isConnected) return;
+      attached.set(element, behaviour(element, JSON.parse(element.dataset.props ?? '{}') as never));
+    }, error => {
+      loading.delete(element);
+      console.error(`[data-island="${name}"]: its behaviour didn't load`, error);
+    // A behaviour that throws is the page's error, as it was when they
+    // attached at once; the islands after it still attach.
+    }).catch(error => reportError(error));
   };
   switch (element.dataset.mount) {
     case 'visible': {

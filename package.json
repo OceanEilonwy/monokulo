@@ -4,8 +4,8 @@
   "workspaces": [
     "crates/ui",
     "apps/stylebook",
-    "crates/monokulo/pos-ui",
-    "crates/monokulo/engine-ui"
+    "apps/pos",
+    "apps/engine"
   ],
   "scripts": {
     "stylebook": "npm run dev -w @monokulo/stylebook",

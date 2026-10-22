@@ -13,7 +13,7 @@
 //!   browser  The offline Playwright run, coverage-browser (its fixture
 //!            and real-binaries projects, without instrumenting, so no
 //!            coverage overhead). Needs `npm ci` in e2e/browser and
-//!            crates/monokulo/pos-ui.
+//!            apps/pos.
 //!
 //! Not run: the #[ignore]d stagenet/Tor Rust tests and the stagenet POS
 //! Playwright suite, since they spend stagenet funds and need public nodes.
