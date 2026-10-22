@@ -82,6 +82,7 @@ pub mod auth;
 pub mod challenge;
 pub mod checkout;
 pub mod connect;
+pub mod connected_apps;
 pub mod controls;
 pub mod create_order;
 pub mod domains;

@@ -654,8 +654,15 @@ impl Shop {
             Arc::clone(&self.state.webhooks),
         );
         tokio::spawn(async move {
-            let _ =
-                subscriber::follow(&db, &engine, &webhooks, &delivery::SystemClock, || {}).await;
+            let _ = subscriber::follow(
+                &db,
+                &engine,
+                &webhooks,
+                &Default::default(),
+                &delivery::SystemClock,
+                || {},
+            )
+            .await;
         })
     }
 
@@ -1020,4 +1027,93 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
         db.lock().recent_deliveries(&webhook.id, 100).unwrap().len(),
         1
     );
+}
+
+/// An engine event about an order a connected app made reaches the store's
+/// app event streams as a sale event; one about any other order doesn't.
+#[tokio::test]
+async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
+    let shop = shop().await;
+    let key = shared::auth::generate_app_key();
+    let token = shared::auth::RawToken::presented("ct_sub").hash();
+    {
+        let db = shop.state.db.lock();
+        db.create_app_connect_token(&token, &shop.store, "Till", crate::now_unix())
+            .unwrap();
+        db.redeem_app_connect_token(
+            &token,
+            crate::now_unix(),
+            600,
+            &crate::db::NewApp {
+                slug: "monokular",
+                name: "Monokular",
+                device_name: "",
+                platform: "",
+                version: "",
+                key_hash: &key.hash(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    }
+    let by_app = self::order_with_key(&shop, key.expose()).await;
+    let other = shop
+        .order(serde_json::json!({ "amount": "0.5", "currency": "XMR" }))
+        .await;
+
+    let apps = Arc::new(crate::apps::AppEvents::default());
+    let mut heard = apps.subscribe();
+    let (db, engine, webhooks, listening) = (
+        shop.state.db.clone(),
+        shop.state.engine.client.clone(),
+        Arc::clone(&shop.state.webhooks),
+        Arc::clone(&apps),
+    );
+    let reader = tokio::spawn(async move {
+        let _ = subscriber::follow(
+            &db,
+            &engine,
+            &webhooks,
+            &listening,
+            &delivery::SystemClock,
+            || {},
+        )
+        .await;
+    });
+    shop.engine.mark_order_expired(&other).unwrap();
+    shop.engine.mark_order_paid(&by_app).unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(5), heard.recv())
+        .await
+        .expect("an announcement")
+        .unwrap();
+    assert_eq!(event.public_key, shop.pk);
+    assert_eq!(event.event.event, "sale.paid");
+    assert_eq!(event.event.order_id, by_app);
+    assert_eq!(event.event.device_name, "Till");
+    reader.abort();
+}
+
+/// An order made with a connected app's key: its id.
+async fn order_with_key(shop: &Shop, key: &str) -> String {
+    let response = shop
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/pay/{}/orders", shop.pk))
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::from(
+                    serde_json::json!({ "amount": "0.25", "currency": "XMR" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["order_id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }

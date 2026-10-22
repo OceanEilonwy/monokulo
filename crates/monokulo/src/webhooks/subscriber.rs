@@ -5,7 +5,9 @@
 //! Where it has read up to is saved in monokulo's database in the same
 //! transaction as the deliveries an event queues, so a restart of either
 //! side carries on from the next event: none is queued twice, none is
-//! skipped. The connection is opened again, with a growing wait, whenever
+//! skipped. Each event about an order a connected app made is also
+//! announced to the store's app event streams (`crate::apps`). The
+//! connection is opened again, with a growing wait, whenever
 //! it fails or ends. If the engine no longer holds events after the saved
 //! position (monokulo was away longer than `order_events.retention_days`,
 //! or the engine's database was replaced), the engine says so and this logs
@@ -17,6 +19,7 @@ use std::time::Duration;
 use futures_util::StreamExt as _;
 use serde::Deserialize;
 
+use crate::apps::AppEvents;
 use crate::db::{Database, DbError, LoggedEvent};
 use crate::engine_client::EngineClient;
 use crate::live::{SseEvent, SseParser};
@@ -101,6 +104,7 @@ pub async fn follow(
     db: &Database,
     engine: &EngineClient,
     webhooks: &super::Webhooks,
+    apps: &AppEvents,
     clock: &dyn Clock,
     on_open: impl FnOnce(),
 ) -> Result<(), FollowError> {
@@ -123,7 +127,7 @@ pub async fn follow(
             Err(_) => return Err(FollowError::Quiet),
         };
         for event in parser.push(&chunk) {
-            handle(db, webhooks, clock, &event).await?;
+            handle(db, webhooks, apps, clock, &event).await?;
         }
     }
 }
@@ -132,6 +136,7 @@ pub async fn follow(
 async fn handle(
     db: &Database,
     webhooks: &super::Webhooks,
+    apps: &AppEvents,
     clock: &dyn Clock,
     event: &SseEvent,
 ) -> Result<(), FollowError> {
@@ -144,6 +149,7 @@ async fn handle(
                 logged.order_id.clone(),
                 logged.event_type.clone(),
             );
+            let for_apps = apps.watched().then(|| logged.clone());
             let queued = db
                 .write(move |db| {
                     db.queue_order_event(&logged, now, |store, metadata| {
@@ -151,6 +157,9 @@ async fn handle(
                     })
                 })
                 .await?;
+            if let Some(logged) = for_apps {
+                announce_to_apps(db, apps, logged).await;
+            }
             tracing::debug!(
                 order_events.seq = seq,
                 order.id = %order_id,
@@ -192,6 +201,24 @@ async fn handle(
     Ok(())
 }
 
+/// Tells the store's open app event streams about `logged`, when an app
+/// made its order. A failed lookup costs the streams this event, never the
+/// webhooks: they re-read the order when they reconnect.
+async fn announce_to_apps(db: &Database, apps: &AppEvents, logged: LoggedEvent) {
+    let order_id = logged.order_id.clone();
+    match db.read(move |db| db.app_order(&order_id)).await {
+        Ok(Some(order)) => {
+            if let Some(event) = crate::apps::SaleEvent::from_logged(&order, &logged) {
+                apps.announce(&logged.tenant_public_key, event);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(order.id = %logged.order_id, error = %e, "an app order could not be read")
+        }
+    }
+}
+
 /// Reads the log for as long as monokulo runs, opening it again after each
 /// failure with a wait doubling from 1 s up to a minute (back to 1 s once a
 /// connection opens).
@@ -199,7 +226,12 @@ async fn handle(
     clippy::infinite_loop,
     reason = "a supervised loop: `shared::supervise` restarts one that returns"
 )]
-pub async fn run_subscriber(db: Database, engine: EngineClient, webhooks: Arc<super::Webhooks>) {
+pub async fn run_subscriber(
+    db: Database,
+    engine: EngineClient,
+    webhooks: Arc<super::Webhooks>,
+    apps: Arc<AppEvents>,
+) {
     let mut delay = Duration::from_secs(1);
     loop {
         let mut opened = false;
@@ -207,6 +239,7 @@ pub async fn run_subscriber(db: Database, engine: EngineClient, webhooks: Arc<su
             &db,
             &engine,
             &webhooks,
+            &apps,
             &super::delivery::SystemClock,
             || opened = true,
         )

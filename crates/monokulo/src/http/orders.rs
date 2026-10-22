@@ -1001,6 +1001,7 @@ pub(super) async fn render_store_settings_page_with(
     let row = row.into_row();
     let wallet = store_wallet_view(state, &row, user, wallet_state).await;
     let sites = super::store_site::site_view(state, &row, &sk, &chrome.clock).await;
+    let apps = super::apps::apps_view(state, &row, &chrome.clock).await;
     let view_model = views::store_settings::StoreSettingsViewModel {
         store: Some(views::store_settings::StoreSettingsData {
             clock: chrome.clock.clone(),
@@ -1009,6 +1010,7 @@ pub(super) async fn render_store_settings_page_with(
             site: crate::stores::stored_site(row.site.as_ref()).to_owned(),
             payment_description: row.payment_description.clone(),
             sites,
+            apps,
             confirmations_required,
             fx_provider_options,
             haveno_settings,

@@ -210,6 +210,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         state.db.clone(),
         state.engine.client.clone(),
         state.webhooks.clone(),
+        state.apps.clone(),
     ));
     let worker = tokio::spawn(crate::webhooks::delivery::run_delivery_loop(
         state.db.clone(),

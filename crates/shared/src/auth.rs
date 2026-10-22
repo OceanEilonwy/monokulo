@@ -135,6 +135,16 @@ pub fn generate_connect_token() -> RawToken {
     RawToken(format!("conn_{}", random_hex(32)))
 }
 
+/// A single-use code the dashboard shows to connect an app to a store.
+pub fn generate_app_connect_token() -> RawToken {
+    RawToken(format!("ct_{}", random_hex(32)))
+}
+
+/// A connected app's own key for one store, given to it once.
+pub fn generate_app_key() -> RawToken {
+    RawToken(format!("ak_{}", random_hex(32)))
+}
+
 /// The header every request to the engine carries the engine token
 /// in. The engine refuses a request without it, whatever the route: only
 /// monokulo, which is given the token, may talk to the engine.

@@ -136,11 +136,14 @@ pub const MAX_MERCHANT_ORDER_ID_CHARS: usize = 120;
 /// from outside a browser (`super::embed_domains::embed_policy_middleware`).
 /// A key-made order's source is the store's connected plugin's when the
 /// request names it in [`CLIENT_HEADER`], else the Store API's
-/// ([`order_source`]).
+/// ([`order_source`]). An order made with a connected app's key is the
+/// app's (its slug), is recorded for the store's app event streams and
+/// announced on them (`crate::apps`).
 pub async fn create_order(
     State(state): State<AppState>,
     Path(pk): Path<String>,
     key: Option<Extension<super::store_key::StoreKeyAuthenticated>>,
+    app: Option<Extension<super::store_key::AppKeyAuthenticated>>,
     headers: axum::http::HeaderMap,
     Json(mut req): Json<CreateOrderRequest>,
 ) -> Response {
@@ -299,6 +302,21 @@ pub async fn create_order(
             // failed when it didn't.
             // Only a keyed order that names its client can be a plugin's.
             let (client, version) = client(&headers).filter(|_| created_with_key).unzip();
+            let app = app.map(|Extension(super::store_key::AppKeyAuthenticated(app))| app);
+            let app_order = app.as_ref().map(|app| crate::db::AppOrder {
+                order_id: order.order_id.clone(),
+                store_id: row.id.clone(),
+                app_id: app.id.clone(),
+                device_name: app.device_name.clone(),
+                amount: req.amount.clone(),
+                currency: req.currency.clone(),
+                address: order.address.clone(),
+                xmr_amount_piconero: order.xmr_amount_piconero,
+                merchant_order_id: req.merchant_order_id.clone(),
+                expires_at: order.expires_at,
+                created_at: now_unix(),
+            });
+            let (recorded_app, announced) = (app.clone(), app_order.clone());
             let (id, order_id, currency, amount, provider) = (
                 row.id.clone(),
                 order.order_id.clone(),
@@ -315,8 +333,9 @@ pub async fn create_order(
                 .db
                 .write(move |db| {
                     // A failed lookup costs the order its plugin, never
-                    // its record.
+                    // its record. An app's order is never a plugin's.
                     let plugin = match client {
+                        Some(_) if recorded_app.is_some() => None,
                         Some(_) => db
                             .active_integration_kind(&id)
                             .inspect_err(|e| tracing::warn!(error = %e, "the store's plugin could not be read"))
@@ -324,8 +343,10 @@ pub async fn create_order(
                             .flatten(),
                         None => None,
                     };
-                    let source =
-                        order_source(created_with_key, client.as_deref(), plugin.as_deref());
+                    let source = match &recorded_app {
+                        Some(app) => app.slug.clone(),
+                        None => order_source(created_with_key, client.as_deref(), plugin.as_deref()),
+                    };
                     db.create_order_currency_metadata(
                         &id,
                         &order_id,
@@ -341,6 +362,16 @@ pub async fn create_order(
                         Some(&source),
                         show_merchant_order_id,
                     )?;
+                    if let (Some(app), Some(app_order)) = (&recorded_app, &app_order) {
+                        db.record_app_order(app_order)?;
+                        let version = match client.as_deref() {
+                            Some(client) if client.eq_ignore_ascii_case(&app.slug) => {
+                                version.as_deref().unwrap_or_default()
+                            }
+                            _ => "",
+                        };
+                        db.app_seen(&app.id, version, now_unix())?;
+                    }
                     // An order from the plugin: its integration was seen now.
                     if plugin.as_deref() == Some(source.as_str()) {
                         db.integration_seen(
@@ -353,6 +384,11 @@ pub async fn create_order(
                     Ok::<_, crate::db::DbError>(())
                 })
                 .await;
+            if let (Ok(()), Some(order)) = (&recorded, &announced) {
+                state
+                    .apps
+                    .announce(&pk, crate::apps::SaleEvent::waiting(order));
+            }
             if let Err(e) = recorded {
                 tracing::error!(
                     order.id = %order.order_id,

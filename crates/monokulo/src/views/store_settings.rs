@@ -69,6 +69,8 @@ pub struct StoreSettingsData {
     /// The website and the plugins connected to the store
     /// (`views::store_site`).
     pub sites: super::store_site::SiteView,
+    /// The devices connected to the store (`views::connected_apps`).
+    pub apps: super::connected_apps::AppsView,
     /// The tenant's current confirmation threshold -
     /// `confirmation_thresholds::FALLBACK_CONFIRMATIONS` when the engine is
     /// currently unreachable.
@@ -1100,6 +1102,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 },
                 StoreTab::Connections => {
                     (super::store_site::connections_card(&store.sites))
+                    (super::connected_apps::apps_card(&store.apps))
                     (verified_domains_card(store))
                     (webhooks_card(store))
                 },
@@ -1158,6 +1161,11 @@ mod tests {
             display_name: "shop.example.com".to_string(),
             site: "shop.example.com".to_string(),
             payment_description: String::new(),
+            apps: crate::views::connected_apps::AppsView {
+                store_id: "conn_1".into(),
+                store_name: "shop.example.com".into(),
+                apps: Vec::new(),
+            },
             sites: crate::views::store_site::SiteView {
                 store_id: "conn_1".into(),
                 store_name: "shop.example.com".into(),

@@ -90,7 +90,7 @@ pub enum WebsiteChange {
 
 /// A plugin's mark: the first letter of its name on a tile. monokulo
 /// knows no plugin, so it draws no plugin's logo.
-fn plugin_mark(name: &str) -> Markup {
+pub(super) fn plugin_mark(name: &str) -> Markup {
     let initial: String = name
         .chars()
         .next()
