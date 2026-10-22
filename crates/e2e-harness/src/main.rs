@@ -319,6 +319,7 @@ async fn main() {
         settings: ControlPlaneAppState::test_settings(None),
         engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
         webhooks: Arc::default(),
+        apps: Default::default(),
     };
     let cp_router = build_monokulo_router(cp_state);
     let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")

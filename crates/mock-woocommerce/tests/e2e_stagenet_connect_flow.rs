@@ -198,6 +198,7 @@ async fn spawn_test_monokulo(
         state.db.clone(),
         state.engine.client.clone(),
         state.webhooks.clone(),
+        state.apps.clone(),
     );
     let worker = monokulo::webhooks::delivery::run_delivery_loop(
         state.db.clone(),
