@@ -7,11 +7,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Every colour, and the spacing, radius and type tokens: the `ui`
-/// package's, the only place a colour is defined.
-const THEME_CSS: &str = ui::assets::TOKENS_CSS;
-/// This site's own components and pages.
-const SITE_CSS: &str = super::SITE.text();
+/// A stylesheet as the server sends it (`crate::assets`): what is checked
+/// is what pages get. `theme.css` holds every colour, and the spacing,
+/// radius and type tokens, the only place a colour is defined; `site.css`
+/// this site's own components and pages; `ui.css` the shared components'.
+fn served(name: &str) -> &'static str {
+    let asset = crate::assets::find(name).unwrap_or_else(|| panic!("no asset is called {name}"));
+    std::str::from_utf8(asset.bytes).unwrap_or_else(|_| panic!("{name} isn't UTF-8"))
+}
 
 fn crate_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -61,11 +64,8 @@ fn style_consts(source: &str) -> Vec<String> {
 /// is the one place allowed to hold colour values.
 fn stylesheets() -> Vec<(String, String)> {
     let mut sheets = vec![
-        ("views/site.css".to_string(), SITE_CSS.to_string()),
-        (
-            "ui/web/components".to_string(),
-            ui::assets::COMPONENTS_CSS.to_string(),
-        ),
+        ("site.css".to_string(), served("site.css").to_string()),
+        ("ui.css".to_string(), served("ui.css").to_string()),
         (
             "apps/pos/src/pos.css".to_string(),
             read(&crate_dir().join("../../apps/pos/src/pos.css")),
@@ -334,7 +334,7 @@ fn every_pill_and_chip_is_padded_with_the_pill_tokens() {
 
 #[test]
 fn every_token_a_page_uses_is_declared() {
-    let mut texts = vec![("ui/web/tokens.css".to_string(), strip_comments(THEME_CSS))];
+    let mut texts = vec![("theme.css".to_string(), strip_comments(served("theme.css")))];
     texts.extend(
         stylesheets()
             .into_iter()
@@ -375,11 +375,11 @@ fn block(css: &str, opening: &str) -> BTreeMap<String, String> {
 }
 
 fn light_tokens() -> BTreeMap<String, String> {
-    block(THEME_CSS, ":root {")
+    block(served("theme.css"), ":root {")
 }
 
 fn dark_overrides() -> BTreeMap<String, String> {
-    block(THEME_CSS, ":root[data-theme=\"dark\"] {")
+    block(served("theme.css"), ":root[data-theme=\"dark\"] {")
 }
 
 /// The browser draws a number box's step arrows, a select's list and
@@ -387,7 +387,7 @@ fn dark_overrides() -> BTreeMap<String, String> {
 /// use, or an account that chose light on a dark OS gets dark arrows.
 #[test]
 fn the_browsers_own_control_parts_follow_the_theme_in_use() {
-    let css = strip_comments(THEME_CSS);
+    let css = strip_comments(served("theme.css"));
     let scheme = |opening: &str| {
         let start = css
             .find(opening)
@@ -412,7 +412,7 @@ fn the_browsers_own_control_parts_follow_the_theme_in_use() {
 
 #[test]
 fn both_dark_blocks_agree_and_only_override_light_tokens() {
-    let css = strip_comments(THEME_CSS);
+    let css = strip_comments(served("theme.css"));
     let from_os = block(&css, ":root:not([data-theme=\"light\"]) {");
     let chosen = dark_overrides();
     assert_eq!(
