@@ -1,6 +1,7 @@
 //! Builds the POS terminal app (`pos-ui/`, Solid 2 + Vite) into `OUT_DIR`,
 //! where `http::pay` embeds it, the shared components' islands script
-//! (`crates/ui`, the same toolchain), and key custody's browser module (the
+//! (`crates/ui`, the same toolchain), the engine page's script (`engine-ui/`,
+//! the same toolchain), and key custody's browser module (the
 //! `key-custody` crate for `wasm32-unknown-unknown`), which `http::key_entry`
 //! embeds; the built files are not kept in git.
 //!
@@ -103,6 +104,32 @@ fn main() {
     assert!(
         islands.join("ui-islands.js").exists(),
         "the islands build did not produce ui-islands.js"
+    );
+
+    // The engine page's script (engine-ui/): the live view, its events
+    // table a Solid view.
+    let engine_ui = manifest.join("engine-ui");
+    for input in ["src", "package.json", "vite.config.ts", "tsconfig.json"] {
+        println!("cargo:rerun-if-changed={}", engine_ui.join(input).display());
+    }
+    let engine_out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("engine-ui");
+    run(&engine_ui, &tsc, &["--noEmit"], mode);
+    run(
+        &engine_ui,
+        &vite,
+        &[
+            "build",
+            "--mode",
+            mode,
+            "--outDir",
+            engine_out.to_str().unwrap(),
+            "--emptyOutDir",
+        ],
+        mode,
+    );
+    assert!(
+        engine_out.join("engine-view.js").exists(),
+        "the engine page's build did not produce engine-view.js"
     );
 
     build_key_custody_wasm(&manifest);

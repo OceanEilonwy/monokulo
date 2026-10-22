@@ -46,7 +46,8 @@ async function main() {
     'crates/monokulo/static/checkout.js',
     'crates/monokulo/static/challenge.js',
     'crates/monokulo/static/monokulo-client.js',
-    'crates/monokulo/static/engine-view.js',
+    'crates/monokulo/engine-ui/src/engine-view.js',
+    'crates/monokulo/engine-ui/src/events.tsx',
     'crates/monokulo/pos-ui/src/main.tsx',
     'crates/monokulo/pos-ui/src/timeline.ts',
   ];

@@ -7,7 +7,7 @@ const root = path.resolve(__dirname, '../..');
 const output = path.join(root, 'target/coverage/browser/assets');
 fs.mkdirSync(output, { recursive: true });
 const initial = {};
-for (const name of ['checkout', 'challenge', 'monokulo-client', 'engine-view']) {
+for (const name of ['checkout', 'challenge', 'monokulo-client']) {
   const source = `crates/monokulo/static/${name}.js`;
   const instrumenter = createInstrumenter({ esModules: false, compact: false });
   const code = instrumenter.instrumentSync(fs.readFileSync(path.join(root, source), 'utf8'), source);
@@ -16,13 +16,19 @@ for (const name of ['checkout', 'challenge', 'monokulo-client', 'engine-view']) 
 }
 fs.writeFileSync(path.join(output, 'initial.json'), JSON.stringify(initial));
 
-const posDir = path.join(root, 'crates/monokulo/pos-ui');
+// The Vite-built scripts, each instrumented in its own build: the POS and
+// the engine page.
 const vite = path.join(root, 'node_modules/vite/bin/vite.js');
 if (!fs.existsSync(vite)) throw new Error(`missing prerequisite: ${vite}`);
-const build = spawnSync(process.execPath, [vite, 'build', '--config', 'coverage.vite.config.mjs'],
-  { cwd: posDir, stdio: 'inherit' });
-if (build.status !== 0) process.exit(build.status || 1);
-if (!fs.readFileSync(path.join(output, 'pos-app.js'), 'utf8').includes('crates/monokulo/pos-ui/src/main.tsx')) {
-  throw new Error('POS coverage bundle did not contain a main.tsx coverage counter');
+for (const [app, bundle, counted] of [
+  ['pos-ui', 'pos-app.js', 'src/main.tsx'],
+  ['engine-ui', 'engine-view.js', 'src/events.tsx'],
+]) {
+  const build = spawnSync(process.execPath, [vite, 'build', '--config', 'coverage.vite.config.mjs'],
+    { cwd: path.join(root, 'crates/monokulo', app), stdio: 'inherit' });
+  if (build.status !== 0) process.exit(build.status || 1);
+  if (!fs.readFileSync(path.join(output, bundle), 'utf8').includes(`crates/monokulo/${app}/${counted}`)) {
+    throw new Error(`${app} coverage bundle did not contain a ${counted} coverage counter`);
+  }
 }
 console.log(`Prepared instrumented browser assets in ${output}`);

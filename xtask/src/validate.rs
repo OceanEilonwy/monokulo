@@ -269,6 +269,7 @@ fn check_sources(root: &Path) -> io::Result<()> {
         "main.tsx",
         "timeline.ts",
         "engine-view.js",
+        "events.tsx",
     ]
     .into_iter()
     .map(String::from)

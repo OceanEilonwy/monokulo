@@ -50,8 +50,9 @@ pub static ASSETS: &[Asset] = &[
     asset!("checkout.js", JS),
     asset!("jsQR.js", JS),
     asset!("challenge.js", JS),
-    // The engine page (`docs/engine_visualizer.md`).
-    asset!("engine-view.js", JS),
+    // The engine page (`docs/engine_visualizer.md`; `engine-ui/`, built by
+    // `build.rs`).
+    asset!(built "engine-view.js", "/engine-ui/engine-view.js", JS),
     // A store's key entry, and making a wallet in the browser, each with
     // the WebAssembly module its script fetches (`build.rs`).
     asset!("key-custody.js", JS),
