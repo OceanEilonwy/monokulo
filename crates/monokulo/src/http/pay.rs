@@ -101,11 +101,13 @@ pub(crate) fn client_version(headers: &axum::http::HeaderMap, name: &str) -> Opt
         .then(|| version.trim().chars().take(40).collect())
 }
 
-/// The client a request's [`CLIENT_HEADER`] names, without its version.
-pub(crate) fn client_name(headers: &axum::http::HeaderMap) -> Option<String> {
+/// The client a request's [`CLIENT_HEADER`] names and its version (empty
+/// when it gave none, at most 40 characters).
+pub(crate) fn client(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
     let value = headers.get(CLIENT_HEADER)?.to_str().ok()?;
-    let name = value.split('/').next()?.trim();
-    (!name.is_empty()).then(|| name.to_owned())
+    let (name, version) = value.split_once('/').unwrap_or((value, ""));
+    let name = name.trim();
+    (!name.is_empty()).then(|| (name.to_owned(), version.trim().chars().take(40).collect()))
 }
 
 /// Where an order made through `POST /pay/{pk}/orders` came from, for its
@@ -295,11 +297,8 @@ pub async fn create_order(
             // payment address. Losing this one local record is a strictly
             // smaller problem than telling a customer their real order
             // failed when it didn't.
-            let client = client_name(&headers);
-            let version = client
-                .as_deref()
-                .and_then(|name| client_version(&headers, name))
-                .unwrap_or_default();
+            // Only a keyed order that names its client can be a plugin's.
+            let (client, version) = client(&headers).filter(|_| created_with_key).unzip();
             let (id, order_id, currency, amount, provider) = (
                 row.id.clone(),
                 order.order_id.clone(),
@@ -315,7 +314,16 @@ pub async fn create_order(
             let recorded = state
                 .db
                 .write(move |db| {
-                    let plugin = db.active_integration(&id)?.map(|i| i.kind);
+                    // A failed lookup costs the order its plugin, never
+                    // its record.
+                    let plugin = match client {
+                        Some(_) => db
+                            .active_integration_kind(&id)
+                            .inspect_err(|e| tracing::warn!(error = %e, "the store's plugin could not be read"))
+                            .ok()
+                            .flatten(),
+                        None => None,
+                    };
                     let source =
                         order_source(created_with_key, client.as_deref(), plugin.as_deref());
                     db.create_order_currency_metadata(
@@ -335,7 +343,12 @@ pub async fn create_order(
                     )?;
                     // An order from the plugin: its integration was seen now.
                     if plugin.as_deref() == Some(source.as_str()) {
-                        db.integration_seen(&id, &source, &version, now_unix())?;
+                        db.integration_seen(
+                            &id,
+                            &source,
+                            version.as_deref().unwrap_or_default(),
+                            now_unix(),
+                        )?;
                     }
                     Ok::<_, crate::db::DbError>(())
                 })

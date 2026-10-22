@@ -1418,9 +1418,10 @@ impl Db {
         })
     }
 
-    /// Records a plugin connecting to a store: a new active row. One of the
-    /// same kind still active on the store (the plugin connected again
-    /// without being disconnected) is closed at the same time.
+    /// Records a plugin connecting to a store: a new active row. A store has
+    /// one shop, so it has one plugin: any still active on it (the same
+    /// plugin connecting again, or another one replacing it) is closed at
+    /// the same time.
     pub fn connect_integration(&self, new: &NewStoreIntegration<'_>) -> Result<String> {
         let id = format!("int_{}", uuid::Uuid::new_v4().simple());
         let tx = rusqlite::Transaction::new_unchecked(
@@ -1428,9 +1429,9 @@ impl Db {
             rusqlite::TransactionBehavior::Immediate,
         )?;
         tx.execute(
-            "UPDATE store_integrations SET disconnected_at_utc = ?3
-             WHERE store_id = ?1 AND kind = ?2 AND disconnected_at_utc IS NULL",
-            params![new.store_id, new.kind, new.at],
+            "UPDATE store_integrations SET disconnected_at_utc = ?2
+             WHERE store_id = ?1 AND disconnected_at_utc IS NULL",
+            params![new.store_id, new.at],
         )?;
         tx.execute(
             "INSERT INTO store_integrations
@@ -1474,6 +1475,35 @@ impl Db {
             .list_integrations(store_id)?
             .into_iter()
             .find(|i| i.disconnected_at.is_none()))
+    }
+
+    /// The slug of the store's active plugin, if it has one: one indexed
+    /// row, for every keyed order to check against.
+    pub fn active_integration_kind(&self, store_id: &ConnectionId) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT kind FROM store_integrations
+                 WHERE store_id = ?1 AND disconnected_at_utc IS NULL
+                 ORDER BY connected_at_utc DESC, rowid DESC LIMIT 1",
+                params![store_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// The name the store's newest integration of `kind` gave, or `''`.
+    pub fn last_integration_name(&self, store_id: &ConnectionId, kind: &str) -> Result<String> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT name FROM store_integrations WHERE store_id = ?1 AND kind = ?2
+                 ORDER BY connected_at_utc DESC, rowid DESC LIMIT 1",
+                params![store_id, kind],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_default())
     }
 
     /// An order from a plugin: its active integration of `kind` was seen
@@ -3847,6 +3877,88 @@ mod tests {
             [
                 ("woocommerce".to_owned(), "WooCommerce".to_owned()),
                 ("custom".to_owned(), String::new())
+            ]
+        );
+    }
+
+    /// A store whose WooCommerce plugin connected before integrations were
+    /// recorded, but made orders since, gets its plugin back, connected
+    /// from its first such order; a store with an integration already, or
+    /// no plugin orders, gets none.
+    #[test]
+    fn migration_0042_records_plugins_that_connected_before_integrations() {
+        let conn = Connection::open_in_memory().unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..41]).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+        for (store, site) in [
+            ("s-old", "old.example"),
+            ("s-new", "new.example"),
+            ("s-till", "till.example"),
+        ] {
+            conn.execute(
+                "INSERT INTO store_connections
+                    (id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc)
+                 VALUES (?1, 'user-1', ?2, ?1, 'sk', 1)",
+                params![store, site],
+            )
+            .unwrap();
+        }
+        let order = |store: &str, id: &str, source: &str, at: i64| {
+            conn.execute(
+                "INSERT INTO order_currency_metadata
+                    (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc, source)
+                 VALUES (?1, ?2, 'XMR', '1', 1, 'fixed', ?3, ?4)",
+                params![store, id, at, source],
+            )
+            .unwrap();
+        };
+        order("s-old", "o1", "woocommerce", 500);
+        order("s-old", "o2", "woocommerce", 900);
+        order("s-new", "o3", "woocommerce", 700);
+        order("s-till", "o4", "pos", 800);
+        conn.execute(
+            "INSERT INTO store_integrations (id, store_id, kind, site, connected_at_utc)
+             VALUES ('int_new', 's-new', 'woocommerce', 'new.example', 600)",
+            [],
+        )
+        .unwrap();
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+
+        let rows: Vec<(String, String, String, String, i64, i64)> = conn
+            .prepare(
+                "SELECT store_id, kind, name, site, connected_at_utc, coalesce(last_seen_at_utc, 0)
+                 FROM store_integrations ORDER BY store_id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        let row = |store: &str, site: &str, from: i64, seen: i64| {
+            (
+                store.into(),
+                "woocommerce".into(),
+                "WooCommerce".into(),
+                site.into(),
+                from,
+                seen,
+            )
+        };
+        assert_eq!(
+            rows,
+            [
+                row("s-new", "new.example", 600, 0),
+                row("s-old", "old.example", 500, 900)
             ]
         );
     }
