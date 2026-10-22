@@ -126,7 +126,7 @@ pub fn generate_session_token() -> RawToken {
 /// `docs/WOOCOMMERCE_ROADMAP.md` Stage 6) - handed to a (mock, then real)
 /// platform plugin via a redirect query param once the wallet-connection
 /// confirm form succeeds, then redeemed exactly once via
-/// `POST /connect/{platform}/finish`. Same generation primitive as
+/// `POST /plugins/connect/{platform}/finish`. Same generation primitive as
 /// `generate_session_token`/`generate_secret_token` - a high-entropy random
 /// hex string - with its own `conn_` prefix: a distinct credential type
 /// (short-lived, single-use, never itself an admin credential) from either

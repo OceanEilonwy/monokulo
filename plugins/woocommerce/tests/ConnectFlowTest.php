@@ -9,7 +9,7 @@
  * own doc comment for why):
  *
  * - `generate_monokulo_connect_html()`: the settings-screen button really
- *   renders a real `GET {control_plane}/connect/woocommerce?...` link and
+ *   renders a real `GET {control_plane}/plugins/connect/woocommerce?...` link and
  *   really stores the nonce embedded in it, so a merchant clicking it and a
  *   later `process_connect_return()` call genuinely agree on what nonce to
  *   expect back.
@@ -137,7 +137,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 
 	/**
 	 * The connect button itself: proves it really points at the configured
-	 * control plane's real `GET /connect/woocommerce` route with real
+	 * control plane's real `GET /plugins/connect/woocommerce` route with real
 	 * `site_url`/`return_url`/`nonce` query params, and that the embedded
 	 * nonce is genuinely the one stored server-side (not just cosmetically
 	 * present in the link) - `process_connect_return()`'s own nonce check
@@ -147,9 +147,9 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		list( $html, $nonce ) = $this->render_connect_button_and_capture_nonce();
 
 		$this->assertStringContainsString(
-			'https://control-plane.test/connect/woocommerce?',
+			'https://control-plane.test/plugins/connect/woocommerce?',
 			$html,
-			'Should link to the configured control plane\'s real GET /connect/{platform} route (connect.rs step 1).'
+			'Should link to the configured control plane\'s real GET /plugins/connect/{platform} route (connect.rs step 1).'
 		);
 		$this->assertStringContainsString(
 			'return_url=' . rawurlencode( admin_url( 'admin-post.php?action=monokulo_connect_return' ) ),
@@ -194,7 +194,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		// --- The /finish request actually sent. ---
 		$this->assertNotNull( $this->captured_request, 'process_connect_return() should have called /finish exactly once.' );
 		$this->assertSame(
-			'https://control-plane.test/connect/woocommerce/finish',
+			'https://control-plane.test/plugins/connect/woocommerce/finish',
 			$this->captured_request['url'],
 			'Should POST to the real, configured control plane\'s /finish route (connect.rs step 5).'
 		);

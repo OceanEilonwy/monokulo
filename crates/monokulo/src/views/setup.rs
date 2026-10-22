@@ -278,7 +278,7 @@ pub struct DoneViewModel {
 }
 
 /// Going back to the plugin: a form that mints its key
-/// (`POST /connect/{platform}`).
+/// (`POST /plugins/connect/{platform}`).
 pub struct PluginReturn {
     pub plugin: Plugin,
     pub site_url: String,
@@ -333,7 +333,7 @@ fn summary(data: &DoneViewModel) -> Markup {
 /// it there.
 pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) -> Markup {
     html! {
-        form method="post" action=(format!("/connect/{}", plugin.plugin.slug())) class="inline-form" {
+        form method="post" action=(format!("/plugins/connect/{}", plugin.plugin.slug())) class="inline-form" {
             input type="hidden" name="connection_id" value=(store_id);
             input type="hidden" name="site_url" value=(plugin.site_url);
             input type="hidden" name="return_url" value=(plugin.return_url);
@@ -768,7 +768,7 @@ mod tests {
         )
         .into_string();
         assert!(primary(&html).contains("Back to Acme Cart"), "{html}");
-        assert!(html.contains(r#"action="/connect/acme-cart""#));
+        assert!(html.contains(r#"action="/plugins/connect/acme-cart""#));
         assert!(html.contains(r#"name="name" value="Acme Cart""#));
         assert!(html.contains(r#"name="connection_id" value="c_1""#));
         assert!(html.contains("<h1>Bakery is connected</h1>"), "{html}");

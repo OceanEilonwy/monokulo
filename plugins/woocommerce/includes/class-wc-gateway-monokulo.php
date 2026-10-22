@@ -73,7 +73,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	/**
 	 * The `platform` path segment this plugin identifies itself as to the
 	 * control plane's generic, platform-agnostic connect flow
-	 * (`GET /connect/{platform}` etc., see `connect.rs`'s own module doc
+	 * (`GET /plugins/connect/{platform}` etc., see `connect.rs`'s own module doc
 	 * comment) - `"woocommerce"`, matching exactly what `control-plane`'s own
 	 * tests and `mock-woocommerce`'s driver already use for this platform, so
 	 * every `store_connections.platform` row this plugin ever produces is
@@ -1084,7 +1084,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * constant, for two concrete reasons: it's what lets this plugin's own
 	 * tests point `process_connect_return()`/`generate_monokulo_connect_html()`
 	 * at a fake control plane (`pre_http_request` alone can't substitute for
-	 * the *browser-facing* `GET /connect/...` URL a test never actually
+	 * the *browser-facing* `GET /plugins/connect/...` URL a test never actually
 	 * fetches, only asserts the shape of - so the base URL itself has to be
 	 * swappable, not just the HTTP call), and it's the one real, sanctioned
 	 * escape hatch for anyone running their own control plane instance
@@ -1173,7 +1173,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Builds the real `GET {control_plane_base_url}/connect/{platform}?...`
+	 * Builds the real `GET {control_plane_base_url}/plugins/connect/{platform}?...`
 	 * URL (step 1 of `connect.rs`'s own module doc comment) this gateway
 	 * sends the merchant's browser to.
 	 *
@@ -1187,7 +1187,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 */
 	private function build_connect_start_url( $nonce ) {
 		return sprintf(
-			'%s/connect/%s?site_url=%s&return_url=%s&nonce=%s&name=%s',
+			'%s/plugins/connect/%s?site_url=%s&return_url=%s&nonce=%s&name=%s',
 			rtrim( $this->get_control_plane_base_url(), '/' ),
 			rawurlencode( self::CONNECT_PLATFORM ),
 			rawurlencode( home_url( '/' ) ),
@@ -1437,7 +1437,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * `POST {control_plane_base_url}/connect/{platform}/finish` (step 4-5 of
+	 * `POST {control_plane_base_url}/plugins/connect/{platform}/finish` (step 4-5 of
 	 * `connect.rs`'s own module doc comment / its `finish` handler, read
 	 * directly): redeems the single-use connect token for real credentials.
 	 *
@@ -1484,7 +1484,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *               onion_endpoint?: string, webhook_signing_secret?: string}|null
 	 */
 	private function call_connect_finish( $token, &$status_code = 0 ) {
-		$url = rtrim( $this->get_control_plane_base_url(), '/' ) . '/connect/' . self::CONNECT_PLATFORM . '/finish';
+		$url = rtrim( $this->get_control_plane_base_url(), '/' ) . '/plugins/connect/' . self::CONNECT_PLATFORM . '/finish';
 
 		$response = wp_remote_post(
 			$url,

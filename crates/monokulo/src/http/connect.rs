@@ -4,7 +4,7 @@
 //! keeps no list of plugins, and the store itself has no platform. The
 //! plugin may add `name=` to say what to call it ("PrestaShop").
 //!
-//! 1. `GET /connect/{platform}?site_url=...&return_url=...&nonce=...[&name=...]`
+//! 1. `GET /plugins/connect/{platform}?site_url=...&return_url=...&nonce=...[&name=...]`
 //!    - the plugin sends the merchant's browser here.
 //! 2. No session yet: redirect to `/dashboard/login?next=<this same URL>`
 //!    (`next` is checked to be a path on this site before it's followed,
@@ -17,11 +17,11 @@
 //!    - no store has it: store setup (`/setup`, `http::setup`), with the
 //!      plugin's request carried through, ending on a Done page whose
 //!      button goes back to the plugin.
-//! 4. `POST /connect/{platform}` (behind [`AuthedUser`]): a store of the
+//! 4. `POST /plugins/connect/{platform}` (behind [`AuthedUser`]): a store of the
 //!    merchant's whose site is the shop's; mints a single-use connect token
 //!    and redirects to `return_url` with `token`/`nonce` appended (via the
 //!    `url` crate, so `return_url`'s own query string is kept).
-//! 5. `POST /connect/{platform}/finish` - deliberately *not* behind
+//! 5. `POST /plugins/connect/{platform}/finish` - deliberately *not* behind
 //!    [`AuthedUser`]: the plugin calls this server-to-server, with no
 //!    monokulo session at all. Redeems the token exactly once (see
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
@@ -196,7 +196,7 @@ pub(super) async fn check_request(
 /// The plugin and its shop, when `next` is a plugin's connect page (the
 /// merchant is logging in on the way to connecting a shop).
 pub(crate) fn connecting_site(next: Option<&str>) -> Option<ConnectingPlugin> {
-    let (slug, query) = next?.strip_prefix("/connect/")?.split_once('?')?;
+    let (slug, query) = next?.strip_prefix("/plugins/connect/")?.split_once('?')?;
     let field = |name: &str| {
         url::form_urlencoded::parse(query.as_bytes())
             .find(|(k, _)| k == name)
@@ -215,7 +215,7 @@ fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// `GET /connect/{platform}` (steps 1-3). No valid session: redirect to
+/// `GET /plugins/connect/{platform}` (steps 1-3). No valid session: redirect to
 /// `/dashboard/login` carrying a `next` that reconstructs this exact URL.
 /// A valid session: the store with the shop's host decides (see the module
 /// doc comment). A path that can't name a plugin is not found.
@@ -230,7 +230,7 @@ pub async fn start(
     };
     let Some((user, _)) = super::resolve_authed_user(&state, &headers).await else {
         let mut this_url = format!(
-            "/connect/{}?site_url={}&return_url={}&nonce={}",
+            "/plugins/connect/{}?site_url={}&return_url={}&nonce={}",
             platform,
             encode_query_value(&query.site_url),
             encode_query_value(&query.return_url),
@@ -245,7 +245,8 @@ pub async fn start(
         ));
     };
     let plugin = Plugin::new(slug, PluginName::clean(&query.name));
-    let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
+    let chrome =
+        super::page_chrome(&state, Some(&user), format!("/plugins/connect/{platform}")).await;
     // A link that can't work says why first.
     let target = match check_request(&state, &query.site_url, &query.return_url).await {
         Ok(target) => target,
@@ -304,7 +305,7 @@ pub async fn start(
     }
 }
 
-/// `POST /connect/{platform}`'s fields: the plugin's request, carried
+/// `POST /plugins/connect/{platform}`'s fields: the plugin's request, carried
 /// through, and the merchant's store whose site is the shop's.
 #[derive(Deserialize)]
 pub struct ConfirmForm {
@@ -318,11 +319,11 @@ pub struct ConfirmForm {
     pub name: String,
 }
 
-/// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4):
+/// `POST /plugins/connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4):
 /// gives the plugin its store's key. The store must be the merchant's, and
 /// its site the shop's: without both, a signed-in attacker could have any
 /// store's `sk_...` delivered to a `return_url` of their own via
-/// `/connect/{platform}/finish`. A store that isn't theirs and one that
+/// `/plugins/connect/{platform}/finish`. A store that isn't theirs and one that
 /// doesn't exist look the same.
 pub async fn confirm_submit(
     State(state): State<AppState>,
@@ -333,7 +334,8 @@ pub async fn confirm_submit(
     let Some(plugin) = Plugin::parse(&platform, &form.name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let chrome = super::page_chrome(&state, Some(&user), format!("/connect/{platform}")).await;
+    let chrome =
+        super::page_chrome(&state, Some(&user), format!("/plugins/connect/{platform}")).await;
     let host = Site::parse(&form.site_url).ok();
     let refuse = |why: ConnectRefusal| {
         crate::views::connect::cannot_connect_page(
@@ -437,7 +439,7 @@ pub struct FinishResponse {
     pub webhook_signing_secret: Option<String>,
 }
 
-/// `POST /connect/{platform}/finish` (WBS 1.4.1 step 5, extended by 1.4.4) -
+/// `POST /plugins/connect/{platform}/finish` (WBS 1.4.1 step 5, extended by 1.4.4) -
 /// deliberately *not* behind [`AuthedUser`]: this is a server-to-server call
 /// from the plugin, which has no monokulo session at all (it's the
 /// browser, not the plugin's backend, that ever holds one). Redeems the
@@ -524,7 +526,7 @@ pub async fn finish(
     // issue between the control plane and the engine, say, with credential retrieval
     // itself having fully succeeded) gets no credentials at all and cannot retry with
     // the same token - it must restart the whole connect flow from `GET
-    // /connect/{platform}` to mint a fresh one. This was judged the safer default
+    // /plugins/connect/{platform}` to mint a fresh one. This was judged the safer default
     // over the alternative (return credentials anyway, with no webhook and no way to
     // signal that clearly in a shape existing callers already parse) rather than
     // because the collapse-to-401 pattern was merely convenient to reuse - flagged
@@ -717,7 +719,7 @@ mod tests {
             .append_pair("nonce", nonce)
             .append_pair("name", PLUGIN_NAME)
             .finish();
-        format!("/connect/acme-cart?{query}")
+        format!("/plugins/connect/acme-cart?{query}")
     }
 
     /// What the test plugin calls itself: monokulo knows no plugin, so a
@@ -803,7 +805,7 @@ mod tests {
         router
             .clone()
             .oneshot(form_request(
-                "/connect/acme-cart",
+                "/plugins/connect/acme-cart",
                 Some(cookie),
                 &[
                     ("connection_id", &store_id),
@@ -831,7 +833,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/connect/acme-cart/finish")
+                    .uri("/plugins/connect/acme-cart/finish")
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_string()))
                     .unwrap(),
@@ -1056,7 +1058,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/connect/acme-cart/finish")
+                    .uri("/plugins/connect/acme-cart/finish")
                     .header("content-type", "application/json")
                     .header("monokulo-client", format!("acme-cart/{version}"))
                     .body(Body::from(
@@ -1109,7 +1111,7 @@ mod tests {
                 let confirmed = router
                     .clone()
                     .oneshot(form_request(
-                        &format!("/connect/{slug}"),
+                        &format!("/plugins/connect/{slug}"),
                         Some(&cookie),
                         &[
                             ("site_url", "https://shop.example.com/"),
@@ -1125,7 +1127,7 @@ mod tests {
                     .oneshot(
                         Request::builder()
                             .method("POST")
-                            .uri(format!("/connect/{slug}/finish"))
+                            .uri(format!("/plugins/connect/{slug}/finish"))
                             .header("content-type", "application/json")
                             .header("monokulo-client", format!("{slug}/1.0.0"))
                             .body(Body::from(
@@ -1325,7 +1327,7 @@ mod tests {
         let again = router
             .clone()
             .oneshot(form_request(
-                "/connect/acme-cart",
+                "/plugins/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com/"),
@@ -1348,7 +1350,7 @@ mod tests {
         let once_more = router
             .clone()
             .oneshot(form_request(
-                "/connect/acme-cart",
+                "/plugins/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com/"),
@@ -1440,7 +1442,7 @@ mod tests {
     {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let original_uri = "/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=detour-nonce";
+        let original_uri = "/plugins/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=detour-nonce";
         let get_response = router
             .clone()
             .oneshot(
@@ -1610,7 +1612,7 @@ mod tests {
         let post_response = router
             .clone()
             .oneshot(form_request(
-                "/connect/acme-cart",
+                "/plugins/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("site_url", "https://shop.example.com/"),
@@ -1684,7 +1686,10 @@ mod tests {
             html.contains("shop.example.com is already connected to Monokulo here"),
             "{html}"
         );
-        assert!(!html.contains(r#"action="/connect/acme-cart""#), "{html}");
+        assert!(
+            !html.contains(r#"action="/plugins/connect/acme-cart""#),
+            "{html}"
+        );
     }
 
     /// The real security boundary: a signed-in user must not be able to get
@@ -1711,7 +1716,7 @@ mod tests {
             let response = router
                 .clone()
                 .oneshot(form_request(
-                    "/connect/acme-cart",
+                    "/plugins/connect/acme-cart",
                     Some(&attacker),
                     &[
                         ("site_url", site),
@@ -1766,7 +1771,7 @@ mod tests {
         let html = body_text(start).await;
         assert!(html.contains("hasn't set its public"), "got: {html}");
         assert!(
-            !html.contains(r#"action="/connect/acme-cart""#),
+            !html.contains(r#"action="/plugins/connect/acme-cart""#),
             "no form, got: {html}"
         );
         let setup = router
@@ -1930,7 +1935,7 @@ mod tests {
         let query = "site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fback&nonce=n1";
         let start = get(
             &router,
-            &format!("/connect/never-heard-of-it?{query}&name=Never%20Heard"),
+            &format!("/plugins/connect/never-heard-of-it?{query}&name=Never%20Heard"),
             &cookie,
         )
         .await;
@@ -1946,17 +1951,22 @@ mod tests {
             "{html}"
         );
         // No name: the slug stands in.
-        let start = get(&router, &format!("/connect/whmcs?{query}"), &cookie).await;
+        let start = get(&router, &format!("/plugins/connect/whmcs?{query}"), &cookie).await;
         let html = body_text(get(&router, &location(&start), &cookie).await).await;
         assert!(html.contains("<h1>Connect your Whmcs shop</h1>"), "{html}");
 
         for slug in ["Acme", "a", "1cart", "my_cart", "-cart"] {
-            let start = get(&router, &format!("/connect/{slug}?{query}"), &cookie).await;
+            let start = get(
+                &router,
+                &format!("/plugins/connect/{slug}?{query}"),
+                &cookie,
+            )
+            .await;
             assert_eq!(start.status(), StatusCode::NOT_FOUND, "{slug}");
             let confirm = router
                 .clone()
                 .oneshot(form_request(
-                    &format!("/connect/{slug}"),
+                    &format!("/plugins/connect/{slug}"),
                     Some(&cookie),
                     &[
                         ("site_url", "https://shop.example.com"),
@@ -1972,7 +1982,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri(format!("/connect/{slug}/finish"))
+                        .uri(format!("/plugins/connect/{slug}/finish"))
                         .header("content-type", "application/json")
                         .body(Body::from(r#"{"token":"x"}"#))
                         .unwrap(),
@@ -1986,7 +1996,7 @@ mod tests {
     #[test]
     fn the_connecting_site_is_read_from_a_connect_link_only() {
         let next =
-            "/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
+            "/plugins/connect/acme-cart?site_url=https%3A%2F%2Fshop.example.com%2F&return_url=x&nonce=n";
         let plugin_and_site = |next: &str| super::connecting_site(Some(next));
         let shown = |next: &str| {
             plugin_and_site(next).map(|from| (from.plugin.to_string(), from.site.to_string()))
@@ -2002,7 +2012,7 @@ mod tests {
         );
         // A path that can't name a plugin is no connect link.
         assert_eq!(
-            plugin_and_site("/connect/Acme?site_url=https%3A%2F%2Fshop.example.com"),
+            plugin_and_site("/plugins/connect/Acme?site_url=https%3A%2F%2Fshop.example.com"),
             None
         );
         assert_eq!(super::connecting_site(Some("/setup")), None);
@@ -2032,12 +2042,15 @@ mod tests {
         )
         .await;
         assert!(html.contains("a different website than the shop"), "{html}");
-        assert!(!html.contains(r#"action="/connect/acme-cart""#), "{html}");
+        assert!(
+            !html.contains(r#"action="/plugins/connect/acme-cart""#),
+            "{html}"
+        );
 
         let response = router
             .clone()
             .oneshot(form_request(
-                "/connect/acme-cart",
+                "/plugins/connect/acme-cart",
                 Some(&cookie),
                 &[
                     ("connection_id", &connection_id),
