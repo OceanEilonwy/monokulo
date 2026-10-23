@@ -118,7 +118,7 @@ test('held, one box gives the reason and a neutral button to take a new anchor',
   const button = held.getByRole('button', { name: 'Take a new anchor' });
   await expect(button).toBeVisible();
   await expect(button).not.toHaveAttribute('data-variant');
-  await expect(held.locator('form')).toHaveAttribute('action', '/dashboard/admin/proof/mainnet/reanchor');
+  await expect(held.locator('form')).toHaveAttribute('action', '/admin/proof/mainnet/reanchor');
   await expect(card(page).locator('.pips')).toHaveCount(0);
   await captureCoverageStage(page, 'status-network-card-held', test.info(), { group: GROUP, shapes: SHAPES });
 });

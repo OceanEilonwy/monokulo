@@ -3,15 +3,15 @@
 //! `admin.query_enabled` is on (otherwise every route is a 404 and the nav
 //! leaves the link out).
 //!
-//! - `GET /dashboard/admin/query?db=&sql=`: the page; a `sql` runs. For
+//! - `GET /admin/query?db=&sql=`: the page; a `sql` runs. For
 //!   fixi, only `#query-results`.
-//! - `GET /dashboard/admin/query/schema?db=`: the tables, the editor and
+//! - `GET /admin/query/schema?db=`: the tables, the editor and
 //!   the results for the other database (fixi swaps them in when the
 //!   database changes; without JavaScript, the page).
-//! - `GET /dashboard/admin/query/value?db=&sql=&row=&col=`: one long value
+//! - `GET /admin/query/value?db=&sql=&row=&col=`: one long value
 //!   whole, on a page of its own, or with `part=dialog` the dialog's
 //!   content.
-//! - `GET /dashboard/admin/query/export?db=&sql=&format=csv|json`: the
+//! - `GET /admin/query/export?db=&sql=&format=csv|json`: the
 //!   rows as a download, up to 10,000.
 //!
 //! The statement runs through `shared::sqlite_query` (on one of monokulo's
@@ -242,7 +242,7 @@ fn answer(fx: FxRequest, busy: bool, html: maud::Markup) -> Response {
     (status, Html(html.into_string())).into_response()
 }
 
-/// `GET /dashboard/admin/query`.
+/// `GET /admin/query`.
 pub async fn page(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
@@ -262,7 +262,7 @@ pub async fn page(
     answer(fx, busy, view::page(&chrome, &vm))
 }
 
-/// `GET /dashboard/admin/query/schema`: another database's tables, with an
+/// `GET /admin/query/schema`: another database's tables, with an
 /// empty editor.
 pub async fn schema(
     State(state): State<AppState>,
@@ -297,7 +297,7 @@ fn cell_of(result: &QueryResult, row: usize, col: usize) -> Option<(&str, String
     Some((result.columns.get(col)?.name.as_str(), row_id, cell))
 }
 
-/// `GET /dashboard/admin/query/value`: runs the statement again and shows
+/// `GET /admin/query/value`: runs the statement again and shows
 /// one value whole.
 pub async fn value(
     State(state): State<AppState>,
@@ -339,7 +339,7 @@ fn csv_field(value: &str) -> String {
     }
 }
 
-/// `GET /dashboard/admin/query/export?format=csv|json`.
+/// `GET /admin/query/export?format=csv|json`.
 pub async fn export(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,

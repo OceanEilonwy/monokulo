@@ -143,21 +143,21 @@ mod tests {
     fn pages_about_a_store_report_only_once_it_opted_in() {
         let db = db_with_store();
         assert!(
-            page_may_report(&db, "/dashboard/admin/logs"),
+            page_may_report(&db, "/admin/logs"),
             "admin pages always report"
         );
         assert!(page_may_report(&db, "/"));
         assert!(page_may_report(&db, ""));
-        assert!(!page_may_report(&db, "/dashboard/stores/c1/settings"));
-        assert!(!page_may_report(&db, "/dashboard/stores/c1/pos"));
+        assert!(!page_may_report(&db, "/stores/c1/settings"));
+        assert!(!page_may_report(&db, "/stores/c1/pos"));
         assert!(!page_may_report(&db, "/checkout/o1"));
         assert!(
-            !page_may_report(&db, "/dashboard/stores/unknown/orders"),
+            !page_may_report(&db, "/stores/unknown/orders"),
             "no store, no reports"
         );
         db.set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
             .unwrap();
-        assert!(page_may_report(&db, "/dashboard/stores/c1/settings"));
+        assert!(page_may_report(&db, "/stores/c1/settings"));
         assert!(page_may_report(&db, "/checkout/o1"));
     }
 

@@ -4,7 +4,7 @@
 //!   (unauthenticated by necessity, same as `/signup`) an invite-only
 //!   instance's landing page links to instead of a plain sign-up button
 //!   (`http::home::landing`).
-//! - `GET /dashboard/admin/invites` + its three `POST` actions - the admin
+//! - `GET /admin/invites` + its three `POST` actions - the admin
 //!   page (`AuthedAdmin`-gated) that reviews those requests, generates
 //!   single-use invite links, and dismisses/bulk-clears requests.
 //!
@@ -175,10 +175,10 @@ fn build_mailto_href(email: &str, raw_invite_link: &str) -> String {
 }
 
 /// The full, absolute signup URL a raw invite token resolves to -
-/// `GET /dashboard/signup?invite=<token>` carries it straight into the
+/// `GET /signup?invite=<token>` carries it straight into the
 /// form's hidden field (`http::dashboard::signup_form`).
 fn invite_signup_url(base_url: &str, raw_token: &str) -> String {
-    format!("{base_url}/dashboard/signup?invite={raw_token}")
+    format!("{base_url}/signup?invite={raw_token}")
 }
 
 fn to_row_view(
@@ -293,11 +293,11 @@ async fn render_invites_page(
         return axum::response::Html(views::admin::invites_section(&view).into_string())
             .into_response();
     }
-    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/invites").await;
+    let chrome = super::page_chrome(state, Some(admin_user), "/admin/invites").await;
     views::admin::admin_invites_page(&chrome, &view).into_response()
 }
 
-/// `GET /dashboard/admin/invites?page=N&deleted=<id>` (or `?cleared=N` right
+/// `GET /admin/invites?page=N&deleted=<id>` (or `?cleared=N` right
 /// after "delete all").
 pub async fn invites_page(
     State(state): State<AppState>,
@@ -321,7 +321,7 @@ pub async fn invites_page(
     .await
 }
 
-/// `POST /dashboard/admin/invites/create-link` - the standalone-link
+/// `POST /admin/invites/create-link` - the standalone-link
 /// button: a fresh, never-request-linked invite, shown exactly once (see
 /// `AdminInvitesViewModel::created_link`'s own doc comment) and only ever
 /// stored hashed.
@@ -366,7 +366,7 @@ pub async fn create_invite_link(
     .await
 }
 
-/// `POST /dashboard/admin/invites/{id}/delete?page=N` - see this module's
+/// `POST /admin/invites/{id}/delete?page=N` - see this module's
 /// own doc comment and `Db::delete_invite_request`'s for what "delete" means
 /// here (a soft-delete plus revoking the request's own unused link, not a
 /// row delete). Redirects back to the *same* page it was submitted from
@@ -416,12 +416,10 @@ pub async fn delete_invite_request(
         )
         .await;
     }
-    redirect_302(&format!(
-        "/dashboard/admin/invites?page={page}&deleted={id}"
-    ))
+    redirect_302(&format!("/admin/invites?page={page}&deleted={id}"))
 }
 
-/// `POST /dashboard/admin/invites/delete-all` - clears every currently
+/// `POST /admin/invites/delete-all` - clears every currently
 /// unactioned request (across every page, not just the one being viewed -
 /// `Db::delete_all_unactioned_invite_requests` operates on the whole
 /// table), then redirects to page 1 with a count-bearing confirmation
@@ -453,7 +451,7 @@ pub async fn delete_all_invite_requests(
         )
         .await;
     }
-    redirect_302(&format!("/dashboard/admin/invites?cleared={cleared}"))
+    redirect_302(&format!("/admin/invites?cleared={cleared}"))
 }
 
 fn cleared_message(n: usize) -> String {
@@ -522,7 +520,7 @@ mod tests {
         fields.extend_from_slice(extra_fields);
         router
             .clone()
-            .oneshot(form_request("POST", "/dashboard/signup", &fields))
+            .oneshot(form_request("POST", "/signup", &fields))
             .await
             .unwrap()
     }
@@ -533,7 +531,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/admin/invites")
+                    .uri("/admin/invites")
                     .header("cookie", cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -543,7 +541,7 @@ mod tests {
     }
 
     /// Extracts the raw invite token from a page containing a
-    /// `/dashboard/signup?invite=<token>` link (either the "create invite
+    /// `/signup?invite=<token>` link (either the "create invite
     /// link" confirmation, or a row's own `mailto:` body) - a small,
     /// deliberately narrow scraper for test purposes only. Handbars
     /// HTML-escapes `=` as `&#x3D;` (see `AdminInviteRequestRow::mailto_href`'s
@@ -562,12 +560,12 @@ mod tests {
     }
 
     /// The real row delete form's own action URL is
-    /// `/dashboard/admin/invites/<uuid>/delete` - distinct from the fixed
+    /// `/admin/invites/<uuid>/delete` - distinct from the fixed
     /// `create-link`/`delete-all` action paths this same marker prefix also
     /// matches, so this skips any match that isn't followed by `/delete`
     /// starting right after a real id.
     fn extract_first_row_delete_id(html: &str) -> String {
-        let marker = "/dashboard/admin/invites/";
+        let marker = "/admin/invites/";
         let mut search_from = 0;
         loop {
             let found = html[search_from..]
@@ -645,8 +643,7 @@ mod tests {
             "expected a real mailto link, got: {html}"
         );
         assert!(
-            html.contains("dashboard%2Fsignup%3Finvite")
-                || html.contains("dashboard/signup?invite"),
+            html.contains("%2Fsignup%3Finvite") || html.contains("/signup?invite"),
             "expected the mailto body to carry a real invite link, got: {html}"
         );
     }
@@ -686,7 +683,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/admin/invites")
+                    .uri("/admin/invites")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -698,7 +695,7 @@ mod tests {
             .clone()
             .oneshot(form_request(
                 "POST",
-                "/dashboard/signup",
+                "/signup",
                 &[
                     ("email", "merchant@example.com"),
                     ("password", "correct horse battery staple"),
@@ -710,7 +707,7 @@ mod tests {
             .clone()
             .oneshot(form_request(
                 "POST",
-                "/dashboard/login",
+                "/login",
                 &[
                     ("email", "merchant@example.com"),
                     ("password", "correct horse battery staple"),
@@ -733,7 +730,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/admin/invites")
+                    .uri("/admin/invites")
                     .header("cookie", cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -756,7 +753,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/invites/create-link",
+                "/admin/invites/create-link",
                 &cookie,
                 &[],
             ))
@@ -830,7 +827,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                &format!("/dashboard/admin/invites/{real_id}/delete?page=1"),
+                &format!("/admin/invites/{real_id}/delete?page=1"),
                 &cookie,
                 &[],
             ))
@@ -898,7 +895,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/invites/delete-all",
+                "/admin/invites/delete-all",
                 &cookie,
                 &[],
             ))
@@ -958,7 +955,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/admin/invites?page=2")
+                    .uri("/admin/invites?page=2")
                     .header("cookie", &cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -972,7 +969,7 @@ mod tests {
         );
         // Back a page is a real link, which fixi swaps into the section.
         assert!(
-            html.contains(r##"<a href="/dashboard/admin/invites?page=1" rel="prev" fx-action="/dashboard/admin/invites?page=1" fx-target="#invites" fx-push-url="">"##),
+            html.contains(r##"<a href="/admin/invites?page=1" rel="prev" fx-action="/admin/invites?page=1" fx-target="#invites" fx-push-url="">"##),
             "{html}"
         );
         assert!(!html.contains(r#"rel="next""#), "{html}");
@@ -983,7 +980,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                &format!("/dashboard/admin/invites/{last_row_id}/delete?page=2"),
+                &format!("/admin/invites/{last_row_id}/delete?page=2"),
                 &cookie,
                 &[],
             ))
@@ -997,7 +994,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(
-            location.starts_with("/dashboard/admin/invites?page=2"),
+            location.starts_with("/admin/invites?page=2"),
             "the redirect itself still targets the page it was deleted from"
         );
 
@@ -1025,20 +1022,18 @@ mod tests {
     async fn invites_buttons_answer_fixi_with_the_section() {
         let router = build_router(test_state());
         let cookie = admin_session_cookie(&router).await;
-        let mut create =
-            authed_form_request("POST", "/dashboard/admin/invites/create-link", &cookie, &[]);
+        let mut create = authed_form_request("POST", "/admin/invites/create-link", &cookie, &[]);
         create
             .headers_mut()
             .insert("FX-Request", "true".parse().unwrap());
         let html = body_text(router.clone().oneshot(create).await.unwrap()).await;
         assert!(html.starts_with(r#"<section id="invites">"#), "{html}");
         assert!(
-            html.contains("Share this link") && html.contains("/dashboard/signup?invite="),
+            html.contains("Share this link") && html.contains("/signup?invite="),
             "{html}"
         );
 
-        let mut clear =
-            authed_form_request("POST", "/dashboard/admin/invites/delete-all", &cookie, &[]);
+        let mut clear = authed_form_request("POST", "/admin/invites/delete-all", &cookie, &[]);
         clear
             .headers_mut()
             .insert("FX-Request", "true".parse().unwrap());

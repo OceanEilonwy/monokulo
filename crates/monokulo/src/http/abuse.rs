@@ -154,13 +154,10 @@ fn site_route_class(method: &Method, path: &str) -> RouteClass {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     match (method.as_str(), path, segments.as_slice()) {
         (_, "/status/summary", _) => RouteClass::Exempt,
-        (
-            "GET",
-            "/" | "/dashboard/login" | "/dashboard/signup" | "/request-invite" | "/status",
-            _,
-        ) => RouteClass::Page,
-        ("POST", "/telemetry/client", _)
-        | ("POST", _, ["dashboard", "stores", _, "pos", "logs"]) => RouteClass::Logs,
+        ("GET", "/" | "/login" | "/signup" | "/request-invite" | "/status", _) => RouteClass::Page,
+        ("POST", "/telemetry/client", _) | ("POST", _, ["stores", _, "pos", "logs"]) => {
+            RouteClass::Logs
+        }
         _ => RouteClass::Other,
     }
 }
@@ -885,7 +882,7 @@ mod tests {
     }
 
     fn report(peer: &str) -> Request<Body> {
-        let body = r#"{"kind":"error","message":"x is undefined","page":"/dashboard/admin/logs"}"#;
+        let body = r#"{"kind":"error","message":"x is undefined","page":"/admin/logs"}"#;
         let mut request = Request::builder()
             .method("POST")
             .uri("/telemetry/client")
@@ -961,11 +958,11 @@ mod tests {
             super::RouteClass::Logs
         );
         assert_eq!(
-            super::site_route_class(&Method::POST, "/dashboard/stores/c1/pos/logs"),
+            super::site_route_class(&Method::POST, "/stores/c1/pos/logs"),
             super::RouteClass::Logs
         );
         assert_eq!(
-            super::site_route_class(&Method::GET, "/dashboard/stores/c1/pos/logs"),
+            super::site_route_class(&Method::GET, "/stores/c1/pos/logs"),
             super::RouteClass::Other
         );
         assert_eq!(

@@ -1,6 +1,6 @@
 // Applies the site theme toggle's choice in the POS: the same System /
 // Light / Dark preference the rest of the dashboard uses, saved to the merchant's account through the
-// site's own `/dashboard/theme` form endpoint, and applied here at once by
+// site's own `/theme` form endpoint, and applied here at once by
 // setting `data-theme` on <html> (absent means follow the system).
 
 export type Theme = 'system' | 'light' | 'dark';
@@ -12,7 +12,7 @@ export async function applyTheme(theme: Theme): Promise<boolean> {
   else document.documentElement.dataset.theme = theme;
   const form = new URLSearchParams({ theme, next: location.pathname });
   try {
-    const response = await fetch('/dashboard/theme', { method: 'POST', body: form, redirect: 'manual' });
+    const response = await fetch('/theme', { method: 'POST', body: form, redirect: 'manual' });
     return response.type === 'opaqueredirect' || response.ok;
   } catch { return false; }
 }

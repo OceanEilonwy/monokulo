@@ -426,7 +426,7 @@ impl Default for ConnectFlowWallet {
 /// Percent-encodes `s` for embedding as one query-string value - the same
 /// `form_urlencoded::byte_serialize` encoding `monokulo`'s own
 /// `http/connect.rs::encode_query_value` uses to build the `next` value it
-/// hands to `/dashboard/login`. Used here to *independently reconstruct*
+/// hands to `/login`. Used here to *independently reconstruct*
 /// that exact same `next` path (see [`run_connect_flow`]) rather than
 /// capturing it off a redirect response - since both sides use the same
 /// underlying encoding primitive, the two constructions agree byte-for-byte.
@@ -441,9 +441,9 @@ fn encode_query_value(s: &str) -> String {
 /// 1. Binds this driver's own callback server (standing in for the plugin's
 ///    settings-page callback route) and generates a fresh nonce.
 /// 2. `GET /plugins/connect/woocommerce?...` with no session - auto-followed by the
-///    cookie-persisting client to `/dashboard/login`.
-/// 3. `POST /dashboard/signup` with a fresh, unique email.
-/// 4. `POST /dashboard/login` with `next` set to the exact original
+///    cookie-persisting client to `/login`.
+/// 3. `POST /signup` with a fresh, unique email.
+/// 4. `POST /login` with `next` set to the exact original
 ///    connect-start path - auto-followed all the way to the confirm form.
 /// 5. `POST /plugins/connect/woocommerce` with the confirm form's fields (the fixed
 ///    test wallet material above) - auto-followed to the common store settings.
@@ -624,9 +624,9 @@ async fn run_connect_flow_inner(
 
     // The exact relative path+query `monokulo`'s own
     // `http/connect.rs::start` would construct as `this_url` for the
-    // `/dashboard/login?next=...` redirect - reconstructed independently
+    // `/login?next=...` redirect - reconstructed independently
     // (see `encode_query_value`'s doc comment) rather than parsed back off a
-    // response, so it can be handed straight to `/dashboard/login`'s `next`
+    // response, so it can be handed straight to `/login`'s `next`
     // field in step 4 below.
     let connect_next_path = format!(
         "/plugins/connect/{platform}?site_url={}&return_url={}&nonce={}",
@@ -635,7 +635,7 @@ async fn run_connect_flow_inner(
         encode_query_value(nonce),
     );
 
-    // Step 2: no session yet - sent to /dashboard/login.
+    // Step 2: no session yet - sent to /login.
     let start = client
         .get(format!("{monokulo_base_url}{connect_next_path}"))
         .send()
@@ -645,13 +645,13 @@ async fn run_connect_flow_inner(
     // Step 3: sign up a fresh account, then log in carrying `next` back to
     // the connect link.
     let signup = client
-        .post(format!("{monokulo_base_url}/dashboard/signup"))
+        .post(format!("{monokulo_base_url}/signup"))
         .form(&[("email", email), ("password", password)])
         .send()
         .await?;
     expect_redirect(signup, "dashboard signup").await?;
     let login = client
-        .post(format!("{monokulo_base_url}/dashboard/login"))
+        .post(format!("{monokulo_base_url}/login"))
         .form(&[
             ("email", email),
             ("password", password),
@@ -1415,13 +1415,13 @@ mod tests {
             .await
             .unwrap();
         client
-            .post(format!("{monokulo_base_url}/dashboard/signup"))
+            .post(format!("{monokulo_base_url}/signup"))
             .form(&[("email", email.as_str()), ("password", password)])
             .send()
             .await
             .unwrap();
         client
-            .post(format!("{monokulo_base_url}/dashboard/login"))
+            .post(format!("{monokulo_base_url}/login"))
             .form(&[
                 ("email", email.as_str()),
                 ("password", password),

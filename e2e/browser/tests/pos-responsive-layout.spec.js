@@ -26,7 +26,7 @@ async function checkFit(page, context, label, w, h, captures = {}) {
     if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
     await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
     await page.setViewportSize({ width: w, height: h });
-    await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+    await page.goto(`${fixture.base_url}/stores/${fixture.connection_id}/pos`);
     await expect(page.locator('.pos-pay-card')).toBeVisible();
     await page.getByRole('button', { name: 'Background order', exact: true }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
@@ -69,7 +69,7 @@ test('real POS retains its fit after five viewport changes', async ({ page, cont
   try {
     if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
     await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-    await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+    await page.goto(`${fixture.base_url}/stores/${fixture.connection_id}/pos`);
     await page.getByRole('button', { name: 'Background order', exact: true }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
     for (const [width, height] of [[375, 667], [667, 375], [1024, 768], [360, 740], [740, 360]]) {

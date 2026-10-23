@@ -57,7 +57,7 @@ pub struct StoreRef<'a> {
 
 impl StoreRef<'_> {
     fn settings(&self) -> String {
-        format!("/dashboard/stores/{}/settings", self.id)
+        format!("/stores/{}/settings", self.id)
     }
 
     /// The settings tab the Verified domains card is on.
@@ -71,7 +71,7 @@ impl StoreRef<'_> {
 
     fn crumbs(&self) -> Vec<ui::Crumb> {
         super::crumbs(&[
-            (&format!("/dashboard/stores/{}", self.id), self.name),
+            (&format!("/stores/{}", self.id), self.name),
             (&self.connections(), "Settings"),
         ])
     }
@@ -303,7 +303,7 @@ fn banner(store: &StoreRef, restricted: bool, can_restrict: bool, oob: bool) -> 
 fn add_button(store: &StoreRef, primary: bool) -> Markup {
     let button = ui::LinkButton::new(
         with_icon(icons::PLUS, "Add a domain"),
-        format!("{}/domains/add", store.settings()),
+        format!("{}/domains/new", store.settings()),
     );
     let button = if primary {
         button.variant(ui::ButtonVariant::Primary)
@@ -391,7 +391,7 @@ fn domain_page(
         .render(chrome, body)
 }
 
-/// `GET .../domains/add`, and the answer to an add that was refused: the
+/// `GET .../domains/new`, and the answer to an add that was refused: the
 /// domain, what was typed and why it was refused.
 pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Option<&str>) -> Markup {
     let body = html! {
@@ -452,7 +452,7 @@ pub fn record_page(chrome: &PageChrome, store: &StoreRef, domain: &DomainView) -
         form method="post" action=(format!("{}/check", store.domain(&domain.id))) {
             input type="hidden" name="from" value="check";
             (ui::FormActions::new(ui::Slot::many([
-                ui::Slot::from(ui::LinkButton::new(with_icon(icons::ARROW_LEFT, "Back"), format!("{}/domains/add", store.settings()))),
+                ui::Slot::from(ui::LinkButton::new(with_icon(icons::ARROW_LEFT, "Back"), format!("{}/domains/new", store.settings()))),
                 ui::Slot::from(ui::Button::new(then_icon("I've added it, check now", icons::ARROW_RIGHT)).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
             ])))
         }
@@ -488,7 +488,7 @@ fn onion_file_page(chrome: &PageChrome, store: &StoreRef, domain: &DomainView) -
         form method="post" action=(format!("{}/check", store.domain(&domain.id))) {
             input type="hidden" name="from" value="check";
             (ui::FormActions::new(ui::Slot::many([
-                ui::Slot::from(ui::LinkButton::new(with_icon(icons::ARROW_LEFT, "Back"), format!("{}/domains/add", store.settings()))),
+                ui::Slot::from(ui::LinkButton::new(with_icon(icons::ARROW_LEFT, "Back"), format!("{}/domains/new", store.settings()))),
                 ui::Slot::from(ui::Button::new(then_icon("I've added it, check now", icons::ARROW_RIGHT)).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
             ])))
         }
@@ -677,7 +677,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"href="/dashboard/stores/conn_1/settings/domains/d1/record""#),
+            html.contains(r#"href="/stores/conn_1/settings/domains/d1/record""#),
             "{html}"
         );
         // While a check runs, "Checking…" stands in for the answer.
@@ -686,9 +686,7 @@ mod tests {
         let html = check_result(&store(), &domain(DomainStatus::Verified), true).into_string();
         assert!(html.contains("shop.example is verified."), "{html}");
         assert!(
-            html.contains(
-                r##"href="/dashboard/stores/conn_1/settings?tab=connections#domain-d1""##
-            ),
+            html.contains(r##"href="/stores/conn_1/settings?tab=connections#domain-d1""##),
             "{html}"
         );
         assert!(!html.contains("data-recheck"), "{html}");
@@ -697,7 +695,7 @@ mod tests {
     #[test]
     fn a_refused_domain_keeps_what_was_typed_and_says_why_beside_it() {
         let html = add_page(
-            &PageChrome::from_user(None, "/dashboard/stores/conn_1/settings"),
+            &PageChrome::from_user(None, "/stores/conn_1/settings"),
             &store(),
             "rachelshandicrafts",
             Some("Enter a full domain, like shop.example."),

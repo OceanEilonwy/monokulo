@@ -10,7 +10,7 @@ test.beforeEach(async ({ context }) => {
 });
 test.afterEach(async () => { await stopCoverageFixture(fixture?.process); });
 
-function posUrl() { return `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`; }
+function posUrl() { return `${fixture.base_url}/stores/${fixture.connection_id}/pos`; }
 
 /** Rings up `reference` and backgrounds it, so the background orders
  * sidebar (the POS's only way to its order list) stays on screen. */
@@ -224,7 +224,7 @@ test('real POS header is the site app bar: the mark, the store, a POS label, the
   // nav does on every page.
   await expect(top.locator('.pos-brand')).toHaveAttribute('href', '/');
   await expect(top.locator('.pos-brand svg.logo-mark')).toBeVisible();
-  await expect(top.locator('.pos-store')).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}`);
+  await expect(top.locator('.pos-store')).toHaveAttribute('href', `/stores/${fixture.connection_id}`);
   await expect(top.locator('.pos-mode')).toHaveText('POS');
   await expect(page.locator('#pos-site-brand')).toHaveCount(0);
   const status = top.locator('#status-indicator');
@@ -620,7 +620,7 @@ test('charge whose response is lost is retried without creating a second order',
 
 test('payment waiting on the store\'s confirmations shows its progress', async ({ page, request }) => {
   // The merchant asks for 3 confirmations on the store's settings page.
-  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`,
+  const saved = await request.post(`${fixture.base_url}/stores/${fixture.connection_id}/settings`,
     { headers: { cookie: `session=${fixture.session}` }, form: { confirmations_required: '3' }, maxRedirects: 0 });
   expect(saved.status()).toBeLessThan(400);
   await page.goto(posUrl());
@@ -657,7 +657,7 @@ test('double spend on the order on screen warns the merchant not to hand over go
 
 test('store priced in AUD: the merchant keys in dollars and cents and sees both amounts throughout', async ({ page, request }) => {
   // The merchant switches the store to Australian dollars on its settings page.
-  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`,
+  const saved = await request.post(`${fixture.base_url}/stores/${fixture.connection_id}/settings`,
     { headers: { cookie: `session=${fixture.session}` }, form: { base_currency: 'AUD' }, maxRedirects: 0 });
   expect(saved.status()).toBeLessThan(400);
   await page.goto(posUrl());
@@ -780,7 +780,7 @@ test('an order finished at the counter moves to Finished for this session only',
   await expect(page.locator('.mk-card')).toContainText('Fixture order');
   const note = page.locator('.pos-list-note');
   await expect(note).toContainText('Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads.');
-  await expect(note.getByRole('link', { name: 'See all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders`);
+  await expect(note.getByRole('link', { name: 'See all orders →' })).toHaveAttribute('href', `/stores/${fixture.connection_id}/orders`);
   await captureCoverageStage(page, 'pos-finished-tab', test.info());
   await page.getByRole('button', { name: /Active/ }).click();
   await expect(page.locator('.mk-card')).toHaveCount(1);
@@ -830,7 +830,7 @@ test('a search with no match in this session links to searching all orders', asy
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('wc-1042');
   const empty = page.locator('.pos-empty');
   await expect(empty).toHaveText('No matches from this session. Search all orders →');
-  await expect(empty.getByRole('link', { name: 'Search all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders?q=wc-1042`);
+  await expect(empty.getByRole('link', { name: 'Search all orders →' })).toHaveAttribute('href', `/stores/${fixture.connection_id}/orders?q=wc-1042`);
   await empty.getByRole('link', { name: 'Search all orders →' }).click();
   await expect(page.getByRole('heading', { name: 'Orders' })).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Search orders' })).toHaveValue('wc-1042');

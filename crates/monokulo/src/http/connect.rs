@@ -6,7 +6,7 @@
 //!
 //! 1. `GET /plugins/connect/{platform}?site_url=...&return_url=...&nonce=...[&name=...]`
 //!    - the plugin sends the merchant's browser here.
-//! 2. No session yet: redirect to `/dashboard/login?next=<this same URL>`
+//! 2. No session yet: redirect to `/login?next=<this same URL>`
 //!    (`next` is checked to be a path on this site before it's followed,
 //!    `dashboard::SafePath`); signing up or logging in comes back here.
 //! 3. A session. A store is a host and no two stores share one
@@ -216,7 +216,7 @@ fn encode_query_value(s: &str) -> String {
 }
 
 /// `GET /plugins/connect/{platform}` (steps 1-3). No valid session: redirect to
-/// `/dashboard/login` carrying a `next` that reconstructs this exact URL.
+/// `/login` carrying a `next` that reconstructs this exact URL.
 /// A valid session: the store with the shop's host decides (see the module
 /// doc comment). A path that can't name a plugin is not found.
 pub async fn start(
@@ -239,10 +239,7 @@ pub async fn start(
         if !query.name.is_empty() {
             this_url.push_str(&format!("&name={}", encode_query_value(&query.name)));
         }
-        return redirect_302(&format!(
-            "/dashboard/login?next={}",
-            encode_query_value(&this_url)
-        ));
+        return redirect_302(&format!("/login?next={}", encode_query_value(&this_url)));
     };
     let plugin = Plugin::new(slug, PluginName::clean(&query.name));
     let chrome =
@@ -671,7 +668,7 @@ mod tests {
         let signup = router
             .clone()
             .oneshot(form_request(
-                "/dashboard/signup",
+                "/signup",
                 None,
                 &[("email", email), ("password", PASSWORD)],
             ))
@@ -1209,7 +1206,7 @@ mod tests {
         );
 
         // The site is locked; Connections lists the plugin.
-        let settings = format!("/dashboard/stores/{id}/settings");
+        let settings = format!("/stores/{id}/settings");
         let page = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
             page.contains(&format!(
@@ -1268,7 +1265,7 @@ mod tests {
 
         // Nothing from the shop is open: disconnecting is ready, and says
         // its webhook goes.
-        let disconnect = format!("{settings}/connections/{}/disconnect", rows[0].id);
+        let disconnect = format!("{settings}/plugins/{}/disconnect", rows[0].id);
         let ready = body_text(get(&router, &disconnect, &cookie).await).await;
         assert!(ready.contains("The plugin's webhook is removed<span class=\"fix\">https://shop.example.com/?wc-api=monokulo</span>"), "{ready}");
         let wrong = router
@@ -1394,7 +1391,7 @@ mod tests {
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert_eq!(rows[0].version, "0.4.1");
         assert!(rows[0].last_seen_at.is_some());
-        let disconnect = format!("{settings}/connections/{}/disconnect", rows[0].id);
+        let disconnect = format!("{settings}/plugins/{}/disconnect", rows[0].id);
         let blocked = body_text(get(&router, &disconnect, &cookie).await).await;
         assert!(blocked.contains("No order from shop.example.com can still be paid<span class=\"fix\">1 can be paid until about "), "{blocked}");
         let refused = router
@@ -1457,7 +1454,7 @@ mod tests {
         assert_eq!(get_response.status(), StatusCode::FOUND);
         let login_location = location(&get_response);
         let next_value = login_location
-            .strip_prefix("/dashboard/login?next=")
+            .strip_prefix("/login?next=")
             .expect("a next-carrying login redirect");
         let decoded_next = url::form_urlencoded::parse(format!("x={next_value}").as_bytes())
             .next()
@@ -1481,14 +1478,14 @@ mod tests {
         )
         .await;
         assert!(html.contains("shop.example.com wants to connect"), "{html}");
-        assert!(html.contains("/dashboard/signup?next="), "{html}");
+        assert!(html.contains("/signup?next="), "{html}");
 
         // Signing up with `next` goes straight back to the connect link,
         // which sends a merchant with no store to setup.
         let signup = router
             .clone()
             .oneshot(form_request(
-                "/dashboard/signup",
+                "/signup",
                 None,
                 &[
                     ("email", "connect-detour@example.com"),
@@ -1517,7 +1514,7 @@ mod tests {
         let login_response = router
             .clone()
             .oneshot(form_request(
-                "/dashboard/login",
+                "/login",
                 None,
                 &[
                     ("email", "connect-detour@example.com"),

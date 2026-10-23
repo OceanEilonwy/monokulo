@@ -89,7 +89,7 @@ impl Merchant {
             .router
             .clone()
             .oneshot(form_post(
-                "/dashboard/login",
+                "/login",
                 None,
                 &[("email", email), ("password", password)],
             ))
@@ -480,7 +480,7 @@ async fn signed_out_the_account_page_sends_a_browser_to_log_in() {
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(
         response.headers()["location"],
-        "/dashboard/login?next=%2Faccount%3Ftab%3Dwallets"
+        "/login?next=%2Faccount%3Ftab%3Dwallets"
     );
 }
 
@@ -494,7 +494,7 @@ async fn the_theme_picked_at_sign_up_is_the_new_accounts() {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/dashboard/signup")
+                    .uri("/signup")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -514,7 +514,7 @@ async fn the_theme_picked_at_sign_up_is_the_new_accounts() {
     let sign_up = |email: &str, theme: &str| {
         Request::builder()
             .method("POST")
-            .uri("/dashboard/signup")
+            .uri("/signup")
             .header("content-type", "application/x-www-form-urlencoded")
             .body(Body::from(format!(
                 "email={}&password={}&theme={theme}",

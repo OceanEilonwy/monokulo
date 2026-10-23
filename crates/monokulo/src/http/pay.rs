@@ -395,7 +395,7 @@ mod tests {
         let checkout = format!("/checkout/{}", order["order_id"].as_str().unwrap());
 
         let mut referenced = std::collections::BTreeSet::new();
-        for page in ["/dashboard/signup", "/dashboard/login", checkout.as_str()] {
+        for page in ["/signup", "/login", checkout.as_str()] {
             let response = router
                 .clone()
                 .oneshot(Request::builder().uri(page).body(Body::empty()).unwrap())
@@ -540,17 +540,17 @@ mod tests {
         };
         for path in [
             "/".to_string(),
-            "/dashboard/login".into(),
-            "/dashboard/signup".into(),
+            "/login".into(),
+            "/signup".into(),
             "/account".into(),
             "/account?tab=wallets".into(),
             "/setup".into(),
             "/account/wallets/add".into(),
-            format!("/dashboard/stores/{store_id}"),
-            format!("/dashboard/stores/{store_id}/settings"),
-            format!("/dashboard/stores/{store_id}/orders"),
-            format!("/dashboard/stores/{store_id}/orders/{order_id}"),
-            format!("/dashboard/stores/{store_id}/orders/new"),
+            format!("/stores/{store_id}"),
+            format!("/stores/{store_id}/settings"),
+            format!("/stores/{store_id}/orders"),
+            format!("/stores/{store_id}/orders/{order_id}"),
+            format!("/stores/{store_id}/orders/new"),
         ] {
             let response = router.clone().oneshot(get(path.clone())).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{path}");
@@ -924,9 +924,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!(
-                        "/dashboard/stores/{connection_id}/orders/{order_id}"
-                    ))
+                    .uri(format!("/stores/{connection_id}/orders/{order_id}"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1090,7 +1088,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .uri(format!("/stores/{connection_id}/settings"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(body))
@@ -1639,7 +1637,7 @@ mod tests {
             .clone()
             .oneshot(forged(
                 &token_b,
-                format!("/dashboard/stores/{id_a}/settings"),
+                format!("/stores/{id_a}/settings"),
                 "POST",
                 body,
             ))
@@ -1654,7 +1652,7 @@ mod tests {
             .clone()
             .oneshot(forged(
                 &token_b,
-                format!("/dashboard/stores/{id_a}/settings"),
+                format!("/stores/{id_a}/settings"),
                 "GET",
                 "",
             ))

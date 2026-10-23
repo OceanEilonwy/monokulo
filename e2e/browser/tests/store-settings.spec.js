@@ -16,7 +16,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context) {
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
-const store = '/dashboard/stores/coverage-store';
+const store = '/stores/coverage-store';
 const tab = (name) => `${fixture.base_url}${store}/settings?tab=${name}`;
 
 /** Records the settings components' events, across page loads. */

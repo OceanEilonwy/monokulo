@@ -36,7 +36,7 @@ pub(super) enum LoginError {
 
 /// The actual login logic - verifying email+password (with the
 /// account-enumeration-safe dummy-hash comparison described in the module
-/// doc comment) and issuing a session - for `POST /dashboard/login`
+/// doc comment) and issuing a session - for `POST /login`
 /// (`http/dashboard.rs`) and the first-run admin setup. Returns the
 /// resolved user alongside the raw (unhashed) session token, which becomes
 /// the session cookie.

@@ -45,7 +45,7 @@ test("a wallet's page is one column: where it lives, stores, details, history, t
   await expect(stores.locator('.card-meta')).toHaveText('1 takes payments into this wallet');
   const row = stores.locator('.store-rows li').first();
   await expect(row.getByRole('link', { name: 'shop.localhost' })).toBeVisible();
-  await expect(row.getByRole('link', { name: 'change the wallet' })).toHaveAttribute('href', '/dashboard/stores/coverage-store/settings?tab=wallet#card-wallet');
+  await expect(row.getByRole('link', { name: 'change the wallet' })).toHaveAttribute('href', '/stores/coverage-store/settings?tab=wallet#card-wallet');
   // Flush: no list indent.
   await expect(stores.locator('.store-rows')).toHaveCSS('padding-left', '0px');
 

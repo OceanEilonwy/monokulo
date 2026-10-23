@@ -811,7 +811,7 @@ fn proof_view(proof: shared::proof::ProofStatus, now: i64) -> views::status::Pro
     }
 }
 
-/// `POST /dashboard/admin/proof/{network}/reanchor` - the "Take a new
+/// `POST /admin/proof/{network}/reanchor` - the "Take a new
 /// anchor" button: the engine forgets the network's anchor and proven
 /// chain and takes a new anchor from its nodes next round
 /// (docs/proof_of_work.md). For after a reorg deeper than the anchor.
@@ -1666,9 +1666,7 @@ mod tests {
                 .into_string()
                 .contains("/status/engine"));
             assert!(
-                html.contains(
-                    r#"<form method="post" action="/dashboard/admin/proof/mainnet/reanchor">"#
-                ),
+                html.contains(r#"<form method="post" action="/admin/proof/mainnet/reanchor">"#),
                 "{html}"
             );
         }

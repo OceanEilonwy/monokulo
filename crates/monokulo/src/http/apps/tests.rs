@@ -69,7 +69,7 @@ async fn code(router: &Router, id: &str, cookie: &str, device_name: &str) -> (St
     let response = router
         .clone()
         .oneshot(form_post(
-            &format!("/dashboard/stores/{id}/apps/connect"),
+            &format!("/stores/{id}/settings/apps/connect"),
             Some(cookie),
             &[("device_name", device_name)],
         ))
@@ -86,7 +86,7 @@ async fn code(router: &Router, id: &str, cookie: &str, device_name: &str) -> (St
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
     let status = html
-        .split(&format!("/dashboard/stores/{id}/apps/connect/"))
+        .split(&format!("/stores/{id}/settings/apps/connect/"))
         .nth(1)
         .map(|rest| {
             rest.chars()
@@ -198,7 +198,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let unused = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{id}/apps/connect/{status}"),
+            &format!("/stores/{id}/settings/apps/connect/{status}"),
             &cookie,
         )
         .await,
@@ -235,7 +235,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let used = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{id}/apps/connect/{status}"),
+            &format!("/stores/{id}/settings/apps/connect/{status}"),
             &cookie,
         )
         .await,
@@ -288,7 +288,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let settings = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{id}/settings?tab=connections"),
+            &format!("/stores/{id}/settings?tab=connections"),
             &cookie,
         )
         .await,
@@ -305,7 +305,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let gone = router
         .clone()
         .oneshot(form_post(
-            &format!("/dashboard/stores/{id}/apps/{app_id}/disconnect"),
+            &format!("/stores/{id}/settings/apps/{app_id}/disconnect"),
             Some(&cookie),
             &[],
         ))
@@ -397,7 +397,7 @@ async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
     let page = router
         .clone()
         .oneshot(form_post(
-            &format!("/dashboard/stores/{id}/apps/connect"),
+            &format!("/stores/{id}/settings/apps/connect"),
             Some(&cookie),
             &[],
         ))

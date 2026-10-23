@@ -116,17 +116,13 @@ pub async fn setup_submit(
                 Ok((_user, raw_token)) => {
                     let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
                     let jar = CookieJar::new().add(cookie);
-                    (
-                        jar,
-                        redirect_302("/dashboard/admin/settings?tab=nodes&welcome=true"),
-                    )
-                        .into_response()
+                    (jar, redirect_302("/admin/settings?tab=nodes&welcome=true")).into_response()
                 }
                 // The account was just created with this exact password, so
                 // this is unreachable in practice - falling back to a plain
                 // login redirect rather than `.expect()` is simply the
                 // cheapest safe response to a case that should never occur.
-                Err(_) => redirect_302("/dashboard/login"),
+                Err(_) => redirect_302("/login"),
             }
         }
         Err(CreateAccountError::DuplicateEmail) => {
@@ -308,7 +304,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(
             response.headers().get("location").unwrap(),
-            "/dashboard/admin/settings?tab=nodes&welcome=true"
+            "/admin/settings?tab=nodes&welcome=true"
         );
         let set_cookie = response
             .headers()
@@ -325,7 +321,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/dashboard/admin/settings?tab=nodes&welcome=true")
+                    .uri("/admin/settings?tab=nodes&welcome=true")
                     .header("cookie", set_cookie.split(';').next().unwrap())
                     .body(Body::empty())
                     .unwrap(),

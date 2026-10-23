@@ -23,7 +23,7 @@ async fn request_over_tor(router: axum::Router, request: &str) -> String {
 async fn a_stream_from_tor_is_served_as_a_visitor_on_the_onion_address() {
     let response = request_over_tor(
         build_router(AppState::for_tests()),
-        "GET /dashboard/login HTTP/1.1\r\nHost: x.onion\r\nConnection: close\r\n\r\n",
+        "GET /login HTTP/1.1\r\nHost: x.onion\r\nConnection: close\r\n\r\n",
     )
     .await;
     assert!(response.starts_with("HTTP/1.1 200"), "{response}");

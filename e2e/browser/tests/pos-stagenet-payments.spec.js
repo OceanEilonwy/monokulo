@@ -11,7 +11,7 @@
 // workers: 1), never concurrently, since they share one real backend and one
 // real customer wallet.
 //
-// Login happens through the real `/dashboard/login` form in the browser
+// Login happens through the real `/login` form in the browser
 // (not injected cookies) - the one part of setup worth actually driving
 // through the UI, since it's cheap and it's real production code a merchant
 // depends on before they ever reach the POS screen. Account/store creation
@@ -42,13 +42,13 @@ test.beforeEach(async ({ context }) => {
 
 /** Real login through the real form, then navigates to the real POS page. */
 async function loginAndOpenPos(page) {
-  await page.goto(`${fixture.monokulo_base_url}/dashboard/login`);
+  await page.goto(`${fixture.monokulo_base_url}/login`);
   await page.fill('input[name="email"]', fixture.email);
   await page.fill('input[name="password"]', fixture.password);
   await page.click('button[type="submit"]');
   await expect(page).toHaveURL(/\/$/);
 
-  await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+  await page.goto(`${fixture.monokulo_base_url}/stores/${fixture.connection_id}/pos`);
   await expect(page.locator('.pos-keypad')).toBeVisible();
 }
 
@@ -60,7 +60,7 @@ async function loginAndOpenPos(page) {
  */
 async function setConfirmationsRequired(context, value) {
   const response = await context.request.post(
-    `${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/settings`,
+    `${fixture.monokulo_base_url}/stores/${fixture.connection_id}/settings`,
     { form: { confirmations_required: String(value) } },
   );
   expect(response.ok()).toBeTruthy();
@@ -127,7 +127,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
 
     // Spec point 5: a POS-created order is a real order, visible on the
     // normal dashboard orders list, not something private to this screen.
-    const ordersPage = await context.request.get(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/orders`);
+    const ordersPage = await context.request.get(`${fixture.monokulo_base_url}/stores/${fixture.connection_id}/orders`);
     expect(await ordersPage.text()).toContain(order.order_id);
   });
 

@@ -179,7 +179,7 @@ test('the account menu closes on a click outside it, and its items join the phon
 
 test('the nav bar is one height signed in or out', async ({ browser }) => {
   const signedOut = await browser.newPage();
-  await signedOut.goto(fixture.base_url + '/dashboard/login');
+  await signedOut.goto(fixture.base_url + '/login');
   const outHeight = (await signedOut.locator('.site-nav').boundingBox()).height;
   const context = await browser.newContext();
   await login(context);

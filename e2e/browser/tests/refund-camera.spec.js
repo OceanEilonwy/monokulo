@@ -129,7 +129,7 @@ test('real checkout camera can be stopped by the customer before it finds a code
 test('merchant scans the customer refund QR with the POS tablet camera', async ({ page, context, browserName }) => {
   await holdUpCode(page, browserName);
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-  await visit(page, `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+  await visit(page, `${fixture.base_url}/stores/${fixture.connection_id}/pos`);
   const card = page.locator('.pos-pay-card');
   await card.getByRole('button', { name: 'Scan refund QR' }).click();
   await expect(card.locator('#pos-refund')).toHaveValue(address);
@@ -147,7 +147,7 @@ test('POS tablet camera stopped before it finds a code leaves the field as it wa
     let real;
     Object.defineProperty(window, 'jsQR', { configurable: true, get: () => (real ? () => null : undefined), set: value => { real = value; } });
   });
-  await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+  await page.goto(`${fixture.base_url}/stores/${fixture.connection_id}/pos`);
   const card = page.locator('.pos-pay-card');
   await expect(card).toBeVisible();
   const before = await card.locator('#pos-refund').inputValue();

@@ -1,4 +1,4 @@
-//! `GET/POST /dashboard/stores/{id}/orders/new` -
+//! `GET/POST /stores/{id}/orders/new` -
 //! `http::orders::create_order_page`/`create_order`.
 //!
 //! A widget page, same shape as [`super::pos`]'s POS terminal: rather than a
@@ -49,7 +49,7 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
         @if let Some(error) = &data.order_creation_error {
             (ui::Alert::new(error.as_str(), ui::Tone::Error))
         }
-        form method="post" action=(format!("/dashboard/stores/{}/orders/new", data.connection_id)) {
+        form method="post" action=(format!("/stores/{}/orders/new", data.connection_id)) {
             label for="amount" { "Amount" }
             input type="hidden" name="request_key" value=(data.request_key);
             (ui::Input::new("amount").id("amount").value(data.amount.as_str()).required(true))
@@ -109,7 +109,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/stores/conn_1/orders/new")
+        PageChrome::from_user(None, "/stores/conn_1/orders/new")
     }
 
     fn data() -> CreateOrderData {
@@ -176,7 +176,7 @@ mod tests {
             html.contains(r#"id="show-merchant-order-id" checked"#),
             "{html}"
         );
-        assert!(html.contains(r#"action="/dashboard/stores/conn_1/orders/new""#));
+        assert!(html.contains(r#"action="/stores/conn_1/orders/new""#));
     }
 
     #[test]

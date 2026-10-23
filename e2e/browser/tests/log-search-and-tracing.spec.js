@@ -11,7 +11,7 @@ const { createStore, useRealStack, fixture, signInAsAdmin, transitionDone, fakeN
 
 useRealStack(test);
 
-const logsUrl = (query = '') => `${fixture().monokulo_url}/dashboard/admin/logs${query}`;
+const logsUrl = (query = '') => `${fixture().monokulo_url}/admin/logs${query}`;
 const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs' });
 
 test.beforeEach(async ({ context }) => {
@@ -21,7 +21,7 @@ test.beforeEach(async ({ context }) => {
 test('a search swaps the results in place, keeps the URL, and back returns to the earlier search', async ({ page }) => {
   await signInAsAdmin(page);
   // Something recent in both services: the settings page asks the engine.
-  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
+  await page.goto(`${fixture().monokulo_url}/admin/settings`);
   await page.goto(logsUrl());
   await expect(page.locator('#log-rows .log-row').first()).toBeVisible();
   await expect(page.locator('.error', { hasText: "engine's lines aren't shown" })).toHaveCount(0);
@@ -92,7 +92,7 @@ test('without JavaScript, Syntax is a page whose examples are searches', async (
     await signInAsAdmin(page);
     await page.goto(logsUrl());
     await page.getByRole('link', { name: 'Syntax' }).click();
-    await expect(page).toHaveURL(/\/dashboard\/admin\/logs\/syntax$/);
+    await expect(page).toHaveURL(/\/admin\/logs\/syntax$/);
     await expect(page.getByRole('heading', { name: 'Search syntax', level: 1 })).toBeVisible();
     await stage(page, 'logs-syntax-page');
     await transitionDone(page);
@@ -103,14 +103,14 @@ test('without JavaScript, Syntax is a page whose examples are searches', async (
 
 test("a line's properties load when it's first opened, and only then", async ({ page }) => {
   await signInAsAdmin(page);
-  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
+  await page.goto(`${fixture().monokulo_url}/admin/settings`);
   await page.goto(logsUrl(`?q=${encodeURIComponent("has http.route")}`));
   const row = page.locator('#log-rows .log-row').first();
   // Closed, with no properties in the page: only a link to them.
   await expect(row).not.toHaveAttribute('open', '');
   await expect(row.locator('.props table')).toHaveCount(0);
   const loads = [];
-  page.on('request', (request) => { if (request.url().includes('/dashboard/admin/logs/row/')) loads.push(request.url()); });
+  page.on('request', (request) => { if (request.url().includes('/admin/logs/row/')) loads.push(request.url()); });
 
   await row.locator('summary').click();
   await expect(row.locator('.props table')).toBeVisible();
@@ -137,8 +137,8 @@ test('a search that does not parse says where', async ({ page }) => {
 
 test('a request from monokulo to the engine is one trace with spans from both', async ({ page }) => {
   await signInAsAdmin(page);
-  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
-  await page.goto(logsUrl(`?q=${encodeURIComponent("http.route = '/dashboard/admin/settings'")}`));
+  await page.goto(`${fixture().monokulo_url}/admin/settings`);
+  await page.goto(logsUrl(`?q=${encodeURIComponent("http.route = '/admin/settings'")}`));
   const row = page.locator('#log-rows .log-row').first();
   await row.locator('summary').click();
   await row.getByRole('link', { name: 'Show the whole trace' }).click();
@@ -250,7 +250,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
 
   await expect
     .poll(async () => {
-      await page.goto(`${base}/dashboard/admin/logs/trace/${traceId}`);
+      await page.goto(`${base}/admin/logs/trace/${traceId}`);
       const spans = await page.locator('.trace-span').allTextContents();
       return spans.some((s) => s.includes('monokulo')) && spans.some((s) => s.includes('engine'));
     }, { timeout: 15_000, intervals: [500] })
@@ -259,8 +259,8 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
 
 test('Refresh and Live sit in the title bar, the histogram above the search, and every line has trace and session buttons', async ({ page }) => {
   await signInAsAdmin(page);
-  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
-  await page.goto(logsUrl(`?q=${encodeURIComponent("http.route = '/dashboard/admin/settings'")}`));
+  await page.goto(`${fixture().monokulo_url}/admin/settings`);
+  await page.goto(logsUrl(`?q=${encodeURIComponent("http.route = '/admin/settings'")}`));
   for (const width of [1280, 390]) {
     await page.setViewportSize({ width, height: 800 });
     const head = page.locator('.mk-page-header');

@@ -30,7 +30,7 @@
 //! stagenet test (`e2e_stagenet_connect_flow.rs`) uses hands back a
 //! `pk_...`/`sk_...` credential pair for a "plugin" integration, never the
 //! `connection_id`/session a real merchant's own browser would have. This
-//! test signs up on `/dashboard/signup` and sets the store up through
+//! test signs up on `/signup` and sets the store up through
 //! `/setup` directly instead, as a browser without JavaScript does (the same
 //! forms `mock-woocommerce/src/lib.rs`'s `walk_setup` posts), keeping the
 //! `session` cookie in a cookie-persisting client: sessions are cookies
@@ -266,13 +266,13 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let password = "correct horse battery staple";
 
     let signup = client
-        .post(format!("{monokulo_base_url}/dashboard/signup"))
+        .post(format!("{monokulo_base_url}/signup"))
         .form(&[("email", email.as_str()), ("password", password)])
         .send()
         .await
         .unwrap();
     assert!(
-        signup.status().is_success() && !signup.url().path().starts_with("/dashboard/signup"),
+        signup.status().is_success() && !signup.url().path().starts_with("/signup"),
         "signup failed: {} at {}",
         signup.status(),
         signup.url()
@@ -343,7 +343,7 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // success than a raw status code would be anyway.
     let threshold_response = client
         .post(format!(
-            "{monokulo_base_url}/dashboard/stores/{connection_id}/settings"
+            "{monokulo_base_url}/stores/{connection_id}/settings"
         ))
         .form(&[
             ("new_unit_amount", THRESHOLD_UNIT_AMOUNT),
@@ -430,7 +430,7 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // decided", `templates::OrderDetailData::confirmations_required_display`).
     let detail_html = client
         .get(format!(
-            "{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{order_id}"
+            "{monokulo_base_url}/stores/{connection_id}/orders/{order_id}"
         ))
         .send()
         .await

@@ -12,7 +12,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context) {
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
-const store = '/dashboard/stores/coverage-store';
+const store = '/stores/coverage-store';
 
 // The markup `ui::Select` renders around a select (crates/ui): its root is
 // an island the page's islands script attaches its behaviour to. Only

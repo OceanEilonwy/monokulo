@@ -34,7 +34,7 @@ pub(crate) async fn signed_up_and_logged_in_session_token(
     let signup = router
         .clone()
         .oneshot(form_post(
-            "/dashboard/signup",
+            "/signup",
             None,
             &[("email", email), ("password", password)],
         ))
@@ -187,7 +187,7 @@ pub(crate) async fn admin_session_cookie(router: &Router) -> String {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/login")
+                .uri("/login")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(body))
                 .unwrap(),

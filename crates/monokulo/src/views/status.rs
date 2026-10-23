@@ -409,7 +409,7 @@ fn proof_section(network: &str, name: &str, proof: &ProofView) -> Markup {
             @if proof.state == ProofState::Held {
                 div class="proof-held" {
                     p { (proof.summary) }
-                    form method="post" action=(format!("/dashboard/admin/proof/{network}/reanchor")) {
+                    form method="post" action=(format!("/admin/proof/{network}/reanchor")) {
                         (Hint::new(concat!(
                             "A new anchor is taken on the nodes' word, 720 blocks below their tips. ",
                             "Check that the nodes are your own or ones you trust before taking one."
@@ -1078,7 +1078,7 @@ mod tests {
         assert!(
             html.contains(concat!(
                 r#"<div class="proof-held"><p>Every node's chain left the proven one more than 720 blocks back.</p>"#,
-                r#"<form method="post" action="/dashboard/admin/proof/mainnet/reanchor">"#,
+                r#"<form method="post" action="/admin/proof/mainnet/reanchor">"#,
                 r#"<p class="hint">A new anchor is taken on the nodes' word, 720 blocks below their tips. Check that the nodes are your own or ones you trust before taking one.</p>"#,
                 r#"<button class="mk-btn" type="submit">Take a new anchor</button></form></div>"#,
             )),

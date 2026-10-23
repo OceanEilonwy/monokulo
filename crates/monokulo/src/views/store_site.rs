@@ -65,7 +65,7 @@ pub struct SiteView {
 
 impl SiteView {
     fn settings(&self) -> String {
-        format!("/dashboard/stores/{}/settings", self.store_id)
+        format!("/stores/{}/settings", self.store_id)
     }
 
     pub fn website_path(&self) -> String {
@@ -73,11 +73,7 @@ impl SiteView {
     }
 
     pub fn disconnect_path(&self, integration: &IntegrationView) -> String {
-        format!(
-            "{}/connections/{}/disconnect",
-            self.settings(),
-            integration.id
-        )
+        format!("{}/plugins/{}/disconnect", self.settings(), integration.id)
     }
 }
 
@@ -457,7 +453,7 @@ fn dialog_page(
         .render(chrome, body)
 }
 
-/// `GET /dashboard/stores/{id}/settings/website`: B1 as a page.
+/// `GET /stores/{id}/settings/website`: B1 as a page.
 pub fn website_page(
     chrome: &PageChrome,
     view: &SiteView,
@@ -476,7 +472,7 @@ pub fn website_page(
     )
 }
 
-/// `GET /dashboard/stores/{id}/settings/connections/{integration}/disconnect`:
+/// `GET /stores/{id}/settings/plugins/{integration}/disconnect`:
 /// C1 as a page.
 pub fn disconnect_page(
     chrome: &PageChrome,
@@ -559,7 +555,7 @@ mod tests {
         );
         assert!(
             field.contains(
-                r##"Set by Acme Cart · <a href="/dashboard/stores/c_1/settings?tab=connections#card-connections">see Connections</a>"##
+                r##"Set by Acme Cart · <a href="/stores/c_1/settings?tab=connections#card-connections">see Connections</a>"##
             ),
             "{field}"
         );
@@ -572,7 +568,7 @@ mod tests {
             card.contains("shop.example · plugin 0.4.0 · connected 3 Oct · last order today"),
             "{card}"
         );
-        assert!(card.contains(r#"<a class="mk-btn" href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">Disconnect…</a>"#), "{card}");
+        assert!(card.contains(r#"<a class="mk-btn" href="/stores/c_1/settings/plugins/int_1/disconnect" data-opens-dialog="disconnect-dialog">Disconnect…</a>"#), "{card}");
         assert!(
             card.contains("<h4>Before</h4>") && card.contains("3 Oct to 12 Sep"),
             "{card}"
@@ -624,7 +620,7 @@ mod tests {
             html.contains("Change the website of \u{201c}Bakery\u{201d}?"),
             "{html}"
         );
-        assert!(html.contains(r#"No plugin is connected to it<span class="fix">Acme Cart on shop.example is · <a href="/dashboard/stores/c_1/settings/connections/int_1/disconnect" data-opens-dialog="disconnect-dialog">disconnect it first</a>"#), "{html}");
+        assert!(html.contains(r#"No plugin is connected to it<span class="fix">Acme Cart on shop.example is · <a href="/stores/c_1/settings/plugins/int_1/disconnect" data-opens-dialog="disconnect-dialog">disconnect it first</a>"#), "{html}");
         assert!(
             html.contains(r#"data-variant="danger" disabled"#) && !html.contains("<form"),
             "{html}"
@@ -646,9 +642,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(
-                r#"<form method="post" action="/dashboard/stores/c_1/settings/website">"#
-            ),
+            html.contains(r#"<form method="post" action="/stores/c_1/settings/website">"#),
             "{html}"
         );
         assert!(
@@ -711,7 +705,12 @@ mod tests {
                 && html.contains("The website unlocks"),
             "{html}"
         );
-        assert!(html.contains(r#"<form method="post" action="/dashboard/stores/c_1/settings/connections/int_1/disconnect">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<form method="post" action="/stores/c_1/settings/plugins/int_1/disconnect">"#
+            ),
+            "{html}"
+        );
         assert!(
             html.contains(
                 r#"<button class="mk-btn" type="submit" data-variant="danger">Disconnect Acme Cart</button>"#

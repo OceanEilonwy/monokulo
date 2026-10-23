@@ -62,10 +62,10 @@ async fn headers_of(router: &Router, request: Request<Body>) -> HeaderMap {
 #[tokio::test]
 async fn a_web_page_tells_tor_browser_where_the_same_page_is_on_tor() {
     let router = build_router(state_with(external_tor()));
-    let headers = headers_of(&router, page("/dashboard/login?next=%2Fsetup")).await;
+    let headers = headers_of(&router, page("/login?next=%2Fsetup")).await;
     assert_eq!(
         headers["onion-location"],
-        format!("http://{ONION}/dashboard/login?next=%2Fsetup")
+        format!("http://{ONION}/login?next=%2Fsetup")
     );
     assert_eq!(
         headers["referrer-policy"],
@@ -76,7 +76,7 @@ async fn a_web_page_tells_tor_browser_where_the_same_page_is_on_tor() {
 #[tokio::test]
 async fn a_page_on_tor_points_nowhere_else_and_sends_no_referer() {
     let router = build_router(state_with(external_tor()));
-    let headers = headers_of(&router, over_tor(page("/dashboard/login"))).await;
+    let headers = headers_of(&router, over_tor(page("/login"))).await;
     assert!(headers.get("onion-location").is_none(), "{headers:?}");
     assert_eq!(headers["referrer-policy"], "no-referrer");
 }
@@ -93,7 +93,7 @@ async fn onion_location_is_left_out_when_switched_off_tor_is_off_or_not_up_yet()
     };
     for tor in [switched_off, TorConfig::defaults(), not_up_yet] {
         let router = build_router(state_with(tor.clone()));
-        let headers = headers_of(&router, page("/dashboard/login")).await;
+        let headers = headers_of(&router, page("/login")).await;
         assert!(
             headers.get("onion-location").is_none(),
             "{tor:?}: {headers:?}"
@@ -130,11 +130,8 @@ async fn tor_inside_monokulo_gives_its_own_address_once_it_has_one() {
         })
     };
     let router = build_router(state);
-    let headers = headers_of(&router, page("/dashboard/login")).await;
-    assert_eq!(
-        headers["onion-location"],
-        format!("http://{ONION}/dashboard/login")
-    );
+    let headers = headers_of(&router, page("/login")).await;
+    assert_eq!(headers["onion-location"], format!("http://{ONION}/login"));
 }
 
 #[test]
@@ -243,7 +240,7 @@ async fn signing_in_on_tor_gives_a_cookie_tor_browser_sends_back() {
         );
         let request = Request::builder()
             .method("POST")
-            .uri("/dashboard/login")
+            .uri("/login")
             .header("content-type", "application/x-www-form-urlencoded")
             .header("x-forwarded-proto", "https")
             .header("host", "pay.example.com")

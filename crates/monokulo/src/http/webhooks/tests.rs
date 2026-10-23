@@ -134,7 +134,7 @@ async fn creating_a_webhook_with_custom_headers_keeps_them() {
     let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
     let response = router
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &session_token,
             &[
                 ("url", "https://merchant.example/monokulo-webhook"),
@@ -215,7 +215,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+                &format!("/stores/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[
                     ("url", &hook),
@@ -239,7 +239,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     let response = router
         .clone()
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/orders/new"),
+            &format!("/stores/{connection_id}/orders/new"),
             &session_token,
             &[
                 ("amount", "0.5"),
@@ -289,7 +289,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     let page = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{connection_id}/settings?tab=connections"),
+            &format!("/stores/{connection_id}/settings?tab=connections"),
             &session_token,
         )
         .await,
@@ -391,13 +391,13 @@ async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings?tab=connections"),
+            &format!("/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,
     )
     .await;
-    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}");
+    let base = format!("/stores/{store}/settings/webhooks/{webhook}");
     assert!(
         html.contains(r#"<span class="card-meta">1 webhook</span>"#),
         "{html}"
@@ -507,7 +507,7 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings?tab=connections"),
+            &format!("/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,
@@ -531,7 +531,7 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
     let html = body_text(
         get(
             &router2,
-            &format!("/dashboard/stores/{empty}/settings?tab=connections"),
+            &format!("/stores/{empty}/settings?tab=connections"),
             &other,
         )
         .await,
@@ -549,7 +549,7 @@ async fn send_again_and_retry_failed_work_as_plain_form_posts() {
     let (state, _engine) = test_state_with_real_engine().await;
     let (router, session, store, webhook, [delivered, _, gave_up]) =
         store_with_deliveries(&state, "posts@example.com").await;
-    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}");
+    let base = format!("/stores/{store}/settings/webhooks/{webhook}");
     let response = router
         .clone()
         .oneshot(form_post_request(
@@ -562,7 +562,7 @@ async fn send_again_and_retry_failed_work_as_plain_form_posts() {
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         response.headers()["location"],
-        format!("/dashboard/stores/{store}/settings?saved=webhooks#card-webhooks").as_str()
+        format!("/stores/{store}/settings?saved=webhooks#card-webhooks").as_str()
     );
     let store_id = crate::db::ConnectionId::new(store.clone());
     let webhook_id = shared::ids::WebhookId::new(webhook.clone());
@@ -599,7 +599,7 @@ async fn send_again_and_retry_failed_work_as_plain_form_posts() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings?saved=webhooks"),
+            &format!("/stores/{store}/settings?saved=webhooks"),
             &session,
         )
         .await,
@@ -618,7 +618,7 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     let (state, _engine) = test_state_with_real_engine().await;
     let (router, session, store, webhook, [_, retrying, _]) =
         store_with_deliveries(&state, "detail@example.com").await;
-    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}");
+    let base = format!("/stores/{store}/settings/webhooks/{webhook}");
     let response = get(&router, &format!("{base}/deliveries/{retrying}"), &session).await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
@@ -671,7 +671,7 @@ async fn deleting_a_webhook_is_asked_on_a_page_then_removes_its_deliveries() {
     let (state, _engine) = test_state_with_real_engine().await;
     let (router, session, store, webhook, [delivered, ..]) =
         store_with_deliveries(&state, "delete@example.com").await;
-    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}");
+    let base = format!("/stores/{store}/settings/webhooks/{webhook}");
     let html = body_text(get(&router, &format!("{base}/delete"), &session).await).await;
     assert!(html.contains("Delete this webhook?"), "{html}");
     assert!(
@@ -708,7 +708,7 @@ async fn another_accounts_webhooks_and_deliveries_are_not_found() {
         "correct horse battery staple",
     )
     .await;
-    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}");
+    let base = format!("/stores/{store}/settings/webhooks/{webhook}");
     for uri in [
         format!("{base}/deliveries/{delivered}"),
         format!("{base}/deliveries"),
@@ -734,7 +734,7 @@ async fn another_accounts_webhooks_and_deliveries_are_not_found() {
     }
     // And their own store can't reach another webhook's delivery by id.
     let (own, _) = create_connection(&router, &state, &intruder).await;
-    let uri = format!("/dashboard/stores/{own}/settings/webhooks/{webhook}/deliveries/{delivered}");
+    let uri = format!("/stores/{own}/settings/webhooks/{webhook}/deliveries/{delivered}");
     assert_eq!(
         get(&router, &uri, &intruder).await.status(),
         StatusCode::NOT_FOUND
@@ -767,7 +767,7 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
     let response = router
         .clone()
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &session_token,
             &[
                 ("url", "https://merchant.example/moneropay-webhook"),
@@ -791,9 +791,7 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/dashboard/stores/{connection_id}/settings?tab=connections"
-                ))
+                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
                 .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -823,7 +821,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
     let response = router
         .clone()
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &session_token,
             &[("url", "https://merchant.example/moneropay-webhook")],
         ))
@@ -847,9 +845,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/dashboard/stores/{connection_id}/settings?tab=connections"
-                ))
+                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
                 .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -879,7 +875,7 @@ async fn creating_a_webhook_with_an_empty_url_shows_a_clear_error() {
 
     let response = router
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &session_token,
             &[("url", "")],
         ))
@@ -908,7 +904,7 @@ async fn creating_a_webhook_with_an_invalid_url_says_why() {
 
     let response = router
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &session_token,
             &[("url", "not a url at all")],
         ))
@@ -938,7 +934,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
     let create_response = router
         .clone()
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &session_token,
             &[("url", "https://merchant.example/to-be-deleted")],
         ))
@@ -953,9 +949,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/dashboard/stores/{connection_id}/settings?tab=connections"
-                ))
+                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
                 .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -976,7 +970,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
     let delete_response = router
         .clone()
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks/{webhook_id}/delete"),
+            &format!("/stores/{connection_id}/settings/webhooks/{webhook_id}/delete"),
             &session_token,
             &[],
         ))
@@ -992,9 +986,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!(
-                    "/dashboard/stores/{connection_id}/settings?tab=connections"
-                ))
+                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
                 .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1031,7 +1023,7 @@ async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_conn
     let create_response = router
         .clone()
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &format!("/stores/{connection_id}/settings/webhooks"),
             &intruder_token,
             &[("url", "https://attacker.example/steal")],
         ))
@@ -1041,7 +1033,7 @@ async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_conn
 
     let delete_response = router
         .oneshot(form_post_request(
-            &format!("/dashboard/stores/{connection_id}/settings/webhooks/some-webhook-id/delete"),
+            &format!("/stores/{connection_id}/settings/webhooks/some-webhook-id/delete"),
             &intruder_token,
             &[],
         ))
@@ -1075,7 +1067,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
     .await
     .unwrap();
     let webhook = created.webhook.id.to_string();
-    let base = format!("/dashboard/stores/{store}/settings/webhooks/{webhook}/deliveries");
+    let base = format!("/stores/{store}/settings/webhooks/{webhook}/deliveries");
     let order = |seq: i64| format!("order{seq:030}");
     let add = |from: i64, to: i64| {
         let db = state.db.lock();
@@ -1108,7 +1100,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings?tab=connections"),
+            &format!("/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,
@@ -1122,7 +1114,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
     let html = body_text(
         get(
             &router,
-            &format!("/dashboard/stores/{store}/settings?tab=connections"),
+            &format!("/stores/{store}/settings?tab=connections"),
             &session,
         )
         .await,

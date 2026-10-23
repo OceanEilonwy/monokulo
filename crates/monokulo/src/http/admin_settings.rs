@@ -1,4 +1,4 @@
-//! `GET`/`POST /dashboard/admin/settings` -
+//! `GET`/`POST /admin/settings` -
 //! the one admin page every monokulo *and* scanner setting can be managed
 //! from, per the product spec ("We need an admin page that makes it so that
 //! all the monokulo + scanner settings can be set from the admin web page").
@@ -558,7 +558,7 @@ fn attach_node_status(
 }
 
 async fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
-    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/settings").await;
+    let chrome = super::page_chrome(state, Some(admin_user), "/admin/settings").await;
     views::admin::admin_settings_page(&chrome, &view).into_response()
 }
 
@@ -571,7 +571,7 @@ pub struct SettingsPageQuery {
     saved: Option<String>,
 }
 
-/// `GET /dashboard/admin/settings?tab=<id>` - one tab of the page
+/// `GET /admin/settings?tab=<id>` - one tab of the page
 /// (General when `tab` is missing or unknown). With fixi (a tab link), just
 /// the panel, with the tab bar, banners and toast out of band.
 pub async fn page(
@@ -1520,7 +1520,7 @@ fn take_flash(token: &str) -> Option<Flash> {
         .filter(|f| f.created.elapsed() < FLASH_TTL)
 }
 
-/// `POST /dashboard/admin/settings` - saves one tab, all of it or none of
+/// `POST /admin/settings` - saves one tab, all of it or none of
 /// it: any mix of monokulo's and the engine's settings (`save_tab`).
 /// Without JavaScript it redirects back to the tab (303), at the card a
 /// refusal is about or else the first one saved, with the result carried
@@ -1669,7 +1669,7 @@ async fn reload_engine(state: &AppState) -> Result<(String, Vec<SaveNote>), Stri
     Ok((success, notes))
 }
 
-/// `POST /dashboard/admin/settings/reload` - the Reload options file button:
+/// `POST /admin/settings/reload` - the Reload options file button:
 /// reads monokulo's or the engine's options file again, after an edit by
 /// hand, and applies all of it, or, when anything in it is wrong, none of
 /// it, with every problem named by line. A reload that worked redirects
@@ -1954,7 +1954,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/admin/settings")
+                    .uri("/admin/settings")
                     .header("cookie", cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -1972,7 +1972,7 @@ mod tests {
         let engine = spawn_engine().await;
         let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
-        let uri = |network: &str| format!("/dashboard/admin/proof/{network}/reanchor");
+        let uri = |network: &str| format!("/admin/proof/{network}/reanchor");
 
         let anonymous = router
             .clone()
@@ -2033,7 +2033,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/admin/settings")
+                    .uri("/admin/settings")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2053,7 +2053,7 @@ mod tests {
             .clone()
             .oneshot(form_request(
                 "POST",
-                "/dashboard/signup",
+                "/signup",
                 &[
                     ("email", "merchant@example.com"),
                     ("password", "correct horse battery staple"),
@@ -2066,7 +2066,7 @@ mod tests {
             .clone()
             .oneshot(form_request(
                 "POST",
-                "/dashboard/login",
+                "/login",
                 &[
                     ("email", "merchant@example.com"),
                     ("password", "correct horse battery staple"),
@@ -2123,7 +2123,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("tab", "abuse"), ("abuse.soft_per_min", "5")],
             ))
@@ -2237,7 +2237,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 new_values,
             ))
@@ -2321,7 +2321,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 new_values,
             ))
@@ -2443,7 +2443,7 @@ mod tests {
         // The sign-up form: a `302` on to setup once the account is made.
         let signup = |email: &'static str| {
             crate::http::test_support::form_post(
-                "/dashboard/signup",
+                "/signup",
                 None,
                 &[
                     ("email", email),
@@ -2466,7 +2466,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("signup.mode", "invite_only")],
             ))
@@ -2488,7 +2488,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("signup.mode", "public")],
             ))
@@ -2523,7 +2523,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("public_uri", "https://pay.example.com")],
             ))
@@ -2572,7 +2572,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("tab", "general"), ("engine.url", "http://127.0.0.1:1")],
             ))
@@ -2628,7 +2628,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[
                     ("tab", "general"),
@@ -2701,7 +2701,7 @@ mod tests {
                 router
                     .oneshot(authed_form_request(
                         "POST",
-                        "/dashboard/admin/settings",
+                        "/admin/settings",
                         &cookie,
                         &form,
                     ))
@@ -2817,7 +2817,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("tab", "logging"), (key, "authorization=Bearer sk-live-x")],
             ))
@@ -2846,7 +2846,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("abuse.soft_per_min", "not-a-number")],
             ))
@@ -2937,7 +2937,7 @@ mod tests {
                 .clone()
                 .oneshot(authed_form_request(
                     "POST",
-                    "/dashboard/admin/settings",
+                    "/admin/settings",
                     &cookie,
                     &[(key, value)],
                 ))
@@ -2973,7 +2973,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("tab", "payments"), ("payment.confirmations_required", "5")],
             ))
@@ -3011,22 +3011,19 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let page = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=abuse",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
-        assert!(page.contains(r##"fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel""##), "{page}");
+        let page = body_text(get(&router, "/admin/settings?tab=abuse", Some(&cookie)).await).await;
+        assert!(
+            page.contains(
+                r##"fx-action="/admin/settings" fx-method="POST" fx-target="#settings-panel""##
+            ),
+            "{page}"
+        );
 
         let save = router
             .clone()
             .oneshot(fixi(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("tab", "abuse"), ("abuse.soft_per_min", "70")],
             )))
@@ -3060,7 +3057,7 @@ mod tests {
             .clone()
             .oneshot(fixi(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[
                     ("tab", "payments"),
@@ -3091,7 +3088,7 @@ mod tests {
             .clone()
             .oneshot(fixi(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("tab", "payments"), ("payment.confirmations_required", "4")],
             )))
@@ -3113,7 +3110,7 @@ mod tests {
             .clone()
             .oneshot(fixi(
                 Request::builder()
-                    .uri("/dashboard/admin/settings?tab=nodes")
+                    .uri("/admin/settings?tab=nodes")
                     .header("cookie", &cookie)
                     .body(Body::empty())
                     .unwrap(),
@@ -3135,7 +3132,7 @@ mod tests {
             ),
             "{html}"
         );
-        assert!(html.contains(r##"href="/dashboard/admin/settings?tab=nodes" fx-action="/dashboard/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
+        assert!(html.contains(r##"href="/admin/settings?tab=nodes" fx-action="/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
     }
 
     #[tokio::test]
@@ -3149,7 +3146,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &[("payment.confirmations_required", "not-a-number")],
             ))
@@ -3200,7 +3197,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 cookie,
                 fields,
             ))
@@ -3234,7 +3231,7 @@ mod tests {
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
         let location = save.headers()["location"].to_str().unwrap().to_string();
         assert!(
-            location.starts_with("/dashboard/admin/settings?tab=abuse&saved="),
+            location.starts_with("/admin/settings?tab=abuse&saved="),
             "{location}"
         );
         assert!(is_saved(&follow(&router, &cookie, save).await));
@@ -3302,15 +3299,8 @@ mod tests {
             monokulo_value(&settings, "exchange_rate.cache_seconds").0,
             "88"
         );
-        let page = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=payments",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
+        let page =
+            body_text(get(&router, "/admin/settings?tab=payments", Some(&cookie)).await).await;
         assert!(
             shows_value(&page, "7") && shows_value(&page, "88"),
             "one tab shows both: {page}"
@@ -3725,8 +3715,7 @@ mod tests {
             );
         }
         let unknown =
-            body_text(get(&router, "/dashboard/admin/settings?tab=nope", Some(&cookie)).await)
-                .await;
+            body_text(get(&router, "/admin/settings?tab=nope", Some(&cookie)).await).await;
         assert!(
             unknown.contains(r#"<h2 id="settings-panel-title" tabindex="-1">General</h2>"#),
             "{unknown}"
@@ -3744,15 +3733,8 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let page = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=logging",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
+        let page =
+            body_text(get(&router, "/admin/settings?tab=logging", Some(&cookie)).await).await;
         assert!(
             page.contains(r#"id="setting-engine:logging.level""#)
                 && page.contains(r#"id="setting-logging.level""#),
@@ -3827,17 +3809,17 @@ mod tests {
         let page = files_tab(&router, &cookie).await;
         assert!(page.contains(&path.display().to_string()), "{page}");
         assert!(
-            page.contains(r#"action="/dashboard/admin/settings/reload""#),
+            page.contains(r#"action="/admin/settings/reload""#),
             "{page}"
         );
         // The files are the Files tab's: the other tabs are their settings.
         let general = body_text(get_settings_page(&router, &cookie).await).await;
         assert!(
-            !general.contains(r#"action="/dashboard/admin/settings/reload""#),
+            !general.contains(r#"action="/admin/settings/reload""#),
             "{general}"
         );
         assert!(
-            general.contains(r#"href="/dashboard/admin/settings?tab=files""#),
+            general.contains(r#"href="/admin/settings?tab=files""#),
             "{general}"
         );
 
@@ -3856,7 +3838,7 @@ mod tests {
         let reload = |fields: &'static [(&'static str, &'static str)]| {
             router.clone().oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings/reload",
+                "/admin/settings/reload",
                 &cookie,
                 fields,
             ))
@@ -3872,7 +3854,7 @@ mod tests {
         assert_eq!(reloaded.status(), StatusCode::SEE_OTHER);
         let location = reloaded.headers()["location"].to_str().unwrap().to_string();
         assert!(
-            location.starts_with("/dashboard/admin/settings?tab=abuse&saved="),
+            location.starts_with("/admin/settings?tab=abuse&saved="),
             "{location}"
         );
         let html = follow(&router, &cookie, reloaded).await;
@@ -3935,7 +3917,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings/reload",
+                "/admin/settings/reload",
                 &cookie,
                 &[("owner", "engine"), ("tab", "payments")],
             ))
@@ -4310,7 +4292,7 @@ mod tests {
             .clone()
             .oneshot(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 new_values,
             ))
@@ -4712,15 +4694,7 @@ mod tests {
             [c.clone(), b.clone()]
         );
 
-        let page = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=nodes",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
+        let page = body_text(get(&router, "/admin/settings?tab=nodes", Some(&cookie)).await).await;
         let first = page.find(&format!(r#"value="{c}""#)).expect(&page);
         assert!(
             first < page.find(&format!(r#"value="{b}""#)).unwrap(),
@@ -4788,7 +4762,7 @@ mod tests {
             "a ticked box stays ticked: {html}"
         );
         assert!(html.contains(r#"<span class="setting-problem" id="node-stagenet-1-error">Add the port, like node.example.com:18081.</span>"#), "{html}");
-        assert!(html.contains(r##"href="/dashboard/admin/settings?tab=nodes" fx-action="/dashboard/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
+        assert!(html.contains(r##"href="/admin/settings?tab=nodes" fx-action="/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
         assert!(
             saved_nodes(&engine, "stagenet").await.is_empty(),
             "not even the good row"
@@ -4803,7 +4777,7 @@ mod tests {
             .clone()
             .oneshot(fixi(authed_form_request(
                 "POST",
-                "/dashboard/admin/settings",
+                "/admin/settings",
                 &cookie,
                 &fields,
             )))
@@ -4962,15 +4936,7 @@ mod tests {
             .await
             .unwrap();
 
-        let page = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=nodes",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
+        let page = body_text(get(&router, "/admin/settings?tab=nodes", Some(&cookie)).await).await;
         assert!(
             page.contains(r#"data-network="stagenet" data-tenant-count="1""#),
             "{page}"
@@ -5004,15 +4970,7 @@ mod tests {
         let state = test_app_state_in_process(&engine).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        let page = body_text(
-            get(
-                &router,
-                "/dashboard/admin/settings?tab=nodes",
-                Some(&cookie),
-            )
-            .await,
-        )
-        .await;
+        let page = body_text(get(&router, "/admin/settings?tab=nodes", Some(&cookie)).await).await;
         assert!(
             !page.contains(r#"class="node-status"#),
             "no nodes, no status"

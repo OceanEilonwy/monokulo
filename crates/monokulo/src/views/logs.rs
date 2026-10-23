@@ -345,7 +345,7 @@ fn property_row(name: &str, value: Markup, act: Markup) -> ui::Row {
     ]))
 }
 
-/// `/dashboard/admin/logs/row/{cursor}` without JavaScript: one line,
+/// `/admin/logs/row/{cursor}` without JavaScript: one line,
 /// opened, with a way back to the search it came from.
 pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
@@ -493,9 +493,9 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
                 (ui::Table::new(html! {
                     @for s in saved {
                         tr {
-                            td { a href=(format!("/dashboard/admin/logs?{}", s.query_string)) { (s.name) } }
+                            td { a href=(format!("/admin/logs?{}", s.query_string)) { (s.name) } }
                             td class="row-acts" {
-                                (fixi(format!("/dashboard/admin/logs/saved/{}/delete", s.id))(html! {
+                                (fixi(format!("/admin/logs/saved/{}/delete", s.id))(html! {
                                     (ui::Button::new("Remove")
                                         .size(ui::ControlSize::Compact)
                                         .kind(ui::ButtonType::Submit)
@@ -508,7 +508,7 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
                 .scroll(false)
                 .attr("data-table", "saved-searches"))
             }
-            (fixi("/dashboard/admin/logs/saved".to_string())(html! {
+            (fixi("/admin/logs/saved".to_string())(html! {
                 (super::settings::Field::new("Save this search as", "saved-search-name")
                     .help(Some("saved-search-name-help"), html! { "Its text, filters and time range, as they are now." })
                     .render(html! {
@@ -539,7 +539,7 @@ fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> M
 }
 
 /// Where the syntax help lives as a page of its own.
-pub const SYNTAX_PAGE: &str = "/dashboard/admin/logs/syntax";
+pub const SYNTAX_PAGE: &str = "/admin/logs/syntax";
 
 /// Examples of each part of the language (`telemetry::query`), with what
 /// each shows.
@@ -588,7 +588,7 @@ fn syntax(names: &[String], in_dialog: bool) -> Markup {
                     li {
                         code { (query) }
                         span class="qh-what" { (what) }
-                        (ui::LinkButton::new("Use", format!("/dashboard/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()))
+                        (ui::LinkButton::new("Use", format!("/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()))
                             .size(ui::ControlSize::Compact)
                             .attr("data-q", *query))
                     }
@@ -625,12 +625,12 @@ fn syntax_dialog(names: &[String]) -> Markup {
         .render()
 }
 
-/// `GET /dashboard/admin/logs/syntax`: the same help as the dialog, for a
+/// `GET /admin/logs/syntax`: the same help as the dialog, for a
 /// browser without script.
 pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header = ui::PageHeader::new("Search syntax")
-        .crumbs(super::crumbs(&[("/dashboard/admin/logs", "Logs")]));
+    let header =
+        ui::PageHeader::new("Search syntax").crumbs(super::crumbs(&[("/admin/logs", "Logs")]));
     let body = html! {
         div class="qh-page" { (syntax(names, false)) }
     };
@@ -641,7 +641,7 @@ pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
 
 /// Live's stream when the page opens on an older page; the script takes
 /// the URL from the results anyway.
-const LIVE_NONE: &str = "/dashboard/admin/logs/tail";
+const LIVE_NONE: &str = "/admin/logs/tail";
 
 pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
@@ -672,8 +672,8 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
         });
     let body = html! {
         div class="logs-body" {
-            form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
-                fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
+            form id="log-search" class="logs-search" method="get" action="/admin/logs"
+                fx-action="/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
                 div class="q-row" {
                     label for="log-q" class="sr-only" { "Search" }
                     (ui::Input::new("q")
@@ -765,15 +765,13 @@ pub struct PosTimelineViewModel {
     pub zone_label: String,
 }
 
-/// `/dashboard/admin/logs/pos/{session}`: one POS session, event by event
+/// `/admin/logs/pos/{session}`: one POS session, event by event
 /// in the order the tablet recorded them, with gaps and the periods it was
 /// offline or hidden called out.
 pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) (PreEscaped(TIMELINE_STYLE)) } };
-    let header = ui::PageHeader::new("POS session").crumbs(super::crumbs(&[
-        ("/", "Home"),
-        ("/dashboard/admin/logs", "Logs"),
-    ]));
+    let header = ui::PageHeader::new("POS session")
+        .crumbs(super::crumbs(&[("/", "Home"), ("/admin/logs", "Logs")]));
     let body = html! {
         (ui::Hint::new(html! {
             code { (vm.session) }
@@ -863,15 +861,13 @@ pub struct TraceViewModel {
     pub logs_url: String,
 }
 
-/// `/dashboard/admin/logs/trace/{id}`: the spans as a waterfall (bars
+/// `/admin/logs/trace/{id}`: the spans as a waterfall (bars
 /// placed by CSS percentages worked out on the server), then the trace's
 /// lines in order.
 pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
-    let header =
-        ui::PageHeader::new(html! { "Trace " span class="trace-id" { (vm.trace_id) } }).crumbs(
-            super::crumbs(&[("/", "Home"), ("/dashboard/admin/logs", "Logs")]),
-        );
+    let header = ui::PageHeader::new(html! { "Trace " span class="trace-id" { (vm.trace_id) } })
+        .crumbs(super::crumbs(&[("/", "Home"), ("/admin/logs", "Logs")]));
     let body = html! {
         @for problem in &vm.problems { (status_problem(problem)) }
         @if vm.spans.is_empty() {

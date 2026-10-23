@@ -9,7 +9,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context, admin = false) {
   await context.addCookies([{ name: 'session', value: admin ? fixture.admin_session : fixture.session, url: fixture.base_url }]);
 }
-const store = '/dashboard/stores/coverage-store';
+const store = '/stores/coverage-store';
 
 test('live view remains responsive and bounded through sustained activity and stream recovery', async ({ page, context }) => {
   await login(context, true);

@@ -45,11 +45,11 @@ async function signInAsAdmin(page) {
     await expect(page).not.toHaveURL(/\/admin\/setup/);
     return;
   }
-  await page.goto(base + '/dashboard/login');
+  await page.goto(base + '/login');
   await page.locator('input[name="email"]').fill(ADMIN_EMAIL);
   await page.locator('input[name="password"]').fill(ADMIN_PASSWORD);
-  await page.locator('form[action="/dashboard/login"] button[type="submit"]').click();
-  await expect(page).not.toHaveURL(/\/dashboard\/login/);
+  await page.locator('form[action="/login"] button[type="submit"]').click();
+  await expect(page).not.toHaveURL(/\/login/);
 }
 
 /** The fake monerod's address, as the node form takes it. */
@@ -131,7 +131,7 @@ const SETTINGS_TABS = ['general', 'nodes', 'payments', 'custody', 'abuse', 'serv
 
 /** Opens one tab of the admin settings page. */
 async function openSettingsTab(page, tab) {
-  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings?tab=${tab}`);
+  await page.goto(`${fixture().monokulo_url}/admin/settings?tab=${tab}`);
 }
 
 /** Fills the open tab's fields; `fields` maps input names to values. */
@@ -190,14 +190,14 @@ async function reloadUntil(page, url, check) {
 /**
  * Ends store setup: from its Done page (or the store's page, when the store
  * already existed) on to the store's page; returns the store's path,
- * `/dashboard/stores/{id}`.
+ * `/stores/{id}`.
  */
 async function finishStoreSetup(page) {
-  if (!/\/dashboard\/stores\/[^/]+$/.test(new URL(page.url()).pathname)) {
+  if (!/\/stores\/[^/]+$/.test(new URL(page.url()).pathname)) {
     await expect(page.getByRole('heading', { name: /is set up$|is connected$/ })).toBeVisible();
     await page.getByRole('link', { name: /^Go to .*'s page$/ }).click();
   }
-  await expect(page).toHaveURL(/\/dashboard\/stores\/[^/]+$/);
+  await expect(page).toHaveURL(/\/stores\/[^/]+$/);
   return new URL(page.url()).pathname;
 }
 
@@ -248,7 +248,7 @@ async function createStore(page, site) {
 }
 
 /** Connects a stagenet store for `site` (giving stagenet the fake node
- * first) and returns its dashboard path, `/dashboard/stores/{id}`. */
+ * first) and returns its dashboard path, `/stores/{id}`. */
 async function connectStore(page, site) {
   const { monokulo_url: base } = fixture();
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });

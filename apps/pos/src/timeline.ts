@@ -48,7 +48,7 @@ function load(): Stored {
 }
 
 /** Timelines are per terminal page; `endpoint` is the POS's own
- * `/dashboard/stores/{id}/pos/logs`. */
+ * `/stores/{id}/pos/logs`. */
 export function createTimeline(enabled: boolean, endpoint: string): Timeline {
   if (!enabled) return disabled;
   const state = load();
@@ -183,12 +183,12 @@ export function watchPage(timeline: Timeline) {
 }
 
 /** An API path with its ids replaced, so requests group by route:
- * `/dashboard/stores/c1/pos/orders/order_8f42/cancel` → `/pos/orders/{id}/cancel`,
+ * `/stores/c1/pos/orders/order_8f42/cancel` → `/pos/orders/{id}/cancel`,
  * `/checkout/order_8f42/refund-address` → `/checkout/{order_id}/refund-address`,
  * `/api/v1/orders/order_8f42` → `/api/v1/orders/{order_id}`. */
 export function routeOf(url: string): string {
   const path = url.split('?')[0];
-  const pos = path.replace(/^\/dashboard\/stores\/[^/]+\/pos/, '/pos');
+  const pos = path.replace(/^\/stores\/[^/]+\/pos/, '/pos');
   if (pos.startsWith('/checkout/')) return pos.replace(/^\/checkout\/[^/]+/, '/checkout/{order_id}');
   if (pos.startsWith('/api/v1/orders/')) return pos.replace(/^\/api\/v1\/orders\/[^/]+/, '/api/v1/orders/{order_id}');
   return pos.replace(/\/orders\/[^/]+/, '/orders/{id}');

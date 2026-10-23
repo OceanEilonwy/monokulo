@@ -129,7 +129,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
 /// settings to hand. A store with no wallet can't take payments, so it
 /// says so, and linking one is what it offers.
 fn store_card(chrome: &PageChrome, store: &HomeStoreRow) -> ui::Card {
-    let base = format!("/dashboard/stores/{}", store.connection_id);
+    let base = format!("/stores/{}", store.connection_id);
     let link = |icon: &str, label: &str, href: String| {
         ui::Slot::from(
             ui::LinkButton::new(html! { (PreEscaped(icon)) (label) }, href)
@@ -203,7 +203,7 @@ fn order_row(chrome: &PageChrome, order: &HomeOrderRow) -> ui::Slot {
     ui::Row::new(ui::Slot::many([
         ui::Cell::new(order.display_name.as_str()).part(ui::CellPart::Meta).into(),
         ui::Cell::new(html! {
-            a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+            a href=(format!("/stores/{}/orders/{}", order.connection_id, order.order_id)) {
                 (super::short_id(order.order_id.as_str()))
             }
         })
@@ -223,7 +223,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard")
+        PageChrome::from_user(None, "/")
     }
 
     fn empty_data() -> HomeViewModel {
@@ -294,7 +294,7 @@ mod tests {
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<div class="mk-card-grid" data-list="stores"><article class="mk-card" data-store="conn_1">"#), "{html}");
-        assert!(html.contains(r#"<h3 class="mk-card-title"><a href="/dashboard/stores/conn_1" data-store-link>Kafe Kolo</a></h3><p class="mk-card-sub">kafekolo.example</p>"#), "{html}");
+        assert!(html.contains(r#"<h3 class="mk-card-title"><a href="/stores/conn_1" data-store-link>Kafe Kolo</a></h3><p class="mk-card-sub">kafekolo.example</p>"#), "{html}");
         assert!(html.contains("tag-ok"));
         assert!(
             html.contains(r#"<dt>Wallet</dt><dd><span class="tag-network is-test" data-size="icon" title="Stagenet">"#)
@@ -311,9 +311,9 @@ mod tests {
             "{html}"
         );
         for (href, label) in [
-            ("/dashboard/stores/conn_1/pos", "Open POS"),
-            ("/dashboard/stores/conn_1/orders/new", "New order"),
-            ("/dashboard/stores/conn_1/settings", "Settings"),
+            ("/stores/conn_1/pos", "Open POS"),
+            ("/stores/conn_1/orders/new", "New order"),
+            ("/stores/conn_1/settings", "Settings"),
         ] {
             let at = html
                 .find(&format!(r#"href="{href}""#))
@@ -333,7 +333,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("1.234567890123"));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
+        assert!(html.contains(r#"href="/stores/conn_1/orders/pay_xyz""#));
     }
 
     /// A store with no wallet can't take payments: its card says so and
@@ -353,7 +353,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(r#"href="/dashboard/stores/conn_1/settings?tab=wallet""#),
+            html.contains(r#"href="/stores/conn_1/settings?tab=wallet""#),
             "{html}"
         );
         assert_eq!(
@@ -386,7 +386,7 @@ mod tests {
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains(&format!(
-            r#"<a href="/dashboard/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a>"#
+            r#"<a href="/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a>"#
         )), "{html}");
         assert!(!html.contains("..."), "{html}");
     }

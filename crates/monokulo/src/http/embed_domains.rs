@@ -241,7 +241,7 @@ pub struct EmbedRestrictionForm {
     pub restricted: String,
 }
 
-/// `POST /dashboard/stores/{id}/settings/embed-restriction` - turns "Only my
+/// `POST /stores/{id}/settings/embed-restriction` - turns "Only my
 /// verified domains can show this checkout" on or off. It can only be
 /// turned on while at least one domain counts as verified; otherwise the
 /// checkout could be shown nowhere.
@@ -311,16 +311,12 @@ async fn store_page(
     row: &super::OwnedStore,
     render: impl FnOnce(&crate::views::PageChrome, &StoreRef) -> maud::Markup,
 ) -> maud::Markup {
-    let chrome = super::page_chrome(
-        state,
-        Some(user),
-        format!("/dashboard/stores/{}/settings", row.id),
-    )
-    .await;
+    let chrome =
+        super::page_chrome(state, Some(user), format!("/stores/{}/settings", row.id)).await;
     render(&chrome, &store_ref(row))
 }
 
-/// `GET /dashboard/stores/{id}/settings/domains/add` - adding a domain, its
+/// `GET /stores/{id}/settings/domains/new` - adding a domain, its
 /// first step: the domain.
 pub async fn add_form(
     State(state): State<AppState>,
@@ -344,7 +340,7 @@ pub struct AddDomainForm {
     pub domain: String,
 }
 
-/// `POST /dashboard/stores/{id}/settings/domains` - adds a domain waiting
+/// `POST /stores/{id}/settings/domains` - adds a domain waiting
 /// for its DNS record, then shows the record to publish. One that can't be
 /// added answers with the domain's page again, saying why.
 pub async fn add_domain(
@@ -390,7 +386,7 @@ pub async fn add_domain(
     let error = match created {
         Ok(true) => {
             return super::dashboard::redirect_303(&format!(
-                "/dashboard/stores/{id}/settings/domains/{domain_id}/record"
+                "/stores/{id}/settings/domains/{domain_id}/record"
             ))
         }
         Ok(false) => format!(
@@ -428,7 +424,7 @@ async fn load_domain(
     }
 }
 
-/// `GET /dashboard/stores/{id}/settings/domains/{domain_id}/record` - the
+/// `GET /stores/{id}/settings/domains/{domain_id}/record` - the
 /// TXT record to publish for a domain, and the way to its check.
 pub async fn record_page(
     State(state): State<AppState>,
@@ -447,7 +443,7 @@ pub async fn record_page(
     .into_response()
 }
 
-/// `GET /dashboard/stores/{id}/settings/domains/{domain_id}/check` - what
+/// `GET /stores/{id}/settings/domains/{domain_id}/check` - what
 /// the last check of a domain found.
 pub async fn check_page(
     State(state): State<AppState>,
@@ -475,7 +471,7 @@ pub struct CheckForm {
     pub from: Option<String>,
 }
 
-/// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/check` - looks
+/// `POST /stores/{id}/settings/domains/{domain_id}/check` - looks
 /// the domain's record up now, unless it was looked up moments ago
 /// ([`embed_domains::MIN_CHECK_GAP_SECS`]: then the answer says when it can
 /// be, in place). The result is never a "saved" toast: with JavaScript it's
@@ -544,13 +540,10 @@ pub async fn check_domain(
         .await
         .into_response();
     }
-    super::dashboard::redirect_303(&format!(
-        "/dashboard/stores/{id}/settings/domains/{}/check",
-        view.id
-    ))
+    super::dashboard::redirect_303(&format!("/stores/{id}/settings/domains/{}/check", view.id))
 }
 
-/// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/delete`.
+/// `POST /stores/{id}/settings/domains/{domain_id}/delete`.
 pub async fn delete_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -609,7 +602,7 @@ pub async fn delete_domain(
     }
 }
 
-/// `POST /dashboard/stores/{id}/embed-warning/dismiss` - shrinks the store
+/// `POST /stores/{id}/settings/embed-restriction/dismiss-warning` - shrinks the store
 /// page's "any website can show this checkout" warning to one line.
 pub async fn dismiss_embed_warning(
     State(db): State<Database>,
@@ -627,7 +620,7 @@ pub async fn dismiss_embed_warning(
         .write(move |db| db.dismiss_embed_warning(&store_id))
         .await;
     match dismissed {
-        Ok(()) => super::fx::respond(fx, &format!("/dashboard/stores/{id}"), || {
+        Ok(()) => super::fx::respond(fx, &format!("/stores/{id}"), || {
             crate::views::store_detail::compact_embed_warning(id.as_str())
         }),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1223,7 +1216,7 @@ mod tests {
         let (_, settings) = send(
             &router,
             "GET",
-            &format!("/dashboard/stores/{id}/settings"),
+            &format!("/stores/{id}/settings"),
             &session,
             None,
         )
@@ -1240,7 +1233,7 @@ mod tests {
         );
 
         // The settings form: a redirect back to the page.
-        let url = format!("/dashboard/stores/{id}/settings");
+        let url = format!("/stores/{id}/settings");
         assert_eq!(
             send(&router, "POST", &url, &session, Some("client_logging=on"))
                 .await
@@ -1258,7 +1251,7 @@ mod tests {
         let (_, settings) = send(
             &router,
             "GET",
-            &format!("/dashboard/stores/{id}/settings"),
+            &format!("/stores/{id}/settings"),
             &session,
             None,
         )
@@ -1301,7 +1294,7 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "restricted@example.com").await;
         let (id, pk) = create_store_with_key(&router, &state, &session).await;
-        let settings = format!("/dashboard/stores/{id}/settings");
+        let settings = format!("/stores/{id}/settings");
         let turn = |on: bool| format!("restricted={}", if on { "on" } else { "off" });
 
         // Unrestricted: any site, no framing header.
@@ -1478,14 +1471,7 @@ mod tests {
 
         // The store page drops the "any website" warning; if the domain lapses,
         // it says the checkout can be shown nowhere.
-        let (_, html) = send(
-            &router,
-            "GET",
-            &format!("/dashboard/stores/{id}"),
-            &session,
-            None,
-        )
-        .await;
+        let (_, html) = send(&router, "GET", &format!("/stores/{id}"), &session, None).await;
         assert!(
             !html.contains("Any website can show this store"),
             "got: {html}"
@@ -1556,7 +1542,7 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "onion-domains@example.com").await;
         let id = create_store(&router, &state, &session).await;
-        let settings = format!("/dashboard/stores/{id}/settings");
+        let settings = format!("/stores/{id}/settings");
 
         let to = post_location(
             &router,
@@ -1626,10 +1612,10 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "domains@example.com").await;
         let id = create_store(&router, &state, &session).await;
-        let settings = format!("/dashboard/stores/{id}/settings");
+        let settings = format!("/stores/{id}/settings");
         // Verified domains are on the Connections tab.
         let connections = format!("{settings}?tab=connections");
-        let store_page = format!("/dashboard/stores/{id}");
+        let store_page = format!("/stores/{id}");
 
         // The store's own site is already on its list, waiting for DNS.
         let suggested = state
@@ -1656,7 +1642,7 @@ mod tests {
         let (status, html) = send(
             &router,
             "GET",
-            &format!("{settings}/domains/add"),
+            &format!("{settings}/domains/new"),
             &session,
             None,
         )
@@ -1664,7 +1650,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(r#"<h1>Add a domain</h1>"#), "got: {html}");
         assert!(
-            html.contains(r#"<form method="post" action="/dashboard/stores/"#),
+            html.contains(r#"<form method="post" action="/stores/"#),
             "got: {html}"
         );
 
@@ -1803,11 +1789,13 @@ mod tests {
 
         // Dismissing shrinks only the "any website" warning; fixi gets the
         // shrunk warning to put in its place.
-        let dismiss = Request::post(format!("/dashboard/stores/{id}/embed-warning/dismiss"))
-            .header("cookie", format!("session={session}"))
-            .header("FX-Request", "true")
-            .body(Body::empty())
-            .unwrap();
+        let dismiss = Request::post(format!(
+            "/stores/{id}/settings/embed-restriction/dismiss-warning"
+        ))
+        .header("cookie", format!("session={session}"))
+        .header("FX-Request", "true")
+        .body(Body::empty())
+        .unwrap();
         let response = router.clone().oneshot(dismiss).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let fragment = String::from_utf8(
@@ -1827,7 +1815,7 @@ mod tests {
         let (status, _) = send(
             &router,
             "POST",
-            &format!("/dashboard/stores/{id}/embed-warning/dismiss"),
+            &format!("/stores/{id}/settings/embed-restriction/dismiss-warning"),
             &session,
             None,
         )
@@ -1891,7 +1879,7 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "in-place@example.com").await;
         let id = create_store(&router, &state, &session).await;
-        let settings = format!("/dashboard/stores/{id}/settings");
+        let settings = format!("/stores/{id}/settings");
         // Verified domains are on the Connections tab.
         let connections = format!("{settings}?tab=connections");
         let row = state
@@ -2017,10 +2005,10 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "dns-outage@example.com").await;
         let id = create_store(&router, &state, &session).await;
-        let settings = format!("/dashboard/stores/{id}/settings");
+        let settings = format!("/stores/{id}/settings");
         // Verified domains are on the Connections tab.
         let connections = format!("{settings}?tab=connections");
-        let store_page = format!("/dashboard/stores/{id}");
+        let store_page = format!("/stores/{id}");
         let row = state
             .db
             .lock()

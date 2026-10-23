@@ -61,12 +61,12 @@ impl<'a> Paths<'a> {
     }
     pub fn settings(&self) -> String {
         format!(
-            "/dashboard/stores/{}/settings?tab=connections#card-webhooks",
+            "/stores/{}/settings?tab=connections#card-webhooks",
             self.store_id
         )
     }
     pub fn add(&self) -> String {
-        format!("/dashboard/stores/{}/settings/webhooks", self.store_id)
+        format!("/stores/{}/settings/webhooks", self.store_id)
     }
     fn webhook(&self, webhook: &str) -> String {
         format!("{}/{webhook}", self.add())
@@ -95,7 +95,7 @@ impl<'a> Paths<'a> {
         format!("{}/send-again", self.detail(webhook, delivery))
     }
     fn order(&self, order: &str) -> String {
-        format!("/dashboard/stores/{}/orders/{order}", self.store_id)
+        format!("/stores/{}/orders/{order}", self.store_id)
     }
 }
 

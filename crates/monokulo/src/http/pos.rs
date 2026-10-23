@@ -5,7 +5,7 @@
 //! to the payment appearing.
 //!
 //! Deliberately behind [`AuthedUser`] and connection-ownership-checked
-//! ([`load_owned_connection`]) exactly like every other `/dashboard/stores/{id}/*`
+//! ([`load_owned_connection`]) exactly like every other `/stores/{id}/*`
 //! route (`http::orders`'s own module doc comment) - unlike `http::pay`'s
 //! public, unauthenticated storefront endpoint, a POS terminal is operated
 //! by the merchant themselves, logged in, standing at the register.
@@ -20,7 +20,7 @@
 //!
 //! Unlike the public checkout page (`http::checkout`, which must stay
 //! usable with JavaScript disabled), this screen is a merchant-operated dashboard tool in the same
-//! bucket as the rest of `/dashboard/*`, which already uses JS as
+//! bucket as the rest of the signed-in pages, which already use JS as
 //! progressive enhancement elsewhere (`order_detail.html.hbs`'s share
 //! button/local-time script). A live Square-Terminal-style keypad, stacked
 //! backgrounded payments have no meaningful no-JS fallback, so this screen leans on
@@ -55,7 +55,7 @@ use crate::crypto::AtRestKey;
 use crate::db::Database;
 use crate::http::Engine;
 
-/// `GET /dashboard/stores/{id}/pos` - the terminal screen itself.
+/// `GET /stores/{id}/pos` - the terminal screen itself.
 pub async fn pos_page(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -96,7 +96,7 @@ pub async fn pos_page(
     let chrome = super::page_chrome(
         &state,
         Some(&user),
-        format!("/dashboard/stores/{}/pos", view.connection_id),
+        format!("/stores/{}/pos", view.connection_id),
     )
     .await;
     views::pos::page(&chrome, &view).into_response()
@@ -138,7 +138,7 @@ pub struct PosCreateOrderResponse {
     pub merchant_order_id: Option<String>,
 }
 
-/// `POST /dashboard/stores/{id}/pos/orders` - creates a real order,
+/// `POST /stores/{id}/pos/orders` - creates a real order,
 /// always priced in this store's own `base_currency` (spec point 2 - a POS
 /// terminal has no currency picker). Mirrors
 /// `http::orders::create_order`/`http::pay::create_order` field for field;
@@ -888,7 +888,7 @@ pub(super) fn derive_payment_error(order: &OrderView) -> Option<String> {
     }
 }
 
-/// `GET /dashboard/stores/{id}/pos/orders/{order_id}/status` - the
+/// `GET /stores/{id}/pos/orders/{order_id}/status` - the
 /// small JSON status of one POS order. The terminal screen itself follows
 /// the same data live via [`order_events`].
 pub async fn order_status(
@@ -973,7 +973,7 @@ pub struct PosEventsQuery {
     orders: String,
 }
 
-/// `GET /dashboard/stores/{id}/pos/events?orders=a,b,...` - one
+/// `GET /stores/{id}/pos/events?orders=a,b,...` - one
 /// Server-Sent Events stream for every order the terminal is watching,
 /// replacing a poll loop per order. Each `status` event is
 /// [`PosStatusResponse`] plus its `order_id`, sent on connect and again
@@ -1157,7 +1157,7 @@ mod tests {
         )
         .await;
         let id = create_connection_with_base_currency(&router, &state, &owner, "XMR").await;
-        let base = format!("/dashboard/stores/{id}/pos/orders");
+        let base = format!("/stores/{id}/pos/orders");
         let create_body = serde_json::json!({"amount":"0.010000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string();
         let create = |token: &str, body: String| {
             Request::builder()
@@ -1357,7 +1357,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos"))
+                    .uri(format!("/stores/{id}/pos"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1388,7 +1388,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/stores/nonexistent/pos")
+                    .uri("/stores/nonexistent/pos")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1422,7 +1422,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos"))
+                    .uri(format!("/stores/{id}/pos"))
                     .header("cookie", format!("session={other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1453,7 +1453,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos"))
+                    .uri(format!("/stores/{id}/pos"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1481,7 +1481,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
@@ -1508,7 +1508,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/orders"))
+                    .uri(format!("/stores/{id}/orders"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1558,7 +1558,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
@@ -1578,7 +1578,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/orders/{order_id}"))
+                    .uri(format!("/stores/{id}/orders/{order_id}"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1614,7 +1614,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
@@ -1650,7 +1650,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "" }).to_string()))
@@ -1678,7 +1678,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
@@ -1714,7 +1714,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={other_token}"))
                     .body(Body::from(
@@ -1745,7 +1745,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
@@ -1764,9 +1764,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!(
-                        "/dashboard/stores/{id}/pos/orders/{order_id}/status"
-                    ))
+                    .uri(format!("/stores/{id}/pos/orders/{order_id}/status"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1802,7 +1800,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                        .uri(format!("/stores/{id}/pos/orders"))
                         .header("content-type", "application/json")
                         .header("cookie", format!("session={session_token}"))
                         .body(Body::from(
@@ -1822,7 +1820,7 @@ mod tests {
 
         let events_request = |query: String, token: Option<&str>| {
             let mut builder =
-                Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={query}"));
+                Request::builder().uri(format!("/stores/{id}/pos/events?orders={query}"));
             if let Some(token) = token {
                 builder = builder.header("cookie", format!("session={token}"));
             }
@@ -1905,7 +1903,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                        .uri(format!("/stores/{id}/pos/orders"))
                         .header("content-type", "application/json")
                         .header("cookie", format!("session={session_token}"))
                         .body(Body::from(
@@ -1950,7 +1948,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/dashboard/stores/{id}/pos/orders?limit=40"))
+                    .uri(format!("/stores/{id}/pos/orders?limit=40"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1974,7 +1972,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!(
-                        "/dashboard/stores/{id}/pos/events?orders={}",
+                        "/stores/{id}/pos/events?orders={}",
                         order_ids.join(",")
                     ))
                     .header("cookie", format!("session={session_token}"))
@@ -2065,7 +2063,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method(method)
-                        .uri(format!("/dashboard/stores/{}/{path}", self.id))
+                        .uri(format!("/stores/{}/{path}", self.id))
                         .header("cookie", format!("session={}", self.session_token))
                         .body(Body::empty())
                         .unwrap(),
@@ -2459,9 +2457,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!(
-                        "/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"
-                    ))
+                    .uri(format!("/stores/{id}/pos/orders/{cancelled}/cancel"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2492,7 +2488,7 @@ mod tests {
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri(format!("/dashboard/stores/{id}/pos/orders?state=active"))
+                    .uri(format!("/stores/{id}/pos/orders?state=active"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2532,7 +2528,7 @@ mod tests {
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}"))
+                        .uri(format!("/stores/{id}/pos/orders/{order_id}"))
                         .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
@@ -2570,9 +2566,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!(
-                        "/dashboard/stores/{id}/pos/orders/nonexistent/status"
-                    ))
+                    .uri(format!("/stores/{id}/pos/orders/nonexistent/status"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2599,7 +2593,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={owner_token}"))
                     .body(Body::from(
@@ -2624,9 +2618,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!(
-                        "/dashboard/stores/{id}/pos/orders/{order_id}/status"
-                    ))
+                    .uri(format!("/stores/{id}/pos/orders/{order_id}/status"))
                     .header("cookie", format!("session={other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2660,7 +2652,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .uri(format!("/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
