@@ -211,7 +211,19 @@ type Answerer = Arc<dyn Fn(&Message) -> Reply + Send + Sync>;
 /// where it listens, and how many questions it was asked.
 async fn serve(tcp: bool, answer: Answerer) -> (SocketAddr, Arc<AtomicUsize>) {
     let asked = Arc::new(AtomicUsize::new(0));
-    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    // The UDP port the system picks may be taken for TCP (by another test's
+    // connection, say): another port is picked until both are free.
+    let (socket, listener) = loop {
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        if !tcp {
+            break (socket, None);
+        }
+        match tokio::net::TcpListener::bind(socket.local_addr().unwrap()).await {
+            Ok(listener) => break (socket, Some(listener)),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) => panic!("{e}"),
+        }
+    };
     let address = socket.local_addr().unwrap();
     let (udp_answer, udp_asked) = (answer.clone(), asked.clone());
     tokio::spawn(async move {
@@ -227,8 +239,7 @@ async fn serve(tcp: bool, answer: Answerer) -> (SocketAddr, Arc<AtomicUsize>) {
                 .unwrap();
         }
     });
-    if tcp {
-        let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+    if let Some(listener) = listener {
         tokio::spawn(async move {
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();

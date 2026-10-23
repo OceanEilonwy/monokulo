@@ -331,8 +331,14 @@ test('the round lanes use the width, their chips on their own row at the right',
       expect(lane.chipLeft, `${width}px`).toBeGreaterThan(lane.trackRight);
     }
   }
-  // A phone keeps a mini form of the bars beside the label and the chip.
+  // A phone keeps a mini form of the bars beside the label and the chip,
+  // even when a lane ends with the longest words a chip can hold.
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => {
+    for (const chip of document.querySelectorAll('#engine-round .outcome .engine-chip')) {
+      chip.textContent = 'Waiting: payments to re-examine are waiting to retry';
+    }
+  });
   for (const lane of await lanes()) {
     expect(lane.trackWidth).toBeGreaterThan(120);
     expect(lane.bar).toBeGreaterThan(0);

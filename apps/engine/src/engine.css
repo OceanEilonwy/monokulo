@@ -294,6 +294,9 @@
   .strip { height: auto; padding-top: var(--space-xs); }
   .strip .marks, .strip .axis, .strip .pills { display: none; }
   .lanes { grid-template-columns: 64px minmax(0, 1fr) auto; gap: 2px var(--space-xs); }
+  /* A long ending (waiting, backlogged) is cut short: the bars keep the
+     room, the chip's title the whole of it. */
+  .outcome { max-width: 7rem; }
   .lane-label .tierchip { font-size: 0.65rem; }
   .lane-label small { display: none; }
   .engine-timeline { flex-wrap: wrap; }
