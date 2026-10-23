@@ -48,9 +48,15 @@ It answers once per token:
   "app_id": "app_…",
   "device_name": "Front counter",
   "store": { "name": "Bakery", "base_currency": "USD" },
-  "wallet": { "name": "Shop wallet", "network": "mainnet", "address_short": "4AdUndXH…pQ8Lmb7s" }
+  "wallet": { "name": "Shop wallet", "network": "mainnet",
+              "address": "4AdUndXH…", "address_short": "4AdUndXH…pQ8Lmb7s" }
 }
 ```
+
+`wallet` is where the store's payments go: `address` is its primary
+address, whole, for the app to show or copy, and `address_short` the same
+address shortened for a narrow screen. A Monokulo from before `address`
+was added sends only `address_short`.
 
 Keep `app_key` somewhere safe on the device: it isn't shown again. An
 `onion_endpoint` is added when the Monokulo has an onion address. A `503`

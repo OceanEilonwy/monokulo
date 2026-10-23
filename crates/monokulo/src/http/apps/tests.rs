@@ -212,6 +212,27 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     );
     assert_eq!(creds["store"]["name"], "Bakery");
     assert_eq!(creds["wallet"]["network"], "mainnet");
+    let primary_address = {
+        let db = state.db.lock();
+        let store = db
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.clone()))
+            .unwrap()
+            .unwrap();
+        db.get_wallet(&store.user_id, store.wallet_id.as_ref().unwrap())
+            .unwrap()
+            .unwrap()
+            .primary_address
+    };
+    assert_eq!(
+        creds["wallet"]["address"], primary_address,
+        "the whole address, for the app to copy"
+    );
+    let short = creds["wallet"]["address_short"].as_str().unwrap();
+    let (head, tail) = short.split_once('…').unwrap();
+    assert!(
+        primary_address.starts_with(head) && primary_address.ends_with(tail),
+        "{short} is {primary_address} shortened"
+    );
     let key = creds["app_key"].as_str().unwrap().to_owned();
     assert!(key.starts_with("ak_"));
 

@@ -292,6 +292,8 @@ pub struct StoreInfo {
 pub struct WalletInfo {
     pub name: String,
     pub network: String,
+    /// Its primary address, whole, for the app to copy.
+    pub address: String,
     /// The first and last characters of its primary address.
     pub address_short: String,
 }
@@ -403,6 +405,7 @@ pub async fn redeem(
             name: w.name,
             network: w.network,
             address_short: short_address(&w.primary_address),
+            address: w.primary_address,
         }),
     })
     .into_response()
