@@ -1,28 +1,24 @@
-//! Thin CLI wrapper around [`mock_woocommerce::run_connect_flow_without_webhook`] - see
-//! `docs/WOOCOMMERCE_WBS.md` 1.4.2. Drives the real WBS 1.4.1 connect flow
-//! against a real, already-running monokulo instance and prints the
-//! resulting credentials; exits `0` with valid credentials in hand, or
-//! non-zero on any failure - the acceptance criterion the WBS spells out
-//! directly ("run it against a live control plane in CI; exit 0 with valid
-//! credentials in hand is the pass condition").
+//! Thin CLI wrapper around [`mock_woocommerce::run_connect_flow_without_webhook`]:
+//! runs the connect flow against an already-running monokulo and prints the
+//! resulting credentials. Exits `0` with valid credentials in hand, or
+//! non-zero on any failure.
 //!
-//! No config-file/CLI-parsing system needed at this scale: the monokulo
-//! URL is either the first CLI argument, the `MOCK_WOOCOMMERCE_CONTROL_PLANE_URL`
-//! environment variable, or a hardcoded local default, checked in that order.
+//! The monokulo URL is the first CLI argument, the `MOCK_WOOCOMMERCE_MONOKULO_URL`
+//! environment variable, or a local default, checked in that order.
 
 use std::process::ExitCode;
 
-const DEFAULT_CONTROL_PLANE_BASE_URL: &str = "http://127.0.0.1:8081";
+const DEFAULT_MONOKULO_URL: &str = "http://127.0.0.1:8081";
 
 #[tokio::main]
 async fn main() -> ExitCode {
     let monokulo_base_url = std::env::args()
         .nth(1)
-        .or_else(|| std::env::var("MOCK_WOOCOMMERCE_CONTROL_PLANE_URL").ok())
-        .unwrap_or_else(|| DEFAULT_CONTROL_PLANE_BASE_URL.to_string());
+        .or_else(|| std::env::var("MOCK_WOOCOMMERCE_MONOKULO_URL").ok())
+        .unwrap_or_else(|| DEFAULT_MONOKULO_URL.to_string());
 
     // No webhook: this process exits once it has printed the credentials, so
-    // a receiver it ran would leave the tenant with a dead webhook URL.
+    // a receiver it ran would leave the store with a dead webhook URL.
     match mock_woocommerce::run_connect_flow_without_webhook(&monokulo_base_url).await {
         Ok(credentials) => {
             println!("connect flow succeeded against {monokulo_base_url}");

@@ -1,5 +1,4 @@
-//! Real end-to-end test for the "Confirmation Thresholds" feature
-//! (`docs/WOOCOMMERCE_ROADMAP.md`): a real store, connected against a real
+//! Real end-to-end test for confirmation thresholds: a real store, connected against a real
 //! stagenet-configured engine through monokulo's own dashboard forms (no
 //! browser-facing connect flow - see this file's own doc comment below on
 //! why), gets one real custom confirmation threshold whose
@@ -18,8 +17,8 @@
 //!    `confirmations_required_override` isn't just recorded but genuinely
 //!    enforced by the real engine's own status computation
 //!    (`engine::store::recompute_order_status`).
-//! 3. The order detail dashboard page shows the real, snapshotted threshold
-//!    info (`http/orders.rs::render_order_detail_page`, WBS task #83) - "1"
+//! 3. The order's page shows the real, snapshotted threshold
+//!    info (`http/orders.rs::render_order_detail_page`) - "1"
 //!    confirmation required, "XMR" as the store's own base currency.
 //!
 //! ## Why this drives monokulo directly (no `mock_woocommerce::run_connect_flow_with_wallet`)
@@ -48,6 +47,8 @@
 //! cargo test -p mock-woocommerce --features e2e -- --ignored --nocapture
 //! ```
 
+mod support;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,17 +57,7 @@ use serde_json::{json, Value};
 
 use engine::daemon::MoneroDaemonClient;
 use engine::daemon_rpc::RpcDaemonClient;
-
-/// Same fixed public stagenet node `e2e_stagenet_connect_flow.rs` uses -
-/// duplicated rather than shared, same reasoning as that file's own
-/// `node_fixture` doc comment (two `#[ignore]`d, manually-run tests, no
-/// shared `e2e`-test-support crate yet).
-mod node_fixture {
-    pub const HOST: &str = "node.monerodevs.org";
-    pub const PORT: u16 = 38089;
-    pub const SSL: bool = false;
-    pub const ACCEPT_SELF_SIGNED_CERTS: bool = true;
-}
+use support::{node_fixture, require_daemon_reachable, retry};
 
 /// This test's own order amount - genuinely tiny (real stagenet XMR is
 /// worthless, but still a real transaction with real fees/propagation), same
@@ -87,61 +78,21 @@ const THRESHOLD_UNIT_AMOUNT: &str = "0.0001";
 const THRESHOLD_CONFIRMATIONS_REQUIRED: u64 = 1;
 const TENANT_DEFAULT_CONFIRMATIONS_REQUIRED: u64 = 99;
 
-async fn require_daemon_reachable(daemon: &dyn MoneroDaemonClient, host: &str, port: u16) {
-    if let Err(e) = retry(5, Duration::from_secs(3), || daemon.get_height()).await {
-        panic!(
-            "\n\ncannot reach the stagenet node at {host}:{port} (configured in node_fixture) after \
-             several attempts: {e}\n\
-             Check that host/port, your network connection, or try a different public stagenet \
-             node (search \"monero stagenet public node\" for alternatives).\n"
-        );
-    }
-}
-
-/// Same retry helper as `e2e_stagenet_connect_flow.rs` - see that file's own
-/// doc comment on why this specific public node warrants it.
-async fn retry<T, E, F, Fut>(attempts: u32, delay: Duration, mut f: F) -> Result<T, E>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, E>>,
-    E: std::fmt::Display,
-{
-    let mut last_err = None;
-    for attempt in 1..=attempts {
-        match f().await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                eprintln!("attempt {attempt}/{attempts} failed, retrying in {delay:?}: {e}");
-                last_err = Some(e);
-                if attempt < attempts {
-                    tokio::time::sleep(delay).await;
-                }
-            }
-        }
-    }
-    Err(last_err.expect("attempts is always >= 1"))
-}
-
-/// Same small real-monokulo-instance harness `e2e_stagenet_connect_flow.rs`
-/// duplicates from `mock-woocommerce/src/lib.rs`'s own private test module -
-/// see that file's own doc comment on why this is duplicated rather than
-/// shared.
-struct TestControlPlaneHandle {
+/// A running, real (network-bound) monokulo instance for this test.
+struct TestMonokulo {
     addr: std::net::SocketAddr,
     /// monokulo's database, which holds the store this test sets up.
     db: monokulo::db::Database,
     task: tokio::task::JoinHandle<()>,
 }
 
-impl Drop for TestControlPlaneHandle {
+impl Drop for TestMonokulo {
     fn drop(&mut self) {
         self.task.abort();
     }
 }
 
-async fn spawn_test_monokulo(
-    engine: &engine_test_support::TestEngineHandle,
-) -> TestControlPlaneHandle {
+async fn spawn_test_monokulo(engine: &engine_test_support::TestEngineHandle) -> TestMonokulo {
     use monokulo::db::Db;
     use monokulo::engine_client::EngineClient;
     use monokulo::http::{build_router, AppState};
@@ -149,8 +100,7 @@ async fn spawn_test_monokulo(
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
     let state = AppState {
         engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
-        // Public signup, as `mock_woocommerce::spawn_test_monokulo`
-        // (`src/lib.rs`) needs - see that call site's own comment.
+        // Public signup: the test signs up with no invite.
         settings: AppState::test_settings(None),
         ..AppState::for_tests_with_db(db.into_shared())
     };
@@ -159,14 +109,14 @@ async fn spawn_test_monokulo(
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
-        .expect("failed to bind an ephemeral local port for the test control plane");
+        .expect("failed to bind an ephemeral local port for the test monokulo");
     let addr = listener
         .local_addr()
         .expect("bound listener has no local address");
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    TestControlPlaneHandle { addr, db, task }
+    TestMonokulo { addr, db, task }
 }
 
 async fn body_json(response: reqwest::Response) -> Value {
@@ -390,6 +340,16 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .as_str()
         .expect("expected a real order_id")
         .to_string();
+    // The order in the API, its `self` link resolved against where it was made.
+    let order_url = url::Url::parse(&format!("{monokulo_base_url}/api/v1/orders"))
+        .unwrap()
+        .join(
+            order_body["_links"]["self"]["href"]
+                .as_str()
+                .expect("expected the order's self link"),
+        )
+        .unwrap()
+        .to_string();
     let address = order_body["address"]
         .as_str()
         .expect("expected a real derived address")
@@ -425,9 +385,9 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         println!("PASS (structural): the real engine's stored order carries confirmations_required_override=Some({THRESHOLD_CONFIRMATIONS_REQUIRED})");
     }
 
-    // The order detail dashboard page must show the same resolved snapshot
-    // (WBS task: "makes it clear how the confirmation threshold was
-    // decided", `templates::OrderDetailData::confirmations_required_display`).
+    // The order's page must show the same resolved snapshot, so the merchant
+    // can see how the confirmation threshold was decided
+    // (`views::orders`'s `confirmations_required_display`).
     let detail_html = client
         .get(format!(
             "{monokulo_base_url}/stores/{connection_id}/orders/{order_id}"
@@ -492,7 +452,7 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         // The order in monokulo's API, read with the public key - what the
         // embed polls when its live updates can't connect.
         let order_status: Value = client
-            .get(format!("{monokulo_base_url}/api/v1/orders/{order_id}"))
+            .get(&order_url)
             .bearer_auth(&public_key)
             .send()
             .await

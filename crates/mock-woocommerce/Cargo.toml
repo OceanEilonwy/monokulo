@@ -6,66 +6,44 @@ edition = "2021"
 
 [dependencies]
 parking_lot = "0.12.5"
-# Kept from WBS 0.1 - not directly used by this task's own code, but left in
-# place rather than ripped out; a later WBS task (1.4.3, order creation) is
-# expected to want it.
-engine = { path = "../engine" }
 axum = "0.8.9"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "cookies", "form"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-# The real webhook receiver route (WBS 1.4.4) verifies `X-MoneroPay-Signature`
-# via `shared::webhook_sign::verify_signature` - this is Rust calling Rust, so
-# there is no reason to reimplement HMAC verification here the way a future PHP
-# plugin (WBS 1.5.4) will have to. Plain library dependency, no circularity:
-# `shared` does not depend on `mock-woocommerce`.
+# The webhook receiver verifies `X-Monokulo-Signature` with
+# `shared::webhook_sign::verify_signature`, the same code monokulo signs with.
 shared = { path = "../shared" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
-# WBS 1.4.5's real stagenet connect-flow test (and its sibling,
-# e2e_stagenet_confirmation_threshold.rs) only - the fast, no-scanning,
-# cached-decoys wallet that sends the real payment. Optional, same reasoning
-# `engine`'s own Cargo.toml gives for the same dependency: keep the real
-# transaction-construction deps it pulls in out of the tree for a normal
-# `cargo build`/`cargo test --workspace`.
-cli-wallet = { path = "../cli-wallet", optional = true }
 
-# Test-only: lets mock-woocommerce's own integration tests start a real,
-# network-bound scanner instance (engine-test-support) and a
-# real, network-bound monokulo instance (monokulo's own
-# http::AppState/build_router, constructed directly here since no shared
-# monokulo-test-support crate exists yet - see this crate's own test
-# harness in src/lib.rs). Dev-dependencies only - never linked into a normal
-# build.
+# The tests start a real, network-bound engine (engine-test-support) and a
+# real monokulo (its `http::AppState`/`build_router`) to connect to.
 [dev-dependencies]
+engine = { path = "../engine" }
 monokulo = { path = "../monokulo", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
 monero = "0.22.0"
-# WBS 1.4.5's real stagenet connect-flow test only (hex-encodes the sent
-# transaction's hash for logging/persisting to its wallet file) -
-# same version scanner itself already pins.
+# The real-stagenet tests hex-encode the sent transaction's hash.
 hex = "0.4.3"
+# The real-stagenet tests' wallet: the fast, no-scanning, cached-decoys
+# wallet that sends the real payment.
+cli-wallet = { path = "../cli-wallet" }
 
 [features]
-# Turning this on pulls in `cli-wallet`'s own real
-# transaction-construction dependencies, so WBS 1.4.5's real stagenet
-# connect-flow test (tests/e2e_stagenet_connect_flow.rs) and its sibling can
-# use `cli_wallet::send_payment`. Never enabled by default - a
-# plain `cargo test --workspace`/`cargo test -p mock-woocommerce` must not
-# link this in.
-e2e = ["dep:cli-wallet"]
+# Builds the real-stagenet tests, which need a live stagenet node and funded
+# test wallets. Never on by default.
+e2e = []
 
+# A real stagenet connect flow, order, payment, scan and signed webhook.
 [[test]]
 name = "e2e_stagenet_connect_flow"
 path = "tests/e2e_stagenet_connect_flow.rs"
 required-features = ["e2e"]
 
-# Confirmation Thresholds feature (WBS): a real order against a real
-# stagenet-connected store resolves and enforces a non-default
-# confirmations_required from a custom threshold - see that file's own doc
-# comment.
+# A real order against a real stagenet store resolves and enforces a
+# non-default confirmations_required from a custom threshold.
 [[test]]
 name = "e2e_stagenet_confirmation_threshold"
 path = "tests/e2e_stagenet_confirmation_threshold.rs"

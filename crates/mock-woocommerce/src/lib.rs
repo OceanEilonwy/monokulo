@@ -1,23 +1,21 @@
-//! `mock-woocommerce`: a fake WooCommerce store that plays the role of a
-//! real WooCommerce plugin's "Connect your Monero wallet" button, all the
-//! way through to holding real, working `pk_`/`sk_` credentials. See
-//! `docs/WOOCOMMERCE_WBS.md` 1.4.2 and `docs/WOOCOMMERCE_ROADMAP.md`'s
-//! "Stage 6 - Connect flow" section for the full narrative this drives.
+//! `mock-woocommerce`: a fake WooCommerce store that plays the role of the
+//! WooCommerce plugin's "Connect" button, all the way through to holding
+//! real, working `pk_`/`sk_` credentials, then makes orders and receives
+//! webhooks the way the plugin (OceanEilonwy/monokulo-woocommerce) does.
 //!
-//! This is genuinely **no browser involved** - [`run_connect_flow`] *is* the
-//! synthetic browser, using a cookie-persisting `reqwest::Client` to walk
-//! the exact HTTP path a real browser would (see `monokulo/src/http/
-//! connect.rs`'s own module doc comment for the connection protocol this walks
-//! through), and a real, locally-bound axum server stands in for the
-//! plugin's own callback route - the actual "plugin-side" logic (verify the
-//! nonce, call `/finish` server-to-server) lives in that callback's handler,
-//! not in [`run_connect_flow`] itself, since that's exactly where a real
-//! WordPress plugin's callback handler will live at WBS 1.5.3.
+//! There is **no browser involved** - [`run_connect_flow_with_wallet`] *is*
+//! the synthetic browser, using a cookie-persisting `reqwest::Client` to walk
+//! the exact HTTP path a browser without JavaScript would (see
+//! `monokulo/src/http/connect.rs`'s module doc comment for the connect
+//! protocol), and a real, locally-bound axum server stands in for the
+//! plugin's own callback route - the "plugin-side" logic (verify the nonce,
+//! call `/finish` server-to-server) lives in that callback's handler, as it
+//! does in the real plugin.
 //!
 //! ## Why the nonce check matters
 //!
 //! The `nonce` that rides along the whole flow (`GET /plugins/connect/{platform}`'s
-//! query param -> the confirm form's hidden field -> the `return_url`
+//! query param -> store setup's hidden fields -> the `return_url`
 //! redirect's query param) exists so the callback can tell "this redirect
 //! really came from the connect flow I started" from "someone (or something)
 //! substituted or replayed a redirect at me carrying a stolen `token`
@@ -41,12 +39,8 @@ use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 /// The real, working credentials `POST /plugins/connect/{platform}/finish` hands
-/// back on success - see `monokulo/src/http/connect.rs::FinishResponse`,
-/// which this mirrors field-for-field (the two crates only ever talk over
-/// HTTP, same convention `monokulo::engine_client` already uses for the
-/// engine's own admin API).
-///
-/// WBS 1.4.4 extends this with the real webhook this flow now always
+/// back on success - see `monokulo/src/http/connect.rs::FinishResponse`
+/// (the two crates only ever talk over HTTP), plus the webhook this flow
 /// registers: `webhook_signing_secret` (the engine's real per-webhook HMAC
 /// key, echoed back by `/finish`) and `webhook_receiver` (this driver's own
 /// long-lived receiver, still running - see [`WebhookReceiver`] - so a caller
@@ -96,7 +90,7 @@ impl Credentials {
 /// relative to the URL that was called) resolved against `base`, as a
 /// browser resolves a link: monokulo's links are paths on its own host, so
 /// a plugin that reached it at some address stays at that address.
-pub fn resolve(base: &str, href: &str) -> String {
+fn resolve(base: &str, href: &str) -> String {
     match url::Url::parse(base).and_then(|base| base.join(href)) {
         Ok(url) => url.to_string(),
         Err(_) => format!("{}{href}", base.trim_end_matches('/')),
@@ -105,7 +99,7 @@ pub fn resolve(base: &str, href: &str) -> String {
 
 /// The plain fields `/finish` hands back once webhook registration has been
 /// folded in - the oneshot channel's payload type between [`callback_handler`]
-/// (which calls `/finish`) and [`run_connect_flow`] (which owns the
+/// (which calls `/finish`) and [`run_connect_flow_with`] (which owns the
 /// [`WebhookReceiver`] and combines it with these fields into the final
 /// [`ConnectedCredentials`]). Kept separate from `ConnectedCredentials` itself
 /// so the receiver - which must be spawned *before* the flow starts, since its
@@ -132,8 +126,7 @@ struct FinishResponseBody {
 
 /// One event this driver's webhook receiver verified and recorded - see
 /// [`WebhookReceiver::events`]. Deliberately keeps the whole parsed payload
-/// (`docs/DESIGN.md` §11's envelope plus whatever event-specific fields ride
-/// along) rather than picking out only `event`/`event_id`, so a caller can
+/// (the webhook envelope plus whatever event-specific fields ride along) rather than picking out only `event`/`event_id`, so a caller can
 /// assert on anything the delivery actually carried.
 #[derive(Debug, Clone)]
 pub struct RecordedWebhookEvent {
@@ -163,16 +156,15 @@ struct ReceiverState {
     seen_event_ids: HashSet<String>,
 }
 
-/// This driver's own real webhook receiver (WBS 1.4.4) - a genuine, network-bound
-/// axum server standing in for the real WordPress plugin's own receiver endpoint
-/// (WBS 1.5.4 will host equivalent PHP verification logic). Outlives the connect
+/// This driver's own real webhook receiver - a genuine, network-bound axum
+/// server standing in for the WooCommerce plugin's receiver. Outlives the connect
 /// flow that registered it (unlike [`CallbackServer`], which is deliberately
 /// short-lived): a webhook can be delivered - or retried - long after `/finish` has
 /// already returned, so this has to keep listening for as long as the caller holds
 /// onto the [`ConnectedCredentials`] it came back on.
 pub struct WebhookReceiver {
     /// The real local address this receiver is listening on - `POST
-    /// {addr}/moneropay/webhook` is what gets registered as `webhook_url`.
+    /// {addr}/monokulo/webhook` is what gets registered as `webhook_url`.
     pub addr: SocketAddr,
     state: Arc<StdMutex<ReceiverState>>,
     task: tokio::task::JoinHandle<()>,
@@ -205,7 +197,7 @@ impl Drop for WebhookReceiver {
     }
 }
 
-/// `POST /moneropay/webhook` - the real receiver route. Takes the raw request body
+/// `POST /monokulo/webhook` - the real receiver route. Takes the raw request body
 /// as [`Bytes`], deliberately *not* a pre-parsed `Json<T>` extractor: signature
 /// verification (`shared::webhook_sign::verify_signature`) must run against the
 /// exact bytes the sender signed, before any JSON parsing/re-serialization ever
@@ -267,9 +259,8 @@ async fn webhook_handler(
         return StatusCode::BAD_REQUEST;
     }
 
-    // Webhook delivery is at-least-once (`docs/DESIGN.md` §11) - a real retry of an
-    // already-recorded delivery is expected, not a bug, and dedupes on `event_id`
-    // exactly as the design doc says a receiver should.
+    // Webhook delivery is at least once - a retry of an already-recorded
+    // delivery is expected, not a bug, and a receiver dedupes on `event_id`.
     let mut guard = state.lock();
     if guard.seen_event_ids.insert(event_id.clone()) {
         guard.events.push(RecordedWebhookEvent {
@@ -285,7 +276,7 @@ async fn webhook_handler(
 }
 
 /// Binds this receiver's own real `127.0.0.1:0` socket and serves
-/// `POST /moneropay/webhook` in a background task - same low-level pattern
+/// `POST /monokulo/webhook` in a background task - same low-level pattern
 /// [`spawn_callback_server`]/`engine_test_support::TestEngineConfig::spawn` already
 /// use. Its `signing_secret` isn't known yet at this point (the receiver's URL has
 /// to exist *before* `/finish` is called, since it's an input to that call, while
@@ -295,7 +286,7 @@ async fn webhook_handler(
 async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
     let state = Arc::new(StdMutex::new(ReceiverState::default()));
     let router: Router = Router::new()
-        .route("/moneropay/webhook", post(webhook_handler))
+        .route("/monokulo/webhook", post(webhook_handler))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -357,9 +348,24 @@ struct HalLink {
     href: String,
 }
 
-/// Every way [`run_connect_flow`] (or the callback handler it waits on) can
-/// fail. [`ConnectFlowError::NonceMismatch`] is the one that matters most for
-/// this task's own purpose - see the module doc comment.
+/// The parts of the API's entry (`GET /api/v1`) the plugin uses: the forms
+/// its key may use.
+#[derive(Debug, Deserialize)]
+struct ApiEntry {
+    #[serde(rename = "_templates", default)]
+    templates: std::collections::HashMap<String, Template>,
+}
+
+/// A HAL-FORMS template: where and how to send the form.
+#[derive(Debug, Deserialize)]
+struct Template {
+    method: String,
+    target: String,
+}
+
+/// Every way the connect flow (or the callback handler it waits on), or an
+/// API call after it, can fail. [`ConnectFlowError::NonceMismatch`] is the
+/// one that matters most - see the module doc comment.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectFlowError {
     #[error("http request failed: {0}")]
@@ -371,15 +377,17 @@ pub enum ConnectFlowError {
          rejecting rather than proceeding, since this is exactly what a substituted or replayed redirect looks like"
     )]
     NonceMismatch,
-    #[error("control plane rejected step '{step}' with {status}: {body}")]
+    #[error("monokulo rejected step '{step}' with {status}: {body}")]
     UnexpectedResponse {
         step: String,
         status: u16,
         body: String,
     },
+    #[error("the API's entry offers no `{0}` form for this key")]
+    NoForm(&'static str),
     #[error("the callback server never reported an outcome - the redirect chain never reached it")]
     CallbackNeverReceived,
-    #[error("the control plane registered no webhook although the flow asked for one")]
+    #[error("monokulo registered no webhook although the flow asked for one")]
     WebhookNotRegistered,
 }
 
@@ -395,13 +403,9 @@ const TEST_VIEW_KEY_HEX: &str = "07070707070707070707070707070707070707070707070
 const TEST_SPEND_PUBKEY_HEX: &str =
     "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-/// The wallet material [`run_connect_flow_with`] submits through the confirm form -
-/// generalized out of what used to be hardcoded constants so a caller
-/// (`run_connect_flow_with_wallet`, WBS 1.4.5) can provision the tenant with real
-/// wallet material (a real stagenet merchant view key/spend pubkey, say) instead of
-/// this driver's fixed mainnet test scalars. [`Default`] reproduces exactly what
-/// every existing caller (`run_connect_flow`/`run_connect_flow_with_order_expiry_seconds`)
-/// has always submitted, so neither's behavior changes.
+/// The wallet material [`run_connect_flow_with`] brings in through store setup.
+/// [`Default`] is this driver's fixed mainnet test scalars; the stagenet test
+/// ([`run_connect_flow_with_wallet`]) passes a real merchant wallet's keys.
 #[derive(Debug, Clone)]
 pub struct ConnectFlowWallet {
     pub view_key_hex: String,
@@ -427,69 +431,38 @@ impl Default for ConnectFlowWallet {
 /// `form_urlencoded::byte_serialize` encoding `monokulo`'s own
 /// `http/connect.rs::encode_query_value` uses to build the `next` value it
 /// hands to `/login`. Used here to *independently reconstruct*
-/// that exact same `next` path (see [`run_connect_flow`]) rather than
+/// that exact same `next` path (see [`run_connect_flow_inner`]) rather than
 /// capturing it off a redirect response - since both sides use the same
 /// underlying encoding primitive, the two constructions agree byte-for-byte.
 fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// Runs the full WBS 1.4.1 connect flow against a real, reachable control
-/// plane at `monokulo_base_url` (e.g. `http://127.0.0.1:8081`), acting
-/// as both the merchant's browser and the plugin's own backend:
+/// Runs the whole connect flow against a reachable monokulo at
+/// `monokulo_base_url` (e.g. `http://127.0.0.1:8081`), acting as both the
+/// merchant's browser and the plugin's own backend, with the store taking
+/// payments into `wallet` (e.g. the real stagenet merchant wallet from
+/// `e2e/wallets/merchant.db`, which a scanner can see a real payment to):
 ///
 /// 1. Binds this driver's own callback server (standing in for the plugin's
-///    settings-page callback route) and generates a fresh nonce.
-/// 2. `GET /plugins/connect/woocommerce?...` with no session - auto-followed by the
-///    cookie-persisting client to `/login`.
-/// 3. `POST /signup` with a fresh, unique email.
-/// 4. `POST /login` with `next` set to the exact original
-///    connect-start path - auto-followed all the way to the confirm form.
-/// 5. `POST /plugins/connect/woocommerce` with the confirm form's fields (the fixed
-///    test wallet material above) - auto-followed to the common store settings.
-/// 6. Skip the optional settings, keeping the submitted wallet defaults -
-///    auto-followed to this driver's own callback server, whose handler does
-///    the real "plugin-side" work (nonce
-///    check, then a separate server-to-server `/finish` call) and reports
-///    its outcome back here over a `tokio::sync::oneshot` channel.
+///    settings-page callback route) and webhook receiver, and generates a
+///    fresh nonce.
+/// 2. `GET /plugins/connect/woocommerce?...` with no session - redirected to
+///    `/login`.
+/// 3. Signs up a fresh account (the `/signup` form), then logs in (the
+///    `/login` form) with `next` set to the original connect path.
+/// 4. The connect link again: the shop has no store yet, so it sends the
+///    merchant to store setup.
+/// 5. Store setup as a browser without JavaScript walks it
+///    ([`walk_setup`]), ending in Done's "Back to WooCommerce" button.
+/// 6. Back at this driver's callback server, whose handler does the
+///    "plugin-side" work (nonce check, then a separate server-to-server
+///    `/finish` call registering the webhook) and reports its outcome back
+///    over a `tokio::sync::oneshot` channel.
 ///
-/// Returns the real, working credentials the control plane's `/finish`
-/// handed back once the callback has reported them, plus (WBS 1.4.4) the
-/// real webhook signing secret and this driver's own still-running
-/// [`WebhookReceiver`] - see [`ConnectedCredentials`]'s doc comment.
-pub async fn run_connect_flow(
-    monokulo_base_url: &str,
-) -> Result<ConnectedCredentials, ConnectFlowError> {
-    run_connect_flow_with(monokulo_base_url, None, ConnectFlowWallet::default()).await
-}
-
-/// Same as [`run_connect_flow`], but provisions the tenant with a specific
-/// `order_expiry_seconds` instead of the engine's own default (via
-/// `ConfirmForm::order_expiry_seconds` - see `monokulo/src/http/
-/// connect.rs`). Exists for a caller that needs to force a real,
-/// non-payment-dependent order status transition quickly (WBS 1.4.4's own
-/// forced-delivery test: an order past a very short `expires_at` reaches
-/// `expired` purely from wall-clock time, see `docs/DESIGN.md` §7.6) without
-/// waiting on the engine's real default expiry window.
-pub async fn run_connect_flow_with_order_expiry_seconds(
-    monokulo_base_url: &str,
-    order_expiry_seconds: i64,
-) -> Result<ConnectedCredentials, ConnectFlowError> {
-    run_connect_flow_with(
-        monokulo_base_url,
-        Some(order_expiry_seconds),
-        ConnectFlowWallet::default(),
-    )
-    .await
-}
-
-/// Same as [`run_connect_flow`], but provisions the tenant with `wallet` (real view
-/// key/spend pubkey/network, e.g. a real stagenet merchant wallet from
-/// `e2e/wallets/merchant.db`) instead of this driver's fixed mainnet test scalars.
-/// Exists for WBS 1.4.5's real stagenet connect-flow test, which must provision the
-/// tenant with genuine wallet material a real scanner can actually detect a real
-/// payment against - the fixed test constants this driver otherwise submits have no
-/// corresponding spendable wallet on any real network.
+/// Returns the credentials `/finish` handed back, the webhook signing
+/// secret and this driver's still-running [`WebhookReceiver`] - see
+/// [`ConnectedCredentials`].
 pub async fn run_connect_flow_with_wallet(
     monokulo_base_url: &str,
     wallet: ConnectFlowWallet,
@@ -497,9 +470,10 @@ pub async fn run_connect_flow_with_wallet(
     run_connect_flow_with(monokulo_base_url, None, wallet).await
 }
 
-/// Same as [`run_connect_flow`], but registers no webhook. For the CLI,
+/// Same as [`run_connect_flow_with_wallet`], with the fixed test wallet and
+/// no webhook. For the CLI,
 /// which exits once it has printed the credentials: a receiver that dies
-/// with it would leave the tenant with a dead webhook URL the engine keeps
+/// with it would leave the store with a dead webhook URL monokulo keeps
 /// retrying.
 pub async fn run_connect_flow_without_webhook(
     monokulo_base_url: &str,
@@ -513,12 +487,9 @@ pub async fn run_connect_flow_without_webhook(
     })
 }
 
-/// The shared implementation behind [`run_connect_flow`]/
-/// [`run_connect_flow_with_order_expiry_seconds`]/[`run_connect_flow_with_wallet`] -
-/// a builder-style config parameter here would be overkill for two independent
-/// optional knobs, so this just takes both directly, following the same "generalize
-/// rather than add a near-duplicate function" judgment
-/// `engine_test_support::TestEngineConfig` already applied to a similar situation.
+/// [`run_connect_flow_with_wallet`], with the store's orders expiring after
+/// `order_expiry_seconds` when given (tests use a second, to make an order
+/// expire without waiting).
 async fn run_connect_flow_with(
     monokulo_base_url: &str,
     order_expiry_seconds: Option<i64>,
@@ -531,10 +502,7 @@ async fn run_connect_flow_with(
     // comment.
     let webhook_receiver = spawn_webhook_receiver().await?;
     let webhook = CallbackWebhook {
-        url: Arc::from(format!(
-            "http://{}/moneropay/webhook",
-            webhook_receiver.addr
-        )),
+        url: Arc::from(format!("http://{}/monokulo/webhook", webhook_receiver.addr)),
         state: webhook_receiver.state.clone(),
     };
     let finished = connect(
@@ -597,10 +565,9 @@ async fn connect(
     result
 }
 
-/// The actual HTTP walk (module doc comment / [`run_connect_flow`]'s own doc
-/// comment lay out the six steps) - factored out so [`run_connect_flow_with`]
-/// can unconditionally abort the callback server's background task
-/// afterward, on both success and failure.
+/// The actual HTTP walk ([`run_connect_flow_with_wallet`] lays out the
+/// steps) - factored out so [`connect`] can unconditionally abort the
+/// callback server's background task afterward, on both success and failure.
 #[allow(clippy::too_many_arguments)]
 async fn run_connect_flow_inner(
     monokulo_base_url: &str,
@@ -613,7 +580,7 @@ async fn run_connect_flow_inner(
     wallet: &ConnectFlowWallet,
     callback: &CallbackServer,
 ) -> Result<FinishedCredentials, ConnectFlowError> {
-    let callback_url = format!("http://{}/moneropay/callback", callback.addr);
+    let callback_url = format!("http://{}/monokulo/callback", callback.addr);
 
     // Redirects are followed by hand, step by step, as each one says where
     // the next screen is.
@@ -649,7 +616,7 @@ async fn run_connect_flow_inner(
         .form(&[("email", email), ("password", password)])
         .send()
         .await?;
-    expect_redirect(signup, "dashboard signup").await?;
+    expect_redirect(signup, "signup").await?;
     let login = client
         .post(format!("{monokulo_base_url}/login"))
         .form(&[
@@ -659,7 +626,7 @@ async fn run_connect_flow_inner(
         ])
         .send()
         .await?;
-    expect_redirect(login, "dashboard login").await?;
+    expect_redirect(login, "login").await?;
 
     // Step 4: the shop has no store yet, so the connect link sends the
     // merchant to store setup with the plugin's request.
@@ -816,19 +783,17 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
     })
 }
 
-/// Creates a real order through monokulo's `POST {api}/orders`
-/// (`monokulo/src/api/v1/orders.rs::create`) exactly the way the real
-/// WooCommerce plugin does: from the shop's server, authenticated with the
-/// store's secret key (`Authorization: Bearer sk_...`) and naming itself
-/// (`Monokulo-Client: woocommerce/...`), with monokulo pricing
-/// the amount into XMR. The checkout redirect target is the order's own
-/// `mk:checkout` link, resolved against the URL that was called - not a
-/// plausibly-shaped guess.
+/// Creates a real order through monokulo's API the way the WooCommerce
+/// plugin does: from the shop's server, authenticated with the store's
+/// secret key (`Authorization: Bearer sk_...`) and naming itself
+/// (`Monokulo-Client: woocommerce/...`), with monokulo pricing the amount
+/// into XMR. It reads the API's entry and uses the `create-order` form it
+/// offers, building no URL itself; the checkout redirect target is the
+/// order's own `mk:checkout` link, resolved against the URL that answered.
 ///
-/// `api_url` is monokulo's API root as the plugin resolved it
+/// `api_url` is monokulo's API entry as the plugin resolved it
 /// ([`ConnectedCredentials::api_url`]: `/finish`'s `api` against the
-/// address the plugin connected at) - *not* the engine's; a WooCommerce
-/// plugin never talks to the engine at all.
+/// address the plugin connected at). A plugin never talks to the engine.
 pub async fn create_order(
     api_url: &str,
     secret_token: &str,
@@ -836,9 +801,29 @@ pub async fn create_order(
     currency: &str,
 ) -> Result<CreatedOrder, ConnectFlowError> {
     let client = reqwest::Client::new();
-    let orders_url = format!("{}/orders", api_url.trim_end_matches('/'));
+    let entry = client.get(api_url).bearer_auth(secret_token).send().await?;
+    if !entry.status().is_success() {
+        let status = entry.status().as_u16();
+        let body = entry.text().await.unwrap_or_default();
+        return Err(ConnectFlowError::UnexpectedResponse {
+            step: "read the API entry".to_string(),
+            status,
+            body,
+        });
+    }
+    let entry: ApiEntry = entry.json().await?;
+    let form = entry
+        .templates
+        .get("create-order")
+        .ok_or(ConnectFlowError::NoForm("create-order"))?;
+    let orders_url = resolve(api_url, &form.target);
     let response = client
-        .post(&orders_url)
+        .request(
+            form.method
+                .parse()
+                .map_err(|_| ConnectFlowError::NoForm("create-order"))?,
+            &orders_url,
+        )
         .bearer_auth(secret_token)
         // As the plugin names itself, so the order shows as WooCommerce's.
         .header("Monokulo-Client", "woocommerce/mock")
@@ -897,13 +882,11 @@ pub async fn read_order(
 /// deliberately a plain, separate `reqwest` call sharing no state (and no
 /// cookie jar) with the browser-acting client in [`run_connect_flow_inner`],
 /// exactly like the real plugin's backend has no monokulo session at
-/// all. This is called from inside [`callback_handler`], not by
-/// [`run_connect_flow`] after the fact - see the module doc comment on why
-/// that placement matters (it mirrors where the real WordPress plugin's
-/// callback handler will do this at WBS 1.5.3).
+/// all. This is called from inside [`callback_handler`], not by the flow
+/// after the fact, as in the real plugin.
 ///
-/// `webhook_url` (WBS 1.4.4), when given, is this driver's own
-/// [`WebhookReceiver`]'s address.
+/// `webhook_url`, when given, is this driver's own [`WebhookReceiver`]'s
+/// address.
 async fn call_finish(
     monokulo_base_url: &str,
     platform: &str,
@@ -955,7 +938,7 @@ type ResultSender = oneshot::Sender<Result<FinishedCredentials, ConnectFlowError
 
 /// Shared state the callback route's handler needs: the nonce this driver
 /// generated for this flow (to check the incoming one against), where to
-/// reach the control plane for the server-to-server `/finish` call, which
+/// reach monokulo for the server-to-server `/finish` call, which
 /// platform this connection is for, this driver's own webhook receiver's
 /// webhook, if any ([`CallbackWebhook`]), and a slot for the one-shot result
 /// sender - wrapped in `Arc<Mutex<Option<..>>>` so it can be taken exactly
@@ -972,7 +955,7 @@ struct CallbackState {
 }
 
 /// The webhook a flow registers: this driver's own receiver's URL (passed
-/// to `/finish` as `webhook_url`, WBS 1.4.4) and a handle to that same
+/// to `/finish` as `webhook_url`) and a handle to that same
 /// receiver's shared state (to set its `signing_secret` once `/finish`
 /// returns one - see [`ReceiverState`]).
 #[derive(Clone)]
@@ -981,9 +964,8 @@ struct CallbackWebhook {
     state: Arc<StdMutex<ReceiverState>>,
 }
 
-/// `GET /moneropay/callback` - the callback route standing in for the real
-/// plugin's own settings-page callback (WBS 1.5.3 will host the same logic
-/// in PHP). This is where the actual "plugin-side" security check lives: a
+/// `GET /monokulo/callback` - the callback route standing in for the
+/// plugin's own settings-page callback. This is where the actual "plugin-side" security check lives: a
 /// `nonce` that doesn't match the one this driver generated is rejected
 /// outright, *before* ever calling `/finish` - seeing a wrong nonce here is
 /// exactly what a substituted or replayed redirect would produce, so
@@ -1044,9 +1026,7 @@ struct CallbackServer {
 }
 
 impl CallbackServer {
-    /// Awaits this server's one-shot result slot. `pub(crate)` visibility
-    /// isn't needed - this is only ever called from within this same module
-    /// (production code) or its own test submodule.
+    /// Awaits this server's one-shot result slot.
     async fn result_rx_recv(&self) -> Result<FinishedCredentials, ConnectFlowError> {
         let rx = self
             .result_rx
@@ -1063,7 +1043,7 @@ impl CallbackServer {
 /// background task - same low-level pattern
 /// `engine_test_support::TestEngineConfig::spawn` already uses for the
 /// engine itself, just for one callback route rather than a whole app.
-/// `webhook` (WBS 1.4.4) is threaded straight into [`CallbackState`] - see
+/// `webhook` is threaded straight into [`CallbackState`] - see
 /// that type's own doc comment.
 async fn spawn_callback_server(
     expected_nonce: String,
@@ -1081,7 +1061,7 @@ async fn spawn_callback_server(
     };
 
     let router: Router = Router::new()
-        .route("/moneropay/callback", get(callback_handler))
+        .route("/monokulo/callback", get(callback_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1108,22 +1088,16 @@ mod tests {
 
     use super::*;
 
-    /// A running, real (network-bound) monokulo instance for this
-    /// crate's own tests - no shared `monokulo-test-support` crate
-    /// exists yet (only `engine-test-support`, for the engine), so this is a
-    /// small, private helper local to this crate, built directly on
-    /// `monokulo::http::{AppState, build_router}` the same way
-    /// `engine_test_support::TestEngineConfig::spawn` is built on the
-    /// engine's own `AppState`/`build_router`. See this task's report for
-    /// whether a shared crate is worth it yet.
-    struct TestControlPlaneHandle {
+    /// A running, real (network-bound) monokulo instance for this crate's
+    /// tests, built directly on `monokulo::http::{AppState, build_router}`.
+    struct TestMonokulo {
         addr: SocketAddr,
         /// monokulo's database, which holds stores' webhooks.
         db: monokulo::db::Database,
         task: tokio::task::JoinHandle<()>,
     }
 
-    impl TestControlPlaneHandle {
+    impl TestMonokulo {
         /// The webhooks of the store whose public key is `public_key`.
         fn webhooks(&self, public_key: &str) -> Vec<monokulo::db::WebhookRow> {
             let db = self.db.lock();
@@ -1135,20 +1109,16 @@ mod tests {
         }
     }
 
-    impl Drop for TestControlPlaneHandle {
+    impl Drop for TestMonokulo {
         fn drop(&mut self) {
             self.task.abort();
         }
     }
 
-    /// Spawns a real monokulo instance (in-memory `Db`, `engine` inside it
-    /// as by default, the fixed test encryption
-    /// key) bound to a real ephemeral local port. No exchange rate/order-
-    /// creation setup needed on the engine side - this flow never creates
-    /// an order, only a tenant.
-    async fn spawn_test_monokulo(
-        engine: &engine_test_support::TestEngineHandle,
-    ) -> TestControlPlaneHandle {
+    /// Spawns a real monokulo instance (in-memory `Db`, the engine inside
+    /// it as by default, the fixed test encryption key) bound to a real
+    /// ephemeral local port, with its webhook pipeline running.
+    async fn spawn_test_monokulo(engine: &engine_test_support::TestEngineHandle) -> TestMonokulo {
         use monokulo::db::Db;
         use monokulo::engine_client::EngineClient;
         use monokulo::http::{build_router, AppState};
@@ -1158,7 +1128,7 @@ mod tests {
         // `public_uri`) can be this very listener.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("failed to bind an ephemeral local port for the test control plane");
+            .expect("failed to bind an ephemeral local port for the test monokulo");
         let addr = listener
             .local_addr()
             .expect("bound listener has no local address");
@@ -1206,7 +1176,14 @@ mod tests {
             );
         });
 
-        TestControlPlaneHandle { addr, db, task }
+        TestMonokulo { addr, db, task }
+    }
+
+    /// The connect flow with the fixed test wallet and a webhook.
+    async fn run_connect_flow(
+        monokulo_base_url: &str,
+    ) -> Result<ConnectedCredentials, ConnectFlowError> {
+        run_connect_flow_with(monokulo_base_url, None, ConnectFlowWallet::default()).await
     }
 
     fn parse_query_params(url: &str) -> HashMap<String, String> {
@@ -1226,7 +1203,7 @@ mod tests {
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow(&monokulo_base_url).await.expect(
-            "the connect flow should succeed end to end against a real engine + control plane",
+            "the connect flow should succeed end to end against a real engine and monokulo",
         );
 
         assert!(
@@ -1260,16 +1237,15 @@ mod tests {
         );
         assert_eq!(tenant_view.public_key, credentials.public_key);
 
-        // WBS 1.4.4: this flow always registers a real webhook now, at this
-        // driver's own receiver - not just a plausibly-shaped secret in the
-        // response.
+        // The flow registers a real webhook at this driver's own receiver -
+        // not just a plausibly-shaped secret in the response.
         assert!(!credentials.webhook_signing_secret.is_empty());
         let webhooks = monokulo.webhooks(&credentials.public_key);
         assert_eq!(webhooks.len(), 1);
         assert_eq!(
             webhooks[0].url,
             format!(
-                "http://{}/moneropay/webhook",
+                "http://{}/monokulo/webhook",
                 credentials.webhook_receiver.addr
             )
         );
@@ -1296,15 +1272,11 @@ mod tests {
         );
     }
 
-    /// A test-only currency code, matching monokulo's own fixed test
-    /// exchange rate (`spawn_test_monokulo`'s `AppState.exchange_rate`).
-    // "XMR" - needs no exchange rate provider at all, matching this test
-    // module's own `spawn_test_monokulo` (`ExchangeRateProviders::xmr_only()`).
+    /// XMR needs no exchange rate provider at all.
     const TEST_CURRENCY: &str = "XMR";
 
-    /// WBS 1.4.3: runs the full connect flow to get real, working
-    /// credentials against a real engine (reusing [`run_connect_flow`]
-    /// rather than duplicating tenant-creation logic), then calls
+    /// Runs the full connect flow to get real, working credentials against
+    /// a real engine, then calls
     /// [`create_order`] against that same engine with those credentials -
     /// proving order creation is genuinely wired to the real public API, not
     /// just plausibly shaped. The final assertion fetches the returned
@@ -1321,7 +1293,7 @@ mod tests {
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let credentials = run_connect_flow(&monokulo_base_url).await.expect(
-            "the connect flow should succeed end to end against a real engine + control plane",
+            "the connect flow should succeed end to end against a real engine and monokulo",
         );
         assert_eq!(
             credentials.api, "/api/v1",
@@ -1366,7 +1338,7 @@ mod tests {
     }
 
     /// The load-bearing nonce-mismatch proof: a raw HTTP call bypassing
-    /// `run_connect_flow`'s own logic entirely - simulating a substituted or
+    /// the flow's own logic entirely - simulating a substituted or
     /// replayed redirect - hits the callback URL with the *real* token but a
     /// *wrong* nonce, and the callback handler must reject it, specifically
     /// via the nonce check (not some other failure), and must never have
@@ -1385,17 +1357,14 @@ mod tests {
         let correct_nonce = format!("nonce-{}", Uuid::new_v4());
         let email = format!("nonce-mismatch-{}@example.com", Uuid::new_v4());
         let password = "correct horse battery staple";
-        // Never actually dialed in this test - the confirm step's redirect
-        // is inspected via its `Location` header instead of being followed
-        // (see the client's `redirect::Policy::none()` below), so this can
-        // point anywhere.
-        let return_url = "http://127.0.0.1:1/moneropay/callback";
+        // Never actually dialed in this test - the redirect back to the
+        // plugin is inspected via its `Location` header instead of being
+        // followed, so this can point anywhere.
+        let return_url = "http://127.0.0.1:1/monokulo/callback";
 
-        // Unlike `run_connect_flow`'s own client, this test's client
-        // deliberately never auto-follows redirects - every step here is
-        // inspected directly (status/`Location` header) rather than chased,
-        // since the whole point is to intercept the token/nonce before they
-        // ever reach a real callback route.
+        // Never follows redirects: every step here is inspected directly
+        // (status/`Location` header), since the whole point is to intercept
+        // the token/nonce before they ever reach a real callback route.
         let client = reqwest::Client::builder()
             .cookie_store(true)
             .redirect(reqwest::redirect::Policy::none())
@@ -1478,7 +1447,7 @@ mod tests {
         let raw_client = reqwest::Client::new();
         let malicious = raw_client
             .get(format!(
-                "http://{}/moneropay/callback?token={}&nonce=an-attacker-substituted-nonce",
+                "http://{}/monokulo/callback?token={}&nonce=an-attacker-substituted-nonce",
                 callback.addr, token
             ))
             .send()
@@ -1516,51 +1485,7 @@ mod tests {
         );
     }
 
-    // --- WBS 1.4.4: webhook receiver -------------------------------------------
-
-    /// The same known secret/payload/signature triple
-    /// `shared::webhook_sign::tests::known_vector_for_cross_language_php_verification`
-    /// documents specifically for reuse by another verifier (its own doc comment:
-    /// "must reproduce byte-for-byte to prove its HMAC-SHA256 signing matches this
-    /// Rust implementation") - reused here rather than invented fresh, per that
-    /// module's own instruction. The constants there are private to `shared`, so the
-    /// values are reproduced literally rather than imported.
-    const KNOWN_VECTOR_SECRET: &str = "known_vector_secret_for_php_crosscheck";
-    const KNOWN_VECTOR_PAYLOAD: &[u8] =
-        br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#;
-    const KNOWN_VECTOR_TIMESTAMP: i64 = 1_700_000_000;
-    const KNOWN_VECTOR_SIGNATURE_HEADER: &str =
-        "t=1700000000,v1=36a7d36d510620adf9ae9e3e42891dcc796ae88c6ac19818bab778998d2a35e6";
-
-    /// A direct unit test of signature verification (WBS 1.4.4's own explicit ask),
-    /// decoupled from any HTTP round trip - this is exactly the check
-    /// [`webhook_handler`] runs against the raw request body before ever parsing it
-    /// as JSON.
-    #[test]
-    fn signature_verification_matches_the_known_cross_language_vector() {
-        assert!(shared::webhook_sign::verify_signature(
-            KNOWN_VECTOR_SECRET,
-            KNOWN_VECTOR_PAYLOAD,
-            KNOWN_VECTOR_SIGNATURE_HEADER,
-            KNOWN_VECTOR_TIMESTAMP
-        ));
-
-        // A tampered payload (one byte flipped in the trailing amount) must not
-        // verify against the same signature - the sanity check that this isn't
-        // trivially true for any input.
-        let tampered =
-            br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#
-                .iter()
-                .copied()
-                .map(|b| if b == b'1' { b'2' } else { b })
-                .collect::<Vec<u8>>();
-        assert!(!shared::webhook_sign::verify_signature(
-            KNOWN_VECTOR_SECRET,
-            &tampered,
-            KNOWN_VECTOR_SIGNATURE_HEADER,
-            KNOWN_VECTOR_TIMESTAMP
-        ));
-    }
+    // --- The webhook receiver ---------------------------------------------------
 
     /// Directly sets a spawned [`WebhookReceiver`]'s `signing_secret` - same-module
     /// access to the private `state` field, standing in for what
@@ -1587,10 +1512,10 @@ mod tests {
             shared::webhook_sign::sign_payload(secret, shared::time::now_unix(), body.as_bytes());
 
         let client = reqwest::Client::new();
-        let url = format!("http://{}/moneropay/webhook", receiver.addr);
+        let url = format!("http://{}/monokulo/webhook", receiver.addr);
 
-        // A real delivery, then its retry (at-least-once delivery, `docs/DESIGN.md`
-        // §11) - the exact same body and signature both times.
+        // A real delivery, then its retry (delivery is at least once) - the
+        // exact same body and signature both times.
         for _ in 0..2 {
             let response = client
                 .post(&url)
@@ -1623,7 +1548,7 @@ mod tests {
 
         let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_should_never_be_recorded" }).to_string();
         let client = reqwest::Client::new();
-        let url = format!("http://{}/moneropay/webhook", receiver.addr);
+        let url = format!("http://{}/monokulo/webhook", receiver.addr);
 
         // Wrong secret entirely - genuinely invalid, not just a near miss.
         let wrong_signature = shared::webhook_sign::sign_payload(
@@ -1670,7 +1595,7 @@ mod tests {
         );
 
         let response = reqwest::Client::new()
-            .post(format!("http://{}/moneropay/webhook", receiver.addr))
+            .post(format!("http://{}/monokulo/webhook", receiver.addr))
             .header("X-Monokulo-Signature", &signature)
             .body(body)
             .send()
@@ -1680,33 +1605,25 @@ mod tests {
         assert!(receiver.events().is_empty());
     }
 
-    // --- WBS 1.4.4: a genuine, forced end-to-end delivery -----------------------
+    // --- A genuine, forced end-to-end delivery ---------------------------------
 
     /// The centerpiece test: forces a *real* webhook delivery - a live outbound HTTP
-    /// call from the engine's own background delivery worker, signed with a real
+    /// call from monokulo's background delivery worker, signed with a real
     /// per-webhook secret, verified by this crate's own receiver route - with no
     /// directly-inserted-row shortcut anywhere in the path.
     ///
-    /// How the event is forced: `run_connect_flow_with_order_expiry_seconds`
-    /// provisions the tenant with `order_expiry_seconds: 1` (confirmed against the
-    /// real code, not assumed - see `docs/DESIGN.md` §7.6 and
-    /// `src/scanner.rs::an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matches_nothing`,
-    /// and `engine_test_support::TestEngineConfig::with_background_loops`'s own doc
-    /// comment for why the recompute sweep that reaches `expired` needs neither a
-    /// real payment nor a non-trivial `MoneroDaemonClient`). An order is then created
-    /// against that tenant with no payment ever made; once more than a second of
-    /// real wall-clock time has passed, the engine's own background scanner tick
-    /// (spawned via `with_background_loops` on the test engine below) recomputes the
-    /// order to `expired` and enqueues a real, signed `order.expired` webhook, which
-    /// the engine's own background delivery tick then genuinely POSTs to this
+    /// How the event is forced: the store's orders expire after a second
+    /// (`order_expiry_seconds: 1`), and an unpaid order past its deadline
+    /// becomes `expired` on the engine's next background tick, with no payment
+    /// and no real node (see `engine_test_support::TestEngineConfig::with_background_loops`).
+    /// monokulo's order-event subscriber then turns that into a signed
+    /// `order.expired` webhook, which its delivery worker POSTs to this
     /// crate's receiver.
     ///
     /// This is provably not a shortcut: nothing in this test ever touches the
-    /// engine's or control plane's databases directly, mints an event/delivery row
+    /// engine's or monokulo's databases directly, mints an event/delivery row
     /// itself, or calls any scanner/delivery function by hand - every step is a real
-    /// HTTP call (`run_connect_flow_with_order_expiry_seconds`, `create_order`) or a
-    /// real background loop (`with_background_loops`) already proven to work on its
-    /// own in `engine_test_support`'s own test suite. The only thing this test does
+    /// HTTP call (the connect flow, [`create_order`]) or a real background loop. The only thing this test does
     /// that production code doesn't is poll for the effect rather than wait
     /// indefinitely for it.
     #[tokio::test]
@@ -1719,11 +1636,12 @@ mod tests {
         let monokulo = spawn_test_monokulo(&engine).await;
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
-        let credentials = run_connect_flow_with_order_expiry_seconds(&monokulo_base_url, 1)
-            .await
-            .expect(
-                "the connect flow should succeed end to end against a real engine + control plane",
-            );
+        let credentials =
+            run_connect_flow_with(&monokulo_base_url, Some(1), ConnectFlowWallet::default())
+                .await
+                .expect(
+                    "the connect flow should succeed end to end against a real engine and monokulo",
+                );
 
         let order = create_order(
             &credentials.api_url(),
@@ -1844,7 +1762,7 @@ mod tests {
             "the checkout page shows the payment address"
         );
 
-        // Paid on the engine; the engine's delivery loop sends the webhook.
+        // Paid on the engine; monokulo's delivery loop sends the webhook.
         engine
             .mark_order_paid(&order.order_id)
             .expect("marking the order paid failed");
