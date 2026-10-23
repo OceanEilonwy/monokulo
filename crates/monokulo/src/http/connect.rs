@@ -171,8 +171,8 @@ fn plain_http_allowed(url: &Url) -> bool {
     }
 }
 
-/// This instance's public address, which is what a plugin is given as its
-/// `endpoint`. Checked before any form is shown, again when the plugin's
+/// This instance's public address, which the plugin's `api` is a path on.
+/// Checked before any form is shown, again when the plugin's
 /// key is minted, and in `/finish`, so a plugin is never handed a wrong
 /// address.
 async fn public_uri_for_plugins(state: &AppState) -> Result<String, ConnectRefusal> {
@@ -217,7 +217,7 @@ fn encode_query_value(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// `GET /plugins/connect/{platform}` (steps 1-3). No valid session: redirect to
+/// `GET /plugins/connect/{slug}` (steps 1-3). No valid session: redirect to
 /// `/login` carrying a `next` that reconstructs this exact URL.
 /// A valid session: the store with the shop's host decides (see the module
 /// doc comment). A path that can't name a plugin is not found.
@@ -304,7 +304,7 @@ pub async fn start(
     }
 }
 
-/// `POST /plugins/connect/{platform}`'s fields: the plugin's request, carried
+/// `POST /plugins/connect/{slug}`'s fields: the plugin's request, carried
 /// through, and the merchant's store whose site is the shop's.
 #[derive(Deserialize)]
 pub struct ConfirmForm {
@@ -318,11 +318,11 @@ pub struct ConfirmForm {
     pub name: String,
 }
 
-/// `POST /plugins/connect/{platform}` (behind [`AuthedUser`]):
+/// `POST /plugins/connect/{slug}` (behind [`AuthedUser`]):
 /// gives the plugin its store's key. The store must be the merchant's, and
 /// its site the shop's: without both, a signed-in attacker could have any
 /// store's `sk_...` delivered to a `return_url` of their own via
-/// `/plugins/connect/{platform}/finish`. A store that isn't theirs and one that
+/// `/plugins/connect/{slug}/finish`. A store that isn't theirs and one that
 /// doesn't exist look the same.
 pub async fn confirm_submit(
     State(state): State<AppState>,
@@ -658,7 +658,7 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     /// This test instance's configured public address - what `/finish`
-    /// must hand plugins as `endpoint`.
+    /// must hand plugins its `api` on.
     const TEST_PUBLIC_URI: &str = "https://pay.example.test";
     const PASSWORD: &str = "correct horse battery staple";
 
@@ -1193,7 +1193,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
-    /// WBS 1.4.4: a `webhook_url` supplied to `/finish` registers a webhook
+    /// A `webhook_url` supplied to `/finish` registers a webhook
     /// against the real engine. Also carries a harness's
     /// `order_expiry_seconds` through setup to the engine's tenant.
     #[tokio::test]
@@ -1624,7 +1624,7 @@ mod tests {
     }
 
     /// A `webhook_url` the engine rejects fails the whole `/finish` call
-    /// (WBS 1.4.4's collapse-to-401 policy, see `finish`).
+    /// (see `finish`).
     #[tokio::test]
     /// A webhook URL that can't be one is refused as an `invalid-request`
     /// problem before the token is spent: the plugin sends it again fixed.

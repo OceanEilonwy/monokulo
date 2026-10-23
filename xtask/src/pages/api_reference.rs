@@ -511,9 +511,10 @@ mod tests {
     use crate::support::Scratch;
     use serde_json::json;
 
-    /// A reference shaped as monokulo writes it: two resources, an onion
-    /// link's relation and a problem. Monokulo's own test checks the real one has every resource
-    /// and problem; this one checks each gets its page.
+    /// A reference shaped as monokulo writes it: API resources, a page, a
+    /// stream, an onion link's relation, a handshake and problems.
+    /// Monokulo's own recording checks the real one has every resource and
+    /// problem; this one checks each gets its page.
     fn reference(site: &str) -> Value {
         json!({
             "resources": [
@@ -563,8 +564,50 @@ mod tests {
                     }],
                     "body": null,
                     "examples": []
+                },
+                {
+                    "rel": "dashboard-order",
+                    "key": "mk:dashboard-order",
+                    "template": "/stores/{id}/orders/{order_id}",
+                    "media_type": "text/html",
+                    "title": "The order's page on the dashboard.",
+                    "description": "The order's page on the dashboard.\n\nFor the merchant.",
+                    "page": format!("{site}/rels/dashboard-order"),
+                    "methods": [],
+                    "offered_to": ["sk", "session"],
+                    "events": [],
+                    "body": null,
+                    "examples": []
+                },
+                {
+                    "rel": "order-events",
+                    "key": "mk:order-events",
+                    "template": "/api/v1/orders/{order_id}/events",
+                    "media_type": "text/event-stream",
+                    "title": "One order's changes.",
+                    "description": "One order's changes.",
+                    "page": format!("{site}/rels/order-events"),
+                    "methods": [{
+                        "method": "GET", "name": "get", "keys": ["sk"],
+                        "anyone": false, "doc": "Follow it.", "form": null, "template": null
+                    }],
+                    "offered_to": null,
+                    "events": [{"name": "order", "doc": "The order as it is now.", "data": {"$ref": "#/$defs/Wallet"}}],
+                    "body": null,
+                    "examples": []
                 }
             ],
+            "handshakes": [{
+                "method": "POST",
+                "template": "/apps/connect",
+                "title": "Connect an app.",
+                "doc": "Connect an app.",
+                "problems": ["invalid-connect-code"],
+                "examples": [{
+                    "method": "POST", "route": "/apps/connect", "path": "/apps/connect", "status": 401,
+                    "response": {"type": format!("{site}/problems/invalid-connect-code"), "status": 401}
+                }]
+            }],
             "definitions": {"Wallet": {"type": "object"}},
             "rels": [{
                 "rel": "onion-order",
@@ -582,6 +625,12 @@ mod tests {
                 "status": 404,
                 "title": "Not found",
                 "doc": "Nothing is there."
+            }, {
+                "slug": "invalid-connect-code",
+                "type": format!("{site}/problems/invalid-connect-code"),
+                "status": 401,
+                "title": "Connect code not valid",
+                "doc": "The code is spent."
             }]
         })
     }
@@ -606,7 +655,7 @@ mod tests {
         let scratch = Scratch::new("api-reference");
         let site = scratch.path().join("site");
         let pages = write(&generated(&scratch, &reference), &site).unwrap();
-        assert_eq!(pages, 5);
+        assert_eq!(pages, 8);
         for resource in list(&reference, "resources") {
             let html = fs::read_to_string(
                 site.join("rels")
@@ -626,6 +675,16 @@ mod tests {
         assert!(order.contains("Real exchanges"), "{order}");
         let problem = fs::read_to_string(site.join("problems/not-found/index.html")).unwrap();
         assert!(problem.contains("/api/v1/orders/order_2"), "{problem}");
+        // A problem only a handshake answers has its example too.
+        let code =
+            fs::read_to_string(site.join("problems/invalid-connect-code/index.html")).unwrap();
+        assert!(code.contains("POST /apps/connect"), "{code}");
+        // A page says who gets its link; a stream, its events.
+        let page = fs::read_to_string(site.join("rels/dashboard-order/index.html")).unwrap();
+        assert!(page.contains("Only the sk_ key and the merchant"), "{page}");
+        let stream = fs::read_to_string(site.join("rels/order-events/index.html")).unwrap();
+        assert!(stream.contains("The order as it is now."), "{stream}");
+        assert!(stream.contains("<code>order</code>"), "{stream}");
         let openapi: Value =
             serde_json::from_str(&fs::read_to_string(site.join("api/v1/openapi.json")).unwrap())
                 .unwrap();
@@ -634,6 +693,11 @@ mod tests {
         assert!(index.contains(r#"href="../../rels/order/""#), "{index}");
         assert!(
             index.contains(r#"href="../../rels/onion-order/""#),
+            "{index}"
+        );
+        assert!(index.contains("POST /apps/connect"), "{index}");
+        assert!(
+            index.contains(r#"href="../../problems/invalid-connect-code/""#),
             "{index}"
         );
     }
