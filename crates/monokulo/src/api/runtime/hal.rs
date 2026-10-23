@@ -141,6 +141,75 @@ pub fn link_title<T: Resource>() -> String {
     catalog::title(T::info())
 }
 
+/// `_links` with absolute URLs, written as the API writes its links
+/// (each relation's key, title and media type, and the `mk` curie), for a
+/// body sent with no request to resolve a path against: a webhook's.
+#[derive(Default)]
+pub struct AbsoluteLinks {
+    links: Vec<(String, LinkObject)>,
+}
+
+impl AbsoluteLinks {
+    /// Adds a link to `path` on `base` (an absolute URL with any path
+    /// prefix, no trailing `/`).
+    pub fn add<T: Resource>(&mut self, base: &str, path: T) {
+        let info = T::info();
+        self.links.push((
+            info.link_key(),
+            LinkObject {
+                href: format!("{}{path}", base.trim_end_matches('/')),
+                title: catalog::title(info),
+                type_: if info.kind == Kind::Hal {
+                    ""
+                } else {
+                    info.kind.media_type()
+                },
+            },
+        ));
+    }
+
+    /// Adds `link` under its onion relation `rel` (`onion-checkout`), with
+    /// that relation's title.
+    pub fn add_onion<T: Resource>(&mut self, rel: &str, link: OnionLink<T>) {
+        let info = T::info();
+        let title = catalog::rels()
+            .into_iter()
+            .find(|r| r.rel == rel)
+            .map(|r| catalog::summary(r.doc))
+            .unwrap_or_default();
+        self.links.push((
+            format!("mk:{rel}"),
+            LinkObject {
+                href: link.href,
+                title,
+                type_: if info.kind == Kind::Hal {
+                    ""
+                } else {
+                    info.kind.media_type()
+                },
+            },
+        ));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.links.is_empty()
+    }
+}
+
+impl Serialize for AbsoluteLinks {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry(
+            "curies",
+            &[json!({"name": "mk", "href": format!("{DOCS}/rels/{{rel}}"), "templated": true})],
+        )?;
+        for (key, link) in &self.links {
+            map.serialize_entry(key, link)?;
+        }
+        map.end()
+    }
+}
+
 /// One link as written.
 #[derive(Serialize)]
 struct LinkObject {

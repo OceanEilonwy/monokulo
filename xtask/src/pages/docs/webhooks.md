@@ -51,7 +51,13 @@ plus the headers you added. The body:
   "xmr_amount": "0.081245310000",
   "fx_source": "coingecko",
   "fx_rate": "153.84615385",
-  "store": { "id": "917701c2-15c7-4bcb-bbc8-72d9ab28e785", "name": "Bakery" }
+  "store": { "id": "917701c2-15c7-4bcb-bbc8-72d9ab28e785", "name": "Bakery" },
+  "_links": {
+    "curies": [{ "name": "mk", "href": "https://docs.monokulo.com/rels/{rel}", "templated": true }],
+    "mk:order": { "href": "https://www.monokulo.com/api/v1/orders/order_5f01c9a7d2e14b88a3e0f9c6d1e21b07", "title": "One order: what to pay, where, and how far the payment has got." },
+    "mk:dashboard-order": { "href": "https://www.monokulo.com/stores/917701c2-15c7-4bcb-bbc8-72d9ab28e785/orders/order_5f01c9a7d2e14b88a3e0f9c6d1e21b07", "title": "The order's page on the merchant's dashboard: …", "type": "text/html" },
+    "mk:checkout": { "href": "https://www.monokulo.com/checkout/order_5f01c9a7d2e14b88a3e0f9c6d1e21b07", "title": "The page the payer pays on: …", "type": "text/html" }
+  }
 }
 ```
 
@@ -70,6 +76,7 @@ plus the headers you added. The body:
 | `xmr_amount` | What the customer was asked to pay, in XMR with 12 decimals. |
 | `fx_source`, `fx_rate` | Who priced the order and the rate used: 1 XMR in `currency`, a decimal string with up to 8 decimals. Not there for orders priced in XMR. |
 | `store` | The store: `{ "id", "name" }`. |
+| `_links` | The order, as the API links it, on Monokulo's web address: [`mk:order`](../rels/order/) (the order in the API: read it with the store's secret key), [`mk:dashboard-order`](../rels/dashboard-order/) (its page for the merchant: link your admin's order view here) and [`mk:checkout`](../rels/checkout/) (the payer's page), plus [`mk:onion-checkout`](../rels/onion-checkout/) while Monokulo has an onion address. Absolute URLs, since a webhook has no request to resolve a path against; on every event, `order.cancelled` included, so an order made before you stored its links still has them. |
 
 A field with no value is left out, never sent as `null`.
 

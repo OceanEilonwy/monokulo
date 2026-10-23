@@ -16,6 +16,7 @@ pub mod delivery;
 pub mod subscriber;
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use shared::ids::WebhookId;
 
@@ -33,6 +34,28 @@ pub const MAX_URL_LEN: usize = 2048;
 #[derive(Default)]
 pub struct Webhooks {
     wake: tokio::sync::Notify,
+}
+
+/// This Monokulo's addresses, read as each event is queued, for the
+/// links in its webhook bodies ([`body::LinkBases`]).
+#[derive(Clone)]
+pub struct Addresses {
+    settings: Arc<crate::settings::MonokuloSettings>,
+    tor: crate::tor::Tor,
+}
+
+impl Addresses {
+    pub fn new(settings: Arc<crate::settings::MonokuloSettings>, tor: crate::tor::Tor) -> Self {
+        Addresses { settings, tor }
+    }
+
+    /// The web and onion addresses now.
+    pub fn now(&self) -> body::LinkBases {
+        body::LinkBases {
+            web: self.settings.public_uri(),
+            onion: crate::network::onion_uri(&self.settings, &self.tor),
+        }
+    }
 }
 
 impl Webhooks {

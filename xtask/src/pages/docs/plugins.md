@@ -143,7 +143,10 @@ its `self` link (`GET /api/v1/orders/{order_id}`), or follow its changes on
 On the shop's own order page, link the merchant to the order in Monokulo
 with its [`mk:dashboard-order`](../rels/dashboard-order/) link (resolved
 like the others): its page on the merchant's dashboard. Only your secret
-key is given it; keep it with the order rather than building it.
+key is given it; keep it with the order rather than building it. Every
+webhook carries it too, absolute, in its `_links` (with `mk:order` and
+`mk:checkout`), so an order made before your plugin kept its links gets
+them from its next event.
 
 ### 4. Take webhooks
 

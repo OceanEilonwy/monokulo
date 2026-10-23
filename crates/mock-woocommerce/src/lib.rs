@@ -1157,6 +1157,7 @@ mod tests {
             state.engine.client.clone(),
             state.webhooks.clone(),
             state.apps.clone(),
+            monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
         );
         let worker = monokulo::webhooks::delivery::run_delivery_loop(
             state.db.clone(),

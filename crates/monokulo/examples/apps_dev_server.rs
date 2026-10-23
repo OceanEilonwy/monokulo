@@ -171,6 +171,7 @@ async fn main() {
         client,
         state.webhooks.clone(),
         state.apps.clone(),
+        monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
     ));
     let controls = Router::new()
         .route("/__dev/code", post(code))

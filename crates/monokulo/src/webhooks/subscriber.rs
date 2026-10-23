@@ -105,6 +105,7 @@ pub async fn follow(
     engine: &EngineClient,
     webhooks: &super::Webhooks,
     apps: &AppEvents,
+    addresses: &super::Addresses,
     clock: &dyn Clock,
     on_open: impl FnOnce(),
 ) -> Result<(), FollowError> {
@@ -127,7 +128,7 @@ pub async fn follow(
             Err(_) => return Err(FollowError::Quiet),
         };
         for event in parser.push(&chunk) {
-            handle(db, webhooks, apps, clock, &event).await?;
+            handle(db, webhooks, apps, addresses, clock, &event).await?;
         }
     }
 }
@@ -137,6 +138,7 @@ async fn handle(
     db: &Database,
     webhooks: &super::Webhooks,
     apps: &AppEvents,
+    addresses: &super::Addresses,
     clock: &dyn Clock,
     event: &SseEvent,
 ) -> Result<(), FollowError> {
@@ -150,10 +152,11 @@ async fn handle(
                 logged.event_type.clone(),
             );
             let for_apps = apps.watched().then(|| logged.clone());
+            let bases = addresses.now();
             let queued = db
                 .write(move |db| {
                     db.queue_order_event(&logged, now, |store, metadata| {
-                        super::body::body_v2(&logged, store, metadata)
+                        super::body::body_v2(&logged, store, metadata, &bases)
                     })
                 })
                 .await?;
@@ -231,6 +234,7 @@ pub async fn run_subscriber(
     engine: EngineClient,
     webhooks: Arc<super::Webhooks>,
     apps: Arc<AppEvents>,
+    addresses: super::Addresses,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
@@ -240,6 +244,7 @@ pub async fn run_subscriber(
             &engine,
             &webhooks,
             &apps,
+            &addresses,
             &super::delivery::SystemClock,
             || opened = true,
         )
