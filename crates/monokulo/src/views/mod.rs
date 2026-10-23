@@ -999,7 +999,7 @@ mod tests {
         let status = at(r#"<a href="/status" class="nav-status-link""#);
         let hamburger = at(r#"<label for="nav-toggle""#);
         let links = at(r#"<div class="site-nav-links">"#);
-        let home = at(r#"<a href=(crate::base::url("/")) aria-current="page">Home</a>"#);
+        let home = at(r#"<a href="/" aria-current="page">Home</a>"#);
         let admin = at(r#"href="/admin/settings">Admin<"#);
         let invites = at(r#"href="/admin/invites">Invites<"#);
         let logs = at(r#"href="/admin/logs">Logs<"#);
@@ -1031,7 +1031,7 @@ mod tests {
         chrome.current_path = "/".into();
         let html = nav(&chrome, ui::PageWidth::Normal).into_string();
         assert!(
-            html.contains(r#"<a href=(crate::base::url("/")) aria-current="page">Home</a>"#),
+            html.contains(r#"<a href="/" aria-current="page">Home</a>"#),
             "{html}"
         );
         let html = nav(&PageChrome::from_user(None, "/"), ui::PageWidth::Normal).into_string();

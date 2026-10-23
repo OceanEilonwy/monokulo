@@ -86,7 +86,6 @@ function buildBinaries() {
   execFileSync('cargo', BUILD_ARGS, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
 
-/** Starts the three processes; resolves to `{ fixture, stop }`. */
 /**
  * A reverse proxy serving `target` (`http://127.0.0.1:port`) under `prefix`
  * (`/monokulo`) on `port`, as an operator's nginx would: it strips the
@@ -130,7 +129,8 @@ function startPrefixProxy(port, prefix, target) {
 }
 
 /**
- * Starts a stack. `options.prefix` (`/monokulo`) serves monokulo behind a
+ * Starts the three processes; resolves to `{ fixture, stop }`.
+ * `options.prefix` (`/monokulo`) serves monokulo behind a
  * reverse proxy under that path (startPrefixProxy), with `public_uri` the
  * proxy's address: the fixture's `monokulo_url` is then the proxy's, path
  * and all, `direct_url` monokulo's own, and `proxy_misses` every request

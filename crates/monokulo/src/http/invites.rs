@@ -415,7 +415,7 @@ pub async fn delete_invite_request(
         )
         .await;
     }
-    crate::base::redirect(&format!("/admin/invites?page={page}&deleted={id}"))
+    crate::base::redirect(format!("/admin/invites?page={page}&deleted={id}"))
 }
 
 /// `POST /admin/invites/delete-all` - clears every currently
@@ -450,7 +450,7 @@ pub async fn delete_all_invite_requests(
         )
         .await;
     }
-    crate::base::redirect(&format!("/admin/invites?cleared={cleared}"))
+    crate::base::redirect(format!("/admin/invites?cleared={cleared}"))
 }
 
 fn cleared_message(n: usize) -> String {

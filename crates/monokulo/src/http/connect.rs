@@ -240,7 +240,7 @@ pub async fn start(
         if !query.name.is_empty() {
             this_url.push_str(&format!("&name={}", encode_query_value(&query.name)));
         }
-        return crate::base::redirect(&format!("/login?next={}", encode_query_value(&this_url)));
+        return crate::base::redirect(format!("/login?next={}", encode_query_value(&this_url)));
     };
     let plugin = Plugin::new(slug, PluginName::clean(&query.name));
     let chrome =
@@ -297,7 +297,7 @@ pub async fn start(
             if let Some(name) = plugin.name() {
                 setup.append_pair("plugin_name", name.as_str());
             }
-            crate::base::redirect(&format!("/setup?{}", setup.finish()))
+            crate::base::redirect(format!("/setup?{}", setup.finish()))
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }

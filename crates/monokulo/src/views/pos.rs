@@ -85,7 +85,7 @@ mod tests {
         )));
         assert!(!html.contains("<nav class=\"site-nav\""));
         assert!(
-            html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href=(crate::base::url("/"))"#),
+            html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href="/""#),
             "the POS bar gets the site's mark: {html}"
         );
     }

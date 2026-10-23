@@ -842,7 +842,7 @@ fn unauthenticated(parts: &Parts) -> Response {
         return ApiError::Unauthorized.into_response();
     }
     let here = parts.uri.path_and_query().map_or("/", |p| p.as_str());
-    crate::base::redirect(&format!(
+    crate::base::redirect(format!(
         "/login?next={}",
         url::form_urlencoded::byte_serialize(here.as_bytes()).collect::<String>()
     ))
