@@ -5,8 +5,8 @@
 //! **`checkout_page`/`not_found_page` deliberately carry no site nav at
 //! all** - a merchant embeds `checkout_page` in an iframe inside their own
 //! checkout flow; Monokulo's own site navigation has no business appearing
-//! inside it. They still use the shared head partial for consistent
-//! typography/color, just not [`super::layout`]'s nav bar - see
+//! inside it. They still use the shared head for consistent
+//! typography/color, without the site nav - see
 //! [`super::layout_bare_with_head`]/[`super::layout_bare`].
 //!
 //! The payment details and refund form are server-rendered and usable with
