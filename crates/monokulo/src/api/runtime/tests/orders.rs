@@ -419,6 +419,94 @@ async fn every_static_file_the_pages_reference_is_served_with_its_type() {
 /// (structured_logging.md D4); every other page is a snapshot with a
 /// Reload button. (The challenge page's continue refresh is covered
 /// by `views::challenge`.)
+/// No answer repeats a header (but `Set-Cookie`): the API, its problems
+/// and CORS preflights from another site, the checkout and its share
+/// page, the merchant's pages, the point of sale and the static files each
+/// send one `Vary` and one `Cache-Control`, whatever several layers added
+/// to them. (The recorded API exchanges are checked the same way, in
+/// `recording::exchange`.)
+#[tokio::test]
+async fn no_answer_repeats_a_header() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let session_token = signed_up_and_logged_in_session_token(
+        &router,
+        "one-vary@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let pk = create_connection(&router, &state, &session_token).await;
+    let store_id = state
+        .db
+        .lock()
+        .get_store_connection_by_public_key(&pk)
+        .unwrap()
+        .unwrap()
+        .id;
+    let order = body_json(
+        router
+            .clone()
+            .oneshot(create_order_request(&pk, "0.5", "XMR"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let order_id = order["order_id"].as_str().unwrap().to_owned();
+    let script = crate::assets::url("checkout.js");
+
+    let origin = "https://elsewhere.example";
+    let cookie = format!("session={session_token}");
+    let requests: Vec<(&str, String, Option<&str>, bool)> = vec![
+        ("GET", "/api/v1".into(), None, true),
+        ("GET", "/api/v1".into(), Some(pk.as_str()), true),
+        ("GET", "/api/v1/store".into(), Some(pk.as_str()), true),
+        ("GET", format!("/api/v1/orders/{order_id}"), Some(pk.as_str()), true),
+        ("GET", "/api/v1".into(), Some("sk_0000"), true),
+        ("OPTIONS", "/api/v1/orders".into(), None, true),
+        ("GET", "/api/v1/openapi.json".into(), None, true),
+        ("GET", format!("/checkout/{order_id}"), None, false),
+        ("GET", format!("/checkout/{order_id}"), None, true),
+        ("GET", format!("/checkout/{order_id}/share"), None, false),
+        ("GET", "/static/monokulo-client.js".into(), None, true),
+        ("GET", script, None, false),
+        ("GET", "/".into(), None, false),
+        ("GET", "/login".into(), None, false),
+        ("GET", "/status".into(), None, false),
+        ("GET", format!("/stores/{store_id}"), Some("cookie"), false),
+        ("GET", format!("/stores/{store_id}/pos"), Some("cookie"), false),
+        ("GET", format!("/stores/{store_id}/pos/orders"), Some("cookie"), false),
+        ("GET", format!("/stores/{store_id}/orders/{order_id}"), Some("cookie"), false),
+    ];
+    for (method, path, key, cross_origin) in requests {
+        let mut request = Request::builder().method(method).uri(&path);
+        match key {
+            Some("cookie") => request = request.header("cookie", &cookie),
+            Some(key) => request = request.header("authorization", format!("Bearer {key}")),
+            None => {}
+        }
+        if cross_origin {
+            request = request.header("origin", origin);
+        }
+        if method == "OPTIONS" {
+            request = request
+                .header("access-control-request-method", "POST")
+                .header("access-control-request-headers", "authorization, content-type");
+        }
+        let response = router
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let repeated = crate::http::repeated_headers(response.headers());
+        assert!(
+            repeated.is_empty(),
+            "{method} {path} ({}) repeats {repeated:?}: {:?}",
+            response.status(),
+            response.headers()
+        );
+    }
+}
+
 #[tokio::test]
 async fn only_the_checkout_refreshes_by_itself() {
     let (state, _engine) = test_state_with_real_engine().await;

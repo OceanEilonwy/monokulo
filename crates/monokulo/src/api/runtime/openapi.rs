@@ -367,7 +367,7 @@ pub fn build(examples: &[Exchange]) -> Value {
                 response["headers"] = json!({
                     "ETag": {"description": "The body's version: send it back in `If-None-Match`.", "schema": {"type": "string"}},
                     "Cache-Control": {"description": "`private, max-age=…`: keep it that long.", "schema": {"type": "string"}},
-                    "Vary": {"description": "`Authorization`: each key sees its own.", "schema": {"type": "string"}},
+                    "Vary": {"description": "One header naming `Authorization` (each key sees its own), and `Origin` when another site asks.", "schema": {"type": "string"}},
                 });
             }
             responses.insert(status.as_u16().to_string(), response);

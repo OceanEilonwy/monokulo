@@ -650,7 +650,7 @@ impl<B: Body> Respond for Cached<B> {
         if let Ok(cache) = HeaderValue::from_str(&format!("private, max-age={}", self.max_age)) {
             headers.insert(header::CACHE_CONTROL, cache);
         }
-        headers.append(header::VARY, HeaderValue::from_static("Authorization"));
+        crate::http::add_vary(headers, "Authorization");
         response
     }
 
