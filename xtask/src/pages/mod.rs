@@ -74,12 +74,14 @@ pub(crate) const HELP: &str = "\
                       Download main's newest OpenWrt apk repository, coverage, property, fuzz, scale and live-network\n\
                       artifacts\n\
                       into DIR, with DIR/sources.json naming their runs (needs the gh CLI)\n\
-        pages landing --site DIR [--github-url URL]\n\
+        pages landing --site DIR [--github-url URL] [--site-url URL]\n\
                       Build the landing page (GitHub Pages /) into DIR, which holds the\n\
-                      OpenWrt apk repository under openwrt/ (the page names its package and key)\n\
-        pages docs --out DIR
-                      Build the docs (GitHub Pages /docs/) from xtask/src/pages/docs/*.md, with the Geomart sample
-                      shop (examples/geomart/) under DIR/geomart/
+                      OpenWrt apk repository under openwrt/ (the page names its package and key, at\n\
+                      --site-url, https://docs.monokulo.com by default)\n\
+        pages docs --site DIR\n\
+                      Build the docs into the site DIR from xtask/src/pages/docs/*.md: /guide/, a folder\n\
+                      per page beside it, /api/, the Geomart sample shop (examples/geomart/) under\n\
+                      /geomart/, and a redirect from each page's old address under /docs/\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

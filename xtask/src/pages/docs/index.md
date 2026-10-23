@@ -21,8 +21,8 @@ anything.
    Monokulo's payment page in yours.
 5. **Handle the paid webhook** on your server: `order.paid`, signed, with
    your own order id in `merchant_order_id`. Ship on this, never on the
-   browser's word. See [Webhooks](webhooks/) and
-   [When is an order really paid?](paid/)
+   browser's word. See [Webhooks](../webhooks/) and
+   [When is an order really paid?](../paid/)
 6. **Verify your domain** with a DNS record, in the store's settings, so
    only your site can show the checkout. Subdomains (`pay.shop.example`)
    are covered too.
@@ -35,8 +35,9 @@ for your store's public key.
 
 ## Read next
 
-- [Walkthrough: Geomart](walkthrough-geomart/): the steps above, one at a
+- [Walkthrough: Geomart](../walkthrough-geomart/): the steps above, one at a
   time, on a small shop that sells shapes.
-- [JS library](js-library/): everything `monokulo-client.js` does.
-- [When is an order really paid?](paid/)
-- [Webhooks](webhooks/): every field, the signature, retries.
+- [JS library](../js-library/): everything `monokulo-client.js` does.
+- [When is an order really paid?](../paid/)
+- [Webhooks](../webhooks/): every field, the signature, retries.
+- [HTTP API](../api/): `/api/v1`, for a server, a shop plugin or an app.

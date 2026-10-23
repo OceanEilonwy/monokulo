@@ -10,7 +10,7 @@
 mod page;
 
 use super::site_assets;
-use super::site_header::GITHUB_URL;
+use super::site_header::{GITHUB_URL, SITE_URL};
 use crate::support::{at, files_under, Exit};
 use std::{
     fs, io,
@@ -19,10 +19,13 @@ use std::{
 
 const PUBLIC_KEY: &str = "openwrt/keys/monokulo.pem";
 
-/// `cargo xtask pages landing --site DIR [--github-url URL]`.
+/// `cargo xtask pages landing --site DIR [--github-url URL] [--site-url URL]`.
+/// The site's address is where routers fetch the apk repositories from:
+/// docs.monokulo.com unless a fork publishes its own.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
-    let (mut site, mut github_url) = (None, GITHUB_URL.to_string());
+    let (mut site, mut github_url, mut site_url) =
+        (None, GITHUB_URL.to_string(), SITE_URL.to_string());
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -31,27 +34,14 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
         match *flag {
             "--site" => site = Some(PathBuf::from(value)),
             "--github-url" => github_url = value.trim_end_matches('/').to_string(),
+            "--site-url" => site_url = value.trim_end_matches('/').to_string(),
             _ => return Err(bad(&format!("unknown option {flag}"))),
         }
     }
     let site = site.ok_or_else(|| bad("pages landing needs --site DIR"))?;
-    write(root, &site, &github_url)?;
+    write(root, &site, &github_url, &site_url)?;
     eprintln!("landing page in {}", site.display());
     Ok(Exit::SUCCESS)
-}
-
-/// The GitHub Pages address of a repository's URL: https://owner.github.io/name.
-fn pages_url(github_url: &str) -> io::Result<String> {
-    let path = github_url.strip_prefix("https://github.com/").unwrap_or("");
-    match path.split_once('/') {
-        Some((owner, name)) if !owner.is_empty() && !name.is_empty() => {
-            Ok(format!("https://{}.github.io/{name}", owner.to_lowercase()))
-        }
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("--github-url {github_url} is not https://github.com/OWNER/NAME"),
-        )),
-    }
 }
 
 /// One apk repository in the site: `openwrt/<release>/<arch>/`.
@@ -154,13 +144,12 @@ fn repos(site: &Path) -> io::Result<Vec<Repo>> {
 }
 
 /// Writes `index.html`, its assets and `.nojekyll` into `site`.
-fn write(root: &Path, site: &Path, github_url: &str) -> io::Result<()> {
-    let pages_url = pages_url(github_url)?;
+fn write(root: &Path, site: &Path, github_url: &str, site_url: &str) -> io::Result<()> {
     let repos = repos(site)?;
 
     let key_path = root.join(PUBLIC_KEY);
     let key = fs::read_to_string(&key_path).map_err(|e| at(&key_path, e))?;
-    let page = page::render(github_url, &pages_url, key.trim_end(), &repos).0;
+    let page = page::render(github_url, site_url, key.trim_end(), &repos).0;
     // The key the page tells routers to trust, beside the repositories.
     let published_key = site.join("openwrt/monokulo.pem");
     fs::write(&published_key, &key).map_err(|e| at(&published_key, e))?;
@@ -214,14 +203,13 @@ mod tests {
             "monokulo-0.2.0-r50.apk",
         );
 
-        write(&root, &site, "https://github.com/Owner/monokulo").unwrap();
+        write(&root, &site, "https://github.com/Owner/monokulo", SITE_URL).unwrap();
 
         let page = fs::read_to_string(site.join("index.html")).unwrap();
         // The install steps name the newest release's repository, and the
         // footer its version.
-        assert!(page.contains(
-            "https://owner.github.io/monokulo/openwrt/26.06/aarch64_cortex-a53/packages.adb"
-        ));
+        assert!(page
+            .contains("https://docs.monokulo.com/openwrt/26.06/aarch64_cortex-a53/packages.adb"));
         assert!(page.contains("Monokulo 0.2.0-r50 · "));
         // A dropdown option, and the install steps and package files, for
         // each version, the newest first.
@@ -260,7 +248,7 @@ mod tests {
         let scratch = Scratch::new("landing-empty");
         let site = scratch.join("site");
         fs::create_dir_all(site.join("openwrt")).unwrap();
-        let error = write(scratch.path(), &site, GITHUB_URL).unwrap_err();
+        let error = write(scratch.path(), &site, GITHUB_URL, SITE_URL).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

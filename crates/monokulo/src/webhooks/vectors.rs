@@ -129,7 +129,7 @@ fn vectors() -> Value {
         "about": "Webhook deliveries as monokulo sends them, for testing a plugin's receiver. \
                   Check each with your clock at `sent_at` and the webhook's `signing_secret`: \
                   every one under `deliveries` verifies, every one under `refuse` must not. \
-                  See https://oceaneilonwy.github.io/monokulo/docs/webhooks/.",
+                  See https://docs.monokulo.com/webhooks/.",
         "api_version": API_VERSION,
         "signing_secret": SECRET,
         "sent_at": SENT_AT,

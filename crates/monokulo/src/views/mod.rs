@@ -21,13 +21,17 @@ pub use shared::order_status::OrderStatus;
 use crate::assets;
 use crate::db::{Theme, UserRow};
 
-/// Where the docs are: the guides for adding Monokulo to a site, built and
-/// published with the GitHub Pages site (`cargo xtask pages docs`).
-pub const DOCS_URL: &str = "https://oceaneilonwy.github.io/monokulo/docs/";
+/// The project's site (docs.monokulo.com, GitHub Pages): the docs, built
+/// and published with it (`cargo xtask pages docs`), each page a folder at
+/// its top level.
+pub const SITE_URL: &str = "https://docs.monokulo.com/";
 
-/// A docs page, by its file under [`DOCS_URL`] (`js-library/`).
+/// The docs' front page: the guide for adding Monokulo to a site.
+pub const DOCS_URL: &str = "https://docs.monokulo.com/guide/";
+
+/// A docs page, by its folder under [`SITE_URL`] (`js-library/`).
 pub fn docs_url(page: &str) -> String {
-    format!("{DOCS_URL}{page}")
+    format!("{SITE_URL}{page}")
 }
 
 /// The small "opens elsewhere" arrow after a link to another site.
