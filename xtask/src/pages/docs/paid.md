@@ -21,7 +21,7 @@ then sends a signed `POST` for every change of an order's status
   "event_id": "evt_4be2d07a85c113e9",
   "event": "order.paid",
   "created_at": 1760020320,
-  "order_id": "5f01c9a7d2e14b88a3e0f9c6d1e21b07",
+  "order_id": "order_5f01c9a7d2e14b88a3e0f9c6d1e21b07",
   "status": "paid",
   "merchant_order_id": "gm-1042",
   "amount": "12.50",
