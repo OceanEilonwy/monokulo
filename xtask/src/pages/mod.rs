@@ -70,7 +70,7 @@ pub(crate) const HELP: &str = "\
                       Build the coverage report (GitHub Pages /testing/) from CI artifacts: the joined\n\
                       coverage artifact (or target/coverage), an engine-properties artifact, a folder of\n\
                       engine-fuzz artifacts, an engine-scale-measurements artifact, a live-network artifact,\n\
-                      and a JSON file naming the run behind each (docs/COVERAGE.md); replaces its own files\n\
+                      and a JSON file naming the run behind each; replaces its own files\n\
                       in DIR\n\
         pages fetch DIR [--repo OWNER/NAME] [--feature zmq|default]\n\
                       Download main's newest OpenWrt apk repository, coverage, property, fuzz, scale and live-network\n\
