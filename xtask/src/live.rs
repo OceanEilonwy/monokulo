@@ -46,6 +46,14 @@ pub(crate) const HELP: &str = "\
 /// A test the daily run runs is named with this prefix, and `#[ignore]`d.
 pub(crate) const PREFIX: &str = "live_";
 
+/// A live test that could not tell either way, because a service answered
+/// with its own documented refusal (a rate limit) rather than working or
+/// failing, prints a line starting with this and passes. The report lists
+/// it as inconclusive, with the rest of the line as the reason, so it is
+/// never mistaken for a pass. Only a refusal the service documents may be
+/// counted so; any other error still fails the test.
+pub(crate) const INCONCLUSIVE: &str = "live test inconclusive: ";
+
 /// The nextest filter for those tests: the last segment of the test's path
 /// starts with [`PREFIX`]. It runs with `--run-ignored only`.
 fn filter() -> String {
@@ -104,7 +112,11 @@ const SERVICES: [Service; 8] = [
     Service {
         id: "coinmarketcap",
         name: "CoinMarketCap public API",
-        probe: Probe::Get(&["https://pro-api.coinmarketcap.com/public-api/"]),
+        // The quote the test asks for: the API's root answers 200 even
+        // while its rate limit refuses every quote.
+        probe: Probe::Get(&[
+            "https://pro-api.coinmarketcap.com/public-api/v2/tools/price-conversion?amount=1&id=328&convert=USD",
+        ]),
     },
     Service {
         id: "haveno",
@@ -683,6 +695,49 @@ pub(crate) struct Live {
     /// Each test's `#[ignore]` reason, by `classname › name` as its JUnit
     /// report names it.
     pub(crate) reasons: BTreeMap<String, String>,
+    /// Why each inconclusive test (see [`INCONCLUSIVE`]) could not tell, by
+    /// the same key.
+    #[serde(default)]
+    pub(crate) inconclusive: BTreeMap<String, String>,
+}
+
+/// The passing cases of a JUnit report that said they were inconclusive
+/// (a line of their output starting with [`INCONCLUSIVE`]), and why.
+/// nextest keeps a passing test's output in the report under the live
+/// profile (`store-success-output`, .config/nextest.toml).
+pub(crate) fn inconclusive(path: &Path) -> io::Result<BTreeMap<String, String>> {
+    if !path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let text = fs::read_to_string(path).map_err(|e| at(path, e))?;
+    let doc = roxmltree::Document::parse(&text)
+        .map_err(|e| at(path, io::Error::new(io::ErrorKind::InvalidData, e)))?;
+    Ok(doc
+        .descendants()
+        .filter(|n| n.has_tag_name("testcase"))
+        .filter(|case| {
+            !case
+                .children()
+                .any(|c| c.has_tag_name("failure") || c.has_tag_name("error"))
+        })
+        .filter_map(|case| {
+            let out = case
+                .children()
+                .filter(|c| c.has_tag_name("system-out"))
+                .filter_map(|c| c.text())
+                .collect::<String>();
+            let reason = out
+                .lines()
+                .find_map(|line| line.trim().strip_prefix(INCONCLUSIVE))?;
+            Some((
+                case_key(
+                    case.attribute("classname").unwrap_or(""),
+                    case.attribute("name").unwrap_or(""),
+                ),
+                reason.trim().to_string(),
+            ))
+        })
+        .collect())
 }
 
 /// The services a reason names, by id.
@@ -790,10 +845,55 @@ fn report(root: &Path, out: &Path) -> io::Result<Exit> {
         services,
         wallets,
         reasons,
+        inconclusive: inconclusive(&out.join("rust-junit.xml"))?,
     };
     write_json(&out.join("live.json"), &live)?;
+    let annotations_path = out.join("annotations.txt");
+    fs::write(
+        &annotations_path,
+        annotations(&live, rust.iter().chain(&browser)),
+    )
+    .map_err(|e| at(&annotations_path, e))?;
     print!("{}", markdown(&live, rust.iter().chain(&browser)));
     Ok(Exit::SUCCESS)
+}
+
+/// Why a failed test failed: the service it needs that was down, or the code.
+fn cause(live: &Live, key: &str) -> String {
+    let reason = live.reasons.get(key).map_or("", String::as_str);
+    match missing(reason, &live.services) {
+        Some(service) => format!("{} was unreachable", service.name),
+        None => "a test failure: its services answered".to_string(),
+    }
+}
+
+/// One GitHub Actions annotation per failed test and per inconclusive one,
+/// for the workflow's last step to print, so each shows on the run's page
+/// by name and not only in the summary.
+fn annotations<'a>(live: &Live, cases: impl Iterator<Item = &'a Test>) -> String {
+    // A workflow command's message escapes these three.
+    let escape = |text: &str| {
+        text.replace('%', "%25")
+            .replace('\r', "%0D")
+            .replace('\n', "%0A")
+    };
+    let mut out = String::new();
+    for case in cases.filter(|c| c.status == TestStatus::Failed) {
+        let key = case_key(&case.class, &case.name);
+        let message = case.message.as_deref().unwrap_or("no message");
+        let first = message.lines().next().unwrap_or("");
+        out.push_str(&format!(
+            "::error title=Live test failed::{}\n",
+            escape(&format!("{key}: {} - {first}", cause(live, &key)))
+        ));
+    }
+    for (key, reason) in &live.inconclusive {
+        out.push_str(&format!(
+            "::warning title=Live test inconclusive::{}\n",
+            escape(&format!("{key}: {reason}"))
+        ));
+    }
+    out
 }
 
 fn markdown<'a>(live: &Live, cases: impl Iterator<Item = &'a Test>) -> String {
@@ -844,20 +944,32 @@ fn markdown<'a>(live: &Live, cases: impl Iterator<Item = &'a Test>) -> String {
             writeln!(out, "- {kept}").unwrap();
         }
     }
+    if !live.inconclusive.is_empty() {
+        writeln!(
+            out,
+            "\n### Inconclusive tests\n\nThese passed without telling either way: a service refused them with its own documented limit.\n"
+        )
+        .unwrap();
+        for (key, reason) in &live.inconclusive {
+            writeln!(
+                out,
+                "- ⚠️ <code>{}</code>: {}",
+                crate::support::escape_html(key),
+                crate::support::escape_html(reason)
+            )
+            .unwrap();
+        }
+    }
     let failed: Vec<&Test> = cases.filter(|c| c.status == TestStatus::Failed).collect();
     if !failed.is_empty() {
         writeln!(out, "\n### Why each test failed\n").unwrap();
         for case in failed {
             let key = case_key(&case.class, &case.name);
-            let reason = live.reasons.get(&key).map_or("", String::as_str);
-            let cause = match missing(reason, &live.services) {
-                Some(service) => format!("{} was unreachable", service.name),
-                None => "a test failure: its services answered".to_string(),
-            };
             writeln!(
                 out,
-                "- <code>{}</code>: {cause}",
-                crate::support::escape_html(&key)
+                "- <code>{}</code>: {}",
+                crate::support::escape_html(&key),
+                cause(live, &key)
             )
             .unwrap();
         }
@@ -1127,10 +1239,20 @@ mod tests {
                 "pos.spec.js › pays".to_string(),
                 BROWSER_NEEDS.to_string(),
             )]),
+            inconclusive: BTreeMap::from([(
+                "shared › live_cmc".to_string(),
+                "rate-limited (HTTP 429)".to_string(),
+            )]),
         };
         let failed = |class: &str, name: &str| case(class, name, TestStatus::Failed);
         let cases = [failed("pos.spec.js", "pays"), failed("shared", "live_dns")];
         let text = markdown(&live, cases.iter());
+        assert_eq!(
+            annotations(&live, cases.iter()),
+            "::error title=Live test failed::pos.spec.js › pays: Funded stagenet test wallets was unreachable - boom\n\
+             ::error title=Live test failed::shared › live_dns: a test failure: its services answered - boom\n\
+             ::warning title=Live test inconclusive::shared › live_cmc: rate-limited (HTTP 429)\n"
+        );
         assert!(
             text.contains(
                 "| Funded stagenet test wallets | ❌ unreachable | fund the CI spender at 53etP |"
@@ -1152,6 +1274,36 @@ mod tests {
                 "- <code>shared › live_dns</code>: a test failure: its services answered"
             ),
             "{text}"
+        );
+        assert!(
+            text.contains("- ⚠️ <code>shared › live_cmc</code>: rate-limited (HTTP 429)"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_passing_case_that_says_it_was_inconclusive_is_listed_with_its_reason() {
+        let scratch = crate::support::Scratch::new("live-inconclusive");
+        let path = scratch.join("junit.xml");
+        fs::write(
+            &path,
+            format!(
+                r#"<testsuites><testsuite name="shared">
+<testcase classname="shared" name="coinmarketcap::tests::live_cmc"><system-out>attempt 1: rate-limited
+{INCONCLUSIVE}still rate-limited (HTTP 429)
+</system-out></testcase>
+<testcase classname="shared" name="live_dns"><system-out>resolved</system-out></testcase>
+<testcase classname="shared" name="live_failed"><failure message="boom"/><system-out>{INCONCLUSIVE}not this one</system-out></testcase>
+</testsuite></testsuites>"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            inconclusive(&path).unwrap(),
+            BTreeMap::from([(
+                "shared › coinmarketcap::tests::live_cmc".to_string(),
+                "still rate-limited (HTTP 429)".to_string()
+            )])
         );
     }
 }

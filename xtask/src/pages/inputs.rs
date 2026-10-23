@@ -118,7 +118,7 @@ pub(crate) struct Test {
     /// The `hostname` of its testsuite: the Playwright project, or empty.
     pub(super) project: String,
     /// Why it failed or was skipped, where the report says.
-    pub(super) message: Option<String>,
+    pub(crate) message: Option<String>,
 }
 
 pub(crate) fn junit(path: &Path) -> io::Result<Vec<Test>> {
@@ -1055,6 +1055,8 @@ pub(super) struct LiveTest {
     /// For a failure, the service it needs that wasn't answering when the
     /// run checked: the failure is that service's, not the code's.
     pub(super) unreachable: Option<String>,
+    /// For a pass, why it could not tell either way (`live::INCONCLUSIVE`).
+    pub(super) inconclusive: Option<String>,
 }
 
 /// The live-network artifact as the page shows it.
@@ -1114,9 +1116,18 @@ pub(super) fn live(src: &Path) -> io::Result<Option<LiveRun>> {
                 .then(|| live::missing(reason, &summary.services))
                 .flatten()
                 .map(|c| c.name.clone());
+            let inconclusive = (test.status == TestStatus::Passed)
+                .then(|| {
+                    summary
+                        .inconclusive
+                        .get(&live::case_key(&test.class, &test.name))
+                        .cloned()
+                })
+                .flatten();
             LiveTest {
                 needs: live::needs(reason).iter().map(|id| name_of(id)).collect(),
                 unreachable,
+                inconclusive,
                 suite,
                 test,
             }

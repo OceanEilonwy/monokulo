@@ -426,18 +426,89 @@ mod tests {
         );
     }
 
+    /// CoinMarketCap's answer to a plain request for the live test's quote:
+    /// its status, `Retry-After` and body. Asked only after the provider was
+    /// refused, to log the limit's own words and honour its wait.
+    async fn plain_answer(url: &str) -> (u16, Option<std::time::Duration>, String) {
+        match reqwest::get(url).await {
+            Err(e) => (0, None, e.to_string()),
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .map(std::time::Duration::from_secs);
+                let body = response.text().await.unwrap_or_default();
+                (status, retry_after, body)
+            }
+        }
+    }
+
     #[tokio::test]
     // Run daily by `cargo xtask live` (live-network.yml), never per change.
     #[ignore = "needs the live CoinMarketCap API"]
     async fn live_coinmarketcap_api_quotes_usd() {
-        let provider =
-            CoinMarketCapRateProvider::new("https://pro-api.coinmarketcap.com/public-api");
-        let usd = provider
-            .piconero_per_unit_cached("USD", TTL)
-            .await
-            .expect("real call failed")
-            .expect("no USD rate");
-        println!("live coinmarketcap smoke test: piconero_per_unit(\"USD\") = {usd}");
-        assert!(usd > 0);
+        const BASE: &str = "https://pro-api.coinmarketcap.com/public-api";
+        const TRIES: u32 = 6;
+        const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+        let url = format!("{BASE}/v2/tools/price-conversion?amount=1&id={MONERO_ID}&convert=USD");
+        let provider = CoinMarketCapRateProvider::new(BASE);
+        // The keyless API's rate pool is shared by everyone on an address,
+        // and a CI runner's address is shared by many. CoinMarketCap's advice
+        // for its 429 is to back off exponentially (1, 2, 4, 8 s); a
+        // `Retry-After`, when it sends one, is waited out in full.
+        let mut backoff = std::time::Duration::from_secs(1);
+        let started = std::time::Instant::now();
+        for attempt in 1..=TRIES {
+            let error = match provider.piconero_per_unit_cached("USD", TTL).await {
+                Ok(rate) => {
+                    let usd = rate.expect("CoinMarketCap answered with no USD quote");
+                    println!("live coinmarketcap smoke test: piconero_per_unit(\"USD\") = {usd}");
+                    assert!(usd > 0);
+                    return;
+                }
+                Err(error) => error,
+            };
+            let limited = matches!(
+                &error,
+                ExchangeRateError::Request(e)
+                    if e.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
+            );
+            assert!(limited, "real call failed: {error:?}");
+            let (status, retry_after, body) = plain_answer(&url).await;
+            println!("attempt {attempt}: rate-limited; a plain request got HTTP {status}, Retry-After {retry_after:?}: {body}");
+            // A wait longer than a test should take ends the tries early.
+            if attempt == TRIES || retry_after.is_some_and(|wait| wait > MAX_WAIT) {
+                // Only CoinMarketCap's own documented limit, in its own
+                // shape, is inconclusive; anything else fails the test.
+                let message = serde_json::from_str::<serde_json::Value>(&body)
+                    .ok()
+                    .and_then(|b| {
+                        let status = b.get("status")?;
+                        Some(format!(
+                            "error_code {}: {}",
+                            status.get("error_code")?,
+                            status.get("error_message")?.as_str()?
+                        ))
+                    });
+                match (status, message) {
+                    (429, Some(message)) => {
+                        // `cargo xtask live report` lists this line in the
+                        // job summary and on the Live tests page.
+                        println!(
+                            "live test inconclusive: CoinMarketCap's keyless API still rate-limited this address \
+                             after {attempt} tries over {:.0?} (HTTP 429, Retry-After {retry_after:?}, {message})",
+                            started.elapsed()
+                        );
+                        return;
+                    }
+                    _ => panic!("real call failed: {error:?}; then HTTP {status}: {body}"),
+                }
+            }
+            tokio::time::sleep(retry_after.map_or(backoff, |wait| wait.max(backoff))).await;
+            backoff *= 2;
+        }
     }
 }
