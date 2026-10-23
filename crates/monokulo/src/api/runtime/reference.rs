@@ -1,19 +1,20 @@
-//! The API's committed reference, written from the code so it can't drift:
+//! The API's reference, written from the code so it can't drift, and
+//! never committed: the docs build makes it (`cargo xtask pages api`, which
+//! runs this module's test with `MONOKULO_API_OUT` set):
 //!
-//! - `docs/api/examples.json`: one recorded exchange of each kind
+//! - `examples.json`: one recorded exchange of each kind
 //!   (`super::examples`);
-//! - `docs/api/openapi.json`: the OpenAPI document with those examples
+//! - `openapi.json`: the OpenAPI document with those examples
 //!   (`super::openapi`);
-//! - `docs/api/reference.json`: every resource (its description, methods,
-//!   who may call them, body schema, forms and examples) and every
-//!   problem, which `cargo xtask pages docs` turns into the docs site's
-//!   `/api/reference/`, `/rels/{rel}/` and `/problems/{slug}/` pages.
+//! - `reference.json`: every resource (its description, methods, who may
+//!   call them, body schema, forms and examples) and every problem, which
+//!   `cargo xtask pages api` turns into the docs site's `/api/reference/`,
+//!   `/rels/{rel}/` and `/problems/{slug}/` pages.
 //!
-//! A test makes the exchanges and checks all three are what this code
-//! writes. When a change is meant, write them again with
-//! `MONOKULO_WRITE_API=1 cargo nextest run -p monokulo api::runtime::reference`
-//! (twice when the examples change: the served document reads them when
-//! it's built).
+//! The test makes the exchanges against a real engine and checks what it
+//! writes: the document is OpenAPI 3.1, every example fits its schema,
+//! every resource and problem is there with its page, and every link
+//! names a route.
 
 use serde_json::{json, Value};
 
@@ -21,13 +22,6 @@ use super::catalog::{self, Kind};
 use super::examples::Exchange;
 use super::problem::Problem;
 use super::DOCS;
-
-/// Where the committed files are, from this crate.
-pub const EXAMPLES_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/api/examples.json");
-pub const OPENAPI_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/api/openapi.json");
-pub const REFERENCE_PATH: &str =
-    concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/api/reference.json");
 
 /// Every resource and problem, with what its page says.
 pub fn catalog(examples: &[Exchange]) -> Value {
@@ -87,7 +81,7 @@ pub fn catalog(examples: &[Exchange]) -> Value {
     })
 }
 
-/// `value` as committed: pretty, with a final newline.
+/// `value` as written: pretty, with a final newline.
 pub fn to_text(value: &Value) -> String {
     let mut text = serde_json::to_string_pretty(value).expect("JSON");
     text.push('\n');

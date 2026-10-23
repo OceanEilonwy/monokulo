@@ -1,7 +1,7 @@
 //! `cargo xtask pages api --site DIR`: the HTTP API's reference, generated
-//! from what monokulo commits about its own API (`docs/api/`, written by
-//! monokulo's `api::runtime::reference` test from the code and from real
-//! exchanges), into the site beside the docs' `/api/` page:
+//! from the code and from real exchanges (`crate::api`, which runs
+//! monokulo's `api::runtime::reference` test into `target/api/`; nothing is
+//! committed), into the site beside the docs' `/api/` page:
 //!
 //! - `api/reference/`: every resource, with its methods and who may call
 //!   them, and every problem;
@@ -27,9 +27,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Where monokulo commits its API reference, from the repository's root.
-const REFERENCE: &str = "docs/api/reference.json";
-const OPENAPI: &str = "docs/api/openapi.json";
+/// Where the reference is generated, from the repository's root.
+const GENERATED: &str = "target/api";
 
 /// `cargo xtask pages api --site DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -42,7 +41,12 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
             ))
         }
     };
-    let written = write(root, &site)?;
+    let generated = root.join(GENERATED);
+    let exit = crate::api::generate(root, &generated)?;
+    if !exit.succeeded() {
+        return Ok(exit);
+    }
+    let written = write(&generated, &site)?;
     eprintln!("API reference in {}: {written} page(s)", site.display());
     Ok(Exit::SUCCESS)
 }
@@ -52,10 +56,11 @@ fn read_json(path: &Path) -> io::Result<Value> {
     serde_json::from_str(&text).map_err(|e| at(path, io::Error::other(e)))
 }
 
-/// Writes every page and the OpenAPI document into `site`; returns how many
-/// pages.
-pub(super) fn write(root: &Path, site: &Path) -> io::Result<usize> {
-    let reference = read_json(&root.join(REFERENCE))?;
+/// Writes every page and the OpenAPI document, from the `generated`
+/// reference, into `site`; returns how many pages.
+pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
+    let reference = read_json(&generated.join("reference.json"))?;
+    points_here(&reference)?;
     let put = |path: PathBuf, contents: String| -> io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| at(dir, e))?;
@@ -84,12 +89,47 @@ pub(super) fn write(root: &Path, site: &Path) -> io::Result<usize> {
         )?;
         pages += 1;
     }
-    let openapi = root.join(OPENAPI);
+    let openapi = generated.join("openapi.json");
     let dir = site.join("api/v1");
     fs::create_dir_all(&dir).map_err(|e| at(&dir, e))?;
     fs::copy(&openapi, dir.join("openapi.json")).map_err(|e| at(&openapi, e))?;
     site_assets::write(site)?;
     Ok(pages)
+}
+
+/// The `mk` curie and each problem's `type` point at the pages this site
+/// publishes: a reference that names another site isn't published.
+fn points_here(reference: &Value) -> io::Result<()> {
+    let wrong = |what: &str, found: &str, expected: String| {
+        io::Error::other(format!(
+            "{what} points at {found}, not {expected} where this site publishes it"
+        ))
+    };
+    for resource in list(reference, "resources") {
+        let expected = format!("{}/rels/{}", site_header::SITE_URL, text(resource, "rel"));
+        if text(resource, "page") != expected {
+            return Err(wrong(
+                text(resource, "rel"),
+                text(resource, "page"),
+                expected,
+            ));
+        }
+    }
+    for problem in list(reference, "problems") {
+        let expected = format!(
+            "{}/problems/{}",
+            site_header::SITE_URL,
+            text(problem, "slug")
+        );
+        if text(problem, "type") != expected {
+            return Err(wrong(
+                text(problem, "slug"),
+                text(problem, "type"),
+                expected,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn list<'a>(value: &'a Value, key: &str) -> &'a [Value] {
@@ -359,17 +399,94 @@ fn problem_page(problem: &Value, reference: &Value) -> Markup {
 mod tests {
     use super::*;
     use crate::support::Scratch;
+    use serde_json::json;
 
-    /// Every resource and every problem monokulo names has its page, and the
-    /// OpenAPI document is published beside them.
+    /// A reference shaped as monokulo writes it: two resources and a
+    /// problem. Monokulo's own test checks the real one has every resource
+    /// and problem; this one checks each gets its page.
+    fn reference(site: &str) -> Value {
+        json!({
+            "resources": [
+                {
+                    "rel": "order",
+                    "key": "mk:order",
+                    "template": "/api/v1/orders/{order_id}",
+                    "media_type": "application/prs.hal-forms+json",
+                    "title": "One order.",
+                    "description": "One order.\n\nWhat the payer was asked for.",
+                    "page": format!("{site}/rels/order"),
+                    "methods": [{
+                        "method": "GET", "name": "show", "keys": ["sk", "ak"],
+                        "anyone": false, "doc": "The order.", "form": null, "template": null
+                    }],
+                    "body": {
+                        "type": "object",
+                        "required": ["order_id"],
+                        "properties": {
+                            "order_id": {"type": "string", "description": "Its id."},
+                            "wallet": {"$ref": "#/$defs/Wallet"},
+                            "_links": {"properties": {"self": {"description": "This order."}}}
+                        }
+                    },
+                    "examples": [{
+                        "method": "GET", "route": "/api/v1/orders/{order_id}",
+                        "path": "/api/v1/orders/order_1", "key": "sk", "status": 200,
+                        "response": {"order_id": "order_1"}
+                    }, {
+                        "method": "GET", "route": "/api/v1/orders/{order_id}",
+                        "path": "/api/v1/orders/order_2", "key": "sk", "status": 404,
+                        "response": {"type": format!("{site}/problems/not-found"), "status": 404}
+                    }]
+                },
+                {
+                    "rel": "orders",
+                    "key": "mk:orders",
+                    "template": "/api/v1/orders",
+                    "media_type": "application/prs.hal-forms+json",
+                    "title": "The store's orders.",
+                    "description": "The store's orders.",
+                    "page": format!("{site}/rels/orders"),
+                    "methods": [{
+                        "method": "POST", "name": "create", "keys": ["sk", "pk"],
+                        "anyone": false, "doc": "Makes an order.", "form": "create",
+                        "template": {"properties": [{"name": "amount", "required": true, "prompt": "How much."}]}
+                    }],
+                    "body": null,
+                    "examples": []
+                }
+            ],
+            "definitions": {"Wallet": {"type": "object"}},
+            "problems": [{
+                "slug": "not-found",
+                "type": format!("{site}/problems/not-found"),
+                "status": 404,
+                "title": "Not found",
+                "doc": "Nothing is there."
+            }]
+        })
+    }
+
+    fn generated(scratch: &Scratch, reference: &Value) -> PathBuf {
+        let dir = scratch.path().join("generated");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("reference.json"), reference.to_string()).unwrap();
+        fs::write(
+            dir.join("openapi.json"),
+            json!({"openapi": "3.1.0", "paths": {}}).to_string(),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Every resource and every problem in the reference has its page, and
+    /// the OpenAPI document is published beside them.
     #[test]
     fn every_relation_and_problem_has_a_page() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let reference = read_json(&root.join(REFERENCE)).unwrap();
+        let reference = reference(site_header::SITE_URL);
         let scratch = Scratch::new("api-reference");
-        let site = scratch.path();
-        write(root, site).unwrap();
-        assert!(!list(&reference, "resources").is_empty());
+        let site = scratch.path().join("site");
+        let pages = write(&generated(&scratch, &reference), &site).unwrap();
+        assert_eq!(pages, 4);
         for resource in list(&reference, "resources") {
             let html = fs::read_to_string(
                 site.join("rels")
@@ -381,13 +498,11 @@ mod tests {
             let linked = site_assets::assert_links_published(&html, &site.join("assets"));
             assert!(linked.contains(&"styles.css"));
         }
-        for problem in list(&reference, "problems") {
-            assert!(site
-                .join("problems")
-                .join(text(problem, "slug"))
-                .join("index.html")
-                .is_file());
-        }
+        let order = fs::read_to_string(site.join("rels/order/index.html")).unwrap();
+        assert!(order.contains("Wallet"), "{order}");
+        assert!(order.contains("Real exchanges"), "{order}");
+        let problem = fs::read_to_string(site.join("problems/not-found/index.html")).unwrap();
+        assert!(problem.contains("/api/v1/orders/order_2"), "{problem}");
         let openapi: Value =
             serde_json::from_str(&fs::read_to_string(site.join("api/v1/openapi.json")).unwrap())
                 .unwrap();
@@ -396,26 +511,15 @@ mod tests {
         assert!(index.contains(r#"href="../../rels/order/""#), "{index}");
     }
 
-    /// The `mk` curie and each problem's `type` point at these pages.
+    /// A reference whose links point at another site isn't published.
     #[test]
-    fn the_api_points_at_these_pages() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let reference = read_json(&root.join(REFERENCE)).unwrap();
-        for resource in list(&reference, "resources") {
-            assert_eq!(
-                text(resource, "page"),
-                format!("{}/rels/{}", site_header::SITE_URL, text(resource, "rel"))
-            );
-        }
-        for problem in list(&reference, "problems") {
-            assert_eq!(
-                text(problem, "type"),
-                format!(
-                    "{}/problems/{}",
-                    site_header::SITE_URL,
-                    text(problem, "slug")
-                )
-            );
-        }
+    fn a_reference_naming_another_site_is_refused() {
+        let scratch = Scratch::new("api-reference-elsewhere");
+        let generated = generated(&scratch, &reference("https://example.com"));
+        let error = write(&generated, &scratch.path().join("site")).unwrap_err();
+        assert!(
+            error.to_string().contains("where this site publishes it"),
+            "{error}"
+        );
     }
 }

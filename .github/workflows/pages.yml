@@ -74,8 +74,9 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
-      # Builds only xtask, which the Rust tests job's cache holds; the npm
-      # dependencies are for the ui islands script the site's pages load.
+      # Builds xtask, and monokulo's library tests for the API reference,
+      # which the Rust tests job's cache holds; the npm dependencies are for
+      # monokulo's build and the ui islands script the site's pages load.
       - uses: ./.github/actions/setup-rust
         with:
           shared-key: dev
@@ -105,8 +106,10 @@ jobs:
       # sample shop under /geomart/ and the redirects from /docs/.
       - name: Build the docs beside the landing page
         run: cargo xtask pages docs --site target/pages/site
-      # The HTTP API's reference beside the docs' /api/ page, from docs/api/,
-      # which monokulo's tests write from the code and from real exchanges.
+      # The HTTP API's reference beside the docs' /api/ page, generated here
+      # from the code and from real exchanges: it runs monokulo's
+      # api::runtime::reference test, which records them and writes the
+      # reference into target/api/. Nothing of it is committed.
       - name: Build the API reference beside the docs
         run: cargo xtask pages api --site target/pages/site
       # Every ui component, in both themes, from apps/stylebook in this

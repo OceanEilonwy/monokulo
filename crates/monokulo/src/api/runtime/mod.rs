@@ -1,6 +1,6 @@
 //! What the API's resources are written with: the catalog the macros fill,
 //! who may call what, HAL-FORMS, problems, scalars, extractors, the router,
-//! the OpenAPI document and the committed reference. See `crate::api`.
+//! the OpenAPI document and the generated reference. See `crate::api`.
 
 pub mod auth;
 pub mod catalog;
