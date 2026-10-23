@@ -228,7 +228,7 @@ test('client refund option frames the real checkout and retains its status strea
   await page.setContent('<div id="mount"></div>');
   await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
   await page.evaluate(({ base_url, public_key, order_id }) => {
-    window.Monokulo.mount('#mount', { orderId: order_id, endpoint: base_url, publicKey: public_key }, { refund: false });
+    window.Monokulo.mount('#mount', { orderId: order_id, monokulo: base_url, publicKey: public_key }, { refund: false });
   }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
   await expect(page.locator('#mount iframe')).toHaveAttribute('src', `${url}?refund=false`);
   await expect(page.frameLocator('#mount iframe').locator('#checkout-root')).toBeVisible();
@@ -265,7 +265,7 @@ test('client falls back to status polling when its stream is refused', async ({ 
   await page.setContent('<div id="mount"></div>');
   await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
   await page.evaluate(({ base_url, public_key, order_id }) => {
-    window.Monokulo.mount('#mount', order_id, { endpoint: base_url, publicKey: public_key,
+    window.Monokulo.mount('#mount', order_id, { monokulo: base_url, publicKey: public_key,
       onStatusChange: status => { document.querySelector('#mount').dataset.status = status; } });
   }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
   await expect(page.locator('#mount iframe')).toHaveAttribute('src', url);
@@ -638,7 +638,7 @@ test('real checkout takes its theme from ?theme=, the embed option, and the sign
   await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
   // No public key: framing an order from an earlier visit needs only where it is.
   await page.evaluate(({ base_url, order_id }) => {
-    window.Monokulo.mount('#pay', order_id, { endpoint: base_url, theme: 'light' });
+    window.Monokulo.mount('#pay', order_id, { monokulo: base_url, theme: 'light' });
   }, { base_url: fixture.base_url, order_id: orderId });
   await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${url}?theme=light`);
   await expect(page.frameLocator('#pay iframe').locator('html')).toHaveAttribute('data-theme', 'light');

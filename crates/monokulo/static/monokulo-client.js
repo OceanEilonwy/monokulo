@@ -24,7 +24,7 @@
  * Monokulo's own onion address, never its web address, so a customer on
  * Tor stays on Tor. Monokulo's API entry (`GET /api/v1`, open without a
  * key) names its onion address as `mk:onion-api` while it has one; the
- * library reads it once per endpoint and then makes the order, frames the
+ * library reads it once per Monokulo address and then makes the order, frames the
  * checkout and follows it there. Loading this file from the onion address
  * (`<script src="http://<monokulo>.onion/static/monokulo-client.js">`)
  * skips the lookup. A Monokulo with no onion address has nowhere else to
@@ -44,11 +44,12 @@
 (function (global) {
   "use strict";
 
-  // Orders remember the endpoint/publicKey they were created against, so
-  // `mount(selector, orderId, options)` can be called with just the id
-  // without the caller re-stating both. A page that reloads and wants to
-  // remount an orderId from a previous visit (no createOrder call this
-  // pageload) can still pass `endpoint`/`publicKey` explicitly via `options`.
+  // Orders remember the Monokulo address (`monokulo`) and publicKey they
+  // were created against, so `mount(selector, orderId, options)` can be
+  // called with just the id without the caller re-stating both. A page that
+  // reloads and wants to remount an orderId from a previous visit (no
+  // createOrder call this pageload) can still pass `monokulo` and
+  // `publicKey` explicitly via `options`.
   var knownOrders = {};
 
   // Every element that currently has a live mount, so a re-mount can tear the
@@ -68,7 +69,7 @@
   // whatever script is running *right now*, so by the time a merchant calls
   // into this library it is their code, not ours: null when called from an
   // event handler or a module, and their own page's origin when called from
-  // another classic <script src>. The endpoint inference then either fails
+  // another classic <script src>. Inferring the Monokulo address then either fails
   // outright or - worse - silently points the payment API at the merchant's
   // own static host. It is the script's URL without `/static/<file>`, so a
   // Monokulo a proxy serves under a path (`https://example.com/monokulo`)
@@ -109,31 +110,31 @@
     }
   }
 
-  // Whether calls to `endpoint` from this page should go to Monokulo's
-  // onion address instead: the page is on Tor and the endpoint isn't.
-  function wantsOnion(endpoint) {
-    return onOnionPage() && !isOnionUrl(endpoint);
+  // Whether calls to the Monokulo at `monokulo` from this page should go to
+  // its onion address instead: the page is on Tor and `monokulo` isn't.
+  function wantsOnion(monokulo) {
+    return onOnionPage() && !isOnionUrl(monokulo);
   }
 
-  // Each endpoint's onion address, looked up once (see the header comment).
-  var onionEndpoints = {};
+  // Each Monokulo address's onion address, looked up once (see the header comment).
+  var onionAddresses = {};
 
-  // Resolves to where this page calls Monokulo at: `endpoint`, or, from a
+  // Resolves to where this page calls Monokulo at: `monokulo`, or, from a
   // page on Tor, the origin of Monokulo's onion API entry (`mk:onion-api`)
   // when it has one.
-  function callEndpoint(endpoint) {
-    if (!wantsOnion(endpoint)) return Promise.resolve(endpoint);
-    if (!onionEndpoints[endpoint]) {
-      onionEndpoints[endpoint] = fetchSolvingChallenges(endpoint + "/api/v1", {})
+  function reach(monokulo) {
+    if (!wantsOnion(monokulo)) return Promise.resolve(monokulo);
+    if (!onionAddresses[monokulo]) {
+      onionAddresses[monokulo] = fetchSolvingChallenges(monokulo + "/api/v1", {})
         .then(function (response) { return response.ok ? response.json() : null; })
         .catch(function () { return null; })
         .then(function (entry) {
           var link = entry && entry._links && entry._links["mk:onion-api"];
-          if (!link || !link.href || !isOnionUrl(link.href)) return endpoint;
+          if (!link || !link.href || !isOnionUrl(link.href)) return monokulo;
           return new URL(link.href).origin;
         });
     }
-    return onionEndpoints[endpoint];
+    return onionAddresses[monokulo];
   }
 
   function leadingZeroBits(bytes) {
@@ -194,10 +195,10 @@
 
   function createOrder(params) {
     params = params || {};
-    var endpoint = (params.endpoint || scriptBase() || "").replace(/\/+$/, "");
+    var monokulo = (params.monokulo || scriptBase() || "").replace(/\/+$/, "");
     var publicKey = params.publicKey;
-    if (!endpoint) {
-      return Promise.reject(new Error("Monokulo.createOrder: endpoint is required (could not infer it from the script tag)"));
+    if (!monokulo) {
+      return Promise.reject(new Error("Monokulo.createOrder: monokulo (the Monokulo address, like https://pay.example.com) is required (could not infer it from the script tag)"));
     }
     if (!publicKey) {
       return Promise.reject(new Error("Monokulo.createOrder: publicKey is required"));
@@ -206,9 +207,9 @@
       return Promise.reject(new Error("Monokulo.createOrder: amount and currency are required (currency: \"XMR\", or any fiat currency this store's exchange rate provider supports)"));
     }
 
-    return callEndpoint(endpoint).then(function (resolved) {
-      endpoint = resolved;
-      return fetchSolvingChallenges(endpoint + "/api/v1/orders", {
+    return reach(monokulo).then(function (resolved) {
+      monokulo = resolved;
+      return fetchSolvingChallenges(monokulo + "/api/v1/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + publicKey },
         body: JSON.stringify({
@@ -242,10 +243,10 @@
       })
       .then(function (data) {
         // The order's links are paths on monokulo: resolved against the
-        // endpoint the order was made at.
+        // Monokulo address the order was made at.
         var links = data._links || {};
         var link = function (rel) {
-          return links[rel] && links[rel].href ? new URL(links[rel].href, endpoint + "/").href : null;
+          return links[rel] && links[rel].href ? new URL(links[rel].href, monokulo + "/").href : null;
         };
         // A page on Tor whose Monokulo was reached on its web address
         // anyway (its onion entry couldn't be read just then) still
@@ -263,7 +264,7 @@
           merchantOrderId: data.merchant_order_id,
           description: data.description,
           expiresAt: data.expires_at,
-          endpoint: endpoint,
+          monokulo: monokulo,
           publicKey: publicKey,
           // The payer's page, to link to or frame.
           checkoutUrl: checkoutUrl,
@@ -271,7 +272,7 @@
           orderUrl: link("self"),
         };
         knownOrders[order.orderId] = {
-          endpoint: endpoint,
+          monokulo: monokulo,
           publicKey: publicKey,
           checkoutUrl: order.checkoutUrl,
           orderUrl: order.orderUrl,
@@ -292,7 +293,7 @@
       throw new Error("Monokulo.mount: target element not found: " + selector);
     }
 
-    var orderId, endpoint, publicKey, known;
+    var orderId, monokulo, publicKey, known;
     if (orderIdOrOrder && typeof orderIdOrOrder === "object") {
       orderId = orderIdOrOrder.orderId;
       known = orderIdOrOrder;
@@ -300,14 +301,14 @@
       orderId = orderIdOrOrder;
       known = knownOrders[orderId] || {};
     }
-    endpoint = (options.endpoint || known.endpoint || scriptBase() || "").replace(/\/+$/, "");
+    monokulo = (options.monokulo || known.monokulo || scriptBase() || "").replace(/\/+$/, "");
     // Only needed to poll the order where Server-Sent Events can't be used.
     publicKey = options.publicKey || known.publicKey;
 
-    if (!orderId || !endpoint) {
+    if (!orderId || !monokulo) {
       throw new Error(
-        "Monokulo.mount: could not resolve orderId/endpoint - pass an order object " +
-          "from createOrder(), or {endpoint} in options for an orderId from a previous visit"
+        "Monokulo.mount: could not resolve orderId or the Monokulo address - pass an order object " +
+          "from createOrder(), or {monokulo} (the Monokulo address) in options for an orderId from a previous visit"
       );
     }
 
@@ -319,9 +320,9 @@
     }
 
     try {
-      new URL(endpoint + "/checkout/", global.location.href);
+      new URL(monokulo + "/checkout/", global.location.href);
     } catch (e) {
-      throw new Error("Monokulo.mount: endpoint is not a valid URL: " + endpoint);
+      throw new Error("Monokulo.mount: monokulo (the Monokulo address) is not a valid URL: " + monokulo);
     }
     // `theme: "light" | "dark"` pins the checkout's theme to match the
     // merchant's site; left out, it follows the customer's device.
@@ -329,7 +330,7 @@
     if (options.refund === false) query.push("refund=false");
     if (options.theme === "light" || options.theme === "dark") query.push("theme=" + options.theme);
     // The order's own links when this page made it; for an order from an
-    // earlier visit, the same paths built from its id, on the endpoint
+    // earlier visit, the same paths built from its id, on the Monokulo address
     // this page calls (the onion one, from a page on Tor).
     var checkoutUrl = null, orderUrl = null;
 
@@ -424,11 +425,11 @@
       });
     }
 
-    // `endpoint`: where this page calls Monokulo (`callEndpoint`).
-    function start(endpoint) {
+    // `monokulo`: the address this page calls Monokulo at (`reach`).
+    function start(monokulo) {
       if (destroyed) return;
-      checkoutUrl = known.checkoutUrl || endpoint + "/checkout/" + encodeURIComponent(orderId);
-      orderUrl = known.orderUrl || endpoint + "/api/v1/orders/" + encodeURIComponent(orderId);
+      checkoutUrl = known.checkoutUrl || monokulo + "/checkout/" + encodeURIComponent(orderId);
+      orderUrl = known.orderUrl || monokulo + "/api/v1/orders/" + encodeURIComponent(orderId);
       iframe.src = checkoutUrl + (query.length ? "?" + query.join("&") : "");
       if (typeof EventSource === "function") {
         listen();
@@ -437,10 +438,10 @@
       }
     }
 
-    if (known.checkoutUrl || !wantsOnion(endpoint)) {
-      start(endpoint);
+    if (known.checkoutUrl || !wantsOnion(monokulo)) {
+      start(monokulo);
     } else {
-      callEndpoint(endpoint).then(start);
+      reach(monokulo).then(start);
     }
 
     var handle = {

@@ -1752,7 +1752,7 @@ async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoint
     // key as its bearer, and frames monokulo's own checkout page: never
     // the engine, which is private.
     assert!(
-        js.contains("endpoint + \"/api/v1/orders\"")
+        js.contains("monokulo + \"/api/v1/orders\"")
             && js.contains("Authorization: \"Bearer \" + publicKey"),
         "should call monokulo's own order-creation endpoint, got: {js}"
     );
@@ -1778,7 +1778,7 @@ async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoint
     );
     assert!(
         js.contains(r#"new EventSource(checkoutUrl + "/events")"#)
-            && js.contains(r#"endpoint + "/api/v1/orders/" + encodeURIComponent(orderId)"#),
+            && js.contains(r#"monokulo + "/api/v1/orders/" + encodeURIComponent(orderId)"#),
         "expected mount() to follow the order directly, got: {js}"
     );
     assert!(js.contains("options.refund === false"));
