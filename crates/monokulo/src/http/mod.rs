@@ -767,7 +767,67 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .layer(middleware::from_fn(record_store))
         .layer(middleware::from_fn(telemetry::http::server))
+        // Outermost: whatever the layers above added, each list header
+        // goes out once.
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                one_of_each_list_header(response.headers_mut());
+                response
+            },
+        ))
         .with_state(state)
+}
+
+/// The headers whose values are lists, which some layers append to
+/// rather than set (the CORS layer adds `Vary: origin, …`, the API
+/// `Vary: Authorization`).
+const LIST_HEADERS: [header::HeaderName; 2] = [header::VARY, header::CACHE_CONTROL];
+
+/// Adds `token` to the one `Vary` header `headers` has (made when there's
+/// none), never as a second `Vary`: a client that keeps only the last
+/// header of each name would lose the first.
+pub fn add_vary(headers: &mut axum::http::HeaderMap, token: &'static str) {
+    headers.append(header::VARY, axum::http::HeaderValue::from_static(token));
+    one_of_each_list_header(headers);
+}
+
+/// Every header name `headers` has more than once, but `Set-Cookie` (one
+/// per cookie, by design): none, in every answer Monokulo gives.
+pub fn repeated_headers(headers: &axum::http::HeaderMap) -> Vec<header::HeaderName> {
+    headers
+        .keys()
+        .filter(|name| **name != header::SET_COOKIE && headers.get_all(*name).iter().count() > 1)
+        .cloned()
+        .collect()
+}
+
+/// Merges each [`LIST_HEADERS`] header that appears more than once into
+/// one, its entries comma-separated and each once (a `Vary` naming `*`
+/// is just `*`).
+pub fn one_of_each_list_header(headers: &mut axum::http::HeaderMap) {
+    for name in &LIST_HEADERS {
+        if headers.get_all(name).iter().count() < 2 {
+            continue;
+        }
+        let mut entries: Vec<String> = Vec::new();
+        for value in headers.get_all(name) {
+            for entry in value.to_str().unwrap_or_default().split(',') {
+                let entry = entry.trim();
+                if !entry.is_empty() && !entries.iter().any(|e| e.eq_ignore_ascii_case(entry)) {
+                    entries.push(entry.to_owned());
+                }
+            }
+        }
+        if *name == header::VARY && entries.iter().any(|e| e == "*") {
+            entries = vec!["*".to_owned()];
+        }
+        match axum::http::HeaderValue::from_str(&entries.join(", ")) {
+            Ok(value) => {
+                headers.insert(name, value);
+            }
+            Err(e) => tracing::error!(header = %name, error = %e, "a list header couldn't be merged"),
+        }
+    }
 }
 
 /// Adds the headers every response carries on the network its request

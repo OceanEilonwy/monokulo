@@ -355,10 +355,7 @@ fn open_from_shop_response(order_id: &crate::db::OrderId) -> Response {
 /// The checkout and share pages answer differently depending on
 /// `Sec-Fetch-Dest` ([`must_open_from_shop`]), so any cache must key on it.
 fn with_vary_on_fetch_dest(mut response: Response) -> Response {
-    response.headers_mut().append(
-        axum::http::header::VARY,
-        axum::http::HeaderValue::from_static("Sec-Fetch-Dest"),
-    );
+    super::add_vary(response.headers_mut(), "Sec-Fetch-Dest");
     response
 }
 

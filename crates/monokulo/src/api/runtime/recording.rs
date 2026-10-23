@@ -75,6 +75,14 @@ pub(super) async fn exchange(request: Request, next: Next) -> (Response, Option<
     let response = next
         .run(Request::from_parts(parts, Body::from(request_bytes)))
         .await;
+    // One of each header (one `Vary`, one `Cache-Control`): a client that
+    // keeps the last of each name would lose the others.
+    let repeated = crate::http::repeated_headers(response.headers());
+    assert!(
+        repeated.is_empty(),
+        "{method} {path} repeats {repeated:?}: {:?}",
+        response.headers()
+    );
     let content_type = response
         .headers()
         .get(header::CONTENT_TYPE)
