@@ -431,3 +431,45 @@ fn every_link_names_a_route(recorded: &[examples::Exchange]) {
     }
     assert!(checked > 10, "only {checked} links checked");
 }
+
+/// The entry offers each key the forms it may use, and only those: a shop's
+/// server sends its logs through the entry's form, never a path it builds.
+#[tokio::test]
+async fn the_entry_offers_each_key_its_own_forms() {
+    let (state, _engine) = state().await;
+    let router = build_router(state.clone());
+    let admin = admin_session_cookie(&router).await;
+    let session = admin.strip_prefix("session=").unwrap().to_owned();
+    let store = store_with_keys(&router, &state, &session, "bakery.example", "XMR").await;
+    let ak = connect_app(&router, &store.id, &format!("session={session}")).await;
+    for (key, forms) in [
+        (None, vec![]),
+        (Some(store.public_key.as_str()), vec!["create-order"]),
+        (
+            Some(store.secret_key.as_str()),
+            vec!["create-order", "send-logs"],
+        ),
+        (Some(ak.as_str()), vec!["create-order", "disconnect"]),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(api_request("GET", "/api/v1", key, None))
+            .await
+            .unwrap();
+        let body = crate::http::test_support::body_json(response).await;
+        let mut offered: Vec<&str> = body["_templates"]
+            .as_object()
+            .map(|templates| templates.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        offered.sort_unstable();
+        assert_eq!(offered, forms, "the forms offered to {key:?}");
+    }
+    let response = router
+        .clone()
+        .oneshot(api_request("GET", "/api/v1", Some(&store.secret_key), None))
+        .await
+        .unwrap();
+    let body = crate::http::test_support::body_json(response).await;
+    assert_eq!(body["_templates"]["send-logs"]["method"], "POST");
+    assert_eq!(body["_templates"]["send-logs"]["target"], "/api/v1/logs");
+}

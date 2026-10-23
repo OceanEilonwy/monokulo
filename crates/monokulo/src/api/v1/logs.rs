@@ -31,7 +31,7 @@ struct Entry {
 }
 
 /// Send the plugin's warnings and errors.
-#[post(sk)]
+#[post(sk, form = "send-logs")]
 async fn send(
     store: Store,
     instance: Instance,

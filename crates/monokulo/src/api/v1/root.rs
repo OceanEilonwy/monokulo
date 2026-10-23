@@ -1,4 +1,4 @@
-use super::{app, events, openapi, orders, store};
+use super::{app, events, logs, openapi, orders, store};
 use crate::api::{self, prelude::*};
 
 api::resource!("/api/v1", rel = "root");
@@ -6,7 +6,8 @@ api::resource!("/api/v1", rel = "root");
 /// The API's entry: where to go from here.
 ///
 /// Links to the store, its orders and its events (and, for a connected
-/// app, the app itself), the forms the key may use, and the API's
+/// app, the app itself), the forms the key may use (a shop's server also
+/// gets the one for sending its warnings and errors), and the API's
 /// description. A link or form the key may not use is left out, so a
 /// client can find out what its key does by reading this.
 #[api::body]
@@ -18,6 +19,7 @@ struct Body {
     service_desc: Link<openapi::Path>,
     service_doc: Href,
     create_order: Form<orders::create>,
+    send_logs: Form<logs::send>,
     disconnect: Form<app::delete>,
 }
 
@@ -36,6 +38,7 @@ async fn get() -> api::Result<Body> {
             media_type: "text/html",
         },
         create_order: Form::new(),
+        send_logs: Form::new(),
         disconnect: Form::new(),
     })
 }
