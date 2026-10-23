@@ -156,23 +156,62 @@ The documentation site consumes the same package token source.
 
 ## Adoption
 
-The initial extraction moves theme and self-hosted font ownership, enhanced selects, metadata badges and switches
-into the library. Signup/login fields and buttons, checkout's refund input,
-and POS primary/danger actions and text inputs use the new explicit primitives.
-Existing admin selects and switches now use the package implementation.
+Every server-rendered page (monokulo's views, the pages site) and the POS
+use `crates/ui` components for everything shared; only the custom
+visualisations stay application markup (the engine page's block chart and
+timeline, the logs histogram, trace waterfall and log rows, the
+proof-of-work pip chain, wallet backup words, and the testing report's
+figures, trees and charts).
 
-Legacy page styles remain in `site.css`, and some specialized POS controls
-(keypad, order tiles, scan actions) still have application styling. Migrate
-these deliberately after reviewing their contracts in the stylebook. Do not
-move application-specific CSS wholesale into the library or add a second
-implementation of an existing primitive.
+### Left as page markup, and why
 
-For each next adoption: choose an existing primitive or document a reusable
-variant, render the stylebook example, update the page markup, remove redundant
-page-level styling, and check the real workflow at its smallest supported
-viewport. Keep domain components such as order/payment state composition in
-the application until multiple consumers justify extracting a presentation
-contract.
+- The custom visualisations above.
+- The POS's background-order stack (small horizontal chips) and its hidden
+  file input.
+- The wallets' test-networks fold; `span.tag-active`; `dl.dns-record`.
+
+### Converting a page
+
+A page's markup becomes `ui` components wherever one fits; what's left is
+layout (the page's own `div`s and their classes), plain text elements
+(`p`, `h3`, `ul`, `code`, `strong`, links in text) and the custom
+visualisations listed above. Components keep the classes the app shipped
+(`.box`, `.error`, `.hint`, `.facts`, `.tag`, `.checks`, …), so a converted
+page looks the same.
+
+| Hand-written | Component |
+|---|---|
+| `button` (any `.btn*` class or none) | `ui::Button` (`.variant(Primary/Danger/Quiet)`, `.size(Compact)` for `.btn-sm`, `.kind(Submit)`) |
+| `a class="btn…"` | `ui::LinkButton` |
+| `button.icon-only` | `ui::IconButton` |
+| a row of buttons, or a lone submit under fields | `ui::FormActions` (gap and space above; `span class="spacer"` pushes the rest right) |
+| `input type=text/email/url/number/password/search` | `ui::Input` (its label elsewhere) or `ui::Field` (label, hint and error together) |
+| `textarea` | `ui::TextArea` |
+| `input type=checkbox` | `ui::Checkbox` (`.text(...)` beside it, or `.label(...)` in a table) |
+| on/off switch | `ui::Switch` (`views::controls::switch` wraps it) |
+| radio cards | `ui::RadioCards` |
+| `div.box` | `ui::Panel` |
+| `p.error/.warning/.success/.notice` | `ui::Alert` with a `Tone` (an error is `role="alert"`, the rest `role="status"`; `.quiet(true)` for neither; `.block(true)` for a `div`) |
+| `p.hint`, `span.hint` | `ui::Hint` (`.inline(true)` for the span) |
+| a page's `h1`, its breadcrumbs, actions beside it, a wizard's steps | `ui::PageHeader`, required by `views::Page` (`Page::new(title, header).render(chrome, body)`) |
+| `h2`–`h4` | `ui::Heading` |
+| a dialog's content, also a page without JavaScript | `views::DialogContent`: `.in_dialog()` in the `ui::Dialog`, `.page(crumbs, size)` for the page's header and body |
+| `dl.facts` | `ui::Facts` |
+| `span.tag…` | `ui::Tag` (`.tone(TagTone::…)`, or `.state(OrderState::…)`; `.short(…)` for a phone) |
+| network badge | `views::network_badge` (`ui::NetworkBadge`) |
+| shortened id/address | `views::short_id` / `short_address` (`ui::ShortValue`) |
+| `details` (plain, `.keys-help`, `.more-options`) | `ui::Disclosure` with a `DisclosureLook` |
+| `ul.checks` | `ui::Checks` |
+| `ol.timeline` | `ui::Timeline` |
+| `table` (`.table-cards`, `.table-stack`, `.kv-table`), `div.table-scroll` | `ui::Table` with `TableLook`, rows `ui::Row`/`ui::Cell` (`.part(CellPart::…)`, `.label(…)` for `data-label`, `.optional(true)` for `col-optional`) |
+| `dialog`, its title and actions, its page | `ui::Dialog`, `DialogTitle`, `DialogActions`, `DialogPage` |
+| `select` | `ui::Select` |
+
+A component takes no `class` or `style`: a page that positions or styles
+one names it with a `data-*` attribute (`.attr("data-table", "orders")`)
+or styles its container, and its CSS selectors follow. A page's own
+layout classes stay on its own elements. Where nothing fits, the markup
+stays and the gap is noted under "Left as page markup" above.
 
 ## Verification
 
