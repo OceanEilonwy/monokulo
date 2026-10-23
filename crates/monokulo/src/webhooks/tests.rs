@@ -834,7 +834,10 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
         );
         assert_eq!(
             body["_links"]["mk:dashboard-order"]["href"],
-            format!("https://www.monokulo.com/stores/{}/orders/{order}", shop.store),
+            format!(
+                "https://www.monokulo.com/stores/{}/orders/{order}",
+                shop.store
+            ),
             "{event}"
         );
         events.insert(event);
@@ -1073,7 +1076,8 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
         Arc::clone(&shop.state.webhooks),
         Arc::clone(&apps),
     );
-    let addresses = crate::webhooks::Addresses::new(shop.state.settings.clone(), shop.state.tor.clone());
+    let addresses =
+        crate::webhooks::Addresses::new(shop.state.settings.clone(), shop.state.tor.clone());
     let reader = tokio::spawn(async move {
         let _ = subscriber::follow(
             &db,

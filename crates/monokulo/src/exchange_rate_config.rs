@@ -138,12 +138,10 @@ impl RatesUnavailable {
         let mut problem =
             crate::api::runtime::problem::Problem::RatesUnavailable.detail(self.message());
         if let Some(secs) = self.retry_after_secs() {
-            problem = problem
-                .with("retry_after", serde_json::json!(secs))
-                .header(
-                    axum::http::header::RETRY_AFTER,
-                    axum::http::HeaderValue::from(secs),
-                );
+            problem = problem.with("retry_after", serde_json::json!(secs)).header(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(secs),
+            );
         }
         problem
     }

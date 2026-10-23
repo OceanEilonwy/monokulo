@@ -89,18 +89,15 @@ fn hrefs(body: &Value) -> Vec<String> {
 async fn no_machine_route_is_ever_challenged() {
     let engine = engine().await;
     let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
-    fixture
-        .state
-        .abuse
-        .reload(crate::abuse::AbuseConfig {
-            under_attack: true,
-            soft_per_min: 1,
-            hard_per_min: 10_000,
-            signed_in_per_min: 10_000,
-            per_store_key_per_min: 10_000,
-            client_logs_per_min: 10_000,
-            ..fixture.state.abuse.config()
-        });
+    fixture.state.abuse.reload(crate::abuse::AbuseConfig {
+        under_attack: true,
+        soft_per_min: 1,
+        hard_per_min: 10_000,
+        signed_in_per_min: 10_000,
+        per_store_key_per_min: 10_000,
+        client_logs_per_min: 10_000,
+        ..fixture.state.abuse.config()
+    });
     let from_one_peer = |mut request: Request<Body>| {
         request.extensions_mut().insert(axum::extract::ConnectInfo(
             "198.51.100.9:4000".parse::<std::net::SocketAddr>().unwrap(),

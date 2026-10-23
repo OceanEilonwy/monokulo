@@ -282,7 +282,9 @@ pub async fn checkout_page(
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
-        Err(LoadError::EngineUnavailable) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(LoadError::EngineUnavailable) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if must_open_from_shop(&state, &row, &order_id, &headers).await {
@@ -903,7 +905,9 @@ pub async fn checkout_share_page(
             true
         }
         Err(LoadError::NotFound) => false,
-        Err(LoadError::EngineUnavailable) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(LoadError::EngineUnavailable) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let status = if found {

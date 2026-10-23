@@ -825,7 +825,9 @@ pub fn one_of_each_list_header(headers: &mut axum::http::HeaderMap) {
             Ok(value) => {
                 headers.insert(name, value);
             }
-            Err(e) => tracing::error!(header = %name, error = %e, "a list header couldn't be merged"),
+            Err(e) => {
+                tracing::error!(header = %name, error = %e, "a list header couldn't be merged")
+            }
         }
     }
 }

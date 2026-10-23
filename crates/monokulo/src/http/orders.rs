@@ -1465,9 +1465,14 @@ pub async fn create_order(
                     "Something went wrong. Please try again.",
                 )
             };
-            let page =
-                render_create_order_page(&state, row, &user, Some(&form), Some(message.to_string()))
-                    .await;
+            let page = render_create_order_page(
+                &state,
+                row,
+                &user,
+                Some(&form),
+                Some(message.to_string()),
+            )
+            .await;
             (status, page).into_response()
         }
     }

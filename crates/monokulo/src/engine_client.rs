@@ -326,8 +326,10 @@ impl EngineTarget {
             }
             #[cfg(feature = "embedded-engine")]
             Transport::Embedded { router, runtime } => {
-                let answer =
-                    Self::answer(router, self.embedded_request(call, Some("text/event-stream"))?);
+                let answer = Self::answer(
+                    router,
+                    self.embedded_request(call, Some("text/event-stream"))?,
+                );
                 // The timeout is made where it's awaited (lazily), so on the
                 // engine's runtime it's the engine's timer.
                 let opened = async move {
@@ -345,9 +347,10 @@ impl EngineTarget {
                             .checked()
                             .expect_err("a failure status is an error"));
                     }
-                    Ok(response.into_body().into_data_stream().map(|chunk| {
-                        chunk.map_err(|e| EngineClientError::Embedded(e.to_string()))
-                    }))
+                    Ok(response
+                        .into_body()
+                        .into_data_stream()
+                        .map(|chunk| chunk.map_err(|e| EngineClientError::Embedded(e.to_string()))))
                 };
                 let Some(runtime) = runtime else {
                     return Ok(opened.await?.boxed());
