@@ -660,7 +660,7 @@ pub fn build_router(state: AppState) -> Router {
     // The payer's pages, keyed by the order alone, and the machine API:
     // the surfaces a shop, an app or a customer's browser reaches, under
     // the embed policy, the per-client budget and the embed CORS rules.
-    let pay_router = Router::new()
+    let api_and_checkout = Router::new()
         .route(
             crate::api::checkout::Path::TEMPLATE,
             axum::routing::get(checkout::checkout_page),
@@ -680,7 +680,7 @@ pub fn build_router(state: AppState) -> Router {
         // runs (`http::abuse`).
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            abuse::pay_middleware,
+            abuse::api_and_checkout_middleware,
         ))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
@@ -722,7 +722,7 @@ pub fn build_router(state: AppState) -> Router {
             abuse::site_middleware,
         ));
 
-    let router = router.merge(pay_router);
+    let router = router.merge(api_and_checkout);
 
     // A plain static file, not state-changing - no rate limiter needed.
     let router = router.route(
@@ -1104,7 +1104,7 @@ pub(crate) fn session_log_id(token_hash: &TokenHash) -> String {
 
 /// Puts the store a dashboard store page is about on its lines
 /// (`store.id`), first, so the middleware's lines carry it too. The public
-/// routes' store is recorded once `abuse::pay_middleware` has found it.
+/// routes' store is recorded once `abuse::api_and_checkout_middleware` has found it.
 async fn record_store(request: axum::extract::Request, next: middleware::Next) -> Response {
     if let Some(store) = request
         .uri()

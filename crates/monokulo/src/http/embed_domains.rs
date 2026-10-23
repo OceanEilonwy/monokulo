@@ -28,7 +28,7 @@ use crate::views::store_settings::StoreSection;
 
 /// Enforces a restricted store's embed policy on its public routes (CORS
 /// is `super::embed_cors_layer`'s job). The store is the one
-/// `super::abuse::pay_middleware` found ([`RequestStore`]):
+/// `super::abuse::api_and_checkout_middleware` found ([`RequestStore`]):
 ///
 /// - every response carries `Content-Security-Policy: frame-ancestors ...`,
 ///   so browsers only show the checkout inside monokulo itself or a
