@@ -534,9 +534,9 @@ where
             }
         }
     });
-    futures_util::StreamExt::flat_map(batches, |events| {
-        futures_util::stream::iter(events.into_iter().map(Ok))
-    })
+    batches
+        .flat_map(|events| futures_util::stream::iter(events.into_iter().map(Ok)))
+        .boxed()
 }
 
 /// One snapshot per order for [`batch_snapshot_stream`], keyed by order id.
@@ -552,11 +552,16 @@ pub type BatchSnapshot = Vec<(crate::db::OrderId, LiveSnapshot)>;
 /// when none are left. `snapshot` gets the live order ids and returns `None`
 /// when it could not read them, in which case the stream waits for the next
 /// change.
+///
+/// Boxed, so the response's `Send` check stops here: proving it through
+/// this stream's nested type and the caller's `snapshot` future runs past
+/// the compiler's recursion limit, a warning newer nightlies give on
+/// Windows that will become an error.
 pub fn batch_snapshot_stream<F, Fut>(
     subscriptions: Vec<(OrderSubscription, OrderChangeWatch)>,
     refresh_every: Duration,
     snapshot: F,
-) -> impl Stream<Item = Result<Event, Infallible>> + Send
+) -> futures_util::stream::BoxStream<'static, Result<Event, Infallible>>
 where
     F: FnMut(Vec<crate::db::OrderId>) -> Fut + Send + 'static,
     Fut: Future<Output = Option<BatchSnapshot>> + Send + 'static,
@@ -629,9 +634,9 @@ where
             }
         }
     });
-    futures_util::StreamExt::flat_map(batches, |events| {
-        futures_util::stream::iter(events.into_iter().map(Ok))
-    })
+    batches
+        .flat_map(|events| futures_util::stream::iter(events.into_iter().map(Ok)))
+        .boxed()
 }
 
 /// Reads SSE frames from `body` until one full event arrives, returning its
