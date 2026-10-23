@@ -143,7 +143,7 @@ fn event(seq: i64, store: &str, order: &str, event_type: &str) -> LoggedEvent {
 fn queue(db: &Database, event: &LoggedEvent, now: i64) -> usize {
     db.lock()
         .queue_order_event(event, now, |store, metadata| {
-            body::body_v2(event, store, metadata)
+            body::body_v2(event, store, metadata, &Default::default())
         })
         .unwrap()
 }
@@ -565,14 +565,22 @@ async fn shop() -> Shop {
         .with_networks(&[monero::Network::Mainnet])
         .spawn()
         .await;
+    // At a web address, as an instance a plugin connects to is: the
+    // bodies' links are on it. (The options set the instance's own rate
+    // providers, so the local Coingecko goes in after them.)
     let state = AppState {
-        exchange_rate: Arc::new(
-            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(coingecko().await),
-        ),
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::embedded_for_tests(
             engine.router(),
         )),
         ..AppState::for_tests()
+    }
+    .with_options("public_uri = \"https://www.monokulo.com\"\n[signup]\nmode = \"public\"\n")
+    .await;
+    let state = AppState {
+        exchange_rate: Arc::new(
+            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(coingecko().await),
+        ),
+        ..state
     };
     let router = build_router(state.clone());
     let session = signed_up_and_logged_in_session_token(
@@ -622,12 +630,15 @@ impl Shop {
             self.state.engine.client.clone(),
             Arc::clone(&self.state.webhooks),
         );
+        let addresses =
+            crate::webhooks::Addresses::new(self.state.settings.clone(), self.state.tor.clone());
         tokio::spawn(async move {
             let _ = subscriber::follow(
                 &db,
                 &engine,
                 &webhooks,
                 &Default::default(),
+                &addresses,
                 &delivery::SystemClock,
                 || {},
             )
@@ -814,6 +825,18 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
             .unwrap_or_else(|| panic!("no published vector for {event}"));
         let fields: Vec<String> = body.as_object().unwrap().keys().cloned().collect();
         assert_eq!(fields, expected, "{event}: {body}");
+        // Its links lead to its order, on the web address.
+        let order = body["order_id"].as_str().unwrap();
+        assert_eq!(
+            body["_links"]["mk:order"]["href"],
+            format!("https://www.monokulo.com/api/v1/orders/{order}"),
+            "{event}"
+        );
+        assert_eq!(
+            body["_links"]["mk:dashboard-order"]["href"],
+            format!("https://www.monokulo.com/stores/{}/orders/{order}", shop.store),
+            "{event}"
+        );
         events.insert(event);
     }
     for event in [
@@ -1050,12 +1073,14 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
         Arc::clone(&shop.state.webhooks),
         Arc::clone(&apps),
     );
+    let addresses = crate::webhooks::Addresses::new(shop.state.settings.clone(), shop.state.tor.clone());
     let reader = tokio::spawn(async move {
         let _ = subscriber::follow(
             &db,
             &engine,
             &webhooks,
             &listening,
+            &addresses,
             &delivery::SystemClock,
             || {},
         )

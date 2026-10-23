@@ -7,7 +7,8 @@
 
 use serde::Serialize;
 
-use crate::db::{LoggedEvent, OrderCurrencyMetadataRow, StoreConnectionRow};
+use crate::api::runtime::hal::{AbsoluteLinks, OnionLink};
+use crate::db::{LoggedEvent, OrderCurrencyMetadataRow, OrderId, StoreConnectionRow};
 
 /// The `api_version` this body carries.
 pub const API_VERSION: u8 = 2;
@@ -43,6 +44,56 @@ struct BodyV2<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     fx_rate: Option<String>,
     store: StoreRef<'a>,
+    /// The order in the API (`mk:order`), its page for the merchant
+    /// (`mk:dashboard-order`) and its checkout (`mk:checkout`, and
+    /// `mk:onion-checkout` while there's an onion address): absolute, as
+    /// there's no request to resolve a path against.
+    #[serde(rename = "_links", skip_serializing_if = "AbsoluteLinks::is_empty")]
+    links: AbsoluteLinks,
+}
+
+/// This Monokulo's addresses when an event is queued, which a body's
+/// links are on: its web address (`public_uri`, with any path prefix)
+/// and its onion address, each `None` while it has none.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LinkBases {
+    pub web: Option<String>,
+    pub onion: Option<String>,
+}
+
+/// The links of a body about `store`'s order `order_id`, on `bases`.
+fn links(store: &StoreConnectionRow, order_id: &OrderId, bases: &LinkBases) -> AbsoluteLinks {
+    let mut links = AbsoluteLinks::default();
+    if let Some(web) = &bases.web {
+        links.add(
+            web,
+            crate::api::v1::order::Path {
+                order_id: order_id.clone(),
+            },
+        );
+        links.add(
+            web,
+            crate::api::dashboard_order::Path {
+                id: store.id.clone(),
+                order_id: order_id.clone(),
+            },
+        );
+        links.add(
+            web,
+            crate::api::checkout::Path {
+                order_id: order_id.clone(),
+            },
+        );
+    }
+    if let Some(onion) = OnionLink::new(
+        bases.onion.as_deref(),
+        crate::api::checkout::Path {
+            order_id: order_id.clone(),
+        },
+    ) {
+        links.add_onion("onion-checkout", onion);
+    }
+    links
 }
 
 #[derive(Serialize)]
@@ -52,11 +103,13 @@ struct StoreRef<'a> {
 }
 
 /// The body for `event` of `store`'s order, with `metadata` (what the
-/// customer was quoted) when monokulo recorded it.
+/// customer was quoted) when monokulo recorded it, and its links on
+/// `bases`.
 pub fn body_v2(
     event: &LoggedEvent,
     store: &StoreConnectionRow,
     metadata: Option<&OrderCurrencyMetadataRow>,
+    bases: &LinkBases,
 ) -> String {
     // Priced in XMR: no exchange rate was involved.
     let fx = metadata.filter(|m| !m.currency.eq_ignore_ascii_case("XMR"));
@@ -85,6 +138,7 @@ pub fn body_v2(
             id: store.id.as_str(),
             name: &store.name,
         },
+        links: links(store, &event.order_id, bases),
     };
     serde_json::to_string(&body).expect("a webhook body always serializes")
 }
@@ -187,6 +241,7 @@ mod tests {
             &paid,
             &store(),
             Some(&metadata("EUR", "12.50", 6_500_000_000, "coingecko")),
+            &LinkBases::default(),
         );
         assert_eq!(
             body,
@@ -207,6 +262,7 @@ mod tests {
             &detected,
             &store(),
             Some(&metadata("XMR", "0.08124531", 1_000_000_000_000, "xmr")),
+            &LinkBases::default(),
         ))
         .unwrap();
         assert_eq!(body["amount"], "0.08124531");
@@ -229,12 +285,78 @@ mod tests {
     #[test]
     fn an_order_monokulo_has_no_record_of_still_gets_a_body() {
         let body: serde_json::Value =
-            serde_json::from_str(&body_v2(&event("order.expired"), &store(), None)).unwrap();
+            serde_json::from_str(&body_v2(&event("order.expired"), &store(), None, &LinkBases::default()))
+                .unwrap();
         assert_eq!(body["api_version"], 2);
         assert_eq!(body["store"]["name"], "Bakery");
         for absent in ["amount", "currency", "fx_source", "fx_rate"] {
             assert!(body.get(absent).is_none(), "{absent}: {body}");
         }
+    }
+
+    /// Every event links its order in the API, its page on the dashboard
+    /// and its checkout, absolute on this Monokulo's web address (with its
+    /// path prefix), as the API names and titles them; its onion checkout
+    /// too while it has an onion address. A Monokulo with neither address
+    /// sends no links.
+    #[test]
+    fn a_body_links_its_order_absolute_on_this_monokulos_addresses() {
+        for name in ["order.paid", "order.expired", "order.cancelled", "order.double_spend_detected"] {
+            let body: serde_json::Value = serde_json::from_str(&body_v2(
+                &event(name),
+                &store(),
+                None,
+                &LinkBases {
+                    web: Some("https://pay.example/monokulo".into()),
+                    onion: Some("http://abc.onion".into()),
+                },
+            ))
+            .unwrap();
+            let links = &body["_links"];
+            assert_eq!(links["curies"][0]["href"], "https://docs.monokulo.com/rels/{rel}");
+            assert_eq!(
+                links["mk:order"]["href"],
+                "https://pay.example/monokulo/api/v1/orders/5f01c9a7",
+                "{name}"
+            );
+            assert!(links["mk:order"]["title"].as_str().is_some_and(|t| !t.is_empty()));
+            assert_eq!(
+                links["mk:dashboard-order"]["href"],
+                "https://pay.example/monokulo/stores/917701c2/orders/5f01c9a7"
+            );
+            assert_eq!(links["mk:dashboard-order"]["type"], "text/html");
+            assert_eq!(
+                links["mk:checkout"]["href"],
+                "https://pay.example/monokulo/checkout/5f01c9a7"
+            );
+            assert_eq!(
+                links["mk:onion-checkout"]["href"],
+                "http://abc.onion/checkout/5f01c9a7"
+            );
+        }
+        let web_only: serde_json::Value = serde_json::from_str(&body_v2(
+            &event("order.paid"),
+            &store(),
+            None,
+            &LinkBases {
+                web: Some("https://pay.example".into()),
+                onion: None,
+            },
+        ))
+        .unwrap();
+        assert!(web_only["_links"]["mk:onion-checkout"].is_null());
+        assert_eq!(
+            web_only["_links"]["mk:checkout"]["href"],
+            "https://pay.example/checkout/5f01c9a7"
+        );
+        let neither: serde_json::Value = serde_json::from_str(&body_v2(
+            &event("order.paid"),
+            &store(),
+            None,
+            &LinkBases::default(),
+        ))
+        .unwrap();
+        assert!(neither.get("_links").is_none());
     }
 
     #[test]

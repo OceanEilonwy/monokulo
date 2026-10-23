@@ -623,7 +623,7 @@ async fn seed_webhooks(
                 xmr_amount_piconero: 81_245_310_000,
             };
             db.queue_order_event(&event, at, |store, metadata| {
-                monokulo::webhooks::body::body_v2(&event, store, metadata)
+                monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
             })
             .map_err(failed)?;
             let id = db
@@ -777,7 +777,7 @@ async fn seed_webhooks(
             };
             let db = control.db.lock();
             db.queue_order_event(&event, event.created_at, |store, metadata| {
-                monokulo::webhooks::body::body_v2(&event, store, metadata)
+                monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
             })
             .map_err(failed)?;
             for other in &earlier {

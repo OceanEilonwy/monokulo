@@ -13,7 +13,7 @@
 use serde_json::{json, Value};
 use shared::xmr_amount::Piconero;
 
-use super::body::{body_v2, API_VERSION};
+use super::body::{body_v2, LinkBases, API_VERSION};
 use crate::db::{ConnectionId, LoggedEvent, OrderCurrencyMetadataRow, OrderId, StoreConnectionRow};
 
 /// Where the published file lives, from this crate.
@@ -82,9 +82,23 @@ fn event(n: u8, event_type: &str) -> LoggedEvent {
     }
 }
 
+/// The Monokulo every vector comes from: a web address, and no onion
+/// address but for the one delivery that shows one.
+fn web() -> LinkBases {
+    LinkBases {
+        web: Some("https://www.monokulo.com".into()),
+        onion: None,
+    }
+}
+
 /// One delivery as it arrives: its exact body and headers.
-fn delivery(name: &str, event: &LoggedEvent, metadata: &OrderCurrencyMetadataRow) -> Value {
-    let body = body_v2(event, &store(), Some(metadata));
+fn delivery(
+    name: &str,
+    event: &LoggedEvent,
+    metadata: &OrderCurrencyMetadataRow,
+    bases: &LinkBases,
+) -> Value {
+    let body = body_v2(event, &store(), Some(metadata), bases);
     json!({
         "name": name,
         "headers": {
@@ -112,22 +126,36 @@ fn vectors() -> Value {
     let mut deliveries: Vec<Value> = events
         .iter()
         .zip(1..)
-        .map(|(name, n)| delivery(name, &event(n, name), &eur))
+        .map(|(name, n)| delivery(name, &event(n, name), &eur, &web()))
         .collect();
     // Priced in XMR: no exchange rate, so no `fx_source` or `fx_rate`.
     deliveries.push(delivery(
         "order.paid priced in XMR",
         &event(9, "order.paid"),
         &metadata("XMR", "0.08124531", 1_000_000_000_000),
+        &web(),
     ));
     // Added after the others, so their ids stay as plugins pinned them.
     deliveries.push(delivery(
         "order.cancelled",
         &event(10, "order.cancelled"),
         &eur,
+        &web(),
+    ));
+    // From a Monokulo with an onion address: `mk:onion-checkout` too.
+    deliveries.push(delivery(
+        "order.paid from a Monokulo with an onion address",
+        &event(11, "order.paid"),
+        &eur,
+        &LinkBases {
+            onion: Some(
+                "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion".into(),
+            ),
+            ..web()
+        },
     ));
 
-    let paid = body_v2(&event(4, "order.paid"), &store(), Some(&eur));
+    let paid = body_v2(&event(4, "order.paid"), &store(), Some(&eur), &web());
     let signed = shared::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
     let tampered = paid.replace("12.50", "1.25");
     let old = SENT_AT - shared::webhook_sign::SIGNATURE_TOLERANCE_SECS - 1;
@@ -204,7 +232,7 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
         )
     };
     let deliveries = vectors["deliveries"].as_array().unwrap();
-    assert_eq!(deliveries.len(), 10);
+    assert_eq!(deliveries.len(), 11);
     for delivery in deliveries {
         assert!(verifies(delivery), "{delivery}");
         let body: Value = serde_json::from_str(delivery["body"].as_str().unwrap()).unwrap();

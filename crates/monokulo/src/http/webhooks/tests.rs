@@ -197,6 +197,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         state.engine.client.clone(),
         state.webhooks.clone(),
         state.apps.clone(),
+        crate::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
     ));
     let worker = tokio::spawn(crate::webhooks::delivery::run_delivery_loop(
         state.db.clone(),
@@ -348,7 +349,7 @@ async fn store_with_deliveries(
             xmr_amount_piconero: 1,
         };
         db.queue_order_event(&event, now - 600, |store, metadata| {
-            crate::webhooks::body::body_v2(&event, store, metadata)
+            crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
         })
         .unwrap();
         let id = db.recent_deliveries(&created.webhook.id, 1).unwrap()[0].id;
@@ -1086,7 +1087,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
                 xmr_amount_piconero: 1,
             };
             db.queue_order_event(&event, 1000, |store, metadata| {
-                crate::webhooks::body::body_v2(&event, store, metadata)
+                crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
             })
             .unwrap();
         }
