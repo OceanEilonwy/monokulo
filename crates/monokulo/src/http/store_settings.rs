@@ -1,4 +1,4 @@
-//! `POST /dashboard/stores/{id}/settings`: the store settings page's
+//! `POST /stores/{id}/settings`: the store settings page's
 //! settings form (`views::store_settings`), saved with its one save bar.
 //!
 //! The form carries every card's fields; only the cards whose values differ
@@ -123,13 +123,12 @@ pub async fn save(
             WebsiteRequest::To(site) => query.append_pair("site", &site),
             WebsiteRequest::Remove => query.append_pair("remove", "1"),
         };
-        format!("/dashboard/stores/{id}/settings/website?{}", query.finish())
+        format!("/stores/{id}/settings/website?{}", query.finish())
     });
     if plan.is_empty() {
         drop(policy);
         return redirect_303(
-            &website
-                .unwrap_or_else(|| format!("/dashboard/stores/{id}/settings?saved=nothing{tab}")),
+            &website.unwrap_or_else(|| format!("/stores/{id}/settings?saved=nothing{tab}")),
         );
     }
 
@@ -149,10 +148,7 @@ pub async fn save(
     if let Some(website) = website {
         return redirect_303(&website);
     }
-    redirect_303(&format!(
-        "/dashboard/stores/{id}/settings?saved={}",
-        ids.join(",")
-    ))
+    redirect_303(&format!("/stores/{id}/settings?saved={}", ids.join(",")))
 }
 
 async fn refused(

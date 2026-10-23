@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn renders_solid_mount_with_store_config_and_no_site_nav() {
-        let chrome = PageChrome::from_user(None, "/dashboard/stores/conn-1/pos");
+        let chrome = PageChrome::from_user(None, "/stores/conn-1/pos");
         let data = PosViewModel {
             connection_id: shared::ids::ConnectionId::new("conn-1"),
             display_name: "example.com".into(),

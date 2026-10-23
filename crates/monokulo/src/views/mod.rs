@@ -142,7 +142,7 @@ pub fn store_crumbs(
     display_name: &str,
     include_orders: bool,
 ) -> Vec<ui::Crumb> {
-    let store = format!("/dashboard/stores/{connection_id}");
+    let store = format!("/stores/{connection_id}");
     let orders = format!("{store}/orders");
     if include_orders {
         crumbs(&[(&store, display_name), (&orders, "Orders")])
@@ -661,7 +661,7 @@ pub fn logs_link(chrome: &PageChrome, field: &str, value: &str, text: &str) -> M
         value.replace('\\', "\\\\").replace('\'', "\\'")
     );
     let href = format!(
-        "/dashboard/admin/logs?q={}&range=all",
+        "/admin/logs?q={}&range=all",
         url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()
     );
     html! {
@@ -742,16 +742,16 @@ fn nav(chrome: &PageChrome, width: ui::PageWidth) -> Markup {
             a href="/" aria-current=[(chrome.current_path == "/").then_some("page")] { "Home" }
         }
         @if chrome.is_admin {
-            a href="/dashboard/admin/settings" { "Admin" }
-            a href="/dashboard/admin/invites" { "Invites" }
-            a href="/dashboard/admin/logs" { "Logs" }
+            a href="/admin/settings" { "Admin" }
+            a href="/admin/invites" { "Invites" }
+            a href="/admin/logs" { "Logs" }
             @if chrome.query_enabled {
                 a href=(query::PAGE) { "Query" }
             }
         }
         @if !chrome.logged_in {
-            a href="/dashboard/login" { "Log in" }
-            a href="/dashboard/signup" { "Sign up" }
+            a href="/login" { "Log in" }
+            a href="/signup" { "Sign up" }
         }
         @if chrome.logged_in {
             (account_menu(chrome))
@@ -796,7 +796,7 @@ pub fn account_menu(chrome: &PageChrome) -> Markup {
         (ui::MenuItem::new("Theme").note(theme_toggle(chrome)))
         (ui::MenuItem::new(html! { "Times in " (zone) }).href("/account#card-time").note("change").title(zone_title))
         hr;
-        (ui::MenuItem::new("Log out").post_to("/dashboard/logout"))
+        (ui::MenuItem::new("Log out").post_to("/logout"))
     };
     ui::Menu::new("Account menu", account_icon(), items)
         .title(chrome.email.clone())
@@ -811,7 +811,7 @@ pub fn theme_toggle(chrome: &PageChrome) -> Markup {
         Theme::Light => ui::ThemeChoice::Light,
         Theme::Dark => ui::ThemeChoice::Dark,
     };
-    ui::ThemeToggle::new(theme, "/dashboard/theme", chrome.current_path.clone()).render()
+    ui::ThemeToggle::new(theme, "/theme", chrome.current_path.clone()).render()
 }
 
 #[cfg(test)]
@@ -957,9 +957,9 @@ mod tests {
         let hamburger = at(r#"<label for="nav-toggle""#);
         let links = at(r#"<div class="site-nav-links">"#);
         let home = at(r#"<a href="/" aria-current="page">Home</a>"#);
-        let admin = at(r#"href="/dashboard/admin/settings">Admin<"#);
-        let invites = at(r#"href="/dashboard/admin/invites">Invites<"#);
-        let logs = at(r#"href="/dashboard/admin/logs">Logs<"#);
+        let admin = at(r#"href="/admin/settings">Admin<"#);
+        let invites = at(r#"href="/admin/invites">Invites<"#);
+        let logs = at(r#"href="/admin/logs">Logs<"#);
         let menu = at(r#"<details class="acct""#);
         assert!(
             status < hamburger
@@ -977,7 +977,6 @@ mod tests {
             html.contains(r#"<a href="/" class="site-nav-brand">"#),
             "{html}"
         );
-        assert!(!html.contains(r#"href="/dashboard""#), "{html}");
         assert!(!html.contains(">wallets<"), "{html}");
     }
 
@@ -1021,9 +1020,9 @@ mod tests {
         let wallets = at(
             r#"<a class="menu-item" href="/account?tab=wallets"><span>Wallets</span><span class="menu-note">3</span></a>"#,
         );
-        let theme = at(r#"<form method="post" action="/dashboard/theme" class="nav-theme-form">"#);
+        let theme = at(r#"<form method="post" action="/theme" class="nav-theme-form">"#);
         let times = at(r##"<a class="menu-item" href="/account#card-time""##);
-        let logout = at(r#"action="/dashboard/logout""#);
+        let logout = at(r#"action="/logout""#);
         assert!(
             who < account
                 && account < wallets
@@ -1051,23 +1050,17 @@ mod tests {
         )
         .into_string();
         assert!(merchant.contains("<small>Merchant</small>"), "{merchant}");
-        assert!(!merchant.contains("/dashboard/admin"), "{merchant}");
+        assert!(!merchant.contains("/admin"), "{merchant}");
     }
 
     #[test]
     fn signed_out_the_nav_offers_log_in_and_sign_up_and_no_account_controls() {
-        let chrome = PageChrome::from_user(None, "/dashboard/login");
+        let chrome = PageChrome::from_user(None, "/login");
         let html = nav(&chrome, ui::PageWidth::Normal).into_string();
-        assert!(
-            html.contains(r#"<a href="/dashboard/login">Log in</a>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<a href="/dashboard/signup">Sign up</a>"#),
-            "{html}"
-        );
+        assert!(html.contains(r#"<a href="/login">Log in</a>"#), "{html}");
+        assert!(html.contains(r#"<a href="/signup">Sign up</a>"#), "{html}");
         assert!(!html.contains("admin"));
-        assert!(!html.contains(r#"action="/dashboard/logout""#));
+        assert!(!html.contains(r#"action="/logout""#));
         assert!(!html.contains("theme-toggle"));
         assert!(!html.contains("acct"));
     }
@@ -1100,7 +1093,7 @@ mod tests {
             (Theme::Dark, "theme-toggle-dark"),
         ] {
             let chrome = PageChrome {
-                current_path: "/dashboard/stores".to_string(),
+                current_path: "/stores".to_string(),
                 ..signed_in("ann@example.org", false, theme)
             };
             let html = nav(&chrome, ui::PageWidth::Normal).into_string();
@@ -1118,8 +1111,8 @@ mod tests {
                 "expected a thumb element, got: {html}"
             );
             // Each option submits its theme through the same no-JS form.
-            assert!(html.contains(r#"<form method="post" action="/dashboard/theme""#));
-            assert!(html.contains(r#"<input type="hidden" name="next" value="/dashboard/stores">"#));
+            assert!(html.contains(r#"<form method="post" action="/theme""#));
+            assert!(html.contains(r#"<input type="hidden" name="next" value="/stores">"#));
             for value in ["light", "system", "dark"] {
                 assert!(html.contains(&format!(r#"name="theme" value="{value}""#)));
             }
@@ -1150,7 +1143,7 @@ mod tests {
         let html = logs_link(&admin, "order.id", "o'1", "Logs").into_string();
         assert_eq!(
             html,
-            r#"<a class="logs-link" href="/dashboard/admin/logs?q=order.id+%3D+%27o%5C%271%27&amp;range=all">Logs</a>"#
+            r#"<a class="logs-link" href="/admin/logs?q=order.id+%3D+%27o%5C%271%27&amp;range=all">Logs</a>"#
         );
         let query = "order.id = 'o\\'1'";
         assert_eq!(

@@ -314,7 +314,7 @@ async fn main() {
         tor: monokulo::tor::Tor::default(),
         log_store: None,
         // Public signup: `signup.mode` defaults to invite-only, which would
-        // refuse the plain `/dashboard/signup` below (a re-rendered `200`
+        // refuse the plain `/signup` below (a re-rendered `200`
         // form, not the `302` it asserts on).
         settings: ControlPlaneAppState::test_settings(None),
         engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
@@ -431,7 +431,7 @@ async fn main() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/signup")
+                .uri("/signup")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_body(&[
                     ("email", &email),
@@ -452,7 +452,7 @@ async fn main() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/login")
+                .uri("/login")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_body(&[
                     ("email", &email),
@@ -465,7 +465,7 @@ async fn main() {
     assert_eq!(
         login_response.status(),
         StatusCode::FOUND,
-        "real login should redirect to /dashboard"
+        "real login should redirect to the dashboard"
     );
     let set_cookie = login_response
         .headers()
@@ -559,7 +559,7 @@ async fn main() {
         .await
         .unwrap();
     let dashboard_html = body_text(dashboard_response).await;
-    let link_marker = "/dashboard/stores/";
+    let link_marker = "/stores/";
     let link_start = dashboard_html
         .find(link_marker)
         .expect("expected a real store link on the dashboard")

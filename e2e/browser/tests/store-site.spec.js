@@ -21,7 +21,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context) {
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
-const settings = () => `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`;
+const settings = () => `${fixture.base_url}/stores/${fixture.connection_id}/settings`;
 async function connectPlugin() {
   const response = await fetch(`${fixture.base_url}/__coverage/integration`, { method: 'POST' });
   expect(response.ok).toBe(true);

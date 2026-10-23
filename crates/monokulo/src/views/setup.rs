@@ -231,7 +231,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                     .attr("inputmode", "url"))
                 @match &data.site_error {
                     Some(SiteError::Invalid(why)) => (ui::FieldNote::new(html! { "✕ " (why) }).tone(ui::NoteTone::Problem).id("store-site-error")),
-                    Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(format!("/dashboard/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                    Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(format!("/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
                     Some(SiteError::Someone { site }) => (ui::FieldNote::new(html! { "✕ " (site) " is already connected to Monokulo here. If it's yours, ask the person who connected it." }).tone(ui::NoteTone::Problem).id("store-site-error")),
                     None => {}
                 }
@@ -287,7 +287,7 @@ pub struct PluginReturn {
 }
 
 fn settings_link(id: &str) -> String {
-    format!("/dashboard/stores/{id}/settings")
+    format!("/stores/{id}/settings")
 }
 
 /// What the store is set up with, as facts: whether it takes payments yet
@@ -419,14 +419,14 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                     strong { "Open the till (POS)" }
                     (ui::Hint::new("On the phone or tablet you take payments with. Customers scan a QR code.").inline(true))
                 }
-                (ui::LinkButton::new("Open the till", format!("/dashboard/stores/{id}/pos")).maybe_variant(primary(till_primary)))
+                (ui::LinkButton::new("Open the till", format!("/stores/{id}/pos")).maybe_variant(primary(till_primary)))
             }
         }
         @if has_site { (public_key_help(&data.public_key)) }
         div class="step-foot" {
             (ui::LinkButton::new("Store settings", settings_link(id)))
             span class="spacer" {}
-            a href=(format!("/dashboard/stores/{id}")) { "Go to " (data.name) "'s page" }
+            a href=(format!("/stores/{id}")) { "Go to " (data.name) "'s page" }
         }
     };
     super::Page::new(format!("{} is set up - Monokulo", data.name), header)
@@ -566,7 +566,12 @@ mod tests {
             },
         )
         .into_string();
-        assert!(html.contains(r#"Your store <a href="/dashboard/stores/c_1">Corner shop</a> already uses shop.example."#), "{html}");
+        assert!(
+            html.contains(
+                r#"Your store <a href="/stores/c_1">Corner shop</a> already uses shop.example."#
+            ),
+            "{html}"
+        );
         let html = store_page(
             &chrome(),
             &StoreStepViewModel {
@@ -578,7 +583,7 @@ mod tests {
         )
         .into_string();
         assert!(html.contains("shop.example is already connected to Monokulo here."));
-        assert!(!html.contains("/dashboard/stores/"));
+        assert!(!html.contains("/stores/"));
     }
 
     #[test]
@@ -671,10 +676,7 @@ mod tests {
                 html.contains("<strong>Open the till (POS)</strong>"),
                 "{html}"
             );
-            assert!(
-                html.contains(r#"href="/dashboard/stores/c_1/pos""#),
-                "{html}"
-            );
+            assert!(html.contains(r#"href="/stores/c_1/pos""#), "{html}");
             assert!(
                 !html.to_lowercase().contains("ready to take payments"),
                 "{html}"
@@ -713,7 +715,7 @@ mod tests {
         assert_eq!(terms, ["Status", "Wallet", "Prices in"], "{summary}");
         assert!(summary.contains("Not taking payments yet"), "{summary}");
         assert!(
-            html.contains(r#"href="/dashboard/stores/c_1/settings" data-variant="quiet" data-size="compact">Change in the store's settings<svg"#),
+            html.contains(r#"href="/stores/c_1/settings" data-variant="quiet" data-size="compact">Change in the store's settings<svg"#),
             "{html}"
         );
         // Once an order was made, it no longer says so.
@@ -738,7 +740,12 @@ mod tests {
             html.contains("add your site in the store's settings first"),
             "{html}"
         );
-        assert!(html.contains(r#"<a class="mk-btn" href="/dashboard/stores/c_1/settings#card-store">Add your site</a>"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<a class="mk-btn" href="/stores/c_1/settings#card-store">Add your site</a>"#
+            ),
+            "{html}"
+        );
         assert!(!html.contains("Open the guide"), "{html}");
         assert!(!html.contains("Not taking payments yet"), "{html}");
     }

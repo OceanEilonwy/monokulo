@@ -87,7 +87,7 @@ test('POS uses the approved symbols in the compact stack and list badges', async
     if (url.pathname.endsWith('/pos/orders')) return route.fulfill({ json: { orders, total: orders.length } });
     return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><link rel="stylesheet" href="/static/pos-app.css"></head><body><div id="pos-root" data-connection-id="conn-1" data-public-key="pk-1" data-currency="XMR" data-decimals="12" data-store-name="example.com"></div><script type="module" src="/static/pos-app.js"></script></body></html>' });
   });
-  await page.goto(`${host}/dashboard/stores/conn-1/pos`);
+  await page.goto(`${host}/stores/conn-1/pos`);
   await expect(page.locator('.pos-stack-card')).toHaveCount(5);
   await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
   await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);

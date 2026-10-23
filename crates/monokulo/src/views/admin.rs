@@ -1,6 +1,6 @@
 //! Admin-only pages: first-run setup (`GET`/`POST /admin/setup`), the
-//! settings page (`GET`/`POST /dashboard/admin/settings?tab=<id>`), the invites page
-//! (`GET /dashboard/admin/invites` and its create-link/delete actions), and
+//! settings page (`GET`/`POST /admin/settings?tab=<id>`), the invites page
+//! (`GET /admin/invites` and its create-link/delete actions), and
 //! the public `GET`/`POST /request-invite` form.
 
 use maud::{html, Markup, PreEscaped};
@@ -131,7 +131,7 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> ui::Row {
     let actions: Vec<ui::Slot> = if row.just_deleted {
         vec![ui::Cell::new("deleted").attr("colspan", "2").into()]
     } else {
-        let delete = format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page);
+        let delete = format!("/admin/invites/{}/delete?page={}", row.id, page);
         vec![
             action(html! {
                 @if let Some(href) = &row.mailto_href {
@@ -192,8 +192,8 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
                 (ui::Alert::new(success.as_str(), ui::Tone::Success).flag("data-fx-focus").attr("tabindex", "-1"))
             }
 
-            form method="post" action="/dashboard/admin/invites/create-link"
-                fx-action="/dashboard/admin/invites/create-link" fx-method="POST" fx-target=(target) {
+            form method="post" action="/admin/invites/create-link"
+                fx-action="/admin/invites/create-link" fx-method="POST" fx-target=(target) {
                 (ui::FormActions::new(ui::Button::new("Create invite link")
                     .variant(ui::ButtonVariant::Primary)
                     .kind(ui::ButtonType::Submit)))
@@ -212,12 +212,12 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
                         .map(|row| invite_row(row, data.page)),
                 ))
                 (ui::Pagination::new("Invite request pages")
-                    .maybe_previous(data.has_previous.then(|| format!("/dashboard/admin/invites?page={}", data.previous_page)))
-                    .maybe_next(data.has_next.then(|| format!("/dashboard/admin/invites?page={}", data.next_page)))
+                    .maybe_previous(data.has_previous.then(|| format!("/admin/invites?page={}", data.previous_page)))
+                    .maybe_next(data.has_next.then(|| format!("/admin/invites?page={}", data.next_page)))
                     .status(format!("Page {} of {}", data.page, data.total_pages))
                     .fixi_target(target))
-                form method="post" action="/dashboard/admin/invites/delete-all"
-                    fx-action="/dashboard/admin/invites/delete-all" fx-method="POST" fx-target=(target) {
+                form method="post" action="/admin/invites/delete-all"
+                    fx-action="/admin/invites/delete-all" fx-method="POST" fx-target=(target) {
                     (ui::FormActions::new(ui::Button::new("Delete all").kind(ui::ButtonType::Submit)))
                 }
             } @else if let Some(deleted) = &data.just_deleted_row {
@@ -539,7 +539,7 @@ pub enum SettingOwner {
 
 /// The admin settings page's tabs, grouped by job rather than by which
 /// process owns a setting (nicer_admin_screen.md T1). Each is its own URL,
-/// `/dashboard/admin/settings?tab=<id>`, so switching works as a plain link
+/// `/admin/settings?tab=<id>`, so switching works as a plain link
 /// and a save can send the browser back to the tab it came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
@@ -618,7 +618,7 @@ impl SettingsTab {
 
     /// The tab's page.
     pub fn href(self) -> String {
-        format!("/dashboard/admin/settings?tab={}", self.id())
+        format!("/admin/settings?tab={}", self.id())
     }
 
     /// Whether every setting on this tab is the engine's, so the tab has
@@ -1403,7 +1403,7 @@ fn options_file_bars(data: &AdminSettingsViewModel) -> Markup {
                         SettingOwner::Engine => "the engine",
                     };
                     (ui::Panel::new(html! {
-                        form class="options-file" method="post" action="/dashboard/admin/settings/reload" {
+                        form class="options-file" method="post" action="/admin/settings/reload" {
                             input type="hidden" name="tab" value=(data.tab.id());
                             input type="hidden" name="owner" value=(match file.owner {
                                 SettingOwner::Monokulo => "monokulo",
@@ -2095,7 +2095,7 @@ fn settings_tab(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
         @if tab.engine_only() && !engine_available(data) {
             (engine_unavailable(data))
         } @else {
-            (super::settings::form("/dashboard/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
+            (super::settings::form("/admin/settings", Save::Fixi { target: "#settings-panel" }, tab.label(), html! {
                 input type="hidden" name="tab" value=(tab.id());
                 @if tab == SettingsTab::Nodes {
                     // Enter in a text box presses a form's first submit
@@ -2166,7 +2166,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/admin/settings")
+        PageChrome::from_user(None, "/admin/settings")
     }
 
     /// Every setting both registries have today, with the tab and the card
@@ -2423,10 +2423,7 @@ mod tests {
         }
         assert_eq!(SettingsTab::from_id(None), SettingsTab::General);
         assert_eq!(SettingsTab::from_id(Some("nope")), SettingsTab::General);
-        assert_eq!(
-            SettingsTab::Nodes.href(),
-            "/dashboard/admin/settings?tab=nodes"
-        );
+        assert_eq!(SettingsTab::Nodes.href(), "/admin/settings?tab=nodes");
         assert!(SettingsTab::Nodes.engine_only());
         assert!(
             !SettingsTab::Custody.engine_only()
@@ -2519,7 +2516,7 @@ mod tests {
         let html = admin_invites_page(&chrome(), &data).into_string();
         assert!(html.contains("hopeful@example.com"));
         assert!(html.contains("mailto:hopeful@example.com"));
-        assert!(html.contains("/dashboard/admin/invites/row-1/delete?page=2"));
+        assert!(html.contains("/admin/invites/row-1/delete?page=2"));
         assert!(html.contains("Page 2 of 2"));
         // Each action in a column of its own, an icon with a name.
         assert!(html.contains(r#"<th colspan="2">Actions</th>"#), "{html}");
@@ -3581,7 +3578,7 @@ mod tests {
             "Saving writes the changes on this tab to the options file and applies them."
         ));
         assert!(
-            bar.contains(r#"<a class="mk-btn" href="/dashboard/admin/settings?tab=payments" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
+            bar.contains(r#"<a class="mk-btn" href="/admin/settings?tab=payments" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7-->"#),
             "{bar}"
         );
         // After every card, last in the form.

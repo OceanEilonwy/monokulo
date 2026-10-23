@@ -303,9 +303,9 @@ case "$cmd" in
         echo
         echo "First time only: opening $CONTROL_PLANE_URL now redirects to its own"
         echo "first-run admin setup wizard - create the one admin account there."
-        echo "You'll land on its admin settings page (/dashboard/admin/settings),"
+        echo "You'll land on its admin settings page (/admin/settings),"
         echo "which already has the engine connection pre-wired - the engine half"
-        echo "of it (/dashboard/admin/invites, /dashboard/admin/settings) should"
+        echo "of it (/admin/invites, /admin/settings) should"
         echo "work immediately with no further setup."
         echo
         echo "logs:          scripts/dev-run.sh logs"

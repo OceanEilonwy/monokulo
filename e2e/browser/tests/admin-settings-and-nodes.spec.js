@@ -214,7 +214,7 @@ test('saving without the last node of a network stores use asks first', async ({
   await expect(page.locator('.node-network[data-network="stagenet"]')).not.toHaveAttribute('data-tenant-count', '0');
   let posts = 0;
   page.on('request', (request) => {
-    if (request.method() === 'POST' && request.url().endsWith('/dashboard/admin/settings')) posts += 1;
+    if (request.method() === 'POST' && request.url().endsWith('/admin/settings')) posts += 1;
   });
   // Remove takes the row out; the question comes with Save.
   await openNodes(page, 'stagenet');
@@ -284,7 +284,7 @@ test('every tab, for the gallery', async ({ page }) => {
     await captureCoverageStage(page, `admin-settings-${tab}`, test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
   }
   // The options files, each with its Reload, are a tab of their own.
-  await expect(page.locator('#settings-panel form[action="/dashboard/admin/settings/reload"]')).toHaveCount(0);
+  await expect(page.locator('#settings-panel form[action="/admin/settings/reload"]')).toHaveCount(0);
   await page.locator('#settings-tabs').getByRole('link', { name: 'Files' }).click();
   await expect(page).toHaveURL(/\?tab=files$/);
   await expect(page.locator('#settings-panel').getByRole('button', { name: 'Reload options file' })).toHaveCount(2);

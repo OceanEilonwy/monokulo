@@ -1,5 +1,5 @@
-//! `GET /dashboard/stores/{id}/orders` and
-//! `/dashboard/stores/{id}/orders/{order_id}` -
+//! `GET /stores/{id}/orders` and
+//! `/stores/{id}/orders/{order_id}` -
 //! `http::orders::orders_list`/`order_detail`/`lookup_payment`.
 
 use maud::{html, Markup, PreEscaped};
@@ -60,7 +60,7 @@ pub fn orders_table(
     ));
     let rows = orders.iter().map(|order| {
         ui::Slot::from(ui::Row::new(ui::Slot::many([
-            ui::Cell::new(html! { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } })
+            ui::Cell::new(html! { a href=(format!("/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } })
                 .part(ui::CellPart::Title)
                 .into(),
             ui::Cell::new(html! { @if let Some(reference) = &order.reference { (reference) } @else { (super::no_reference()) } })
@@ -126,7 +126,7 @@ pub fn lookup_payment_card(
 }
 
 fn orders_base(data: &OrdersViewModel) -> String {
-    format!("/dashboard/stores/{}/orders", data.connection_id)
+    format!("/stores/{}/orders", data.connection_id)
 }
 
 /// The list and its paging: what a search or a page change replaces. With
@@ -554,7 +554,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                 (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
                 @if order.from_pos && chrome.is_admin {
                     " "
-                    a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_str().as_bytes()).collect::<String>())) {
+                    a class="logs-link" href=(format!("/admin/logs/orders/{}/pos", order.order_id)) {
                         "POS session"
                     }
                 }
@@ -562,7 +562,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
             (live_fragment(order, &chrome.clock))
             // Streams the part above as the order changes, when
             // JavaScript is on (fixi starts it as soon as it's seen).
-            span hidden fx-action=(format!("/dashboard/stores/{}/orders/{}/events", data.connection_id, order.order_id))
+            span hidden fx-action=(format!("/stores/{}/orders/{}/events", data.connection_id, order.order_id))
                 fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
 
         } @else {
@@ -590,7 +590,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/stores/conn_1/orders")
+        PageChrome::from_user(None, "/stores/conn_1/orders")
     }
 
     #[test]
@@ -613,9 +613,9 @@ mod tests {
         };
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains("pay_xyz"));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
+        assert!(html.contains(r#"href="/stores/conn_1/orders/pay_xyz""#));
         assert!(
-            html.contains(r#"href="/dashboard/stores/conn_1""#),
+            html.contains(r#"href="/stores/conn_1""#),
             "expected a back-to-store link"
         );
     }
@@ -635,8 +635,8 @@ mod tests {
         let html = list_results(&data, &chrome().clock).into_string();
         assert!(html.contains(concat!(
             r##"<nav class="mk-pagination" aria-label="Orders pages">"##,
-            r##"<a href="/dashboard/stores/conn_1/orders?q=wc&amp;page=1" rel="prev" fx-action="/dashboard/stores/conn_1/orders?q=wc&amp;page=1" fx-target="#orders-results" fx-push-url="">← Newer</a>"##,
-            r##"<a href="/dashboard/stores/conn_1/orders?q=wc&amp;page=3" rel="next" fx-action="/dashboard/stores/conn_1/orders?q=wc&amp;page=3" fx-target="#orders-results" fx-push-url="">Older →</a></nav>"##,
+            r##"<a href="/stores/conn_1/orders?q=wc&amp;page=1" rel="prev" fx-action="/stores/conn_1/orders?q=wc&amp;page=1" fx-target="#orders-results" fx-push-url="">← Newer</a>"##,
+            r##"<a href="/stores/conn_1/orders?q=wc&amp;page=3" rel="next" fx-action="/stores/conn_1/orders?q=wc&amp;page=3" fx-target="#orders-results" fx-push-url="">Older →</a></nav>"##,
         )), "{html}");
 
         // The first and only page has nowhere to go.
@@ -675,7 +675,7 @@ mod tests {
         };
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains(&format!(
-            r#"<td class="card-title"><a href="/dashboard/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a></td>"#
+            r#"<td class="card-title"><a href="/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a></td>"#
         )), "{html}");
         assert!(!html.contains("..."), "{html}");
     }
@@ -735,7 +735,7 @@ mod tests {
             order: Some(test_order_detail_data(None)),
         };
         let html = detail_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><a href="/dashboard/stores/conn_1/orders" title="Orders">Orders</a></nav>"#));
+        assert!(html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/stores/conn_1" title="shop.example.com">shop.example.com</a><a href="/stores/conn_1/orders" title="Orders">Orders</a></nav>"#));
         assert!(
             html.contains(r#"<h1>Order <span class="order-title-id">pay_abc123</span></h1>"#),
             "{html}"

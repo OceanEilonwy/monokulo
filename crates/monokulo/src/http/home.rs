@@ -2,7 +2,7 @@
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Response};
 
 use crate::db::UserRow;
 use crate::views;
@@ -20,8 +20,8 @@ use super::{resolve_authed_user, AppState};
 /// still false) a visitor who isn't signed in is sent to `/admin/setup`
 /// instead - "when you open monokulo it should open to an admin setup flow"
 /// is exactly the front door this page is. No other route is gated on this
-/// flag; a direct link to `/dashboard/login` or the plain `/signup` API
-/// still works even pre-setup, and someone signed in that way still gets
+/// flag; a direct link to `/login` or `/signup` still works even
+/// pre-setup, and someone signed in that way still gets
 /// their dashboard here.
 pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some((user, _)) = resolve_authed_user(&state, &headers).await {
@@ -33,15 +33,10 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
         .await
         .unwrap_or(true);
     if setup_complete {
-        redirect_302("/dashboard/login")
+        redirect_302("/login")
     } else {
         redirect_302("/admin/setup")
     }
-}
-
-/// `GET /dashboard`: the dashboard moved to `/` (308, permanent).
-pub async fn dashboard_moved() -> Redirect {
-    Redirect::permanent("/")
 }
 
 /// The dashboard (`GET /`, signed in): every store the user has
@@ -283,10 +278,9 @@ mod tests {
                 .to_string()
         }
 
-        /// `/` is the dashboard: someone not signed in is sent to log in,
-        /// and the old `/dashboard` address moved there for good.
+        /// `/` is the dashboard: someone not signed in is sent to log in.
         #[tokio::test]
-        async fn signed_out_the_home_page_sends_you_to_log_in_and_dashboard_moved_to_it() {
+        async fn signed_out_the_home_page_sends_you_to_log_in() {
             let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state);
             let get = |uri: &str| {
@@ -296,13 +290,9 @@ mod tests {
                     .body(Body::empty())
                     .unwrap()
             };
-            let response = router.clone().oneshot(get("/")).await.unwrap();
+            let response = router.oneshot(get("/")).await.unwrap();
             assert_eq!(response.status(), StatusCode::FOUND);
-            assert_eq!(response.headers()["location"], "/dashboard/login");
-
-            let response = router.oneshot(get("/dashboard")).await.unwrap();
-            assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
-            assert_eq!(response.headers()["location"], "/");
+            assert_eq!(response.headers()["location"], "/login");
         }
 
         #[tokio::test]
@@ -397,7 +387,7 @@ mod tests {
             );
             assert!(
                 html.contains(&format!(
-                    r#"<a href="/dashboard/stores/{connection_id}" data-store-link>"#
+                    r#"<a href="/stores/{connection_id}" data-store-link>"#
                 )),
                 "expected a link to the store, got: {html}"
             );

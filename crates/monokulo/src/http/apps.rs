@@ -79,13 +79,13 @@ async fn load(
 
 // -- The dashboard ---------------------------------------------------------------
 
-/// `GET /dashboard/stores/{id}/apps/connect`: what to call the device.
+/// `GET /stores/{id}/settings/apps/connect`: what to call the device.
 pub async fn connect_form(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<ConnectionId>,
 ) -> Response {
-    let path = format!("/dashboard/stores/{id}/apps/connect");
+    let path = format!("/stores/{id}/settings/apps/connect");
     match load(&state, &user, &id, path).await {
         Ok((_, view, chrome)) => {
             crate::views::connected_apps::connect_form_page(&chrome, &view, None).into_response()
@@ -100,7 +100,7 @@ pub struct ConnectForm {
     device_name: String,
 }
 
-/// `POST /dashboard/stores/{id}/apps/connect`: makes a single-use code and
+/// `POST /stores/{id}/settings/apps/connect`: makes a single-use code and
 /// shows it, once.
 pub async fn connect_submit(
     State(state): State<AppState>,
@@ -108,7 +108,7 @@ pub async fn connect_submit(
     Path(id): Path<ConnectionId>,
     Form(form): Form<ConnectForm>,
 ) -> Response {
-    let path = format!("/dashboard/stores/{id}/apps/connect");
+    let path = format!("/stores/{id}/settings/apps/connect");
     let (row, view, chrome) = match load(&state, &user, &id, path).await {
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
@@ -170,20 +170,17 @@ pub fn connect_link(public_uri: &str, token: &str) -> String {
 /// Where the dashboard checks whether a code was used: by its hash, which
 /// can't connect anything.
 fn status_path(store_id: &ConnectionId, hash: &shared::auth::TokenHash) -> String {
-    format!(
-        "/dashboard/stores/{store_id}/apps/connect/{}",
-        hash.as_str()
-    )
+    format!("/stores/{store_id}/settings/apps/connect/{}", hash.as_str())
 }
 
-/// `GET /dashboard/stores/{id}/apps/connect/{code_hash}`: whether the code
+/// `GET /stores/{id}/settings/apps/connect/{code_hash}`: whether the code
 /// was used, and by which app.
 pub async fn connect_status(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path((id, code_hash)): Path<(ConnectionId, String)>,
 ) -> Response {
-    let path = format!("/dashboard/stores/{id}/apps/connect/{code_hash}");
+    let path = format!("/stores/{id}/settings/apps/connect/{code_hash}");
     let (row, view, chrome) = match load(&state, &user, &id, path.clone()).await {
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
@@ -200,7 +197,7 @@ pub async fn connect_status(
     crate::views::connected_apps::status_page(&chrome, &view, app.as_ref(), &path).into_response()
 }
 
-/// `POST /dashboard/stores/{id}/apps/{app_id}/disconnect`: the app's key
+/// `POST /stores/{id}/settings/apps/{app_id}/disconnect`: the app's key
 /// stops working at once. Its orders stay, and can still be paid.
 pub async fn disconnect_submit(
     State(state): State<AppState>,
@@ -222,9 +219,7 @@ pub async fn disconnect_submit(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     state.apps.disconnected(&app_id);
-    super::dashboard::redirect_303(&format!(
-        "/dashboard/stores/{id}/settings?tab=connections#card-apps"
-    ))
+    super::dashboard::redirect_303(&format!("/stores/{id}/settings?tab=connections#card-apps"))
 }
 
 // -- The app's API -----------------------------------------------------------------

@@ -18,7 +18,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context) {
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
-const settings = () => `${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings`;
+const settings = () => `${fixture.base_url}/stores/${fixture.connection_id}/settings`;
 /** The design's three webhooks (delivering, retrying, gave up), or none. */
 async function seed(empty = false) {
   const response = await fetch(`${fixture.base_url}/__coverage/webhooks${empty ? '?empty' : ''}`, { method: 'POST' });

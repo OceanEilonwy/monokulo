@@ -24,10 +24,7 @@ fn get(uri: &str, cookie: &str) -> Request<Body> {
 }
 
 fn query(db: &str, sql: &str) -> String {
-    format!(
-        "/dashboard/admin/query?db={db}&sql={}",
-        urlencoding_encode(sql)
-    )
+    format!("/admin/query?db={db}&sql={}", urlencoding_encode(sql))
 }
 
 async fn admin(state: AppState) -> (Router, String) {
@@ -85,7 +82,7 @@ async fn an_admin_reads_monokulos_database_with_secrets_hidden() {
         "{html}"
     );
     assert!(
-        html.contains(r#"<a href="/dashboard/admin/query">Query</a>"#),
+        html.contains(r#"<a href="/admin/query">Query</a>"#),
         "{html}"
     );
 }
@@ -124,7 +121,7 @@ async fn fixi_gets_only_the_results_and_a_database_switch_gets_the_workspace() {
     assert!(html.starts_with(r#"<section id="query-results""#), "{html}");
     assert!(!html.contains("<html"), "{html}");
 
-    let mut request = get("/dashboard/admin/query/schema?db=monokulo", &cookie);
+    let mut request = get("/admin/query/schema?db=monokulo", &cookie);
     request
         .headers_mut()
         .insert("fx-request", "true".parse().unwrap());
@@ -140,7 +137,7 @@ async fn the_rows_download_as_csv_and_json() {
     let response = router
         .clone()
         .oneshot(get(
-            &format!("/dashboard/admin/query/export?db=monokulo&sql={sql}&format=csv"),
+            &format!("/admin/query/export?db=monokulo&sql={sql}&format=csv"),
             &cookie,
         ))
         .await
@@ -162,7 +159,7 @@ async fn the_rows_download_as_csv_and_json() {
     let (status, json) = send(
         &router,
         get(
-            &format!("/dashboard/admin/query/export?db=monokulo&sql={sql}&format=json"),
+            &format!("/admin/query/export?db=monokulo&sql={sql}&format=json"),
             &cookie,
         ),
     )
@@ -180,7 +177,7 @@ async fn a_long_value_opens_whole_on_its_own_page_or_in_the_dialog() {
     let (_, html) = send(&router, get(&query("monokulo", sql), &cookie)).await;
     assert!(html.contains("Expand payload of row 1"), "{html}");
     let value = format!(
-        "/dashboard/admin/query/value?db=monokulo&sql={}&row=0&col=1",
+        "/admin/query/value?db=monokulo&sql={}&row=0&col=1",
         urlencoding_encode(sql)
     );
     let (status, page) = send(&router, get(&value, &cookie)).await;
@@ -209,7 +206,7 @@ async fn only_an_admin_gets_the_page() {
     let response = router
         .clone()
         .oneshot(
-            Request::get("/dashboard/admin/query")
+            Request::get("/admin/query")
                 .header("cookie", format!("session={session}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -221,7 +218,7 @@ async fn only_an_admin_gets_the_page() {
     let response = router
         .clone()
         .oneshot(
-            Request::get("/dashboard/admin/query?db=monokulo")
+            Request::get("/admin/query?db=monokulo")
                 .header("accept", "text/html")
                 .body(Body::empty())
                 .unwrap(),
@@ -231,7 +228,7 @@ async fn only_an_admin_gets_the_page() {
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(
         response.headers()["location"],
-        "/dashboard/login?next=%2Fdashboard%2Fadmin%2Fquery%3Fdb%3Dmonokulo"
+        "/login?next=%2Fadmin%2Fquery%3Fdb%3Dmonokulo"
     );
 }
 
@@ -326,8 +323,8 @@ async fn switched_off_the_page_is_gone_and_so_is_its_link() {
     let (router, cookie) = admin(state).await;
     let (status, _) = send(&router, get(&query("monokulo", "SELECT 1"), &cookie)).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (_, html) = send(&router, get("/dashboard/admin/logs", &cookie)).await;
-    assert!(!html.contains("/dashboard/admin/query"), "{html}");
+    let (_, html) = send(&router, get("/admin/logs", &cookie)).await;
+    assert!(!html.contains("/admin/query"), "{html}");
 }
 
 #[tokio::test]

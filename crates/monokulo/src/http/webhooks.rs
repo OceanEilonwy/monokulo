@@ -140,7 +140,7 @@ fn parse_extra_headers(text: &str) -> Result<BTreeMap<String, String>, String> {
     Ok(headers)
 }
 
-/// `POST /dashboard/stores/{id}/settings/webhooks`: adds a webhook and shows
+/// `POST /stores/{id}/settings/webhooks`: adds a webhook and shows
 /// the page with its signing secret, this once. Answers with the page
 /// rather than a redirect, so the secret is never in a URL (history, a
 /// `Referer`).

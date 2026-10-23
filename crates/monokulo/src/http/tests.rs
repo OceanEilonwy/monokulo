@@ -143,7 +143,7 @@ async fn get_dashboard_signup_returns_html() {
     let router = test_router();
     let request = Request::builder()
         .method("GET")
-        .uri("/dashboard/signup")
+        .uri("/signup")
         .body(Body::empty())
         .unwrap();
     let response = router.oneshot(request).await.unwrap();
@@ -161,7 +161,7 @@ async fn get_dashboard_signup_returns_html() {
     );
     let html = body_text(response).await;
     assert!(html.contains("<form"));
-    assert!(html.contains("/dashboard/signup"));
+    assert!(html.contains("/signup"));
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ async fn get_dashboard_login_returns_html() {
     let router = test_router();
     let request = Request::builder()
         .method("GET")
-        .uri("/dashboard/login")
+        .uri("/login")
         .body(Body::empty())
         .unwrap();
     let response = router.oneshot(request).await.unwrap();
@@ -187,7 +187,7 @@ async fn get_dashboard_login_returns_html() {
     );
     let html = body_text(response).await;
     assert!(html.contains("<form"));
-    assert!(html.contains("/dashboard/login"));
+    assert!(html.contains("/login"));
 }
 
 /// A new account is logged in straight away and goes on to set up its
@@ -197,7 +197,7 @@ async fn signing_up_logs_in_and_goes_on_to_set_up_a_wallet() {
     let router = test_router();
     let response = router
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "form-signup@example.com"),
                 ("password", "correct horse battery staple"),
@@ -233,7 +233,7 @@ async fn posting_a_duplicate_email_to_dashboard_signup_rerenders_the_form_with_a
     let first = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "dupe-form@example.com"),
                 ("password", "first password here"),
@@ -245,7 +245,7 @@ async fn posting_a_duplicate_email_to_dashboard_signup_rerenders_the_form_with_a
 
     let second = router
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "dupe-form@example.com"),
                 ("password", "a different password"),
@@ -273,7 +273,7 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "form-login@example.com"),
                 ("password", "correct horse battery staple"),
@@ -285,7 +285,7 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
 
     let response = router
         .oneshot(form_request(
-            "/dashboard/login",
+            "/login",
             &[
                 ("email", "form-login@example.com"),
                 ("password", "correct horse battery staple"),
@@ -325,7 +325,7 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "cookie-auth@example.com"),
                 ("password", "correct horse battery staple"),
@@ -338,7 +338,7 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
     let login = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/login",
+            "/login",
             &[
                 ("email", "cookie-auth@example.com"),
                 ("password", "correct horse battery staple"),
@@ -410,7 +410,7 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
         .unwrap();
     assert_eq!(response.status(), StatusCode::FOUND);
     let to = response.headers()["location"].to_str().unwrap().to_string();
-    assert_eq!(to, "/dashboard/login?next=%2Fsetup%3Ffrom%3Dnav");
+    assert_eq!(to, "/login?next=%2Fsetup%3Ffrom%3Dnav");
     let html = body_text(router.clone().oneshot(page(&to)).await.unwrap()).await;
     assert!(
         html.contains(r#"<input type="hidden" name="next" value="/setup?from=nav">"#),
@@ -431,7 +431,7 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
             .unwrap(),
         Request::builder()
             .method("POST")
-            .uri("/dashboard/theme")
+            .uri("/theme")
             .header("accept", "text/html")
             .header("content-type", "application/x-www-form-urlencoded")
             .body(Body::from("theme=dark"))
@@ -445,7 +445,7 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "nav-auth-state@example.com"),
                 ("password", "correct horse battery staple"),
@@ -479,14 +479,8 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
         html.contains("<strong>nav-auth-state@example.com</strong>"),
         "{html}"
     );
-    assert!(
-        !html.contains(r#"href="/dashboard/login">Log in<"#),
-        "{html}"
-    );
-    assert!(
-        !html.contains(r#"href="/dashboard/signup">Sign up<"#),
-        "{html}"
-    );
+    assert!(!html.contains(r#"href="/login">Log in<"#), "{html}");
+    assert!(!html.contains(r#"href="/signup">Sign up<"#), "{html}");
 }
 
 #[tokio::test]
@@ -496,7 +490,7 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_goes_to_l
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "dashboard-logout@example.com"),
                 ("password", "correct horse battery staple"),
@@ -508,7 +502,7 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_goes_to_l
     let login = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/login",
+            "/login",
             &[
                 ("email", "dashboard-logout@example.com"),
                 ("password", "correct horse battery staple"),
@@ -530,7 +524,7 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_goes_to_l
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/logout")
+                .uri("/logout")
                 .header("cookie", session_pair.clone())
                 .body(Body::empty())
                 .unwrap(),
@@ -542,10 +536,7 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_goes_to_l
         StatusCode::FOUND,
         "expected a redirect after logging out"
     );
-    assert_eq!(
-        logout.headers().get("location").unwrap(),
-        "/dashboard/login"
-    );
+    assert_eq!(logout.headers().get("location").unwrap(), "/login");
 
     // The same, now-deleted session cookie must no longer authenticate.
     let whoami_after = router
@@ -573,7 +564,7 @@ async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_g
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[
                 ("email", "wrong-pw-form@example.com"),
                 ("password", "the real password"),
@@ -585,7 +576,7 @@ async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_g
 
     let response = router
         .oneshot(form_request(
-            "/dashboard/login",
+            "/login",
             &[
                 ("email", "wrong-pw-form@example.com"),
                 ("password", "not the real password"),
@@ -611,7 +602,7 @@ async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wr
     let router = test_router();
     let response = router
         .oneshot(form_request(
-            "/dashboard/login",
+            "/login",
             &[
                 ("email", "nobody-has-this-account@example.com"),
                 ("password", "whatever"),
@@ -665,7 +656,7 @@ async fn signed_up_and_logged_in_session_cookie(
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[("email", email), ("password", password)],
         ))
         .await
@@ -675,7 +666,7 @@ async fn signed_up_and_logged_in_session_cookie(
     let login = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/login",
+            "/login",
             &[("email", email), ("password", password)],
         ))
         .await
@@ -756,10 +747,7 @@ async fn setup_without_a_session_sends_a_page_load_to_log_in() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FOUND);
-    assert_eq!(
-        response.headers()["location"],
-        "/dashboard/login?next=%2Fsetup"
-    );
+    assert_eq!(response.headers()["location"], "/login?next=%2Fsetup");
 }
 
 /// The whole of setup without JavaScript: the store step, the wallet
@@ -970,7 +958,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
         )
         .await,
     );
-    let settings = format!("/dashboard/stores/{stall}/settings");
+    let settings = format!("/stores/{stall}/settings");
     let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
     assert!(
         page.contains(r#"name="store_name" id="store-name" value="Market stall""#),
@@ -1193,7 +1181,7 @@ async fn a_store_with_no_site_has_a_name_only() {
     .await;
     assert!(done.contains("Saturday market stall is set up"), "{done}");
     assert!(done.contains(&format!(
-        r#"<a class="mk-btn" href="/dashboard/stores/{store_id}/pos" data-variant="primary">Open the till</a>"#
+        r#"<a class="mk-btn" href="/stores/{store_id}/pos" data-variant="primary">Open the till</a>"#
     )), "{done}");
     assert!(
         done.contains("add your site in the store's settings first"),
@@ -1203,7 +1191,7 @@ async fn a_store_with_no_site_has_a_name_only() {
     let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;
     assert!(
         dashboard.contains(&format!(
-            r#"<h3 class="mk-card-title"><a href="/dashboard/stores/{store_id}" data-store-link>Saturday market stall</a></h3><p class="mk-card-sub">No website</p>"#
+            r#"<h3 class="mk-card-title"><a href="/stores/{store_id}" data-store-link>Saturday market stall</a></h3><p class="mk-card-sub">No website</p>"#
         )),
         "no website: {dashboard}"
     );
@@ -1234,7 +1222,7 @@ async fn a_stores_payment_description_is_saved_from_its_settings() {
     )
     .await;
     let store = crate::http::test_support::store_made(&made);
-    let settings = format!("/dashboard/stores/{store}/settings");
+    let settings = format!("/stores/{store}/settings");
     let page = body_text(cookie_get(&router, &settings, &cookie).await).await;
     let website = page.find("Your website (optional)").unwrap();
     let description = page.find("Payment description (optional)").unwrap();
@@ -1361,7 +1349,7 @@ async fn the_store_step_refuses_a_missing_name_a_bad_site_and_a_site_already_use
     .await;
     assert!(
         html.contains(&format!(
-            r#"Your store <a href="/dashboard/stores/{corner}">Corner shop</a> already uses shop.example."#
+            r#"Your store <a href="/stores/{corner}">Corner shop</a> already uses shop.example."#
         )),
         "{html}"
     );
@@ -1506,7 +1494,7 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
     let signup = router
         .clone()
         .oneshot(form_request(
-            "/dashboard/signup",
+            "/signup",
             &[("email", email), ("password", password)],
         ))
         .await
@@ -1521,7 +1509,7 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
         let response = router
             .clone()
             .oneshot(form_request(
-                "/dashboard/login",
+                "/login",
                 &[
                     ("email", email),
                     ("password", password),
@@ -1552,7 +1540,7 @@ fn invite_token_signup_request(
     invite_token: Option<&str>,
 ) -> Request<Body> {
     form_request(
-        "/dashboard/signup",
+        "/signup",
         &[
             ("email", email),
             ("password", password),
@@ -1685,12 +1673,7 @@ async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
             .body(Body::from("email=a%40b.example&password=x"))
             .unwrap()
     };
-    for uri in [
-        "/dashboard/login",
-        "/dashboard/logout",
-        "/dashboard/theme",
-        "/dashboard/admin/settings",
-    ] {
+    for uri in ["/login", "/logout", "/theme", "/admin/settings"] {
         let response = router
             .clone()
             .oneshot(post(uri, &[("origin", "https://evil.example")]))
@@ -1712,7 +1695,7 @@ async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
     let response = router
         .clone()
         .oneshot(post(
-            "/dashboard/logout",
+            "/logout",
             &[
                 ("origin", "https://pay.example"),
                 ("sec-fetch-site", "same-origin"),
@@ -1726,7 +1709,7 @@ async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
     let response = router
         .clone()
         .oneshot(post(
-            "/dashboard/logout",
+            "/logout",
             &[
                 ("origin", "https://evil.example"),
                 ("authorization", "Bearer nope"),
@@ -2093,18 +2076,18 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
             .into_string()
             .contains(&crate::assets::url("telemetry.js"))
     };
-    assert!(with_script("/dashboard/admin/logs").await);
+    assert!(with_script("/admin/logs").await);
     assert!(with_script("/").await);
     assert!(with_script("/setup").await);
-    assert!(!with_script("/dashboard/stores/c1").await);
-    assert!(!with_script("/dashboard/stores/c1/settings").await);
+    assert!(!with_script("/stores/c1").await);
+    assert!(!with_script("/stores/c1/settings").await);
     state
         .db
         .lock()
         .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
         .unwrap();
-    assert!(with_script("/dashboard/stores/c1").await);
-    assert!(with_script("/dashboard/stores/c1/orders?page=2").await);
+    assert!(with_script("/stores/c1").await);
+    assert!(with_script("/stores/c1/orders?page=2").await);
 }
 
 #[tokio::test]
@@ -2192,7 +2175,7 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
     let send = |token: &str, body: String| {
         Request::builder()
             .method("POST")
-            .uri("/dashboard/stores/c1/pos/logs")
+            .uri("/stores/c1/pos/logs")
             .header("cookie", format!("session={token}"))
             .header("content-type", "text/plain")
             .body(Body::from(body))

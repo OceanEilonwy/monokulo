@@ -10,7 +10,7 @@ CREATE TABLE settings (
 
 -- Distinguishes the one instance-admin account (created once, by the
 -- first-run setup wizard - see `http::setup`) from every ordinary merchant
--- user `POST /dashboard/signup` creates. `0` for every existing row (an
+-- user `POST /signup` creates. `0` for every existing row (an
 -- already-deployed instance's own users are all ordinary merchants; the
 -- setup wizard only ever creates a NEW row with this set) and for every new
 -- signup going forward - only the setup wizard's own `create_user` call ever

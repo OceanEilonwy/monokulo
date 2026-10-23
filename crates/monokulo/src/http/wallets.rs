@@ -641,17 +641,17 @@ async fn render_detail(
                 },
                 "renamed" => html! { "Renamed from \u{201c}" (event.detail) "\u{201d}" },
                 "store_connected" => match store_name(&event.detail) {
-                    Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " connected" },
+                    Some((id, name)) => html! { "Store " a href=(format!("/stores/{id}")) { (name) } " connected" },
                     None => html! { "A store connected" },
                 },
                 "store_changed_to" => match store_name(&event.detail) {
-                    Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " changed to this wallet" },
+                    Some((id, name)) => html! { "Store " a href=(format!("/stores/{id}")) { (name) } " changed to this wallet" },
                     None => html! { "A store changed to this wallet" },
                 },
                 "retired" => html! { "Retired: its keys were deleted from key storage" },
                 "restored" => html! { "Brought back with its keys" },
                 "store_changed_away" => match store_name(&event.detail) {
-                    Some((id, name)) => html! { "Store " a href=(format!("/dashboard/stores/{id}")) { (name) } " changed to another wallet" },
+                    Some((id, name)) => html! { "Store " a href=(format!("/stores/{id}")) { (name) } " changed to another wallet" },
                     None => html! { "A store changed to another wallet" },
                 },
                 other => html! { (other) },
@@ -680,7 +680,7 @@ async fn render_detail(
             .into_iter()
             .filter(|o| o.amount_received_piconero > 0 && on_this_wallet(o.created_at))
         {
-            let link = format!("/dashboard/stores/{}/orders/{}", store.id, order.order_id);
+            let link = format!("/stores/{}/orders/{}", store.id, order.order_id);
             history.push((
                 order.updated_at,
                 WalletEvent {
@@ -1163,7 +1163,7 @@ mod tests {
         }
         let response = router
             .clone()
-            .oneshot(post("/dashboard/signup", None, &fields))
+            .oneshot(post("/signup", None, &fields))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
@@ -2042,7 +2042,7 @@ mod tests {
             .await
             .unwrap();
 
-        let settings = format!("/dashboard/stores/{store}/settings?tab=wallet");
+        let settings = format!("/stores/{store}/settings?tab=wallet");
         let html = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
             html.contains(r#"<section id="card-wallet" class="settings-card""#),
@@ -2065,7 +2065,7 @@ mod tests {
             "{html}"
         );
 
-        let action = format!("/dashboard/stores/{store}/settings/wallet");
+        let action = format!("/stores/{store}/settings/wallet");
         let asked = router
             .clone()
             .oneshot(post(
@@ -2197,7 +2197,7 @@ mod tests {
             copper.id.as_str(),
         )
         .await;
-        let action = format!("/dashboard/stores/{store}/settings/wallet");
+        let action = format!("/stores/{store}/settings/wallet");
         let card_post = |fields: &[(&str, &str)]| post(&action, Some(&cookie), fields);
 
         let response = router
@@ -2247,7 +2247,7 @@ mod tests {
         let page = body_text(
             get(
                 &router,
-                &format!("/dashboard/stores/{store}/settings?tab=wallet"),
+                &format!("/stores/{store}/settings?tab=wallet"),
                 &cookie,
             )
             .await,

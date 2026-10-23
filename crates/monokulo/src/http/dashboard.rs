@@ -52,7 +52,7 @@ pub struct SignupForm {
 
 #[derive(Deserialize)]
 pub struct SignupQuery {
-    /// `GET /dashboard/signup?invite=<token>` - carried straight into the
+    /// `GET /signup?invite=<token>` - carried straight into the
     /// rendered form's hidden field, unvalidated (see
     /// `views::auth::SignupViewModel::invite_token`'s own doc comment on why validation
     /// only ever happens at submit time).
@@ -66,7 +66,7 @@ pub struct SignupQuery {
 pub struct LoginForm {
     pub email: String,
     pub password: String,
-    /// Carried through from `GET /dashboard/login?next=...`'s hidden form
+    /// Carried through from `GET /login?next=...`'s hidden form
     /// field (see `LoginQuery`/`login_form` below) - `None` whenever no
     /// `next` was ever in play, which keeps every existing caller that never
     /// sends this field working unchanged (see module doc comment on
@@ -75,7 +75,7 @@ pub struct LoginForm {
     pub next: Option<String>,
 }
 
-/// Query parameters `GET /dashboard/login` accepts (WBS 1.4.1) - just the
+/// Query parameters `GET /login` accepts (WBS 1.4.1) - just the
 /// optional `next` value the generic connect flow (`http/connect.rs`)
 /// redirects here with when the browser has no session yet. Rendered
 /// straight into the login page's hidden `next` field, unvalidated - see
@@ -91,7 +91,7 @@ pub struct LoginQuery {
 /// this is the one thing standing between `login_submit` and an
 /// open-redirect vulnerability, since `next` is otherwise fully
 /// attacker-controlled (anyone can link a victim straight to
-/// `/dashboard/login?next=<anything>`, not just the connect flow that
+/// `/login?next=<anything>`, not just the connect flow that
 /// legitimately sets it).
 ///
 /// Requires `next` to be a same-origin, relative path:
@@ -248,7 +248,7 @@ pub async fn signup_submit(
                 }
             }
             let Ok(raw_token) = login::start_session(&state, &user_id).await else {
-                return redirect_302("/dashboard/login");
+                return redirect_302("/login");
             };
             let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
@@ -286,7 +286,7 @@ pub async fn signup_submit(
             form.invite.as_str(),
         ),
         // Not a path a non-admin signup takes.
-        Err(CreateAccountError::AlreadySetUp) => return redirect_302("/dashboard/login"),
+        Err(CreateAccountError::AlreadySetUp) => return redirect_302("/login"),
     };
     render_signup(
         &state,
@@ -305,10 +305,10 @@ pub async fn login_form(
     render_login(&state, None, query.next.as_deref()).await
 }
 
-/// `POST /dashboard/logout` - the browser-facing nav's "log out" link (a
+/// `POST /logout` - the browser-facing nav's "log out" link (a
 /// tiny same-origin form, not a bare `<a href>`, since this is a
 /// state-changing action - see `_nav.html.hbs`). Behind [`AuthedUser`] like
-/// every other `/dashboard/*` route, so it accepts the session cookie the
+/// every other signed-in page, so it accepts the session cookie the
 /// same way every other protected page already does; reuses the exact same
 /// delete-session logic `POST /logout` (the JSON API, `http/logout.rs`)
 /// runs, just via `AuthedUser`'s cookie path rather than its `Bearer` one.
@@ -330,7 +330,7 @@ pub async fn logout_submit(
     let mut cookie = super::session_cookie(on.secure, String::new());
     cookie.set_max_age(time::Duration::ZERO);
     let jar = CookieJar::new().add(cookie);
-    (jar, redirect_302("/dashboard/login")).into_response()
+    (jar, redirect_302("/login")).into_response()
 }
 
 #[derive(Deserialize)]
@@ -348,7 +348,7 @@ fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
     }
 }
 
-/// `POST /dashboard/theme` - the account menu's no-JS theme switch. Named
+/// `POST /theme` - the account menu's no-JS theme switch. Named
 /// submit buttons select a theme directly; a form without a choice cycles.
 /// Persists the result against the authenticated user (not a cookie - see
 /// `migrations/0017_user_theme.sql` for why this is server-side per-user
@@ -388,14 +388,14 @@ mod theme_selector_tests {
     }
 }
 
-/// `POST /dashboard/login`. WBS 1.4.1 adds `next`-redirect support on top of
+/// `POST /login`. WBS 1.4.1 adds `next`-redirect support on top of
 /// WBS 1.3.1's original behavior: if a *validated* `next` was carried
 /// through the form (see [`is_safe_redirect_path`]), a successful login
 /// redirects there instead of rendering the inline "you're logged in"
 /// confirmation below - this is what lets the generic connect flow
 /// (`http/connect.rs`) send an unauthenticated browser to log in and land
 /// back exactly where it started. When `next` is absent (the overwhelming
-/// majority of logins - anyone reaching `/dashboard/login` directly, not via
+/// majority of logins - anyone reaching `/login` directly, not via
 /// the connect flow) or fails validation, behavior is *exactly* what it was
 /// before this task: the same inline confirmation, unchanged.
 pub async fn login_submit(
@@ -447,8 +447,8 @@ mod tests {
     #[test]
     fn a_safe_path_is_made_only_from_a_path_on_this_site() {
         assert_eq!(
-            SafePath::parse("/dashboard/connect").map(|p| p.as_str().to_string()),
-            Some("/dashboard/connect".to_string())
+            SafePath::parse("/account/wallets").map(|p| p.as_str().to_string()),
+            Some("/account/wallets".to_string())
         );
         assert!(SafePath::parse("//evil.example.com").is_none());
         assert!(SafePath::parse("https://evil.example.com").is_none());
@@ -466,7 +466,7 @@ mod tests {
     #[test]
     fn an_absolute_url_next_is_rejected() {
         assert!(!is_safe_redirect_path("https://evil.example.com"));
-        assert!(!is_safe_redirect_path("http://evil.example.com/dashboard"));
+        assert!(!is_safe_redirect_path("http://evil.example.com/account"));
     }
 
     #[test]
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn a_next_with_no_leading_slash_is_rejected() {
         assert!(!is_safe_redirect_path("evil.example.com"));
-        assert!(!is_safe_redirect_path("dashboard/connect"));
+        assert!(!is_safe_redirect_path("account/wallets"));
     }
 
     #[test]
@@ -495,7 +495,7 @@ mod tests {
         assert!(is_safe_redirect_path(
             "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"
         ));
-        assert!(is_safe_redirect_path("/dashboard/connect"));
+        assert!(is_safe_redirect_path("/account/wallets"));
     }
 
     /// A merchant picks Light, Dark or System from any page's theme toggle
@@ -528,7 +528,7 @@ mod tests {
         let pick = |theme: &str, next: &str| {
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/theme")
+                .uri("/theme")
                 .header("cookie", format!("session={session}"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(format!(
@@ -577,13 +577,13 @@ mod tests {
         ] {
             let response = router
                 .clone()
-                .oneshot(pick(theme, "/dashboard/stores"))
+                .oneshot(pick(theme, "/stores"))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::FOUND);
             assert_eq!(
                 response.headers()["location"],
-                "/dashboard/stores",
+                "/stores",
                 "{theme}: back to the page it was picked on"
             );
             let html_tag = page_theme(router.clone()).await;

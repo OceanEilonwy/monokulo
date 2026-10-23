@@ -576,12 +576,12 @@ pub struct UserRow {
     pub created_at: i64,
     /// `true` only for the one instance-admin account the first-run setup
     /// wizard creates (`http::setup`) - `false` for every ordinary merchant
-    /// user `POST /dashboard/signup` creates. Gates the nav's own "admin"
-    /// link and `/dashboard/admin/*` - see `AuthedUser`'s own doc comment.
+    /// user `POST /signup` creates. Gates the nav's own "admin"
+    /// link and `/admin/*` - see `AuthedUser`'s own doc comment.
     pub is_admin: bool,
     /// This user's stored light/dark preference (`users.theme`, migration
     /// 0017) - read fresh on every request via [`AuthedUser`]'s own DB
-    /// lookup, so a theme change (`POST /dashboard/theme`) takes effect on
+    /// lookup, so a theme change (`POST /theme`) takes effect on
     /// the very next page load with no session/cookie invalidation needed.
     pub theme: Theme,
     /// The time zone this user chose (`users.timezone`, migration 0026), or
@@ -1121,7 +1121,7 @@ impl Db {
         Ok(ended)
     }
 
-    /// `POST /dashboard/theme` - the nav's own no-JS toggle form. Same
+    /// `POST /theme` - the nav's own no-JS toggle form. Same
     /// "update a single column, keyed by id" shape as
     /// `update_store_connection_fx_providers`.
     pub fn update_user_theme(&self, id: &UserId, theme: Theme) -> Result<()> {

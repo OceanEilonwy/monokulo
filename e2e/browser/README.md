@@ -118,7 +118,7 @@ screenshots on failure).
   including `send_payment_url`, the store's `connection_id`, the test account's
   email/password) is written to `.pos-e2e-fixture.json` (gitignored) for the test
   files to read.
-- `tests/pos-stagenet-payments.spec.js` drives the actual browser: real login through `/dashboard/login`,
+- `tests/pos-stagenet-payments.spec.js` drives the actual browser: real login through `/login`,
   real clicks on the real keypad, reads the real order back off the real `POST
   .../pos/orders` response, then calls `e2e-harness`'s own `POST /send-payment`
   endpoint (`helpers.js::sendStagenetPayment`, a plain `fetch`) to sign and broadcast

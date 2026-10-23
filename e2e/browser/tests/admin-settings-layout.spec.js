@@ -69,7 +69,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   const expected = count === 1 ? '1 store uses the stagenet network' : `${count} stores use the stagenet network`;
   let posts = 0;
   page.on('request', (request) => {
-    if (request.method() === 'POST' && request.url().endsWith('/dashboard/admin/settings')) posts += 1;
+    if (request.method() === 'POST' && request.url().endsWith('/admin/settings')) posts += 1;
   });
 
   // Dismissed: nothing is sent. Proven by the accepted save below being

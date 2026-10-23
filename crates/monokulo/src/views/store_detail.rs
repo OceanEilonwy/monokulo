@@ -1,4 +1,4 @@
-//! `GET /dashboard/stores/{id}` - `http::orders::store_detail`/
+//! `GET /stores/{id}` - `http::orders::store_detail`/
 //! `render_store_detail_page`.
 
 use maud::{html, Markup, PreEscaped};
@@ -53,7 +53,7 @@ pub struct FailingDomainWarning {
 /// dismissed; also what fixi swaps in for the warning on Dismiss.
 pub fn compact_embed_warning(connection_id: &str) -> Markup {
     let settings =
-        format!("/dashboard/stores/{connection_id}/settings?tab=connections#card-verified-domains");
+        format!("/stores/{connection_id}/settings?tab=connections#card-verified-domains");
     html! {
         (ui::Alert::new(html! { a href=(settings) { "Verify your domains" } }, ui::Tone::Warning)
             .title("Any website can show this store's checkout.")
@@ -77,8 +77,8 @@ pub struct StoreDetailViewModel {
 
 fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
     let settings =
-        format!("/dashboard/stores/{connection_id}/settings?tab=connections#card-verified-domains");
-    let dismiss = format!("/dashboard/stores/{connection_id}/embed-warning/dismiss");
+        format!("/stores/{connection_id}/settings?tab=connections#card-verified-domains");
+    let dismiss = format!("/stores/{connection_id}/settings/embed-restriction/dismiss-warning");
     html! {
         @if warnings.shown_nowhere {
             (ui::Alert::new(html! {
@@ -202,7 +202,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         a class="store-site" href=(site.link()) title=(site) { (site) }
                     }
                 }
-                (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::SETTINGS)) "Settings" }, format!("/dashboard/stores/{}/settings", store.connection_id))
+                (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::SETTINGS)) "Settings" }, format!("/stores/{}/settings", store.connection_id))
                     .attr("data-store-link", "settings"))
                 (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::EXTERNAL)) "Help" }, super::DOCS_URL)
                     .attr("target", "_blank")
@@ -232,12 +232,12 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
             // The POS needs JavaScript: without it, its tile says so.
             div class="widget-links" {
                 (ui::LaunchTile::new("POS Terminal", "Full-screen keypad for in-person sales", pos_icon())
-                    .href(format!("/dashboard/stores/{}/pos", store.connection_id))
+                    .href(format!("/stores/{}/pos", store.connection_id))
                     .attr("data-only", "script"))
                 (ui::LaunchTile::new("POS Terminal", "Requires JavaScript", pos_icon())
                     .attr("data-only", "no-script"))
                 (ui::LaunchTile::new("Create an order", "For one-off custom payments", new_order_icon())
-                    .href(format!("/dashboard/stores/{}/orders/new", store.connection_id)))
+                    .href(format!("/stores/{}/orders/new", store.connection_id)))
             }
 
             h2 { "Recent orders" }
@@ -247,15 +247,15 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 (orders_table(store.connection_id.as_str(), &store.recent_orders, &chrome.clock))
             }
             p {
-                a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }
+                a href=(format!("/stores/{}/orders", store.connection_id)) { "all orders →" }
             }
 
             (lookup_payment_card(
-                &format!("/dashboard/stores/{}/orders/lookup", store.connection_id),
+                &format!("/stores/{}/orders/lookup", store.connection_id),
                 &store.lookup_txid_value,
                 &store.lookup_message,
                 &store.lookup_found_order_id,
-                |order_id| format!("/dashboard/stores/{}/orders/{}", store.connection_id, order_id),
+                |order_id| format!("/stores/{}/orders/{}", store.connection_id, order_id),
             ))
         } @else {
             p { "This store doesn't exist, or isn't connected to your account." }
@@ -273,7 +273,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/stores/conn_1")
+        PageChrome::from_user(None, "/stores/conn_1")
     }
 
     fn base_store() -> StoreDetailData {
@@ -310,10 +310,11 @@ mod tests {
         )
         .into_string();
         assert!(html.contains(r#"<div class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout</strong>"#), "got: {html}");
-        assert!(html.contains(r#"action="/dashboard/stores/conn_1/embed-warning/dismiss""#));
-        assert!(html.contains(
-            r#"href="/dashboard/stores/conn_1/settings?tab=connections#card-verified-domains""#
-        ));
+        assert!(
+            html.contains(r#"action="/stores/conn_1/settings/embed-restriction/dismiss-warning""#)
+        );
+        assert!(html
+            .contains(r#"href="/stores/conn_1/settings?tab=connections#card-verified-domains""#));
 
         let store = StoreDetailData {
             wallet: None,
@@ -343,7 +344,7 @@ mod tests {
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         assert!(html.contains(r#"<p class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout.</strong>"#), "got: {html}");
         assert!(
-            !html.contains("embed-warning/dismiss"),
+            !html.contains("embed-restriction/dismiss-warning"),
             "a dismissed warning offers nothing more to dismiss"
         );
         assert!(html.contains("shop.example failed its DNS check"));
@@ -457,7 +458,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"href="/dashboard/stores/conn_1/settings""#),
+            html.contains(r#"href="/stores/conn_1/settings""#),
             "expected a Settings link, got: {html}"
         );
         let help = html.find(r#"data-store-link="help""#).unwrap();
@@ -481,7 +482,12 @@ mod tests {
             "expected the gear before Settings: {html}"
         );
         // The POS needs JavaScript: its tile is a link only with it.
-        assert!(html.contains(r#"<a class="mk-launch-tile" href="/dashboard/stores/conn_1/pos" data-only="script">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<a class="mk-launch-tile" href="/stores/conn_1/pos" data-only="script">"#
+            ),
+            "{html}"
+        );
         assert!(
             html.contains(
                 r#"<a class="mk-launch-tile" aria-disabled="true" data-only="no-script">"#
@@ -489,7 +495,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains("Requires JavaScript"));
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/new""#));
+        assert!(html.contains(r#"href="/stores/conn_1/orders/new""#));
     }
 
     #[test]

@@ -68,7 +68,7 @@ pub fn existing_store_page(
     let body = html! {
         p {
             "The " (request.plugin) " plugin on " strong { (request.host) } " asked to connect. Your store "
-            a href=(format!("/dashboard/stores/{store_id}")) { (store_name) } " already uses that site, so it "
+            a href=(format!("/stores/{store_id}")) { (store_name) } " already uses that site, so it "
             "connects to that store: the same orders, settings and wallet."
         }
         @if let Some(onion) = onion {

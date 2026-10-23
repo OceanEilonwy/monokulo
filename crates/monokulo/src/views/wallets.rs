@@ -1149,7 +1149,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
                         @for store in stores {
                             li {
                                 span class="sr-name" {
-                                    a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
+                                    a href=(format!("/stores/{}", store.id)) { (store.name) }
                                     @if let Some(site) = &store.site { span class="sr-host" { (site) } }
                                 }
                                 a class="sr-act" href=(change_wallet_link(&store.id)) { "change the wallet" }
@@ -1163,7 +1163,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
                         @for store in past {
                             li {
                                 span class="sr-name" {
-                                    a href=(format!("/dashboard/stores/{}", store.id)) { (store.name) }
+                                    a href=(format!("/stores/{}", store.id)) { (store.name) }
                                     @if let Some(site) = &store.site { span class="sr-host" { (site) } }
                                 }
                                 @if let Some(until) = &store.until { span class="sr-host" { "until " (until) } }
@@ -1178,7 +1178,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
 
 /// A store's Wallet section, where its wallet is changed.
 fn change_wallet_link(store_id: &str) -> String {
-    format!("/dashboard/stores/{store_id}/settings?tab=wallet#card-wallet")
+    format!("/stores/{store_id}/settings?tab=wallet#card-wallet")
 }
 
 /// The retire dialog (D1, the checklist), and the same on the page
@@ -1679,7 +1679,7 @@ mod tests {
             html.contains(r#"<span class="card-meta">2 take payments into this wallet</span>"#),
             "{html}"
         );
-        assert!(html.contains(r#"<li><span class="sr-name"><a href="/dashboard/stores/s1">Bakery</a><span class="sr-host">bakery.example</span></span><a class="sr-act" href="/dashboard/stores/s1/settings?tab=wallet#card-wallet">change the wallet</a></li>"#), "{html}");
+        assert!(html.contains(r#"<li><span class="sr-name"><a href="/stores/s1">Bakery</a><span class="sr-host">bakery.example</span></span><a class="sr-act" href="/stores/s1/settings?tab=wallet#card-wallet">change the wallet</a></li>"#), "{html}");
         assert!(html.contains(r#"Saturday market</a></span>"#), "{html}");
         let before = between(&html, "<h4>Before</h4>", "</ul>");
         assert!(
@@ -1726,7 +1726,7 @@ mod tests {
         );
         assert!(html.starts_with("<h2 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>"), "{html}");
         assert!(html.contains("<p>Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app.</p>"), "{html}");
-        assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix"><span class="fix-line">Bakery does · <a href="/dashboard/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
+        assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix"><span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
         assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No order on it can still be paid</span></li>"#), "{html}");
         assert!(
             html.contains("Retire becomes available when both are ticked."),

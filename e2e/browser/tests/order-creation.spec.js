@@ -9,7 +9,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context, admin = false) {
   await context.addCookies([{ name: 'session', value: admin ? fixture.admin_session : fixture.session, url: fixture.base_url }]);
 }
-const store = '/dashboard/stores/coverage-store';
+const store = '/stores/coverage-store';
 
 test('order creation, Back and changed or unchanged resubmission work', async ({ page, context }) => {
   await login(context);

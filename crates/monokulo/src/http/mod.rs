@@ -12,7 +12,7 @@
 //! which exists because *other* crates need a real socket to reach a
 //! separately-deployed *engine* instance.
 //!
-//! `/dashboard/signup` and `/dashboard/login` (`dashboard` module, WBS
+//! `/signup` and `/login` (`dashboard` module, WBS
 //! 1.1 and 1.3.1) are plain HTML forms over the account and login logic
 //! (`signup`, `login`), ending in a `session` cookie, which the
 //! [`AuthedUser`] extractor below resolves back to a user. The machine API
@@ -25,7 +25,7 @@
 //! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
 //! for any shop plugin, which names itself (`crate::plugins`): a plugin sends the merchant's
 //! browser to `GET /plugins/connect/{platform}`, which redirects to
-//! `/dashboard/login` (carrying a validated `next`, see
+//! `/login` (carrying a validated `next`, see
 //! `dashboard::login_submit`) if there's no session yet; with one, the
 //! store with the shop's site gets the plugin, or setup makes one, and
 //! the plugin's `return_url` gets a short-lived, single-use connect token
@@ -348,85 +348,70 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(admin_setup::setup_form).post(admin_setup::setup_submit),
         )
         .route(
-            "/dashboard/admin/settings",
+            "/admin/settings",
             axum::routing::get(admin_settings::page).post(admin_settings::save),
         )
         .route(
-            "/dashboard/admin/settings/reload",
+            "/admin/settings/reload",
             axum::routing::post(admin_settings::reload),
         )
         .route(
-            "/dashboard/admin/proof/{network}/reanchor",
+            "/admin/proof/{network}/reanchor",
             axum::routing::post(status_page::take_new_anchor),
         )
         .route(
             "/request-invite",
             axum::routing::get(invites::request_invite_form).post(invites::request_invite_submit),
         )
+        .route("/admin/invites", axum::routing::get(invites::invites_page))
         .route(
-            "/dashboard/admin/invites",
-            axum::routing::get(invites::invites_page),
-        )
-        .route(
-            "/dashboard/admin/invites/create-link",
+            "/admin/invites/create-link",
             axum::routing::post(invites::create_invite_link),
         )
         .route(
-            "/dashboard/admin/invites/delete-all",
+            "/admin/invites/delete-all",
             axum::routing::post(invites::delete_all_invite_requests),
         )
         .route(
-            "/dashboard/admin/invites/{id}/delete",
+            "/admin/invites/{id}/delete",
             axum::routing::post(invites::delete_invite_request),
         )
-        .route("/dashboard/admin/logs", axum::routing::get(logs_page::page))
+        .route("/admin/logs", axum::routing::get(logs_page::page))
+        .route("/admin/logs/tail", axum::routing::get(logs_page::tail))
         .route(
-            "/dashboard/admin/logs/tail",
-            axum::routing::get(logs_page::tail),
-        )
-        .route(
-            "/dashboard/admin/logs/syntax",
+            "/admin/logs/syntax",
             axum::routing::get(logs_page::syntax_page),
         )
+        .route("/admin/logs/export", axum::routing::get(logs_page::export))
         .route(
-            "/dashboard/admin/logs/export",
-            axum::routing::get(logs_page::export),
-        )
-        .route(
-            "/dashboard/admin/logs/trace/{trace_id}",
+            "/admin/logs/trace/{trace_id}",
             axum::routing::get(logs_page::trace_page),
         )
         .route(
-            "/dashboard/admin/logs/row/{cursor}",
+            "/admin/logs/row/{cursor}",
             axum::routing::get(logs_page::row_page),
         )
         .route(
-            "/dashboard/admin/logs/pos",
+            "/admin/logs/orders/{order_id}/pos",
             axum::routing::get(logs_page::pos_session_for_order),
         )
         .route(
-            "/dashboard/admin/logs/pos/{session}",
+            "/admin/logs/pos/{session}",
             axum::routing::get(logs_page::pos_timeline),
         )
-        .route("/dashboard/admin/logs/saved", post(logs_page::save_search))
+        .route("/admin/logs/saved", post(logs_page::save_search))
         .route(
-            "/dashboard/admin/logs/saved/{id}/delete",
+            "/admin/logs/saved/{id}/delete",
             post(logs_page::delete_search),
         )
+        .route("/admin/query", axum::routing::get(query_page::page))
         .route(
-            "/dashboard/admin/query",
-            axum::routing::get(query_page::page),
-        )
-        .route(
-            "/dashboard/admin/query/schema",
+            "/admin/query/schema",
             axum::routing::get(query_page::schema),
         )
+        .route("/admin/query/value", axum::routing::get(query_page::value))
         .route(
-            "/dashboard/admin/query/value",
-            axum::routing::get(query_page::value),
-        )
-        .route(
-            "/dashboard/admin/query/export",
+            "/admin/query/export",
             axum::routing::get(query_page::export),
         )
         .route("/status", axum::routing::get(status_page::status_page))
@@ -452,23 +437,16 @@ pub fn build_router(state: AppState) -> Router {
             "/status/engine/replay",
             axum::routing::get(engine_page::replay),
         )
-        .route("/dashboard", axum::routing::get(home::dashboard_moved))
         .route(
-            "/dashboard/signup",
+            "/signup",
             axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit),
         )
         .route(
-            "/dashboard/login",
+            "/login",
             axum::routing::get(dashboard::login_form).post(dashboard::login_submit),
         )
-        .route(
-            "/dashboard/logout",
-            axum::routing::post(dashboard::logout_submit),
-        )
-        .route(
-            "/dashboard/theme",
-            axum::routing::post(dashboard::theme_submit),
-        )
+        .route("/logout", axum::routing::post(dashboard::logout_submit))
+        .route("/theme", axum::routing::post(dashboard::theme_submit))
         .route(
             "/setup",
             axum::routing::get(setup::store_form).post(setup::store_submit),
@@ -512,146 +490,140 @@ pub fn build_router(state: AppState) -> Router {
             "/account/wallets/{id}/restore",
             axum::routing::get(wallets::restore_form_page).post(wallets::restore),
         )
+        .route("/stores/{id}", axum::routing::get(orders::store_detail))
         .route(
-            "/dashboard/stores/{id}",
-            axum::routing::get(orders::store_detail),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings",
+            "/stores/{id}/settings",
             axum::routing::get(orders::store_settings).post(store_settings::save),
         )
         .route(
-            "/dashboard/stores/{id}/settings/domains",
+            "/stores/{id}/settings/domains",
             post(embed_domains::add_domain),
         )
         .route(
-            "/dashboard/stores/{id}/settings/domains/add",
+            "/stores/{id}/settings/domains/new",
             axum::routing::get(embed_domains::add_form),
         )
         .route(
-            "/dashboard/stores/{id}/settings/domains/{domain_id}/record",
+            "/stores/{id}/settings/domains/{domain_id}/record",
             axum::routing::get(embed_domains::record_page),
         )
         .route(
-            "/dashboard/stores/{id}/settings/domains/{domain_id}/check",
+            "/stores/{id}/settings/domains/{domain_id}/check",
             axum::routing::get(embed_domains::check_page).post(embed_domains::check_domain),
         )
         .route(
-            "/dashboard/stores/{id}/settings/domains/{domain_id}/delete",
+            "/stores/{id}/settings/domains/{domain_id}/delete",
             post(embed_domains::delete_domain),
         )
         .route(
-            "/dashboard/stores/{id}/settings/embed-restriction",
+            "/stores/{id}/settings/embed-restriction",
             post(embed_domains::set_embed_restriction),
         )
         .route(
-            "/dashboard/stores/{id}/settings/key-custody",
-            post(orders::move_key_storage),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/wallet",
-            post(orders::change_store_wallet),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/website",
-            axum::routing::get(store_site::website_form).post(store_site::website_submit),
-        )
-        .route(
-            "/dashboard/stores/{id}/apps/connect",
-            axum::routing::get(apps::connect_form).post(apps::connect_submit),
-        )
-        .route(
-            "/dashboard/stores/{id}/apps/connect/{code_hash}",
-            axum::routing::get(apps::connect_status),
-        )
-        .route(
-            "/dashboard/stores/{id}/apps/{app_id}/disconnect",
-            post(apps::disconnect_submit),
-        )
-        .route(
-            "/dashboard/stores/{id}/settings/connections/{integration}/disconnect",
-            axum::routing::get(store_site::disconnect_form).post(store_site::disconnect_submit),
-        )
-        .route(
-            "/dashboard/stores/{id}/embed-warning/dismiss",
+            "/stores/{id}/settings/embed-restriction/dismiss-warning",
             post(embed_domains::dismiss_embed_warning),
         )
         .route(
-            "/dashboard/stores/{id}/orders/new",
+            "/stores/{id}/settings/key-custody",
+            post(orders::move_key_storage),
+        )
+        .route(
+            "/stores/{id}/settings/wallet",
+            post(orders::change_store_wallet),
+        )
+        .route(
+            "/stores/{id}/settings/website",
+            axum::routing::get(store_site::website_form).post(store_site::website_submit),
+        )
+        .route(
+            "/stores/{id}/settings/apps/connect",
+            axum::routing::get(apps::connect_form).post(apps::connect_submit),
+        )
+        .route(
+            "/stores/{id}/settings/apps/connect/{code_hash}",
+            axum::routing::get(apps::connect_status),
+        )
+        .route(
+            "/stores/{id}/settings/apps/{app_id}/disconnect",
+            post(apps::disconnect_submit),
+        )
+        .route(
+            "/stores/{id}/settings/plugins/{integration}/disconnect",
+            axum::routing::get(store_site::disconnect_form).post(store_site::disconnect_submit),
+        )
+        .route(
+            "/stores/{id}/orders/new",
             axum::routing::get(orders::create_order_page).post(orders::create_order),
         )
         .route(
-            "/dashboard/stores/{id}/settings/webhooks",
+            "/stores/{id}/settings/webhooks",
             axum::routing::post(webhooks::add),
         )
         .route(
-            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/delete",
+            "/stores/{id}/settings/webhooks/{webhook_id}/delete",
             axum::routing::get(webhooks::delete_page).post(webhooks::delete),
         )
         .route(
-            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/retry-failed",
+            "/stores/{id}/settings/webhooks/{webhook_id}/retry-failed",
             axum::routing::post(webhooks::retry_failed),
         )
         .route(
-            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/deliveries",
+            "/stores/{id}/settings/webhooks/{webhook_id}/deliveries",
             axum::routing::get(webhooks::all),
         )
         .route(
-            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/deliveries/{delivery_id}",
+            "/stores/{id}/settings/webhooks/{webhook_id}/deliveries/{delivery_id}",
             axum::routing::get(webhooks::detail),
         )
         .route(
-            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/deliveries/{delivery_id}/send-again",
+            "/stores/{id}/settings/webhooks/{webhook_id}/deliveries/{delivery_id}/send-again",
             axum::routing::post(webhooks::send_again),
         )
+        .route("/stores/{id}/pos", axum::routing::get(pos::pos_page))
         .route(
-            "/dashboard/stores/{id}/pos",
-            axum::routing::get(pos::pos_page),
-        )
-        .route(
-            "/dashboard/stores/{id}/pos/orders",
+            "/stores/{id}/pos/orders",
             axum::routing::get(pos::list_orders).post(pos::create_order),
         )
         .route(
-            "/dashboard/stores/{id}/pos/orders/{order_id}",
+            "/stores/{id}/pos/orders/{order_id}",
             axum::routing::get(pos::order_detail),
         )
         .route(
-            "/dashboard/stores/{id}/pos/orders/{order_id}/background",
+            "/stores/{id}/pos/orders/{order_id}/background",
             axum::routing::post(pos::background_order),
         )
         .route(
-            "/dashboard/stores/{id}/pos/orders/{order_id}/cancel",
+            "/stores/{id}/pos/orders/{order_id}/cancel",
             axum::routing::post(pos::cancel_order),
         )
         .route(
-            "/dashboard/stores/{id}/pos/orders/{order_id}/status",
+            "/stores/{id}/pos/orders/{order_id}/status",
             axum::routing::get(pos::order_status),
         )
         .route(
-            "/dashboard/stores/{id}/pos/events",
+            "/stores/{id}/pos/events",
             axum::routing::get(pos::order_events),
         )
         .route(
-            "/dashboard/stores/{id}/pos/logs",
+            "/stores/{id}/pos/logs",
             post(pos_logs::receive).layer(axum::extract::DefaultBodyLimit::max(
                 pos_logs::MAX_BODY_BYTES,
             )),
         )
         .route(
-            "/dashboard/stores/{id}/orders",
+            "/stores/{id}/orders",
             axum::routing::get(orders::orders_list),
         )
         .route(
-            "/dashboard/stores/{id}/orders/lookup",
+            "/stores/{id}/orders/lookup",
             axum::routing::post(orders::lookup_payment),
         )
         .route(
-            "/dashboard/stores/{id}/orders/{order_id}",
+            "/stores/{id}/orders/{order_id}",
             axum::routing::get(orders::order_detail),
         )
         .route(
-            "/dashboard/stores/{id}/orders/{order_id}/events",
+            "/stores/{id}/orders/{order_id}/events",
             axum::routing::get(orders::order_detail_events),
         )
         .route(
@@ -851,7 +823,7 @@ fn unauthenticated(parts: &Parts) -> Response {
     }
     let here = parts.uri.path_and_query().map_or("/", |p| p.as_str());
     dashboard::redirect_302(&format!(
-        "/dashboard/login?next={}",
+        "/login?next={}",
         url::form_urlencoded::byte_serialize(here.as_bytes()).collect::<String>()
     ))
 }
@@ -1024,12 +996,12 @@ pub(crate) async fn page_chrome(
     chrome
 }
 
-/// The store (connection id) a `/dashboard/stores/{id}/...` path is about.
+/// The store (connection id) a `/stores/{id}/...` path is about.
 pub(crate) fn store_of_path(path: &str) -> Option<&str> {
     let path = path.split(['?', '#']).next().unwrap_or(path);
     let mut segments = path.trim_start_matches('/').split('/');
-    match (segments.next(), segments.next(), segments.next()) {
-        (Some("dashboard"), Some("stores"), Some(id)) if !id.is_empty() => Some(id),
+    match (segments.next(), segments.next()) {
+        (Some("stores"), Some(id)) if !id.is_empty() => Some(id),
         _ => None,
     }
 }
@@ -1075,7 +1047,7 @@ fn store_alerts(
 /// instead of a parallel reimplementation. `GET /plugins/connect/{platform}`
 /// (`http/connect.rs`, WBS 1.4.1) is the first such caller: an unauthenticated
 /// request there is a normal, expected case handled with a redirect to
-/// `/dashboard/login`, not a bare `401` - genuinely different handling from
+/// `/login`, not a bare `401` - genuinely different handling from
 /// [`AuthedUser`]'s own rejection, but it must resolve a *valid* session
 /// identically, or the two code paths could quietly drift apart on what
 /// counts as "logged in."
@@ -1133,7 +1105,7 @@ async fn record_store(request: axum::extract::Request, next: middleware::Next) -
     if let Some(store) = request
         .uri()
         .path()
-        .strip_prefix("/dashboard/stores/")
+        .strip_prefix("/stores/")
         .and_then(|rest| rest.split('/').next())
         .filter(|id| !id.is_empty())
     {

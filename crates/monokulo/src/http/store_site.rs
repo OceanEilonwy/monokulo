@@ -2,11 +2,11 @@
 //! changing or removing the website, and disconnecting a plugin, each
 //! behind its checklist dialog, or the page holding it without JavaScript.
 //!
-//! - `GET`/`POST /dashboard/stores/{id}/settings/website` (`?site=` the
+//! - `GET`/`POST /stores/{id}/settings/website` (`?site=` the
 //!   new address, or `?remove=1`): refused while a plugin is connected.
 //!   The old site's domain is dropped and the new one's waits to be
 //!   verified.
-//! - `GET`/`POST /dashboard/stores/{id}/settings/connections/{integration}/disconnect`:
+//! - `GET`/`POST /stores/{id}/settings/plugins/{integration}/disconnect`:
 //!   refused while an order the plugin made can still be paid. Removes the
 //!   plugin's webhook and gives the store a new secret key in the engine,
 //!   so the plugin's stops working, then marks it disconnected; the
@@ -176,10 +176,10 @@ pub struct WebsiteForm {
 }
 
 fn website_path(id: &ConnectionId) -> String {
-    format!("/dashboard/stores/{id}/settings/website")
+    format!("/stores/{id}/settings/website")
 }
 
-/// `GET /dashboard/stores/{id}/settings/website`: B1 as a page. A store
+/// `GET /stores/{id}/settings/website`: B1 as a page. A store
 /// with no website has nothing to change: back to its settings.
 pub async fn website_form(
     State(state): State<AppState>,
@@ -192,9 +192,7 @@ pub async fn website_form(
         Err(status) => return status.into_response(),
     };
     if row.site.is_none() {
-        return super::dashboard::redirect_303(&format!(
-            "/dashboard/stores/{id}/settings#card-store"
-        ));
+        return super::dashboard::redirect_303(&format!("/stores/{id}/settings#card-store"));
     }
     let change = match (query.remove, query.site) {
         (Some(_), _) => WebsiteChange::Remove,
@@ -203,7 +201,7 @@ pub async fn website_form(
     crate::views::store_site::website_page(&chrome, &view, &change, None).into_response()
 }
 
-/// `POST /dashboard/stores/{id}/settings/website`: the website changed or
+/// `POST /stores/{id}/settings/website`: the website changed or
 /// removed, once no plugin is connected and the store's name was typed.
 pub async fn website_submit(
     State(state): State<AppState>,
@@ -228,9 +226,7 @@ pub async fn website_submit(
             .into_response()
     };
     let Some(current) = row.site.clone() else {
-        return super::dashboard::redirect_303(&format!(
-            "/dashboard/stores/{id}/settings#card-store"
-        ));
+        return super::dashboard::redirect_303(&format!("/stores/{id}/settings#card-store"));
     };
     if let Some(active) = &view.active {
         return refuse(format!(
@@ -328,10 +324,10 @@ pub struct DisconnectForm {
 }
 
 fn disconnect_path(id: &ConnectionId, integration: &str) -> String {
-    format!("/dashboard/stores/{id}/settings/connections/{integration}/disconnect")
+    format!("/stores/{id}/settings/plugins/{integration}/disconnect")
 }
 
-/// `GET …/settings/connections/{integration}/disconnect`: C1 as a page. One
+/// `GET …/settings/plugins/{integration}/disconnect`: C1 as a page. One
 /// that isn't the store's active plugin: back to its settings.
 pub async fn disconnect_form(
     State(state): State<AppState>,
@@ -345,13 +341,13 @@ pub async fn disconnect_form(
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return super::dashboard::redirect_303(&format!(
-            "/dashboard/stores/{id}/settings?tab=connections#card-connections"
+            "/stores/{id}/settings?tab=connections#card-connections"
         ));
     };
     crate::views::store_site::disconnect_page(&chrome, &view, active, None).into_response()
 }
 
-/// `POST …/settings/connections/{integration}/disconnect`: once no order
+/// `POST …/settings/plugins/{integration}/disconnect`: once no order
 /// the plugin made can still be paid and the store's name was typed,
 /// removes its webhook, gives the store a new secret key (the plugin's
 /// stops working) and marks it disconnected.
@@ -368,7 +364,7 @@ pub async fn disconnect_submit(
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return super::dashboard::redirect_303(&format!(
-            "/dashboard/stores/{id}/settings?tab=connections#card-connections"
+            "/stores/{id}/settings?tab=connections#card-connections"
         ));
     };
     let refuse = |message: String| {

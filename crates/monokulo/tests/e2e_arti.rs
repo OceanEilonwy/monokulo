@@ -187,7 +187,8 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
             .map_err(|e| e.to_string())?;
             stream
                 .write_all(
-                    format!("GET /dashboard/login HTTP/1.1\r\nHost: {onion}\r\nConnection: close\r\n\r\n").as_bytes(),
+                    format!("GET /login HTTP/1.1\r\nHost: {onion}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
                 )
                 .await
                 .map_err(|e| e.to_string())?;

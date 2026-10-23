@@ -14,7 +14,7 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 async function login(context) {
   await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
-const settings = '/dashboard/stores/coverage-store/settings';
+const settings = '/stores/coverage-store/settings';
 
 /** The page doesn't scroll sideways. */
 async function fits(page) {
@@ -90,7 +90,7 @@ test('without JavaScript a domain is added, checked and removed by posting', asy
   const context = await browser.newContext({ javaScriptEnabled: false });
   await login(context);
   const page = await context.newPage();
-  await page.goto(fixture.base_url + settings + '/domains/add');
+  await page.goto(fixture.base_url + settings + '/domains/new');
   await page.getByRole('textbox', { name: 'Domain' }).fill('nojs-check.example');
   await page.getByRole('button', { name: 'Next' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Add the record' })).toBeVisible();
@@ -113,7 +113,7 @@ test('without JavaScript a domain is added, checked and removed by posting', asy
 test('on a phone the domain pages fit, and a card stacks its actions under its name', async ({ page, context }) => {
   await login(context);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(fixture.base_url + settings + '/domains/add');
+  await page.goto(fixture.base_url + settings + '/domains/new');
   await fits(page);
   await page.getByRole('textbox', { name: 'Domain' }).fill('phone-check.example');
   await page.getByRole('button', { name: 'Next' }).click();

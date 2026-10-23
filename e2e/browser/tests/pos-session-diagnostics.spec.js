@@ -105,7 +105,7 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   await expect(page.locator('#pos-root')).toHaveAttribute('data-client-logging', 'true');
 
   // Everything recorded arrives, however it was held up.
-  const timeline = `${base}/dashboard/admin/logs/pos/${session}`;
+  const timeline = `${base}/admin/logs/pos/${session}`;
   const kinds = [
     'pos.opened', 'order.charge', 'order.created', 'order.backgrounded', 'network.offline', 'network.online',
     'page.hidden', 'page.frozen', 'page.resumed', 'page.visible', 'order.foregrounded', 'order.cancelled',
@@ -136,7 +136,7 @@ test('a POS session reads as one timeline, from opting in to the last event', as
   await page.goto(`${base}${store}/orders/${first}`);
   await page.getByRole('link', { name: 'POS session' }).click();
   await expect(page).toHaveURL(timeline);
-  await page.goto(`${base}/dashboard/admin/logs?range=all&q=${encodeURIComponent(`pos.session = '${session}' and pos.kind = 'order.created'`)}`);
+  await page.goto(`${base}/admin/logs?range=all&q=${encodeURIComponent(`pos.session = '${session}' and pos.kind = 'order.created'`)}`);
   const row = page.locator('#log-rows .log-row').first();
   await row.locator('summary').click();
   await expect(row.getByRole('link', { name: 'Show the POS session timeline' })).toBeVisible();
@@ -179,7 +179,7 @@ test('log reports past their limit are dropped with a 429, never a challenge, an
   // A client of its own (no session): anonymous, by address.
   const client = await playwright.request.newContext();
   const report = () => client.post(`${base}/telemetry/client`, {
-    data: { kind: 'error', message: 'rate limit test', page: '/dashboard/admin/logs' },
+    data: { kind: 'error', message: 'rate limit test', page: '/admin/logs' },
   });
   let refused = null;
   for (let i = 0; i < 40 && !refused; i++) {

@@ -5,7 +5,7 @@
 //! `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use, pays a
 //! real order with a genuine, signed, broadcast stagenet transaction (via
 //! `cli_wallet::Wallet`, same as those two), and asserts the
-//! payment shows up on the real monokulo dashboard (`GET /dashboard`)
+//! payment shows up on the real monokulo dashboard (`GET /`)
 //! with the real, correct total-received-XMR figure - not just that the
 //! engine detected it (that's already `e2e_stagenet.rs`'s own job).
 //!
@@ -242,7 +242,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         webhooks: Arc::default(),
         apps: Default::default(),
         // Public signup: `signup.mode` defaults to invite-only, which would
-        // refuse the plain `/dashboard/signup` below (a re-rendered `200`
+        // refuse the plain `/signup` below (a re-rendered `200`
         // form, not the `302` it asserts on).
         settings: ControlPlaneAppState::test_settings(None),
         engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine_router)),
@@ -257,7 +257,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/signup")
+                .uri("/signup")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_body(&[
                     ("email", &email),
@@ -278,7 +278,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/dashboard/login")
+                .uri("/login")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(form_body(&[
                     ("email", &email),
@@ -291,7 +291,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     assert_eq!(
         login_response.status(),
         StatusCode::FOUND,
-        "real login should redirect to /dashboard"
+        "real login should redirect to the dashboard"
     );
     let set_cookie = login_response
         .headers()

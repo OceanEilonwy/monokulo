@@ -46,7 +46,7 @@ const shortOf = (value, prefix = '') => {
 
 test("an order's ID at the top of its page shows short, and copies, reads and finds whole", async ({ page, browserName }) => {
   await watchCopies(page);
-  await page.goto(`${fixture.base_url}/dashboard/stores/coverage-store/orders/${orderId}`);
+  await page.goto(`${fixture.base_url}/stores/coverage-store/orders/${orderId}`);
   const value = page.locator('.order-title-id .short-value');
   await expect(value).toHaveAttribute('title', orderId);
   // Shown short, with one ellipsis.
@@ -68,7 +68,7 @@ test("an order's ID at the top of its page shows short, and copies, reads and fi
   expect(await page.evaluate(() => getSelection().anchorNode.parentElement.className)).toBe('short-value-full');
 });
 
-for (const [where, path] of [['dashboard', '/'], ['orders list', '/dashboard/stores/coverage-store/orders']]) {
+for (const [where, path] of [['dashboard', '/'], ['orders list', '/stores/coverage-store/orders']]) {
   test(`an order ID on the ${where} is a short, underlined link to the order whose name is the whole ID`, async ({ page, browserName }) => {
     await page.goto(fixture.base_url + path);
     // Its accessible name is the whole ID.
@@ -100,7 +100,7 @@ test('a double-click on an order ID link opens the order: the link wins over sel
   // Any link in a browser: its first click follows it. So the whole ID is
   // selected and copied from the order's own page (its Order ID row), or
   // with the browser's own link selection (Alt+drag), not a double-click.
-  await page.goto(fixture.base_url + '/dashboard/stores/coverage-store/orders');
+  await page.goto(fixture.base_url + '/stores/coverage-store/orders');
   await page.getByRole('link', { name: orderId, exact: true }).locator('.short-value').dblclick();
   await expect(page).toHaveURL(new RegExp(`/orders/${orderId}$`));
 });

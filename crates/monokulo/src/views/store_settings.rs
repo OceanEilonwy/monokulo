@@ -1,4 +1,4 @@
-//! `GET /dashboard/stores/{id}/settings` -
+//! `GET /stores/{id}/settings` -
 //! `http::orders::store_settings`/`render_store_settings_page`.
 //!
 //! Everything about a store that isn't day-to-day order activity: currency
@@ -459,10 +459,7 @@ fn settings_card(
 /// anywhere - and the fields are always empty on render. An action of its
 /// own, not part of the settings form.
 fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> Markup {
-    let action = format!(
-        "/dashboard/stores/{}/settings/key-custody",
-        store.connection_id
-    );
+    let action = format!("/stores/{}/settings/key-custody", store.connection_id);
     plain_card(
         StoreSection::KeyStorage.id(),
         "Key storage",
@@ -514,7 +511,7 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
 /// JavaScript the pick posts at once; without, Change wallet does.
 fn wallet_card(store: &StoreSettingsData) -> Markup {
     let wallet = &store.wallet;
-    let action = format!("/dashboard/stores/{}/settings/wallet", store.connection_id);
+    let action = format!("/stores/{}/settings/wallet", store.connection_id);
     let picked = wallet
         .pending
         .as_ref()
@@ -1032,7 +1029,7 @@ fn save_bar(store: &StoreSettingsData) -> Markup {
         refused.is_some(),
         false,
         message,
-        &format!("/dashboard/stores/{}/settings", store.connection_id),
+        &format!("/stores/{}/settings", store.connection_id),
     )
 }
 
@@ -1042,11 +1039,7 @@ fn tab_links(store: &StoreSettingsData) -> Markup {
     let links = StoreTab::ALL
         .into_iter()
         .map(|tab| ui::TabLink {
-            href: format!(
-                "/dashboard/stores/{}/settings?tab={}",
-                store.connection_id,
-                tab.id()
-            ),
+            href: format!("/stores/{}/settings?tab={}", store.connection_id, tab.id()),
             label: tab.label().to_string(),
             current: tab == store.tab,
             count: (tab == StoreTab::Wallet && store.wallet.current.is_none())
@@ -1061,7 +1054,7 @@ fn tab_links(store: &StoreSettingsData) -> Markup {
 /// to it.
 fn settings_form(store: &StoreSettingsData, cards: Markup) -> Markup {
     super::settings::form(
-        &format!("/dashboard/stores/{}/settings", store.connection_id),
+        &format!("/stores/{}/settings", store.connection_id),
         Save::Reload,
         "Store settings",
         html! {
@@ -1150,7 +1143,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/stores/conn_1/settings")
+        PageChrome::from_user(None, "/stores/conn_1/settings")
     }
 
     fn base_store() -> StoreSettingsData {
@@ -1369,11 +1362,10 @@ mod tests {
                 "{needles:?} in order: {html}"
             );
         };
-        let form =
-            r#"<form method="post" action="/dashboard/stores/conn_1/settings" id="settings-form""#;
+        let form = r#"<form method="post" action="/stores/conn_1/settings" id="settings-form""#;
 
         let html = tab(StoreTab::General);
-        assert!(html.contains(r#"<nav class="mk-tabs" aria-label="Store settings"><a href="/dashboard/stores/conn_1/settings?tab=general" aria-current="page">General</a><a href="/dashboard/stores/conn_1/settings?tab=payments">Payments</a><a href="/dashboard/stores/conn_1/settings?tab=wallet">Wallet<span class="mk-tab-count">No wallet</span></a><a href="/dashboard/stores/conn_1/settings?tab=connections">Connections</a></nav>"#), "{html}");
+        assert!(html.contains(r#"<nav class="mk-tabs" aria-label="Store settings"><a href="/stores/conn_1/settings?tab=general" aria-current="page">General</a><a href="/stores/conn_1/settings?tab=payments">Payments</a><a href="/stores/conn_1/settings?tab=wallet">Wallet<span class="mk-tab-count">No wallet</span></a><a href="/stores/conn_1/settings?tab=connections">Connections</a></nav>"#), "{html}");
         order(
             &html,
             &[
@@ -1405,14 +1397,17 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains(
-                r#"<a class="mk-btn" href="/dashboard/stores/conn_1/settings" data-discard-all"#
-            ),
+            html.contains(r#"<a class="mk-btn" href="/stores/conn_1/settings" data-discard-all"#),
             "{html}"
         );
 
         let html = tab(StoreTab::Payments);
-        assert!(html.contains(r#"<a href="/dashboard/stores/conn_1/settings?tab=payments" aria-current="page">Payments</a>"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<a href="/stores/conn_1/settings?tab=payments" aria-current="page">Payments</a>"#
+            ),
+            "{html}"
+        );
         order(
             &html,
             &[
@@ -1668,9 +1663,7 @@ mod tests {
         assert!(html.contains("<strong>No domains yet</strong>"), "{html}");
         // With nothing verified, adding a domain is the card's primary.
         assert!(
-            html.contains(
-                r#"href="/dashboard/stores/conn_1/settings/domains/add" data-variant="primary">"#
-            ),
+            html.contains(r#"href="/stores/conn_1/settings/domains/new" data-variant="primary">"#),
             "{html}"
         );
         let script = crate::assets::url("domains.js");
@@ -1719,7 +1712,7 @@ mod tests {
         );
         assert!(!verified.contains("/check"), "nothing to check: {verified}");
         assert!(
-            verified.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d1/delete""#),
+            verified.contains(r#"action="/stores/conn_1/settings/domains/d1/delete""#),
             "{verified}"
         );
         assert!(
@@ -1735,7 +1728,7 @@ mod tests {
         assert!(waiting.contains("No TXT record yet."), "{waiting}");
         // Check again swaps this card, and checks again by itself.
         assert!(
-            waiting.contains(r#"fx-action="/dashboard/stores/conn_1/settings/domains/d2/check""#),
+            waiting.contains(r#"fx-action="/stores/conn_1/settings/domains/d2/check""#),
             "{waiting}"
         );
         assert!(waiting.contains(r##"fx-target="#domain-d2""##), "{waiting}");
@@ -1748,9 +1741,7 @@ mod tests {
         assert!(html.contains(&script), "a domain is waiting: {html}");
         // Something is verified: adding another isn't the primary.
         assert!(
-            html.contains(
-                r#"<a class="mk-btn" href="/dashboard/stores/conn_1/settings/domains/add">"#
-            ),
+            html.contains(r#"<a class="mk-btn" href="/stores/conn_1/settings/domains/new">"#),
             "{html}"
         );
     }
@@ -1771,7 +1762,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><div class="mk-page-title"><h1>Settings</h1>"#),
+            html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><div class="mk-page-title"><h1>Settings</h1>"#),
             "expected a store link above the Settings heading, got: {html}"
         );
     }

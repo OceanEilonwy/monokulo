@@ -22,7 +22,7 @@ use ui::{
 use super::{script, DialogContent, Load, PageChrome};
 
 /// The page's address.
-pub const PAGE: &str = "/dashboard/admin/query";
+pub const PAGE: &str = "/admin/query";
 
 /// Which database a query reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

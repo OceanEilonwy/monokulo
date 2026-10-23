@@ -12,7 +12,7 @@ const { useRealStack, fixture, signInAsAdmin } = require('./backend-helpers');
 useRealStack(test);
 
 const queryUrl = (db = 'monokulo', sql = '') =>
-  `${fixture().monokulo_url}/dashboard/admin/query?db=${db}&sql=${encodeURIComponent(sql)}`;
+  `${fixture().monokulo_url}/admin/query?db=${db}&sql=${encodeURIComponent(sql)}`;
 const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs' });
 
 // Twenty-four columns, and a long JSON value beside a blob.
@@ -28,7 +28,7 @@ test('without JavaScript a query runs, a write is refused, and the rows download
   await expect(grid).toContainText('admin@example.com');
   await expect(grid.locator('td[data-kind="hidden"]')).toHaveText('hidden');
   await expect(page.locator('.mk-data-grid-stats')).toContainText('1 column hidden');
-  await expect(page.getByRole('link', { name: 'Export CSV' })).toHaveAttribute('href', /\/dashboard\/admin\/query\/export\?db=monokulo&sql=.*&format=csv/);
+  await expect(page.getByRole('link', { name: 'Export CSV' })).toHaveAttribute('href', /\/admin\/query\/export\?db=monokulo&sql=.*&format=csv/);
 
   // Run is an ordinary GET form.
   await page.locator('#query-sql').fill('DELETE FROM users');

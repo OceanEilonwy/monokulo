@@ -31,18 +31,18 @@ pub struct AppRow {
 impl AppsView {
     fn settings(&self) -> String {
         format!(
-            "/dashboard/stores/{}/settings?tab=connections#card-apps",
+            "/stores/{}/settings?tab=connections#card-apps",
             self.store_id
         )
     }
 
     pub fn connect_path(&self) -> String {
-        format!("/dashboard/stores/{}/apps/connect", self.store_id)
+        format!("/stores/{}/settings/apps/connect", self.store_id)
     }
 
     fn disconnect_path(&self, app: &AppRow) -> String {
         format!(
-            "/dashboard/stores/{}/apps/{}/disconnect",
+            "/stores/{}/settings/apps/{}/disconnect",
             self.store_id, app.id
         )
     }
@@ -122,7 +122,7 @@ fn page(chrome: &PageChrome, view: &AppsView, title: &str, content: DialogConten
         .render(chrome, body)
 }
 
-/// `GET /dashboard/stores/{id}/apps/connect`: what to call the device, then
+/// `GET /stores/{id}/settings/apps/connect`: what to call the device, then
 /// a code.
 pub fn connect_form_page(chrome: &PageChrome, view: &AppsView, error: Option<&str>) -> Markup {
     let body = html! {
@@ -272,7 +272,7 @@ mod tests {
             "{html}"
         );
         assert!(
-            html.contains("/dashboard/stores/conn_1/apps/app_1/disconnect"),
+            html.contains("/stores/conn_1/settings/apps/app_1/disconnect"),
             "{html}"
         );
         assert!(html.contains("1 device"), "{html}");

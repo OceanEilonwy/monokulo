@@ -36,7 +36,7 @@ async fn connect_app(router: &axum::Router, id: &str, cookie: &str) -> String {
     let page = router
         .clone()
         .oneshot(form_post(
-            &format!("/dashboard/stores/{id}/apps/connect"),
+            &format!("/stores/{id}/settings/apps/connect"),
             Some(cookie),
             &[("device_name", "Front till")],
         ))

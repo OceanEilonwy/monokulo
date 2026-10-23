@@ -89,7 +89,7 @@ async fn setup(extra: usize) -> Setup {
     };
     let router = build_router(state.clone());
     let login = form(
-        "/dashboard/login",
+        "/login",
         &[
             ("email", TEST_ADMIN_EMAIL),
             ("password", TEST_ADMIN_PASSWORD),
@@ -175,15 +175,20 @@ impl Setup {
 }
 
 fn logs_url(q: &str, extra: &str) -> String {
-    format!("/dashboard/admin/logs?q={}{extra}", encode(q))
+    format!("/admin/logs?q={}{extra}", encode(q))
 }
 
 #[tokio::test]
 async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing() {
     let s = setup(0).await;
-    let (status, _, html) = s.get("/dashboard/admin/logs", false).await;
+    let (status, _, html) = s.get("/admin/logs", false).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains(r#"<form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs""#), "{html}");
+    assert!(
+        html.contains(
+            r#"<form id="log-search" class="logs-search" method="get" action="/admin/logs""#
+        ),
+        "{html}"
+    );
     for message in [
         "payment seen for the page test",
         "the page test is slow",
@@ -220,9 +225,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
         "{head}"
     );
     assert!(
-        html.contains(
-            r#"<div id="log-rows" class="log-rows" data-tail-url="/dashboard/admin/logs/tail?"#
-        ),
+        html.contains(r#"<div id="log-rows" class="log-rows" data-tail-url="/admin/logs/tail?"#),
         "{html}"
     );
     // The histogram comes with the results, and its style puts it above
@@ -239,7 +242,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     let payment = &payment[..payment.find("</summary>").unwrap()];
     assert!(
         payment.contains(&format!(
-            r#"<a href="/dashboard/admin/logs/trace/{}" title="Show trace""#,
+            r#"<a href="/admin/logs/trace/{}" title="Show trace""#,
             s.trace_id
         )),
         "{payment}"
@@ -255,7 +258,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     );
     // Syntax help: a link to its own page, opened as a dialog by script.
     assert!(
-        html.contains(r#"href="/dashboard/admin/logs/syntax" id="query-help-link""#),
+        html.contains(r#"href="/admin/logs/syntax" id="query-help-link""#),
         "{html}"
     );
     assert!(
@@ -264,7 +267,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
                 .contains(r#"<button class="mk-btn" type="button" data-chip="">order.id</button>"#),
         "property names listed in the help: {html}"
     );
-    let (status, _, syntax) = s.get("/dashboard/admin/logs/syntax", false).await;
+    let (status, _, syntax) = s.get("/admin/logs/syntax", false).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         syntax.contains("<h1>Search syntax</h1>")
@@ -274,7 +277,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     // Without script each example is a search for it.
     assert!(
         syntax.contains(&format!(
-            r#"href="/dashboard/admin/logs?q={}""#,
+            r#"href="/admin/logs?q={}""#,
             encode("level >= warn")
         )),
         "{syntax}"
@@ -314,7 +317,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
         )),
         "{page}"
     );
-    assert!(page.contains(&format!("/dashboard/admin/logs/trace/{}", s.trace_id)));
+    assert!(page.contains(&format!("/admin/logs/trace/{}", s.trace_id)));
     assert!(page.contains("Back to the search"));
 
     // Opened with fixi: only the properties, replacing the placeholder.
@@ -335,9 +338,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     );
 
     // A line retention has deleted.
-    let (status, _, page) = s
-        .get("/dashboard/admin/logs/row/1.999999.monokulo", false)
-        .await;
+    let (status, _, page) = s.get("/admin/logs/row/1.999999.monokulo", false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(page.contains("no longer kept"), "{page}");
 }
@@ -367,7 +368,7 @@ async fn a_search_filters_and_a_fixi_search_gets_only_the_results() {
     );
     assert!(!html.contains("the page test is slow"), "{html}");
 
-    let (_, _, html) = s.get("/dashboard/admin/logs?level=warn", false).await;
+    let (_, _, html) = s.get("/admin/logs?level=warn", false).await;
     assert!(
         !html.contains("payment seen for the page test") && html.contains("the page test is slow")
     );
@@ -388,11 +389,8 @@ async fn a_search_filters_and_a_fixi_search_gets_only_the_results() {
 async fn the_logs_pages_own_requests_are_hidden_unless_asked_for() {
     let s = setup(0).await;
     tracing::dispatcher::with_default(&s.dispatch, || {
-        tracing::info_span!(
-            "HTTP request",
-            http.route = "/dashboard/admin/logs/row/{cursor}"
-        )
-        .in_scope(|| tracing::info!("reading a log line"));
+        tracing::info_span!("HTTP request", http.route = "/admin/logs/row/{cursor}")
+            .in_scope(|| tracing::info!("reading a log line"));
         tracing::info_span!("HTTP request", http.route = "/api/v1/admin/logs")
             .in_scope(|| tracing::info!("the engine served its lines"));
     });
@@ -414,7 +412,7 @@ async fn the_logs_pages_own_requests_are_hidden_unless_asked_for() {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
+    let (_, _, html) = s.get("/admin/logs", false).await;
     assert!(
         html.contains("payment seen for the page test"),
         "other requests' lines stay: {html}"
@@ -432,9 +430,7 @@ async fn the_logs_pages_own_requests_are_hidden_unless_asked_for() {
         "{html}"
     );
 
-    let (_, _, html) = s
-        .get("/dashboard/admin/logs?logs_requests=show", false)
-        .await;
+    let (_, _, html) = s.get("/admin/logs?logs_requests=show", false).await;
     assert!(
         html.contains("reading a log line") && html.contains("the engine served its lines"),
         "{html}"
@@ -468,7 +464,7 @@ async fn a_query_that_does_not_parse_is_shown_with_the_problem_marked() {
 #[tokio::test]
 async fn older_pages_follow_as_links_or_appended_by_fixi() {
     let s = setup(100).await;
-    let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
+    let (_, _, html) = s.get("/admin/logs", false).await;
     assert_eq!(html.matches(r#"<details class="log-row""#).count(), 100);
     let older = html
         .split(r#"<a class="mk-btn" href=""#)
@@ -500,10 +496,7 @@ async fn older_pages_follow_as_links_or_appended_by_fixi() {
 async fn a_trace_shows_its_spans_and_lines() {
     let s = setup(0).await;
     let (status, _, html) = s
-        .get(
-            &format!("/dashboard/admin/logs/trace/{}", s.trace_id),
-            false,
-        )
+        .get(&format!("/admin/logs/trace/{}", s.trace_id), false)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(
@@ -522,9 +515,7 @@ async fn a_trace_shows_its_spans_and_lines() {
         html.contains("payment seen for the page test") && html.contains("the page test is slow")
     );
     assert!(!html.contains("the page test failed"), "not in this trace");
-    let (status, _, _) = s
-        .get("/dashboard/admin/logs/trace/not-a-trace", false)
-        .await;
+    let (status, _, _) = s.get("/admin/logs/trace/not-a-trace", false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -532,10 +523,7 @@ async fn a_trace_shows_its_spans_and_lines() {
 async fn a_search_downloads_as_ndjson_or_csv() {
     let s = setup(0).await;
     let (status, headers, ndjson) = s
-        .get(
-            "/dashboard/admin/logs/export?format=ndjson&level=warn",
-            false,
-        )
+        .get("/admin/logs/export?format=ndjson&level=warn", false)
         .await;
     assert_eq!(status, StatusCode::OK);
     assert!(headers["content-disposition"]
@@ -553,7 +541,7 @@ async fn a_search_downloads_as_ndjson_or_csv() {
     let (_, _, csv) = s
         .get(
             &format!(
-                "/dashboard/admin/logs/export?format=csv&q={}",
+                "/admin/logs/export?format=csv&q={}",
                 encode("order.id = 'o_page'")
             ),
             false,
@@ -576,7 +564,7 @@ async fn a_search_downloads_as_ndjson_or_csv() {
 async fn searches_are_saved_and_removed_with_or_without_fixi() {
     let s = setup(0).await;
     let saved = form(
-        "/dashboard/admin/logs/saved",
+        "/admin/logs/saved",
         &[
             ("name", "Slow"),
             ("query_string", "q=%27slow%27&level=warn&before=1.2.x"),
@@ -587,17 +575,17 @@ async fn searches_are_saved_and_removed_with_or_without_fixi() {
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(
         response.headers()["location"],
-        "/dashboard/admin/logs?q=%27slow%27&level=warn",
+        "/admin/logs?q=%27slow%27&level=warn",
         "paging isn't saved"
     );
-    let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
+    let (_, _, html) = s.get("/admin/logs", false).await;
     assert!(
-        html.contains(r#"<a href="/dashboard/admin/logs?q=%27slow%27&amp;level=warn">Slow</a>"#),
+        html.contains(r#"<a href="/admin/logs?q=%27slow%27&amp;level=warn">Slow</a>"#),
         "{html}"
     );
 
     let mut fixi = form(
-        "/dashboard/admin/logs/saved",
+        "/admin/logs/saved",
         &[("name", ""), ("query_string", "")],
         Some(&s.cookie),
     );
@@ -638,7 +626,7 @@ async fn searches_are_saved_and_removed_with_or_without_fixi() {
         .id
         .clone();
     let mut remove = form(
-        &format!("/dashboard/admin/logs/saved/{id}/delete"),
+        &format!("/admin/logs/saved/{id}/delete"),
         &[],
         Some(&s.cookie),
     );
@@ -662,16 +650,12 @@ async fn only_admins_see_the_logs() {
     let response = s
         .router
         .clone()
-        .oneshot(
-            Request::get("/dashboard/admin/logs")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::get("/admin/logs").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_ne!(response.status(), StatusCode::OK);
     let signup = form(
-        "/dashboard/signup",
+        "/signup",
         &[
             ("email", "someone@example.com"),
             ("password", "correct horse battery staple"),
@@ -680,7 +664,7 @@ async fn only_admins_see_the_logs() {
     );
     s.router.clone().oneshot(signup).await.unwrap();
     let login = form(
-        "/dashboard/login",
+        "/login",
         &[
             ("email", "someone@example.com"),
             ("password", "correct horse battery staple"),
@@ -695,11 +679,7 @@ async fn only_admins_see_the_logs() {
         .next()
         .unwrap()
         .to_string();
-    for uri in [
-        "/dashboard/admin/logs",
-        "/dashboard/admin/logs/export",
-        "/dashboard/admin/logs/tail",
-    ] {
+    for uri in ["/admin/logs", "/admin/logs/export", "/admin/logs/tail"] {
         let response = s
             .router
             .clone()
@@ -719,7 +699,7 @@ async fn only_admins_see_the_logs() {
 async fn live_streams_new_lines_to_the_top_of_the_list() {
     let s = setup(0).await;
     // After the error line: only lines newer than it come.
-    let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
+    let (_, _, html) = s.get("/admin/logs", false).await;
     let tail = html.split(r#"data-tail-url=""#).nth(1).unwrap();
     let tail = tail.split('"').next().unwrap().replace("&amp;", "&");
     assert!(tail.contains("after="), "{tail}");
@@ -826,7 +806,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     let t0: i64 = 1_790_000_000_000;
     let send = |events: serde_json::Value| {
         let body = serde_json::json!({ "session": session, "events": events }).to_string();
-        let request = Request::post("/dashboard/stores/c_pos/pos/logs")
+        let request = Request::post("/stores/c_pos/pos/logs")
             .header("cookie", &s.cookie)
             .body(Body::from(body))
             .unwrap();
@@ -891,9 +871,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         9,
         "a resent batch is stored again"
     );
-    let (status, _, html) = s
-        .get(&format!("/dashboard/admin/logs/pos/{session}"), false)
-        .await;
+    let (status, _, html) = s.get(&format!("/admin/logs/pos/{session}"), false).await;
     assert_eq!(status, StatusCode::OK, "{html}");
     let at = |needle: &str| {
         html.find(needle)
@@ -908,7 +886,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     assert!(html.contains("offline for 42 s"), "{html}");
     assert!(html.contains("Nothing recorded for 2 min 37 s"), "{html}");
     assert!(
-        html.contains(r#"href="/dashboard/stores/c_pos/orders/o_pos""#),
+        html.contains(r#"href="/stores/c_pos/orders/o_pos""#),
         "{html}"
     );
     assert!(
@@ -932,15 +910,10 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     );
 
     // From the order, and from a line in Logs.
-    let (status, headers, _) = s.get("/dashboard/admin/logs/pos?order=o_pos", false).await;
+    let (status, headers, _) = s.get("/admin/logs/orders/o_pos/pos", false).await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    assert_eq!(
-        headers["location"],
-        format!("/dashboard/admin/logs/pos/{session}")
-    );
-    let (status, _, html) = s
-        .get("/dashboard/admin/logs/pos?order=o_elsewhere", false)
-        .await;
+    assert_eq!(headers["location"], format!("/admin/logs/pos/{session}"));
+    let (status, _, html) = s.get("/admin/logs/orders/o_elsewhere/pos", false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(html.contains("No POS session recorded"));
     let (_, _, html) = s
@@ -950,13 +923,11 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         .get(&properties_url(&html, "order.created has_note=true"), true)
         .await;
     assert!(
-        fragment.contains(&format!(r#"href="/dashboard/admin/logs/pos/{session}""#))
+        fragment.contains(&format!(r#"href="/admin/logs/pos/{session}""#))
             && fragment.contains("Show the POS session timeline"),
         "{fragment}"
     );
-    let (status, _, _) = s
-        .get("/dashboard/admin/logs/pos/not-a-session!", false)
-        .await;
+    let (status, _, _) = s.get("/admin/logs/pos/not-a-session!", false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -996,9 +967,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
             .with_subscriber(s.dispatch.clone())
     };
     call("/", Some(&s.cookie)).await.unwrap();
-    call("/dashboard/stores/c_who", Some(&s.cookie))
-        .await
-        .unwrap();
+    call("/stores/c_who", Some(&s.cookie)).await.unwrap();
     // The API with the store's public key, for an order it doesn't have.
     s.router
         .clone()
@@ -1089,7 +1058,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         "{:?}",
         dashboard.attributes
     );
-    let store_page = finished("/dashboard/stores/{id}").await;
+    let store_page = finished("/stores/{id}").await;
     assert_eq!(store_page.attributes["store.id"], "c_who");
     assert_eq!(store_page.attributes["session.id"], session.as_str());
     let api = finished("/api/v1/orders/{order_id}").await;
@@ -1114,10 +1083,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     // session's lines and no one else's.
     let (_, _, html) = s
         .get(
-            &logs_url(
-                "http.route = '/dashboard/stores/{id}'",
-                "&logs_requests=show",
-            ),
+            &logs_url("http.route = '/stores/{id}'", "&logs_requests=show"),
             false,
         )
         .await;
@@ -1131,7 +1097,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     );
     let (_, _, found) = s.get(&session_search.replace("&amp;", "&"), false).await;
     assert!(
-        found.contains("GET / 200") && found.contains("GET /dashboard/stores/{id} 500"),
+        found.contains("GET / 200") && found.contains("GET /stores/{id} 500"),
         "{found}"
     );
     assert!(
@@ -1142,10 +1108,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
 
     // Opened: who first, with names beside the ids.
     let (_, _, fragment) = s
-        .get(
-            &properties_url(&html, "GET /dashboard/stores/{id} 500"),
-            true,
-        )
+        .get(&properties_url(&html, "GET /stores/{id} 500"), true)
         .await;
     let at = |needle: &str| {
         fragment

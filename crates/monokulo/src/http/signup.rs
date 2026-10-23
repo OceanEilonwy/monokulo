@@ -46,7 +46,7 @@ pub(super) enum CreateAccountError {
 
 /// The actual account-creation logic - `Db::create_user`/
 /// `Db::redeem_invite_and_create_user` plus `shared::password::Hasher::hash`
-/// — shared by `POST /signup` (below), `POST /dashboard/signup`
+/// — shared by `POST /signup` (below), `POST /signup`
 /// (`http/dashboard.rs`), and the first-run admin setup wizard
 /// (`http/admin_setup.rs`, the one caller that ever passes `is_admin: true`),
 /// so all three surfaces can never drift apart on what "creating an account"

@@ -1,4 +1,4 @@
-//! `GET`/`POST /dashboard/login` and `/dashboard/signup` -
+//! `GET`/`POST /login` and `/signup` -
 //! `http::dashboard::render_login`/`render_signup`.
 //!
 //! Both pages always render with `chrome.logged_in == false` regardless of
@@ -30,7 +30,7 @@ pub struct SignupViewModel {
     /// email/password form entirely. Always `false` in `"public"` mode.
     pub invite_required: bool,
     /// Carried through as a hidden form field (`GET
-    /// /dashboard/signup?invite=...`'s query param, echoed back on a
+    /// /signup?invite=...`'s query param, echoed back on a
     /// rejected `POST` the same way every other field on this form already
     /// is) - the raw, not-yet-validated token; real validation happens at
     /// submit time (`Db::redeem_invite_and_create_user`), never here.
@@ -81,7 +81,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                 " to join."
             }
         } @else {
-            form method="post" action="/dashboard/signup" class="signup-form mk-stack" {
+            form method="post" action="/signup" class="signup-form mk-stack" {
                 input type="hidden" name="invite" value=(data.invite_token);
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
@@ -97,7 +97,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                 (Button::new("Sign up").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
             }
         }
-        p { "Already have an account? " a href=(with_next("/dashboard/login", data.next.as_deref())) { "Log in" } }
+        p { "Already have an account? " a href=(with_next("/login", data.next.as_deref())) { "Log in" } }
     };
     super::Page::new("Sign up - Monokulo", header).render(chrome, body)
 }
@@ -117,7 +117,7 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
         @if let Some(error) = &data.error {
             (Alert::new(error.as_str(), Tone::Error))
         }
-        form method="post" action="/dashboard/login" class="mk-stack" {
+        form method="post" action="/login" class="mk-stack" {
             @if let Some(next) = &data.next {
                 input type="hidden" name="next" value=(next);
             }
@@ -128,7 +128,7 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
                 .autocomplete("current-password"))
             (Button::new("Log in").variant(ButtonVariant::Primary).kind(ButtonType::Submit))
         }
-        p { "Need an account? " a href=(with_next("/dashboard/signup", data.next.as_deref())) { "Sign up" } }
+        p { "Need an account? " a href=(with_next("/signup", data.next.as_deref())) { "Sign up" } }
     };
     super::Page::new("Log in - Monokulo", header).render(chrome, body)
 }
@@ -213,7 +213,7 @@ mod tests {
         )
         .into_string();
         assert!(
-            !html.contains("<form method=\"post\" action=\"/dashboard/signup\""),
+            !html.contains("<form method=\"post\" action=\"/signup\""),
             "an invite-only instance with no token must not show the signup form"
         );
         assert!(html.contains("/request-invite"));

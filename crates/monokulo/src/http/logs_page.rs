@@ -1,17 +1,17 @@
 //! The Logs page's handlers (structured_logging.md part 5), admin only.
 //!
-//! - `GET /dashboard/admin/logs`: the page. For fixi, only `#log-results`;
+//! - `GET /admin/logs`: the page. For fixi, only `#log-results`;
 //!   with `part=more`, only the next page's lines ("Older").
-//! - `GET /dashboard/admin/logs/tail`: new lines as server-sent events
+//! - `GET /admin/logs/tail`: new lines as server-sent events
 //!   (Live; JavaScript only).
-//! - `GET /dashboard/admin/logs/trace/{trace_id}`: one trace's waterfall.
-//! - `GET /dashboard/admin/logs/row/{cursor}`: one line's properties, which
+//! - `GET /admin/logs/trace/{trace_id}`: one trace's waterfall.
+//! - `GET /admin/logs/row/{cursor}`: one line's properties, which
 //!   a line in a list loads when it's first opened.
-//! - `GET /dashboard/admin/logs/pos/{session}`: one POS session's
-//!   timeline; `GET /dashboard/admin/logs/pos?order=...` finds the session
+//! - `GET /admin/logs/pos/{session}`: one POS session's
+//!   timeline; `GET /admin/logs/orders/{order_id}/pos` finds the session
 //!   that created an order.
-//! - `GET /dashboard/admin/logs/export?format=ndjson|csv`: a download.
-//! - `POST /dashboard/admin/logs/saved`, `.../saved/{id}/delete`: saved
+//! - `GET /admin/logs/export?format=ndjson|csv`: a download.
+//! - `POST /admin/logs/saved`, `.../saved/{id}/delete`: saved
 //!   searches.
 //!
 //! Lines come from monokulo's own store and the engine's
@@ -151,7 +151,7 @@ impl LogsParams {
     }
 }
 
-const LOGS: &str = "/dashboard/admin/logs";
+const LOGS: &str = "/admin/logs";
 
 use shared::time::now_unix_nanos as now_nanos;
 
@@ -240,7 +240,7 @@ fn time_range(
 /// Routes whose lines only say someone was reading the logs: this page's
 /// own requests, and the engine's that serve them. Hidden unless asked for,
 /// or every look at the page would fill it.
-const OWN_REQUESTS: [&str; 2] = ["/dashboard/admin/logs%", "/api/v1/admin/logs%"];
+const OWN_REQUESTS: [&str; 2] = ["/admin/logs%", "/api/v1/admin/logs%"];
 
 /// The user's own query, and the whole filter with the level, service and
 /// own-requests choices added.
@@ -724,7 +724,7 @@ async fn attribute_names(sources: &Sources) -> Vec<String> {
     names
 }
 
-/// `GET /dashboard/admin/logs`.
+/// `GET /admin/logs`.
 pub async fn page(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
@@ -747,7 +747,7 @@ pub async fn page(
     Html(view::page(&chrome, &vm).into_string()).into_response()
 }
 
-/// `GET /dashboard/admin/logs/syntax`: the search language, as a page. The
+/// `GET /admin/logs/syntax`: the search language, as a page. The
 /// Logs page opens the same help as a dialog when script runs.
 pub async fn syntax_page(
     State(state): State<AppState>,
@@ -758,7 +758,7 @@ pub async fn syntax_page(
     Html(view::syntax_page(&chrome, &names).into_string()).into_response()
 }
 
-/// `GET /dashboard/admin/logs/tail`: lines newer than `after` (or the
+/// `GET /admin/logs/tail`: lines newer than `after` (or the
 /// `Last-Event-ID` a reconnecting stream sends), as they arrive. Each event
 /// carries rendered rows routed to the top of `#log-rows` (ssexi's JSON
 /// event form), with the newest row's cursor as its id.
@@ -938,7 +938,7 @@ pub async fn tail(
     crate::live::sse(opened.chain(stream))
 }
 
-/// `GET /dashboard/admin/logs/trace/{trace_id}`.
+/// `GET /admin/logs/trace/{trace_id}`.
 pub async fn trace_page(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
@@ -1028,7 +1028,7 @@ pub async fn trace_page(
     Html(view::trace_page(&chrome, &vm).into_string()).into_response()
 }
 
-/// `GET /dashboard/admin/logs/row/{cursor}`: one line's properties. For
+/// `GET /admin/logs/row/{cursor}`: one line's properties. For
 /// fixi (a line opening in a list), just the properties; otherwise a page
 /// with the line opened. The search's parameters come along, so the Find
 /// and Exclude links add to it.
@@ -1170,7 +1170,7 @@ fn attr_str<'a>(row: &'a LogRow, name: &str) -> Option<&'a str> {
     row.attributes.get(name).and_then(Value::as_str)
 }
 
-/// `GET /dashboard/admin/logs/pos/{session}`.
+/// `GET /admin/logs/pos/{session}`.
 pub async fn pos_timeline(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
@@ -1202,7 +1202,7 @@ pub async fn pos_timeline(
                 .flatten()
                 .map(|row| row.name.clone())
                 .unwrap_or_else(|| id.clone());
-            Some((name, format!("/dashboard/stores/{id}")))
+            Some((name, format!("/stores/{id}")))
         }
         None => None,
     };
@@ -1263,7 +1263,7 @@ pub async fn pos_timeline(
         let late_ms = (row.ts / 1_000_000).saturating_sub(client_ms);
         let order = attr_str(row, "order.id").map(|order| {
             let href = match &store {
-                Some(store) => format!("/dashboard/stores/{store}/orders/{order}"),
+                Some(store) => format!("/stores/{store}/orders/{order}"),
                 None => format!(
                     "{LOGS}?q={}",
                     url::form_urlencoded::byte_serialize(
@@ -1331,17 +1331,12 @@ pub async fn pos_timeline(
     Html(view::pos_timeline_page(&chrome, &vm).into_string()).into_response()
 }
 
-#[derive(Deserialize)]
-pub struct PosSessionForOrder {
-    order: String,
-}
-
-/// `GET /dashboard/admin/logs/pos?order=...`: the POS session that created
+/// `GET /admin/logs/orders/{order_id}/pos`: the POS session that created
 /// an order, or a page saying there isn't one.
 pub async fn pos_session_for_order(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
-    Query(query): Query<PosSessionForOrder>,
+    Path(order_id): Path<String>,
 ) -> Response {
     // Built as an expression, not as query text: no quoting rules to keep
     // in step with the query language's.
@@ -1351,7 +1346,7 @@ pub async fn pos_session_for_order(
         value: QValue::Text(value),
     };
     let filter = Expr::And(
-        Box::new(compare("order.id", query.order)),
+        Box::new(compare("order.id", order_id.clone())),
         Box::new(compare("pos.kind", "order.created".to_string())),
     );
     let sources = Sources {
@@ -1370,7 +1365,12 @@ pub async fn pos_session_for_order(
             return axum::response::Redirect::to(&format!("{LOGS}/pos/{session}")).into_response();
         }
     }
-    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos")).await;
+    let chrome = super::page_chrome(
+        &state,
+        Some(&admin),
+        format!("{LOGS}/orders/{order_id}/pos"),
+    )
+    .await;
     let header = ui::PageHeader::new("No POS session recorded")
         .crumbs(crate::views::crumbs(&[("/", "Home"), (LOGS, "Logs")]));
     let body = maud::html! {
@@ -1412,7 +1412,7 @@ fn csv_field(text: &str) -> String {
     }
 }
 
-/// `GET /dashboard/admin/logs/export?format=ndjson|csv`: this search's
+/// `GET /admin/logs/export?format=ndjson|csv`: this search's
 /// lines, newest first, up to `EXPORT_MAX`.
 pub async fn export(
     State(state): State<AppState>,
@@ -1518,7 +1518,7 @@ async fn saved_fragment(
     view::saved_searches(&saved, query_string, error)
 }
 
-/// `POST /dashboard/admin/logs/saved`.
+/// `POST /admin/logs/saved`.
 pub async fn save_search(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,
@@ -1578,7 +1578,7 @@ pub struct DeleteSearchForm {
     query_string: String,
 }
 
-/// `POST /dashboard/admin/logs/saved/{id}/delete`.
+/// `POST /admin/logs/saved/{id}/delete`.
 pub async fn delete_search(
     State(state): State<AppState>,
     AuthedAdmin(admin, _): AuthedAdmin,

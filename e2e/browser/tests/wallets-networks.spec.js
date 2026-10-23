@@ -114,7 +114,7 @@ test('pickers show each wallet with its network, and a store changes only within
   await page.keyboard.press('Escape');
 
   // A store changes only to a wallet on its own network.
-  await page.goto(fixture.base_url + `/dashboard/stores/${fixture.connection_id}/settings?tab=wallet`);
+  await page.goto(fixture.base_url + `/stores/${fixture.connection_id}/settings?tab=wallet`);
   const section = page.locator('#card-wallet');
   await expect(section).toContainText('A store can only change to a wallet on its own network.');
   await section.getByRole('combobox', { name: 'Wallet' }).click();
