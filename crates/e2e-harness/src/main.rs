@@ -82,8 +82,7 @@ use monokulo::http::{build_router as build_monokulo_router, AppState as Monokulo
 // meaningfully-sized logic worth restructuring the crate to share.
 const NODE_HOST: &str = "node.monerodevs.org";
 const NODE_PORT: u16 = 38089;
-/// Tried in order when `NODE_HOST` stops answering - the same fallbacks
-/// `e2e/moneropay-stagenet.toml` configures. These public nodes rate-limit
+/// Tried in order when `NODE_HOST` stops answering. These public nodes rate-limit
 /// one address: with the scanner and the payment wallet in this one process
 /// both talking to `NODE_HOST`, it resets connections, and the scanner then
 /// never sees the payment.

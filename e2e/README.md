@@ -1,48 +1,39 @@
-# Real stagenet end-to-end test
+# Real stagenet end-to-end tests
 
-The actual test lives in Rust: [`../crates/e2e-harness/tests/e2e_stagenet.rs`](../crates/e2e-harness/tests/e2e_stagenet.rs),
-run via `cargo test` like any other test in this crate. It drives the real
-`scanner` library - config, store, key custody, scanner, router; the same
-pieces `main.rs` wires together - against a real public Monero **stagenet** node,
-and pays the order it creates with a real (tiny) transaction constructed, signed,
-and broadcast entirely in Rust by [`crates/cli-wallet`](../crates/cli-wallet),
-from a wallet that was funded by a public stagenet faucet. Nothing here is mocked,
-and nothing here needs an external wallet process - the point is to prove the
-actual scanning, detection, and status-update logic works against a real chain,
-not just a simulated one. This directory holds the fixtures every real e2e
-suite in the repo needs (this test, `e2e_dashboard_stagenet.rs`, both
-`mock-woocommerce` real-stagenet tests, and the POS screen's own
-`e2e/browser/` suite), plus a demo shop for manually eyeballing the same
-flow through the actual embedded widget in a browser.
+These tests run Monokulo against a real public Monero **stagenet** node and
+pay real (tiny, worthless) orders with transactions constructed, signed and
+broadcast entirely in Rust by [`crates/cli-wallet`](../crates/cli-wallet),
+from a faucet-funded wallet. Nothing is mocked but the shop, and no external
+wallet process is needed: the only external dependency is the node.
 
-**The only external dependency is the public stagenet node itself** - no
-wallet-rpc, no `monero-wallet-cli`, no other process. Sending a test payment
-happens by directly signing a real CLSAG + Bulletproofs+ transaction from the
-spender wallet's own private keys against outputs already known to be ours,
-selecting decoys from a cached distribution snapshot, and broadcasting it over
-the node's plain RPC - see `crates/cli-wallet/src/lib.rs`'s own
-module doc comment for the full explanation (why no chain scanning, why decoys
-come from a cache, why it's safe to trust that path's randomness/cryptography).
+| Test | What it proves |
+|---|---|
+| [`crates/e2e-harness/tests/e2e_stagenet.rs`](../crates/e2e-harness/tests/e2e_stagenet.rs) | The engine, driven in-process, detects a real payment to an order it made. |
+| [`crates/e2e-harness/tests/e2e_dashboard_stagenet.rs`](../crates/e2e-harness/tests/e2e_dashboard_stagenet.rs) | A merchant who signs up and sets up a store sees the payment on their home page with the right total. |
+| [`crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`](../crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs) | A shop plugin connects, makes an order, and gets a signed `order.paid` webhook. |
+| [`crates/mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs`](../crates/mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs) | An order is held to its store's confirmation threshold. |
 
-Following the same pattern as `daemon_rpc::live_node_tests` (`src/daemon_rpc.rs`),
-the test is `#[ignore]`d so the default `cargo test` run stays hermetic and fast,
-and named `live_`, so the daily live-network run (`cargo xtask live`,
-`.github/workflows/live-network.yml`) runs it with every other test that needs
-the network. Run it explicitly, from the repository root:
+This directory holds the fixtures they share: the wallets and the decoy
+cache below. Sending a payment signs a CLSAG + Bulletproofs+ transaction from
+the spender's own keys against outputs it already knows, with decoys from the
+cached distribution, and broadcasts it over the node's plain RPC; see
+`crates/cli-wallet/src/lib.rs`'s module doc for why.
+
+Every test is `#[ignore]`d, so the default run stays hermetic, and named
+`live_`, so the daily live-network run (`cargo xtask live`,
+`.github/workflows/live-network.yml`) runs them with every other test that
+needs the network. Run one by hand from the repository root:
 
 ```bash
 cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
+cargo test -p mock-woocommerce --features e2e --test e2e_stagenet_connect_flow -- --ignored --nocapture
 ```
-
-Decoy selection is served from the committed cache below rather than fetched live,
-so a full run is fast (seconds, not minutes) and doesn't depend on a large
-`get_output_distribution` fetch succeeding against a possibly-slow public node.
 
 ## Infrastructure used
 
-- **Node**: `node.monerodevs.org:38089` (public stagenet node) - configured in
-  `moneropay-stagenet.toml`'s `[monero_node.stagenet]` and in
-  `crates/engine/tests/support/mod.rs`'s `e2e_fixture` constants.
+- **Node**: `node.monerodevs.org:38089` (public stagenet node), set in
+  `crates/e2e-harness/tests/support/mod.rs`'s `e2e_fixture` constants (the
+  mock-woocommerce tests have their own copy in `tests/support/mod.rs`).
 - **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the spender wallet
   below.
 - **`wallets/<name>.db`**: one SQLite file per wallet, holding *everything* about
@@ -50,18 +41,13 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
   subaddress labels, address book, description), and its own record of every
   output it has received, every transaction it has sent, and anything still
   waiting to confirm. Loaded through `cli-wallet` (never parsed by hand):
-  - `merchant.db` - moneropay's own tenant, bootstrapped into
-    `moneropay-stagenet.toml` with its view key + spend *public* key only
-    (never the private spend key). Its full spend key is recorded too, like
-    every other fixture here (there's no reason to withhold it - worthless
-    stagenet XMR, and full recoverability/CLI use is strictly more useful,
-    e.g. sweeping funds back to `spender`) - but only the derived public key
-    ever goes to moneropay's real connect API
-    (`ResolvedWallet::spend_public_key_hex`), so the e2e tests still exercise
-    it exactly as a genuinely watch-only tenant would be.
+  - `merchant.db` - the store's wallet. Its full spend key is recorded
+    (worthless stagenet XMR, and it lets `wallet-cli` sweep funds back to
+    `spender`), but the tests only ever give Monokulo its view key and spend
+    *public* key, so the store is watch-only as in production.
   - `spender.db` - an ordinary wallet that received faucet funds and is
-    used to *send* test payments to orders. Never given to moneropay - it
-    plays the role of "the person paying an invoice."
+    used to *send* test payments to orders. Never given to Monokulo - it
+    plays the role of the customer.
 
   `crates/cli-wallet` is deliberately *not* a chain-scanning wallet: it
   trusts each wallet's file as the source of truth for what it owns, rather
@@ -156,60 +142,14 @@ New wallets: `--generate-new-wallet <name>` (fresh keys), plus
 node, `--do-not-relay` signs without broadcasting. Shell completions:
 `wallet-cli completions <bash|zsh|fish|...>`.
 
-## One-time setup
+## Why the fixtures are tuned the way they are
 
-Just `scanner` built:
-
-```bash
-cargo build --manifest-path ../Cargo.toml
-```
-
-## Running the test
-
-```bash
-cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
-```
-
-This builds the scanner router in-process straight from `moneropay-stagenet.toml`
-(via `tower::ServiceExt::oneshot` - no bound port, no separate `scanner`
-process needed), creates a real order against it, pays that order with a real
-transaction sent from the spender wallet, then drives the real scanner
-(`run_scan_tick`, the same function `main.rs`'s production loop calls on a timer)
-and polls the order's status until it reports `paid` (or a terminal
-confirming/overpaid state) - failing the test otherwise.
-
-**(Optional) Watch it happen in a browser too.** The test above only proves the
-library logic; to see the same flow through the actual server process and
-embedded widget, start the server and demo shop separately:
-
-```bash
-# from e2e/, in one terminal:
-../target/debug/monokulo-engine moneropay-stagenet.toml
-# prints a pk_... on first boot - note it
-
-# in another terminal:
-cargo xtask serve demo-shop 8190
-# then open http://127.0.0.1:8190/?endpoint=http://127.0.0.1:8180&pk=pk_...
-# and click "Buy with Monero" - paying that order needs a separate real transfer,
-# e.g. by calling crates/cli-wallet::send_payment directly
-```
-
-`moneropay.db*` (created alongside the config) is that server's tenant/order
-database; delete it to start over with a fresh bootstrap.
-
-## Why the config is tuned the way it is
-
-- `confirmations_required = 0`: stagenet
-  blocks land roughly every ~2 minutes, so requiring several confirmations
-  would make the test spend most of its wall-clock time waiting on the chain
-  instead of exercising moneropay's own detection logic. Native 0-conf
-  resolves the payment as soon as it is seen in the mempool.
-- The test order's `xmr_amount_piconero` (335_000_000, i.e. 0.000335 XMR) is
-  chosen to be a genuinely tiny real payment, per the project's own constraint
-  of only moving trivial amounts on this shared faucet-funded wallet. The
-  engine itself has no concept of fiat at all - the
-  monokulo owns fiat pricing in production; this test talks to the
-  engine's own XMR-only API directly.
+- `PAYMENT_CONFIRMATIONS_REQUIRED = 0`: stagenet blocks land roughly every
+  two minutes, so requiring confirmations would spend most of a run waiting
+  on the chain instead of exercising detection. 0-conf settles the payment
+  as soon as it is seen in the mempool.
+- `e2e_stagenet.rs`'s order is 0.000335 XMR, a genuinely tiny payment, since
+  these tests only move trivial amounts from the shared faucet-funded wallet.
 
 ## A note on running the test repeatedly
 
@@ -266,11 +206,13 @@ change too small/young to help):
    resulting outputs if one round isn't enough.
 
 
-# Real Tor end-to-end test
+# Real Tor end-to-end tests
 
-`crates/monokulo/tests/e2e_tor.rs` checks monokulo's Tor support against a real
-`tor` process and the live Tor network. Like the stagenet tests it is
-`#[ignore]`d by default.
+`crates/monokulo/tests/e2e_tor.rs` checks monokulo's onion service behind an
+external `tor` process on the live Tor network, and
+`crates/monokulo/tests/e2e_arti.rs` checks Tor inside monokulo (its module doc
+says how to run it). Like the stagenet tests they are `#[ignore]`d by default.
+The rest of this section is about `e2e_tor.rs`.
 
 ## Requirements
 

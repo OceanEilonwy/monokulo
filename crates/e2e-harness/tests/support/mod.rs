@@ -1,24 +1,12 @@
-//! The real-money-costing wallet used to *implement* this test previously
-//! (`engine::e2e_wallet::StagenetSpendWallet`, re-exported from here) has
-//! been replaced by `crates/cli-wallet::Wallet` - see
-//! that crate's own doc comment for why. This module now holds only the
-//! shared stagenet fixture data every real e2e test in this crate still
-//! needs regardless of which wallet implementation sends the payment.
+//! What this crate's real stagenet tests share. The payment itself is sent
+//! by `cli_wallet::Wallet`, and the merchant's keys come from its wallet
+//! file (`cli_wallet::WalletStore`).
 
-/// The real end-to-end tests' fixed stagenet connection and payment
-/// settings (the merchant's keys come from its wallet file,
-/// `cli_wallet::WalletStore`) - replaces what used to be `e2e/moneropay-stagenet.toml`, parsed at
-/// test time via the now-removed `engine::config::Config`. Plain Rust
-/// constants instead of a TOML file: `e2e_stagenet.rs`/`e2e_dashboard_stagenet.rs`
-/// were the only things that ever read that file (the real binary now reads
-/// its settings from its own database, `engine::settings`, never a file at
-/// all), so there is no reason left to keep a config-file-shaped indirection
-/// around purely for these two tests. `#[allow(dead_code)]`: each `tests/*.rs`
-/// file compiles as its own separate binary, and the two real callers don't use
-/// an identical subset of these constants (e.g. `e2e_dashboard_stagenet.rs`
-/// never seals wallet material directly, since its own tenant is provisioned
-/// through a real HTTP connect flow instead) - a constant unused in *one*
-/// binary but used in the other is expected here, not dead code to prune.
+/// The real end-to-end tests' fixed stagenet node and payment settings.
+/// Each `tests/*.rs` file compiles as its own binary and uses only part of
+/// them (`e2e_dashboard_stagenet.rs` sets its store up through monokulo's
+/// pages, so it never seals wallet material itself), hence the
+/// `dead_code` expectation.
 #[expect(dead_code, reason = "each e2e test binary uses part of this module")]
 pub(crate) mod e2e_fixture {
     // Switched to monerodevs.org (the community-curated stagenet node) after

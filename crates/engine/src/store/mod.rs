@@ -50,7 +50,7 @@ pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>, Vec<u8>);
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
 /// Re-running the raw DDL against an already-migrated database (e.g. every time the
-/// server restarts against its existing `moneropay.db`) would otherwise crash with
+/// server restarts against its existing database) would otherwise crash with
 /// "table already exists" - a real bug caught by actually restarting the compiled
 /// binary against a file it had already created, not by any unit test, since every
 /// unit test in this codebase opens a fresh `:memory:` database exactly once.

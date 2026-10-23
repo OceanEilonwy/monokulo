@@ -24,8 +24,8 @@
 # (MONOKULO_ENCRYPTION_KEY and the engine token). Nothing here is checked
 # in, and nothing here is a real credential worth protecting beyond your
 # own machine - this is a local dev stack against a real *stagenet* wallet
-# (worthless XMR only), the same wallet e2e/moneropay-stagenet.toml
-# already uses for the repo's own real end-to-end test.
+# (worthless XMR only), the same merchant wallet the repo's own real
+# end-to-end tests use (e2e/wallets/merchant.db).
 #
 # SETTINGS. Each process reads its options file, passed with --options:
 # .dev-run/engine/engine.toml and .dev-run/monokulo/monokulo.toml. This
@@ -146,8 +146,7 @@ build() {
 # Writes each process's options file with the dev values, the first time
 # only: after that it is the developer's, edited by hand or on the admin
 # settings page. The stagenet node and payment thresholds are the ones
-# e2e/moneropay-stagenet.toml and crates/engine/tests/support/mod.rs's
-# e2e_fixture use. Key custody is per store; this enables only the
+# crates/e2e-harness/tests/support/mod.rs's e2e_fixture uses. Key custody is per store; this enables only the
 # `plain` backend: the `snp` one needs an AMD SEV-SNP confidential VM.
 ensure_options_files() {
     if [[ ! -f "$ENGINE_OPTIONS" ]]; then

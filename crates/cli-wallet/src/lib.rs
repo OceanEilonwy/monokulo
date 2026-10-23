@@ -446,9 +446,8 @@ impl WalletCtx {
     pub fn for_network(network: Network) -> Self {
         let (nodes, decoy_distribution_path) = match network {
             Network::Testnet => (DEFAULT_TESTNET_NODES, None),
-            // The same three community stagenet nodes monokulo's stagenet
-            // config uses (`e2e/moneropay-stagenet.toml`): separate
-            // machines, so one rate-limiting us doesn't block the others.
+            // Three community stagenet nodes on separate machines, so one
+            // rate-limiting us doesn't block the others.
             _ => (
                 DEFAULT_STAGENET_NODES,
                 Some(e2e_path!("stagenet-decoy-distribution.json").to_string()),
@@ -545,7 +544,7 @@ impl ResolvedWallet {
     /// This wallet's *public* spend key, hex-encoded - derived locally from
     /// `self.private_spend_key_hex`, never the private key itself. For
     /// handing to something that must never see a private key even for a
-    /// worthless stagenet fixture (moneropay's own real connect API, which
+    /// worthless stagenet fixture (Monokulo, which
     /// only ever takes a view key + spend *public* key for a watch-only
     /// tenant) while this crate still holds full credentials for every
     /// wallet it knows about.
@@ -662,9 +661,9 @@ impl WalletStore {
 
     /// The wallet named `name` (`<wallet_dir>/<name>.db`). Every wallet
     /// this crate manages is a worthless stagenet fixture, so every one has
-    /// its spend key recorded - even moneropay's own tenant (`merchant`);
+    /// its spend key recorded - even the store's wallet (`merchant`);
     /// only the *public* half ([`ResolvedWallet::spend_public_key_hex`]) is
-    /// ever actually handed to moneropay's real connect API, so the e2e
+    /// ever actually handed to Monokulo, so the e2e
     /// tests still exercise it exactly as a genuinely watch-only tenant
     /// would be.
     pub fn wallet(&self, name: &str) -> Result<ResolvedWallet, WalletError> {
