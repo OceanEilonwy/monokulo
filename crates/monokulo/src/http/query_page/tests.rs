@@ -210,7 +210,7 @@ async fn only_an_admin_gets_the_page() {
         .clone()
         .oneshot(
             Request::get("/dashboard/admin/query")
-                .header("authorization", format!("Bearer {session}"))
+                .header("cookie", format!("session={session}"))
                 .body(Body::empty())
                 .unwrap(),
         )

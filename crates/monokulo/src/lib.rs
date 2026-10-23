@@ -10,6 +10,7 @@
 
 pub mod abuse;
 pub mod admin_nodes;
+pub mod api;
 pub mod apps;
 pub mod assets;
 pub mod cli;

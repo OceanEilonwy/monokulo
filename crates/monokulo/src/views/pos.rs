@@ -11,7 +11,6 @@ use super::{
 
 pub struct PosViewModel {
     pub connection_id: crate::db::ConnectionId,
-    pub public_key: String,
     pub display_name: String,
     pub base_currency: String,
     pub base_currency_decimals: u8,
@@ -26,7 +25,6 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
     let body = html! {
         div id="pos-root"
             data-connection-id=(data.connection_id)
-            data-public-key=(data.public_key)
             data-store-name=(data.display_name)
             data-currency=(data.base_currency)
             data-decimals=(data.base_currency_decimals)
@@ -70,7 +68,6 @@ mod tests {
         let chrome = PageChrome::from_user(None, "/dashboard/stores/conn-1/pos");
         let data = PosViewModel {
             connection_id: shared::ids::ConnectionId::new("conn-1"),
-            public_key: "pk_test".into(),
             display_name: "example.com".into(),
             base_currency: "XMR".into(),
             base_currency_decimals: 12,

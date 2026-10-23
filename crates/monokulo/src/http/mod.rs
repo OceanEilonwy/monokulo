@@ -12,24 +12,14 @@
 //! which exists because *other* crates need a real socket to reach a
 //! separately-deployed *engine* instance.
 //!
-//! `/signup` is necessarily unauthenticated (WBS 1.1.1). `/login` (1.1.2)
-//! issues a session token; the [`AuthedUser`] extractor below resolves a
-//! `Authorization: Bearer <session_token>` header back to a user, the same
-//! pattern as the engine's own `AuthedTenant` (see `src/http/mod.rs` at the
-//! repo root) resolves `Bearer sk_...`. `/logout` (1.1.3) reuses the same
-//! extractor to find out which session to revoke.
-//!
 //! `/dashboard/signup` and `/dashboard/login` (`dashboard` module, WBS
-//! 1.3.1) are a second, browser-facing surface over the same underlying
-//! account/login logic — plain HTML forms instead of JSON, ending in a
-//! `session` cookie instead of a JSON-body bearer token. [`AuthedUser`]
-//! accepts either: a `Bearer` header (the JSON API's own clients) or a
-//! `session` cookie (the browser flow) — same hash-and-look-up logic either
-//! way, so this stays one auth system, not two.
+//! 1.1 and 1.3.1) are plain HTML forms over the account and login logic
+//! (`signup`, `login`), ending in a `session` cookie, which the
+//! [`AuthedUser`] extractor below resolves back to a user. The machine API
+//! (`crate::api`) takes a store's or an app's key instead.
 //!
 //! `/setup` (`setup` module) makes a store in three steps (Store, Wallet,
-//! Done) on top of `connections::create_connection_for_user`, the same
-//! logic `/connections` itself calls.
+//! Done) on top of `connections::create_connection_for_user`.
 //!
 //! `/plugins/connect/{platform}` and `/plugins/connect/{platform}/finish` (`connect` module,
 //! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
@@ -61,10 +51,10 @@ mod home;
 mod invites;
 pub mod key_entry;
 mod login;
-mod logout;
 mod logs_page;
 mod orders;
-mod pay;
+pub mod paths;
+pub(crate) mod pay;
 mod pos;
 mod pos_logs;
 pub(crate) mod query_page;
@@ -92,6 +82,7 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum::Router;
 use axum_extra::extract::CookieJar;
+use axum_extra::routing::RouterExt;
 use serde_json::json;
 
 use crate::db::{Database, UserRow};
@@ -128,7 +119,10 @@ impl std::ops::Deref for OwnedStore {
 /// can't drift apart on the name.
 pub(crate) const SESSION_COOKIE_NAME: &str = "session";
 
+pub(crate) use orders::decrypt_sk;
+pub(crate) use pos::resolve_confirmations_required;
 pub(crate) use signup::MIN_PASSWORD_LEN;
+pub(crate) use telemetry_client::clip as clip_report;
 
 /// The session cookie as it is set and cleared: `HttpOnly` (never readable
 /// from page JS), `SameSite=Lax` (sent on top-level navigation, not on
@@ -458,10 +452,6 @@ pub fn build_router(state: AppState) -> Router {
             "/status/engine/replay",
             axum::routing::get(engine_page::replay),
         )
-        .route("/signup", post(signup::signup))
-        .route("/login", post(login::login))
-        .route("/logout", post(logout::logout))
-        .route("/connections", post(connections::create_connection))
         .route("/dashboard", axum::routing::get(home::dashboard_moved))
         .route(
             "/dashboard/signup",
@@ -680,52 +670,27 @@ pub fn build_router(state: AppState) -> Router {
             )),
         );
 
-    // `POST /pay/{pk}/orders` (`docs/fx_refactor.md` Phase 1.4) is
-    // monokulo's first genuinely public, unauthenticated,
-    // state-changing endpoint - a separate sub-router purely so
-    // `rate_limit::rate_limit_middleware` layers onto *only* this route,
-    // not the authenticated `/dashboard/*` routes or the admin-proxy ones
-    // above, which don't need (and shouldn't share a budget via) an
-    // IP-keyed limit - see `http::rate_limit`'s own module doc comment.
+    // The machine API (`crate::api`): every resource's routes, from the
+    // catalog its macros fill. Under test each answer is also checked
+    // against the OpenAPI document and recorded (`api::runtime::examples`).
+    let api = crate::api::runtime::router();
+    #[cfg(test)]
+    let api = api.layer(middleware::from_fn(
+        crate::api::runtime::examples::record_layer,
+    ));
+    // The payer's pages, keyed by the order alone.
     let pay_router = Router::new()
-        .route("/pay/{pk}/orders", post(pay::create_order))
-        // A connected app's store-wide stream, and its own disconnect
-        // (`crate::apps`).
-        .route("/pay/{pk}/events", axum::routing::get(apps::events))
         .route(
-            "/pay/{pk}/app",
-            axum::routing::delete(apps::disconnect_self),
-        )
-        .route(
-            "/pay/{pk}/orders/{order_id}",
+            crate::api::checkout::Path::TEMPLATE,
             axum::routing::get(checkout::checkout_page),
         )
-        .route(
-            "/pay/{pk}/orders/{order_id}/status",
-            axum::routing::get(checkout::checkout_status),
-        )
-        .route(
-            "/pay/{pk}/orders/{order_id}/events",
-            axum::routing::get(checkout::checkout_events),
-        )
-        .route(
-            "/pay/{pk}/orders/{order_id}/refund-address",
-            axum::routing::post(checkout::set_refund_address),
-        )
+        .typed_get(checkout::checkout_events)
+        .typed_post(checkout::set_refund_address)
         // A real follow-up to `docs/fx_refactor.md`: a nav-bearing,
         // shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
-        .route(
-            "/pay/{pk}/orders/{order_id}/share",
-            axum::routing::get(checkout::checkout_share_page),
-        )
-        // Errors a shop plugin forwards (structured_logging.md 2.4).
-        .route(
-            "/pay/{pk}/logs",
-            post(telemetry_client::plugin::forward).layer(axum::extract::DefaultBodyLimit::max(
-                telemetry_client::plugin::MAX_BODY_BYTES,
-            )),
-        )
+        .typed_get(checkout::checkout_share_page)
+        .merge(api)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             embed_domains::embed_policy_middleware,
@@ -807,7 +772,7 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             network_headers,
         ))
-        .layer(middleware::from_fn_with_state(state.clone(), record_store))
+        .layer(middleware::from_fn(record_store))
         .layer(middleware::from_fn(telemetry::http::server))
         .with_state(state)
 }
@@ -833,24 +798,17 @@ async fn network_headers(
     response
 }
 
-/// Resolves a session token to the user that session belongs to - either
-/// from `Authorization: Bearer <session_token>` (the JSON API, WBS 1.1.2) or
-/// from a `session` cookie (the browser flow, WBS 1.3.1's
-/// `dashboard::login_submit`), checked in that order: a request carrying an
-/// `Authorization` header is treated as an API client and only that header
-/// is consulted, falling back to the cookie only when the header is absent
-/// entirely. `401` for a missing/malformed header, missing cookie, or an
-/// unknown/invalid token - never distinguishes any of these from each
-/// other. Both paths converge on the exact same "hash the token, look up
-/// the session" logic below - there is one auth system here, not two
-/// parallel ones. A browser loading a page is sent to log in instead of
-/// getting the `401` ([`unauthenticated`]).
+/// Resolves the `session` cookie (set by `dashboard::login_submit`, WBS
+/// 1.3.1) to the user that session belongs to. `401` for a missing cookie
+/// or an unknown/invalid token - never distinguishes the two. A browser
+/// loading a page is sent to log in instead of getting the `401`
+/// ([`unauthenticated`]). The machine API takes keys, not sessions
+/// (`crate::api`).
 ///
 /// Also carries the presented session's `token_hash` (the same hash
 /// `Db::find_session`/`Db::delete_session` key on) alongside the resolved
-/// user - `/logout` (WBS 1.1.3) needs to know exactly which session row to
-/// delete, and re-deriving it would mean re-parsing the credential a second
-/// time outside this extractor.
+/// user - logging out (`dashboard::logout_submit`) needs to know exactly
+/// which session row to delete.
 pub struct AuthedUser(pub UserRow, pub TokenHash);
 
 /// The session `abuse::site_middleware` already resolved for this request,
@@ -883,8 +841,7 @@ fn unauthenticated(parts: &Parts) -> Response {
     let page = matches!(
         parts.method,
         axum::http::Method::GET | axum::http::Method::HEAD
-    ) && !headers.contains_key(header::AUTHORIZATION)
-        && !headers.contains_key(fx::FX_REQUEST)
+    ) && !headers.contains_key(fx::FX_REQUEST)
         && headers
             .get(header::ACCEPT)
             .and_then(|v| v.to_str().ok())
@@ -924,12 +881,16 @@ impl FromRequestParts<AppState> for AuthedAdmin {
     }
 }
 
-/// CORS for the public `/pay/{pk}/...` routes a merchant's page uses to
-/// embed checkout (order creation from `monokulo-client.js`, order status
-/// and its live stream). A store that hasn't restricted embedding answers
-/// any origin - a clearnet shop, a `.onion` one, a sandboxed frame whose
-/// origin is `null` - and one that has answers only its verified domains
-/// (`embed_domains::EmbedPolicy::allows_origin`). Safe to open this wide by
+/// CORS for the public routes a merchant's page uses to embed checkout
+/// (order creation from `monokulo-client.js` with the store's public key,
+/// the order and the checkout's live stream). A store that hasn't
+/// restricted embedding answers any origin - a clearnet shop, a `.onion`
+/// one, a sandboxed frame whose origin is `null` - and one that has
+/// answers only its verified domains
+/// (`embed_domains::EmbedPolicy::allows_origin`). The store is the one the
+/// request's public key names, or its checkout's order's; a preflight
+/// carries neither (no `Authorization` value), and is answered for any
+/// origin, the request itself then being checked. Safe to open this wide by
 /// default because none of these routes use cookies or any other ambient
 /// credential (credentials are never allowed), and anything they do is
 /// equally possible from a script outside a browser. Private-network
@@ -939,11 +900,32 @@ fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
     use tower_http::cors::AllowOrigin;
     let db = state.db.clone();
     cors_layer_base().allow_origin(AllowOrigin::async_predicate(move |origin, parts| {
-        let public_key =
-            embed_domains::public_key_of_pay_path(parts.uri.path()).map(str::to_string);
+        let db = db.clone();
+        // The store's public key, when the request carries one; the order,
+        // on a checkout page.
+        let public_key = parts
+            .headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.split_once(' '))
+            .map(|(_, key)| key.trim().to_owned())
+            .filter(|key| key.starts_with("pk_"));
+        let order = paths::checkout_order(parts.uri.path());
         async move {
-            let Some(public_key) = public_key else {
-                return true;
+            let public_key = match (public_key, order) {
+                (Some(public_key), _) => public_key,
+                (None, Some(order)) => {
+                    match db
+                        .read(move |db| db.get_store_connection_by_order(&order))
+                        .await
+                    {
+                        Ok(Some(store)) => store.tenant_public_key,
+                        Ok(None) => return true,
+                        // Not knowing is not permission.
+                        Err(_) => return false,
+                    }
+                }
+                (None, None) => return true,
             };
             let Ok(origin) = origin.to_str() else {
                 return false;
@@ -973,6 +955,7 @@ fn cors_layer_base() -> tower_http::cors::CorsLayer {
         // site (`http::abuse`).
         .allow_headers([
             header::CONTENT_TYPE,
+            header::AUTHORIZATION,
             header::ACCEPT,
             header::HeaderName::from_static(abuse::PROOF_HEADER),
         ])
@@ -1104,15 +1087,8 @@ pub(crate) async fn resolve_authed_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Option<(UserRow, TokenHash)> {
-    let token = if let Some(header_value) = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-    {
-        RawToken::presented(header_value.strip_prefix("Bearer ")?)
-    } else {
-        let jar = CookieJar::from_headers(headers);
-        RawToken::presented(jar.get(SESSION_COOKIE_NAME)?.value())
-    };
+    let jar = CookieJar::from_headers(headers);
+    let token = RawToken::presented(jar.get(SESSION_COOKIE_NAME)?.value());
     let token_hash = token.hash();
 
     let hash = token_hash.clone();
@@ -1150,33 +1126,17 @@ pub(crate) fn session_log_id(token_hash: &TokenHash) -> String {
     hex::encode(&Sha256::digest(format!("monokulo log session:{token_hash}").as_bytes())[..8])
 }
 
-/// Puts the store a request concerns on its lines (`store.id`): the one in
-/// a dashboard store page's path, or the one whose public key a `/pay/`
-/// route carries.
-async fn record_store(
-    axum::extract::State(state): axum::extract::State<AppState>,
-    request: axum::extract::Request,
-    next: middleware::Next,
-) -> Response {
-    let path = request.uri().path();
-    let store = match path
+/// Puts the store a dashboard store page is about on its lines
+/// (`store.id`), first, so the middleware's lines carry it too. The public
+/// routes' store is recorded once `abuse::pay_middleware` has found it.
+async fn record_store(request: axum::extract::Request, next: middleware::Next) -> Response {
+    if let Some(store) = request
+        .uri()
+        .path()
         .strip_prefix("/dashboard/stores/")
         .and_then(|rest| rest.split('/').next())
         .filter(|id| !id.is_empty())
     {
-        Some(id) => Some(id.to_string()),
-        None => match embed_domains::public_key_of_pay_path(path).map(str::to_string) {
-            Some(pk) => state
-                .db
-                .read(move |db| db.get_store_connection_by_public_key(&pk))
-                .await
-                .ok()
-                .flatten()
-                .map(|row| row.id.into_string()),
-            None => None,
-        },
-    };
-    if let Some(store) = store {
         tracing::Span::current().record("store.id", store);
     }
     next.run(request).await
@@ -1191,22 +1151,17 @@ async fn test_whoami(AuthedUser(user, _): AuthedUser) -> Json<serde_json::Value>
     Json(json!({ "user_id": user.id }))
 }
 
-/// `Conflict` (signup, duplicate email), `Unauthorized` (login, or a
-/// missing/invalid session), `BadRequest` (a request the *caller* got
-/// wrong in some caller-visible way — currently just the engine rejecting
-/// `POST /connections`'s wallet fields, e.g. bad hex or an unconfigured
-/// network), or `Internal` for anything else. Every message on
-/// `Conflict`/`Unauthorized`/`Internal` is fixed and generic — `Internal`
-/// never describes *why* the underlying operation failed, and
-/// `Unauthorized` never distinguishes "wrong password" from "unknown
-/// email" from "invalid session token" — so a client can't use
-/// error-message differences to fingerprint internals or enumerate
-/// accounts beyond what each variant already, unavoidably, signals.
+/// `Unauthorized` (a missing/invalid session), `BadRequest` (a request
+/// the *caller* got wrong in some caller-visible way), or `Internal` for
+/// anything else. Every message on `Unauthorized`/`Internal` is fixed and
+/// generic — `Internal` never describes *why* the underlying operation
+/// failed — so a client can't use error-message differences to
+/// fingerprint internals. The machine API answers with problems instead
+/// (`crate::api::runtime::problem`, which converts these).
 /// `BadRequest` is the one variant that *does* carry a real message,
 /// deliberately: it's surfacing the engine's own validation error back to
 /// the caller who made the mistake, not leaking internal state.
 pub enum ApiError {
-    Conflict,
     Unauthorized,
     BadRequest(String),
     /// Added for `http::pay`'s new public order-creation endpoint
@@ -1231,7 +1186,6 @@ pub enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            ApiError::Conflict => (StatusCode::CONFLICT, "email already in use".to_string()),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),

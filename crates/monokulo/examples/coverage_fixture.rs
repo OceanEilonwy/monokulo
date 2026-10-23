@@ -448,11 +448,13 @@ async fn create_order(
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    record_order(&control.db.lock(), &order.order_id, None)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({"order_id": order.order_id})))
 }
 
 async fn challenge(State(control): State<Controls>) -> axum::response::Html<String> {
-    let continue_url = format!("/pay/{}/orders/{}", control.public_key, control.order_id);
+    let continue_url = format!("/checkout/{}", control.order_id);
     let view = views::challenge::ChallengePageView {
         // The first valid nonce is 382 at eight bits, so the UI always
         // exercises its second proof batch before continuing.
@@ -836,24 +838,7 @@ async fn plugin_order(
         )
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    control
-        .db
-        .lock()
-        .create_order_currency_metadata(
-            &shared::ids::ConnectionId::new("coverage-store"),
-            &order.order_id,
-            "XMR",
-            "0.001",
-            shared::xmr_amount::Piconero(1_000_000_000_000),
-            "fixed",
-            monokulo::now_unix(),
-            "XMR",
-            None,
-            1,
-            true,
-            Some("woocommerce"),
-            true,
-        )
+    record_order(&control.db.lock(), &order.order_id, Some("woocommerce"))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({ "order_id": order.order_id })))
 }
@@ -1076,28 +1061,30 @@ async fn seed_wallets(
     })))
 }
 
-async fn mark_browser_created(
-    State(control): State<Controls>,
-    Path(id): Path<String>,
-) -> StatusCode {
-    match control.db.lock().create_order_currency_metadata(
+/// Records a fixture order (0.001 XMR, made with the store's key) as
+/// monokulo records the orders it makes: its price, and the store it
+/// belongs to, which is how its checkout page (`/checkout/{order_id}`)
+/// finds the store. `source` names what made it (`pos`, a plugin).
+fn record_order(
+    db: &monokulo::db::Db,
+    order_id: &shared::ids::OrderId,
+    source: Option<&str>,
+) -> Result<(), monokulo::db::DbError> {
+    db.create_order_currency_metadata(
         &shared::ids::ConnectionId::new("coverage-store"),
-        &shared::ids::OrderId::new(id.to_string()),
+        order_id,
         "XMR",
         "0.001",
         shared::xmr_amount::Piconero(1_000_000_000_000),
         "fixed",
-        1,
+        monokulo::now_unix(),
         "XMR",
         None,
         1,
-        false,
-        None,
         true,
-    ) {
-        Ok(()) => StatusCode::NO_CONTENT,
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
-    }
+        source,
+        true,
+    )
 }
 
 #[tokio::main]
@@ -1215,6 +1202,7 @@ async fn main() {
         monokulo::now_unix(),
     )
     .expect("create fixture POS order");
+    record_order(&db, &order.order_id, Some("pos")).expect("record fixture POS order");
     // Bound first so the exchange rate stand-in below can live on this same
     // server: a store priced in AUD then converts at a fixed, known rate.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1257,10 +1245,6 @@ async fn main() {
         .route(
             "/__coverage/orders/{id}/double-spend",
             post(mark_double_spent),
-        )
-        .route(
-            "/__coverage/orders/{id}/browser-created",
-            post(mark_browser_created),
         )
         .route("/__coverage/engine/story", post(engine_story))
         .route("/__coverage/wallets", post(seed_wallets))

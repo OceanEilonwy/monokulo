@@ -61,7 +61,7 @@ pub(super) async fn load_owned_connection(
 /// encrypted can't be decrypted with its own key - shouldn't happen, but
 /// handled as a plain internal error rather than unwrapped/panicked on (see
 /// the task's own note on this).
-pub(super) fn decrypt_sk(
+pub(crate) fn decrypt_sk(
     encryption_key: &crate::crypto::AtRestKey,
     row: &StoreConnectionRow,
 ) -> Result<shared::auth::RawToken, ()> {
@@ -350,7 +350,7 @@ pub async fn order_detail(
         format!("/dashboard/stores/{id}/orders/{order_id}"),
     )
     .await;
-    let payment_link = payment_link_for(&on, &row.tenant_public_key, &order_id);
+    let payment_link = payment_link_for(&on, &order_id);
 
     match order_detail_data(&state, &row, &sk, &order_id, payment_link).await {
         Ok(Some(order)) => {
@@ -529,7 +529,7 @@ pub async fn order_detail_events(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let payment_link = payment_link_for(&on, &row.tenant_public_key, &order_id);
+    let payment_link = payment_link_for(&on, &order_id);
     let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
     let row = std::sync::Arc::new(row);
     // Times in the viewer's zone, as the page itself shows them.
@@ -576,8 +576,13 @@ pub async fn order_detail_events(
 /// the merchant is using (`crate::network::OnNetwork::link`), so one made
 /// on the onion address is the onion one and one made on the web is the
 /// web one.
-fn payment_link_for(on: &OnNetwork, public_key: &str, order_id: &crate::db::OrderId) -> String {
-    on.link(&format!("/pay/{public_key}/orders/{order_id}/share"))
+fn payment_link_for(on: &OnNetwork, order_id: &crate::db::OrderId) -> String {
+    on.link(
+        &super::paths::CheckoutSharePath {
+            order_id: order_id.clone(),
+        }
+        .to_string(),
+    )
 }
 
 /// The only store-health signal available without this service also probing
@@ -1817,12 +1822,7 @@ mod tests {
     use super::{fx_provider_options, parse_fx_providers_form};
     use crate::views;
 
-    /// Same fixed-scalar construction `engine_client.rs`'s and
-    /// `connections.rs`'s own tests use.
-    const TEST_VIEW_KEY_HEX: &str =
-        "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str =
-        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    use crate::http::test_support::{TEST_SPEND_PUBKEY_HEX, TEST_VIEW_KEY_HEX};
     const TEST_ENCRYPTION_KEY: crate::crypto::AtRestKey = crate::crypto::AtRestKey::new([7u8; 32]);
 
     /// `"XMR"` deliberately, not a fiat currency: these tests are about the
@@ -1866,49 +1866,28 @@ mod tests {
         (state, engine)
     }
 
-    fn create_connection_request(bearer: &str) -> Request<Body> {
-        let body = serde_json::json!({
-            "site_url": "https://shop.example.com",
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "domains": [],
-            "base_currency": "XMR",
-        });
-        Request::builder()
-            .method("POST")
-            .uri("/connections")
-            .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {bearer}"))
-            .body(Body::from(body.to_string()))
-            .unwrap()
-    }
-
     use crate::http::test_support::body_json;
 
     use crate::http::test_support::body_text;
 
     use crate::http::test_support::signed_up_and_logged_in_session_token;
 
-    /// Creates a real `store_connections` row for the given session token via
-    /// the JSON `/connections` API, returning `(connection_id, public_key)`.
-    async fn create_connection(router: &Router, session_token: &str) -> (String, String) {
-        let response = router
-            .clone()
-            .oneshot(create_connection_request(session_token))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = body_json(response).await;
-        let obj = body.as_object().unwrap();
-        (
-            obj.get("connection_id")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string(),
-            obj.get("public_key").unwrap().as_str().unwrap().to_string(),
+    /// Makes a real store for the given session token through store setup
+    /// (an XMR store on the test wallet), returning `(store_id, public_key)`.
+    async fn create_connection(
+        router: &Router,
+        state: &AppState,
+        session_token: &str,
+    ) -> (String, String) {
+        let store = crate::http::test_support::store_with_keys(
+            router,
+            state,
+            session_token,
+            "https://shop.example.com",
+            "XMR",
         )
+        .await;
+        (store.id, store.public_key)
     }
 
     /// Seeds a real order directly on the spawned engine through its admin
@@ -1959,14 +1938,14 @@ mod tests {
     #[tokio::test]
     async fn dashboard_order_retries_reuse_the_order_and_changed_history_forms_create_another() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session = signed_up_and_logged_in_session_token(
             &router,
             "history@example.com",
             "correct horse battery staple",
         )
         .await;
-        let (id, _) = create_connection(&router, &session).await;
+        let (id, _) = create_connection(&router, &state, &session).await;
         let path = format!("/dashboard/stores/{id}/orders/new");
         let fields = [
             ("amount", "1.00"),
@@ -2030,7 +2009,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
 
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
@@ -2040,7 +2019,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{connection_id}/orders"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2062,7 +2041,7 @@ mod tests {
             fixi(
                 Request::builder()
                     .uri(format!("/dashboard/stores/{connection_id}/orders?q={q}"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2099,12 +2078,12 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
         let get = |uri: String, token: &str| {
             Request::builder()
                 .uri(uri)
-                .header("authorization", format!("Bearer {token}"))
+                .header("cookie", format!("session={token}"))
                 .header("host", "test.example")
                 .body(Body::empty())
                 .unwrap()
@@ -2182,7 +2161,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
 
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
@@ -2193,7 +2172,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/orders/{order_id}"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
                     .unwrap(),
@@ -2206,8 +2185,8 @@ mod tests {
             html.contains(&order_id),
             "expected the order's order_id in its detail page, got: {html}"
         );
-        // Seeded directly against the engine's own public API, bypassing
-        // monokulo's own `http::pay` endpoint - no local fiat metadata
+        // Seeded directly against the engine's own admin API, bypassing
+        // monokulo's own order creation - no local fiat metadata
         // was ever recorded for it, so the page must show a dash rather than
         // a fabricated amount (see `checkout.rs`'s own doc comment on the
         // same fallback).
@@ -2241,14 +2220,12 @@ mod tests {
         // Host header (`test.example` here, set by `oneshot`'s default) -
         // not a placeholder or a bare relative path.
         assert!(
-            html.contains(&format!(
-                "http://test.example/pay/{public_key}/orders/{order_id}/share"
-            )),
+            html.contains(&format!("http://test.example/checkout/{order_id}/share")),
             "expected a real absolute payment link, got: {html}"
         );
         // The share icon and order id live in the order title.
         assert!(
-            html.contains(r#"<h1>Order <span class="order-title-id">"#) && html.contains(r#"<div class="mk-page-actions"><a class="mk-btn" href="http://test.example/pay/"#),
+            html.contains(r#"<h1>Order <span class="order-title-id">"#) && html.contains(r#"<div class="mk-page-actions"><a class="mk-btn" href="http://test.example/checkout/"#),
             "expected the title banner to carry the share button, got: {html}"
         );
         assert!(
@@ -2271,7 +2248,7 @@ mod tests {
     #[tokio::test]
     async fn order_detail_for_an_unknown_order_id_renders_a_clear_not_found_state() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2279,7 +2256,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(
@@ -2288,7 +2265,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/orders/no-such-payment-id"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2309,7 +2286,7 @@ mod tests {
     #[tokio::test]
     async fn webhooks_list_on_a_connection_with_none_registered_renders_an_empty_but_valid_page() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2317,7 +2294,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(
@@ -2326,7 +2303,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=connections"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2351,7 +2328,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &owner_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &owner_token).await;
         seed_real_order(&state, engine.addr, &public_key).await;
 
         let other_token = signed_up_and_logged_in_session_token(
@@ -2366,7 +2343,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{connection_id}/orders"))
-                    .header("authorization", format!("Bearer {other_token}"))
+                    .header("cookie", format!("session={other_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2380,7 +2357,7 @@ mod tests {
     #[tokio::test]
     async fn unauthenticated_requests_to_all_three_new_routes_get_401_before_any_ownership_check() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         // A connection id doesn't even need to exist for this - `AuthedUser`
         // must reject before the handler ever looks it up.
@@ -2421,7 +2398,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
         let response = router
@@ -2429,7 +2406,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{connection_id}"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2443,8 +2420,8 @@ mod tests {
             "expected the store's public key, got: {html}"
         );
         assert!(
-            html.contains("<h1>shop.example.com</h1>"),
-            "a store made without a name is named after its site, got: {html}"
+            html.contains("<h1>https://shop.example.com</h1>"),
+            "the store's name heads its page, got: {html}"
         );
         assert!(
             html.contains("tag-ok"),
@@ -2464,7 +2441,7 @@ mod tests {
     #[tokio::test]
     async fn store_detail_for_an_unowned_or_unknown_connection_returns_404() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2472,7 +2449,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
 
         let other_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2491,7 +2468,7 @@ mod tests {
                     Request::builder()
                         .method("GET")
                         .uri(uri.clone())
-                        .header("authorization", format!("Bearer {other_token}"))
+                        .header("cookie", format!("session={other_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -2517,14 +2494,14 @@ mod tests {
         (state, engine)
     }
 
-    async fn get_with_bearer(router: &Router, uri: &str, bearer: &str) -> String {
+    async fn get_with_session(router: &Router, uri: &str, session: &str) -> String {
         let response = router
             .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
                     .uri(uri)
-                    .header("authorization", format!("Bearer {bearer}"))
+                    .header("cookie", format!("session={session}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2552,14 +2529,14 @@ mod tests {
     #[tokio::test]
     async fn saving_the_providers_waits_for_the_stores_policy_lock() {
         let (state, _engine) = haveno_state().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session = signed_up_and_logged_in_session_token(
             &router,
             "fx-policy-lock@example.com",
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, pk) = create_connection(&router, &session).await;
+        let (connection_id, pk) = create_connection(&router, &state, &session).await;
         let fx_uri = format!("/dashboard/stores/{connection_id}/settings");
 
         let guard = crate::confirmation_thresholds::lock_policy(&pk).await;
@@ -2592,11 +2569,11 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let (connection_id, _pk) = create_connection(&router, &state, &session).await;
         let fx_uri = format!("/dashboard/stores/{connection_id}/settings");
         let settings_uri = format!("{fx_uri}?tab=payments");
 
-        let html = get_with_bearer(&router, &settings_uri, &session).await;
+        let html = get_with_session(&router, &settings_uri, &session).await;
         assert!(
             html.contains("Haveno (RetoSwap) limits"),
             "the limits are offered while haveno is: {html}"
@@ -2643,7 +2620,7 @@ mod tests {
             (2.5, 3, 1.5)
         );
 
-        let html = get_with_bearer(&router, &settings_uri, &session).await;
+        let html = get_with_session(&router, &settings_uri, &session).await;
         assert!(
             html.contains(r#"name="haveno_currencies" id="haveno-currencies" value="EUR, USD""#),
             "the saved values come back: {html}"
@@ -2664,7 +2641,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let (connection_id, _pk) = create_connection(&router, &state, &session).await;
         let fx_uri = format!("/dashboard/stores/{connection_id}/settings");
         let before = state
             .db
@@ -2730,7 +2707,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let (connection_id, _pk) = create_connection(&router, &state, &session).await;
         let fx_uri = format!("/dashboard/stores/{connection_id}/settings");
         router
             .clone()
@@ -2786,9 +2763,9 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let (connection_id, _pk) = create_connection(&router, &state, &session).await;
 
-        let html = get_with_bearer(
+        let html = get_with_session(
             &router,
             &format!("/dashboard/stores/{connection_id}/settings?tab=payments"),
             &session,
@@ -2833,7 +2810,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let (connection_id, _pk) = create_connection(&router, &state, &session).await;
         let fx_uri = format!("/dashboard/stores/{connection_id}/settings");
         let orders_uri = format!("/dashboard/stores/{connection_id}/orders/new");
 
@@ -2847,7 +2824,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let html = get_with_bearer(&router, &orders_uri, &session).await;
+        let html = get_with_session(&router, &orders_uri, &session).await;
         for code in ["XMR", "USD", "EUR", "GBP"] {
             assert!(
                 html.contains(&format!(
@@ -2868,7 +2845,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        let html = get_with_bearer(&router, &orders_uri, &session).await;
+        let html = get_with_session(&router, &orders_uri, &session).await;
         assert!(
             html.contains(r#"<option value="EUR">EUR</option>"#)
                 && html.contains(r#"<option value="XMR" selected>XMR</option>"#),
@@ -2984,7 +2961,7 @@ mod tests {
         );
     }
 
-    fn form_post_request(uri: &str, bearer: &str, fields: &[(&str, &str)]) -> Request<Body> {
+    fn form_post_request(uri: &str, session: &str, fields: &[(&str, &str)]) -> Request<Body> {
         let body = fields
             .iter()
             .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
@@ -2994,7 +2971,7 @@ mod tests {
             .method("POST")
             .uri(uri)
             .header("content-type", "application/x-www-form-urlencoded")
-            .header("authorization", format!("Bearer {bearer}"))
+            .header("cookie", format!("session={session}"))
             .body(Body::from(body))
             .unwrap()
     }
@@ -3002,7 +2979,7 @@ mod tests {
     #[tokio::test]
     async fn creating_an_order_from_the_dashboard_redirects_to_its_real_detail_page() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3010,7 +2987,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .clone()
@@ -3047,7 +3024,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(location)
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3086,14 +3063,14 @@ mod tests {
     #[tokio::test]
     async fn the_create_order_form_describes_the_order_and_can_hide_its_reference() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "order-describe@example.com",
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
         let path = format!("/dashboard/stores/{connection_id}/orders/new");
         let too_long = "x".repeat(141);
         let response = router
@@ -3146,7 +3123,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .uri(location)
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -3163,7 +3140,7 @@ mod tests {
     #[tokio::test]
     async fn creating_an_order_with_an_unknown_currency_shows_a_clear_error() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3171,7 +3148,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(form_post_request(
@@ -3205,7 +3182,7 @@ mod tests {
     async fn creating_an_order_with_a_known_but_provider_unsupported_currency_gets_a_distinct_error(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3213,7 +3190,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(form_post_request(
@@ -3238,7 +3215,7 @@ mod tests {
     #[tokio::test]
     async fn a_different_user_cannot_create_an_order_on_someone_elses_connection() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3246,7 +3223,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
 
         let intruder_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3313,7 +3290,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(uri)
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3397,7 +3374,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
         assert_eq!(
             engine_backend_of(&state, &public_key).await.as_deref(),
             Some("plain")
@@ -3615,14 +3592,14 @@ mod tests {
         crate::http::status_page::get_status_cached(&state.engine)
             .await
             .unwrap();
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "no-choice@example.com",
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _) = create_connection(&router, &session_token).await;
+        let (connection_id, _) = create_connection(&router, &state, &session_token).await;
         assert!(!get_page(
             &router,
             &session_token,
@@ -3643,7 +3620,7 @@ mod tests {
     async fn updating_the_confirmation_threshold_redirects_and_the_new_value_shows_on_the_store_page(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3651,7 +3628,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .clone()
@@ -3679,7 +3656,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3695,7 +3672,7 @@ mod tests {
     #[tokio::test]
     async fn updating_the_confirmation_threshold_to_zero_is_accepted() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3703,7 +3680,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .clone()
@@ -3738,7 +3715,7 @@ mod tests {
     #[tokio::test]
     async fn a_new_store_defaults_to_coingecko_and_offers_no_options_when_none_are_enabled() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3746,7 +3723,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let settings_response = router
             .clone()
@@ -3756,7 +3733,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3788,7 +3765,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{connection_id}/orders/new"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3833,7 +3810,7 @@ mod tests {
                 "http://{mock_coingecko_addr}"
             )),
         );
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3841,14 +3818,14 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{connection_id}/orders/new"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3881,7 +3858,7 @@ mod tests {
     async fn choosing_an_fx_provider_the_instance_has_not_enabled_is_a_clear_error_not_silently_accepted(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3889,7 +3866,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(form_post_request(
@@ -3924,14 +3901,14 @@ mod tests {
     #[tokio::test]
     async fn the_settings_form_saves_the_changed_cards_or_nothing() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "settings-form@example.com",
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
         let settings = format!("/dashboard/stores/{connection_id}/settings");
         let send = |fields: &[(&str, &str)]| {
             router
@@ -3943,7 +3920,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(uri)
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4038,7 +4015,7 @@ mod tests {
     #[tokio::test]
     async fn updating_the_base_currency_persists_and_shows_on_the_store_page() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4046,7 +4023,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .clone()
@@ -4065,7 +4042,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{connection_id}/settings"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4082,7 +4059,7 @@ mod tests {
     #[tokio::test]
     async fn ticking_the_zero_conf_checkbox_persists_and_shows_as_checked_on_the_settings_page() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4090,7 +4067,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .clone()
@@ -4114,7 +4091,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4147,7 +4124,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4178,7 +4155,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _) = create_connection(&router, &token).await;
+        let (connection_id, _) = create_connection(&router, &state, &token).await;
         state
             .db
             .lock()
@@ -4228,7 +4205,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _) = create_connection(&router, &token).await;
+        let (connection_id, _) = create_connection(&router, &state, &token).await;
         state
             .db
             .lock()
@@ -4298,7 +4275,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _) = create_connection(&router, &token).await;
+        let (connection_id, _) = create_connection(&router, &state, &token).await;
         state.db.lock().break_confirmation_thresholds_for_test();
         let response = router
             .oneshot(form_post_request(
@@ -4343,7 +4320,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _) = create_connection(&router, &session_token).await;
+        let (connection_id, _) = create_connection(&router, &state, &session_token).await;
         let existing_id = "existing-threshold";
         state
             .db
@@ -4409,7 +4386,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_base_currency_is_rejected_and_the_existing_value_is_unchanged() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4417,7 +4394,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(form_post_request(
@@ -4448,12 +4425,12 @@ mod tests {
     #[tokio::test]
     async fn a_known_currency_with_no_enabled_rate_provider_is_still_accepted_as_a_base_currency_change(
     ) {
-        // Same decoupling proof as `connections.rs`'s own equivalent test,
-        // exercised here for the *change* path rather than creation -
+        // A base currency doesn't need a rate provider, proved here for the
+        // *change* path rather than creation -
         // `test_state_with_real_engine`'s own `ExchangeRateProviders::xmr_only()`
         // has no provider enabled at all.
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4461,7 +4438,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(form_post_request(
@@ -4489,7 +4466,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         router
             .clone()
@@ -4547,7 +4524,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .clone()
@@ -4581,7 +4558,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4636,7 +4613,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4659,7 +4636,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _) = create_connection(&router, &session_token).await;
+        let (connection_id, _) = create_connection(&router, &state, &session_token).await;
         let direct_path = format!("/dashboard/stores/{connection_id}/settings");
         let response = router
             .clone()
@@ -4729,7 +4706,7 @@ mod tests {
     #[tokio::test]
     async fn custom_thresholds_are_displayed_in_ascending_order_of_amount() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4737,7 +4714,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         for amount in ["100.00", "10.00", "50.00"] {
             router
@@ -4761,7 +4738,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/settings?tab=payments"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -4787,7 +4764,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
         // The settings page's one form: its "new threshold" fields, and a
         // delete checkbox per existing row.
         let save = format!("/dashboard/stores/{connection_id}/settings");
@@ -4876,7 +4853,7 @@ mod tests {
     #[tokio::test]
     async fn a_duplicate_unit_amount_is_rejected() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -4884,7 +4861,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         router
             .clone()
@@ -4932,7 +4909,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
         let save = format!("/dashboard/stores/{connection_id}/settings");
 
         for (amount, confirmations, message) in [
@@ -4996,7 +4973,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
 
         router
             .clone()
@@ -5080,7 +5057,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/orders/{order_id}"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5123,7 +5100,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
 
         router
             .clone()
@@ -5193,7 +5170,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_threshold_has_no_remove_control_and_is_not_a_tier() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -5201,7 +5178,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
         let page = || async {
             let response = router
                 .clone()
@@ -5211,7 +5188,7 @@ mod tests {
                         .uri(format!(
                             "/dashboard/stores/{connection_id}/settings?tab=payments"
                         ))
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -5264,7 +5241,7 @@ mod tests {
     #[tokio::test]
     async fn updating_the_confirmation_threshold_with_non_numeric_input_shows_a_clear_error() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -5272,7 +5249,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(form_post_request(
@@ -5293,7 +5270,7 @@ mod tests {
     #[tokio::test]
     async fn a_different_user_cannot_update_confirmations_on_someone_elses_connection() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
             &router,
@@ -5301,7 +5278,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
 
         let intruder_token = signed_up_and_logged_in_session_token(
             &router,
@@ -5344,17 +5321,22 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (id, pk) = create_connection(&router, &session_token).await;
-        let bearer = format!("Bearer {session_token}");
-        let json_post = |uri: String, auth: Option<String>, body: serde_json::Value| {
-            let mut builder = Request::builder()
+        let (id, pk) = create_connection(&router, &state, &session_token).await;
+        let cookie = format!("session={session_token}");
+        // The POS posts with the merchant's session cookie.
+        let pos_post = |uri: String, body: serde_json::Value| {
+            Request::builder()
                 .method("POST")
                 .uri(uri)
-                .header("content-type", "application/json");
-            if let Some(auth) = auth {
-                builder = builder.header("authorization", auth);
-            }
-            builder.body(Body::from(body.to_string())).unwrap()
+                .header("content-type", "application/json")
+                .header("cookie", cookie.clone())
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        // The API takes the store's secret key, or its public key from a
+        // website.
+        let api_post = |key: &str, body: serde_json::Value| {
+            crate::http::test_support::api_request("POST", "/api/v1/orders", Some(key), Some(body))
         };
         let created_id = |response: axum::response::Response| async move {
             body_json(response).await["order_id"]
@@ -5366,9 +5348,8 @@ mod tests {
         let pos = created_id(
             router
                 .clone()
-                .oneshot(json_post(
+                .oneshot(pos_post(
                     format!("/dashboard/stores/{id}/pos/orders"),
-                    Some(bearer.clone()),
                     serde_json::json!({ "amount": "0.3", "merchant_order_id": "Table 4" }),
                 ))
                 .await
@@ -5378,9 +5359,8 @@ mod tests {
         let cancelled = created_id(
             router
                 .clone()
-                .oneshot(json_post(
+                .oneshot(pos_post(
                     format!("/dashboard/stores/{id}/pos/orders"),
-                    Some(bearer.clone()),
                     serde_json::json!({ "amount": "0.2", "merchant_order_id": "Table 9" }),
                 ))
                 .await
@@ -5395,7 +5375,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"
                     ))
-                    .header("authorization", bearer.clone())
+                    .header("cookie", cookie.clone())
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -5448,9 +5428,8 @@ mod tests {
             })
             .unwrap();
         let keyed = |reference: &str, client: &str| {
-            let mut request = json_post(
-                format!("/pay/{pk}/orders"),
-                Some(format!("Bearer {secret}")),
+            let mut request = api_post(
+                &secret,
                 serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": reference }),
             );
             request
@@ -5476,12 +5455,20 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        let api = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
-            serde_json::json!({ "amount": "2.50", "currency": "XMR", "merchant_order_id": "srv-9" }))).await.unwrap()).await;
+        let api = created_id(
+            router
+                .clone()
+                .oneshot(api_post(
+                    &secret,
+                    serde_json::json!({ "amount": "2.50", "currency": "XMR", "merchant_order_id": "srv-9" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
         // The header alone, from a browser, names nothing.
-        let mut claimed = json_post(
-            format!("/pay/{pk}/orders"),
-            None,
+        let mut claimed = api_post(
+            &pk,
             serde_json::json!({ "amount": "2.75", "currency": "XMR", "merchant_order_id": "web-3" }),
         );
         claimed.headers_mut().insert(
@@ -5492,9 +5479,8 @@ mod tests {
         let website = created_id(
             router
                 .clone()
-                .oneshot(json_post(
-                    format!("/pay/{pk}/orders"),
-                    None,
+                .oneshot(api_post(
+                    &pk,
                     serde_json::json!({ "amount": "3.00", "currency": "XMR" }),
                 ))
                 .await
@@ -5503,9 +5489,9 @@ mod tests {
         .await;
 
         let page = |query: &str| {
-            let (router, bearer, uri) = (
+            let (router, cookie, uri) = (
                 router.clone(),
-                bearer.clone(),
+                cookie.clone(),
                 format!("/dashboard/stores/{id}/orders{query}"),
             );
             async move {
@@ -5514,7 +5500,7 @@ mod tests {
                         .oneshot(
                             Request::builder()
                                 .uri(uri)
-                                .header("authorization", bearer)
+                                .header("cookie", cookie)
                                 .body(Body::empty())
                                 .unwrap(),
                         )
@@ -5581,9 +5567,8 @@ mod tests {
         for i in 0..43 {
             router
                 .clone()
-                .oneshot(json_post(
-                    format!("/pay/{pk}/orders"),
-                    None,
+                .oneshot(api_post(
+                    &pk,
                     serde_json::json!({ "amount": format!("0.{i:02}1"), "currency": "XMR" }),
                 ))
                 .await
@@ -5610,14 +5595,14 @@ mod tests {
     #[tokio::test]
     async fn lookup_payment_reshows_the_orders_page_with_a_not_found_message() {
         let (state, _engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "lookup-owner@example.com",
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
         let txid = "a".repeat(64);
         let response = router
@@ -5655,7 +5640,7 @@ mod tests {
     async fn merchant_recovers_a_missed_payment_by_looking_up_the_customers_txid() {
         use monero::cryptonote::hash::Hashable;
         let (state, engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "lookup-recover@example.com",
@@ -5672,27 +5657,34 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let connect = |view: String, spend: String| {
-            Request::builder().method("POST").uri("/connections")
-            .header("content-type", "application/json").header("authorization", format!("Bearer {session_token}"))
-            .body(Body::from(serde_json::json!({
-                "site_url": "https://recovered.example.com", "view_key_hex": view,
-                "spend_pubkey_hex": spend, "network": "mainnet", "domains": [], "base_currency": "XMR",
-            }).to_string())).unwrap()
+        let cookie = format!("session={session_token}");
+        let connect = |site: &'static str, view: String, spend: String| {
+            let cookie = cookie.clone();
+            let router = router.clone();
+            async move {
+                let response = crate::http::test_support::set_up_store_with_keys(
+                    &router,
+                    &cookie,
+                    &[
+                        ("store_name", site),
+                        ("store_site", site),
+                        ("base_currency", "XMR"),
+                        ("view_key_hex", &view),
+                        ("spend_pubkey_hex", &spend),
+                        ("network", "mainnet"),
+                        ("name", site),
+                    ],
+                )
+                .await;
+                crate::http::test_support::store_made(&response)
+            }
         };
-        let response = router
-            .clone()
-            .oneshot(connect(
-                hex::encode(view_key.to_bytes()),
-                hex::encode(monero::PublicKey::from_private_key(&spend_key).to_bytes()),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let connection_id = body_json(response).await["connection_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let connection_id = connect(
+            "https://recovered.example.com",
+            hex::encode(view_key.to_bytes()),
+            hex::encode(monero::PublicKey::from_private_key(&spend_key).to_bytes()),
+        )
+        .await;
         let response = router
             .clone()
             .oneshot(form_post_request(
@@ -5740,7 +5732,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .uri(&order_page)
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -5754,7 +5746,12 @@ mod tests {
         );
 
         // The same transaction looked up from a store it does not pay.
-        let (other_store, _) = create_connection(&router, &session_token).await;
+        let other_store = connect(
+            "https://other.example.com",
+            TEST_VIEW_KEY_HEX.to_owned(),
+            TEST_SPEND_PUBKEY_HEX.to_owned(),
+        )
+        .await;
         let html = body_text(
             router
                 .clone()
@@ -5823,7 +5820,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
         // Deliberately no `bump_scanned_range_for_order` call - this harness runs
         // no background scan loop, so a freshly seeded order genuinely has never
@@ -5836,7 +5833,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/orders/{order_id}"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
                     .unwrap(),
@@ -5865,7 +5862,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
         // Still `pending` (non-terminal) - genuinely still in scope, so the range
         // must read as still growing ("N+"), not a closed span. Two calls to the
@@ -5894,7 +5891,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/orders/{order_id}"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
                     .unwrap(),
@@ -5949,7 +5946,7 @@ mod tests {
             expires_at: 2000,
             updated_at: 1000,
             payments: vec![],
-            payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
+            payment_link: "http://127.0.0.1:8081/checkout/pay_abc123/share".to_string(),
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
         };
         let data = OrderDetailViewModel {

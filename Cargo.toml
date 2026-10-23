@@ -19,6 +19,7 @@ members = [
     "crates/bakery",
     "crates/ui",
     "crates/ui-macros",
+    "crates/api-macros",
     "xtask",
 ]
 

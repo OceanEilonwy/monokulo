@@ -17,8 +17,8 @@ function pageHtml(initialSaved = false) {
   return `<!doctype html><html><head></head><body>
     <div id="checkout-root" data-order-id="order-1" data-status="pending" data-confirmations="0" data-error="">
       <div id="live-status" data-live><span id="status-badge">Waiting for payment</span></div>
-      <noscript><p class="refresh-toggle"><a href="/pay/pk/orders/order-1?refresh=false">Auto Refresh: ON</a></p></noscript>
-      <form id="refund-form" action="/refund-address" method="post" data-qr-decoder="/static/jsQR.js">
+      <noscript><p class="refresh-toggle"><a href="/checkout/order-1?refresh=false">Auto Refresh: ON</a></p></noscript>
+      <form id="refund-form" action="/checkout/order-1/refund-address" method="post" data-qr-decoder="/static/jsQR.js">
         <div id="refund-field" class="refund-field${initialSaved ? ' is-saved' : ''}">
           <input id="refund_address" name="refund_address" value="${initialSaved ? address : ''}">
           <span id="refund-save-state" role="status" aria-label="${initialSaved ? 'Refund address saved' : ''}"></span>
@@ -39,7 +39,7 @@ async function routeCheckout(page, getStatus = () => 'pending', save = async () 
   const submissions = [];
   await page.route(`${host}/**`, async route => {
     const pathname = new URL(route.request().url()).pathname;
-    if (pathname === '/refund-address' && route.request().method() === 'POST') {
+    if (pathname === '/checkout/order-1/refund-address' && route.request().method() === 'POST') {
       submissions.push(new URLSearchParams(route.request().postData()).get('refund_address'));
       const response = await save();
       return route.fulfill({ status: response.status, contentType: 'application/json', body: JSON.stringify(response.body) });
@@ -102,7 +102,7 @@ test('POS uses the approved symbols in the compact stack and list badges', async
 function challengeServer({ difficulty = 8 } = {}) {
   const http = require('node:http');
   const crypto = require('node:crypto');
-  const state = { passed: false, waitIssuedAt: 0, orderAttempts: [] };
+  const state = { passed: false, waitIssuedAt: 0, orderAttempts: [], orderKeys: [] };
   const challenge = 'c0ffee.coverage'; // First valid nonce is 419 at eight bits.
   const zeroBits = buf => {
     let bits = 0;
@@ -122,7 +122,7 @@ function challengeServer({ difficulty = 8 } = {}) {
     <script src="/static/challenge.js"></script></body></html>`;
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
-    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, monokulo-proof', 'access-control-expose-headers': 'monokulo-challenge, retry-after' };
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'authorization, content-type, monokulo-proof', 'access-control-expose-headers': 'monokulo-challenge, retry-after' };
     if (url.pathname === '/static/challenge.js' || url.pathname === '/static/monokulo-client.js') {
       res.writeHead(200, { 'content-type': 'text/javascript', ...cors });
       return res.end(fs.readFileSync(authoredAsset(url.pathname.slice('/static/'.length))));
@@ -135,16 +135,23 @@ function challengeServer({ difficulty = 8 } = {}) {
       res.writeHead(200, { 'content-type': 'text/html' });
       return res.end(`<script src="http://checkout.localhost:${server.address().port}/static/monokulo-client.js"></script>`);
     }
-    if (url.pathname === '/pay/pk/orders') {
+    if (url.pathname === '/api/v1/orders') {
       if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
       const proof = req.headers['monokulo-proof'];
       state.orderAttempts.push(proof || null);
+      state.orderKeys.push(req.headers.authorization || null);
       if (proof && solved(proof)) {
-        res.writeHead(200, { 'content-type': 'application/json', ...cors });
-        return res.end(JSON.stringify({ order_id: 'order-9', address: '8addr', xmr_amount_piconero: 1, amount: '1', currency: 'XMR', expires_at: 0 }));
+        res.writeHead(201, { 'content-type': 'application/json', location: '/api/v1/orders/order-9', ...cors });
+        return res.end(JSON.stringify({
+          order_id: 'order-9', address: '8addr', xmr_amount_piconero: 1, amount: '1', currency: 'XMR', expires_at: 0,
+          _links: { self: { href: '/api/v1/orders/order-9' }, 'mk:checkout': { href: '/checkout/order-9' } },
+        }));
       }
-      res.writeHead(429, { 'content-type': 'application/json', 'monokulo-challenge': `${challenge}; difficulty=${difficulty}`, ...cors });
-      return res.end(JSON.stringify({ error: 'Too many requests', challenge: { challenge, difficulty, expires_in: 300 } }));
+      res.writeHead(429, { 'content-type': 'application/problem+json', 'monokulo-challenge': `${challenge}; difficulty=${difficulty}`, ...cors });
+      return res.end(JSON.stringify({
+        type: 'https://docs.monokulo.com/problems/challenge-required', title: 'Solve a challenge to continue', status: 429,
+        detail: 'Too many requests', challenge: { challenge, difficulty, expires_in: 300 },
+      }));
     }
     if (url.pathname === '/pay') {
       const proof = url.searchParams.get('monokulo_proof');
@@ -176,6 +183,8 @@ test('monokulo-client.js solves an order-creation challenge on its own', async (
       endpoint: `http://checkout.localhost:${port}`, publicKey: 'pk', amount: 1, currency: 'XMR',
     }), port);
     expect(order.orderId).toBe('order-9');
+    expect(order.checkoutUrl).toBe(`http://checkout.localhost:${port}/checkout/order-9`);
+    expect(state.orderKeys).toEqual(['Bearer pk', 'Bearer pk']);
     expect(state.orderAttempts.length).toBe(2);
     expect(state.orderAttempts[0]).toBeNull();
     expect(state.orderAttempts[1]).toMatch(/^c0ffee\.coverage\.\d+$/);

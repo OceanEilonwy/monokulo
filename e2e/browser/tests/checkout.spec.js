@@ -22,7 +22,16 @@ async function checkoutUrl(request) {
   const response = await request.post(`${fixture.base_url}/__coverage/orders`);
   expect(response.ok()).toBeTruthy();
   const { order_id } = await response.json();
-  return `${fixture.base_url}/pay/${fixture.public_key}/orders/${order_id}`;
+  return `${fixture.base_url}/checkout/${order_id}`;
+}
+
+// An order made as the store's website makes one: the API, with its public key.
+async function websiteOrder(request, data) {
+  const response = await request.post(`${fixture.base_url}/api/v1/orders`, {
+    headers: { authorization: `Bearer ${fixture.public_key}` }, data,
+  });
+  expect(response.status()).toBe(201);
+  return response.json();
 }
 
 test('real checkout saves a QR refund address and restores a saved address after editing', async ({ page, request }) => {
@@ -213,7 +222,7 @@ test('client refund option frames the real checkout and retains its status strea
   const url = await checkoutUrl(request);
   let statusRequests = 0;
   page.on('request', received => {
-    if (received.url().startsWith(`${url}/events?`) || received.url().startsWith(`${url}/status`)) statusRequests++;
+    if (received.url().startsWith(`${url}/events?`) || received.url().startsWith(`${fixture.base_url}/api/v1/orders/`)) statusRequests++;
   });
   await page.goto(`${fixture.base_url}/__coverage/ready`);
   await page.setContent('<div id="mount"></div>');
@@ -229,14 +238,18 @@ test('client refund option frames the real checkout and retains its status strea
 
 test('client falls back to status polling when its stream is refused', async ({ page, request }) => {
   const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
   let refused = 0;
   let polled = 0;
+  let pollKey;
   await page.route(`${url}/events*`, route => {
     if (route.request().frame() !== page.mainFrame()) return route.continue();
     refused++;
     return route.fulfill({ status: 204, body: '' });
   });
-  await page.route(`${url}/status`, route => {
+  // The order in the API, read with the store's public key.
+  await page.route(`${fixture.base_url}/api/v1/orders/${orderId}`, route => {
+    pollKey = route.request().headers().authorization;
     polled++;
     return route.fulfill({ json: { status: 'paid', confirmations: 1 } });
   });
@@ -266,6 +279,7 @@ test('client falls back to status polling when its stream is refused', async ({ 
   expect(polled, 'no poll before 3s').toBe(0);
   await page.clock.runFor(1);
   await expect.poll(() => polled, 'the poll at 3s').toBe(1);
+  expect(pollKey, 'the poll reads the order with the public key').toBe(`Bearer ${fixture.public_key}`);
   await expect(page.locator('#mount')).toHaveAttribute('data-status', 'paid');
 });
 
@@ -285,12 +299,12 @@ test('real restricted checkout permits its own origin and blocks another origin'
 });
 
 test('real frame-only checkout refuses a top-level navigation', async ({ page, request }) => {
+  // An order the store's website made with its public key, before the store
+  // took orders only from its verified websites.
+  const { order_id } = await websiteOrder(request, { amount: '0.001', currency: 'XMR' });
+  const url = `${fixture.base_url}/checkout/${order_id}`;
   const restricted = await request.post(`${fixture.base_url}/__coverage/embed/restricted`);
   expect(restricted.status()).toBe(204);
-  const url = await checkoutUrl(request);
-  const orderId = url.split('/').pop();
-  const flagged = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/browser-created`);
-  expect(flagged.status()).toBe(204);
   const top = await page.goto(url);
   expect(top.status()).toBe(403);
   await expect(page.getByText('This store only shows its checkout inside its own website')).toBeVisible();
@@ -565,8 +579,8 @@ test('real checkout says so when the chosen refund QR photo cannot be read', asy
 
 test('real checkout keeps the amount and XMR on one line and shows a fiat equivalent only for fiat orders', async ({ page, request }) => {
   const xmrOrder = await checkoutUrl(request);
-  const aud = await (await request.post(`${fixture.base_url}/pay/${fixture.public_key}/orders`, { data: { amount: '12.50', currency: 'AUD' } })).json();
-  const audOrder = `${fixture.base_url}/pay/${fixture.public_key}/orders/${aud.order_id}`;
+  const aud = await websiteOrder(request, { amount: '12.50', currency: 'AUD' });
+  const audOrder = `${fixture.base_url}/checkout/${aud.order_id}`;
   const oneLine = () => page.evaluate(() => {
     const amount = document.getElementById('xmr-amount');
     const value = amount.querySelector('.amount-value').getBoundingClientRect();
@@ -582,10 +596,10 @@ test('real checkout keeps the amount and XMR on one line and shows a fiat equiva
     }
   }
   // The longest an amount gets: all twelve decimals, in the narrowest frame.
-  const long = await (await request.post(`${fixture.base_url}/pay/${fixture.public_key}/orders`, { data: { amount: '0.123456789012', currency: 'XMR' } })).json();
+  const long = await websiteOrder(request, { amount: '0.123456789012', currency: 'XMR' });
   for (const view of ['', '?view=compact']) {
     await page.setViewportSize({ width: 280, height: 900 });
-    await page.goto(`${fixture.base_url}/pay/${fixture.public_key}/orders/${long.order_id}${view}`);
+    await page.goto(`${fixture.base_url}/checkout/${long.order_id}${view}`);
     await expect(page.locator('#xmr-amount')).toHaveText('0.123456789012 XMR');
     expect(await oneLine(), `longest amount at 280px${view}`).toEqual({ sameLine: true, fits: true });
   }
@@ -622,9 +636,10 @@ test('real checkout takes its theme from ?theme=, the embed option, and the sign
   await page.goto(`${fixture.base_url.replace('127.0.0.1', 'localhost')}/__coverage/ready`);
   await page.setContent('<div id="pay"></div>');
   await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
-  await page.evaluate(({ base_url, public_key, order_id }) => {
-    window.Monokulo.mount('#pay', order_id, { endpoint: base_url, publicKey: public_key, theme: 'light' });
-  }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: orderId });
+  // No public key: framing an order from an earlier visit needs only where it is.
+  await page.evaluate(({ base_url, order_id }) => {
+    window.Monokulo.mount('#pay', order_id, { endpoint: base_url, theme: 'light' });
+  }, { base_url: fixture.base_url, order_id: orderId });
   await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${url}?theme=light`);
   await expect(page.frameLocator('#pay iframe').locator('html')).toHaveAttribute('data-theme', 'light');
 
@@ -633,11 +648,11 @@ test('real checkout takes its theme from ?theme=, the embed option, and the sign
   const pick = theme => page.request.post(`${fixture.base_url}/dashboard/theme`, { form: { theme, next: '/' }, maxRedirects: 0 });
   await pick('dark');
   await page.goto(`${url}/share`);
-  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}?theme=dark`);
+  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/checkout/${orderId}?theme=dark`);
   await expect(page.frameLocator('#checkout-frame').locator('html')).toHaveAttribute('data-theme', 'dark');
   await pick('system');
   await page.goto(`${url}/share`);
-  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}`);
+  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/checkout/${orderId}`);
 });
 
 test('real share page grows its frame to the whole checkout, so nothing scrolls inside it', async ({ page, request }) => {

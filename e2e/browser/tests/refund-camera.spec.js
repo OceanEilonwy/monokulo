@@ -86,7 +86,7 @@ async function checkoutUrl(request) {
   const response = await request.post(`${fixture.base_url}/__coverage/orders`);
   expect(response.ok()).toBeTruthy();
   const { order_id } = await response.json();
-  return `${fixture.base_url}/pay/${fixture.public_key}/orders/${order_id}`;
+  return `${fixture.base_url}/checkout/${order_id}`;
 }
 
 test('real checkout scans a refund QR with the camera, then stops the camera', async ({ page, request, browserName }) => {

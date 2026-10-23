@@ -88,7 +88,6 @@ pub async fn pos_page(
     let row = row.into_row();
     let view = PosViewModel {
         connection_id: id,
-        public_key: row.tenant_public_key,
         display_name: row.name.clone(),
         base_currency: row.base_currency,
         base_currency_decimals,
@@ -840,7 +839,7 @@ pub async fn cancel_order(
 /// created directly against the engine, or predating this field) - the same
 /// "a reasonable, safe-side default" posture `http::checkout::render_checkout_page`
 /// already applies to this exact fallback.
-pub(super) async fn resolve_confirmations_required(
+pub(crate) async fn resolve_confirmations_required(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
@@ -1097,11 +1096,6 @@ mod tests {
 
     use super::super::{build_router, AppState};
 
-    const TEST_VIEW_KEY_HEX: &str =
-        "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str =
-        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         test_state_with_engine(engine_test_support::TestEngineConfig::new()).await
     }
@@ -1127,48 +1121,29 @@ mod tests {
 
     use crate::http::test_support::signed_up_and_logged_in_session_token;
 
+    /// A store for `session_token`'s account priced in `base_currency`,
+    /// made through store setup: its id.
     async fn create_connection_with_base_currency(
         router: &Router,
+        state: &AppState,
         session_token: &str,
         base_currency: &str,
     ) -> String {
-        let body = serde_json::json!({
-            "site_url": "https://shop.example.com",
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "domains": [],
-            "base_currency": base_currency,
-        });
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        body_json(response)
-            .await
-            .as_object()
-            .unwrap()
-            .get("connection_id")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
+        crate::http::test_support::store_with_keys(
+            router,
+            state,
+            session_token,
+            "https://shop.example.com",
+            base_currency,
+        )
+        .await
+        .id
     }
 
     #[tokio::test]
     async fn pending_order_can_be_backgrounded_listed_reopened_and_cancelled() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let owner = signed_up_and_logged_in_session_token(
             &router,
             "pos-flow@example.com",
@@ -1181,7 +1156,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &owner, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &owner, "XMR").await;
         let base = format!("/dashboard/stores/{id}/pos/orders");
         let create_body = serde_json::json!({"amount":"0.010000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string();
         let create = |token: &str, body: String| {
@@ -1189,7 +1164,7 @@ mod tests {
                 .method("POST")
                 .uri(&base)
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {token}"))
+                .header("cookie", format!("session={token}"))
                 .body(Body::from(body))
                 .unwrap()
         };
@@ -1217,7 +1192,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(&base)
-                    .header("authorization", format!("Bearer {other}"))
+                    .header("cookie", format!("session={other}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1230,7 +1205,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("{order_url}/background"))
-                    .header("authorization", format!("Bearer {owner}"))
+                    .header("cookie", format!("session={owner}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1242,7 +1217,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("{base}?limit=1&offset=0"))
-                    .header("authorization", format!("Bearer {owner}"))
+                    .header("cookie", format!("session={owner}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1278,7 +1253,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("{base}?search=mia"))
-                    .header("authorization", format!("Bearer {owner}"))
+                    .header("cookie", format!("session={owner}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1290,7 +1265,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(&order_url)
-                    .header("authorization", format!("Bearer {other}"))
+                    .header("cookie", format!("session={other}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1303,7 +1278,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("{order_url}/cancel"))
-                    .header("authorization", format!("Bearer {owner}"))
+                    .header("cookie", format!("session={owner}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1315,7 +1290,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(&order_url)
-                    .header("authorization", format!("Bearer {owner}"))
+                    .header("cookie", format!("session={owner}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1329,7 +1304,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("{order_url}/cancel"))
-                    .header("authorization", format!("Bearer {owner}"))
+                    .header("cookie", format!("session={owner}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1341,7 +1316,7 @@ mod tests {
     #[tokio::test]
     async fn production_pos_assets_are_served_with_browser_mime_types() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         for (path, mime, marker) in [
             (
                 crate::assets::url("pos-app.js"),
@@ -1368,7 +1343,7 @@ mod tests {
     #[tokio::test]
     async fn the_pos_page_renders_for_the_owning_user_with_the_stores_own_base_currency() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1376,14 +1351,14 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{id}/pos"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1400,7 +1375,7 @@ mod tests {
     #[tokio::test]
     async fn the_pos_page_is_a_real_404_not_a_500_for_an_unknown_connection() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1414,7 +1389,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/dashboard/stores/nonexistent/pos")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1426,7 +1401,7 @@ mod tests {
     #[tokio::test]
     async fn the_pos_page_404s_for_a_connection_owned_by_a_different_user() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1434,7 +1409,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &owner_token, "XMR").await;
 
         let other_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1448,7 +1423,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{id}/pos"))
-                    .header("authorization", format!("Bearer {other_token}"))
+                    .header("cookie", format!("session={other_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1464,7 +1439,7 @@ mod tests {
     #[tokio::test]
     async fn the_pos_page_requires_authentication() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1472,7 +1447,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
@@ -1499,7 +1474,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .clone()
@@ -1508,7 +1483,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "1.5" }).to_string(),
                     ))
@@ -1534,7 +1509,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{id}/orders"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1568,7 +1543,7 @@ mod tests {
         // by checking it shows up on the real order detail page, the same
         // place `http::pay`'s own equivalent test checks.
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1576,7 +1551,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .clone()
@@ -1585,7 +1560,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "1.0", "merchant_order_id": "Jane Doe" })
                             .to_string(),
@@ -1604,7 +1579,7 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri(format!("/dashboard/stores/{id}/orders/{order_id}"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1625,7 +1600,7 @@ mod tests {
         // `merchant_order_id` - same trim-to-`None` convention
         // `http::orders::create_order`'s own form field already follows.
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1633,7 +1608,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
@@ -1641,7 +1616,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " })
                             .to_string(),
@@ -1661,7 +1636,7 @@ mod tests {
     #[tokio::test]
     async fn creating_a_pos_order_rejects_an_empty_amount() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1669,7 +1644,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
@@ -1677,7 +1652,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "" }).to_string()))
                     .unwrap(),
             )
@@ -1689,7 +1664,7 @@ mod tests {
     #[tokio::test]
     async fn creating_a_pos_order_rejects_a_malformed_amount() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1697,7 +1672,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
@@ -1705,7 +1680,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "not-a-number" }).to_string(),
                     ))
@@ -1719,7 +1694,7 @@ mod tests {
     #[tokio::test]
     async fn creating_a_pos_order_404s_for_a_connection_owned_by_a_different_user() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1727,7 +1702,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &owner_token, "XMR").await;
         let other_token = signed_up_and_logged_in_session_token(
             &router,
             "pos-create-other@example.com",
@@ -1741,7 +1716,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {other_token}"))
+                    .header("cookie", format!("session={other_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "1.0" }).to_string(),
                     ))
@@ -1755,7 +1730,7 @@ mod tests {
     #[tokio::test]
     async fn the_status_endpoint_reports_pending_with_no_error_for_a_fresh_order() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1763,7 +1738,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let create = router
             .clone()
@@ -1772,7 +1747,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "2.0" }).to_string(),
                     ))
@@ -1792,7 +1767,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{id}/pos/orders/{order_id}/status"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1812,14 +1787,14 @@ mod tests {
     #[tokio::test]
     async fn the_events_stream_reports_every_watched_order_and_pushes_changes() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "pos-events@example.com",
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
         let mut order_ids = Vec::new();
         for _ in 0..2 {
             let create = router
@@ -1829,7 +1804,7 @@ mod tests {
                         .method("POST")
                         .uri(format!("/dashboard/stores/{id}/pos/orders"))
                         .header("content-type", "application/json")
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::from(
                             serde_json::json!({ "amount": "2.0" }).to_string(),
                         ))
@@ -1849,7 +1824,7 @@ mod tests {
             let mut builder =
                 Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={query}"));
             if let Some(token) = token {
-                builder = builder.header("authorization", format!("Bearer {token}"));
+                builder = builder.header("cookie", format!("session={token}"));
             }
             builder.body(Body::empty()).unwrap()
         };
@@ -1932,7 +1907,7 @@ mod tests {
                         .method("POST")
                         .uri(format!("/dashboard/stores/{id}/pos/orders"))
                         .header("content-type", "application/json")
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::from(
                             serde_json::json!({ "amount": "2.0" }).to_string(),
                         ))
@@ -1960,14 +1935,14 @@ mod tests {
     #[tokio::test]
     async fn the_order_list_and_events_stream_read_many_orders_in_one_engine_request() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "pos-batch@example.com",
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
         let order_ids = create_pos_orders(&router, &session_token, &id, 30).await;
 
         let before = engine.tenant_request_count();
@@ -1976,7 +1951,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("/dashboard/stores/{id}/pos/orders?limit=40"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2002,7 +1977,7 @@ mod tests {
                         "/dashboard/stores/{id}/pos/events?orders={}",
                         order_ids.join(",")
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2069,7 +2044,8 @@ mod tests {
                 "correct horse battery staple",
             )
             .await;
-            let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+            let id =
+                create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
             LiveStore {
                 state,
                 engine: std::sync::Arc::new(engine),
@@ -2090,7 +2066,7 @@ mod tests {
                     Request::builder()
                         .method(method)
                         .uri(format!("/dashboard/stores/{}/{path}", self.id))
-                        .header("authorization", format!("Bearer {}", self.session_token))
+                        .header("cookie", format!("session={}", self.session_token))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -2145,15 +2121,6 @@ mod tests {
         async fn connect_engine_stream(&self, order: &str) -> LiveEvents {
             let mut stream = self.open(order).await;
             assert!(stream.next().await["refund_address"].is_null());
-            let store_id = crate::db::ConnectionId::new(self.id.as_str());
-            let pk = self
-                .state
-                .db
-                .read(move |db| db.get_store_connection_by_id(&store_id))
-                .await
-                .unwrap()
-                .unwrap()
-                .tenant_public_key;
             let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
             let set = self
                 .router
@@ -2161,7 +2128,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("POST")
-                        .uri(format!("/pay/{pk}/orders/{order}/refund-address"))
+                        .uri(format!("/checkout/{order}/refund-address"))
                         .header("accept", "application/json")
                         .header("content-type", "application/x-www-form-urlencoded")
                         .body(Body::from(format!("refund_address={refund_address}")))
@@ -2477,7 +2444,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
         let waiting = create_pos_orders(&router, &session_token, &id, 1)
             .await
             .remove(0);
@@ -2495,7 +2462,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2512,25 +2479,21 @@ mod tests {
             .tenant_public_key;
         let web = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/pay/{pk}/orders"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "amount": "1.0", "currency": "XMR" }).to_string(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(&pk),
+                Some(serde_json::json!({ "amount": "1.0", "currency": "XMR" })),
+            ))
             .await
             .unwrap();
-        assert_eq!(web.status(), StatusCode::OK);
+        assert_eq!(web.status(), StatusCode::CREATED);
 
         let response = router
             .oneshot(
                 Request::builder()
                     .uri(format!("/dashboard/stores/{id}/pos/orders?state=active"))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2552,14 +2515,14 @@ mod tests {
             engine_test_support::TestEngineConfig::new().with_rate_limit(20),
         )
         .await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "pos-limited@example.com",
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
         let order_id = create_pos_orders(&router, &session_token, &id, 1)
             .await
             .remove(0);
@@ -2570,7 +2533,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}"))
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -2593,7 +2556,7 @@ mod tests {
     #[tokio::test]
     async fn the_status_endpoint_404s_for_an_unknown_order_id() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2601,7 +2564,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
         let response = router
             .oneshot(
@@ -2610,7 +2573,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{id}/pos/orders/nonexistent/status"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2622,7 +2585,7 @@ mod tests {
     #[tokio::test]
     async fn the_status_endpoint_404s_for_a_connection_owned_by_a_different_user() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2630,7 +2593,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
+        let id = create_connection_with_base_currency(&router, &state, &owner_token, "XMR").await;
         let create = router
             .clone()
             .oneshot(
@@ -2638,7 +2601,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {owner_token}"))
+                    .header("cookie", format!("session={owner_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "1.0" }).to_string(),
                     ))
@@ -2664,7 +2627,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{id}/pos/orders/{order_id}/status"
                     ))
-                    .header("authorization", format!("Bearer {other_token}"))
+                    .header("cookie", format!("session={other_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2683,7 +2646,7 @@ mod tests {
         // tests already exercise for the public endpoint. Proves the POS
         // endpoint surfaces that as a clear `400`, not a `500`.
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2691,7 +2654,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let id = create_connection_with_base_currency(&router, &session_token, "USD").await;
+        let id = create_connection_with_base_currency(&router, &state, &session_token, "USD").await;
 
         let response = router
             .oneshot(
@@ -2699,7 +2662,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(
                         serde_json::json!({ "amount": "10.00" }).to_string(),
                     ))

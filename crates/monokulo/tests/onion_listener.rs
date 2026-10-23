@@ -14,7 +14,7 @@ use monokulo::http::{build_router, AppState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// A soft limit of `soft_per_min` (past it the JSON status route answers
+/// A soft limit of `soft_per_min` (past it the API root answers
 /// `429` with a challenge) and a much higher hard limit.
 fn state(soft_per_min: u32) -> AppState {
     AppState {
@@ -30,7 +30,7 @@ fn state(soft_per_min: u32) -> AppState {
 /// (or `None` if the server closed without answering).
 async fn request(addr: std::net::SocketAddr, prefix: &str) -> Option<u16> {
     let mut stream = TcpStream::connect(addr).await.unwrap();
-    let request = format!("{prefix}GET /pay/pk_unknown/orders/o1/status HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    let request = format!("{prefix}GET /api/v1 HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).await.unwrap();
     let mut response = Vec::new();
     let _ = stream.read_to_end(&mut response).await;
@@ -62,12 +62,12 @@ async fn each_circuit_is_its_own_client_and_headerless_connections_are_dropped()
         .unwrap();
     });
 
-    // Circuit 1 spends its budget of 2 (unknown store: 404), then gets 429...
-    assert_eq!(request(addr, &circuit(1)).await, Some(404));
-    assert_eq!(request(addr, &circuit(1)).await, Some(404));
+    // Circuit 1 spends its budget of 2 (the API root: 200), then gets 429...
+    assert_eq!(request(addr, &circuit(1)).await, Some(200));
+    assert_eq!(request(addr, &circuit(1)).await, Some(200));
     assert_eq!(request(addr, &circuit(1)).await, Some(429));
     // ...while circuit 2 is unaffected.
-    assert_eq!(request(addr, &circuit(0x0002_0001)).await, Some(404));
+    assert_eq!(request(addr, &circuit(0x0002_0001)).await, Some(200));
 
     // No header, or a malformed one: closed without an answer.
     assert_eq!(request(addr, "").await, None);
@@ -93,7 +93,7 @@ async fn the_ordinary_listener_never_honours_a_proxy_header() {
     let answer = request(addr, &circuit(9)).await;
     assert!(matches!(answer, None | Some(400)), "got {answer:?}");
     // And the peer address is still what's counted: budget 1, then 429.
-    assert_eq!(request(addr, "").await, Some(404));
+    assert_eq!(request(addr, "").await, Some(200));
     assert_eq!(request(addr, "").await, Some(429));
 }
 
@@ -129,7 +129,7 @@ async fn junk_is_refused_and_a_stalled_connection_does_not_block_the_next_circui
     )
     .await
     .expect("the stalled connection held up a real one");
-    assert_eq!(answered, Some(404));
+    assert_eq!(answered, Some(200));
 
     // A TLS ClientHello's first bytes: binary, no line ending.
     let mut junk = TcpStream::connect(addr).await.unwrap();

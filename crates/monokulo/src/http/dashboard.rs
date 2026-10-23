@@ -518,38 +518,18 @@ mod tests {
             ..crate::http::AppState::for_tests()
         };
         let router = crate::http::build_router(state);
-        let json = |uri: &str, body: serde_json::Value| {
-            Request::builder()
-                .method("POST")
-                .uri(uri)
-                .header("content-type", "application/json")
-                .body(Body::from(body.to_string()))
-                .unwrap()
-        };
-        let credentials = serde_json::json!({ "email": "theme@example.com", "password": "correct horse battery staple" });
-        assert_eq!(
-            router
-                .clone()
-                .oneshot(json("/signup", credentials.clone()))
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::CREATED
-        );
-        let login = router
-            .clone()
-            .oneshot(json("/login", credentials))
-            .await
-            .unwrap();
-        let body: serde_json::Value =
-            serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
-        let session = body["session_token"].as_str().unwrap().to_string();
+        let session = crate::http::test_support::signed_up_and_logged_in_session_token(
+            &router,
+            "theme@example.com",
+            "correct horse battery staple",
+        )
+        .await;
 
         let pick = |theme: &str, next: &str| {
             Request::builder()
                 .method("POST")
                 .uri("/dashboard/theme")
-                .header("authorization", format!("Bearer {session}"))
+                .header("cookie", format!("session={session}"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from(format!(
                     "theme={theme}&next={}",
@@ -564,7 +544,7 @@ mod tests {
                     .oneshot(
                         Request::builder()
                             .uri("/")
-                            .header("authorization", format!("Bearer {session}"))
+                            .header("cookie", format!("session={session}"))
                             .body(Body::empty())
                             .unwrap(),
                     )

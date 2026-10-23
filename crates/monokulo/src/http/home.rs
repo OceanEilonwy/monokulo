@@ -215,17 +215,12 @@ mod tests {
     mod http_tests {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
-        use axum::Router;
         use tower::ServiceExt;
 
         use crate::engine_client::EngineClient;
 
         use super::super::super::{build_router, AppState};
 
-        const TEST_VIEW_KEY_HEX: &str =
-            "0707070707070707070707070707070707070707070707070707070707070707";
-        const TEST_SPEND_PUBKEY_HEX: &str =
-            "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
         const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
         async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle)
@@ -244,44 +239,7 @@ mod tests {
 
         use crate::http::test_support::body_text;
 
-        use crate::http::test_support::body_json;
-
-        use crate::http::test_support::signed_up_and_logged_in_session_token;
-
-        async fn create_connection(router: &Router, session_token: &str) -> (String, String) {
-            let body = serde_json::json!({
-                "site_url": "https://shop.example.com",
-                "view_key_hex": TEST_VIEW_KEY_HEX,
-                "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-                "network": "mainnet",
-                "domains": [],
-                "base_currency": "XMR",
-            });
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/connections")
-                        .header("content-type", "application/json")
-                        .header("authorization", format!("Bearer {session_token}"))
-                        .body(Body::from(body.to_string()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::CREATED);
-            let body = body_json(response).await;
-            let obj = body.as_object().unwrap();
-            (
-                obj.get("connection_id")
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_string(),
-                obj.get("public_key").unwrap().as_str().unwrap().to_string(),
-            )
-        }
+        use crate::http::test_support::{signed_up_and_logged_in_session_token, store_with_keys};
 
         /// Seeds a real order directly on the spawned engine through its admin
         /// API (`POST /api/v1/admin/tenant/orders`), authenticated with the store's
@@ -363,7 +321,7 @@ mod tests {
                     Request::builder()
                         .method("GET")
                         .uri("/")
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )
@@ -387,7 +345,9 @@ mod tests {
                 "correct horse battery staple",
             )
             .await;
-            let (connection_id, public_key) = create_connection(&router, &session_token).await;
+            let store =
+                store_with_keys(&router, &state, &session_token, "shop.example.com", "XMR").await;
+            let (connection_id, public_key) = (store.id, store.public_key);
             let order_id = seed_real_order(&state, engine.addr, &public_key).await;
             let (metadata_connection, metadata_order) = (
                 crate::db::ConnectionId::new(connection_id.clone()),
@@ -420,7 +380,7 @@ mod tests {
                     Request::builder()
                         .method("GET")
                         .uri("/")
-                        .header("authorization", format!("Bearer {session_token}"))
+                        .header("cookie", format!("session={session_token}"))
                         .body(Body::empty())
                         .unwrap(),
                 )

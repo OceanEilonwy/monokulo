@@ -1,29 +1,29 @@
 /*
  * monokulo-client.js - the thin embed library for a static merchant site.
- * Moved here from the engine per `docs/fx_refactor.md` decision 3 - order
- * creation and the checkout page are both monokulo responsibilities
- * now, so this talks to monokulo's own `/pay/{pk}/orders` endpoint,
- * not the engine directly (the engine no longer has any concept of fiat at
- * all, and no checkout page of its own to iframe - see that document's
- * Phase 3/4). Deliberately dependency-free, no build step, ES5-ish syntax:
- * it has to run unmodified on an arbitrary third-party page (a GitHub Pages
- * site, most plausibly) that whoever maintains this project does not
- * control the toolchain of.
+ * It talks to monokulo's own API (`POST /api/v1/orders`, with the store's
+ * public key as `Authorization: Bearer pk_...`), never the engine, and
+ * frames the order's checkout page (`/checkout/{order_id}`). Deliberately
+ * dependency-free, no build step, ES5-ish syntax: it has to run unmodified
+ * on an arbitrary third-party page (a GitHub Pages site, most plausibly)
+ * that whoever maintains this project does not control the toolchain of.
  *
  * All payment logic and status rendering lives server-side in the
- * `/pay/{pk}/orders/{order_id}` page this library iframes; this file only
- * creates orders, mounts that iframe, and follows monokulo's own
- * `/events` stream (Server-Sent Events, falling back to polling `/status`
- * where EventSource is unavailable or refused) to drive `onStatusChange`/
- * `onPaid`/`onExpired`. The iframed page keeps itself up to date and has a
- * no-JavaScript fallback. It does not post messages back to this library;
- * this file's own subscription (running here, in the merchant's page, not
- * inside the frame) is what makes the callbacks below fire.
+ * checkout page this library iframes; this file only creates orders,
+ * mounts that iframe, and follows the checkout's own `/events` stream
+ * (Server-Sent Events, falling back to polling the order,
+ * `GET /api/v1/orders/{order_id}` with the public key, where EventSource is
+ * unavailable or refused) to drive `onStatusChange`/`onPaid`/`onExpired`.
+ * The iframed page keeps itself up to date and has a no-JavaScript
+ * fallback. It does not post messages back to this library; this file's
+ * own subscription (running here, in the merchant's page, not inside the
+ * frame) is what makes the callbacks below fire.
+ *
+ * Errors are `application/problem+json`: `detail` says what went wrong.
  *
  * Abuse protection: a visitor making a lot of requests may be asked to
  * prove it's a real browser. monokulo then answers `createOrder` or the
- * status poll with `429` and a JSON body
- * `{ "error": ..., "challenge": { "challenge": "<token>", "difficulty": <bits>, ... } }`
+ * order poll with `429` and a problem body with a `challenge` member,
+ * `{ "type": ".../problems/challenge-required", "detail": ..., "challenge": { "challenge": "<token>", "difficulty": <bits>, ... } }`
  * (also in the `Monokulo-Challenge` response header). This library solves it
  * by itself - finding a nonce such that SHA-256(challenge + nonce) starts with
  * `difficulty` zero bits, with Web Crypto - and retries once with the header
@@ -144,9 +144,9 @@
       return Promise.reject(new Error("Monokulo.createOrder: amount and currency are required (currency: \"XMR\", or any fiat currency this store's exchange rate provider supports)"));
     }
 
-    return fetchSolvingChallenges(endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders", {
+    return fetchSolvingChallenges(endpoint + "/api/v1/orders", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + publicKey },
       body: JSON.stringify({
         amount: String(params.amount),
         currency: params.currency,
@@ -167,15 +167,21 @@
           return response
             .json()
             .catch(function () {
-              return { error: "HTTP " + response.status };
+              return { detail: "HTTP " + response.status };
             })
             .then(function (body) {
-              throw new Error(body.error || "HTTP " + response.status);
+              throw new Error(body.detail || "HTTP " + response.status);
             });
         }
         return response.json();
       })
       .then(function (data) {
+        // The order's links are paths on monokulo: resolved against the
+        // endpoint the order was made at.
+        var links = data._links || {};
+        var link = function (rel) {
+          return links[rel] && links[rel].href ? new URL(links[rel].href, endpoint + "/").href : null;
+        };
         var order = {
           orderId: data.order_id,
           address: data.address,
@@ -187,8 +193,17 @@
           expiresAt: data.expires_at,
           endpoint: endpoint,
           publicKey: publicKey,
+          // The payer's page, to link to or frame.
+          checkoutUrl: link("mk:checkout"),
+          // The order itself, to read its status.
+          orderUrl: link("self"),
         };
-        knownOrders[order.orderId] = { endpoint: endpoint, publicKey: publicKey };
+        knownOrders[order.orderId] = {
+          endpoint: endpoint,
+          publicKey: publicKey,
+          checkoutUrl: order.checkoutUrl,
+          orderUrl: order.orderUrl,
+        };
         return order;
       });
   }
@@ -205,21 +220,22 @@
       throw new Error("Monokulo.mount: target element not found: " + selector);
     }
 
-    var orderId, endpoint, publicKey;
+    var orderId, endpoint, publicKey, known;
     if (orderIdOrOrder && typeof orderIdOrOrder === "object") {
       orderId = orderIdOrOrder.orderId;
-      endpoint = orderIdOrOrder.endpoint;
-      publicKey = orderIdOrOrder.publicKey;
+      known = orderIdOrOrder;
     } else {
       orderId = orderIdOrOrder;
+      known = knownOrders[orderId] || {};
     }
-    endpoint = options.endpoint || endpoint || (knownOrders[orderId] || {}).endpoint || scriptOrigin();
-    publicKey = options.publicKey || publicKey || (knownOrders[orderId] || {}).publicKey;
+    endpoint = (options.endpoint || known.endpoint || scriptOrigin() || "").replace(/\/+$/, "");
+    // Only needed to poll the order where Server-Sent Events can't be used.
+    publicKey = options.publicKey || known.publicKey;
 
-    if (!orderId || !endpoint || !publicKey) {
+    if (!orderId || !endpoint) {
       throw new Error(
-        "Monokulo.mount: could not resolve orderId/endpoint/publicKey - pass an order object " +
-          "from createOrder(), or {endpoint, publicKey} in options for an orderId from a previous visit"
+        "Monokulo.mount: could not resolve orderId/endpoint - pass an order object " +
+          "from createOrder(), or {endpoint} in options for an orderId from a previous visit"
       );
     }
 
@@ -230,14 +246,16 @@
       previous.destroy();
     }
 
-    var checkoutUrl = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId);
+    // The order's own links when this page made it; for an order from an
+    // earlier visit, the same paths built from its id.
+    var checkoutUrl = known.checkoutUrl || endpoint + "/checkout/" + encodeURIComponent(orderId);
+    var orderUrl = known.orderUrl || endpoint + "/api/v1/orders/" + encodeURIComponent(orderId);
     // `theme: "light" | "dark"` pins the checkout's theme to match the
     // merchant's site; left out, it follows the customer's device.
     var query = [];
     if (options.refund === false) query.push("refund=false");
     if (options.theme === "light" || options.theme === "dark") query.push("theme=" + options.theme);
     var iframeSrc = checkoutUrl + (query.length ? "?" + query.join("&") : "");
-    var statusUrl = checkoutUrl + "/status";
     try {
       new URL(iframeSrc, global.location.href);
     } catch (e) {
@@ -297,7 +315,7 @@
 
     function poll() {
       if (destroyed) return;
-      fetchSolvingChallenges(statusUrl)
+      fetchSolvingChallenges(orderUrl, { headers: { Authorization: "Bearer " + publicKey } })
         .then(function (r) {
           // A non-2xx response (a transient rate limit or 5xx) still has a
           // JSON body, so `.json()` alone would "succeed" with `data.status`
@@ -315,7 +333,15 @@
         });
     }
 
-    if (typeof EventSource === "function") {
+    // Polling the order needs the store's public key; without it, a refused
+    // stream is opened again a little later instead.
+    function fallBack(delay) {
+      if (destroyed) return;
+      pollTimer = setTimeout(publicKey ? poll : listen, delay);
+    }
+
+    function listen() {
+      if (destroyed) return;
       updates = new EventSource(checkoutUrl + "/events");
       updates.addEventListener("status", function (event) {
         var data;
@@ -323,14 +349,18 @@
         onStatus(data);
       });
       // EventSource reconnects by itself after a dropped connection; only a
-      // request refused outright (CLOSED) falls back to polling.
+      // request refused outright (CLOSED) falls back.
       updates.addEventListener("error", function () {
         if (updates && updates.readyState === EventSource.CLOSED) {
           updates = null;
-          if (!destroyed) pollTimer = setTimeout(poll, 3000);
+          fallBack(publicKey ? 3000 : 10000);
         }
       });
-    } else {
+    }
+
+    if (typeof EventSource === "function") {
+      listen();
+    } else if (publicKey) {
       pollTimer = setTimeout(poll, 3000);
     }
 

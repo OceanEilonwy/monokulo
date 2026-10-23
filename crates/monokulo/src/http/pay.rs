@@ -1,89 +1,8 @@
-//! Control-plane's own real, public order-creation endpoint
-//! (`docs/fx_refactor.md` Phase 1.4) - the production counterpart to
-//! `orders::create_order`'s "create a test order" dashboard button, now the
-//! actual path a real storefront/plugin calls to create a fiat-priced
-//! order. Unauthenticated and addressed by the tenant's own `pk_...` - the
-//! same already-public identifier the engine's own equivalent endpoint and
-//! checkout page use, not monokulo's internal `connection_id` (which
-//! nothing outside this service has ever had a reason to know). Rate-limited
-//! per source IP (`http::rate_limit`) - see that module's own doc comment
-//! for why monokulo needed a rate limiter at all as of this endpoint.
-//!
-//! Computes the XMR amount from monokulo's own exchange rate
-//! (`AppState.exchange_rate`) and passes that raw `xmr_amount_piconero` to
-//! the engine's own (now XMR-only, `docs/fx_refactor.md` Phase 3) public
-//! order-creation endpoint - monokulo's computation is the only rate
-//! computation in the whole system now. The fiat amount/currency the
-//! caller asked for is recorded locally (`Db::create_order_currency_metadata`)
-//! for display purposes only; the engine never sees or stores it.
+//! Who an order came from (`Monokulo-Client`, [`order_source`]), for the
+//! API's order creation (`crate::api::v1::orders`), and the embed library
+//! itself ([`client_library`]).
 
-use axum::extract::{Path, State};
-use axum::response::{IntoResponse, Json, Response};
-use axum::Extension;
-use serde::{Deserialize, Serialize};
-
-use crate::engine_client::EngineClientError;
-use crate::now_unix;
-
-use super::{ApiError, AppState};
-
-#[derive(Deserialize)]
-pub struct CreateOrderRequest {
-    pub amount: String,
-    pub currency: String,
-    /// Optional caller-supplied identifier (a storefront's own order/cart
-    /// id) - passed straight through to the engine's own `create_order`
-    /// (`EngineClient::create_order`'s own `merchant_order_id` parameter)
-    /// and shown on the dashboard's order detail page, so a merchant can
-    /// match a Monokulo order back to their own records. `None`/omitted
-    /// when a caller doesn't have one, same `Option` default-to-`None`
-    /// convention this whole codebase already uses for an optional field.
-    #[serde(default)]
-    pub merchant_order_id: Option<String>,
-    /// What the order is for (`"Order #1042: Blue mug + 2 more"`), shown to
-    /// the payer on the checkout under the store's name. Plain text on one
-    /// line, up to 140 characters (`crate::stores::clean_description`);
-    /// trimmed, and empty is none. Passed to the engine with the order. An
-    /// order without one shows the store's payment description, if it has
-    /// one. Anyone with the payment link can read it.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Whether the checkout shows the payer `merchant_order_id`. `true`
-    /// when omitted; a shop whose reference means nothing to its customers
-    /// (a shop plugin's internal post ID) sends `false`. The dashboard and
-    /// webhooks show the reference either way.
-    #[serde(default)]
-    pub show_merchant_order_id: Option<bool>,
-    /// The caller's key for this one purchase (up to 100 visible ASCII
-    /// characters): a retry with the same key gets the order the first
-    /// attempt made, never a second one. A shop plugin sends one per order
-    /// and total.
-    #[serde(default)]
-    pub idempotency_key: Option<String>,
-}
-
-/// Mirrors the engine's own `public::CreateOrderResponse` field-for-field -
-/// deliberately the same shape a caller integrating against the engine
-/// directly today already expects, so migrating a storefront from calling
-/// the engine to calling this endpoint instead is a base-URL change, not a
-/// response-parsing rewrite.
-/// `amount`/`currency` echo back what the caller asked for
-/// (`req.amount`/`req.currency`), not anything the engine
-/// returned - the engine has no concept of fiat at all any more.
-#[derive(Debug, Serialize)]
-pub struct CreateOrderResponse {
-    pub order_id: crate::db::OrderId,
-    pub address: String,
-    pub xmr_amount_piconero: u64,
-    pub amount: String,
-    pub currency: String,
-    pub merchant_order_id: Option<String>,
-    /// The description the order was made with, after trimming.
-    pub description: Option<String>,
-    /// Whether the checkout shows the payer `merchant_order_id`.
-    pub show_merchant_order_id: bool,
-    pub expires_at: i64,
-}
+use axum::response::{IntoResponse, Response};
 
 /// The header a client names itself in, `name/version`: a shop plugin
 /// sends its slug, `Monokulo-Client: prestashop/1.2.3`.
@@ -110,13 +29,17 @@ pub(crate) fn client(headers: &axum::http::HeaderMap) -> Option<(String, String)
     (!name.is_empty()).then(|| (name.to_owned(), version.trim().chars().take(40).collect()))
 }
 
-/// Where an order made through `POST /pay/{pk}/orders` came from, for its
+/// Where an order made through `POST /api/v1/orders` came from, for its
 /// page and the orders table: the store's connected plugin (its slug) when
 /// it was made with the store's key by the client that plugin connected as
 /// (`Monokulo-Client: <slug>/...`, any case), `api` for anything else with
-/// the key, or `website` (a browser). `plugin` is the slug of the store's
-/// active integration, if it has one.
-fn order_source(created_with_key: bool, client: Option<&str>, plugin: Option<&str>) -> String {
+/// the key, or `website` (a browser, with the public key). `plugin` is the
+/// slug of the store's active integration, if it has one.
+pub(crate) fn order_source(
+    created_with_key: bool,
+    client: Option<&str>,
+    plugin: Option<&str>,
+) -> String {
     match (created_with_key, client, plugin) {
         (true, Some(client), Some(plugin)) if client.eq_ignore_ascii_case(plugin) => {
             plugin.to_owned()
@@ -126,324 +49,14 @@ fn order_source(created_with_key: bool, client: Option<&str>, plugin: Option<&st
     }
 }
 
-/// Longest merchant order reference accepted.
-pub const MAX_MERCHANT_ORDER_ID_CHARS: usize = 120;
-
-/// `POST /pay/{pk}/orders`. Open to anyone for an unrestricted store; a
-/// shop's server may authenticate with `Authorization: Bearer sk_...`
-/// (`super::store_key`, checked before this runs), which is recorded on the
-/// order (`created_with_key`) and is how a restricted store takes orders
-/// from outside a browser (`super::embed_domains::embed_policy_middleware`).
-/// A key-made order's source is the store's connected plugin's when the
-/// request names it in [`CLIENT_HEADER`], else the Store API's
-/// ([`order_source`]). An order made with a connected app's key is the
-/// app's (its slug), is recorded for the store's app event streams and
-/// announced on them (`crate::apps`).
-pub async fn create_order(
-    State(state): State<AppState>,
-    Path(pk): Path<String>,
-    key: Option<Extension<super::store_key::StoreKeyAuthenticated>>,
-    app: Option<Extension<super::store_key::AppKeyAuthenticated>>,
-    headers: axum::http::HeaderMap,
-    Json(mut req): Json<CreateOrderRequest>,
-) -> Response {
-    // The merchant's own order reference, from anyone: trimmed, empty is
-    // none, and bounded before it is stored and shown on dashboards.
-    req.merchant_order_id = req
-        .merchant_order_id
-        .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty());
-    if req
-        .merchant_order_id
-        .as_deref()
-        .is_some_and(|id| id.chars().count() > MAX_MERCHANT_ORDER_ID_CHARS)
-    {
-        return ApiError::BadRequest(format!(
-            "merchant_order_id must be at most {MAX_MERCHANT_ORDER_ID_CHARS} characters"
-        ))
-        .into_response();
-    }
-    // What the order is for, which the payer reads: one line, bounded.
-    req.description = match req
-        .description
-        .as_deref()
-        .map(crate::stores::clean_description)
-        .transpose()
-    {
-        Ok(description) => description.flatten(),
-        Err(problem) => {
-            return ApiError::BadRequest(format!("description must be {}", problem.requirement()))
-                .into_response()
-        }
-    };
-    let show_merchant_order_id = req.show_merchant_order_id.unwrap_or(true);
-    if req
-        .idempotency_key
-        .as_deref()
-        .is_some_and(|key| !crate::engine_client::valid_idempotency_key(key))
-    {
-        return ApiError::BadRequest(format!(
-            "idempotency_key must be 1 to {} visible ASCII characters",
-            crate::engine_client::MAX_CALLER_IDEMPOTENCY_KEY_CHARS
-        ))
-        .into_response();
-    }
-    let created_with_key = key.is_some();
-    let policy = crate::confirmation_thresholds::lock_policy(&pk).await;
-    let (key, currency) = (pk.clone(), req.currency.clone());
-    let found = state
-        .db
-        .read(move |db| {
-            Ok::<_, crate::db::DbError>((
-                db.get_store_connection_by_public_key(&key)?,
-                crate::currencies::is_known_currency(db, &currency),
-            ))
-        })
-        .await;
-    let (row, currency_known) = match found {
-        Ok((Some(row), known)) => (row, known),
-        Ok((None, _)) => return ApiError::NotFound.into_response(),
-        Err(_) => return ApiError::Internal.into_response(),
-    };
-
-    // Selection-time validation first, entirely independent of whether any
-    // provider can actually price it (`crate::currencies`'s own doc comment)
-    // - "unknown currency" (this doesn't exist at all) is a genuinely
-    // different, clearer error than "unsupported currency" (a real currency
-    // this instance just can't get a live rate for right now), so the two
-    // get distinct messages rather than being collapsed into one.
-    match currency_known {
-        Ok(true) => {}
-        Ok(false) => {
-            return ApiError::BadRequest(format!("unknown currency: {}", req.currency))
-                .into_response()
-        }
-        Err(_) => return ApiError::Internal.into_response(),
-    }
-
-    // Control-plane's own exchange rate is the only rate computation left in
-    // the whole system (`docs/fx_refactor.md` Phase 3) - a real, fast `400`
-    // for an unsupported currency or a malformed amount, before the engine
-    // (which has no concept of currency at all) is ever called.
-    // `"XMR"` always uses the trivial identity rate regardless of this
-    // store's chosen ordered `fx_providers`; every other currency is dispatched by
-    // *this store's own* chosen provider, a per-merchant setting, not one
-    // shared instance-wide choice.
-    let (piconero_per_unit, provider) = match state
-        .exchange_rate
-        .piconero_per_unit_for(&row, &req.currency)
-        .await
-    {
-        Ok(Some(result)) => result,
-        Ok(None) => {
-            return ApiError::BadRequest(format!("unsupported currency: {}", req.currency))
-                .into_response()
-        }
-        Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
-            // Not a real failure - this store's provider (or no provider at
-            // all) simply can't price this currency on this instance, same
-            // user-facing meaning as `Ok(None)` above.
-            return ApiError::BadRequest(format!("unsupported currency: {}", req.currency))
-                .into_response();
-        }
-        Err(e) => {
-            tracing::error!(store.id = %row.id, currency = ?req.currency, error = %e, "exchange rate lookup failed");
-            return ApiError::Internal.into_response();
-        }
-    };
-    let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(
-        &req.currency,
-        &req.amount,
-        piconero_per_unit,
-    ) {
-        Ok(amount) => amount,
-        Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
-    };
-
-    let sk = match crate::http::orders::decrypt_sk(&state.encryption_key, &row) {
-        Ok(sk) => sk,
-        Err(_) => return ApiError::Internal.into_response(),
-    };
-    let resolution = match crate::confirmation_thresholds::resolve_for_order(
-        &state,
-        &row,
-        &policy,
-        &sk,
-        &req.currency,
-        piconero_per_unit,
-        xmr_amount_piconero,
-    )
-    .await
-    {
-        Ok(resolution) => resolution,
-        Err(message) => return ApiError::BadRequest(message).into_response(),
-    };
-
-    match state
-        .engine
-        .client
-        .create_order(
-            &sk,
-            shared::xmr_amount::Piconero(xmr_amount_piconero),
-            req.merchant_order_id.clone(),
-            req.description.clone(),
-            Some(resolution.confirmations_required),
-            req.idempotency_key.as_ref().map(|key| format!("pay:{key}")),
-        )
-        .await
-    {
-        Ok(order) => {
-            // Best-effort: a failure to record the local metadata row must
-            // never fail an order that the engine has *already* genuinely
-            // created - the order is real either way, and the customer is
-            // already looking at (or about to be redirected to) a real
-            // payment address. Losing this one local record is a strictly
-            // smaller problem than telling a customer their real order
-            // failed when it didn't.
-            // Only a keyed order that names its client can be a plugin's.
-            let (client, version) = client(&headers).filter(|_| created_with_key).unzip();
-            let app = app.map(|Extension(super::store_key::AppKeyAuthenticated(app))| app);
-            let app_order = app.as_ref().map(|app| crate::db::AppOrder {
-                order_id: order.order_id.clone(),
-                store_id: row.id.clone(),
-                app_id: app.id.clone(),
-                device_name: app.device_name.clone(),
-                amount: req.amount.clone(),
-                currency: req.currency.clone(),
-                address: order.address.clone(),
-                xmr_amount_piconero: order.xmr_amount_piconero,
-                merchant_order_id: req.merchant_order_id.clone(),
-                expires_at: order.expires_at,
-                created_at: now_unix(),
-            });
-            let (recorded_app, announced) = (app.clone(), app_order.clone());
-            let (id, order_id, currency, amount, provider) = (
-                row.id.clone(),
-                order.order_id.clone(),
-                req.currency.clone(),
-                req.amount.clone(),
-                provider.to_string(),
-            );
-            let base_currency = resolution.base_currency.clone();
-            let (base_rate, confirmations) = (
-                resolution.base_currency_piconero_per_unit,
-                resolution.confirmations_required,
-            );
-            let recorded = state
-                .db
-                .write(move |db| {
-                    // A failed lookup costs the order its plugin, never
-                    // its record. An app's order is never a plugin's.
-                    let plugin = match client {
-                        Some(_) if recorded_app.is_some() => None,
-                        Some(_) => db
-                            .active_integration_kind(&id)
-                            .inspect_err(|e| tracing::warn!(error = %e, "the store's plugin could not be read"))
-                            .ok()
-                            .flatten(),
-                        None => None,
-                    };
-                    let source = match &recorded_app {
-                        Some(app) => app.slug.clone(),
-                        None => order_source(created_with_key, client.as_deref(), plugin.as_deref()),
-                    };
-                    db.create_order_currency_metadata(
-                        &id,
-                        &order_id,
-                        &currency,
-                        &amount,
-                        shared::xmr_amount::Piconero(piconero_per_unit),
-                        &provider,
-                        now_unix(),
-                        &base_currency,
-                        base_rate,
-                        confirmations,
-                        created_with_key,
-                        Some(&source),
-                        show_merchant_order_id,
-                    )?;
-                    if let (Some(app), Some(app_order)) = (&recorded_app, &app_order) {
-                        db.record_app_order(app_order)?;
-                        let version = match client.as_deref() {
-                            Some(client) if client.eq_ignore_ascii_case(&app.slug) => {
-                                version.as_deref().unwrap_or_default()
-                            }
-                            _ => "",
-                        };
-                        db.app_seen(&app.id, version, now_unix())?;
-                    }
-                    // An order from the plugin: its integration was seen now.
-                    if plugin.as_deref() == Some(source.as_str()) {
-                        db.integration_seen(
-                            &id,
-                            &source,
-                            version.as_deref().unwrap_or_default(),
-                            now_unix(),
-                        )?;
-                    }
-                    Ok::<_, crate::db::DbError>(())
-                })
-                .await;
-            if let (Ok(()), Some(order)) = (&recorded, &announced) {
-                state
-                    .apps
-                    .announce(&pk, crate::apps::SaleEvent::waiting(order));
-            }
-            if let Err(e) = recorded {
-                tracing::error!(
-                    order.id = %order.order_id,
-                    store.id = %row.id,
-                    error = %e,
-                    "failed to record local fiat metadata - the real order still exists on the engine and this \
-                     response is still correct, but its fiat display on monokulo's own pages will be missing"
-                );
-            }
-            Json(CreateOrderResponse {
-                order_id: order.order_id,
-                address: order.address,
-                xmr_amount_piconero: order.xmr_amount_piconero,
-                amount: req.amount,
-                currency: req.currency,
-                merchant_order_id: req.merchant_order_id,
-                description: req.description,
-                show_merchant_order_id,
-                expires_at: order.expires_at,
-            })
-            .into_response()
-        }
-        // The engine's own validation (an unconfigured network, its own
-        // unsupported-currency check) - surfaced verbatim, same convention
-        // every other caller of `EngineClient` in this crate already
-        // applies to the engine's real `400`s.
-        Err(EngineClientError::EngineError { status, message })
-            if status == reqwest::StatusCode::BAD_REQUEST =>
-        {
-            ApiError::BadRequest(message).into_response()
-        }
-        // The key was already used for a different purchase.
-        Err(EngineClientError::EngineError { status, message })
-            if status == reqwest::StatusCode::CONFLICT =>
-        {
-            (
-                axum::http::StatusCode::CONFLICT,
-                axum::Json(serde_json::json!({ "error": message })),
-            )
-                .into_response()
-        }
-        Err(_) => ApiError::Internal.into_response(),
-    }
-}
-
 /// `GET /static/monokulo-client.js` - the thin embed library a merchant's
 /// static site `<script src>`s (`docs/fx_refactor.md` decision 3 / Phase
-/// 4.3). Moved here from the engine, which no longer has any checkout UI or
-/// fiat concept for it to talk to - this version's `createOrder`/`mount`
-/// call monokulo's own `/pay/{pk}/orders` and
-/// `/pay/{pk}/orders/{order_id}` instead. Served from this binary rather
-/// than a CDN so a self-hoster's static site has no third-party dependency
-/// in its payment path, same reasoning the engine's original had.
+/// 4.3): `createOrder` posts to `/api/v1/orders` with the store's public
+/// key, and `mount` frames the order's `/checkout/{order_id}`. Served from
+/// this binary rather than a CDN so a self-hoster's static site has no
+/// third-party dependency in its payment path.
 pub async fn client_library(headers: axum::http::HeaderMap) -> Response {
-    crate::assets::respond_named(&headers, "monokulo-client.js")
+    crate::assets::respond_named(&headers, "monokulo-client.js").into_response()
 }
 
 #[cfg(test)]
@@ -480,15 +93,8 @@ mod tests {
         );
     }
 
-    /// Same fixed-scalar construction every other module's own tests use -
-    /// see `connections.rs` for why these particular values pass the
-    /// engine's real wallet-material validation.
-    const TEST_VIEW_KEY_HEX: &str =
-        "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str =
-        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     // This module's own tests deliberately exercise a real fiat quote (via a
-    // local mock Coingecko server below), not just XMR - `http::pay::create_order`
+    // local mock Coingecko server below), not just XMR - `api::v1::orders::create`
     // is the real production storefront-facing endpoint, so its own tests are
     // the ones that should prove a real fiat currency actually works end to
     // end, unlike most other modules' tests (see `orders.rs`'s own doc
@@ -548,84 +154,69 @@ mod tests {
 
     use crate::http::test_support::signed_up_and_logged_in_session_token;
 
-    /// Creates a real `store_connections` row (and a real tenant on the
-    /// real spawned engine) for the given session, returning its public
-    /// key - the identifier this module's own endpoint is addressed by.
-    async fn create_connection(router: &Router, session_token: &str) -> String {
+    /// Makes a real store (and a real tenant on the real spawned engine)
+    /// for the given session through store setup, returning its public
+    /// key - the key a website's orders are made with.
+    async fn create_connection(router: &Router, state: &AppState, session_token: &str) -> String {
+        create_connection_with_base_currency(router, state, session_token, "XMR").await
+    }
+
+    /// The same, with a caller-chosen base currency.
+    async fn create_connection_with_base_currency(
+        router: &Router,
+        state: &AppState,
+        session_token: &str,
+        base_currency: &str,
+    ) -> String {
         // No two stores share a site.
         static STORES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let body = serde_json::json!({
-            "site_url": format!("https://shop-{n}.example.com"),
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "domains": [],
-            "base_currency": "XMR",
-        });
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        body_json(response)
-            .await
-            .as_object()
-            .unwrap()
-            .get("public_key")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
+        crate::http::test_support::store_with_keys(
+            router,
+            state,
+            session_token,
+            &format!("shop-{n}.example.com"),
+            base_currency,
+        )
+        .await
+        .public_key
     }
 
+    /// A website's order: `POST /api/v1/orders` with the store's public key.
     fn create_order_request(pk: &str, amount: &str, currency: &str) -> Request<Body> {
-        Request::builder()
-            .method("POST")
-            .uri(format!("/pay/{pk}/orders"))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "amount": amount, "currency": currency }).to_string(),
-            ))
-            .unwrap()
+        crate::http::test_support::api_request(
+            "POST",
+            "/api/v1/orders",
+            Some(pk),
+            Some(serde_json::json!({ "amount": amount, "currency": currency })),
+        )
     }
 
-    /// A storefront retrying `POST /pay/{pk}/orders` with the same
+    /// A storefront retrying `POST /api/v1/orders` with the same
     /// idempotency key (its first answer was lost) gets the same order and
     /// address; another key, another order; the key reused for a different
     /// total is a 409; a malformed key is a 400.
     #[tokio::test]
     async fn a_retried_order_creation_with_one_key_makes_one_order() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "idempotent@example.com",
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let post = |body: serde_json::Value| {
             let (router, pk) = (router.clone(), pk.clone());
             async move {
                 let response = router
-                    .oneshot(
-                        Request::builder()
-                            .method("POST")
-                            .uri(format!("/pay/{pk}/orders"))
-                            .header("content-type", "application/json")
-                            .body(Body::from(body.to_string()))
-                            .unwrap(),
-                    )
+                    .oneshot(crate::http::test_support::api_request(
+                        "POST",
+                        "/api/v1/orders",
+                        Some(&pk),
+                        Some(body),
+                    ))
                     .await
                     .unwrap();
                 (response.status(), body_json(response).await)
@@ -640,27 +231,35 @@ mod tests {
             })
         };
         let (status, first) = post(order("wc:9:25.00", "25.00")).await;
-        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(status, StatusCode::CREATED, "{first}");
         let (status, retry) = post(order("wc:9:25.00", "25.00")).await;
-        assert_eq!(status, StatusCode::OK, "{retry}");
+        assert_eq!(status, StatusCode::CREATED, "{retry}");
         assert_eq!(retry["order_id"], first["order_id"]);
         assert_eq!(retry["address"], first["address"]);
 
         let (status, other) = post(order("wc:9:30.00", "30.00")).await;
-        assert_eq!(status, StatusCode::OK, "{other}");
+        assert_eq!(status, StatusCode::CREATED, "{other}");
         assert_ne!(other["order_id"], first["order_id"]);
 
         let (status, clash) = post(order("wc:9:25.00", "26.00")).await;
         assert_eq!(status, StatusCode::CONFLICT, "{clash}");
+        assert_eq!(
+            clash["type"],
+            "https://docs.monokulo.com/problems/idempotency-conflict"
+        );
 
-        let (status, _) = post(order("has space", "25.00")).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, bad) = post(order("has space", "25.00")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        assert_eq!(
+            bad["type"],
+            "https://docs.monokulo.com/problems/invalid-request"
+        );
     }
 
     /// An order's description is checked, trimmed, echoed and passed to
     /// the engine, which keeps it; the reference shows to the payer unless
-    /// the caller says otherwise. A description over 140 characters, or
-    /// with a line break, is a 400 naming the field.
+    /// the caller says otherwise. A description over 140 characters, with
+    /// a line break, or blank, is a 400 naming it.
     #[tokio::test]
     async fn an_orders_description_reaches_the_engine_and_bad_ones_are_refused() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -671,19 +270,17 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let post = |body: serde_json::Value| {
             let (router, pk) = (router.clone(), pk.clone());
             async move {
                 let response = router
-                    .oneshot(
-                        Request::builder()
-                            .method("POST")
-                            .uri(format!("/pay/{pk}/orders"))
-                            .header("content-type", "application/json")
-                            .body(Body::from(body.to_string()))
-                            .unwrap(),
-                    )
+                    .oneshot(crate::http::test_support::api_request(
+                        "POST",
+                        "/api/v1/orders",
+                        Some(&pk),
+                        Some(body),
+                    ))
                     .await
                     .unwrap();
                 (response.status(), body_text(response).await)
@@ -705,21 +302,26 @@ mod tests {
             post(order(serde_json::json!({ "description": "é".repeat(141) }))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert!(
-            body.contains("description must be at most 140 characters"),
+            body.contains("Description must be at most 140 characters"),
             "{body}"
         );
+        assert!(body.contains("invalid-request"), "{body}");
         let (status, body) = post(order(
             serde_json::json!({ "description": "Blue mug\nRed mug" }),
         ))
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-        assert!(body.contains("description must be one line"), "{body}");
+        assert!(body.contains("Description must match"), "{body}");
+        // Blank is no description at all: leave the field out instead.
+        let (status, body) = post(order(serde_json::json!({ "description": "   " }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("Description must be at least 1"), "{body}");
 
         let (status, body) = post(order(
             serde_json::json!({ "description": format!("  {}  ", "é".repeat(140)) }),
         ))
         .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(status, StatusCode::CREATED, "{body}");
         let created: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(created["description"], "é".repeat(140));
         assert_eq!(created["show_merchant_order_id"], true);
@@ -747,12 +349,13 @@ mod tests {
             .unwrap();
         assert!(metadata.show_merchant_order_id);
 
-        // Blank is none; the reference can be kept off the checkout.
+        // Without one there is none; the reference can be kept off the
+        // checkout.
         let (status, body) = post(order(
-            serde_json::json!({ "description": "   ", "show_merchant_order_id": false }),
+            serde_json::json!({ "show_merchant_order_id": false }),
         ))
         .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(status, StatusCode::CREATED, "{body}");
         let created: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(created["description"], serde_json::Value::Null);
         assert_eq!(created["show_merchant_order_id"], false);
@@ -773,14 +376,14 @@ mod tests {
     #[tokio::test]
     async fn every_static_file_the_pages_reference_is_served_with_its_type() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "assets@example.com",
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order = body_json(
             router
                 .clone()
@@ -789,7 +392,7 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        let checkout = format!("/pay/{pk}/orders/{}", order["order_id"].as_str().unwrap());
+        let checkout = format!("/checkout/{}", order["order_id"].as_str().unwrap());
 
         let mut referenced = std::collections::BTreeSet::new();
         for page in ["/dashboard/signup", "/dashboard/login", checkout.as_str()] {
@@ -910,7 +513,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let store_id = state
             .db
             .lock()
@@ -931,7 +534,7 @@ mod tests {
         let get = |path: String| {
             Request::builder()
                 .uri(path)
-                .header("authorization", format!("Bearer {session_token}"))
+                .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap()
         };
@@ -939,7 +542,6 @@ mod tests {
             "/".to_string(),
             "/dashboard/login".into(),
             "/dashboard/signup".into(),
-            "/status".into(),
             "/account".into(),
             "/account?tab=wallets".into(),
             "/setup".into(),
@@ -968,7 +570,7 @@ mod tests {
             );
         }
         let customer = Request::builder()
-            .uri(format!("/pay/{pk}/orders/{order_id}"))
+            .uri(format!("/checkout/{order_id}"))
             .body(Body::empty())
             .unwrap();
         let checkout = router.clone().oneshot(customer).await.unwrap();
@@ -992,7 +594,7 @@ mod tests {
     async fn creating_a_real_order_through_the_public_endpoint_returns_a_real_address_and_order_id()
     {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1000,7 +602,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY))
@@ -1008,9 +610,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             response.status(),
-            StatusCode::OK,
+            StatusCode::CREATED,
             "expected the real engine to accept and create the order"
         );
+        let location = response.headers()["location"].to_str().unwrap().to_string();
         let body = body_json(response).await;
         let obj = body.as_object().unwrap();
         assert!(obj
@@ -1025,6 +628,10 @@ mod tests {
             TEST_CURRENCY
         );
         assert_eq!(obj.get("amount").unwrap().as_str().unwrap(), "25.00");
+        assert_eq!(
+            location,
+            format!("/api/v1/orders/{}", body["order_id"].as_str().unwrap())
+        );
     }
 
     #[tokio::test]
@@ -1037,7 +644,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let row = state
             .db
             .lock()
@@ -1057,7 +664,7 @@ mod tests {
             .oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY))
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::OK);
+        assert!(!response.status().is_success());
         let tenant_id = engine
             .store()
             .lock()
@@ -1075,8 +682,9 @@ mod tests {
             .is_empty());
     }
 
-    /// The plugin's forwarded errors (structured_logging.md 2.4) need the
-    /// store's own secret key and its Diagnostics on, and are capped.
+    /// The plugin's forwarded errors (structured_logging.md 2.4), sent to
+    /// `POST /api/v1/logs`, need the store's own secret key (not its
+    /// public one) and its Diagnostics on, and are capped.
     #[tokio::test]
     async fn only_the_store_itself_can_forward_its_plugin_errors() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -1087,7 +695,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let row = state
             .db
             .lock()
@@ -1099,18 +707,12 @@ mod tests {
             let entries: Vec<_> = (0..entries)
                 .map(|n| serde_json::json!({ "level": "error", "message": format!("failure {n}"), "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736" }))
                 .collect();
-            let mut builder = Request::builder()
-                .method("POST")
-                .uri(format!("/pay/{pk}/logs"))
-                .header("content-type", "application/json");
-            if let Some(key) = key {
-                builder = builder.header("authorization", format!("Bearer {key}"));
-            }
-            builder
-                .body(Body::from(
-                    serde_json::json!({ "entries": entries }).to_string(),
-                ))
-                .unwrap()
+            crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/logs",
+                key,
+                Some(serde_json::json!({ "entries": entries })),
+            )
         };
         assert_eq!(
             router
@@ -1153,6 +755,16 @@ mod tests {
         assert_eq!(
             router
                 .clone()
+                .oneshot(forward(Some(&pk), 1))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN,
+            "the public key may not"
+        );
+        assert_eq!(
+            router
+                .clone()
                 .oneshot(forward(Some(sk.expose()), 21))
                 .await
                 .unwrap()
@@ -1164,14 +776,14 @@ mod tests {
     #[tokio::test]
     async fn an_order_waits_for_its_stores_policy_edit() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "policy-edit-race@example.com",
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let guard = crate::confirmation_thresholds::lock_policy(&pk).await;
         let request = create_order_request(&pk, "25.00", TEST_CURRENCY);
         let mut task = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
@@ -1196,7 +808,7 @@ mod tests {
             .unwrap()
             .is_empty());
         drop(guard);
-        assert_eq!(task.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(task.await.unwrap().status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -1209,7 +821,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let row = state
             .db
             .lock()
@@ -1239,7 +851,7 @@ mod tests {
             .oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY))
             .await
             .unwrap();
-        assert_ne!(response.status(), StatusCode::OK);
+        assert!(!response.status().is_success());
         let tenant_id = engine
             .store()
             .lock()
@@ -1267,7 +879,7 @@ mod tests {
     #[tokio::test]
     async fn creating_a_real_order_with_a_merchant_order_id_records_it_on_the_engine() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1276,50 +888,31 @@ mod tests {
         )
         .await;
 
-        let connect_response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(
-                        serde_json::json!({
-                            "site_url": "https://shop.example.com",
-                            "view_key_hex": TEST_VIEW_KEY_HEX,
-                            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-                            "network": "mainnet",
-                            "domains": [],
-                            "base_currency": "XMR",
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(connect_response.status(), StatusCode::CREATED);
-        let connect_body = body_json(connect_response).await;
-        let pk = connect_body["public_key"].as_str().unwrap().to_string();
-        let connection_id = connect_body["connection_id"].as_str().unwrap().to_string();
+        let store = crate::http::test_support::store_with_keys(
+            &router,
+            &state,
+            &session_token,
+            "shop.example.com",
+            "XMR",
+        )
+        .await;
+        let connection_id = store.id;
 
         let response = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/pay/{pk}/orders"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "amount": "25.00", "currency": TEST_CURRENCY, "merchant_order_id": "order-1234" })
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(&store.public_key),
+                Some(serde_json::json!({
+                    "amount": "25.00",
+                    "currency": TEST_CURRENCY,
+                    "merchant_order_id": "order-1234",
+                })),
+            ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         let body = body_json(response).await;
         let order_id = body["order_id"].as_str().unwrap().to_string();
         assert_eq!(
@@ -1334,7 +927,7 @@ mod tests {
                     .uri(format!(
                         "/dashboard/stores/{connection_id}/orders/{order_id}"
                     ))
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1362,13 +955,13 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(create_order_request(&pk, "10.00", TEST_CURRENCY))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         let body = body_json(response).await;
         let order_id = body
             .as_object()
@@ -1422,12 +1015,15 @@ mod tests {
         );
     }
 
+    /// An order needs a key that names a store: an unknown one, or none,
+    /// is a 401.
     #[tokio::test]
-    async fn creating_an_order_for_an_unknown_public_key_returns_404() {
+    async fn creating_an_order_with_an_unknown_public_key_or_none_is_a_401() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let response = router
+            .clone()
             .oneshot(create_order_request(
                 "pk_nonexistent",
                 "25.00",
@@ -1435,7 +1031,17 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = router
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                None,
+                Some(serde_json::json!({ "amount": "25.00", "currency": TEST_CURRENCY })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// A local server standing in for CoinMarketCap's keyless price
@@ -1486,7 +1092,7 @@ mod tests {
                     .method("POST")
                     .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("cookie", format!("session={session_token}"))
                     .body(Body::from(body))
                     .unwrap(),
             )
@@ -1507,7 +1113,11 @@ mod tests {
             .oneshot(create_order_request(pk, "10.00", TEST_CURRENCY))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "order creation failed");
+        assert_eq!(
+            response.status(),
+            StatusCode::CREATED,
+            "order creation failed"
+        );
         let order_id = body_json(response).await["order_id"]
             .as_str()
             .unwrap()
@@ -1552,7 +1162,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let connection_id = state
             .db
             .lock()
@@ -1652,7 +1262,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let connection_id = state
             .db
             .lock()
@@ -1744,7 +1354,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let connection_id = state
             .db
             .lock()
@@ -1807,7 +1417,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let connection_id = state
             .db
             .lock()
@@ -1929,8 +1539,8 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk_a = create_connection(&router, &token_a).await;
-        let pk_b = create_connection(&router, &token_b).await;
+        let pk_a = create_connection(&router, &state, &token_a).await;
+        let pk_b = create_connection(&router, &state, &token_b).await;
         let id_a = state
             .db
             .lock()
@@ -2021,7 +1631,7 @@ mod tests {
                 .method(method)
                 .uri(uri)
                 .header("content-type", "application/x-www-form-urlencoded")
-                .header("authorization", format!("Bearer {token}"))
+                .header("cookie", format!("session={token}"))
                 .body(Body::from(body.to_string()))
                 .unwrap()
         };
@@ -2076,7 +1686,7 @@ mod tests {
     async fn creating_an_order_with_an_unknown_currency_is_rejected_before_ever_reaching_the_engine(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2084,7 +1694,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(create_order_request(&pk, "25.00", "NOTREAL"))
@@ -2093,7 +1703,10 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
         assert!(
-            body["error"].as_str().unwrap().contains("unknown currency"),
+            body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("unknown currency"),
             "got: {body}"
         );
     }
@@ -2108,7 +1721,7 @@ mod tests {
     async fn creating_an_order_with_a_known_but_provider_unsupported_currency_gets_a_distinct_error(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2116,7 +1729,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(create_order_request(&pk, "25.00", "EUR"))
@@ -2125,55 +1738,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
         assert!(
-            body["error"]
+            body["detail"]
                 .as_str()
                 .unwrap()
                 .contains("unsupported currency"),
             "got: {body}"
         );
-    }
-
-    /// Same `create_connection` shape, but with a caller-chosen
-    /// `base_currency` rather than the hardcoded `"XMR"` - needed by the
-    /// threshold-resolution tests below, which specifically want a base
-    /// currency this test module's own mock Coingecko *can't* price (it
-    /// only ever stubs `"usd"`).
-    async fn create_connection_with_base_currency(
-        router: &Router,
-        session_token: &str,
-        base_currency: &str,
-    ) -> String {
-        let body = serde_json::json!({
-            "site_url": "https://shop.example.com",
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "domains": [],
-            "base_currency": base_currency,
-        });
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        body_json(response)
-            .await
-            .as_object()
-            .unwrap()
-            .get("public_key")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
     }
 
     /// The store's own base currency ("EUR", a perfectly real known
@@ -2191,7 +1761,7 @@ mod tests {
     async fn creating_an_order_is_rejected_when_the_stores_own_base_currency_has_no_available_rate_provider(
     ) {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2199,7 +1769,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection_with_base_currency(&router, &session_token, "EUR").await;
+        let pk = create_connection_with_base_currency(&router, &state, &session_token, "EUR").await;
 
         let response = router
             .clone()
@@ -2209,7 +1779,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
         assert!(
-            body["error"].as_str().unwrap().contains("EUR"),
+            body["detail"].as_str().unwrap().contains("EUR"),
             "expected a clear error naming the unpriceable base currency, got: {body}"
         );
 
@@ -2234,7 +1804,7 @@ mod tests {
     #[tokio::test]
     async fn creating_an_order_with_a_malformed_amount_is_a_clear_400_not_a_500() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -2242,7 +1812,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
         let response = router
             .oneshot(create_order_request(&pk, "not-a-number", TEST_CURRENCY))
@@ -2254,7 +1824,7 @@ mod tests {
     #[tokio::test]
     async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoints() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let req = Request::builder()
             .method("GET")
@@ -2273,16 +1843,18 @@ mod tests {
         assert!(js.contains("createOrder"));
         assert!(js.contains("mount"));
         // The real point of this rewrite (`docs/fx_refactor.md` decision 3):
-        // it must call monokulo's own `/pay/{pk}/orders` endpoint, not
-        // the engine's old `/api/v1/t/{pk}/orders` - and the mounted iframe
-        // must point at monokulo's own checkout page, not the engine's
-        // now-deleted `/pay/v1/{pk}/{order_id}`.
+        // it must call monokulo's own `/api/v1/orders` with the store's
+        // public key as its bearer, not the engine's old
+        // `/api/v1/t/{pk}/orders` - and the mounted iframe must point at
+        // monokulo's own checkout page, not the engine's now-deleted
+        // `/pay/v1/{pk}/{order_id}`.
         assert!(
-            js.contains("/pay/\" + encodeURIComponent(publicKey) + \"/orders"),
+            js.contains("endpoint + \"/api/v1/orders\"")
+                && js.contains("Authorization: \"Bearer \" + publicKey"),
             "should call monokulo's own order-creation endpoint, got: {js}"
         );
         assert!(
-            js.contains("/orders/\" + encodeURIComponent(orderId)"),
+            js.contains("\"/checkout/\" + encodeURIComponent(orderId)"),
             "should iframe monokulo's own checkout page, got: {js}"
         );
         assert!(
@@ -2294,15 +1866,17 @@ mod tests {
             "must not reference the engine's own (deleted) checkout route: {js}"
         );
         // The iframe does not post messages back, so mount() drives
-        // callbacks through its own status request even when presentation
-        // query parameters are present on the iframe URL.
+        // callbacks by following the order itself (its checkout's event
+        // stream, or the order on the API) even when presentation query
+        // parameters are present on the iframe URL.
         assert!(
             !js.contains("postMessage"),
             "the embed library must not depend on the iframe posting a message any more, got: {js}"
         );
         assert!(
-            js.contains(r#"var statusUrl = checkoutUrl + "/status";"#),
-            "expected mount() to poll the status endpoint directly, got: {js}"
+            js.contains(r#"new EventSource(checkoutUrl + "/events")"#)
+                && js.contains(r#"endpoint + "/api/v1/orders/" + encodeURIComponent(orderId)"#),
+            "expected mount() to follow the order directly, got: {js}"
         );
         assert!(js.contains("options.refund === false"));
         for asset in [

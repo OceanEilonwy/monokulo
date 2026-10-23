@@ -18,12 +18,15 @@
 //! quote (`Db::get_order_currency_metadata`) - the engine has no concept of
 //! fiat at all any more (`docs/fx_refactor.md` Phase 3), so an order with no
 //! local record (predates this feature, or was created directly against the
-//! engine rather than through monokulo's own `http::pay` endpoint)
+//! engine rather than through monokulo's own API)
 //! simply shows a dash rather than a fabricated amount.
 
-use axum::extract::{Form, Path, Query, State};
+use std::sync::Arc;
+
+use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
+use axum::Extension;
 use serde::{Deserialize, Serialize};
 use shared::order_status::OrderStatus;
 use std::str::FromStr;
@@ -35,7 +38,10 @@ use crate::views;
 use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
 use super::dashboard::redirect_302;
+use super::paths::{CheckoutEventsPath, CheckoutSharePath, RefundAddressPath};
+use super::store_key::RequestStore;
 use super::{ApiError, AppState};
+use crate::api::checkout::Path as CheckoutPath;
 
 /// Customer-facing amount guidance; POS keeps its own merchant-facing alerts.
 fn checkout_payment_message(order: &OrderView) -> Option<String> {
@@ -100,55 +106,50 @@ enum LoadError {
     Internal,
 }
 
-/// Shared by both routes below - looks up the connection by `pk`, decrypts
-/// its `sk_...` once (the caller may need it again, e.g. for a follow-up
-/// `get_tenant` call - handed back rather than re-decrypted), and fetches
-/// the order's full detail from the engine's admin API. An order belonging
-/// to a *different* tenant's `pk_` than the one in the URL is
-/// indistinguishable from an unknown `order_id` - the engine's own
-/// `get_order_detail` already scopes lookups to the authenticated tenant,
-/// so this can never leak another tenant's order by construction, not by
-/// an extra check here.
+/// The store a checkout request is about: the one its order belongs to,
+/// which `super::abuse::pay_middleware` found from monokulo's own record of
+/// the order ([`RequestStore`]). `None` for an order monokulo doesn't know.
+type OrderStore = Option<Extension<RequestStore>>;
+
+/// Shared by every route below - decrypts the store's `sk_...` once (the
+/// caller may need it again, e.g. for a follow-up `get_tenant` call - handed
+/// back rather than re-decrypted), and fetches the order's full detail from
+/// the engine's admin API. The engine's own `get_order_detail` scopes
+/// lookups to the store's tenant, so an order can only ever be shown with
+/// its own store.
 async fn load_order(
     state: &AppState,
-    pk: &str,
+    store: &OrderStore,
     order_id: &crate::db::OrderId,
 ) -> Result<
     (
-        StoreConnectionRow,
+        Arc<StoreConnectionRow>,
         shared::auth::RawToken,
         OrderDetailResponse,
     ),
     LoadError,
 > {
-    load_order_with(state, pk, order_id, None).await
+    let Some(Extension(RequestStore(row))) = store else {
+        return Err(LoadError::NotFound);
+    };
+    load_order_with(state, row.clone(), order_id, None).await
 }
 
 /// [`load_order`], reading the order through `shared` when given: a live
 /// stream's re-read, which every other stream on the same order reuses.
 async fn load_order_with(
     state: &AppState,
-    pk: &str,
+    row: Arc<StoreConnectionRow>,
     order_id: &crate::db::OrderId,
     shared: Option<&crate::live::SharedDetail>,
 ) -> Result<
     (
-        StoreConnectionRow,
+        Arc<StoreConnectionRow>,
         shared::auth::RawToken,
         OrderDetailResponse,
     ),
     LoadError,
 > {
-    let key = pk.to_string();
-    let row = match state
-        .db
-        .read(move |db| db.get_store_connection_by_public_key(&key))
-        .await
-    {
-        Ok(Some(row)) => row,
-        Ok(None) => return Err(LoadError::NotFound),
-        Err(_) => return Err(LoadError::Internal),
-    };
     let sk = match super::orders::decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
@@ -169,7 +170,7 @@ async fn load_order_with(
     }
 }
 
-/// `GET /pay/{pk}/orders/{order_id}` - the full checkout page.
+/// `GET /checkout/{order_id}` - the full checkout page.
 #[derive(Clone, Default, Deserialize)]
 pub struct CheckoutOptions {
     view: Option<String>,
@@ -269,22 +270,23 @@ impl CheckoutOptions {
 }
 
 pub async fn checkout_page(
+    CheckoutPath { order_id }: CheckoutPath,
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
+    store: OrderStore,
     Query(mut options): Query<CheckoutOptions>,
     on: OnNetwork,
     headers: HeaderMap,
 ) -> Response {
     options.onion = on.kind == NetworkKind::Onion;
-    let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
+    let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if must_open_from_shop(&state, &row, &order_id, &headers).await {
-        return open_from_shop_response(&pk, &order_id);
+        return open_from_shop_response(&order_id);
     }
-    with_vary_on_fetch_dest(render_checkout_page(&state, pk, row, sk, detail, None, &options).await)
+    with_vary_on_fetch_dest(render_checkout_page(&state, row, sk, detail, None, &options).await)
 }
 
 /// Whether this request for a checkout (or share) page must be turned away
@@ -336,8 +338,9 @@ async fn must_open_from_shop(
         .unwrap_or(false)
 }
 
-fn open_from_shop_response(pk: &str, order_id: &crate::db::OrderId) -> Response {
-    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
+fn open_from_shop_response(order_id: &crate::db::OrderId) -> Response {
+    let order_id = order_id.clone();
+    let chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string());
     with_vary_on_fetch_dest(
         (
             StatusCode::FORBIDDEN,
@@ -373,8 +376,7 @@ fn not_found_response() -> Response {
 /// loaded `(row, sk, detail)` from `load_order`, so this never re-fetches.
 async fn render_checkout_page(
     state: &AppState,
-    pk: String,
-    row: StoreConnectionRow,
+    row: Arc<StoreConnectionRow>,
     sk: shared::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
@@ -384,9 +386,8 @@ async fn render_checkout_page(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     let order_id = detail.order.order_id.clone();
-    let view =
-        build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
-    let mut chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
+    let view = build_checkout_view(state, &row, &sk, detail, refund_address_error, options).await;
+    let mut chrome = views::PageChrome::from_user(None, CheckoutPath { order_id }.to_string());
     chrome.theme = options.theme();
     // Browser problem reports only from a store that opted in (D8).
     let id = row.id.clone();
@@ -404,7 +405,6 @@ async fn render_checkout_page(
 /// (`views::checkout::live_parts`).
 async fn build_checkout_view(
     state: &AppState,
-    pk: &str,
     row: &StoreConnectionRow,
     sk: &shared::auth::RawToken,
     detail: OrderDetailResponse,
@@ -501,7 +501,6 @@ async fn build_checkout_view(
         auto_refresh: options.auto_refresh(),
         toggled_refresh_suffix: options.toggled_refresh_suffix(),
         payment_error: checkout_payment_message(&detail.order),
-        pk: pk.to_string(),
         payments: detail
             .payments
             .iter()
@@ -562,7 +561,7 @@ pub struct SetRefundAddressForm {
     pub refund_address: String,
 }
 
-/// `POST /pay/{pk}/orders/{order_id}/refund-address` - the checkout
+/// `POST /checkout/{order_id}/refund-address` - the checkout
 /// page's own plain HTML form for a customer to record where a refund
 /// should go, forwarding to the engine's admin API with the store's `sk_`
 /// (`EngineClient::set_refund_address`) - monokulo stores nothing of
@@ -574,8 +573,9 @@ pub struct SetRefundAddressForm {
 /// invalid states without leaving the page. A plain form POST still works
 /// without JavaScript: it redirects on success and re-renders inline errors.
 pub async fn set_refund_address(
+    RefundAddressPath { order_id }: RefundAddressPath,
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
+    store: OrderStore,
     Query(mut options): Query<CheckoutOptions>,
     on: OnNetwork,
     headers: HeaderMap,
@@ -586,7 +586,7 @@ pub async fn set_refund_address(
         .get(axum::http::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("application/json"));
-    let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
+    let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -613,7 +613,6 @@ pub async fn set_refund_address(
         }
         return render_checkout_page(
             &state,
-            pk,
             row,
             sk,
             detail,
@@ -634,7 +633,6 @@ pub async fn set_refund_address(
         }
         return render_checkout_page(
             &state,
-            pk,
             row,
             sk,
             detail,
@@ -653,7 +651,6 @@ pub async fn set_refund_address(
         }
         return render_checkout_page(
             &state,
-            pk,
             row,
             sk,
             detail,
@@ -670,7 +667,13 @@ pub async fn set_refund_address(
         .await
     {
         Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}{}", options.suffix())),
+        Ok(()) => redirect_302(&format!(
+            "{}{}",
+            CheckoutPath {
+                order_id: order_id.clone()
+            },
+            options.suffix()
+        )),
         Err(e) => {
             tracing::error!(order.id = %order_id, store.id = %row.id, error = %e, "failed to set a refund address");
             if wants_json {
@@ -678,7 +681,6 @@ pub async fn set_refund_address(
             }
             render_checkout_page(
                 &state,
-                pk,
                 row,
                 sk,
                 detail,
@@ -699,41 +701,8 @@ pub struct CheckoutStatusResponse {
     pub error: Option<String>,
 }
 
-/// `GET /pay/{pk}/orders/{order_id}/status` - the small JSON the checkout
-/// page's own polling script reads (`status`/`confirmations` only - the
-/// same two fields the engine's old polling JS ever read from its
-/// equivalent response).
-pub async fn checkout_status(
-    State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
-) -> Response {
-    match load_order(&state, &pk, &order_id).await {
-        Ok((row, sk, detail)) => {
-            let confirmations_required = super::pos::resolve_confirmations_required(
-                &state,
-                &row.id,
-                &sk,
-                &detail.order.order_id,
-            )
-            .await;
-            let error = checkout_payment_message(&detail.order);
-            let (_, _, is_terminal) = crate::views::order_state(detail.order.status);
-            Json(CheckoutStatusResponse {
-                status: detail.order.status.into(),
-                confirmations: detail.order.confirmations,
-                confirmations_required,
-                is_terminal,
-                error,
-            })
-            .into_response()
-        }
-        Err(LoadError::NotFound) => ApiError::NotFound.into_response(),
-        Err(LoadError::Internal) => ApiError::Internal.into_response(),
-    }
-}
-
-/// `GET /pay/{pk}/orders/{order_id}/events` - the same status as
-/// [`checkout_status`], as a Server-Sent Events stream that sends it again
+/// `GET /checkout/{order_id}/events` - the order's status as a
+/// Server-Sent Events stream that sends it again
 /// only when it changes (`crate::live`) and ends once the order is terminal.
 ///
 /// Events: `status` - [`CheckoutStatusResponse`] JSON, always; `fragment` -
@@ -746,14 +715,15 @@ pub async fn checkout_status(
 /// One client may hold only so many of these open per store at once
 /// (`crate::abuse::streams`); past that the request gets `429`.
 pub async fn checkout_events(
+    CheckoutEventsPath { order_id }: CheckoutEventsPath,
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
+    store: OrderStore,
     Query(mut options): Query<CheckoutOptions>,
     on: OnNetwork,
     extensions: axum::http::Extensions,
 ) -> Response {
     options.onion = on.kind == NetworkKind::Onion;
-    let (row, sk, _) = match load_order(&state, &pk, &order_id).await {
+    let (row, sk, _) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),
         Err(LoadError::Internal) => return ApiError::Internal.into_response(),
@@ -761,7 +731,11 @@ pub async fn checkout_events(
     // The client `http::abuse` identified; absent only when a test drives
     // the router without a connection, which fails open.
     let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
-        Some(client) => match state.abuse.streams.try_acquire(client, &pk) {
+        Some(client) => match state
+            .abuse
+            .streams
+            .try_acquire(client, &row.tenant_public_key)
+        {
             Some(permit) => Some(permit),
             None => {
                 return (
@@ -790,16 +764,16 @@ pub async fn checkout_events(
             let sent = sent.clone();
             // Held by the stream, so the slot frees when the stream ends.
             let _permit = &permit;
-            let (state, pk, order_id, options, shared) = (
+            let (state, row, order_id, options, shared) = (
                 state.clone(),
-                pk.clone(),
+                row.clone(),
                 order_id.clone(),
                 options.clone(),
                 shared.clone(),
             );
             async move {
                 let (row, sk, detail) =
-                    match load_order_with(&state, &pk, &order_id, Some(&shared)).await {
+                    match load_order_with(&state, row, &order_id, Some(&shared)).await {
                         Ok(loaded) => loaded,
                         // The order is gone (or never was this store's): one
                         // last event and the stream ends, rather than staying
@@ -815,8 +789,7 @@ pub async fn checkout_events(
                         }
                         Err(LoadError::Internal) => return None,
                     };
-                let view =
-                    build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
+                let view = build_checkout_view(&state, &row, &sk, detail, None, &options).await;
                 let status = CheckoutStatusResponse {
                     status: view.status,
                     confirmations: view.confirmations,
@@ -876,7 +849,7 @@ pub async fn checkout_events(
     )
 }
 
-/// `GET /pay/{pk}/orders/{order_id}/share` - a real follow-up to
+/// `GET /checkout/{order_id}/share` - a real follow-up to
 /// `docs/fx_refactor.md`: "on the order details page you should be able to
 /// obtain a payment link which can be shared to someone who needs to pay
 /// for the order". `checkout_page` above is deliberately bare (no nav, no
@@ -896,17 +869,18 @@ pub async fn checkout_events(
 /// state with the site's own nav around it, rather than a page whose only
 /// content is a broken iframe.
 pub async fn checkout_share_page(
+    CheckoutSharePath { order_id }: CheckoutSharePath,
     State(state): State<AppState>,
-    Path((pk, order_id)): Path<(String, crate::db::OrderId)>,
+    store: OrderStore,
     headers: HeaderMap,
 ) -> Response {
-    let found = match load_order(&state, &pk, &order_id).await {
+    let found = match load_order(&state, &store, &order_id).await {
         Ok((row, _, _)) => {
             // The share page frames the checkout from monokulo itself, so it
             // would otherwise show a browser-created order of a restricted
             // store as a full page - the same rule applies to it.
             if must_open_from_shop(&state, &row, &order_id, &headers).await {
-                return open_from_shop_response(&pk, &order_id);
+                return open_from_shop_response(&order_id);
             }
             true
         }
@@ -919,14 +893,13 @@ pub async fn checkout_share_page(
         StatusCode::NOT_FOUND
     };
     let authed = super::resolve_authed_user(&state, &headers).await;
-    let current_path = format!("/pay/{pk}/orders/{order_id}/share");
+    let current_path = CheckoutSharePath {
+        order_id: order_id.clone(),
+    }
+    .to_string();
     let chrome =
         super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path).await;
-    let view = CheckoutShareViewModel {
-        pk,
-        order_id,
-        found,
-    };
+    let view = CheckoutShareViewModel { order_id, found };
     with_vary_on_fetch_dest((status, views::checkout::share_page(&chrome, &view)).into_response())
 }
 
@@ -1046,10 +1019,6 @@ mod tests {
             .contains("Double-spend"));
     }
 
-    const TEST_VIEW_KEY_HEX: &str =
-        "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str =
-        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     // `"XMR"`, not a fiat currency - this module's tests are about the
     // checkout page's own rendering, not about exercising a real (mocked)
     // fiat provider (`pay.rs`'s own tests do that), and an XMR-denominated
@@ -1075,58 +1044,34 @@ mod tests {
 
     use crate::http::test_support::signed_up_and_logged_in_session_token;
 
-    async fn create_connection(router: &Router, session_token: &str) -> String {
-        let body = serde_json::json!({
-            "site_url": "https://shop.example.com",
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "domains": [],
-            "base_currency": "XMR",
-        });
-        let response = router
-            .clone()
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        body_json(response)
-            .await
-            .as_object()
-            .unwrap()
-            .get("public_key")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
+    /// Makes a store with the site `shop.example.com` through store setup,
+    /// returning its public key.
+    async fn create_connection(router: &Router, state: &AppState, session_token: &str) -> String {
+        crate::http::test_support::store_with_keys(
+            router,
+            state,
+            session_token,
+            "shop.example.com",
+            "XMR",
+        )
+        .await
+        .public_key
     }
 
+    /// Makes a website's order (`POST /api/v1/orders` with the public key),
+    /// returning its id.
     async fn create_order(router: &Router, pk: &str, amount: &str) -> String {
         let response = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/pay/{pk}/orders"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "amount": amount, "currency": TEST_CURRENCY })
-                            .to_string(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(pk),
+                Some(serde_json::json!({ "amount": amount, "currency": TEST_CURRENCY })),
+            ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         body_json(response)
             .await
             .as_object()
@@ -1152,7 +1097,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let store = {
             let key = pk.clone();
             state
@@ -1172,17 +1117,15 @@ mod tests {
             let (router, pk) = (router.clone(), pk.clone());
             async move {
                 let response = router
-                    .oneshot(
-                        Request::builder()
-                            .method("POST")
-                            .uri(format!("/pay/{pk}/orders"))
-                            .header("content-type", "application/json")
-                            .body(Body::from(body.to_string()))
-                            .unwrap(),
-                    )
+                    .oneshot(crate::http::test_support::api_request(
+                        "POST",
+                        "/api/v1/orders",
+                        Some(&pk),
+                        Some(body),
+                    ))
                     .await
                     .unwrap();
-                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.status(), StatusCode::CREATED);
                 crate::db::OrderId::new(
                     body_json(response).await["order_id"]
                         .as_str()
@@ -1194,12 +1137,20 @@ mod tests {
         let view = |order_id: crate::db::OrderId| {
             let (state, pk) = (state.clone(), pk.clone());
             async move {
-                let Ok((row, sk, detail)) = super::load_order(&state, &pk, &order_id).await else {
+                let store = state
+                    .db
+                    .lock()
+                    .get_store_connection_by_public_key(&pk)
+                    .unwrap()
+                    .unwrap();
+                let Ok((row, sk, detail)) =
+                    super::load_order_with(&state, std::sync::Arc::new(store), &order_id, None)
+                        .await
+                else {
                     panic!("the order loads");
                 };
                 super::build_checkout_view(
                     &state,
-                    &pk,
                     &row,
                     &sk,
                     detail,
@@ -1255,7 +1206,7 @@ mod tests {
     #[tokio::test]
     async fn the_checkout_page_shows_the_real_address_amount_and_fiat_quote() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1263,7 +1214,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
         let response = router
@@ -1271,7 +1222,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{order_id}"))
+                    .uri(format!("/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1299,9 +1250,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!(
-                        "/pay/{pk}/orders/{order_id}?view=compact&refund=false"
-                    ))
+                    .uri(format!("/checkout/{order_id}?view=compact&refund=false"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1356,7 +1305,7 @@ mod tests {
     async fn setting_a_refund_address_through_the_checkout_pages_own_form_persists_it_on_the_engine(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1364,7 +1313,7 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
         // Before setting one, the checkout page must show the form, not a
@@ -1374,7 +1323,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{order_id}"))
+                    .uri(format!("/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1391,9 +1340,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!(
-                        "/pay/{pk}/orders/{order_id}/refund-address?view=compact"
-                    ))
+                    .uri(format!("/checkout/{order_id}/refund-address?view=compact"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address=not-an-address"))
                     .unwrap(),
@@ -1410,7 +1357,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                    .uri(format!("/checkout/{order_id}/refund-address"))
                     .header("accept", "application/json")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address=not-an-address"))
@@ -1429,7 +1376,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                    .uri(format!("/checkout/{order_id}/refund-address"))
                     .header("accept", "application/json")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!("refund_address={refund_address}")))
@@ -1444,7 +1391,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                    .uri(format!("/checkout/{order_id}/refund-address"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!("refund_address={refund_address}")))
                     .unwrap(),
@@ -1461,7 +1408,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{order_id}"))
+                    .uri(format!("/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1482,7 +1429,7 @@ mod tests {
     #[tokio::test]
     async fn submitting_an_empty_refund_address_shows_a_clear_error_not_a_bare_error_page() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1490,14 +1437,14 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                    .uri(format!("/checkout/{order_id}/refund-address"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address="))
                     .unwrap(),
@@ -1520,10 +1467,12 @@ mod tests {
         );
     }
 
+    /// What an embed polls when it can't follow the checkout's stream: the
+    /// order on the API, read with the store's public key.
     #[tokio::test]
-    async fn the_checkout_status_endpoint_returns_real_status_and_confirmations() {
+    async fn the_order_read_with_the_public_key_returns_real_status_and_confirmations() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1531,46 +1480,45 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
 
         let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{order_id}/status"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(crate::http::test_support::api_request(
+                "GET",
+                &format!("/api/v1/orders/{order_id}"),
+                Some(&pk),
+                None,
+            ))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["status"], "pending");
+        assert_eq!(body["is_final"], false);
         assert_eq!(body["confirmations"], 0);
         assert!(body["confirmations_required"].is_number());
-        assert!(body["error"].is_null());
     }
 
     #[tokio::test]
     async fn the_checkout_events_stream_pushes_a_change_made_on_the_engine() {
         let (state, engine) = test_state_with_real_engine().await;
         let engine_client = state.engine.client.clone();
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "checkout-events@example.com",
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
 
         let response = router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/pay/{pk}/orders/{order_id}/events?fragments=true"))
+                    .uri(format!("/checkout/{order_id}/events?fragments=true"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1635,21 +1583,21 @@ mod tests {
     #[tokio::test]
     async fn the_routed_checkout_stream_sends_only_changed_parts_to_their_elements() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "checkout-routed@example.com",
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
 
         let page = router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/pay/{pk}/orders/{order_id}"))
+                    .uri(format!("/checkout/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1664,7 +1612,7 @@ mod tests {
                 .to_vec(),
         )
         .unwrap();
-        let events_url = format!("/pay/{pk}/orders/{order_id}/events?routed=true");
+        let events_url = format!("/checkout/{order_id}/events?routed=true");
         assert!(
             html.contains(&format!(
                 r#"id="checkout-stream" hidden fx-action="{events_url}" fx-trigger="fx:inited""#
@@ -1753,18 +1701,18 @@ mod tests {
                 ..Default::default()
             },
         ));
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "checkout-events-cap@example.com",
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "10.00").await;
         let open = |ip: [u8; 4]| {
             let mut request = Request::builder()
-                .uri(format!("/pay/{pk}/orders/{order_id}/events"))
+                .uri(format!("/checkout/{order_id}/events"))
                 .body(Body::empty())
                 .unwrap();
             request.extensions_mut().insert(axum::extract::ConnectInfo(
@@ -1794,17 +1742,10 @@ mod tests {
     async fn the_checkout_events_stream_404s_for_an_unknown_order() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "checkout-events-404@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let pk = create_connection(&router, &session_token).await;
         let response = router
             .oneshot(
                 Request::builder()
-                    .uri(format!("/pay/{pk}/orders/pay_missing/events"))
+                    .uri("/checkout/pay_missing/events")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1818,19 +1759,11 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "checkout-not-found@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let pk = create_connection(&router, &session_token).await;
-
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/nonexistent"))
+                    .uri("/checkout/nonexistent")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1842,27 +1775,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_public_key_is_also_a_real_not_found_not_a_500() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/pay/pk_nonexistent/orders/pay_nonexistent")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn the_share_page_wraps_the_real_checkout_page_with_the_site_nav() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1870,14 +1785,14 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &session_token).await;
+        let pk = create_connection(&router, &state, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{order_id}/share"))
+                    .uri(format!("/checkout/{order_id}/share"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1898,7 +1813,7 @@ mod tests {
         // The iframe must point at the real, unwrapped checkout page for
         // this exact order - not a second copy of the payment UI.
         assert!(
-            html.contains(&format!(r#"src="/pay/{pk}/orders/{order_id}""#)),
+            html.contains(&format!(r#"src="/checkout/{order_id}""#)),
             "expected an iframe pointing at the real checkout page, got: {html}"
         );
     }
@@ -1908,19 +1823,11 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "checkout-share-not-found@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let pk = create_connection(&router, &session_token).await;
-
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/nonexistent/share"))
+                    .uri("/checkout/nonexistent/share")
                     .body(Body::empty())
                     .unwrap(),
             )

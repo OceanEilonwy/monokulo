@@ -357,16 +357,10 @@ async fn make_store(
     let fields = CreateConnectionFields {
         name: store.name.clone(),
         site: store.site.clone(),
-        view_key_hex: String::new(),
-        spend_pubkey_hex: String::new(),
-        encrypted_keys: None,
-        network: None,
-        domains: Vec::new(),
         confirmations_required: store.confirmations_required,
         order_expiry_seconds: store.order_expiry_seconds,
         base_currency: store.base_currency.clone(),
-        key_custody_backend: None,
-        wallet_id: Some(wallet.id.clone()),
+        wallet_id: wallet.id.clone(),
     };
     match create_connection_for_user(state, user, fields).await {
         Ok(outcome) => {

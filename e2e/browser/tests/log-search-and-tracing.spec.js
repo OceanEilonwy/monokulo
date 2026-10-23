@@ -241,11 +241,11 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
 
   // What class-wc-gateway-monokulo.php sends: its own trace, a new span id.
   const traceId = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
-  const response = await request.post(`${base}/pay/${publicKey}/orders`, {
-    headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01` },
+  const response = await request.post(`${base}/api/v1/orders`, {
+    headers: { authorization: `Bearer ${publicKey}`, traceparent: `00-${traceId}-00f067aa0ba902b7-01` },
     data: { amount: '0.5', currency: 'XMR' },
   });
-  expect(response.ok()).toBeTruthy();
+  expect(response.status()).toBe(201);
   expect(response.headers()['traceresponse']).toContain(traceId);
 
   await expect

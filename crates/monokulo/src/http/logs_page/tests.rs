@@ -999,9 +999,39 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     call("/dashboard/stores/c_who", Some(&s.cookie))
         .await
         .unwrap();
-    call("/pay/pk_who/orders/o_nowhere/status", None)
+    // The API with the store's public key, for an order it doesn't have.
+    s.router
+        .clone()
+        .oneshot(crate::http::test_support::api_request(
+            "GET",
+            "/api/v1/orders/o_nowhere",
+            Some("pk_who"),
+            None,
+        ))
+        .with_subscriber(s.dispatch.clone())
         .await
         .unwrap();
+    // The checkout of an order monokulo recorded for the store.
+    s.state
+        .db
+        .lock()
+        .create_order_currency_metadata(
+            &shared::ids::ConnectionId::new("c_who"),
+            &crate::db::OrderId::new("o_who"),
+            "EUR",
+            "12.34",
+            shared::xmr_amount::Piconero(1_000_000),
+            "fixed",
+            1000,
+            "EUR",
+            None,
+            10,
+            false,
+            None,
+            true,
+        )
+        .unwrap();
+    call("/checkout/o_who", None).await.unwrap();
 
     let store = s.state.log_store.clone().unwrap();
     let finished = |route: &str| {
@@ -1062,17 +1092,23 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     let store_page = finished("/dashboard/stores/{id}").await;
     assert_eq!(store_page.attributes["store.id"], "c_who");
     assert_eq!(store_page.attributes["session.id"], session.as_str());
-    let checkout = finished("/pay/{pk}/orders/{order_id}/status").await;
+    let api = finished("/api/v1/orders/{order_id}").await;
     assert_eq!(
-        checkout.attributes["store.id"], "c_who",
+        api.attributes["store.id"], "c_who",
         "found from the public key"
     );
-    assert!(
-        !checkout.attributes.contains_key("session.id")
-            && !checkout.attributes.contains_key("user.id"),
-        "a visitor has no session: {:?}",
-        checkout.attributes
+    let checkout = finished("/checkout/{order_id}").await;
+    assert_eq!(
+        checkout.attributes["store.id"], "c_who",
+        "found from the order"
     );
+    for line in [&api, &checkout] {
+        assert!(
+            !line.attributes.contains_key("session.id") && !line.attributes.contains_key("user.id"),
+            "a visitor has no session: {:?}",
+            line.attributes
+        );
+    }
 
     // In Logs: the line links to its session, whose search finds the
     // session's lines and no one else's.
@@ -1098,7 +1134,11 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         found.contains("GET / 200") && found.contains("GET /dashboard/stores/{id} 500"),
         "{found}"
     );
-    assert!(!found.contains("/pay/{pk}"), "{found}");
+    assert!(
+        !found.contains("GET /api/v1/orders/{order_id}")
+            && !found.contains("GET /checkout/{order_id}"),
+        "{found}"
+    );
 
     // Opened: who first, with names beside the ids.
     let (_, _, fragment) = s

@@ -489,7 +489,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri("/status/engine")
-                    .header("authorization", format!("Bearer {merchant}"))
+                    .header("cookie", format!("session={merchant}"))
                     .body(Body::empty())
                     .unwrap(),
             )

@@ -12,12 +12,11 @@
 //!
 //! A request with neither header (a plugin's server, `curl`, an old
 //! browser's same-site form) is let through: neither header is how a
-//! cross-site browser request arrives. API clients authenticate with a
-//! bearer token, which a cross-site page can't attach, so a request that
-//! carries `Authorization` is let through whatever its origin.
+//! cross-site browser request arrives.
 //!
-//! Not for the public payment routes (`/pay/…`): those are called from
-//! merchants' sites by design, under their own CORS and embed policy.
+//! Not for the machine API (`/api/v1`) or the checkout (`/checkout/…`):
+//! those are called from merchants' sites by design, under their own CORS
+//! and embed policy.
 
 use axum::extract::Request;
 use axum::http::{header, Method, StatusCode};
@@ -27,8 +26,7 @@ use axum::response::{IntoResponse, Response};
 /// Refuses a state-changing request that a browser says came from another
 /// site. See the module doc comment.
 pub async fn same_origin_middleware(request: Request, next: Next) -> Response {
-    if !is_state_changing(request.method()) || request.headers().contains_key(header::AUTHORIZATION)
-    {
+    if !is_state_changing(request.method()) {
         return next.run(request).await;
     }
     let headers = request.headers();

@@ -321,7 +321,7 @@ settings! {
         key: "public_uri",
         default: String::new(),
         check: |v: &String| check_public_uri(v),
-        description: "This instance's web address, e.g. https://pay.example.com. Shop plugins are given it when they connect, and send customers to its checkout; visitors on Tor get the onion address instead (onion_uri). Plugins can't connect until it is set.",
+        description: "This instance's web address, e.g. https://www.monokulo.com. Connect codes for apps and the plugin connect flow use it, and payment links shared from the dashboard; visitors on Tor get the onion address instead (onion_uri). Plugins and apps can't connect until it is set.",
         example: "https://pay.example.com",
     },
     ABUSE_TRUSTED_PROXIES: String {
@@ -544,7 +544,7 @@ impl Section for LoggingConfig {
 /// plugins and web visitors use (an onion address is `onion_uri`). It must be an
 /// absolute `http`/`https` URL with a host and nothing after it but an
 /// optional `/` - no path, query, fragment or login - since callers append
-/// paths like `/pay/{pk}/orders` to it. Returns it without the trailing
+/// paths like `/checkout/{order_id}` to it. Returns it without the trailing
 /// `/`. The empty string is not valid here; an empty setting just means
 /// "not set" ([`MonokuloSettings::public_uri`]).
 pub fn validate_public_uri(value: &str) -> Result<String, String> {

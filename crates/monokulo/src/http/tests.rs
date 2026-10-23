@@ -1,6 +1,6 @@
-//! HTTP-layer integration tests for `/signup`, driven through the real
-//! `Router` via `tower::ServiceExt::oneshot` — no bound socket needed, same
-//! pattern as `engine::http::tests`.
+//! HTTP-layer integration tests for signing up, logging in and setting up a
+//! store, driven through the real `Router` via `tower::ServiceExt::oneshot`
+//! — no bound socket needed, same pattern as `engine::http::tests`.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -16,90 +16,17 @@ fn test_router() -> Router {
     build_router(AppState::for_tests())
 }
 
-fn signup_request(email: &str, password: &str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri("/signup")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({ "email": email, "password": password }).to_string(),
-        ))
-        .unwrap()
-}
-
-fn login_request(email: &str, password: &str) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri("/login")
-        .header("content-type", "application/json")
-        .body(Body::from(
-            serde_json::json!({ "email": email, "password": password }).to_string(),
-        ))
-        .unwrap()
-}
-
-fn whoami_request(bearer: Option<&str>) -> Request<Body> {
+/// `GET /_test/whoami` (a route behind `AuthedUser`) with `cookie` as the
+/// `Cookie` header.
+fn whoami_request(cookie: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().method("GET").uri("/_test/whoami");
-    if let Some(token) = bearer {
-        builder = builder.header("authorization", format!("Bearer {token}"));
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
     }
     builder.body(Body::empty()).unwrap()
 }
 
-fn logout_request(bearer: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("POST").uri("/logout");
-    if let Some(token) = bearer {
-        builder = builder.header("authorization", format!("Bearer {token}"));
-    }
-    builder.body(Body::empty()).unwrap()
-}
-
-use crate::http::test_support::body_json;
-
-#[tokio::test]
-async fn a_valid_signup_succeeds_and_does_not_return_the_password_or_hash() {
-    let router = test_router();
-
-    let response = router
-        .oneshot(signup_request(
-            "alice@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
-
-    let body = body_json(response).await;
-    let obj = body.as_object().unwrap();
-    assert!(obj
-        .get("user_id")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| !s.is_empty()));
-    // Nothing password-shaped leaked into the response.
-    assert!(!obj.contains_key("password"));
-    assert!(!obj.contains_key("password_hash"));
-    let rendered = body.to_string();
-    assert!(!rendered.contains("correct horse battery staple"));
-    assert!(!rendered.contains("$argon2"));
-}
-
-#[tokio::test]
-async fn signing_up_the_same_email_twice_returns_conflict_on_the_second_attempt() {
-    let router = test_router();
-
-    let first = router
-        .clone()
-        .oneshot(signup_request("bob@example.com", "first password"))
-        .await
-        .unwrap();
-    assert_eq!(first.status(), StatusCode::CREATED);
-
-    let second = router
-        .oneshot(signup_request("bob@example.com", "a different password"))
-        .await
-        .unwrap();
-    assert_eq!(second.status(), StatusCode::CONFLICT);
-}
+use crate::http::test_support::{body_json, signed_up_and_logged_in_session_token};
 
 #[tokio::test]
 async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_password() {
@@ -107,11 +34,7 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
     let router = build_router(state.clone());
 
     let plaintext = "correct horse battery staple";
-    let response = router
-        .oneshot(signup_request("carol@example.com", plaintext))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
+    signed_up_and_logged_in_session_token(&router, "carol@example.com", plaintext).await;
 
     let row = state
         .db
@@ -135,271 +58,61 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
     );
 }
 
+/// A session is a cookie: it reaches a protected route as its own user,
+/// and the same token sent as a bearer header is not a session at all.
 #[tokio::test]
-async fn a_correct_login_returns_a_non_empty_session_token() {
-    let router = test_router();
-
-    let signup = router
-        .clone()
-        .oneshot(signup_request("dave@example.com", "hunter2hunter2"))
-        .await
-        .unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
+async fn a_session_cookie_reaches_the_protected_test_route_as_the_right_user_and_a_bearer_does_not()
+{
+    let state = AppState::for_tests();
+    let router = build_router(state.clone());
+    let token = signed_up_and_logged_in_session_token(
+        &router,
+        "grace@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let user_id = state
+        .db
+        .lock()
+        .get_user_by_email("grace@example.com")
+        .unwrap()
+        .unwrap()
+        .id;
 
     let response = router
-        .oneshot(login_request("dave@example.com", "hunter2hunter2"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = body_json(response).await;
-    let token = body
-        .as_object()
-        .unwrap()
-        .get("session_token")
-        .and_then(|v| v.as_str());
-    assert!(token.is_some_and(|t| !t.is_empty()));
-}
-
-#[tokio::test]
-async fn a_wrong_password_returns_unauthorized() {
-    let router = test_router();
-
-    let signup = router
         .clone()
-        .oneshot(signup_request("erin@example.com", "the real password"))
-        .await
-        .unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
-
-    let response = router
-        .oneshot(login_request("erin@example.com", "not the real password"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn an_unknown_email_returns_the_same_unauthorized_response_as_a_wrong_password() {
-    let router = test_router();
-
-    let unknown_email_response = router
-        .clone()
-        .oneshot(login_request(
-            "nobody-has-this-account@example.com",
-            "whatever",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(unknown_email_response.status(), StatusCode::UNAUTHORIZED);
-    let unknown_email_body = body_json(unknown_email_response).await;
-
-    let signup = router
-        .clone()
-        .oneshot(signup_request("frank@example.com", "the real password"))
-        .await
-        .unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
-    let wrong_password_response = router
-        .oneshot(login_request("frank@example.com", "not the real password"))
-        .await
-        .unwrap();
-    assert_eq!(wrong_password_response.status(), StatusCode::UNAUTHORIZED);
-    let wrong_password_body = body_json(wrong_password_response).await;
-
-    // Same status *and* same body shape - a client must not be able to
-    // distinguish "no such account" from "wrong password".
-    assert_eq!(unknown_email_body, wrong_password_body);
-}
-
-#[tokio::test]
-async fn a_valid_session_token_reaches_the_protected_test_route_as_the_right_user() {
-    let router = test_router();
-
-    let signup = router
-        .clone()
-        .oneshot(signup_request(
-            "grace@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
-    let user_id = body_json(signup)
-        .await
-        .as_object()
-        .unwrap()
-        .get("user_id")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let login = router
-        .clone()
-        .oneshot(login_request(
-            "grace@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let session_token = body_json(login)
-        .await
-        .as_object()
-        .unwrap()
-        .get("session_token")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let response = router
-        .oneshot(whoami_request(Some(&session_token)))
+        .oneshot(whoami_request(Some(&format!("session={token}"))))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
-    assert_eq!(
-        body.as_object()
-            .unwrap()
-            .get("user_id")
-            .unwrap()
-            .as_str()
-            .unwrap(),
-        user_id
-    );
+    assert_eq!(body["user_id"].as_str().unwrap(), user_id.as_str());
+
+    let bearer = router
+        .oneshot(
+            Request::builder()
+                .uri("/_test/whoami")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bearer.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn the_protected_test_route_rejects_a_missing_authorization_header() {
+async fn the_protected_test_route_rejects_a_request_with_no_session() {
     let router = test_router();
     let response = router.oneshot(whoami_request(None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn the_protected_test_route_rejects_an_unknown_bearer_token() {
+async fn the_protected_test_route_rejects_an_unknown_session() {
     let router = test_router();
     let response = router
-        .oneshot(whoami_request(Some("garbage-token-nobody-issued")))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn logging_out_a_valid_session_returns_no_content() {
-    let router = test_router();
-
-    let signup = router
-        .clone()
-        .oneshot(signup_request(
-            "henry@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
-
-    let login = router
-        .clone()
-        .oneshot(login_request(
-            "henry@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let session_token = body_json(login)
-        .await
-        .as_object()
-        .unwrap()
-        .get("session_token")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let response = router
-        .oneshot(logout_request(Some(&session_token)))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::NO_CONTENT);
-}
-
-#[tokio::test]
-async fn after_logging_out_the_same_session_token_no_longer_reaches_a_protected_route() {
-    let router = test_router();
-
-    let signup = router
-        .clone()
-        .oneshot(signup_request(
-            "iris@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
-
-    let login = router
-        .clone()
-        .oneshot(login_request(
-            "iris@example.com",
-            "correct horse battery staple",
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    let session_token = body_json(login)
-        .await
-        .as_object()
-        .unwrap()
-        .get("session_token")
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    // Prove the session actually works before logout, so the post-logout
-    // 401 below demonstrates revocation rather than a token that never
-    // worked in the first place.
-    let before = router
-        .clone()
-        .oneshot(whoami_request(Some(&session_token)))
-        .await
-        .unwrap();
-    assert_eq!(before.status(), StatusCode::OK);
-
-    let logout_response = router
-        .clone()
-        .oneshot(logout_request(Some(&session_token)))
-        .await
-        .unwrap();
-    assert_eq!(logout_response.status(), StatusCode::NO_CONTENT);
-
-    // The same token, reused against the same protected route, must now be
-    // rejected - the session was genuinely deleted, not just "the logout
-    // call returned 204".
-    let after = router
-        .oneshot(whoami_request(Some(&session_token)))
-        .await
-        .unwrap();
-    assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn logout_rejects_a_missing_authorization_header() {
-    let router = test_router();
-    let response = router.oneshot(logout_request(None)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn logout_rejects_an_unknown_bearer_token() {
-    let router = test_router();
-    let response = router
-        .oneshot(logout_request(Some("garbage-token-nobody-issued")))
+        .oneshot(whoami_request(Some("session=garbage-token-nobody-issued")))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -714,12 +427,6 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
             .uri("/setup")
             .header("accept", "text/html")
             .header("fx-request", "true")
-            .body(Body::empty())
-            .unwrap(),
-        Request::builder()
-            .uri("/setup")
-            .header("accept", "text/html")
-            .header("authorization", "Bearer not-a-session")
             .body(Body::empty())
             .unwrap(),
         Request::builder()
@@ -1838,30 +1545,35 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
     }
 }
 
+/// The sign-up form, posted with `invite` as its invite token field.
 fn invite_token_signup_request(
     email: &str,
     password: &str,
     invite_token: Option<&str>,
 ) -> Request<Body> {
-    let mut body = serde_json::json!({ "email": email, "password": password });
-    if let Some(token) = invite_token {
-        body["invite_token"] = serde_json::Value::String(token.to_string());
-    }
-    Request::builder()
-        .method("POST")
-        .uri("/signup")
-        .header("content-type", "application/json")
-        .body(Body::from(body.to_string()))
-        .unwrap()
+    form_request(
+        "/dashboard/signup",
+        &[
+            ("email", email),
+            ("password", password),
+            ("invite", invite_token.unwrap_or("")),
+        ],
+    )
 }
 
-/// `signup.mode` gating for the JSON `POST /signup` API - the browser-facing
-/// `/dashboard/signup` form's own equivalent behavior (including the real
-/// single-use guarantee) is covered end to end in `http::invites::tests`,
-/// which drives it through a real `/request-invite` + admin "create invite
-/// link" flow; these tests exercise the JSON surface specifically, since
-/// `signup::create_account` is shared by both and must not drift between
-/// them.
+/// Whether a sign-up response made the account: a redirect with a session.
+fn signed_up(response: &axum::response::Response) -> bool {
+    response.status() == StatusCode::FOUND
+        && response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .any(|v| v.to_str().unwrap().starts_with("session="))
+}
+
+/// `signup.mode` gating at the sign-up form. The real single-use guarantee
+/// through a `/request-invite` + admin "create invite link" flow is covered
+/// end to end in `http::invites::tests`.
 #[tokio::test]
 async fn public_mode_signup_needs_no_invite_token_at_all() {
     // `test_app_state`'s own `seed_test_admin` already defaults to
@@ -1876,7 +1588,7 @@ async fn public_mode_signup_needs_no_invite_token_at_all() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
+    assert!(signed_up(&response), "{}", response.status());
 }
 
 #[tokio::test]
@@ -1886,6 +1598,7 @@ async fn invite_only_mode_rejects_a_signup_with_no_token() {
         settings: crate::settings::MonokuloSettings::defaults(),
         ..AppState::for_tests()
     };
+    let db = state.db.clone();
     let router = build_router(state);
 
     let response = router
@@ -1896,12 +1609,16 @@ async fn invite_only_mode_rejects_a_signup_with_no_token() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(response).await;
-    assert!(
-        body["error"].as_str().unwrap().contains("invite"),
-        "expected a clear invite-required error, got: {body}"
-    );
+    // The form again, in its "you need an invite" state; no account made.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!signed_up(&response));
+    let html = body_text(response).await;
+    assert!(html.contains("invite"), "{html}");
+    assert!(db
+        .lock()
+        .get_user_by_email("hopeful@example.com")
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -1926,7 +1643,7 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
         ))
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::CREATED);
+    assert!(signed_up(&first), "{}", first.status());
 
     // The literal ask: "more than one account cannot be registered using
     // the same link".
@@ -1938,24 +1655,19 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
         ))
         .await
         .unwrap();
-    assert_eq!(second.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(second).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert!(!signed_up(&second));
+    let html = body_text(second).await;
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap()
-            .contains("already been used"),
-        "expected a clear already-used error, got: {body}"
+        html.contains("already been used"),
+        "expected a clear already-used error, got: {html}"
     );
 }
 
-/// An embed works on any site - clearnet or `.onion` - so the public
-/// `/pay/...` routes of a store that hasn't restricted embedding answer
-/// CORS for any origin (echoing it back), preflight included, and never
 /// A state-changing request that a browser says came from another site is
 /// refused on every route of the site's own, login included (login CSRF
 /// would sign the victim into the attacker's account); the site's own
-/// forms and bearer-token API calls are untouched.
+/// forms and requests carrying an `Authorization` header are untouched.
 #[tokio::test]
 async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
     let state = AppState::for_tests();
@@ -2009,29 +1721,27 @@ async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
         .await
         .unwrap();
     assert_ne!(response.status(), StatusCode::FORBIDDEN);
-    // An API call with a bearer token is not a browser form: let through
-    // to the handler whatever its origin (the token is what authenticates).
+    // The site takes no bearer tokens, so an `Authorization` header buys a
+    // cross-site request nothing.
     let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/logout")
-                .header("host", "pay.example")
-                .header("origin", "https://evil.example")
-                .header("authorization", "Bearer nope")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(post(
+            "/dashboard/logout",
+            &[
+                ("origin", "https://evil.example"),
+                ("authorization", "Bearer nope"),
+            ],
+        ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    // The public payment routes are for other sites by design.
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    // The machine API is for other sites by design: without a key it is
+    // refused for that, not for where it came from.
     let response = router
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/pay/pk_test/orders")
+                .uri("/api/v1/orders")
                 .header("host", "pay.example")
                 .header("origin", "https://shop.example")
                 .header("content-type", "application/json")
@@ -2040,10 +1750,13 @@ async fn cross_site_posts_to_the_sites_own_routes_are_refused() {
         )
         .await
         .unwrap();
-    assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-/// allow credentials. The dashboard stays same-origin only.
+/// An embed works on any site - clearnet or `.onion` - so the machine API
+/// and the checkout pages of a store that hasn't restricted embedding
+/// answer CORS for any origin (echoing it back), preflight included, and
+/// never allow credentials. The dashboard stays same-origin only.
 #[tokio::test]
 async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
     let router = test_router();
@@ -2054,10 +1767,13 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
         .oneshot(
             Request::builder()
                 .method("OPTIONS")
-                .uri("/pay/pk_test/orders")
+                .uri("/api/v1/orders")
                 .header("origin", onion)
                 .header("access-control-request-method", "POST")
-                .header("access-control-request-headers", "content-type")
+                .header(
+                    "access-control-request-headers",
+                    "content-type, authorization",
+                )
                 .header("access-control-request-private-network", "true")
                 .body(Body::empty())
                 .unwrap(),
@@ -2084,8 +1800,8 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
 
     // Error responses carry it too, so a caller can read why it failed.
     for (uri, allowed) in [
-        ("/pay/pk_test/orders/order_x/status", "https://shop.example"),
-        ("/pay/pk_test/orders/order_x/events", "https://shop.example"),
+        ("/api/v1/orders/order_x", "https://shop.example"),
+        ("/checkout/order_x/events", "https://shop.example"),
         ("/static/monokulo-client.js", "*"),
     ] {
         let response = router
@@ -2420,12 +2136,17 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
             "XMR",
         )
         .unwrap();
+        db.set_secret_key_hash(
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::auth::RawToken::presented("sk_shop").hash(),
+        )
+        .unwrap();
     }
     let router = build_router(state.clone());
     let forward = || {
         Request::builder()
             .method("POST")
-            .uri("/pay/pk_shop/logs")
+            .uri("/api/v1/logs")
             .header("content-type", "application/json")
             .header("authorization", "Bearer sk_shop")
             .body(Body::from(

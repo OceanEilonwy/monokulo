@@ -3,7 +3,7 @@
 //! check), checking and removing a store's domains and turning the
 //! restriction on or off on its settings page, and the warnings its store
 //! page shows - plus [`embed_policy_middleware`], which enforces the
-//! restriction on the public `/pay/{pk}/...` routes.
+//! restriction on the public routes (`/api/v1`, `/checkout/{order_id}`).
 
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
@@ -20,61 +20,56 @@ use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning};
 
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
+use super::store_key::{ApiCaller, RequestStore};
 use super::{AppState, AuthedUser};
+use crate::api::runtime::problem::Problem;
 use crate::db::Database;
 use crate::views::store_settings::StoreSection;
 
-/// `{pk}` from a public `/pay/{pk}/...` path.
-pub(super) fn public_key_of_pay_path(path: &str) -> Option<&str> {
-    path.strip_prefix("/pay/")?
-        .split('/')
-        .next()
-        .filter(|pk| !pk.is_empty())
-}
-
-/// Enforces a restricted store's embed policy on its `/pay/{pk}/...` routes
-/// (CORS is `super::embed_cors_layer`'s job):
+/// Enforces a restricted store's embed policy on its public routes (CORS
+/// is `super::embed_cors_layer`'s job). The store is the one
+/// `super::abuse::pay_middleware` found ([`RequestStore`]):
 ///
 /// - every response carries `Content-Security-Policy: frame-ancestors ...`,
 ///   so browsers only show the checkout inside monokulo itself or a
 ///   verified domain;
-/// - `POST /pay/{pk}/orders` must come either from a browser page on a
-///   verified domain (its `Origin`) or from someone holding the store's
-///   secret key (`super::store_key`, e.g. a shop plugin on the
-///   shop's server). Anything else gets `403`, including a request with no
-///   `Origin` and no key, which could otherwise come from any script
-///   anywhere.
+/// - `POST /api/v1/orders` with the store's public key must come from a
+///   browser page on a verified domain (its `Origin`). With the store's
+///   secret key or an app's (a shop plugin on the shop's server, a till)
+///   it may come from anywhere. Anything else gets `403`, including a
+///   request with the public key and no `Origin`, which could otherwise
+///   come from any script anywhere.
 ///
 /// An unrestricted store's requests pass through untouched. While the
 /// policy can't be read (the database didn't answer), nothing is taken as
-/// unrestricted: an order creation without the store's key is `503` and a
-/// page is framed by monokulo alone, since a store that restricted itself
-/// may be the one asking.
+/// unrestricted: an order made with the public key is `503` and a page is
+/// framed by monokulo alone, since a store that restricted itself may be
+/// the one asking.
 pub async fn embed_policy_middleware(
     State(db): State<Database>,
     request: Request,
     next: Next,
 ) -> Response {
     let creates_order = request.method() == Method::POST
-        && request.uri().path().ends_with("/orders")
-        && request.uri().path().matches('/').count() == 3;
+        && request.uri().path() == crate::api::v1::orders::Path::TEMPLATE;
     let has_key = request
         .extensions()
-        .get::<super::store_key::StoreKeyAuthenticated>()
-        .is_some();
-    let policy = match public_key_of_pay_path(request.uri().path()) {
-        Some(public_key) => embed_domains::policy_for_public_key(&db, public_key).await,
+        .get::<ApiCaller>()
+        .is_some_and(|caller| caller.credential.is_store_key());
+    let policy = match request.extensions().get::<RequestStore>() {
+        Some(RequestStore(store)) => {
+            embed_domains::policy_for_public_key(&db, &store.tenant_public_key).await
+        }
         None => Ok(None),
     };
     let policy = match policy {
         Ok(policy) => policy.filter(|policy| policy.restricted),
         Err(_) if creates_order && !has_key => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                axum::Json(serde_json::json!({
-                    "error": "This store's settings can't be read right now. Please try again shortly."
-                })),
-            )
+            return Problem::StoreUnavailable
+                .detail(
+                    "This store's settings can't be read right now. Please try again shortly."
+                        .to_owned(),
+                )
                 .into_response();
         }
         Err(_) => {
@@ -100,11 +95,7 @@ pub async fn embed_policy_middleware(
             ),
         };
         if let Some(error) = error {
-            return (
-                StatusCode::FORBIDDEN,
-                axum::Json(serde_json::json!({ "error": error })),
-            )
-                .into_response();
+            return Problem::Forbidden.detail(error.to_owned()).into_response();
         }
     }
 
@@ -659,11 +650,6 @@ mod tests {
 
     use super::super::{build_router, AppState};
 
-    const TEST_VIEW_KEY_HEX: &str =
-        "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str =
-        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-
     async fn test_state(dns: Arc<FakeDns>) -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
@@ -687,7 +673,7 @@ mod tests {
         let mut builder = Request::builder()
             .method(method)
             .uri(uri)
-            .header("authorization", format!("Bearer {session}"));
+            .header("cookie", format!("session={session}"));
         // A browser posts every form urlencoded, even one with no fields.
         if form.is_some() || method == "POST" {
             builder = builder.header("content-type", "application/x-www-form-urlencoded");
@@ -712,7 +698,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::post(uri)
-                    .header("authorization", format!("Bearer {session}"))
+                    .header("cookie", format!("session={session}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(form.to_string()))
                     .unwrap(),
@@ -734,7 +720,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::post(uri)
-                    .header("authorization", format!("Bearer {session}"))
+                    .header("cookie", format!("session={session}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("FX-Request", "true")
                     .body(Body::from(form.to_string()))
@@ -748,150 +734,69 @@ mod tests {
     }
 
     async fn session_for(router: &Router, email: &str) -> String {
-        let credentials =
-            serde_json::json!({ "email": email, "password": "correct horse battery staple" })
-                .to_string();
-        for uri in ["/signup", "/login"] {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(uri)
-                        .header("content-type", "application/json")
-                        .body(Body::from(credentials.clone()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert!(
-                response.status().is_success(),
-                "{uri}: {}",
-                response.status()
-            );
-            if uri == "/login" {
-                let body = response.into_body().collect().await.unwrap().to_bytes();
-                let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                return json["session_token"].as_str().unwrap().to_string();
-            }
-        }
-        unreachable!()
+        crate::http::test_support::signed_up_and_logged_in_session_token(
+            router,
+            email,
+            "correct horse battery staple",
+        )
+        .await
     }
 
-    async fn create_store(router: &Router, session: &str) -> String {
-        create_store_with_key(router, session).await.0
+    async fn create_store(router: &Router, state: &AppState, session: &str) -> String {
+        create_store_with_key(router, state, session).await.0
     }
 
     /// `(connection_id, public_key)`.
-    async fn create_store_with_key(router: &Router, session: &str) -> (String, String) {
-        create_store_on(router, session, "https://store-home.example/shop").await
+    async fn create_store_with_key(
+        router: &Router,
+        state: &AppState,
+        session: &str,
+    ) -> (String, String) {
+        create_store_on(router, state, session, "store-home.example").await
     }
 
-    /// A store on `site` (no two stores share one); `(connection_id, public_key)`.
-    async fn create_store_on(router: &Router, session: &str, site: &str) -> (String, String) {
-        let body = serde_json::json!({
-            "site_url": site,
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "domains": [],
-            "base_currency": "XMR",
-        });
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session}"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        (
-            json["connection_id"].as_str().unwrap().to_string(),
-            json["public_key"].as_str().unwrap().to_string(),
-        )
+    /// A store on `site` (no two stores share one), made through store
+    /// setup; `(connection_id, public_key)`.
+    async fn create_store_on(
+        router: &Router,
+        state: &AppState,
+        session: &str,
+        site: &str,
+    ) -> (String, String) {
+        let store =
+            crate::http::test_support::store_with_keys(router, state, session, site, "XMR").await;
+        (store.id, store.public_key)
     }
 
-    /// `POST /pay/{pk}/orders` from a page on `origin` (or no page at all).
+    /// A website's `POST /api/v1/orders` (with the store's public key) from
+    /// a page on `origin` (or no page at all).
     async fn create_order_from(
         router: &Router,
         pk: &str,
         origin: Option<&str>,
     ) -> axum::response::Response {
-        let mut builder = Request::builder()
-            .method("POST")
-            .uri(format!("/pay/{pk}/orders"))
-            .header("content-type", "application/json");
+        let mut request = crate::http::test_support::api_request(
+            "POST",
+            "/api/v1/orders",
+            Some(pk),
+            Some(serde_json::json!({ "amount": "1", "currency": "XMR" })),
+        );
         if let Some(origin) = origin {
-            builder = builder.header("origin", origin);
+            request
+                .headers_mut()
+                .insert("origin", origin.parse().unwrap());
         }
-        let body = serde_json::json!({ "amount": "1", "currency": "XMR" }).to_string();
-        router
-            .clone()
-            .oneshot(builder.body(Body::from(body)).unwrap())
-            .await
-            .unwrap()
+        router.clone().oneshot(request).await.unwrap()
     }
 
-    async fn create_store_via_api(
-        router: &Router,
-        session: &str,
-        extra: serde_json::Value,
-    ) -> (StatusCode, String) {
-        let mut body = serde_json::json!({
-            "site_url": "https://store-home.example",
-            "view_key_hex": TEST_VIEW_KEY_HEX,
-            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-            "network": "mainnet",
-            "base_currency": "XMR",
-        });
-        for (key, value) in extra.as_object().unwrap() {
-            body[key] = value.clone();
-        }
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/connections")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {session}"))
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        let json = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
-        (
-            status,
-            json["connection_id"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        )
-    }
-
+    /// A new store's site joins its domains straight away; a store from
+    /// before domains existed gets its site imported, once.
     #[tokio::test]
-    async fn api_domains_join_the_store_and_existing_stores_get_their_site_imported_once() {
+    async fn a_new_stores_site_joins_its_domains_and_existing_stores_get_theirs_imported_once() {
         let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "import@example.com").await;
-        let (status, id) = create_store_via_api(
-            &router,
-            &session,
-            serde_json::json!({ "domains": ["headless.example", "https://second.example", "http://abcdefghijklmnop.onion"] }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
+        let id = create_store(&router, &state, &session).await;
         let domains = |state: &AppState, id: &str| -> Vec<String> {
             state
                 .db
@@ -904,8 +809,8 @@ mod tests {
         };
         assert_eq!(
             domains(&state, &id),
-            vec!["headless.example".to_string(), "second.example".to_string(), "store-home.example".to_string()],
-            "a new store's site and domains (bare or as origins) are added straight away; onion skipped"
+            vec!["store-home.example".to_string()],
+            "a new store's site is added straight away"
         );
 
         // A store from before this existed: only its own site is imported,
@@ -947,59 +852,9 @@ mod tests {
         assert!(domains(&state, &id).is_empty());
     }
 
-    /// Old API callers still sending `allowed_origins` (the field's name when
-    /// it was forwarded to the engine) get the same treatment as `domains`,
-    /// and the engine tenant is created with no origins either way.
-    #[tokio::test]
-    async fn the_old_allowed_origins_field_is_accepted_as_an_alias_for_domains() {
-        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
-        let router = build_router(state.clone());
-        let session = session_for(&router, "alias@example.com").await;
-        let (status, id) = create_store_via_api(
-            &router,
-            &session,
-            serde_json::json!({ "allowed_origins": ["https://legacy.example"] }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
-        let domains: Vec<String> = state
-            .db
-            .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
-            .unwrap()
-            .into_iter()
-            .map(|d| d.domain)
-            .collect();
-        assert_eq!(
-            domains,
-            vec![
-                "legacy.example".to_string(),
-                "store-home.example".to_string()
-            ]
-        );
-
-        let (status, _) = create_store_via_api(
-            &router,
-            &session,
-            serde_json::json!({ "site_url": "https://second-home.example" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED, "domains is optional");
-
-        let (status, _) = create_store_via_api(
-            &router,
-            &session,
-            serde_json::json!({ "allowed_origins": ["https://a.example"], "domains": ["b.example"] }),
-        )
-        .await;
-        assert!(
-            status.is_client_error(),
-            "sending both names is refused rather than silently picking one"
-        );
-    }
-
-    /// `POST /pay/{pk}/orders` with an optional page `Origin` and optional
-    /// `Authorization` value.
+    /// `POST /api/v1/orders` for the store `pk` with an optional page
+    /// `Origin`, and an `Authorization` value: the store's public key as
+    /// the website sends it unless another is given.
     async fn create_order_as(
         router: &Router,
         pk: &str,
@@ -1018,14 +873,13 @@ mod tests {
     ) -> (StatusCode, serde_json::Value) {
         let mut builder = Request::builder()
             .method("POST")
-            .uri(format!("/pay/{pk}/orders"))
+            .uri("/api/v1/orders")
             .header("content-type", "application/json");
         if let Some(origin) = origin {
             builder = builder.header("origin", origin);
         }
-        if let Some(authorization) = authorization {
-            builder = builder.header("authorization", authorization);
-        }
+        let website = format!("Bearer {pk}");
+        builder = builder.header("authorization", authorization.unwrap_or(&website));
         let body = serde_json::json!({ "amount": "1", "currency": "XMR" }).to_string();
         let mut request = builder.body(Body::from(body)).unwrap();
         request.extensions_mut().insert(axum::extract::ConnectInfo(
@@ -1083,32 +937,32 @@ mod tests {
         ));
         let router = build_router(state.clone());
         let session = session_for(&router, "keys@example.com").await;
-        let (id, pk) = create_store_with_key(&router, &session).await;
-        let (other_id, _) =
-            create_store_on(&router, &session, "https://other-home.example/shop").await;
+        let (id, pk) = create_store_with_key(&router, &state, &session).await;
         let key = format!("Bearer {}", secret_key_of(&state, &id));
-        let other_key = format!("Bearer {}", secret_key_of(&state, &other_id));
 
-        // Unrestricted: no key and no Origin still works, recorded as not keyed.
+        // Unrestricted: the public key and no Origin still works, recorded as not keyed.
         let (status, order) = create_order_as(&router, &pk, None, None).await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::CREATED);
         assert!(!recorded_with_key(&state, &id, &order));
 
-        // The right key works and is recorded as keyed.
+        // The secret key works and is recorded as keyed.
         let (status, order) = create_order_as(&router, &pk, None, Some(&key)).await;
-        assert_eq!(status, StatusCode::OK, "{order}");
+        assert_eq!(status, StatusCode::CREATED, "{order}");
         assert!(recorded_with_key(&state, &id, &order));
 
-        // A wrong key, another store's key or a non-bearer value: 401 with a JSON error.
-        for bad in ["Bearer sk_wrong", other_key.as_str(), "Basic abc"] {
+        // An unknown secret or public key, or a non-bearer value: 401 with a problem.
+        for bad in ["Bearer sk_wrong", "Bearer pk_wrong", "Basic abc"] {
             let (status, body) = create_order_as(&router, &pk, None, Some(bad)).await;
             assert_eq!(status, StatusCode::UNAUTHORIZED, "{bad}");
             assert!(
-                body["error"].as_str().unwrap().contains("secret key"),
+                body["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("key was not accepted"),
                 "{body}"
             );
         }
-        // One unkeyed order and three failures spent the per-IP budget (4): unauthenticated
+        // One public-key order and three failures spent the per-IP budget (4): anonymous
         // requests from this address are now limited, keyed ones are not.
         assert_eq!(
             create_order_as(&router, &pk, None, None).await.0,
@@ -1116,7 +970,7 @@ mod tests {
         );
         assert_eq!(
             create_order_as(&router, &pk, None, Some(&key)).await.0,
-            StatusCode::OK
+            StatusCode::CREATED
         );
 
         // Restrict the store to its verified domain.
@@ -1141,11 +995,11 @@ mod tests {
             .unwrap();
 
         // From a fresh address (the first one is out of per-IP budget):
-        // neither a key nor an Origin is refused with a clear message.
+        // the public key with no Origin is refused with a clear message.
         let (status, body) = create_order_from_ip(&router, "198.51.100.7", &pk, None, None).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
-            body["error"].as_str().unwrap().contains("secret key"),
+            body["detail"].as_str().unwrap().contains("secret key"),
             "{body}"
         );
         // A verified page: fine, and not keyed.
@@ -1157,32 +1011,25 @@ mod tests {
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status, StatusCode::CREATED);
         assert!(!recorded_with_key(&state, &id, &order));
         // The key, with or without an Origin: fine.
         assert_eq!(
             create_order_as(&router, &pk, None, Some(&key)).await.0,
-            StatusCode::OK
+            StatusCode::CREATED
         );
         assert_eq!(
             create_order_as(&router, &pk, Some("https://elsewhere.example"), Some(&key))
                 .await
                 .0,
-            StatusCode::OK
-        );
-        // Another store's key is still a 401, not a pass.
-        assert_eq!(
-            create_order_from_ip(&router, "198.51.100.7", &pk, None, Some(&other_key))
-                .await
-                .0,
-            StatusCode::UNAUTHORIZED
+            StatusCode::CREATED
         );
 
         // The per-store key budget (5) is its own limit: 4 keyed orders so
         // far, 1 more passes, then 429.
         assert_eq!(
             create_order_as(&router, &pk, None, Some(&key)).await.0,
-            StatusCode::OK
+            StatusCode::CREATED
         );
         assert_eq!(
             create_order_as(&router, &pk, None, Some(&key)).await.0,
@@ -1221,7 +1068,7 @@ mod tests {
         let (state, _engine) = test_state(dns.clone()).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "frame-only@example.com").await;
-        let (id, pk) = create_store_with_key(&router, &session).await;
+        let (id, pk) = create_store_with_key(&router, &state, &session).await;
         let key = format!("Bearer {}", secret_key_of(&state, &id));
 
         // Created while the store is still unrestricted, from a page: not keyed.
@@ -1229,7 +1076,7 @@ mod tests {
             create_order_as(&router, &pk, Some("https://store-home.example"), None).await;
         let (_, keyed_order) = create_order_as(&router, &pk, None, Some(&key)).await;
         let checkout = |order: &serde_json::Value| {
-            format!("/pay/{pk}/orders/{}", order["order_id"].as_str().unwrap())
+            format!("/checkout/{}", order["order_id"].as_str().unwrap())
         };
 
         // Unrestricted: every order opens as a full page.
@@ -1295,15 +1142,21 @@ mod tests {
             fetch_as(&router, &share, Some("document")).await.0,
             StatusCode::FORBIDDEN
         );
-        // Status and live updates keep working (the embed library and the framed page use them).
+        // The order's status keeps working (the embed library follows it).
+        let mut status = crate::http::test_support::api_request(
+            "GET",
+            &format!(
+                "/api/v1/orders/{}",
+                browser_order["order_id"].as_str().unwrap()
+            ),
+            Some(&pk),
+            None,
+        );
+        status
+            .headers_mut()
+            .insert("sec-fetch-dest", "empty".parse().unwrap());
         assert_eq!(
-            fetch_as(
-                &router,
-                &format!("{}/status", checkout(&browser_order)),
-                Some("empty")
-            )
-            .await
-            .0,
+            router.clone().oneshot(status).await.unwrap().status(),
             StatusCode::OK
         );
 
@@ -1332,14 +1185,14 @@ mod tests {
         let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "diagnostics@example.com").await;
-        let (id, pk) = create_store_with_key(&router, &session).await;
+        let (id, pk) = create_store_with_key(&router, &state, &session).await;
         let response = create_order_from(&router, &pk, None).await;
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let order_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["order_id"]
             .as_str()
             .unwrap()
             .to_string();
-        let checkout = format!("/pay/{pk}/orders/{order_id}");
+        let checkout = format!("/checkout/{order_id}");
         let checkout_html = || async {
             let page = router
                 .clone()
@@ -1447,19 +1300,19 @@ mod tests {
         let (state, _engine) = test_state(dns.clone()).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "restricted@example.com").await;
-        let (id, pk) = create_store_with_key(&router, &session).await;
+        let (id, pk) = create_store_with_key(&router, &state, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
         let turn = |on: bool| format!("restricted={}", if on { "on" } else { "off" });
 
         // Unrestricted: any site, no framing header.
         let response = create_order_from(&router, &pk, Some("https://anything.example")).await;
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let order_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["order_id"]
             .as_str()
             .unwrap()
             .to_string();
-        let checkout = format!("/pay/{pk}/orders/{order_id}");
+        let checkout = format!("/checkout/{order_id}");
         let page = router
             .clone()
             .oneshot(
@@ -1538,14 +1391,14 @@ mod tests {
         );
 
         // Order creation: a subdomain of the verified domain is fine; no
-        // page at all and no secret key (see
+        // page at all with the public key (see
         // `secret_key_orders_are_accepted_and_recorded_and_restricted_stores_need_a_key_or_a_verified_page`),
         // or anywhere else, is refused.
         assert_eq!(
             create_order_from(&router, &pk, Some("https://www.store-home.example"))
                 .await
                 .status(),
-            StatusCode::OK
+            StatusCode::CREATED
         );
         assert_eq!(
             create_order_from(&router, &pk, None).await.status(),
@@ -1564,17 +1417,35 @@ mod tests {
             StatusCode::FORBIDDEN
         );
 
-        // CORS answers only the verified domain.
-        let status_uri = format!("{checkout}/status");
+        // CORS answers only the verified domain, for the order on the API
+        // and its checkout's stream alike.
         for (origin, allowed) in [
             ("https://shop.store-home.example", true),
             ("https://elsewhere.example", false),
         ] {
+            let mut request = crate::http::test_support::api_request(
+                "GET",
+                &format!("/api/v1/orders/{order_id}"),
+                Some(&pk),
+                None,
+            );
+            request
+                .headers_mut()
+                .insert("origin", origin.parse().unwrap());
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get("access-control-allow-origin")
+                    .is_some(),
+                allowed,
+                "{origin}"
+            );
             let response = router
                 .clone()
                 .oneshot(
                     Request::builder()
-                        .uri(&status_uri)
+                        .uri(format!("{checkout}/events"))
                         .header("origin", origin)
                         .body(Body::empty())
                         .unwrap(),
@@ -1663,7 +1534,7 @@ mod tests {
             create_order_from(&router, &pk, Some("https://elsewhere.example"))
                 .await
                 .status(),
-            StatusCode::OK
+            StatusCode::CREATED
         );
     }
 
@@ -1684,7 +1555,7 @@ mod tests {
         };
         let router = build_router(state.clone());
         let session = session_for(&router, "onion-domains@example.com").await;
-        let id = create_store(&router, &session).await;
+        let id = create_store(&router, &state, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
 
         let to = post_location(
@@ -1754,7 +1625,7 @@ mod tests {
         let (state, _engine) = test_state(dns.clone()).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "domains@example.com").await;
-        let id = create_store(&router, &session).await;
+        let id = create_store(&router, &state, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
         // Verified domains are on the Connections tab.
         let connections = format!("{settings}?tab=connections");
@@ -1933,7 +1804,7 @@ mod tests {
         // Dismissing shrinks only the "any website" warning; fixi gets the
         // shrunk warning to put in its place.
         let dismiss = Request::post(format!("/dashboard/stores/{id}/embed-warning/dismiss"))
-            .header("authorization", format!("Bearer {session}"))
+            .header("cookie", format!("session={session}"))
             .header("FX-Request", "true")
             .body(Body::empty())
             .unwrap();
@@ -2019,7 +1890,7 @@ mod tests {
         let (state, _engine) = test_state(dns.clone()).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "in-place@example.com").await;
-        let id = create_store(&router, &session).await;
+        let id = create_store(&router, &state, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
         // Verified domains are on the Connections tab.
         let connections = format!("{settings}?tab=connections");
@@ -2145,7 +2016,7 @@ mod tests {
         let (state, _engine) = test_state(dns.clone()).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "dns-outage@example.com").await;
-        let id = create_store(&router, &session).await;
+        let id = create_store(&router, &state, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
         // Verified domains are on the Connections tab.
         let connections = format!("{settings}?tab=connections");

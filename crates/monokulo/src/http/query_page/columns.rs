@@ -129,6 +129,8 @@ pub const COLUMNS: Classification = Classification {
         ("store_connections", "wallet_id", Visible),
         ("store_connections", "name", Visible),
         ("store_connections", "payment_description", Visible),
+        // The secret key's hash, which finds the store from its key
+        ("store_connections", "secret_key_hash", Secret),
         ("store_domains", "id", Visible),
         ("store_domains", "connection_id", Visible),
         ("store_domains", "domain", Visible),

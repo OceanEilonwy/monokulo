@@ -56,9 +56,21 @@ use uuid::Uuid;
 pub struct ConnectedCredentials {
     pub public_key: String,
     pub secret_token: String,
-    pub endpoint: String,
+    /// The monokulo address the plugin called `/finish` at: what `api` and
+    /// every link the API hands back resolve against.
+    pub monokulo_url: String,
+    /// The API's root as `/finish` returned it: a path, relative to
+    /// `monokulo_url` (`/api/v1`).
+    pub api: String,
     pub webhook_signing_secret: String,
     pub webhook_receiver: WebhookReceiver,
+}
+
+impl ConnectedCredentials {
+    /// The API's root, resolved against the address the plugin connected at.
+    pub fn api_url(&self) -> String {
+        resolve(&self.monokulo_url, &self.api)
+    }
 }
 
 /// The credentials [`run_connect_flow_without_webhook`] returns: no webhook
@@ -67,7 +79,28 @@ pub struct ConnectedCredentials {
 pub struct Credentials {
     pub public_key: String,
     pub secret_token: String,
-    pub endpoint: String,
+    /// See [`ConnectedCredentials::monokulo_url`].
+    pub monokulo_url: String,
+    /// See [`ConnectedCredentials::api`].
+    pub api: String,
+}
+
+impl Credentials {
+    /// The API's root, resolved against the address the plugin connected at.
+    pub fn api_url(&self) -> String {
+        resolve(&self.monokulo_url, &self.api)
+    }
+}
+
+/// `href` (the `api` path `/finish` hands back, or a link from the API,
+/// relative to the URL that was called) resolved against `base`, as a
+/// browser resolves a link: monokulo's links are paths on its own host, so
+/// a plugin that reached it at some address stays at that address.
+pub fn resolve(base: &str, href: &str) -> String {
+    match url::Url::parse(base).and_then(|base| base.join(href)) {
+        Ok(url) => url.to_string(),
+        Err(_) => format!("{}{href}", base.trim_end_matches('/')),
+    }
 }
 
 /// The plain fields `/finish` hands back once webhook registration has been
@@ -82,7 +115,8 @@ pub struct Credentials {
 struct FinishedCredentials {
     public_key: String,
     secret_token: String,
-    endpoint: String,
+    monokulo_url: String,
+    api: String,
     /// Present when the flow registered a webhook.
     webhook_signing_secret: Option<String>,
 }
@@ -91,7 +125,8 @@ struct FinishedCredentials {
 struct FinishResponseBody {
     public_key: String,
     secret_token: String,
-    endpoint: String,
+    /// The API's root, relative to the address `/finish` was called at.
+    api: String,
     webhook_signing_secret: Option<String>,
 }
 
@@ -279,30 +314,47 @@ async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
 
 /// The result of [`create_order`]: a real order seeded through monokulo,
 /// plus the checkout URL a WooCommerce customer would be redirected to next
-/// (`GET /pay/{pk}/orders/{order_id}` - monokulo's own checkout page,
-/// `monokulo/src/http/checkout.rs::checkout_page` - see [`create_order`]'s
-/// own doc comment for why this is monokulo's URL, not the engine's).
+/// (the order's `mk:checkout` link, `/checkout/{order_id}` - monokulo's own
+/// checkout page, `monokulo/src/http/checkout.rs::checkout_page` - see
+/// [`create_order`]'s own doc comment for why this is monokulo's URL, not
+/// the engine's).
 #[derive(Debug)]
 pub struct CreatedOrder {
     pub order_id: String,
     pub checkout_url: String,
+    /// The order in the API (its `self` link, resolved): what the plugin
+    /// reads the order's status from.
+    pub order_url: String,
     /// The payment address and exact XMR amount monokulo's own response
     /// carried - what a stagenet test pays, without asking the engine.
     pub address: String,
     pub xmr_amount_piconero: u64,
 }
 
-/// Field-for-field mirror of monokulo's own
-/// `http::pay::CreateOrderResponse` - only `order_id` is actually needed to
-/// build [`CreatedOrder`], but the rest is deserialized too so a
-/// malformed/unexpected response body fails clearly via `serde_json` rather
-/// than silently ignoring extra fields no differently than a real caller
-/// would notice.
+/// The parts of monokulo's order (`api/v1/order.rs`'s body) [`CreatedOrder`]
+/// is built from: a body missing one fails clearly via `serde_json`.
 #[derive(Debug, Deserialize)]
 struct CreateOrderResponseBody {
     order_id: String,
     address: String,
     xmr_amount_piconero: u64,
+    #[serde(rename = "_links")]
+    links: OrderLinks,
+}
+
+/// The order's links this plugin follows.
+#[derive(Debug, Deserialize)]
+struct OrderLinks {
+    #[serde(rename = "self")]
+    self_: HalLink,
+    #[serde(rename = "mk:checkout")]
+    checkout: HalLink,
+}
+
+/// One HAL link: a path relative to the URL that answered.
+#[derive(Debug, Deserialize)]
+struct HalLink {
+    href: String,
 }
 
 /// Every way [`run_connect_flow`] (or the callback handler it waits on) can
@@ -456,7 +508,8 @@ pub async fn run_connect_flow_without_webhook(
     Ok(Credentials {
         public_key: finished.public_key,
         secret_token: finished.secret_token,
-        endpoint: finished.endpoint,
+        monokulo_url: finished.monokulo_url,
+        api: finished.api,
     })
 }
 
@@ -494,7 +547,8 @@ async fn run_connect_flow_with(
     Ok(ConnectedCredentials {
         public_key: finished.public_key,
         secret_token: finished.secret_token,
-        endpoint: finished.endpoint,
+        monokulo_url: finished.monokulo_url,
+        api: finished.api,
         webhook_signing_secret: finished
             .webhook_signing_secret
             .ok_or(ConnectFlowError::WebhookNotRegistered)?,
@@ -762,29 +816,29 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
     })
 }
 
-/// Creates a real order through monokulo's `POST /pay/{pk}/orders`
-/// (`monokulo/src/http/pay.rs::create_order`) exactly the way the real
+/// Creates a real order through monokulo's `POST {api}/orders`
+/// (`monokulo/src/api/v1/orders.rs::create`) exactly the way the real
 /// WooCommerce plugin does: from the shop's server, authenticated with the
 /// store's secret key (`Authorization: Bearer sk_...`) and naming itself
 /// (`Monokulo-Client: woocommerce/...`), with monokulo pricing
-/// the amount into XMR. Builds the checkout redirect target
-/// (`{monokulo_base_url}/pay/{public_key}/orders/{order_id}`, matching
-/// monokulo's own route table for `checkout::checkout_page`) from the real
-/// `order_id` monokulo handed back - not a plausibly-shaped guess.
+/// the amount into XMR. The checkout redirect target is the order's own
+/// `mk:checkout` link, resolved against the URL that was called - not a
+/// plausibly-shaped guess.
 ///
-/// `monokulo_base_url` is monokulo's own externally-reachable address (the
-/// `endpoint` `/finish` returned) - *not* the engine's; a WooCommerce plugin
-/// never talks to the engine at all.
+/// `api_url` is monokulo's API root as the plugin resolved it
+/// ([`ConnectedCredentials::api_url`]: `/finish`'s `api` against the
+/// address the plugin connected at) - *not* the engine's; a WooCommerce
+/// plugin never talks to the engine at all.
 pub async fn create_order(
-    monokulo_base_url: &str,
-    public_key: &str,
+    api_url: &str,
     secret_token: &str,
     amount: &str,
     currency: &str,
 ) -> Result<CreatedOrder, ConnectFlowError> {
     let client = reqwest::Client::new();
+    let orders_url = format!("{}/orders", api_url.trim_end_matches('/'));
     let response = client
-        .post(format!("{monokulo_base_url}/pay/{public_key}/orders"))
+        .post(&orders_url)
         .bearer_auth(secret_token)
         // As the plugin names itself, so the order shows as WooCommerce's.
         .header("Monokulo-Client", "woocommerce/mock")
@@ -806,16 +860,37 @@ pub async fn create_order(
     }
 
     let parsed: CreateOrderResponseBody = response.json().await?;
-    let checkout_url = format!(
-        "{monokulo_base_url}/pay/{public_key}/orders/{}",
-        parsed.order_id
-    );
     Ok(CreatedOrder {
         order_id: parsed.order_id,
-        checkout_url,
+        checkout_url: resolve(&orders_url, &parsed.links.checkout.href),
+        order_url: resolve(&orders_url, &parsed.links.self_.href),
         address: parsed.address,
         xmr_amount_piconero: parsed.xmr_amount_piconero,
     })
+}
+
+/// Reads `order` back from the API with `key` (`GET` its `self` link), as
+/// the plugin checks an order's status: the order's JSON, `status`,
+/// `is_final` and `confirmations` among it.
+pub async fn read_order(
+    order: &CreatedOrder,
+    key: &str,
+) -> Result<serde_json::Value, ConnectFlowError> {
+    let response = reqwest::Client::new()
+        .get(&order.order_url)
+        .bearer_auth(key)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ConnectFlowError::UnexpectedResponse {
+            step: "read order".to_string(),
+            status,
+            body,
+        });
+    }
+    Ok(response.json().await?)
 }
 
 /// Server-to-server `POST {monokulo_base_url}/plugins/connect/{platform}/finish`,
@@ -859,7 +934,8 @@ async fn call_finish(
     Ok(FinishedCredentials {
         public_key: parsed.public_key,
         secret_token: parsed.secret_token,
-        endpoint: parsed.endpoint,
+        monokulo_url: monokulo_base_url.to_string(),
+        api: parsed.api,
         webhook_signing_secret: parsed.webhook_signing_secret,
     })
 }
@@ -1078,8 +1154,8 @@ mod tests {
         use monokulo::http::{build_router, AppState};
 
         let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
-        // Bound before the state is built so monokulo's public address (what
-        // `/finish` hands the plugin as `endpoint`) can be this very listener.
+        // Bound before the state is built so monokulo's public address (its
+        // `public_uri`) can be this very listener.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("failed to bind an ephemeral local port for the test control plane");
@@ -1164,9 +1240,11 @@ mod tests {
             credentials.secret_token
         );
         assert_eq!(
-            credentials.endpoint, monokulo_base_url,
-            "plugins get monokulo's public address, never the engine's"
+            credentials.api, "/api/v1",
+            "plugins get the API's path on the address they connected at, never the engine's"
         );
+        assert_eq!(credentials.monokulo_url, monokulo_base_url);
+        assert_eq!(credentials.api_url(), format!("{monokulo_base_url}/api/v1"));
 
         // Strong proof, not just "starts with sk_": the returned
         // secret_token is genuinely this tenant's working credential against
@@ -1246,13 +1324,12 @@ mod tests {
             "the connect flow should succeed end to end against a real engine + control plane",
         );
         assert_eq!(
-            credentials.endpoint, monokulo_base_url,
-            "plugins get monokulo's public address, never the engine's"
+            credentials.api, "/api/v1",
+            "plugins get the API's path on the address they connected at, never the engine's"
         );
 
         let order = create_order(
-            &monokulo_base_url,
-            &credentials.public_key,
+            &credentials.api_url(),
             &credentials.secret_token,
             "10.00",
             TEST_CURRENCY,
@@ -1263,8 +1340,12 @@ mod tests {
         assert!(!order.order_id.is_empty(), "expected a non-empty order_id");
         assert_eq!(
             order.checkout_url,
-            format!("{monokulo_base_url}/pay/{}/orders/{}", credentials.public_key, order.order_id),
-            "checkout_url should be shaped exactly like monokulo's own /pay/{{pk}}/orders/{{order_id}} route"
+            format!("{monokulo_base_url}/checkout/{}", order.order_id),
+            "checkout_url is the order's mk:checkout link, resolved against where the plugin called"
+        );
+        assert_eq!(
+            order.order_url,
+            format!("{monokulo_base_url}/api/v1/orders/{}", order.order_id)
         );
 
         // Strong proof, not just a plausibly-shaped URL: actually fetch it,
@@ -1645,8 +1726,7 @@ mod tests {
             );
 
         let order = create_order(
-            &monokulo_base_url,
-            &credentials.public_key,
+            &credentials.api_url(),
             &credentials.secret_token,
             "1.00",
             TEST_CURRENCY,
@@ -1726,12 +1806,11 @@ mod tests {
         let credentials = run_connect_flow(&monokulo_base_url)
             .await
             .expect("the connect flow should succeed");
-        assert_eq!(credentials.endpoint, monokulo_base_url);
+        assert_eq!(credentials.api, "/api/v1");
 
-        // The plugin's order creation, with the key, against the endpoint it was given.
+        // The plugin's order creation, with the key, against the API it was given.
         let order = create_order(
-            &credentials.endpoint,
-            &credentials.public_key,
+            &credentials.api_url(),
             &credentials.secret_token,
             "0.5",
             TEST_CURRENCY,
@@ -1741,21 +1820,11 @@ mod tests {
         assert_eq!(order.xmr_amount_piconero, 500_000_000_000);
         assert_eq!(
             order.checkout_url,
-            format!(
-                "{monokulo_base_url}/pay/{}/orders/{}",
-                credentials.public_key, order.order_id
-            )
+            format!("{monokulo_base_url}/checkout/{}", order.order_id)
         );
 
         // A wrong key is refused, not silently treated as a browser request.
-        let wrong = create_order(
-            &credentials.endpoint,
-            &credentials.public_key,
-            "sk_wrong",
-            "0.5",
-            TEST_CURRENCY,
-        )
-        .await;
+        let wrong = create_order(&credentials.api_url(), "sk_wrong", "0.5", TEST_CURRENCY).await;
         assert!(
             matches!(
                 wrong,
@@ -1801,14 +1870,16 @@ mod tests {
             shared::time::now_unix()
         ));
 
-        // And monokulo's own status route, which the checkout page polls, agrees.
-        let status: serde_json::Value = reqwest::get(format!("{}/status", order.checkout_url))
+        // And the order in the API, as the plugin reads it with its key, agrees.
+        let status = read_order(&order, &credentials.secret_token)
             .await
-            .expect("status request failed")
-            .json()
-            .await
-            .expect("status response was not JSON");
+            .expect("reading the order back failed");
         assert_eq!(status["status"], "paid");
-        assert_eq!(status["is_terminal"], true);
+        assert_eq!(status["is_final"], true);
+        // The website's public key reads it too (the embed's polling fallback).
+        let status = read_order(&order, &credentials.public_key)
+            .await
+            .expect("reading the order with the public key failed");
+        assert_eq!(status["status"], "paid");
     }
 }

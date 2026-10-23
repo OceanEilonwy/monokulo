@@ -38,7 +38,7 @@ struct ClientReport {
 
 /// Up to `MAX_TEXT` characters, control characters replaced, so a report
 /// can't forge extra lines in the readable output format.
-fn clip(text: &str) -> String {
+pub(crate) fn clip(text: &str) -> String {
     text.chars()
         .take(MAX_TEXT)
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -53,8 +53,8 @@ pub fn page_may_report(db: &Db, page: &str) -> bool {
             .client_logging(&crate::db::ConnectionId::new(store))
             .unwrap_or(false);
     }
-    if let Some(pk) = super::embed_domains::public_key_of_pay_path(page) {
-        return db.client_logging_by_public_key(pk).unwrap_or(false);
+    if let Some(order_id) = super::paths::checkout_order(page) {
+        return db.client_logging_by_order(&order_id).unwrap_or(false);
     }
     true
 }
@@ -119,6 +119,23 @@ mod tests {
             "XMR",
         )
         .unwrap();
+        // An order of the store, so its checkout finds it.
+        db.create_order_currency_metadata(
+            &shared::ids::ConnectionId::new("c1"),
+            &shared::ids::OrderId::new("o1"),
+            "XMR",
+            "1",
+            shared::xmr_amount::Piconero(1),
+            "xmr",
+            0,
+            "XMR",
+            None,
+            10,
+            false,
+            None,
+            true,
+        )
+        .unwrap();
         db
     }
 
@@ -133,7 +150,7 @@ mod tests {
         assert!(page_may_report(&db, ""));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/settings"));
         assert!(!page_may_report(&db, "/dashboard/stores/c1/pos"));
-        assert!(!page_may_report(&db, "/pay/pk_1/orders/o1"));
+        assert!(!page_may_report(&db, "/checkout/o1"));
         assert!(
             !page_may_report(&db, "/dashboard/stores/unknown/orders"),
             "no store, no reports"
@@ -141,7 +158,7 @@ mod tests {
         db.set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
             .unwrap();
         assert!(page_may_report(&db, "/dashboard/stores/c1/settings"));
-        assert!(page_may_report(&db, "/pay/pk_1/orders/o1"));
+        assert!(page_may_report(&db, "/checkout/o1"));
     }
 
     #[test]
@@ -149,103 +166,5 @@ mod tests {
         assert!(serde_json::from_slice::<ClientReport>(b"nope").is_err());
         let ok = br#"{"kind":"error","message":"x is undefined","page":"/"}"#;
         assert!(serde_json::from_slice::<ClientReport>(ok).is_ok());
-    }
-}
-
-/// `POST /pay/{pk}/logs`: warnings and errors a shop plugin forwards
-/// when its "Send errors to Monokulo" option is on
-/// (structured_logging.md 2.4), kept only when the store opted in to
-/// client logs. Authenticated with the store's secret key,
-/// so the store is known and the level can be trusted as far as `error`;
-/// texts are still clipped. Each entry joins the plugin request's trace
-/// when it names one.
-pub mod plugin {
-    use axum::extract::{Path, State};
-    use axum::http::{HeaderMap, StatusCode};
-    use axum::Json;
-    use serde::Deserialize;
-
-    use super::clip;
-    use crate::http::store_key::{self, KeyCheck};
-    use crate::http::AppState;
-
-    /// Most entries one request may carry, and the route's body limit.
-    pub const MAX_ENTRIES: usize = 20;
-    pub const MAX_BODY_BYTES: usize = 32 * 1024;
-
-    #[derive(Deserialize)]
-    pub struct PluginLogs {
-        entries: Vec<PluginEntry>,
-    }
-
-    #[derive(Deserialize)]
-    struct PluginEntry {
-        /// A PSR-3 level name (`error`, `warning`, ...), as WordPress's
-        /// `WC_Log_Levels` and most PHP shops use.
-        level: String,
-        message: String,
-        trace_id: Option<String>,
-    }
-
-    pub async fn forward(
-        State(state): State<AppState>,
-        Path(pk): Path<String>,
-        headers: HeaderMap,
-        Json(logs): Json<PluginLogs>,
-    ) -> StatusCode {
-        if store_key::check(&state, &pk, &headers).await != KeyCheck::Valid {
-            return StatusCode::UNAUTHORIZED;
-        }
-        let key = pk.clone();
-        let Ok(Some(store)) = state
-            .db
-            .read(move |db| db.get_store_connection_by_public_key(&key))
-            .await
-        else {
-            return StatusCode::UNAUTHORIZED;
-        };
-        if logs.entries.len() > MAX_ENTRIES {
-            return StatusCode::PAYLOAD_TOO_LARGE;
-        }
-        // The store's own setting wins over the plugin's option: refused
-        // unless the store opted in to client logs. (403, not a silent 204:
-        // the shop's server is authenticated, so it can be told why.)
-        let id = store.id.clone();
-        if !state
-            .db
-            .read(move |db| db.client_logging(&id))
-            .await
-            .unwrap_or(false)
-        {
-            return StatusCode::FORBIDDEN;
-        }
-        // The plugin, by the slug it names itself with; any other client
-        // is just a plugin.
-        let source = crate::http::pay::client(&headers)
-            .and_then(|(name, _)| crate::plugins::PluginSlug::parse(&name.to_ascii_lowercase()))
-            .map_or_else(|| "plugin".to_owned(), |slug| slug.to_string());
-        for entry in logs.entries {
-            let span = tracing::info_span!(parent: None, "plugin report", source = %source, store.id = %store.id);
-            if let Some(trace_id) = entry
-                .trace_id
-                .as_deref()
-                .filter(|t| telemetry::store::api::is_trace_id(t))
-            {
-                // The plugin names only its trace, not a span in it.
-                telemetry::trace::set_remote_parent(
-                    &span,
-                    &format!("00-{trace_id}-0000000000000001-01"),
-                );
-            }
-            let _entered = span.enter();
-            let message = clip(&entry.message);
-            match entry.level.as_str() {
-                "emergency" | "alert" | "critical" | "error" => tracing::error!("{message}"),
-                "warning" => tracing::warn!("{message}"),
-                // Anything quieter isn't forwarded by the plugin; ignore it.
-                _ => {}
-            }
-        }
-        StatusCode::NO_CONTENT
     }
 }

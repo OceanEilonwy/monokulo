@@ -1,30 +1,23 @@
 //! Connected apps (`crate::apps`): the dashboard's Apps card actions and
-//! connect pages, the public API an app connects with, its store's event
-//! stream, and its own disconnect.
+//! connect pages, and the handshake an app connects with. Once connected,
+//! an app uses the API (`crate::api`) with its own key.
 //!
 //! ```text
 //! dashboard: Connect an app ──▶ code: https://{public_uri}/apps/connect#token=ct_…
-//! app:       POST /apps/connect {token, slug, name, …} ──▶ {public_key, app_key, endpoint, …}
-//!            POST /pay/{pk}/orders           (Authorization: Bearer ak_…)
-//!            GET  /pay/{pk}/events           (SSE: sale.waiting, sale.paid, …)
-//!            DELETE /pay/{pk}/app            (disconnects itself)
+//! app:       POST /apps/connect {token, slug, name, …} ──▶ {app_key, api: "/api/v1"}
+//!            GET  /api/v1                     (Authorization: Bearer ak_…): links
+//!            GET  /api/v1/store, /api/v1/app, POST /api/v1/orders, GET /api/v1/events, …
+//!            DELETE /api/v1/app               (disconnects itself)
 //! ```
 //!
 //! An app connects at `/apps/connect`, outside the plugins' `/connect/{slug}`,
 //! so no plugin's slug can collide with it, and a store has any number of
 //! apps where it has one plugin.
 
-use std::convert::Infallible;
-use std::time::Duration;
-
 use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
-use axum::Extension;
-use futures_util::stream;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast::error::RecvError;
 
 use crate::apps::{clean_device_name, CONNECT_TOKEN_TTL_SECONDS};
 use crate::db::{AppConnection, ConnectionId, UserRow};
@@ -33,12 +26,7 @@ use crate::plugins::{Plugin, PluginName, PluginSlug};
 use crate::views::connected_apps::{AppRow, AppsView};
 
 use super::orders::load_owned_connection;
-use super::store_key::{AppKeyAuthenticated, StoreKeyAuthenticated};
 use super::{AppState, AuthedUser, OwnedStore};
-
-/// The comment an open event stream sends while nothing happens, inside
-/// common proxy idle timeouts.
-const KEEP_ALIVE: Duration = Duration::from_secs(25);
 
 /// What the Apps card shows for an app.
 pub(super) fn app_row(app: &AppConnection, clock: &crate::views::time::Clock) -> AppRow {
@@ -265,45 +253,14 @@ pub struct RedeemRequest {
 
 #[derive(Serialize)]
 pub struct RedeemResponse {
-    pub public_key: String,
     /// The app's own key, given once: `Authorization: Bearer ak_…` on the
-    /// store's `/pay/{pk}/...` routes.
+    /// API. It names the store, so the app needs nothing else.
     pub app_key: String,
-    /// Where the app makes orders and opens the event stream.
-    pub endpoint: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub onion_endpoint: Option<String>,
-    pub app_id: String,
-    pub device_name: String,
-    pub store: StoreInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wallet: Option<WalletInfo>,
-}
-
-/// The store, for the app's confirm screen and settings.
-#[derive(Serialize)]
-pub struct StoreInfo {
-    pub name: String,
-    pub base_currency: String,
-}
-
-/// Where the store's payments go, for the app's confirm screen and settings.
-#[derive(Serialize)]
-pub struct WalletInfo {
-    pub name: String,
-    pub network: String,
-    /// The first and last characters of its primary address.
-    pub address_short: String,
-}
-
-fn short_address(address: &str) -> String {
-    let chars: Vec<char> = address.chars().collect();
-    if chars.len() <= 16 {
-        return address.to_owned();
-    }
-    let head: String = chars[..8].iter().collect();
-    let tail: String = chars[chars.len() - 8..].iter().collect();
-    format!("{head}…{tail}")
+    /// The API's entry, `/api/v1`: a path, to resolve against the URL the
+    /// app connected at, so an app that connected over the onion address
+    /// stays on it. Everything else (the store, its wallet, the app's own
+    /// connection) is a link from there.
+    pub api: String,
 }
 
 fn api_error(status: StatusCode, error: &str) -> Response {
@@ -325,12 +282,12 @@ pub async fn redeem(
             "slug must be a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens",
         );
     };
-    let Some(endpoint) = state.settings.public_uri() else {
+    if state.settings.public_uri().is_none() {
         return api_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "This Monokulo has no public address yet. Ask its admin to set one.",
         );
-    };
+    }
     let name = req
         .name
         .as_deref()
@@ -369,139 +326,23 @@ pub async fn redeem(
             else {
                 return Ok(None);
             };
-            let Some(store) = db.get_store_connection_by_id(&app.store_id)? else {
-                return Ok(None);
-            };
-            let wallet = match &store.wallet_id {
-                Some(wallet_id) => db.get_wallet(&store.user_id, wallet_id)?,
-                None => None,
-            };
-            Ok::<_, crate::db::DbError>(Some((app, store, wallet)))
+            Ok::<_, crate::db::DbError>(Some(app))
         })
         .await;
-    let (app, store, wallet) = match redeemed {
-        Ok(Some(found)) => found,
+    let app = match redeemed {
+        Ok(Some(app)) => app,
         Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
         Err(e) => {
             tracing::error!(error = %e, "an app's connect code could not be redeemed");
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-    tracing::info!(store.id = %store.id, app.id = %app.id, app.slug = %app.slug, "an app connected");
+    tracing::info!(store.id = %app.store_id, app.id = %app.id, app.slug = %app.slug, "an app connected");
     Json(RedeemResponse {
-        public_key: store.tenant_public_key,
         app_key: key.expose().to_owned(),
-        endpoint,
-        onion_endpoint: crate::network::onion_uri(&state.settings, &state.tor),
-        app_id: app.id,
-        device_name: app.device_name,
-        store: StoreInfo {
-            name: store.name,
-            base_currency: store.base_currency,
-        },
-        wallet: wallet.map(|w| WalletInfo {
-            name: w.name,
-            network: w.network,
-            address_short: short_address(&w.primary_address),
-        }),
+        api: crate::api::v1::root::Path {}.to_string(),
     })
     .into_response()
-}
-
-/// `DELETE /pay/{pk}/app`: an app disconnects itself. Its key stops working
-/// at once.
-pub async fn disconnect_self(
-    State(state): State<AppState>,
-    app: Option<Extension<AppKeyAuthenticated>>,
-) -> Response {
-    let Some(Extension(AppKeyAuthenticated(app))) = app else {
-        return api_error(StatusCode::UNAUTHORIZED, "send the app's own key");
-    };
-    let (store_id, app_id) = (app.store_id.clone(), app.id.clone());
-    match state
-        .db
-        .write(move |db| db.delete_app(&store_id, &app_id))
-        .await
-    {
-        Ok(_) => {
-            state.apps.disconnected(&app.id);
-            tracing::info!(store.id = %app.store_id, app.id = %app.id, "an app disconnected itself");
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Err(e) => {
-            tracing::error!(app.id = %app.id, error = %e, "an app could not disconnect itself");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
-}
-
-/// `GET /pay/{pk}/events`: the store's sale events (`crate::apps::SaleEvent`)
-/// as server-sent events, for a connected app or the store's own key. Each
-/// is an `event:` named after it (`sale.waiting`, …) with its JSON as data;
-/// `lagged` means some were missed (the app should re-read its orders'
-/// status). Starts with a `ready` event. An app's stream ends when it's
-/// disconnected, so it learns its key has stopped working.
-pub async fn events(
-    State(state): State<AppState>,
-    Path(pk): Path<String>,
-    key: Option<Extension<StoreKeyAuthenticated>>,
-    app: Option<Extension<AppKeyAuthenticated>>,
-    extensions: axum::http::Extensions,
-) -> Response {
-    if key.is_none() {
-        return api_error(StatusCode::UNAUTHORIZED, "send the store's key or an app's");
-    }
-    let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
-        Some(client) => match state.abuse.streams.try_acquire(client, &pk) {
-            Some(permit) => Some(permit),
-            None => {
-                return api_error(
-                    StatusCode::TOO_MANY_REQUESTS,
-                    "too many open update streams",
-                )
-            }
-        },
-        None => None,
-    };
-    let receiver = state.apps.subscribe();
-    let disconnects = state.apps.subscribe_disconnects();
-    let app_id = app.map(|Extension(AppKeyAuthenticated(app))| app.id);
-    let ready = Event::default()
-        .event("ready")
-        .data(serde_json::json!({ "at": now_unix() }).to_string());
-    let events = stream::unfold(
-        (receiver, disconnects, pk, app_id, permit),
-        |(mut receiver, mut disconnects, pk, app_id, permit)| async move {
-            loop {
-                tokio::select! {
-                    gone = disconnects.recv() => match gone {
-                        Ok(gone) if Some(&gone) == app_id.as_ref() => return None,
-                        Ok(_) | Err(RecvError::Lagged(_)) => {}
-                        Err(RecvError::Closed) => return None,
-                    },
-                    announced = receiver.recv() => match announced {
-                        Ok(announced) if announced.public_key == pk => {
-                            let data = serde_json::to_string(&announced.event).unwrap_or_default();
-                            let event = Event::default().event(announced.event.event).data(data);
-                            return Some((Ok::<_, Infallible>(event), (receiver, disconnects, pk, app_id, permit)));
-                        }
-                        Ok(_) => {}
-                        Err(RecvError::Lagged(missed)) => {
-                            let event = Event::default()
-                                .event("lagged")
-                                .data(serde_json::json!({ "missed": missed }).to_string());
-                            return Some((Ok(event), (receiver, disconnects, pk, app_id, permit)));
-                        }
-                        Err(RecvError::Closed) => return None,
-                    },
-                }
-            }
-        },
-    );
-    let events = futures_util::StreamExt::chain(stream::once(async { Ok(ready) }), events);
-    Sse::new(events)
-        .keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
-        .into_response()
 }
 
 #[cfg(test)]

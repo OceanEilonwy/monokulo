@@ -8,15 +8,16 @@ use std::sync::atomic::{AtomicI64, AtomicU16, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::Body;
-use axum::http::{HeaderMap, Request, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use parking_lot::Mutex;
 use tower::ServiceExt as _;
 
 use super::delivery::{run_delivery_tick, Clock, WebhookClient};
 use super::*;
 use crate::db::{Db, DeliveryState, LoggedEvent, OrderId};
-use crate::http::test_support::{body_json, signed_up_and_logged_in_session_token};
+use crate::http::test_support::{
+    api_request, body_json, signed_up_and_logged_in_session_token, store_with_keys,
+};
 use crate::http::{build_router, AppState, TEST_ENCRYPTION_KEY};
 use crate::settings::WebhookConfig;
 
@@ -578,42 +579,9 @@ async fn shop() -> Shop {
         "correct horse battery staple",
     )
     .await;
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/connections")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {session}"))
-                .body(Body::from(
-                    serde_json::json!({
-                        "site_url": "https://bakery.example",
-                        "view_key_hex": "0707070707070707070707070707070707070707070707070707070707070707",
-                        "spend_pubkey_hex": "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90",
-                        "network": "mainnet",
-                        "domains": [],
-                        "base_currency": "XMR",
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let pk = body_json(response).await["public_key"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let pk_lookup = pk.clone();
-    let store = state
-        .db
-        .read(move |db| db.get_store_connection_by_public_key(&pk_lookup))
-        .await
-        .unwrap()
-        .unwrap()
-        .id;
+    let made = store_with_keys(&router, &state, &session, "https://bakery.example", "XMR").await;
+    let pk = made.public_key;
+    let store = ConnectionId::new(made.id);
     Shop {
         state,
         engine,
@@ -629,17 +597,15 @@ impl Shop {
         let response = self
             .router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/pay/{}/orders", self.pk))
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
+            .oneshot(api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(&self.pk),
+                Some(body),
+            ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CREATED);
         body_json(response).await["order_id"]
             .as_str()
             .unwrap()
@@ -1098,20 +1064,15 @@ async fn order_with_key(shop: &Shop, key: &str) -> String {
     let response = shop
         .router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/pay/{}/orders", shop.pk))
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {key}"))
-                .body(Body::from(
-                    serde_json::json!({ "amount": "0.25", "currency": "XMR" }).to_string(),
-                ))
-                .unwrap(),
-        )
+        .oneshot(api_request(
+            "POST",
+            "/api/v1/orders",
+            Some(key),
+            Some(serde_json::json!({ "amount": "0.25", "currency": "XMR" })),
+        ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::CREATED);
     body_json(response).await["order_id"]
         .as_str()
         .unwrap()

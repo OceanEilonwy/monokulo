@@ -23,31 +23,154 @@ pub(crate) fn urlencoding_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-/// Signs up and logs in a fresh user against `router` through the JSON
-/// API, returning their session (bearer) token.
+/// Signs up a fresh user against `router` through the sign-up form (which
+/// logs them in), returning their session token: the `session` cookie's
+/// value. Send it as `cookie: session=<token>`.
 pub(crate) async fn signed_up_and_logged_in_session_token(
     router: &Router,
     email: &str,
     password: &str,
 ) -> String {
-    let request = |uri: &str| {
-        Request::builder()
-            .method("POST")
-            .uri(uri)
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::json!({ "email": email, "password": password }).to_string(),
-            ))
-            .unwrap()
-    };
-    let signup = router.clone().oneshot(request("/signup")).await.unwrap();
-    assert_eq!(signup.status(), StatusCode::CREATED);
-    let login = router.clone().oneshot(request("/login")).await.unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
-    body_json(login).await["session_token"]
-        .as_str()
+    let signup = router
+        .clone()
+        .oneshot(form_post(
+            "/dashboard/signup",
+            None,
+            &[("email", email), ("password", password)],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND, "signing up {email}");
+    let set_cookie = signup
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with("session="))
+        .expect("signing up logs in")
+        .to_owned();
+    set_cookie
+        .split(';')
+        .next()
+        .and_then(|pair| pair.strip_prefix("session="))
         .unwrap()
-        .to_string()
+        .to_owned()
+}
+
+/// The test wallet's keys: the fixed-scalar pair the engine's own tests
+/// use, which pass its real wallet-material validation.
+pub(crate) const TEST_VIEW_KEY_HEX: &str =
+    "0707070707070707070707070707070707070707070707070707070707070707";
+pub(crate) const TEST_SPEND_PUBKEY_HEX: &str =
+    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+
+/// A store made through store setup for a test.
+pub(crate) struct TestStore {
+    pub id: String,
+    pub public_key: String,
+    /// Its secret key, as the store's plugin is given it.
+    pub secret_key: String,
+}
+
+/// Makes a store for the account behind `session_token` on the test
+/// wallet, as `/setup` does (the account's wallet is reused for its second
+/// store): `site` may be empty, `base_currency` is its code.
+pub(crate) async fn store_with_keys(
+    router: &Router,
+    state: &crate::http::AppState,
+    session_token: &str,
+    site: &str,
+    base_currency: &str,
+) -> TestStore {
+    let cookie = format!("session={session_token}");
+    let user = state
+        .db
+        .lock()
+        .find_session(
+            &shared::auth::RawToken::presented(session_token).hash(),
+            crate::now_unix(),
+        )
+        .unwrap()
+        .expect("a live session")
+        .user_id;
+    let wallet = state
+        .db
+        .lock()
+        .list_wallets(&user)
+        .unwrap()
+        .into_iter()
+        .next();
+    let name = if site.is_empty() { "Till" } else { site };
+    let made = match wallet {
+        Some(wallet) => router
+            .clone()
+            .oneshot(form_post(
+                "/setup/wallet/existing",
+                Some(&cookie),
+                &[
+                    ("store_name", name),
+                    ("store_site", site),
+                    ("base_currency", base_currency),
+                    ("wallet_id", wallet.wallet.id.as_str()),
+                ],
+            ))
+            .await
+            .unwrap(),
+        None => {
+            set_up_store_with_keys(
+                router,
+                &cookie,
+                &[
+                    ("store_name", name),
+                    ("store_site", site),
+                    ("base_currency", base_currency),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("network", "mainnet"),
+                    ("name", "Shop wallet"),
+                ],
+            )
+            .await
+        }
+    };
+    let id = store_made(&made);
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.clone()))
+        .unwrap()
+        .unwrap();
+    let secret_key = crate::crypto::decrypt(
+        &state.encryption_key,
+        crate::crypto::Binding::StoreSecret(row.id.as_str()),
+        &row.tenant_secret_token_encrypted,
+    )
+    .unwrap();
+    TestStore {
+        id,
+        public_key: row.tenant_public_key,
+        secret_key,
+    }
+}
+
+/// A JSON request to the API, with `key` as its bearer token.
+pub(crate) fn api_request(
+    method: &str,
+    uri: &str,
+    key: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> Request<Body> {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(key) = key {
+        builder = builder.header("authorization", format!("Bearer {key}"));
+    }
+    match body {
+        Some(body) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+        None => builder.body(Body::empty()).unwrap(),
+    }
 }
 
 /// Logs in as the harness-seeded admin account (`Db::seed_test_admin`) and

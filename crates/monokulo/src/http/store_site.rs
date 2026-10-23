@@ -434,11 +434,12 @@ pub async fn disconnect_submit(
         crate::crypto::Binding::StoreSecret(row.id.as_str()),
         new_sk.expose(),
     );
+    let new_hash = new_sk.hash();
     let (store_id, integration_id) = (row.id.clone(), integration.clone());
     let written = state
         .db
         .write(move |db| {
-            db.set_store_secret(&store_id, &encrypted)?;
+            db.set_store_secret(&store_id, &encrypted, &new_hash)?;
             db.disconnect_integration(&store_id, &integration_id, crate::now_unix())
         })
         .await;

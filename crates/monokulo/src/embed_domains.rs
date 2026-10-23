@@ -311,17 +311,6 @@ pub fn suggest_site_domain(
     }
 }
 
-/// Adds a domain an API caller named (`POST /connections`' `domains`) to a
-/// store, waiting for DNS. Takes either a bare domain (`shop.example`) or an
-/// origin/URL (`https://shop.example`), since the field used to hold
-/// origins. Skipped quietly, like [`suggest_site_domain`], when it isn't a
-/// verifiable domain (an onion address, an IP) or the store is full.
-pub fn suggest_domain(db: &Db, connection_id: &crate::db::ConnectionId, input: &str, now: i64) {
-    if let Some(domain) = domain_of_site(input).or_else(|| normalize_domain(input).ok()) {
-        suggest(db, connection_id, &domain, now);
-    }
-}
-
 fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: i64) {
     if let Err(e) = db.suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
         tracing::warn!(store.id = %connection_id, domain = %domain, error = %e, "could not add a domain to a store");

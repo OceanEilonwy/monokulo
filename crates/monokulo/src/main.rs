@@ -211,6 +211,20 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     {
         tracing::error!(error = %e, "could not import existing stores' domains");
     }
+    // Stores made before the API found them by their key (migration 0044).
+    let key = encryption_key.clone();
+    if let Err(e) = db
+        .write(move |db| {
+            let filled = monokulo::stores::fill_secret_key_hashes(db, &key);
+            if filled > 0 {
+                tracing::info!(stores = filled, "recorded stores' secret key hashes");
+            }
+            Ok::<_, monokulo::db::DbError>(())
+        })
+        .await
+    {
+        tracing::error!(error = %e, "could not record stores' secret key hashes");
+    }
     // Stores' webhooks: the engine's order events read into deliveries,
     // and the deliveries sent (docs/DESIGN.md §11).
     let webhooks = Arc::new(monokulo::webhooks::Webhooks::default());
