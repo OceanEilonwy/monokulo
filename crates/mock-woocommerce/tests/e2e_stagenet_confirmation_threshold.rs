@@ -12,8 +12,9 @@
 //!    stored order is the *threshold's* value (1), not the tenant's default
 //!    (99) - checked immediately after order creation, no waiting required.
 //! 2. That resolved value is what actually drives the real order's status:
-//!    with a nonzero confirmation requirement, the order only reaches `paid`/`confirming`/`overpaid`
-//!    once a real block gives it its first confirmation - proving
+//!    with a nonzero confirmation requirement, the order only reaches `paid`
+//!    once a real block gives it its first confirmation, and with the
+//!    default's 99 one confirmation would leave it `confirming` - proving
 //!    `confirmations_required_override` isn't just recorded but genuinely
 //!    enforced by the real engine's own status computation
 //!    (`engine::store::recompute_order_status`).
@@ -40,7 +41,7 @@
 //!
 //! `#[ignore]`d by default, exactly like every other real-network test in
 //! this workspace - it needs live public stagenet access and real wall-clock
-//! time (a real stagenet block, ~2-10 minutes, to prove point 2 above isn't
+//! time (a real stagenet block, ~2-25 minutes, to prove point 2 above isn't
 //! satisfied by 0-conf alone). Run explicitly, from the repository root:
 //!
 //! ```sh
@@ -55,7 +56,7 @@ use std::time::Duration;
 use monero::Network;
 use serde_json::{json, Value};
 
-use engine::daemon::MoneroDaemonClient;
+use engine::daemon::{MoneroDaemonClient, TxLocation};
 use engine::daemon_rpc::RpcDaemonClient;
 use support::{node_fixture, require_daemon_reachable, retry};
 
@@ -77,6 +78,14 @@ const THRESHOLD_UNIT_AMOUNT: &str = "0.0001";
 /// test flakiness could produce a false pass.
 const THRESHOLD_CONFIRMATIONS_REQUIRED: u64 = 1;
 const TENANT_DEFAULT_CONFIRMATIONS_REQUIRED: u64 = 99;
+/// How long a payment may wait for stagenet's next block. Its target is two
+/// minutes, but with few miners gaps of ten minutes and more are common.
+/// Under the live profile's 30 minutes (.config/nextest.toml), so a slow
+/// stagenet fails with this test's own message rather than a kill.
+const BLOCK_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+/// How long the order has to read as paid once its transaction is in a
+/// block: a few scan ticks.
+const PAID_AFTER_BLOCK: Duration = Duration::from_secs(120);
 
 /// A running, real (network-bound) monokulo instance for this test.
 struct TestMonokulo {
@@ -285,17 +294,18 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     println!("connected: connection_id={connection_id} public_key={public_key}");
 
     // The real point of this test: one real custom confirmation threshold,
-    // added through the store settings form (`http::store_settings::save`),
-    // which saves only the fields it is sent, scoped to this exact store.
-    // `client` follows redirects - so a real success here lands as a 200 on the settings
-    // page the save's own 303 points at, not the 303 itself; checking the
-    // landing page actually shows the new row is a stronger proof of
-    // success than a raw status code would be anyway.
+    // added through the store settings form (`http::store_settings::save`)
+    // as its Payments tab posts it without JavaScript, which saves only the
+    // fields it is sent, scoped to this exact store. `client` follows
+    // redirects, so a real success lands as a 200 on the Payments tab the
+    // save's own 303 points at, showing the new tier on the tier ladder and
+    // the saved toast; the store's own threshold rows say the same.
     let threshold_response = client
         .post(format!(
             "{monokulo_base_url}/stores/{connection_id}/settings"
         ))
         .form(&[
+            ("tab", "payments"),
             ("new_unit_amount", THRESHOLD_UNIT_AMOUNT),
             (
                 "new_confirmations_required",
@@ -310,13 +320,34 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         "expected the real threshold form's landing page, got: {}",
         threshold_response.status()
     );
+    assert_eq!(
+        threshold_response.url().path(),
+        format!("/stores/{connection_id}/settings"),
+        "expected the save to land back on the store's settings"
+    );
     let threshold_html = threshold_response.text().await.unwrap();
     assert!(
-        threshold_html.contains(&format!(">{THRESHOLD_UNIT_AMOUNT}</td>"))
-            && threshold_html.contains(&format!(
-                r#"data-label="Confirmations required">{THRESHOLD_CONFIRMATIONS_REQUIRED}</td>"#
-            )),
-        "expected the real new threshold row on the landing page, got: {threshold_html}"
+        threshold_html.contains("<strong>Settings saved</strong>"),
+        "expected the saved toast on the landing page, got: {threshold_html}"
+    );
+    assert!(
+        threshold_html.contains(&format!(
+            "<strong>From {THRESHOLD_UNIT_AMOUNT} XMR</strong><span>{THRESHOLD_CONFIRMATIONS_REQUIRED} confirmation</span>"
+        )),
+        "expected the real new tier on the landing page's tier ladder, got: {threshold_html}"
+    );
+    let tiers = monokulo
+        .db
+        .lock()
+        .list_confirmation_thresholds(&shared::ids::ConnectionId::new(connection_id.clone()))
+        .unwrap();
+    assert_eq!(
+        tiers
+            .iter()
+            .map(|t| (t.unit_amount.as_str(), t.confirmations_required))
+            .collect::<Vec<_>>(),
+        [(THRESHOLD_UNIT_AMOUNT, THRESHOLD_CONFIRMATIONS_REQUIRED)],
+        "expected exactly the one tier the form added"
     );
     println!("created a real confirmation threshold: {THRESHOLD_UNIT_AMOUNT} XMR -> {THRESHOLD_CONFIRMATIONS_REQUIRED} confirmations");
 
@@ -434,11 +465,14 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .expect("failed to build daemon RPC client"),
     );
 
-    // A generous deadline: this test needs a real block (~2 minutes on
-    // stagenet, typically), not just mempool detection - deliberately
-    // longer than `e2e_stagenet_connect_flow.rs`'s own 180s (which only
-    // needs 0-conf detection).
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    // Stagenet's few miners leave its blocks far apart: two minutes is the
+    // target, but gaps of ten and more are common. So the wait is for the
+    // block itself, as the node reports it, up to `BLOCK_TIMEOUT`; once the
+    // transaction is in one, the order has `PAID_AFTER_BLOCK` to read as
+    // paid. A slow stagenet fails as one, not as a threshold that isn't
+    // enforced.
+    let block_deadline = tokio::time::Instant::now() + BLOCK_TIMEOUT;
+    let mut paid_deadline = None;
     let mut tick = 0u32;
     let last_status = loop {
         tick += 1;
@@ -461,25 +495,45 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             .await
             .expect("order status response was not valid JSON");
         let status = order_status["status"].as_str().unwrap_or("?").to_string();
+        // Asked after the status: a transaction still in the pool now was in
+        // the pool when the status was read too.
+        let location = daemon.locate_transaction(&tx_hash_hex).await;
         eprintln!(
-            "DIAG tick {tick}: status={status} confirmations={:?}",
+            "DIAG tick {tick}: status={status} confirmations={:?} tx={location:?}",
             order_status.get("confirmations"),
         );
-        if matches!(status.as_str(), "paid" | "confirming" | "overpaid") {
+        let mined = matches!(location, Ok(TxLocation::InBlock(_)));
+        // With the tenant's default of 99 the first confirmation would leave
+        // the order `confirming`; only the tier's 1 makes it `paid`.
+        if matches!(status.as_str(), "paid" | "overpaid") {
+            assert!(
+                !matches!(location, Ok(TxLocation::InPool)),
+                "order {order_id} read as {status} while tx {tx_hash_hex} was still unconfirmed: \
+                 a threshold of {THRESHOLD_CONFIRMATIONS_REQUIRED} confirmation was not enforced"
+            );
             break status;
         }
         assert_ne!(
             status, "expired",
             "order expired before the real payment reached its resolved confirmations_required"
         );
-        if tokio::time::Instant::now() >= deadline {
-            break status;
+        if mined && paid_deadline.is_none() {
+            paid_deadline = Some(tokio::time::Instant::now() + PAID_AFTER_BLOCK);
+        }
+        let now = tokio::time::Instant::now();
+        match paid_deadline {
+            Some(deadline) if now >= deadline => break status,
+            None if now >= block_deadline => panic!(
+                "stagenet put tx {tx_hash_hex} in no block within {BLOCK_TIMEOUT:?} \
+                 (last seen: {location:?}); the order is {status}"
+            ),
+            _ => {}
         }
         tokio::time::sleep(Duration::from_secs(5)).await;
     };
     assert!(
-        matches!(last_status.as_str(), "paid" | "confirming" | "overpaid"),
-        "order {order_id} (tx {tx_hash_hex}) never reached a paid/confirming/overpaid status within the deadline - last status: {last_status}"
+        matches!(last_status.as_str(), "paid" | "overpaid"),
+        "order {order_id} (tx {tx_hash_hex}) was not paid {PAID_AFTER_BLOCK:?} after its block - last status: {last_status}"
     );
     println!("PASS: order {order_id} (tx {tx_hash_hex}) reached status '{last_status}' once it had its first real confirmation, proving the resolved threshold value ({THRESHOLD_CONFIRMATIONS_REQUIRED}) - not the tenant's default ({TENANT_DEFAULT_CONFIRMATIONS_REQUIRED}) - genuinely drives the real engine's own status computation");
 }
