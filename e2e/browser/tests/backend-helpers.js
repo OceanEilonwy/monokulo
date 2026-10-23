@@ -8,9 +8,10 @@ const { startStack } = require('../real-stack');
 
 let stack = null;
 
-/** Starts a fresh stack before the file's first test and stops it after its last. */
-function useRealStack(test) {
-  test.beforeAll(async () => { stack = await startStack(); });
+/** Starts a fresh stack before the file's first test and stops it after its
+ * last; `options` as startStack takes them (real-stack.js). */
+function useRealStack(test, options = {}) {
+  test.beforeAll(async () => { stack = await startStack(options); });
   test.afterAll(async () => {
     const running = stack;
     stack = null;
@@ -18,7 +19,7 @@ function useRealStack(test) {
   });
 }
 
-/** The running stack: `{ monokulo_url, engine_url, fake_monerod, logs }`. */
+/** The running stack: `{ monokulo_url, direct_url, engine_url, fake_monerod, logs, proxy_misses }`. */
 function fixture() {
   if (!stack) throw new Error('no real-binaries stack is running: call useRealStack(test) at the top of the spec');
   return stack.fixture;
@@ -48,7 +49,7 @@ async function signInAsAdmin(page) {
   await page.goto(base + '/login');
   await page.locator('input[name="email"]').fill(ADMIN_EMAIL);
   await page.locator('input[name="password"]').fill(ADMIN_PASSWORD);
-  await page.locator('form[action="/login"] button[type="submit"]').click();
+  await page.locator('form[action$="/login"] button[type="submit"]').click();
   await expect(page).not.toHaveURL(/\/login/);
 }
 
@@ -286,7 +287,7 @@ async function answerNodeQuestion(page, answer) {
 }
 
 module.exports = {
-  answerNodeQuestion, useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
+  answerNodeQuestion, useRealStack, fixture, signInAsAdmin, ADMIN_EMAIL, ADMIN_PASSWORD, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
   settingsTabOf, openSettingsTab, fillSettings, openNodes, pressSave, expectSaved,
   SETTINGS_TABS, reloadUntil, connectStore, createStore, addWallet, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, WALLET_NAME,
 };

@@ -85,9 +85,10 @@ A Monokulo behind a reverse proxy can be served under a path,
 `target` and `Location` the API gives starts with `/monokulo`, as does the
 `api` the plugin and app handshakes give. Resolved against the host you
 called, they reach Monokulo; build nothing from `/api/v1` yourself. Onion
-links have no such path: tor reaches Monokulo directly. (This is the API
-and its handshakes; Monokulo's own pages, the dashboard and the checkout,
-still expect the root of their host.)
+links have no such path: tor reaches Monokulo directly. Monokulo's own
+pages, the dashboard, the POS and the checkout, work under the path too:
+their links, forms, redirects, scripts, live updates and session cookie
+all stay under it.
 
 ## Amounts
 

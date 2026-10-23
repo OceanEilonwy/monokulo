@@ -20,6 +20,7 @@ module.exports = defineConfig({
     'site-themes.spec.js',
     'admin-settings-and-nodes.spec.js',
     'wallet-setup.spec.js',
+    'path-prefix.spec.js',
   ],
   timeout: 3 * 60 * 1000,
   expect: { timeout: 30 * 1000 },
