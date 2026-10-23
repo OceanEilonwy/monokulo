@@ -354,7 +354,7 @@
     el.innerHTML = "";
     el.appendChild(iframe);
 
-    var TERMINAL_STATUSES = { paid: true, overpaid: true, expired: true };
+    var TERMINAL_STATUSES = { paid: true, overpaid: true, expired: true, cancelled: true };
     var destroyed = false;
     var pollTimer = null;
     var updates = null;

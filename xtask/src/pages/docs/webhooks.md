@@ -1,8 +1,9 @@
 # Webhooks
 
 A webhook tells your server when one of the store's orders changes: it's
-paid, it's confirming, it expired, a payment to it was double-spent. Ship on
-`order.paid` (see [When is an order really paid?](../paid/)).
+paid, it's confirming, it expired, it was cancelled, a payment to it was
+double-spent. Ship on `order.paid` (see
+[When is an order really paid?](../paid/)).
 
 ## Add one
 
@@ -58,7 +59,7 @@ plus the headers you added. The body:
 | --- | --- |
 | `api_version` | `2`. |
 | `event_id` | The event's id. The same on every retry of it: dedupe on this. |
-| `event` | `order.<status>` when the order's status changes (`order.unconfirmed`, `order.confirming`, `order.paid`, `order.partial`, `order.overpaid`, `order.expired`); `order.double_spend_detected` when a payment to it was double-spent; `order.double_spend_reversed` when that turned out to be wrong. |
+| `event` | `order.<status>` when the order's status changes (`order.unconfirmed`, `order.confirming`, `order.paid`, `order.partial`, `order.overpaid`, `order.expired`, `order.cancelled`); `order.double_spend_detected` when a payment to it was double-spent; `order.double_spend_reversed` when that turned out to be wrong. |
 | `created_at` | When the event happened, in Unix seconds. |
 | `order_id` | Monokulo's id for the order: `createOrder` gave it to your page as `orderId`. |
 | `status` | The order's new status. On `order.<status>` events only. |
@@ -71,6 +72,13 @@ plus the headers you added. The body:
 | `store` | The store: `{ "id", "name" }`. |
 
 A field with no value is left out, never sent as `null`.
+
+`order.cancelled` means the merchant cancelled the order before anything
+was paid to it (today only the POS cancels, and only its own orders). It
+takes no payment from then on, like an expired order. Money sent to it
+anyway is still recorded: a little leaves it cancelled, with what arrived in
+its `amount_received_piconero`; enough to pay it makes it paid, and
+`order.paid` follows, as for an expired order paid late.
 
 ## Check it
 
