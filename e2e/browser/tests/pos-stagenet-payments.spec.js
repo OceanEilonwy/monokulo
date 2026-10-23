@@ -26,7 +26,14 @@
 // real cost and wall-clock time for the same coverage.
 
 const { test, expect } = require('../coverage-test');
-const { loadFixture, piconeroFromXmrDisplay, sendStagenetPayment, enterAmount } = require('../helpers');
+const {
+  loadFixture,
+  piconeroFromXmrDisplay,
+  sendStagenetPayment,
+  enterAmount,
+  waitForBlock,
+  STAGENET_BLOCK_TIMEOUT,
+} = require('../helpers');
 const { captureCoverageStage } = require('../coverage-screenshot');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 
@@ -134,9 +141,9 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
   test('a confirming payment can be backgrounded and completes in the top stack', async ({ page, context }) => {
     // The send itself is fast now (see the first test's own comment on why),
     // but this one *also* waits for one real stagenet confirmation
-    // (~2min average, up to ~5min budgeted below) - the one genuinely slow
-    // step left in this whole suite.
-    test.setTimeout(8 * 60 * 1000);
+    // (STAGENET_BLOCK_TIMEOUT) - the one genuinely slow step left in this
+    // whole suite.
+    test.setTimeout(STAGENET_BLOCK_TIMEOUT + 8 * 60 * 1000);
 
     await loginAndOpenPos(page);
     await setConfirmationsRequired(context, 1);
@@ -163,9 +170,12 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     await expect(bgItem).toBeVisible();
     await captureCoverageStage(page, 'pos-stagenet-background', test.info());
 
-    // The one genuinely slow step in this whole suite - real stagenet blocks
-    // land roughly every ~2 minutes.
-    await expect(bgItem).toBeHidden({ timeout: 5 * 60 * 1000 });
+    // The one genuinely slow step in this whole suite: stagenet's next
+    // block, which can be ten minutes and more away. Once the transaction
+    // is in one, the background order completes within a few scan ticks.
+    const height = await waitForBlock(fixture.tx_url, txHash);
+    console.log(`tx ${txHash} is in block ${height}`);
+    await expect(bgItem).toBeHidden({ timeout: 60_000 });
     // The stack is gone once nothing is left in the background.
     await expect(page.locator('.pos-stack')).toHaveCount(0);
   });

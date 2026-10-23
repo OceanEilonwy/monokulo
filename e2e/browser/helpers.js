@@ -60,4 +60,35 @@ async function enterAmount(page, digits) {
   }
 }
 
-module.exports = { loadFixture, piconeroFromXmrDisplay, sendStagenetPayment, enterAmount };
+// How long a payment may wait for stagenet's next block. Its target is two
+// minutes, but with few miners gaps of ten minutes and more are common
+// (the 2026-10-23 run waited eight).
+const STAGENET_BLOCK_TIMEOUT = 25 * 60 * 1000;
+
+// Waits until the node list e2e-harness's scan loop reads has `txHash` in a
+// block (`fixture.tx_url`, `tx_handler` in crates/e2e-harness/src/main.rs),
+// and returns its height. A test waiting on a confirmation waits here for
+// stagenet first, so a slow block fails as one, and the page is then held
+// to how soon it follows.
+async function waitForBlock(txUrl, txHash, timeout = STAGENET_BLOCK_TIMEOUT) {
+  const deadline = Date.now() + timeout;
+  let last = 'not asked yet';
+  while (Date.now() < deadline) {
+    const response = await fetch(`${txUrl}${txHash}`);
+    last = response.ok ? await response.json() : `HTTP ${response.status}: ${await response.text()}`;
+    if (last.in === 'block') return last.height;
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+  }
+  throw new Error(
+    `stagenet put tx ${txHash} in no block within ${timeout / 60_000} min (last answer: ${JSON.stringify(last)})`,
+  );
+}
+
+module.exports = {
+  loadFixture,
+  piconeroFromXmrDisplay,
+  sendStagenetPayment,
+  enterAmount,
+  waitForBlock,
+  STAGENET_BLOCK_TIMEOUT,
+};

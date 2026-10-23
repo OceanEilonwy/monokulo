@@ -60,7 +60,7 @@ use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tower::ServiceExt as _;
 
-use engine::daemon::MoneroDaemonClient;
+use engine::daemon::{MoneroDaemonClient, TxLocation};
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::daemon_rpc::RpcDaemonClient;
 use engine::http::rate_limit::ApiRateLimits;
@@ -124,6 +124,8 @@ async fn body_text(response: Response) -> String {
 #[derive(Clone)]
 struct SendPaymentState {
     node_url: String,
+    /// The node list the scan loop reads, for `GET /tx/{hash}`.
+    daemon: Arc<dyn MoneroDaemonClient>,
     /// Held for the *entire* duration of any real call to the stagenet
     /// node - both here and around every `run_scan_tick` in `main`'s own
     /// background loop below - so this process never has two connections to
@@ -217,6 +219,28 @@ async fn send_payment_handler(
     Json(SendPaymentResponse {
         tx_hash: hex::encode(tx_hash),
     })
+    .into_response()
+}
+
+/// `GET /tx/{hash}`: where the node list the scan loop reads has a
+/// transaction - `{"in": "block", "height": n}`, `{"in": "pool"}` or
+/// `{"in": "none"}` - so a test that waits on a confirmation can wait for
+/// stagenet's block first, however late it comes, and only then hold the
+/// page to how quickly it follows.
+async fn tx_handler(
+    State(state): State<SendPaymentState>,
+    axum::extract::Path(hash): axum::extract::Path<String>,
+) -> Response {
+    let location = {
+        let _guard = state.network_lock.lock().await;
+        state.daemon.locate_transaction(&hash).await
+    };
+    match location {
+        Ok(TxLocation::InBlock(height)) => Json(json!({ "in": "block", "height": height })),
+        Ok(TxLocation::InPool) => Json(json!({ "in": "pool" })),
+        Ok(TxLocation::NotFound) => Json(json!({ "in": "none" })),
+        Err(e) => return (StatusCode::BAD_GATEWAY, e.to_string()).into_response(),
+    }
     .into_response()
 }
 
@@ -352,10 +376,12 @@ async fn main() {
     // production router above. ----
     let send_payment_state = SendPaymentState {
         node_url: node_url.clone(),
+        daemon: Arc::<FallbackDaemonClient>::clone(&fallback_daemon),
         network_lock: Arc::clone(&network_lock),
     };
     let send_payment_router = Router::new()
         .route("/send-payment", post(send_payment_handler))
+        .route("/tx/{hash}", axum::routing::get(tx_handler))
         .with_state(send_payment_state);
     let send_payment_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -367,6 +393,7 @@ async fn main() {
             .expect("send-payment server error");
     });
     let send_payment_url = format!("http://{send_payment_addr}/send-payment");
+    let tx_url = format!("http://{send_payment_addr}/tx/");
 
     // ---- a real background scan loop, since an external process (Playwright,
     // over real HTTP polling) - not this process's own sequential test code -
@@ -572,6 +599,7 @@ async fn main() {
         "engine_base_url": engine_base_url,
         "monokulo_base_url": monokulo_base_url,
         "send_payment_url": send_payment_url,
+        "tx_url": tx_url,
         "public_key": public_key,
         "connection_id": connection_id,
         "email": email,
