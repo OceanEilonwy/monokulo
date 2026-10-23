@@ -112,8 +112,11 @@ has the body and how to check it. Mark the shop's order paid on
 
 ### 5. Forward your errors (optional)
 
+Follow the entry's `send-logs` form; your `sk_` key is the only one offered
+it:
+
 ```
-POST {monokulo}/api/v1/logs
+POST /api/v1/logs
 Authorization: Bearer {secret_token}
 Monokulo-Client: {slug}/{your version}
 Content-Type: application/json
