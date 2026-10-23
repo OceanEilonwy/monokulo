@@ -116,7 +116,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
                     order_id: o.order_id,
-                    status: o.status.into(),
+                    status: o.status,
                     amount: "—".to_string(),
                     currency: String::new(),
                     created_at: o.created_at,

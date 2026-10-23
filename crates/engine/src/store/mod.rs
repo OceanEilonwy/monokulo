@@ -2726,7 +2726,12 @@ impl Store {
         let closed_at = match plan.status {
             OrderStatus::Expired => order.expires_at.min(now),
             OrderStatus::Cancelled => order.cancelled_at.unwrap_or(now).min(now),
-            _ => now,
+            OrderStatus::Pending
+            | OrderStatus::Unconfirmed
+            | OrderStatus::Confirming
+            | OrderStatus::Paid
+            | OrderStatus::Partial
+            | OrderStatus::Overpaid => now,
         };
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
