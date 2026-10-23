@@ -600,7 +600,8 @@ pub async fn finish(
         }
     }
 
-    let version = super::pay::client_version(&headers, slug.as_str()).unwrap_or_default();
+    let version =
+        crate::api::runtime::client::client_version(&headers, slug.as_str()).unwrap_or_default();
     let name = req.name.as_deref().and_then(PluginName::clean);
     let (store_id, site, webhook_url) = (row.id.clone(), row.site.clone(), req.webhook_url.clone());
     let recorded = state

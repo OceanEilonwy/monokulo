@@ -474,3 +474,5 @@ async fn the_entry_can_be_cached() {
     assert_eq!(store.headers()[header::CACHE_CONTROL], "no-store");
     assert!(store.headers().get(header::ETAG).is_none());
 }
+
+mod orders;

@@ -150,10 +150,19 @@ pub async fn serve(headers: HeaderMap, Path(file): Path<String>) -> Response {
     respond(&headers, asset, cache_control)
 }
 
-/// The asset called `name`, as a fixed route serves it (the embed library
-/// has one, for its CORS headers).
-pub fn respond_named(headers: &HeaderMap, name: &str) -> Response {
-    respond(headers, static_assets::named(ASSETS, name), REVALIDATE)
+/// `GET /static/monokulo-client.js`: the embed library a merchant's page
+/// loads with `<script src>` (`createOrder` posts to the API's
+/// `/api/v1/orders` with the store's public key, `mount` frames the
+/// order's checkout).
+/// A route of its own, by its fixed name, for its CORS headers; served
+/// from this binary rather than a CDN so a self-hoster's site has no
+/// third party in its payment path.
+pub async fn client_library(headers: HeaderMap) -> Response {
+    respond(
+        &headers,
+        static_assets::named(ASSETS, "monokulo-client.js"),
+        REVALIDATE,
+    )
 }
 
 /// The asset, with `Cache-Control` and an `ETag` of its content: a browser

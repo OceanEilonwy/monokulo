@@ -274,7 +274,7 @@ impl ApiParam for Page {
 }
 
 /// The client the request names in `Monokulo-Client: name/version`, and
-/// its version (`crate::http::pay::client`).
+/// its version (`super::client`).
 #[derive(Clone, Debug)]
 pub struct Client(pub Option<(String, String)>);
 
@@ -282,7 +282,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Client {
     type Rejection = ProblemDetails;
 
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, ProblemDetails> {
-        Ok(Client(crate::http::pay::client(&parts.headers)))
+        Ok(Client(super::client::client(&parts.headers)))
     }
 }
 

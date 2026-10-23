@@ -170,7 +170,7 @@ pub(super) async fn order_rows(
 }
 
 /// How an order's source reads in the orders table. Any other source is a
-/// plugin's slug (`http::pay::order_source`), shown by the name the
+/// plugin's slug (`api::v1::orders::order_source`), shown by the name the
 /// store's newest integration of that plugin gave (`plugins`, newest
 /// first), else by the slug.
 fn source_label(source: Option<&str>, plugins: &[crate::db::StoreIntegrationRow]) -> String {
@@ -5377,9 +5377,10 @@ mod tests {
                 &secret,
                 serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": reference }),
             );
-            request
-                .headers_mut()
-                .insert(crate::http::pay::CLIENT_HEADER, client.parse().unwrap());
+            request.headers_mut().insert(
+                crate::api::runtime::client::CLIENT_HEADER,
+                client.parse().unwrap(),
+            );
             request
         };
         // The plugin's slug in the header, in any case, is the plugin's.
@@ -5417,7 +5418,7 @@ mod tests {
             serde_json::json!({ "amount": "2.75", "currency": "XMR", "merchant_order_id": "web-3" }),
         );
         claimed.headers_mut().insert(
-            crate::http::pay::CLIENT_HEADER,
+            crate::api::runtime::client::CLIENT_HEADER,
             "acme-cart/0.4.0".parse().unwrap(),
         );
         let claimed = created_id(router.clone().oneshot(claimed).await.unwrap()).await;

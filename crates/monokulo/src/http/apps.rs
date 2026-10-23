@@ -345,7 +345,8 @@ pub async fn redeem(
         .and_then(PluginSlug::parse)
         .map(|p| p.as_str().to_owned())
         .unwrap_or_default();
-    let version = super::pay::client_version(&headers, slug.as_str()).unwrap_or_default();
+    let version =
+        crate::api::runtime::client::client_version(&headers, slug.as_str()).unwrap_or_default();
     let key = shared::auth::generate_app_key();
     let (token_hash, key_hash) = (
         shared::auth::RawToken::presented(&req.token).hash(),

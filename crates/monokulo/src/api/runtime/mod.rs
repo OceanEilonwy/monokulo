@@ -4,6 +4,7 @@
 
 pub mod auth;
 pub mod catalog;
+pub mod client;
 pub mod examples;
 pub mod extract;
 pub mod hal;

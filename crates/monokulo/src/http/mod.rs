@@ -56,7 +56,6 @@ mod logs_page;
 mod machine_tests;
 mod orders;
 pub mod paths;
-pub(crate) mod pay;
 mod pos;
 mod pos_logs;
 pub(crate) mod query_page;
@@ -728,7 +727,7 @@ pub fn build_router(state: AppState) -> Router {
     // A plain static file, not state-changing - no rate limiter needed.
     let router = router.route(
         "/static/monokulo-client.js",
-        axum::routing::get(pay::client_library).layer(any_origin_cors_layer()),
+        axum::routing::get(crate::assets::client_library).layer(any_origin_cors_layer()),
     );
     // Every other file baked into the binary (`crate::assets`): scripts and
     // styles at URLs carrying their digest, fonts, marks and modules by name.

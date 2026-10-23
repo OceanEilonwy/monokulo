@@ -1,6 +1,5 @@
 use super::order;
 use crate::api::{self, prelude::*};
-use crate::http::pay::order_source;
 use crate::http::store_key::Credential;
 use crate::now_unix;
 
@@ -386,4 +385,50 @@ async fn create(
         )
     });
     Ok(Created(body))
+}
+
+/// Where an order made through `POST /api/v1/orders` came from, for its
+/// page and the orders table: the store's connected plugin (its slug) when
+/// it was made with the store's key by the client that plugin connected as
+/// (`Monokulo-Client: <slug>/...`, any case), `api` for anything else with
+/// the key, or `website` (a browser, with the public key). `plugin` is the
+/// slug of the store's active integration, if it has one.
+pub(crate) fn order_source(
+    created_with_key: bool,
+    client: Option<&str>,
+    plugin: Option<&str>,
+) -> String {
+    match (created_with_key, client, plugin) {
+        (true, Some(client), Some(plugin)) if client.eq_ignore_ascii_case(plugin) => {
+            plugin.to_owned()
+        }
+        (true, _, _) => "api".to_owned(),
+        (false, _, _) => "website".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::order_source;
+
+    /// A keyed order is the store's plugin's only when the client names
+    /// that plugin, in any case; no plugin, another client or none is the
+    /// API; without the key it's the website, whatever it claims.
+    #[test]
+    fn an_orders_source_is_the_connected_plugin_only_when_it_names_itself() {
+        assert_eq!(
+            order_source(true, Some("Acme-Cart"), Some("acme-cart")),
+            "acme-cart"
+        );
+        assert_eq!(
+            order_source(true, Some("opencart"), Some("acme-cart")),
+            "api"
+        );
+        assert_eq!(order_source(true, Some("acme-cart"), None), "api");
+        assert_eq!(order_source(true, None, Some("acme-cart")), "api");
+        assert_eq!(
+            order_source(false, Some("acme-cart"), Some("acme-cart")),
+            "website"
+        );
+    }
 }

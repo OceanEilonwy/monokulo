@@ -15,8 +15,8 @@ use std::fmt;
 /// The longest name a plugin may give itself, in characters.
 pub const MAX_NAME_LEN: usize = 40;
 
-/// Where monokulo's own orders and reports come from (`http::pay::order_source`,
-/// the logs route): no plugin may take one of these as its
+/// Where monokulo's own orders and reports come from (`api::v1::orders`'s
+/// `order_source`, the logs route): no plugin may take one of these as its
 /// slug, or its orders would read as the till's or the website's.
 const RESERVED_SLUGS: [&str; 5] = ["api", "dashboard", "plugin", "pos", "website"];
 
