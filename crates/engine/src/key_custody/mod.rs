@@ -2,7 +2,7 @@
 //!
 //! Each store's keys live in one backend of its own choosing; [`CustodyRouter`]
 //! holds the enabled ones and routes each call to the backend that issued its
-//! handle (`docs/DESIGN.md` §6.4). Re-exported here so the engine names them
+//! handle. Re-exported here so the engine names them
 //! as its own. [`SnpSlot`] is how the engine starts the `snp` backend, in a
 //! build with the `snp` feature; without it there is none, and enabling
 //! `snp` is refused (`engine_settings::CustodyConfig`).

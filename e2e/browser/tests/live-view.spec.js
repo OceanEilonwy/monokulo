@@ -1,4 +1,4 @@
-// The engine page (docs/engine_visualizer.md) in a real browser, against the
+// The engine page in a real browser, against the
 // coverage fixture's engine: following it live, scrubbing the timeline,
 // replaying and going live again, moving and resizing the timeline's window,
 // the legend, the chain strip's cells at each width, the round's lanes, the

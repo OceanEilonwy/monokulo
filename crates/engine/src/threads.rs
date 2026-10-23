@@ -1,4 +1,4 @@
-//! The engine's own threads (`docs/engine_as_library.md` §5).
+//! The engine's own threads.
 //!
 //! A Tokio runtime with `server.worker_threads` workers, every thread of it
 //! (workers and the blocking pool where scans run) named `engine-worker`,

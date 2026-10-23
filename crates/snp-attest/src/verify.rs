@@ -662,9 +662,8 @@ mod tests {
     /// reversal and scalar handling are correct in isolation. Real
     /// end-to-end proof that a genuine AMD VCEK's key verifies a genuine
     /// report requires a report actually captured from SEV-SNP hardware,
-    /// which this environment doesn't have - documented as a real, open gap
-    /// in `docs/DEPLOY_SEV_SNP.md`, not silently assumed covered by this
-    /// test.
+    /// which this environment doesn't have - a real, open gap, not silently
+    /// assumed covered by this test.
     #[test]
     fn report_signature_round_trips_through_the_little_endian_encoding() {
         #[allow(deprecated)]

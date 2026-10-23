@@ -33,8 +33,8 @@ not by trusting the provider's own claim.
    snpguest report /tmp/report.bin /tmp/request-data.txt --random
    ```
 
-3. Verify it with this repo's own tool (`snp-attest`, WBS 2.2.1's literal
-   deliverable - see `snp-attest/src/bin/verify-snp-attestation.rs` for the
+3. Verify it with this repo's own tool (`snp-attest` - see
+   `crates/snp-attest/src/bin/verify-snp-attestation.rs` for the
    full design rationale, including exactly why the `--min-*-spl` flags are
    optional):
 
@@ -50,8 +50,7 @@ not by trusting the provider's own claim.
    verified TCB - **you supply the actual number**, sourced from
    [AMD-SB-3019](https://www.amd.com/en/resources/product-security/bulletin/amd-sb-3019.html)
    (the "StackWarp" SEV-SNP vulnerability, CVE-2025-29943, fixed by AMD's
-   2025-07-29 microcode release - this is the "AMD's July 2025 microcode
-   patch" this WBS item names) or from your specific provider/hardware
+   2025-07-29 microcode release, the "July 2025 microcode patch") or from your specific provider/hardware
    vendor's own documentation of which SPL that release maps to for your
    silicon. This tool does not hardcode that number itself - see the
    binary's own module doc comment for why guessing it would be worse than
@@ -60,7 +59,7 @@ not by trusting the provider's own claim.
    for you to compare by hand.
 4. **Do not proceed to step 2 below if this fails.** A failure here means
    either the box isn't genuinely SEV-SNP-protected, or its microcode
-   predates the fix this WBS item exists to confirm - in both cases,
+   predates the fix this check exists to confirm - in both cases,
    deploying onto it defeats the point of this deployment.
 
 ## 2. Build a measured engine image

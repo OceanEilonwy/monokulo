@@ -1,4 +1,4 @@
-//! Taking an anchor (`docs/proof_of_work.md`).
+//! Taking an anchor.
 //!
 //! The anchor is the one block, with the 735 before it, that the engine
 //! takes on its nodes' word, deep enough below their tips that no reorg

@@ -5,8 +5,7 @@
 //! Deliberately **data only, no HTML** - this used to render a full page
 //! directly on the engine, which was the wrong layer for it: the engine has
 //! no product-facing visual identity or HTML surface of its own at all any
-//! more (`docs/fx_refactor.md` moved the checkout page to the monokulo
-//! too), and the monokulo is the one place a merchant-facing status
+//! more (the checkout page moved to monokulo too), and monokulo is the one place a merchant-facing status
 //! page actually belongs, styled to match everything else there. The
 //! monokulo's own `GET /status` (`monokulo/src/http/status_page.rs`)
 //! is the real page now - it calls this endpoint via `EngineClient::get_status`
@@ -64,8 +63,7 @@ pub(super) struct NodeStatus {
     /// What the engine has asked this node since the node was configured
     /// (or the engine started), by endpoint, busiest first.
     pub rpc: Vec<crate::daemon::EndpointStats>,
-    /// What has been measured of the node's link (`docs/engine_scaling.md`
-    /// section 1).
+    /// What has been measured of the node's link.
     pub link: Option<shared::scaling::LinkSnapshot>,
 }
 
@@ -128,14 +126,13 @@ pub(super) struct NetworkStatus {
     pub lagging_tenants: usize,
     /// How far behind the furthest-behind tenant is, in blocks.
     pub max_blocks_behind: u64,
-    /// How the block scan is going and what limits it
-    /// (`docs/engine_scaling.md` section 6).
+    /// How the block scan is going and what limits it.
     pub scaling: shared::scaling::NetworkScaling,
-    /// The nodes' ZMQ announcements (`docs/monero_zmq.md`); absent while no
+    /// The nodes' ZMQ announcements; absent while no
     /// node of this network has a `zmq_pub`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub announcements: Option<shared::announcements::Announcements>,
-    /// Proof-of-work checking (`docs/proof_of_work.md`); absent while it is
+    /// Proof-of-work checking; absent while it is
     /// off on this network.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proof: Option<shared::proof::ProofStatus>,
@@ -163,7 +160,7 @@ pub(super) struct EngineStatusResponse {
     /// their own, and alert when the two disagree.
     pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour, and the
-    /// machine it runs on (`docs/engine_scaling.md` section 6).
+    /// machine it runs on.
     pub resources: shared::resources::ResourceReport,
 }
 
@@ -382,7 +379,7 @@ pub(super) async fn status_page(
     }))
 }
 
-/// One network's scaling figures (`docs/engine_scaling.md` section 6): how far
+/// One network's scaling figures: how far
 /// behind the node it is and at what pace, what limits it, its memory, and
 /// a block that has taken too long.
 fn network_scaling(

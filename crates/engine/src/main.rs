@@ -86,8 +86,7 @@ fn main() {
     reason = "boot-time: a listener that can't bind or a server that can't start ends the process"
 )]
 async fn run(config: EngineConfig) {
-    // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md
-    // 6): the process's, so its host samples it, not the engine.
+    // CPU and memory every 10 s, for the admin page: the process's, so its host samples it, not the engine.
     shared::resources::start_sampling();
 
     let engine = match Engine::start(config).await {

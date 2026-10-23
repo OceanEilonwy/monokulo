@@ -3,7 +3,7 @@
 //! exploration; `engine properties` and `engine scale` run the property and
 //! scale tests, the property run reporting the scenarios it reached. None of
 //! them infers line coverage: they record what the fuzzer and the tests
-//! report (`docs/ENGINE_VERIFICATION.md`).
+//! report.
 
 use crate::support::{at, read_json, wait_with_deadline, write_json, Exit, OnTimeout};
 use regex::Regex;

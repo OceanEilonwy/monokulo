@@ -5,13 +5,12 @@
 //!   high-water mark, never the node's reported height, so a node claiming
 //!   an absurd tip can't talk the scanner into deleting the window it needs.
 //!   Order events older than `order_events.retention_days` go too.
-//! - Scanned ranges (`docs/order_rescan_wbs.md` Phase 5.1): each in-scope
+//! - Scanned ranges: each in-scope
 //!   order shows the range of blocks scanned for it, up to its store's
 //!   cursor. A rotating page of stores per unit.
 //! - Void recheck: payments voided as double-spent in the last two days are
 //!   rechecked every few minutes against fresh, corroborated key-image
-//!   evidence, and restored if it no longer supports the accusation
-//!   (`docs/DESIGN.md` §7.7). One page per round, from a persisted position.
+//!   evidence, and restored if it no longer supports the accusation. One page per round, from a persisted position.
 
 use crate::scanner::{
     recheck_voided_payment, voided_key_image_statuses, ScannerError,

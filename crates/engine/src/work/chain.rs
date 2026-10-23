@@ -1,6 +1,5 @@
 //! The chain tier: reorg detection, and the durable reorg job that
-//! reconciles the payments a reorg touched (`docs/scanner_microtasks.md`,
-//! "Reorgs").
+//! reconciles the payments a reorg touched.
 
 use std::collections::HashSet;
 
@@ -19,7 +18,7 @@ use super::{bounded, count, Progress, Round, Wait};
 /// (`get_block`: the id is computed from the block, the list is what the id
 /// commits to). A payment moved to a height on a node's word is stamped
 /// with it, and settles under proof-of-work checking only if that block is
-/// the proven one (`docs/proof_of_work.md`). `None` if the node can't show
+/// the proven one. `None` if the node can't show
 /// it: the payment then waits for a scan of that block.
 pub(crate) async fn block_holding(
     daemon: &dyn MoneroDaemonClient,

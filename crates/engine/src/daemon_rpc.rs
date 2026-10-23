@@ -14,7 +14,7 @@
 //! envelope at all, and the binary (epee) `/get_blocks.bin`, for blocks and
 //! for changes to the mempool.
 //!
-//! What is asked for is kept small (`docs/node_rpc_efficiency.md)`:
+//! What is asked for is kept small:
 //! transactions come pruned (the prefix and `RingCT` base a scan reads, about a
 //! sixth of the bytes), a block's id comes from the block itself, a lone hash
 //! or header is asked for as just that, and the mempool is followed by its
@@ -44,7 +44,7 @@ pub struct RpcDaemonClient {
     max_response_bytes: usize,
     stats: parking_lot::Mutex<HashMap<String, EndpointStats>>,
     /// What has been measured of this node's link: what sizes and times
-    /// block requests (`docs/engine_scaling.md` sections 1 and 2).
+    /// block requests.
     link: crate::link::Link,
     /// The mempool as this node last described it. An async lock: one poll
     /// at a time, held across its round trip, so two loops polling at once
@@ -461,7 +461,7 @@ impl RpcDaemonClient {
         let blocks = parse_get_blocks_bin_response(&response)?;
         let received = response.len();
         // The blocks' blobs are copied out: the answer they came in goes now,
-        // not when the whole chunk is decoded (docs/engine_scaling.md 3).
+        // not when the whole chunk is decoded.
         drop(response);
         self.link.record_blocks(
             blocks.len() as u64,
@@ -1255,7 +1255,7 @@ struct BlockHeader {
     #[serde(default)]
     num_txes: Option<u64>,
     /// The difficulty as two 64-bit halves, as monerod sends it; read only
-    /// for an anchor's window (`docs/proof_of_work.md`).
+    /// for an anchor's window.
     #[serde(default)]
     difficulty: u64,
     #[serde(default)]
@@ -3193,8 +3193,8 @@ mod wire_tests {
         assert!(client.find_transaction(B).await.unwrap().is_none());
     }
 
-    /// A small answer measures the link's round trip
-    /// (`docs/engine_scaling.md` section 1): the link is measured from then on.
+    /// A small answer measures the link's round trip:
+    /// the link is measured from then on.
     #[tokio::test]
     async fn a_small_answer_measures_the_round_trip() {
         let (client, node) = scripted().await;
@@ -3493,8 +3493,7 @@ mod wire_tests {
 
     /// A large block's outline comes from `get_block`: its id computed from
     /// the blob, its parent and time, and its transactions' ids in order,
-    /// with no transaction fetched. A blob from another height is refused
-    /// (`docs/engine_scaling.md` section 4).
+    /// with no transaction fetched. A blob from another height is refused.
     #[tokio::test]
     async fn a_large_blocks_outline_is_read_from_its_own_blob() {
         let (client, node) = scripted().await;
@@ -3535,7 +3534,7 @@ mod wire_tests {
         assert!(error.to_string().contains("sent another"), "{error}");
     }
 
-    /// What proof-of-work checking reads (`docs/proof_of_work.md)`: a block's
+    /// What proof-of-work checking reads: a block's
     /// blob as `get_block` sends it, and headers with their difficulties,
     /// whose two 64-bit halves are joined; a header from another height is
     /// refused.
@@ -3714,8 +3713,8 @@ mod live_node_tests {
     //! the default `cargo test` run (`#[ignore]`) so the main suite stays hermetic
     //! and fast. `cargo xtask live` runs them, with every other `live_` test, once
     //! a day (live-network.yml); `cargo test --ignored daemon_rpc::` runs just
-    //! these, to verify against real chain data by hand. Per `docs/TESTING.md` §10's
-    //! reasoning for the regtest tier: this proves the real RPC wiring and real
+    //! these, to verify against real chain data by hand. As with the regtest
+    //! tier, this proves the real RPC wiring and real
     //! transaction parsing against real (and constantly-changing) mainnet data,
     //! which no fixture-based unit test can substitute for - it's a *complement* to
     //! the mocked-daemon scanner tests in `scanner.rs`, not a replacement.

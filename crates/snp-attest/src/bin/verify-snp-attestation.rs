@@ -1,6 +1,5 @@
-//! WBS 2.2.1's own literal deliverable: "an attestation-verification
-//! script - its pass/fail on the signature chain and reported patch level
-//! is the test."
+//! An attestation-verification tool: its pass/fail on the signature chain
+//! and reported patch level is the test.
 //!
 //! USAGE:
 //!   verify-snp-attestation --report <path> --product Milan|Genoa|Turin \
@@ -19,7 +18,7 @@
 //! script convention (`deploy/backup/monokulo-backup.sh`/`monokulo-restore.sh`).
 //!
 //! WHY THE --min-*-spl FLAGS ARE OPTIONAL, AND WHAT THAT MEANS:
-//! This WBS item names one concrete target explicitly: "AMD's July 2025
+//! The deployment names one concrete target explicitly: "AMD's July 2025
 //! microcode patch confirmed present" - which is AMD-SB-3019 (the
 //! "StackWarp" SEV-SNP vulnerability, CVE-2025-29943), fixed by the
 //! microcode batch AMD shipped 2025-07-29. That advisory's fix is expressed

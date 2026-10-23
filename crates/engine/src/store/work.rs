@@ -1,4 +1,4 @@
-//! Durable state for the scanner's work units (`docs/scanner_microtasks.md)`:
+//! Durable state for the scanner's work units:
 //! the reorg job, the recompute schedule, and rotation positions. Every
 //! read here is a bounded page; every multi-row write is one transaction.
 
@@ -1130,8 +1130,8 @@ impl Store {
     }
 }
 
-/// What the engine page's snapshot reads from the database
-/// (`docs/engine_visualizer.md`): each read is one indexed query.
+/// What the engine page's snapshot reads from the database:
+/// each read is one indexed query.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ActivityFacts {
     pub high_water: Option<u64>,

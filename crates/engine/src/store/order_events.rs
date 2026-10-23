@@ -1,4 +1,4 @@
-//! The order-event log (migration 0030, `docs/DESIGN.md` §11): what a
+//! The order-event log (migration 0030): what a
 //! store's webhooks announce, written in the same transaction as the change
 //! itself, read in order by monokulo's subscription
 //! (`GET /api/v1/admin/order-events`), and kept for

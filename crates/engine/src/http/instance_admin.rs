@@ -202,7 +202,7 @@ pub async fn get_settings(
         );
     }
     // The budget's help says what this machine allows, for the networks
-    // configured now (docs/engine_scaling.md section 3).
+    // configured now.
     if let Some(view) =
         scalars.get_mut(crate::engine_settings::PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key)
     {
@@ -616,7 +616,7 @@ fn save_refused(error: live_settings::SaveError) -> axum::response::Response {
 }
 
 /// `DELETE /api/v1/admin/proof/{network}/anchor`: forgets `network`'s
-/// proof-of-work anchor and proven chain (`docs/proof_of_work.md`).
+/// proof-of-work anchor and proven chain.
 ///
 /// Checking stays on: its next round takes a new anchor from the nodes. For
 /// an operator after a reorg deeper than the anchor, once the nodes are

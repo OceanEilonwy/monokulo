@@ -1,5 +1,5 @@
-//! File-backed, deterministic scanner workload for `cargo xtask stress`
-//! (`docs/engine_stress.md`). Setup is excluded from measured tick timings.
+//! File-backed, deterministic scanner workload for `cargo xtask stress`.
+//! Setup is excluded from measured tick timings.
 //! This executable drives the production scanner, `Store` migrations and plain
 //! key custody against a scripted daemon.
 //!
@@ -277,9 +277,8 @@ impl Args {
 }
 
 /// Which engine code runs each tick. `scheduler` is one scheduler round
-/// (`engine::work::run_round`, `docs/scanner_microtasks.md`), as the
-/// production loop runs it. The phase-by-phase tick it replaced was
-/// measured as `legacy`; its results are kept in `docs/stress/`.
+/// (`engine::work::run_round`), as the
+/// production loop runs it.
 #[derive(Clone, Copy)]
 enum Driver {
     Scheduler,

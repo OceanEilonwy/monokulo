@@ -2567,7 +2567,7 @@ fn options_values_for_test(
 }
 
 /// One options file for two services in one process (monokulo and an engine
-/// embedded in it, docs/engine_as_library.md): the outer handle leaves the
+/// embedded in it): the outer handle leaves the
 /// `[engine.*]` tables alone, the engine's handle is that table.
 mod nested_options {
     use super::*;

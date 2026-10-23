@@ -1,8 +1,7 @@
 //! HTTP-layer integration tests, driven through the real `Router` via
 //! `tower::ServiceExt::oneshot` - no bound snp needed. These exercise the same
 //! IDOR/auth properties `store.rs` already tests at the repository level, but end to
-//! end through real request parsing, auth extraction, and JSON (de)serialization,
-//! per `docs/TESTING.md` §5.
+//! end through real request parsing, auth extraction, and JSON (de)serialization.
 
 use std::collections::HashMap;
 use std::str::FromStr as _;
@@ -413,8 +412,7 @@ async fn admin_route_with_no_authorization_header_is_rejected() {
 
 #[tokio::test]
 async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
-    // The exact IDOR scenario from docs/DESIGN.md §10.1 and docs/TESTING.md §5,
-    // exercised end to end through real HTTP requests: tenant A's valid sk_ plus
+    // The IDOR scenario, exercised end to end through real HTTP requests: tenant A's valid sk_ plus
     // tenant B's real order_id must come back as 404, not tenant B's order.
     let router = test_router();
     let tenant_a = create_tenant(&router, 3).await;
@@ -549,8 +547,7 @@ async fn the_engine_serves_no_public_order_routes_and_no_cors() {
 
 #[tokio::test]
 async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
-    // This engine no longer has any concept of fiat/exchange rates
-    // (`docs/fx_refactor.md` decision 2) - a caller supplies the exact
+    // This engine has no concept of fiat/exchange rates: a caller supplies the exact
     // `xmr_amount_piconero` an order is worth directly, so the only amount-shaped
     // validation left here is "an order can't be worth exactly nothing" and "the
     // field must actually be present and correctly typed."
@@ -1200,7 +1197,7 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
 
 #[tokio::test]
 async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
-    // The structural IDOR fix (§DESIGN.md §10.1) is only a guarantee if it holds for
+    // The structural IDOR fix is only a guarantee if it holds for
     // *every* route in the family, not the handful it was designed around. This
     // walks all of them with tenant B's token and asserts none of them can be
     // steered at tenant A's data by any identifier in the path or the body.
@@ -1283,7 +1280,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
 }
 
 /// /status reports the engine's CPU and memory, and each network's scaling
-/// figures (`docs/engine_scaling.md` section 6). One block that has taken over
+/// figures. One block that has taken over
 /// two minutes, while its node answers, is reported as slow, with what is
 /// known about it.
 #[tokio::test]
@@ -2136,7 +2133,7 @@ async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
     assert_eq!(body["monero_node"]["mainnet"], serde_json::Value::Null);
 }
 
-// -- Payment lookup by txid (`docs/txid_lookup_and_scan_chunking_wbs.md` Part B) --
+// -- Payment lookup by txid --
 
 fn lookup_request(token: &str, txid: &str) -> Request<Body> {
     json_request(
@@ -4274,7 +4271,7 @@ async fn status_says_which_network_each_node_is_on() {
     );
 }
 
-/// An operator's "take a new anchor" (`docs/proof_of_work.md)`: the anchor
+/// An operator's "take a new anchor": the anchor
 /// and proven chain go, checking stays on (nothing settles until the next
 /// anchor); refused where checking is off, or for no network.
 #[tokio::test]

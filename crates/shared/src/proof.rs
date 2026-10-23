@@ -1,5 +1,5 @@
-//! What the engine reports in `/status` about proof-of-work checking
-//! (docs/proof_of_work.md): where each network's proven chain stands, what
+//! What the engine reports in `/status` about proof-of-work checking:
+//! where each network's proven chain stands, what
 //! it was anchored on, and what each node was found to serve. The engine
 //! fills these in; monokulo shows them to operators on the status page.
 

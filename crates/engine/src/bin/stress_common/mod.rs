@@ -1,4 +1,4 @@
-//! What the scanner's stress binaries share (`docs/engine_stress.md)`: the
+//! What the scanner's stress binaries share: the
 //! deterministic wallets and the transaction every scripted block carries.
 
 use std::error::Error;

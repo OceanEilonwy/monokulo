@@ -1,4 +1,4 @@
-//! Proof-of-work checking (`docs/proof_of_work.md)`: following the heaviest
+//! Proof-of-work checking: following the heaviest
 //! chain whose every block's proof of work the engine checked itself, from
 //! an anchor its nodes agreed on.
 //!

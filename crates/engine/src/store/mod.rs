@@ -184,7 +184,7 @@ pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
 /// to start against its own database.
 ///
 /// The actual mechanism (transactional per-migration apply, tracked in
-/// `schema_migrations`) lives in `shared::migrations::apply` (WBS 0.5) - moved there
+/// `schema_migrations`) lives in `shared::migrations::apply` - moved there
 /// so the monokulo database can reuse it without a second, hand-rolled copy.
 /// This wrapper just supplies the engine's own migration list, which - being
 /// `include_str!("../../migrations/...")` paths relative to this crate - can't live in
@@ -557,7 +557,7 @@ pub struct Order {
     pub created_at: i64,
     pub expires_at: i64,
     pub updated_at: i64,
-    /// `docs/order_rescan_wbs.md` Phase 5.1 - the actual block-height range this
+    /// The actual block-height range this
     /// order has ever been examined across, accumulated (never replaced) by both
     /// ordinary live scanning and any manual rescan. `None` until the order's very
     /// first tick.
@@ -676,8 +676,8 @@ struct StatusFacts<'a> {
     /// proven one, under proof-of-work checking): which is credited isn't
     /// known, so the order can't settle (`store::conflicts`).
     conflicted: bool,
-    /// While the order's network checks proof of work
-    /// (`docs/proof_of_work.md`), the payments as proven: each counted only
+    /// While the order's network checks proof of work,
+    /// the payments as proven: each counted only
     /// if the block it was found in is the proven block at its height, and
     /// only with confirmations up to the proven, recorded tip. An order may
     /// only newly settle on these.
@@ -736,8 +736,7 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     // back) still happens, and it shows where the payment stands.
     //
     // Likewise while confirmations above the ceiling are needed: a block
-    // whose proof of work wasn't checked may be made up
-    // (docs/proof_of_work.md).
+    // whose proof of work wasn't checked may be made up.
     let settles_on_proven_blocks = || match &facts.proven_views {
         None => true,
         Some(views) => {
@@ -1845,8 +1844,8 @@ impl Store {
     }
 
     /// The *only* sanctioned way to resolve a tenant for an admin request: entirely
-    /// from the presented secret token, never from any path parameter. See
-    /// `docs/DESIGN.md` §10.1 for why this is structural, not a per-handler check.
+    /// from the presented secret token, never from any path parameter: the rule
+    /// is structural, not a per-handler check.
     pub fn find_tenant_by_secret_token(&self, raw_token: &RawToken) -> Result<Option<Tenant>> {
         let hash = raw_token.hash();
         self.conn
@@ -1873,9 +1872,9 @@ impl Store {
     }
 
     /// Updates only the fields the admin API allows a tenant to change about
-    /// itself. `public_key`, key material, and `network` are deliberately absent -
-    /// see `docs/DESIGN.md` §10.2 (rotate by creating a new tenant, not by mutating
-    /// key material in place). Each field is `Option<Option<T>>`-free by design:
+    /// itself. `public_key`, key material, and `network` are deliberately absent
+    /// (rotate by creating a new tenant, not by mutating key material in
+    /// place). Each field is `Option<Option<T>>`-free by design:
     /// `None` means "leave unchanged", so a partial PATCH body only touches the
     /// fields it actually included.
     /// One statement, so a patch with both fields applies both or neither.
@@ -2266,8 +2265,8 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Scoped by `tenant_id` in the query itself - the IDOR-prevention rule from
-    /// `docs/DESIGN.md` §10.1 applied at the row level. A `order_id` belonging to a
+    /// Scoped by `tenant_id` in the query itself - the IDOR-prevention rule
+    /// applied at the row level. A `order_id` belonging to a
     /// different tenant must come back as `Ok(None)`, indistinguishable from a
     /// nonexistent one.
     pub fn get_order(&self, tenant_id: &TenantId, order_id: &OrderId) -> Result<Option<Order>> {
@@ -2282,7 +2281,7 @@ impl Store {
     }
 
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Records
-    /// only - nothing in this system ever sends to a refund address (§DESIGN.md 3).
+    /// only - nothing in this system ever sends to a refund address.
     pub fn set_refund_address(
         &self,
         tenant_id: &TenantId,
@@ -2416,7 +2415,7 @@ impl Store {
 
     /// Marks a payment permanently reversed. Never called on ambiguous evidence -
     /// only once `is_key_image_spent` affirmatively proves a different, unrelated
-    /// transaction consumed the same inputs (see `docs/DESIGN.md` §7.5). Returns
+    /// transaction consumed the same inputs. Returns
     /// `false` if the row didn't exist or was already voided (idempotent).
     pub fn void_payment(
         &self,
@@ -2585,7 +2584,7 @@ impl Store {
 
     /// Recomputes `status`, `confirmations`, and `amount_received_piconero` from the
     /// order's currently-valid payments and persists the result. This is the *only*
-    /// place `orders.status` is written - see `docs/DESIGN.md` §7.6. Returns
+    /// place `orders.status` is written. Returns
     /// `(old_status, new_status)` so the caller can decide whether a status-transition
     /// order event is warranted.
     /// Uses `order.confirmations_required_override` when the order has one
@@ -2970,7 +2969,7 @@ impl Store {
         Ok(())
     }
 
-    // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) -------
+    // -- Scanned block range -------
 
     /// Bumps every one of `tenant_id`'s currently-in-scope orders (the scan
     /// window's predicate, `IN_SCAN_WINDOW`, grace period included) to `height` - one bulk `UPDATE`, not a per-order loop.
@@ -3282,8 +3281,8 @@ mod tests {
         }
     }
 
-    /// An order settles only on its payments as proven
-    /// (`docs/proof_of_work.md`); the counts shown stay the real ones, and an
+    /// An order settles only on its payments as proven;
+    /// the counts shown stay the real ones, and an
     /// order already settled isn't walked back.
     #[test]
     fn settlement_waits_for_proven_payments() {
@@ -3879,7 +3878,7 @@ mod tests {
 
     #[test]
     fn concurrent_minor_index_allocation_never_duplicates() {
-        // Direct test of docs/TESTING.md §6's top concurrency requirement: N
+        // Direct test of the top concurrency requirement: N
         // concurrent order-creation requests for one tenant must never allocate the
         // same minor_index. A Mutex-guarded Store is a legitimate, simple
         // realization of "single writer" for SQLite (which disallows concurrent
@@ -3918,7 +3917,7 @@ mod tests {
     #[test]
     fn get_order_is_scoped_by_tenant_and_returns_none_across_tenants() {
         // Row-level IDOR test: tenant A's id plus tenant B's real order_id must
-        // come back as None, not tenant B's order. See docs/DESIGN.md §10.1.
+        // come back as None, not tenant B's order.
         let store = Store::open_in_memory().unwrap();
         let tenant_a = new_tenant(&store);
         let tenant_b = new_tenant(&store);
@@ -4992,7 +4991,7 @@ mod tests {
             )
             .unwrap();
         // Inserted directly via raw SQL, not `new_order`/`create_order`: those
-        // now build an XMR-only `INSERT` (`docs/fx_refactor.md` Phase 3), which
+        // now build an XMR-only `INSERT`, which
         // this pre-migration-5 schema (fiat columns still `NOT NULL`) would
         // reject. A real pre-upgrade database still has real fiat values in
         // every row, so this reproduces that shape directly instead.
@@ -5005,7 +5004,7 @@ mod tests {
             ))
             .unwrap();
         // Not fetched back via `get_order_by_id` here - `row_to_order` now selects
-        // columns (`first_scanned_height`/`last_scanned_height`, Phase 5.1) that
+        // columns (`first_scanned_height`/`last_scanned_height`) that
         // don't exist yet at this pre-migration-8 schema version; `order_id` is
         // already the exact id just inserted, so there's nothing this would add.
         //

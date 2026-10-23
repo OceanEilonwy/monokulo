@@ -1,12 +1,5 @@
-//! Fiat-to-XMR conversion for order creation. Moved here from the engine's
-//! own `src/exchange_rate.rs` (`docs/fx_refactor.md` Phase 1.1) - the
-//! engine is being narrowed to strictly Monero-watching with no concept of
-//! fiat/FX at all, so this now lives in `shared` as transitional common
-//! ground: the monokulo depends on it directly (its new public
-//! order-creation endpoint, `docs/fx_refactor.md` Phase 1.4, is the real
-//! reason this exists here), while the engine's own use of it is scheduled
-//! for complete removal in that same document's Phase 3/4 - by the end of
-//! that migration this module has exactly one real caller, not two.
+//! Fiat-to-XMR conversion for order creation, used by monokulo: the engine
+//! only watches Monero and has no concept of fiat or exchange rates.
 //!
 //! Two provider types exist: `XmrIdentityProvider`, for the trivial
 //! "XMR priced in XMR" case an order never actually needs a live rate for,
@@ -40,7 +33,7 @@
 //! anyone asks for it (or is rejected with a real "unsupported currency"
 //! once Coingecko itself says so), with no config-time enumeration step.
 //!
-//! Money is never a float anywhere in this system (see `docs/DESIGN.md` §8.1) -
+//! Money is never a float anywhere in this system -
 //! `compute_xmr_amount` does the fiat-decimal-string -> piconero conversion as exact
 //! integer arithmetic, never `f64`. `CoingeckoRateProvider`'s own price-fetching (below) is the
 //! one deliberate exception, and it's an exception rather than a violation: §8.1's
@@ -251,8 +244,8 @@ impl CoingeckoRateProvider {
         CoingeckoRateProvider {
             base_url: base_url.into(),
             // Goes through the same shared, byte-bounded HTTP-cache-aware
-            // transport every other outbound call in this workspace now uses
-            // (`docs/order_rescan_wbs.md` Phase 3.1) - safe here specifically
+            // transport every other outbound call in this workspace now uses,
+            // safe here specifically
             // because Coingecko's real responses (checked live against the actual
             // API) carry no `Cache-Control` header at all, so this changes
             // nothing about Coingecko's own observed behavior; it just means a
@@ -1177,7 +1170,7 @@ mod tests {
 
         #[tokio::test]
         // Run daily by `cargo xtask live` (live-network.yml), never per change:
-        // WBS 1.7.1 keeps live network calls out of the per-change suite.
+        // live network calls stay out of the per-change suite.
         #[ignore = "needs the live Coingecko API"]
         async fn live_coingecko_api_quotes_usd_and_lists_it_as_supported() {
             let provider = CoingeckoRateProvider::new("https://api.coingecko.com");

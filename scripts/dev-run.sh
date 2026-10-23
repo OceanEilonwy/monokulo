@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Start/stop the local Monokulo dev stack against stagenet: the engine and
 # monokulo as two separate processes, monokulo talking to the engine over
-# its admin API. That is production's hardened setup (the engine on its own,
-# docs/RUNNING.md); the default install runs the engine inside monokulo
+# its admin API. That is production's hardened setup (the engine on its
+# own); the default install runs the engine inside monokulo
 # instead. Two processes here so each can be restarted and debugged alone.
 #
 # USAGE:
@@ -55,23 +55,23 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$REPO_ROOT/.dev-run"
 ENGINE_DIR="$RUN_DIR/engine"
-CP_DIR="$RUN_DIR/monokulo"
+MK_DIR="$RUN_DIR/monokulo"
 
 ENGINE_BIN="$REPO_ROOT/target/debug/monokulo-engine"
-CP_BIN="$REPO_ROOT/target/debug/monokulo"
+MK_BIN="$REPO_ROOT/target/debug/monokulo"
 
 ENGINE_OPTIONS="$ENGINE_DIR/engine.toml"
-CP_OPTIONS="$CP_DIR/monokulo.toml"
+MK_OPTIONS="$MK_DIR/monokulo.toml"
 ENGINE_TOKEN_FILE="$ENGINE_DIR/engine_token.txt"
-CP_KEY_FILE="$CP_DIR/encryption_key.txt"
+MK_KEY_FILE="$MK_DIR/encryption_key.txt"
 
 ENGINE_PID_FILE="$RUN_DIR/engine.pid"
-CP_PID_FILE="$RUN_DIR/monokulo.pid"
+MK_PID_FILE="$RUN_DIR/monokulo.pid"
 ENGINE_LOG="$RUN_DIR/engine.log"
-CP_LOG="$RUN_DIR/monokulo.log"
+MK_LOG="$RUN_DIR/monokulo.log"
 
 ENGINE_URL="http://127.0.0.1:8080"
-CONTROL_PLANE_URL="http://127.0.0.1:8081"
+MK_URL="http://127.0.0.1:8081"
 
 
 usage() {
@@ -109,7 +109,7 @@ is_stale() {
 }
 
 ensure_dirs() {
-    mkdir -p "$ENGINE_DIR" "$CP_DIR"
+    mkdir -p "$ENGINE_DIR" "$MK_DIR"
 }
 
 ensure_engine_token() {
@@ -126,16 +126,16 @@ ensure_engine_token() {
 }
 
 ensure_cp_key() {
-    if [[ -f "$CP_KEY_FILE" ]]; then
+    if [[ -f "$MK_KEY_FILE" ]]; then
         return
     fi
     if ! command -v openssl >/dev/null 2>&1; then
         echo "error: openssl not found - needed once, to generate a dev MONOKULO_ENCRYPTION_KEY" >&2
         exit 1
     fi
-    echo "==> generating a dev MONOKULO_ENCRYPTION_KEY (persisted at $CP_KEY_FILE, reused on every future start)"
-    openssl rand -hex 32 > "$CP_KEY_FILE"
-    chmod 600 "$CP_KEY_FILE"
+    echo "==> generating a dev MONOKULO_ENCRYPTION_KEY (persisted at $MK_KEY_FILE, reused on every future start)"
+    openssl rand -hex 32 > "$MK_KEY_FILE"
+    chmod 600 "$MK_KEY_FILE"
 }
 
 build() {
@@ -179,9 +179,9 @@ mainnet = { host = "node.hollingworth.xyz", port = 443, ssl = true, accept_self_
 stagenet = { host = "node.monerodevs.org", port = 38089, ssl = false, accept_self_signed_certs = true, fallbacks = [{ host = "node2.monerodevs.org", port = 38089, ssl = false, accept_self_signed_certs = true, fallbacks = [] }] }
 EOF
     fi
-    if [[ ! -f "$CP_OPTIONS" ]]; then
-        echo "==> writing the dev monokulo options file ($CP_OPTIONS)"
-        cat > "$CP_OPTIONS" <<EOF
+    if [[ ! -f "$MK_OPTIONS" ]]; then
+        echo "==> writing the dev monokulo options file ($MK_OPTIONS)"
+        cat > "$MK_OPTIONS" <<EOF
 # The dev stack's monokulo settings, written once by scripts/dev-run.sh.
 # Edit them here or on the admin settings page; delete this file to get
 # the dev values back. \`monokulo --init --options x.toml\` writes a file
@@ -191,7 +191,7 @@ EOF
 bind = "127.0.0.1:8081"
 
 [database]
-path = "$CP_DIR/monokulo.db"
+path = "$MK_DIR/monokulo.db"
 
 [engine]
 url = "$ENGINE_URL"
@@ -227,31 +227,31 @@ start_engine() {
     fi
 }
 
-start_control_plane() {
-    if is_running "$CP_PID_FILE"; then
-        if ! is_stale "$CP_PID_FILE" "$CP_BIN"; then
-            echo "monokulo already running (pid $(cat "$CP_PID_FILE"))"
+start_monokulo() {
+    if is_running "$MK_PID_FILE"; then
+        if ! is_stale "$MK_PID_FILE" "$MK_BIN"; then
+            echo "monokulo already running (pid $(cat "$MK_PID_FILE"))"
             return
         fi
-        echo "==> monokulo (pid $(cat "$CP_PID_FILE")) is running an older build than $CP_BIN - restarting it"
-        stop_one "monokulo" "$CP_PID_FILE"
+        echo "==> monokulo (pid $(cat "$MK_PID_FILE")) is running an older build than $MK_BIN - restarting it"
+        stop_one "monokulo" "$MK_PID_FILE"
     fi
     ensure_cp_key
-    if [[ ! -x "$CP_BIN" ]]; then
-        echo "error: $CP_BIN not found - run without --no-build at least once" >&2
+    if [[ ! -x "$MK_BIN" ]]; then
+        echo "error: $MK_BIN not found - run without --no-build at least once" >&2
         exit 1
     fi
-    echo "==> starting monokulo -> $CP_LOG"
-    MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" \
+    echo "==> starting monokulo -> $MK_LOG"
+    MONOKULO_ENCRYPTION_KEY="$(cat "$MK_KEY_FILE")" \
     MONOKULO_ENGINE_TOKEN="$(cat "$ENGINE_TOKEN_FILE")" \
-        nohup "$CP_BIN" --options "$CP_OPTIONS" --engine-mode remote > "$CP_LOG" 2>&1 &
-    echo $! > "$CP_PID_FILE"
+        nohup "$MK_BIN" --options "$MK_OPTIONS" --engine-mode remote > "$MK_LOG" 2>&1 &
+    echo $! > "$MK_PID_FILE"
     sleep 1
-    if is_running "$CP_PID_FILE"; then
-        echo "    monokulo up (pid $(cat "$CP_PID_FILE")) - $CONTROL_PLANE_URL"
+    if is_running "$MK_PID_FILE"; then
+        echo "    monokulo up (pid $(cat "$MK_PID_FILE")) - $MK_URL"
     else
-        echo "    monokulo failed to start - see $CP_LOG" >&2
-        rm -f "$CP_PID_FILE"
+        echo "    monokulo failed to start - see $MK_LOG" >&2
+        rm -f "$MK_PID_FILE"
         exit 1
     fi
 }
@@ -296,12 +296,12 @@ case "$cmd" in
             build
         fi
         start_engine
-        start_control_plane
+        start_monokulo
         echo
         echo "engine:        $ENGINE_URL"
-        echo "monokulo:      $CONTROL_PLANE_URL  (open this one in a browser)"
+        echo "monokulo:      $MK_URL  (open this one in a browser)"
         echo
-        echo "First time only: opening $CONTROL_PLANE_URL now redirects to its own"
+        echo "First time only: opening $MK_URL now redirects to its own"
         echo "first-run admin setup wizard - create the one admin account there."
         echo "You'll land on its admin settings page (/admin/settings),"
         echo "which already has the engine connection pre-wired - the engine half"
@@ -311,7 +311,7 @@ case "$cmd" in
         echo "logs:          scripts/dev-run.sh logs"
         ;;
     stop)
-        stop_one "monokulo" "$CP_PID_FILE"
+        stop_one "monokulo" "$MK_PID_FILE"
         stop_one "engine" "$ENGINE_PID_FILE"
         ;;
     restart)
@@ -320,14 +320,14 @@ case "$cmd" in
         ;;
     status)
         status_one "engine" "$ENGINE_PID_FILE" "$ENGINE_URL"
-        status_one "monokulo" "$CP_PID_FILE" "$CONTROL_PLANE_URL"
+        status_one "monokulo" "$MK_PID_FILE" "$MK_URL"
         ;;
     logs)
         target="${2:-both}"
         case "$target" in
             engine) tail -f "$ENGINE_LOG" ;;
-            monokulo) tail -f "$CP_LOG" ;;
-            both) tail -f "$ENGINE_LOG" "$CP_LOG" ;;
+            monokulo) tail -f "$MK_LOG" ;;
+            both) tail -f "$ENGINE_LOG" "$MK_LOG" ;;
             *)
                 echo "unknown log target: $target (expected: engine, monokulo, or nothing for both)" >&2
                 exit 2

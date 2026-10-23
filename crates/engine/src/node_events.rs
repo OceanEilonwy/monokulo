@@ -1,5 +1,5 @@
 //! Waking a network's scan loops as soon as its node has news, instead of at
-//! the next poll (`docs/monero_zmq.md`).
+//! the next poll.
 //!
 //! The loops still poll: an announcement only says "ask now". What is
 //! scanned and recorded always comes from the node's RPC answers, on the

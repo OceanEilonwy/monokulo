@@ -1,4 +1,4 @@
-//! Human-chosen account password hashing for the control plane.
+//! Human-chosen account password hashing for monokulo.
 //!
 //! This is deliberately a *different* algorithm choice from
 //! `shared::auth::RawToken::hash`: that module hashes a machine-generated,

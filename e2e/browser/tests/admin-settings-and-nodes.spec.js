@@ -271,7 +271,7 @@ test('every tab, for the gallery', async ({ page }) => {
   for (const tab of SETTINGS_TABS) {
     await openSettingsTab(page, tab);
     if (tab === 'nodes') {
-      // How the engine performs (docs/engine_scaling.md section 6) is on the
+      // How the engine performs is on the
       // engine page: the tab keeps the nodes and their status, and each
       // network's card links there.
       await expect(page.locator('#card-network-stagenet .node-row-status').first()).toBeVisible();

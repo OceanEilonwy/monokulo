@@ -1,5 +1,5 @@
 //! The scanner as small, durable work units chosen by one scheduler per
-//! network (`docs/scanner_microtasks.md`).
+//! network.
 //!
 //! A *round* runs the five tiers in priority order. Each tier has a reserved
 //! share of the round's time and completes at least one unit per round when
@@ -169,8 +169,7 @@ where
     bounded_by(CALL_DEADLINE, call).await
 }
 
-/// A call with `deadline`: for a block request, what the node's link needs
-/// (`docs/engine_scaling.md` section 2).
+/// A call with `deadline`: for a block request, what the node's link needs.
 pub(crate) async fn bounded_by<T, E>(
     deadline: Duration,
     call: impl std::future::Future<Output = Result<T, E>>,
@@ -251,7 +250,7 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
 #[derive(Default)]
 pub struct ScanState {
     /// Wakes the network's loops when its node announces a block or a pool
-    /// transaction (`docs/monero_zmq.md`).
+    /// transaction.
     node_wakes: std::sync::Arc<crate::node_events::NodeWakes>,
     mempool: mempool::MempoolState,
     blocks: blocks::BlockState,
@@ -264,14 +263,13 @@ pub struct ScanState {
     /// How rounds, units and calls are sized: [`ScanTuning::DEFAULT`] but
     /// in tests and the round length sweep.
     tuning: ScanTuning,
-    /// What the scanner does, recorded for the engine page
-    /// (`docs/engine_visualizer.md`).
+    /// What the scanner does, recorded for the engine page.
     activity: std::sync::Arc<crate::activity::Activity>,
 }
 
 impl ScanState {
     /// This state, keeping its block scan's progress in `progress`, which
-    /// `/status` reads (`docs/engine_scaling.md` section 6).
+    /// `/status` reads.
     #[must_use = "the state with progress reporting is returned, not changed in place"]
     pub fn with_progress(mut self, progress: crate::scaling::SharedProgress) -> Self {
         self.blocks = blocks::BlockState::with_progress(progress);
@@ -279,8 +277,7 @@ impl ScanState {
     }
 
     /// The time the next round may take: the tuning's round, unless a
-    /// large block's smallest unit needs more (`docs/engine_scaling.md`
-    /// section 4).
+    /// large block's smallest unit needs more.
     pub fn round_budget(&self, daemon: &dyn MoneroDaemonClient, stores: usize) -> Duration {
         self.blocks.round_budget(daemon, stores, &self.tuning)
     }

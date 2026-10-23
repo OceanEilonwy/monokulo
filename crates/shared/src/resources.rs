@@ -1,5 +1,5 @@
-//! The machine a process runs on and the share of it the process may use
-//! (docs/engine_scaling.md sections 3 and 6): the memory limit the scan
+//! The machine a process runs on and the share of it the process may use:
+//! the memory limit the scan
 //! budget is checked against, and the identity that says whether two
 //! processes share a machine.
 

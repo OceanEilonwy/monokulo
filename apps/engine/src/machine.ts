@@ -1,7 +1,7 @@
 // What the engine page's "Machine and links" strip and Scanning panel show,
 // from each `machine` event's figures (wire.ts): the machine's CPU and
 // memory over the last hour, the link to the node in use, the blocks' size
-// and the scan (docs/engine_scaling.md section 6).
+// and the scan.
 
 import { DASH, bytes, duration, durationRough, fixed, networkName, rate, thousands } from './format.ts';
 import type {
@@ -320,7 +320,7 @@ export function blockSizeTile(scaling: NetworkScaling | null): Tile {
 }
 
 /** One sentence about a slow block: what is slow, at what rate, how much
- *  longer it needs and what would help (docs/engine_scaling.md section 5).
+ *  longer it needs and what would help.
  *  The Status page writes the same in Rust (`views::scaling`). */
 export function slowBlockMessage(network: string, slow: SlowBlock): string {
   const size = slow.wire_bytes !== null ? ` (${bytes(slow.wire_bytes)})` : '';

@@ -1,4 +1,4 @@
-//! The single source of truth for `orders.status`. See `docs/DESIGN.md` §7.6.
+//! The single source of truth for `orders.status`.
 //!
 //! This is a pure function, deliberately: it is called after *every* mutation to an
 //! order's payments (a new match, a reorg moving a block height, a reorg voiding a
@@ -35,7 +35,7 @@ pub struct StatusInputs {
 /// function has no notion of "voided" at all, on purpose, since double-spend
 /// handling is entirely the caller's concern (see module docs).
 ///
-/// `confirmations_required = 0` (native 0-conf, WBS: kill the `zero_conf_max_piconero`
+/// `confirmations_required = 0` (native 0-conf, with no `zero_conf_max_piconero`
 /// ceiling) needs no special-casing here: `min_confirmations >= 0` is true from the
 /// payment's first mempool sighting onward. Reorganizations can lower the
 /// confirmation count, but the ladder still handles zero without a special case.
@@ -89,7 +89,7 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
     } else if inputs.now > inputs.expires_at {
         // Even a partial payment past the deadline surfaces as expired - the funds
         // still exist at the address and require manual merchant handling, since no
-        // automated refund path exists anywhere in this system (see DESIGN.md §3).
+        // automated refund path exists anywhere in this system.
         OrderStatus::Expired
     } else if total == 0 {
         OrderStatus::Pending

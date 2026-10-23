@@ -38,16 +38,14 @@ pub struct NetworkScanStatus {
     /// matches anything, rather than that being indistinguishable from a
     /// stuck scanner.
     pub tenants_scanned: usize,
-    /// The block scan's live progress (`docs/engine_scaling.md` section 6),
+    /// The block scan's live progress,
     /// written by the scan as it works.
     pub progress: crate::scaling::SharedProgress,
-    /// What wakes the network's loops early, and what it has done
-    /// (`docs/monero_zmq.md`).
+    /// What wakes the network's loops early, and what it has done.
     pub wakes: Arc<crate::node_events::NodeWakes>,
-    /// Proof-of-work checking (`docs/proof_of_work.md`), while it is on.
+    /// Proof-of-work checking, while it is on.
     pub proof: Option<shared::proof::ProofStatus>,
-    /// What the scanner has been doing, for the engine page
-    /// (`docs/engine_visualizer.md`).
+    /// What the scanner has been doing, for the engine page.
     pub activity: Arc<crate::activity::Activity>,
 }
 

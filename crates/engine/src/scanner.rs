@@ -1,5 +1,5 @@
 //! Chain scanning: matching transactions against active tenants, and reorg /
-//! double-spend detection. See `docs/DESIGN.md` §7.
+//! double-spend detection.
 //!
 //! Deliberately built against the `MoneroDaemonClient` trait rather than a live
 //! node, and against `Store` directly rather than the (not-yet-built) writer-actor
@@ -572,9 +572,8 @@ pub(crate) async fn check_vanished_candidates(
 /// `order.<status>` event to the order-event log, which monokulo delivers
 /// to the store's webhooks.
 ///
-/// This is the *only* place status-transition events are written - see
-/// `docs/DESIGN.md` §11 for why that's a transition-triggered event, never a
-/// per-confirmation-count tick.
+/// This is the *only* place status-transition events are written: an event
+/// is triggered by a transition, never by a per-confirmation-count tick.
 ///
 /// The status write and the event it implies happen in one transaction. They are
 /// not independently retryable: `recompute_order_status` decides "did anything
@@ -636,7 +635,7 @@ pub(crate) fn recompute_and_notify_in_tx(
 /// Shared by `check_for_reorg_and_reconcile` and `check_vanished_mempool_payments`,
 /// whose "this payment's transaction is nowhere to be found" case both resolve
 /// identically: never void on absence alone, only on an affirmative
-/// `SpentInBlockchain` for one of the payment's own key images (§DESIGN.md 7.5). One
+/// `SpentInBlockchain` for one of the payment's own key images. One
 /// copy of that evidence rule, not two that could quietly drift apart under a future
 /// edit to just one of them.
 ///
@@ -751,7 +750,7 @@ pub(crate) fn void_and_notify_in_tx(
     store.void_payment(order_id, txid, output_index, now)?;
     store.mark_double_spend_detected(order_id, now)?;
     recompute_and_notify_in_tx(store, order_id, current_height, now)?;
-    // One event per voided payment row (docs/DESIGN.md §11), independent of
+    // One event per voided payment row, independent of
     // whatever status transition the recompute above may also have announced.
     store.append_order_event(
         order_id,
@@ -763,8 +762,8 @@ pub(crate) fn void_and_notify_in_tx(
 }
 
 /// Reverses a payment void that a later, corroborated re-check no longer supports -
-/// the other half of the fix for `is_key_image_spent`'s single-node trust boundary
-/// (`docs/DESIGN.md` §7.7), alongside `is_key_image_spent_corroborated` itself.
+/// the other half of the fix for `is_key_image_spent`'s single-node trust boundary,
+/// alongside `is_key_image_spent_corroborated` itself.
 ///
 /// Unlike `unvoid_payment`'s reorg-driven counterpart in
 /// `check_for_reorg_and_reconcile` (which deliberately leaves
@@ -816,7 +815,7 @@ fn unvoid_as_false_positive(
     })
 }
 
-/// How far back the upkeep tier's void recheck (`work::upkeep`, `docs/DESIGN.md` §7.7) looks for voided
+/// How far back the upkeep tier's void recheck (`work::upkeep`) looks for voided
 /// payments to recheck.
 ///
 /// Bounded deliberately: a void that turns out to have been a false accusation is exactly as worth correcting a
@@ -1017,8 +1016,8 @@ pub(crate) fn scan_in_pages(
         || link.is_some_and(|link| link.secs(1, weight as f64) > tuning.whole_block_max_secs)
 }
 
-/// How many transactions the next page of a large block holds
-/// (`docs/engine_scaling.md` section 4): the fewest of what fits the response
+/// How many transactions the next page of a large block holds:
+/// the fewest of what fits the response
 /// cap and what the link delivers in a target call (its round trip and the
 /// transactions' bytes), at `avg_tx_bytes` a transaction, and what the scan
 /// gets through in the same time when a transaction costs
@@ -1068,7 +1067,7 @@ pub(crate) fn next_page(
 
 /// The bytes-per-block estimate after a block request that ran out of time
 /// or came back too large: doubled, so the next request asks for half as
-/// many blocks (`docs/engine_scaling.md` section 2). Successes bring it back
+/// many blocks. Successes bring it back
 /// down through [`update_avg_bytes_per_block`].
 pub(crate) fn avg_after_failed_fetch(avg_bytes_per_block: f64) -> f64 {
     (avg_bytes_per_block * 2.0).min(1e12)
@@ -1089,7 +1088,7 @@ pub(crate) fn update_avg_bytes_per_block(
     (1.0 - alpha).mul_add(avg_bytes_per_block, alpha * observed_avg)
 }
 
-/// One scan round for one network (`docs/scanner_microtasks.md`).
+/// One scan round for one network.
 ///
 /// Reorg detection and reconciliation, new and lagging blocks, the mempool,
 /// status recomputes and upkeep, each a bounded unit with a share of the

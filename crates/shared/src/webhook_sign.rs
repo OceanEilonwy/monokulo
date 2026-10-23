@@ -1,4 +1,4 @@
-//! Webhook delivery signing and SSRF validation. See `docs/DESIGN.md` §11.
+//! Webhook delivery signing and SSRF validation.
 //!
 //! The HTTP delivery worker itself (retry/backoff against a real `reqwest` client)
 //! is not implemented in this pass - these are the two pieces of logic worth getting
@@ -89,7 +89,7 @@ fn parse_header(header: &str) -> Option<(i64, &str)> {
 /// send a webhook. Checked by the delivery client's resolver for every
 /// address a webhook's host resolves to, at connect time (DNS can change
 /// between registration and delivery), and for an IP literal before the
-/// request - see `docs/DESIGN.md` §11.
+/// request.
 pub fn is_disallowed_address(ip: IpAddr) -> bool {
     // An IPv4-mapped IPv6 address (`::ffff:127.0.0.1`) is a completely ordinary way
     // to reach 127.0.0.1, but none of the `Ipv6Addr` predicates below recognize it -
@@ -501,7 +501,7 @@ mod tests {
         }
     }
 
-    // --- Cross-language known-vector (WBS 0.3 / 1.5.4) -----------------------------
+    // --- Cross-language known-vector -------------------------------------------------
     //
     // This secret/payload/signature triple is what the WooCommerce plugin's own PHP
     // test (`WebhookSignatureTest.php`, in OceanEilonwy/monokulo-woocommerce) mirrors,

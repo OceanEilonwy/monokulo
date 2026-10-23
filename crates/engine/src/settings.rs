@@ -28,7 +28,7 @@ pub struct MoneroNodeSetting {
     pub fallbacks: Vec<Self>,
     /// The node's ZMQ publisher (monerod's `--zmq-pub`), `tcp://host:port`
     /// or `ipc:///path`: a block or pool transaction it announces wakes the
-    /// scan at once instead of at the next poll (`docs/monero_zmq.md`). Needs
+    /// scan at once instead of at the next poll. Needs
     /// an engine built with the `zmq` feature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zmq_pub: Option<String>,
@@ -95,8 +95,8 @@ fn check_zmq_pub(_zmq_pub: &str) -> Result<(), String> {
 /// That is loopback, RFC 1918 (`10/8`, `172.16/12`, `192.168/16`), IPv6
 /// unique-local (`fc00::/7`) or link-local (`169.254/16`, `fe80::/10`).
 ///
-/// The engine is private: monokulo is the only thing meant to talk to it
-/// (see `docs/DESIGN.md`'s monokulo boundary section), so `main.rs` warns
+/// The engine is private: monokulo is the only thing meant to talk to it,
+/// so `main.rs` warns
 /// loudly at boot when this returns `false`.
 ///
 /// The unspecified addresses (`0.0.0.0`, `::`) count as *not* private: they

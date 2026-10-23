@@ -1,5 +1,5 @@
-//! What the engine has measured of one node's link (`docs/engine_scaling.md`
-//! section 1), and the timeouts that follow from it (section 2).
+//! What the engine has measured of one node's link, and the timeouts that
+//! follow from it.
 //!
 //! Three running averages, each from the calls that show it best:
 //!

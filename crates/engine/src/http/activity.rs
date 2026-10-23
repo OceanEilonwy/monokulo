@@ -1,5 +1,5 @@
-//! A network's activity record, streamed to monokulo's engine page
-//! (`docs/engine_visualizer.md`). The engine token only, like the logs API.
+//! A network's activity record, streamed to monokulo's engine page.
+//! The engine token only, like the logs API.
 //!
 //! `GET /api/v1/admin/engine/activity/stream?network=stagenet&from=812`:
 //! server-sent events, each an `activity` whose data is one

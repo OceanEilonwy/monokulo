@@ -1,6 +1,6 @@
 //! A generic, engine-agnostic SQLite migration runner.
 //!
-//! Moved into `shared::migrations` (WBS 0.5) so a second SQLite-backed
+//! Lives in `shared` so a second SQLite-backed
 //! component (e.g. the monokulo database) can reuse the same
 //! transactional, tracked-by-version migration mechanism instead of hand-rolling
 //! its own and risking reintroducing the failure modes this module's test

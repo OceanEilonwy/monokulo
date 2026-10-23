@@ -1,7 +1,7 @@
 //! Rate limiting for the engine's HTTP API: one budget per store, and one
 //! for everything else monokulo asks of the engine.
 //!
-//! The engine is private (`docs/DESIGN.md` §4): every request carries the
+//! The engine is private: every request carries the
 //! engine token, checked before this ([`super::engine_token_middleware`]),
 //! so whatever reaches the limiter is monokulo, or an operator holding the
 //! token. The caller's address says nothing then: monokulo calls on behalf

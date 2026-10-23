@@ -10,7 +10,7 @@ use std::{
 use crate::support::{escape_html, root, write_json};
 
 pub(crate) const HELP: &str = "\
-        stress ci     One-CPU scanner capacity sweep and fault recovery (docs/engine_stress.md)\n\
+        stress ci     One-CPU scanner capacity sweep and fault recovery\n\
         stress full   The same with larger tenant counts\n\
         stress scale  Thousands of tenants; observational latency and capacity\n\
         stress open   Open target/coverage/stress/index.html\n\

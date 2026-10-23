@@ -5,7 +5,7 @@
 //! its `fallbacks`), so a single flaky or down public node doesn't stop payment
 //! detection on that network.
 //!
-//! See `docs/DESIGN.md` §7.1 and `config::MoneroNodeConfig::fallbacks`.
+//! See `config::MoneroNodeConfig::fallbacks`.
 //!
 //! ## Failover policy
 //!
@@ -82,7 +82,7 @@ pub struct FallbackDaemonClient {
     current: AtomicUsize,
     /// Nodes proof-of-work checking caught serving blocks that break the
     /// rules, or a chain with less work than the one proven
-    /// (`docs/proof_of_work.md)`: never pinned or tried while excluded.
+    ///: never pinned or tried while excluded.
     excluded: Mutex<Vec<bool>>,
 }
 
@@ -340,7 +340,7 @@ impl FallbackDaemonClient {
 
     /// [`Self::failover`] with a deadline of `total` for the whole call and
     /// `per_node(node)` for each attempt: a block request is given what each
-    /// node's own link needs (`docs/engine_scaling.md` section 2).
+    /// node's own link needs.
     async fn failover_within<'a, T, F, Fut>(
         &'a self,
         total: Duration,
@@ -800,8 +800,8 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     /// voided on (`engine::void_if_double_spend_proven`), and unlike a block hash
     /// (checked against the scanner's own recorded history) or a locate-transaction
     /// result (only ever trusted for its *presence*, never its absence), nothing
-    /// else in the system can cross-check this answer at all - see
-    /// `docs/DESIGN.md` §7.7's "Fallback nodes widen this trust boundary".
+    /// else in the system can cross-check this answer at all: fallback nodes
+    /// widen this trust boundary.
     ///
     /// Affirms `SpentInBlockchain` only when every node that answered agrees on it.
     /// A single node's answer (because it is the only one configured, or every
@@ -1478,8 +1478,8 @@ mod tests {
         }
     }
 
-    /// A block request gets what each node's link needs
-    /// (`docs/engine_scaling.md` section 2): a slow primary that will deliver
+    /// A block request gets what each node's link needs:
+    /// a slow primary that will deliver
     /// within its own timeout isn't cut off at the fixed 15 s, and a primary
     /// that hangs still leaves its fallback a turn.
     #[tokio::test(start_paused = true)]
@@ -1652,7 +1652,7 @@ mod tests {
         assert_eq!(b.call_count(), 1);
     }
 
-    /// A node proof-of-work checking caught (`docs/proof_of_work.md`) is
+    /// A node proof-of-work checking caught is
     /// never pinned or failed over to, even when every other node is down;
     /// it is back once let back in; and every node can't be excluded at
     /// once.

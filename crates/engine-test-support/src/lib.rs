@@ -1,6 +1,5 @@
 //! Test-only helper for standing up a real, network-bound `engine`
-//! engine instance for cross-crate integration tests. See WBS 0.6
-//! (`docs/WOOCOMMERCE_WBS.md`) for the outcome this is meant to satisfy.
+//! engine instance for cross-crate integration tests.
 //!
 //! ## Why this is its own crate, not `shared`
 //!
@@ -16,9 +15,7 @@
 //! resolved dependency graph), so this genuinely cannot live in `shared`.
 //!
 //! Instead it lives in its own crate, layered *above* both:
-//! `engine-test-support -> scanner -> shared`. That's not a
-//! deviation from the WBS - 0.6 explicitly hedges with "a small helper (in
-//! `shared`, or a dev-only sibling crate)", anticipating exactly this.
+//! `engine-test-support -> scanner -> shared`.
 //!
 //! Any workspace crate that needs a real, bound engine for its own tests
 //! (`mock-woocommerce`, `monokulo`, ...) adds this as a
@@ -73,8 +70,8 @@ pub fn engine_http_client() -> reqwest::Client {
 const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 
 /// A `MoneroDaemonClient` that does the least possible to let [`run_scan_tick`] run
-/// at all, for callers that only need its status-recompute sweep (`docs/DESIGN.md`
-/// §7.6 - confirmation growth and, especially, expiry) rather than genuine chain
+/// at all, for callers that only need its status-recompute sweep (confirmation
+/// growth and, especially, expiry) rather than genuine chain
 /// scanning for payment matches.
 ///
 /// This is deliberately *not* `engine::daemon::fake::FakeDaemonClient`: that
@@ -83,7 +80,7 @@ const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 /// as this crate never sees it, cycle or not. Implementing the (ungated, public)
 /// `MoneroDaemonClient` trait fresh here needs no change to the engine crate at all;
 /// see this crate's own module-level doc comment section on why that matters for
-/// WBS 1.4.4's background-loop harness specifically.
+/// the background-loop harness specifically.
 ///
 /// Always reports height 0 and a deterministic, height-keyed block hash - never
 /// advancing, never disagreeing with itself between calls - so `run_scan_tick`'s
@@ -273,7 +270,7 @@ pub struct TestEngineHandle {
     /// against `format!("http://{addr}")` with a genuine `reqwest::Client`.
     pub addr: SocketAddr,
     /// The same engine's admin API as a router, for a client that calls it
-    /// in-process (`EngineClient::embedded`, docs/engine_as_library.md)
+    /// in-process (`EngineClient::embedded`)
     /// instead of over `addr`. Both reach one engine.
     router: axum::Router,
     server_task: tokio::task::JoinHandle<()>,
@@ -421,7 +418,7 @@ impl TestEngineHandle {
     }
 
     /// `network`'s activity record, which the engine streams at
-    /// `/api/v1/admin/engine/activity/stream` (`docs/engine_visualizer.md`): a test
+    /// `/api/v1/admin/engine/activity/stream`: a test
     /// records events into it to see them reach monokulo's engine page.
     pub fn activity(&self, network: Network) -> Arc<engine::activity::Activity> {
         engine::scanner_status::activity_of(&self.scanner_status, network)
@@ -449,7 +446,7 @@ impl TestEngineHandle {
     /// `daemon`, rather than relying on `with_background_loops`'s own automatic
     /// interval.
     ///
-    /// This matters beyond convenience: observed directly while building WBS 1.4.5's
+    /// This matters beyond convenience: observed directly while building the
     /// real stagenet connect-flow test, running `with_background_loops` *with* a real
     /// per-network daemon continuously ticking in the background, concurrently with
     /// that same test's own foreground use of a real daemon (connecting a spend
@@ -500,7 +497,7 @@ impl TestEngineHandle {
 
     /// This engine's own real, live `SharedStore` - for a caller that needs to
     /// force state a plain HTTP call against the engine can't reach directly
-    /// (e.g. `docs/order_rescan_wbs.md` Phase 3's own tests driving an order
+    /// (e.g. tests driving an order
     /// straight to `Expired` via `recompute_order_status` against a `now` past
     /// its deadline, rather than waiting out a real 30-minute default expiry).
     /// Same "give the test real, direct access rather than a narrower purpose-
@@ -691,9 +688,8 @@ impl Drop for TestEngineHandle {
 }
 
 /// Configuration for spawning a test engine: which Monero networks are
-/// configured (`state.configured_networks`). Added for WBS 1.3.3 as a
-/// generalization of the narrower `spawn_test_engine_with_networks` added for
-/// WBS 1.2.1 - rather than a third near-duplicate spawn function per new
+/// configured (`state.configured_networks`). A generalization of the narrower
+/// `spawn_test_engine_with_networks` - rather than a third near-duplicate spawn function per new
 /// dimension of test setup, [`spawn_test_engine`] and
 /// [`spawn_test_engine_with_networks`] are now both thin wrappers over
 /// [`TestEngineConfig::spawn`], with no change to either's signature or
@@ -788,7 +784,7 @@ impl TestEngineConfig {
     /// callers of this harness never need it (see `spawn`'s own doc comment on
     /// `daemons` for why an empty map is the honest default). A caller
     /// driving `POST /api/v1/admin/tenant/payments/lookup`
-    /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part B) through a genuine
+    /// through a genuine
     /// HTTP round trip: that handler looks a daemon up from `daemons`
     /// unconditionally too. A `NoopDaemonClient` can resolve request-shape
     /// logic (a malformed txid, a genuinely-absent one) but never simulate a
@@ -804,11 +800,11 @@ impl TestEngineConfig {
     /// wrapper (a test that panics here should fail loudly, not get quietly
     /// restarted) and on a much shorter interval (see [`BACKGROUND_LOOP_INTERVAL`]).
     ///
-    /// This is what lets a caller force a *genuine* order event in a test
-    /// (WBS 1.4.4/1.4.5): create a tenant with a short `order_expiry_seconds`, create
+    /// This is what lets a caller force a *genuine* order event in a test:
+    /// create a tenant with a short `order_expiry_seconds`, create
     /// an order against it, and simply wait - the real `run_scan_tick` recomputes
     /// every non-terminal order's status every tick regardless of whether anything
-    /// was scanned (`docs/DESIGN.md` §7.6; confirmed directly against
+    /// was scanned (confirmed directly against
     /// `src/scanner.rs`'s own
     /// `an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matches_nothing`
     /// test, and against the fact that its non-terminal-order recompute sweep is keyed
@@ -829,7 +825,7 @@ impl TestEngineConfig {
     /// what this opt-in exists for.
     ///
     /// A caller that instead needs genuine payment-*matching* chain scanning against a
-    /// real daemon (WBS 1.4.5's real stagenet connect-flow test) should drive that
+    /// real daemon (the real stagenet connect-flow test) should drive that
     /// itself via [`TestEngineHandle::run_scan_tick_now`] rather than through this
     /// method - see that method's own doc comment for why a second, independently-
     /// ticking real daemon client running concurrently in the background turned out to
@@ -839,7 +835,7 @@ impl TestEngineConfig {
     /// paragraph above) regardless of whether `run_scan_tick_now` is also in use -
     /// the two don't conflict since the `NoopDaemonClient` never touches the network.
     ///
-    /// CORRECTION (found while debugging WBS 1.4.5's real stagenet test hanging for
+    /// CORRECTION (found while debugging the real stagenet test hanging for
     /// minutes on its very first `run_scan_tick_now` call, regardless of which public
     /// node it pointed at): the paragraph above is wrong about there being no
     /// conflict. `run_scan_tick`'s block-scan watermark (`max_scanned_height`/
@@ -898,7 +894,7 @@ impl TestEngineConfig {
     /// it with `axum::serve` instead of exercising the router in-process via
     /// `tower::ServiceExt::oneshot` - the whole point is a genuine socket
     /// that an independent `reqwest::Client` (standing in for a
-    /// separately-deployed caller, e.g. the control plane) can connect to.
+    /// separately-deployed caller, e.g. monokulo) can connect to.
     pub async fn spawn(self) -> TestEngineHandle {
         init_test_logging();
         let scanner_status = engine::scanner_status::new_scanner_status_map();
@@ -1130,8 +1126,8 @@ pub async fn spawn_test_engine() -> TestEngineHandle {
 }
 
 /// Same as [`spawn_test_engine`], but with `configured_networks` set to the
-/// given list instead of empty. Added for WBS 1.2.1 (`monokulo`'s
-/// engine admin-API client): `POST /api/v1/admin/tenants`
+/// given list instead of empty, for `monokulo`'s
+/// engine admin-API client: `POST /api/v1/admin/tenants`
 /// (`src/http/admin.rs::create_tenant` at the repo root) rejects any
 /// request for a network not in `state.configured_networks`, so a test that
 /// needs a real tenant actually created — not just the route reachable —
@@ -1154,7 +1150,7 @@ pub async fn spawn_test_engine_with_networks(networks: &[Network]) -> TestEngine
 mod tests {
     use super::*;
 
-    /// The WBS 0.6 smoke test: start a real, network-bound engine instance and
+    /// The smoke test: start a real, network-bound engine instance and
     /// hit its most dependency-free route - `/status` (deliberately
     /// unauthenticated, no tenant or `[monero_node]` required - it reports on
     /// the instance as a whole, empty `configured_networks` included) -
@@ -1190,7 +1186,7 @@ mod tests {
     /// API - no `mock-woocommerce`/`monokulo` involved, since this crate sits below
     /// both of them and this capability needs to stand on its own.
     ///
-    /// Forces the event the same way WBS 1.4.4's real test does: a tenant created
+    /// Forces the event the same way the real order-event test does: a tenant created
     /// with `order_expiry_seconds: 1`, then an order created against it with no
     /// payment ever made. `run_scan_tick`'s non-terminal-order recompute sweep is
     /// unconditional (see `with_background_loops`'s doc comment) - once one second of

@@ -1,12 +1,12 @@
-//! What the engine reports about its scaling in `/status`
-//! (docs/engine_scaling.md section 6): each node's link, each network's
+//! What the engine reports about its scaling in `/status`:
+//! each node's link, each network's
 //! scan, and the slow-block state. The engine fills these in; monokulo
 //! renders them on the status and admin pages.
 
 use serde::{Deserialize, Serialize};
 
 /// One block taking longer than this, while its node answers, is slow: the
-/// status page shows it yellow and says why (docs/engine_scaling.md 5).
+/// status page shows it yellow and says why.
 pub const SLOW_BLOCK_SECS: i64 = 120;
 
 /// What has been measured of one node's link.
@@ -78,8 +78,7 @@ pub struct BlockInProgress {
     pub pages: Option<PageProgress>,
 }
 
-/// How far a large block's scan in pages has got
-/// (docs/engine_scaling.md section 4).
+/// How far a large block's scan in pages has got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageProgress {
     /// Transactions scanned for every store.
@@ -97,8 +96,7 @@ pub struct DoneBlock {
     pub finished_unix: i64,
 }
 
-/// Why blocks' headers are being read before the blocks
-/// (docs/engine_scaling.md section 4).
+/// Why blocks' headers are being read before the blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HeadersFirstReason {

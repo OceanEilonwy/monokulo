@@ -108,8 +108,7 @@ export interface Lane {
 }
 
 /** A segment of a lane: a run of the tier's units, drawn solid, with the
- *  tier's work outside its units drawn outlined over only the time it took
- *  (docs/engine_visualizer_decisions.md D39). */
+ *  tier's work outside its units drawn outlined over only the time it took. */
 export interface Bar {
   start_ms: number;
   /** The time it took: what its label and the round's total add up. */

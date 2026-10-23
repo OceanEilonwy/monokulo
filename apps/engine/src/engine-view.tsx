@@ -1,4 +1,4 @@
-// The engine page's app (docs/engine_visualizer.md): it follows one
+// The engine page's app: it follows one
 // network's scanner live, about 1.5 s behind the engine. Monokulo sends data
 // (wire.ts): the state machine's state at moments, the effects and marks
 // that led there, and every few seconds the machine's figures; the app

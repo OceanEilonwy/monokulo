@@ -1,7 +1,5 @@
-//! A generic, fixed-window per-key rate limiter - moved here (from the
-//! engine's own `src/http/rate_limit.rs`, WBS `fx_refactor.md` Phase 0.1) so
-//! the monokulo can use the exact same, already-proven limiter for its
-//! own new public endpoints rather than reimplementing it. The HTTP-specific
+//! A generic, fixed-window per-key rate limiter, shared so monokulo uses
+//! the same limiter as the engine rather than reimplementing it. The HTTP-specific
 //! parts (axum middleware, which key to extract from a request) stay in
 //! each crate that actually serves HTTP - this module is pure logic with no
 //! HTTP/axum dependency at all.

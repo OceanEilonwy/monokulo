@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "description": "Round length against catch-up throughput, refetched blocks and the wait between rounds (docs/engine_stress.md, round length sweep). v2 adds a high-latency (Tor-like) node, and the node answers the tip with its id and the pool in one request, as the real client does.",
+  "description": "Round length against catch-up throughput, refetched blocks and the wait between rounds. v2 adds a high-latency (Tor-like) node, and the node answers the tip with its id and the pool in one request, as the real client does.",
   "round_budgets_ms": [5000, 7000, 10000, 15000, 20000],
   "block_bytes": 13000,
   "ttfb_us_per_block": 500,

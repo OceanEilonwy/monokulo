@@ -1,5 +1,5 @@
 // The "Machine and links" strip and the Scanning panel, from the figures of a
-// `machine` event (docs/engine_scaling.md section 6).
+// `machine` event.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bytes, duration, durationRough, rate, thousands } from '../src/format.ts';
