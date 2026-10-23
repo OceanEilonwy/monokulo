@@ -3959,14 +3959,27 @@ mod live_node_tests {
     #[ignore = "needs a live mainnet node"]
     async fn live_node_pool_transactions_fetched_by_id_hash_to_their_ids() {
         let c = client();
-        let pool: Vec<String> = c
-            .pool_hashes()
-            .await
-            .unwrap()
-            .into_iter()
-            .take(20)
-            .collect();
-        assert!(!pool.is_empty(), "needs a non-empty live mempool");
+        // Just after a block the mainnet pool can be empty for a moment
+        // (2026-10-23's run found it so); new transactions arrive within
+        // seconds, so the test waits for some rather than fail on that.
+        let deadline = std::time::Instant::now() + Duration::from_secs(300);
+        let pool: Vec<String> = loop {
+            let pool: Vec<String> = c
+                .pool_hashes()
+                .await
+                .unwrap()
+                .into_iter()
+                .take(20)
+                .collect();
+            if !pool.is_empty() {
+                break pool;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the live mempool stayed empty for 5 minutes"
+            );
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        };
         let resp = c.request_transactions(&pool).await.unwrap();
         let entries = resp.txs.unwrap_or_default();
         assert!(!entries.is_empty());
