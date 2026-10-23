@@ -3,7 +3,7 @@
 //!
 //! Each entry is one line, `asset!("name.ext", TYPE)`: the file's bytes and
 //! a digest of them, both computed when the binary is built. A page links a
-//! file by its name (`views::script`, `views::stylesheet`, [`url`]) and
+//! file by its name (`views::script`, `views::stylesheet`, [`url()`]) and
 //! gets a URL carrying that digest, `/static/logo.3f9a1c2b4d5e6f70.svg`,
 //! which a browser may keep for a year: a new release's pages link new
 //! URLs. Only that URL is served: a fingerprinted file's bare name, or an
