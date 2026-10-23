@@ -85,8 +85,13 @@ impl Drop for Tor {
 /// has to download them all first, which on the live network can take longer
 /// than the bootstrap timeout. The onion service itself (keys, address) is
 /// still new every run, in [`Tor::dir`].
+///
+/// This test's own: tor locks its `DataDirectory`, so a second tor started
+/// on it (`e2e_arti.rs`'s, which the daily run starts alongside this one)
+/// exits at once, after its control port has opened but before it writes
+/// the control cookie.
 fn data_dir() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-tor-data")
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-tor-data-external")
 }
 
 /// `deploy/tor/torrc.snippet`, with the directory and target port for this
@@ -150,11 +155,50 @@ async fn start_tor(onion_port: u16) -> Tor {
     }
 }
 
+impl Tor {
+    /// This run's tor log, for a failure message: the file goes with the
+    /// run's directory when the test ends.
+    fn log(&self) -> String {
+        std::fs::read_to_string(self.dir.join("tor.log")).unwrap_or_default()
+    }
+
+    /// The control cookie, once tor has written it. tor opens its control
+    /// port a moment before it writes the cookie, and a tor that can't start
+    /// (another tor holds its `DataDirectory`, a torrc line it refuses)
+    /// opens the port and exits without writing one: that fails here with
+    /// tor's own log, not a bare "file not found".
+    async fn control_cookie(&mut self) -> Vec<u8> {
+        let path = self.data.join("control_auth_cookie");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            // tor writes the 32-byte cookie whole; a shorter read is a write
+            // still under way.
+            match std::fs::read(&path) {
+                Ok(cookie) if cookie.len() == 32 => return cookie,
+                _ => {}
+            }
+            let exited = self.child.try_wait().unwrap();
+            if exited.is_some() || Instant::now() >= deadline {
+                panic!(
+                    "tor wrote no control cookie at {} ({}); its log:\n{}",
+                    path.display(),
+                    match exited {
+                        Some(status) => format!("it exited: {status}"),
+                        None => "after 60s".to_string(),
+                    },
+                    self.log()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
 /// One control-port session, authenticated with the cookie.
 struct Control(BufReader<TcpStream>);
 
 impl Control {
-    async fn connect(tor: &Tor) -> Control {
+    async fn connect(tor: &mut Tor) -> Control {
         let deadline = Instant::now() + Duration::from_secs(60);
         let stream = loop {
             match TcpStream::connect(tor.control).await {
@@ -164,14 +208,13 @@ impl Control {
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
                 Err(e) => panic!(
-                    "tor's control port never opened: {e} (log: {})",
-                    tor.dir.join("tor.log").display()
+                    "tor's control port never opened: {e}; its log:\n{}",
+                    tor.log()
                 ),
             }
         };
         let mut control = Control(BufReader::new(stream));
-        let cookie =
-            std::fs::read(tor.data.join("control_auth_cookie")).expect("control_auth_cookie");
+        let cookie = tor.control_cookie().await;
         let reply = control
             .command(&format!("AUTHENTICATE {}", hex::encode(cookie)))
             .await;
@@ -401,11 +444,11 @@ async fn live_tor_takes_our_torrc_and_hands_monokulo_a_circuit_identity() {
     let engine =
         engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let (state, onion_listener, store) = start_monokulo(&engine).await;
-    let tor = start_tor(onion_listener.port()).await;
+    let mut tor = start_tor(onion_listener.port()).await;
     println!("tor data and log in {}", tor.dir.display());
 
     // -- bootstrap ---------------------------------------------------------
-    let mut control = Control::connect(&tor).await;
+    let mut control = Control::connect(&mut tor).await;
     let deadline = Instant::now() + BOOTSTRAP_TIMEOUT;
     loop {
         let reply = control.command("GETINFO status/bootstrap-phase").await;

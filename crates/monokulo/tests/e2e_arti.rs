@@ -87,6 +87,26 @@ async fn serve_shop(port: u16) {
     });
 }
 
+/// The visitor's own tor, which also publishes the pretend shop.
+struct VisitorTor {
+    child: std::sync::Mutex<tokio::process::Child>,
+    log: PathBuf,
+}
+
+impl VisitorTor {
+    /// Fails the test with tor's log once tor has exited (a torrc line it
+    /// refuses, another tor holding its `DataDirectory`), rather than leave
+    /// [`until`] retrying a SOCKS port nobody serves.
+    fn running(&self) {
+        if let Some(status) = self.child.lock().unwrap().try_wait().unwrap() {
+            panic!(
+                "the visitor's tor exited ({status}); its log:\n{}",
+                std::fs::read_to_string(&self.log).unwrap_or_default()
+            );
+        }
+    }
+}
+
 /// Retries `attempt` every 5 seconds until it answers or [`TIMEOUT`] runs out.
 async fn until<T, F, Fut>(what: &str, mut attempt: F) -> T
 where
@@ -111,9 +131,12 @@ where
 async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shops() {
     let run = std::env::temp_dir().join(format!("monokulo-e2e-arti-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&run);
+    // The client's DataDirectory is kept between runs for a warm consensus
+    // cache, and is this test's own: tor locks it, so sharing it with
+    // `e2e_tor.rs`'s tor, which runs alongside, would stop one of the two.
     let (shop_dir, client_data) = (
         run.join("shop-hs"),
-        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("e2e-tor-data"),
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("e2e-tor-data-arti-visitor"),
     );
     private_dir(&shop_dir);
     private_dir(&client_data);
@@ -125,19 +148,25 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
     std::fs::write(
         run.join("torrc"),
         format!(
-            "DataDirectory {}\nSocksPort 127.0.0.1:{socks}\nHiddenServiceDir {}\nHiddenServicePort 80 127.0.0.1:{shop_port}\n",
+            "DataDirectory {}\nSocksPort 127.0.0.1:{socks}\nLog notice file {}\nHiddenServiceDir {}\nHiddenServicePort 80 127.0.0.1:{shop_port}\n",
             client_data.display(),
+            run.join("tor.log").display(),
             shop_dir.display()
         ),
     )
     .unwrap();
-    let _client = tokio::process::Command::new("tor")
-        .arg("-f")
-        .arg(run.join("torrc"))
-        .stdout(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .expect("could not start `tor` - is it installed and on PATH?");
+    let client = VisitorTor {
+        child: std::sync::Mutex::new(
+            tokio::process::Command::new("tor")
+                .arg("-f")
+                .arg(run.join("torrc"))
+                .stdout(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("could not start `tor` - is it installed and on PATH?"),
+        ),
+        log: run.join("tor.log"),
+    };
 
     // 2. Tor inside monokulo, as saving tor.mode = inside starts it.
     let tor = Tor::default();
@@ -177,6 +206,7 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
     // 3. A visitor on Tor reaches it, and gets what a visitor on Tor gets.
     let response = until("reaching monokulo over Tor", || {
         let onion = onion.clone();
+        client.running();
         async move {
             let mut stream = tokio::time::timeout(
                 Duration::from_secs(90),
@@ -217,6 +247,7 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
     let fetch = WellKnownOverTor(tor.clone());
     let text = until("fetching the shop's file over Tor", || {
         let (fetch, shop) = (&fetch, shop.clone());
+        client.running();
         async move { fetch.fetch(&shop).await }
     })
     .await;
