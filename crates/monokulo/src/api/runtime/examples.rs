@@ -21,6 +21,10 @@ pub struct Exchange {
     /// The key it carried: `pk`, `sk`, `ak`, or none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
+    /// Whether the Monokulo it was made with has an onion address (its
+    /// answers then carry the onion links too). Most have none.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub onion: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<Value>,
     pub status: u16,

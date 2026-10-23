@@ -94,6 +94,7 @@ pub(super) async fn exchange(request: Request, next: Next) -> (Response, Option<
         route,
         path,
         key,
+        onion: false,
         request: request_json,
         status: response.status().as_u16(),
         response: None,
@@ -127,9 +128,22 @@ pub(super) async fn exchange(request: Request, next: Next) -> (Response, Option<
 
 /// Keeps every exchange its router makes, each checked as it's made.
 #[derive(Clone, Default)]
-pub struct Recorder(Arc<Mutex<Vec<Exchange>>>);
+pub struct Recorder {
+    exchanges: Arc<Mutex<Vec<Exchange>>>,
+    /// Whether its router's Monokulo has an onion address.
+    onion: bool,
+}
 
 impl Recorder {
+    /// This recorder, for a router whose Monokulo has an onion address:
+    /// what it records is kept with the rest, marked as such.
+    pub fn with_onion(&self) -> Recorder {
+        Recorder {
+            exchanges: self.exchanges.clone(),
+            onion: true,
+        }
+    }
+
     /// `router`, recording.
     pub fn around(&self, router: axum::Router) -> axum::Router {
         router.layer(axum::middleware::from_fn_with_state(
@@ -144,14 +158,15 @@ impl Recorder {
         next: Next,
     ) -> Response {
         let (response, exchange) = exchange(request, next).await;
-        if let Some(exchange) = exchange {
+        if let Some(mut exchange) = exchange {
+            exchange.onion = recorder.onion;
             recorder.push(exchange);
         }
         response
     }
 
     fn push(&self, exchange: Exchange) {
-        self.0
+        self.exchanges
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(exchange);
@@ -159,25 +174,35 @@ impl Recorder {
 
     /// The exchanges so far, taken.
     pub fn take(&self) -> Vec<Exchange> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+        std::mem::take(&mut *self.exchanges.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
-/// A state like a real instance's, on `engine`: a web address and an
-/// onion address (`None` for one with no web address yet).
-async fn state(engine: axum::Router, public_uri: Option<&str>) -> AppState {
+/// The options file of a recorded instance: its web address (`None` for
+/// one with none yet) and, with `onion`, an onion address served by an
+/// external tor.
+fn options(public_uri: Option<&str>, onion: bool) -> String {
     let public = public_uri
         .map(|uri| format!("public_uri = \"{uri}\"\n"))
         .unwrap_or_default();
+    if onion {
+        format!(
+            "{public}onion_uri = \"{ONION_URI}\"\n\n[tor]\nmode = \"external\"\n\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
+        )
+    } else {
+        public
+    }
+}
+
+/// A state like a real instance's, on `engine`, with [`options`].
+async fn state(engine: axum::Router, public_uri: Option<&str>, onion: bool) -> AppState {
     AppState {
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::embedded_for_tests(
             engine,
         )),
         ..AppState::for_tests()
     }
-    .with_options(&format!(
-        "{public}onion_uri = \"{ONION_URI}\"\n\n[tor]\nmode = \"external\"\n\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
-    ))
+    .with_options(&options(public_uri, onion))
     .await
 }
 
@@ -290,9 +315,20 @@ pub struct Fixture {
 }
 
 /// A [`Fixture`] on `engine` (a test engine's router) at `public_uri`,
-/// whose router records into `recorder`.
+/// with an onion address, whose router records into `recorder`.
 pub async fn fixture(engine: axum::Router, public_uri: &str, recorder: &Recorder) -> Fixture {
-    let state = state(engine, Some(public_uri)).await;
+    fixture_on(engine, public_uri, true, recorder).await
+}
+
+/// A [`Fixture`] on `engine` at `public_uri`, with an onion address when
+/// `onion` says, whose router records into `recorder`.
+pub async fn fixture_on(
+    engine: axum::Router,
+    public_uri: &str,
+    onion: bool,
+    recorder: &Recorder,
+) -> Fixture {
+    let state = state(engine, Some(public_uri), onion).await;
     let router = recorder.around(build_router(state.clone()));
     // The seeded admin: this instance keeps sign-up to invites.
     let admin = admin_session_cookie(&router).await;
@@ -312,15 +348,137 @@ pub async fn fixture(engine: axum::Router, public_uri: &str, recorder: &Recorder
     }
 }
 
-/// One of each kind of exchange, against `engine` (a test engine's
-/// router): the API with each key, its streams, its problems, the
-/// handshakes and theirs.
+/// The plugin's handshake for store `id` with a fresh connect code, as
+/// its server finishes connecting: what it answered.
+async fn finish_plugin(router: &axum::Router, state: &AppState, id: &str) -> Value {
+    let code = plugin_connect_code(state, id);
+    let finished = router
+        .clone()
+        .oneshot(json_post(
+            &crate::http::connect::FINISH.replace("{slug}", "prestashop"),
+            &json!({"token": code, "webhook_url": "https://bakery.example/monokulo/webhook", "name": "PrestaShop"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(finished.status(), StatusCode::OK);
+    body_json(finished).await
+}
+
+/// `request` from the clearnet client `peer`, as a real connection
+/// brings it: the abuse layer counts it.
+fn from_peer(mut request: Request, peer: &str) -> Request {
+    request.extensions_mut().insert(axum::extract::ConnectInfo(
+        peer.parse::<std::net::SocketAddr>().unwrap(),
+    ));
+    request
+}
+
+/// The handshakes' problems that need an instance of their own: too
+/// large a body, too many requests (`rate-limited`, never a challenge: a
+/// server can't solve one) and a failure here (`internal`): the plugin's
+/// when this Monokulo's encryption key doesn't open the store's keys, the
+/// app's when its database fails.
+async fn record_handshake_failures(
+    engine: axum::Router,
+    state: &AppState,
+    store_id: &str,
+    recorder: &Recorder,
+) {
+    let finish = crate::http::connect::FINISH.replace("{slug}", "prestashop");
+    let router = recorder.around(build_router(state.clone()));
+    let too_large = json!({"token": "x".repeat(3 * 1024 * 1024)});
+    for uri in [finish.as_str(), crate::http::apps::CONNECT] {
+        let answer = router
+            .clone()
+            .oneshot(json_post(uri, &too_large))
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+    }
+
+    let limited = recorder.around(build_router(AppState {
+        abuse: Arc::new(crate::abuse::AbuseProtection::new(
+            crate::abuse::AbuseConfig {
+                soft_per_min: 1,
+                hard_per_min: 1,
+                ..Default::default()
+            },
+        )),
+        ..state.clone()
+    }));
+    for (uri, body, peer) in [
+        (
+            finish.as_str(),
+            json!({"token": "conn_0"}),
+            "203.0.113.10:1000",
+        ),
+        (
+            crate::http::apps::CONNECT,
+            json!({"token": "ct_0", "slug": "monokular"}),
+            "203.0.113.11:1000",
+        ),
+    ] {
+        let mut last = StatusCode::OK;
+        for _ in 0..2 {
+            last = limited
+                .clone()
+                .oneshot(from_peer(json_post(uri, &body), peer))
+                .await
+                .unwrap()
+                .status();
+        }
+        assert_eq!(last, StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+
+    let wrong_key = AppState {
+        encryption_key: crate::crypto::AtRestKey::new([9; 32]),
+        ..state.clone()
+    };
+    let code = plugin_connect_code(&wrong_key, store_id);
+    let answer = recorder
+        .around(build_router(wrong_key))
+        .oneshot(json_post(&finish, &json!({"token": code})))
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let broken = state_on_its_own(engine).await;
+    broken
+        .db
+        .lock()
+        .conn_for_test()
+        .execute_batch("DROP TABLE app_connect_tokens")
+        .unwrap();
+    let answer = recorder
+        .around(build_router(broken))
+        .oneshot(json_post(
+            crate::http::apps::CONNECT,
+            &json!({"token": "ct_0", "slug": "monokular"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+/// A state of its own (its own database), at the recorded address.
+async fn state_on_its_own(engine: axum::Router) -> AppState {
+    state(engine, Some(PUBLIC_URI), false).await
+}
+
+/// One coherent sequence of exchanges, against `engine` (a test engine's
+/// router), on a Monokulo without an onion address (the common case) and
+/// then the same one with one: the handshakes and each problem they
+/// answer; the API with each key, its streams and its problems. One order
+/// is made (by an app, then again by the shop's server and its website
+/// with the same `idempotency_key`, which gets that same order), and it
+/// is the one read, listed, streamed and linked, so a client can follow
+/// the examples' links from one to the next.
 pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     let recorder = Recorder::default();
-    let fixture = fixture(engine.clone(), PUBLIC_URI, &recorder).await;
+    let fixture = fixture_on(engine.clone(), PUBLIC_URI, false, &recorder).await;
     assert_eq!(
         fixture.connected,
-        json!({"app_key": fixture.ak, "api": "/api/v1", "onion_api": format!("{ONION_URI}/api/v1")})
+        json!({"app_key": fixture.ak, "api": "/api/v1"})
     );
     let Fixture {
         state,
@@ -329,18 +487,23 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         sk,
         pk,
         ak,
+        cookie,
         ..
     } = fixture;
     let (sk, pk) = (sk.as_str(), pk.as_str());
-    let call = |method: &'static str, uri: String, key: Option<&str>, body: Option<Value>| {
+    let call = |router: &axum::Router,
+                method: &'static str,
+                uri: String,
+                key: Option<&str>,
+                body: Option<Value>| {
         let request = api_request(method, &uri, key, body);
         let router = router.clone();
         async move { router.oneshot(request).await.unwrap() }
     };
 
     // The plugin's handshake, and each problem it can be made to answer.
-    let code = plugin_connect_code(&state, &store_id);
     let finish = crate::http::connect::FINISH.replace("{slug}", "prestashop");
+    let code = plugin_connect_code(&state, &store_id);
     let finished = router
         .clone()
         .oneshot(json_post(
@@ -368,17 +531,19 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
             .await
             .unwrap();
     }
-    router
-        .clone()
-        .oneshot(
-            axum::http::Request::builder()
-                .method("POST")
-                .uri(&finish)
-                .body(Body::from("token=conn_0"))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    for uri in [finish.as_str(), crate::http::apps::CONNECT] {
+        router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .body(Body::from("token=conn_0"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
     // The app's handshake's problems (`connect_app` connected one).
     for body in [
         json!({"token": "ct_0", "slug": "monokular"}),
@@ -391,7 +556,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
             .unwrap();
     }
     // Both handshakes on a Monokulo whose admin hasn't set its address.
-    let unset = recorder.around(build_router(state_without_address(engine).await));
+    let unset = recorder.around(build_router(state_without_address(engine.clone()).await));
     unset
         .clone()
         .oneshot(json_post(&finish, &json!({"token": "conn_0"})))
@@ -405,16 +570,17 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         ))
         .await
         .unwrap();
+    record_handshake_failures(engine.clone(), &state, &store_id, &recorder).await;
 
     // The entry and the store as each key sees them.
-    let entry = call("GET", "/api/v1".into(), None, None).await;
+    let entry = call(&router, "GET", "/api/v1".into(), None, None).await;
     let etag = entry.headers()[header::ETAG].to_str().unwrap().to_owned();
     for key in [Some(sk), Some(pk), Some(ak.as_str())] {
-        call("GET", "/api/v1".into(), key, None).await;
-        call("GET", "/api/v1/store".into(), key, None).await;
+        call(&router, "GET", "/api/v1".into(), key, None).await;
+        call(&router, "GET", "/api/v1/store".into(), key, None).await;
     }
-    call("GET", "/api/v1/store".into(), None, None).await;
-    call("GET", "/api/v1".into(), Some("sk_0000"), None).await;
+    call(&router, "GET", "/api/v1/store".into(), None, None).await;
+    call(&router, "GET", "/api/v1".into(), Some("sk_0000"), None).await;
     let unchanged = router
         .clone()
         .oneshot(
@@ -428,78 +594,85 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         .unwrap();
     assert_eq!(unchanged.status(), StatusCode::NOT_MODIFIED);
 
-    // The store's sale events, from before an app's order is made.
-    let stream = call("GET", "/api/v1/events".into(), Some(&ak), None).await;
+    // The order: made by the app (a till) while the store's sale events
+    // are followed, then again, with the same idempotency key, by the
+    // shop's server and its website, which get that same order.
+    let order_input = json!({
+        "amount": "0.25",
+        "currency": "XMR",
+        "merchant_order_id": "1042",
+        "description": "Order #1042: Blue mug + 2 more",
+        "show_merchant_order_id": true,
+        "idempotency_key": "order-1042-total-025",
+    });
+    let stream = call(&router, "GET", "/api/v1/events".into(), Some(&ak), None).await;
     assert_eq!(stream.status(), StatusCode::OK);
-    let sale = call(
-        "POST",
-        "/api/v1/orders".into(),
-        Some(&ak),
-        Some(json!({"amount": "24.50", "currency": "XMR", "merchant_order_id": "#1042", "idempotency_key": "till:payment-9f2c"})),
-    )
-    .await;
-    assert_eq!(sale.status(), StatusCode::CREATED);
+    let mut order_id = None;
+    for key in [ak.as_str(), sk, pk] {
+        let made = call(
+            &router,
+            "POST",
+            "/api/v1/orders".into(),
+            Some(key),
+            Some(order_input.clone()),
+        )
+        .await;
+        assert_eq!(made.status(), StatusCode::CREATED);
+        let id = body_json(made).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            order_id.get_or_insert_with(|| id.clone()),
+            &id,
+            "the same key gets the same order"
+        );
+    }
+    let order_id = order_id.unwrap();
     let events = read_events(stream, 2).await;
     recorder.push(Exchange {
         method: "GET".into(),
         route: super::super::v1::events::Path::TEMPLATE.into(),
         path: "/api/v1/events".into(),
         key: Some("ak".into()),
+        onion: false,
         request: None,
         status: 200,
         response: Some(events),
     });
-
-    let made = call(
-        "POST",
-        "/api/v1/orders".into(),
-        Some(sk),
-        Some(json!({
-            "amount": "0.25",
-            "currency": "XMR",
-            "merchant_order_id": "1042",
-            "description": "Order #1042: Blue mug + 2 more",
-            "show_merchant_order_id": true,
-            "idempotency_key": "order-1042-total-025",
-        })),
-    )
-    .await;
-    assert_eq!(made.status(), StatusCode::CREATED);
-    let order = body_json(made).await;
-    let order_id = order["order_id"].as_str().unwrap().to_owned();
-    call("GET", "/api/v1/orders?limit=1".into(), Some(sk), None).await;
+    call(&router, "GET", "/api/v1/orders".into(), Some(sk), None).await;
+    for amount in ["twelve", "1"] {
+        let currency = if amount == "1" { "NOPE" } else { "XMR" };
+        call(
+            &router,
+            "POST",
+            "/api/v1/orders".into(),
+            Some(sk),
+            Some(json!({"amount": amount, "currency": currency})),
+        )
+        .await;
+    }
+    for key in [sk, pk, ak.as_str()] {
+        call(
+            &router,
+            "GET",
+            format!("/api/v1/orders/{order_id}"),
+            Some(key),
+            None,
+        )
+        .await;
+    }
     call(
-        "POST",
-        "/api/v1/orders".into(),
-        Some(pk),
-        Some(json!({"amount": "0.1", "currency": "XMR"})),
-    )
-    .await;
-    call(
-        "POST",
-        "/api/v1/orders".into(),
-        Some(sk),
-        Some(json!({"amount": "twelve", "currency": "XMR"})),
-    )
-    .await;
-    call(
-        "POST",
-        "/api/v1/orders".into(),
-        Some(sk),
-        Some(json!({"amount": "1", "currency": "NOPE"})),
-    )
-    .await;
-    call("GET", format!("/api/v1/orders/{order_id}"), Some(sk), None).await;
-    call("GET", format!("/api/v1/orders/{order_id}"), Some(pk), None).await;
-    call(
+        &router,
         "GET",
         "/api/v1/orders/order_00000000000000000000000000000000".into(),
         Some(sk),
         None,
     )
     .await;
-    // One order's changes: the first event is the order as it is.
+    // The order's changes: the first event is the order as it is.
     let order_stream = call(
+        &router,
         "GET",
         format!("/api/v1/orders/{order_id}/events"),
         Some(sk),
@@ -513,27 +686,89 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         route: super::super::v1::order_events::Path::TEMPLATE.into(),
         path: format!("/api/v1/orders/{order_id}/events"),
         key: Some("sk".into()),
+        onion: false,
         request: None,
         status: 200,
         response: Some(events),
     });
-    call("GET", "/api/v1/app".into(), Some(&ak), None).await;
-    call("GET", "/api/v1/app".into(), Some(sk), None).await;
+    call(&router, "GET", "/api/v1/app".into(), Some(&ak), None).await;
+    call(&router, "GET", "/api/v1/app".into(), Some(sk), None).await;
     let logs = json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]});
-    call("POST", "/api/v1/logs".into(), Some(sk), Some(logs.clone())).await;
+    call(&router, "POST", "/api/v1/logs".into(), Some(sk), Some(logs.clone())).await;
     state
         .db
         .lock()
         .set_client_logging(&crate::db::ConnectionId::new(store_id.clone()), true)
         .unwrap();
-    call("POST", "/api/v1/logs".into(), Some(sk), Some(logs)).await;
-    call("GET", "/api/v1/openapi.json".into(), None, None).await;
-    call("DELETE", "/api/v1/app".into(), Some(&ak), None).await;
-    call("GET", "/api/v1".into(), Some(&ak), None).await;
+    call(&router, "POST", "/api/v1/logs".into(), Some(sk), Some(logs)).await;
+    call(&router, "GET", "/api/v1/openapi.json".into(), None, None).await;
+    // The problems the other routes answer: a key that may not, an
+    // unknown key, an order the store doesn't have.
+    call(&router, "DELETE", "/api/v1/app".into(), Some(sk), None).await;
+    call(&router, "GET", "/api/v1/events".into(), Some(pk), None).await;
+    call(&router, "GET", "/api/v1/orders".into(), Some(pk), None).await;
+    call(
+        &router,
+        "GET",
+        "/api/v1/openapi.json".into(),
+        Some("sk_0000"),
+        None,
+    )
+    .await;
+    call(
+        &router,
+        "GET",
+        "/api/v1/orders/order_00000000000000000000000000000000/events".into(),
+        Some(sk),
+        None,
+    )
+    .await;
+
+    // The same Monokulo once its admin has given it an onion address: the
+    // handshakes, the entry with each key, and the order, made again and
+    // read, now with their onion links.
+    let onion_state = state
+        .clone()
+        .with_options(&options(Some(PUBLIC_URI), true))
+        .await;
+    let onion = recorder.with_onion();
+    let onion_router = onion.around(build_router(onion_state.clone()));
+    let finished = finish_plugin(&onion_router, &onion_state, &store_id).await;
+    assert_eq!(finished["onion_api"], format!("{ONION_URI}/api/v1"));
+    let connected = connect_app(&onion_router, &store_id, &cookie).await;
+    assert_eq!(connected["onion_api"], format!("{ONION_URI}/api/v1"));
+    let onion_ak = connected["app_key"].as_str().unwrap().to_owned();
+    for key in [None, Some(sk), Some(pk), Some(onion_ak.as_str())] {
+        call(&onion_router, "GET", "/api/v1".into(), key, None).await;
+    }
+    let made = call(
+        &onion_router,
+        "POST",
+        "/api/v1/orders".into(),
+        Some(sk),
+        Some(order_input),
+    )
+    .await;
+    assert_eq!(body_json(made).await["order_id"], order_id.as_str());
+    for key in [sk, pk] {
+        call(
+            &onion_router,
+            "GET",
+            format!("/api/v1/orders/{order_id}"),
+            Some(key),
+            None,
+        )
+        .await;
+    }
+
+    // Last, the app disconnects itself; its key no longer works.
+    call(&router, "DELETE", "/api/v1/app".into(), Some(&ak), None).await;
+    call(&router, "GET", "/api/v1".into(), Some(&ak), None).await;
 
     let recorded = recorder.take();
-    // The first of each method, route, key and status, for a problem each
-    // problem, and for a stream the one its events were read from.
+    // The first of each method, route, key, network and status, for a
+    // problem each problem, and for a stream the one its events were read
+    // from.
     let mut seen = std::collections::HashSet::new();
     let kept: Vec<_> = recorded
         .into_iter()
@@ -548,6 +783,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
                 e.method.clone(),
                 e.route.clone(),
                 e.key.clone(),
+                e.onion,
                 e.status,
                 problem,
                 e.response.is_some(),
@@ -559,7 +795,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
 
 /// A state with no web address (`public_uri`) set yet.
 async fn state_without_address(engine: axum::Router) -> AppState {
-    state(engine, None).await
+    state(engine, None, false).await
 }
 
 /// `exchanges` with what changes from run to run (ids, keys, addresses,
@@ -679,6 +915,7 @@ impl Reference {
     /// its page. Panics when it isn't so.
     pub fn of(examples: Vec<Exchange>) -> Self {
         every_link_names_a_route(&examples);
+        every_link_to_an_example_leads_to_one(&examples);
         let openapi = openapi::build(&examples);
         let reference = reference::catalog(&examples);
         let written = Reference {
@@ -717,6 +954,7 @@ impl Reference {
         assert_eq!(document["openapi"], "3.1.0");
         let examples = examples_fit_their_schemas(document);
         assert!(examples > 20, "only {examples} examples in the document");
+        every_answer_has_an_example(document);
         // Every page the API links, and both handshakes, are in it.
         for resource in catalog::resources() {
             assert!(
@@ -897,6 +1135,107 @@ pub fn examples_fit_their_schemas(document: &Value) -> usize {
 
 /// Every link and form target in the recorded answers is a route this
 /// router has, or a page outside the API.
+/// Every answer the document gives an operation (each status, each
+/// media type but a page's HTML) has a recorded example, so no gap in the
+/// recording goes unnoticed: a handshake's success with and without an
+/// onion address and each problem it answers, each route's answers and
+/// the problems met on it.
+fn every_answer_has_an_example(document: &Value) {
+    let mut missing = Vec::new();
+    for (template, operations) in document["paths"].as_object().into_iter().flatten() {
+        for (method, operation) in operations.as_object().into_iter().flatten() {
+            let Some(responses) = operation["responses"].as_object() else {
+                continue;
+            };
+            for (status, response) in responses {
+                for (media, content) in response["content"].as_object().into_iter().flatten() {
+                    // A page's HTML, and the document itself, which
+                    // can't be its own example.
+                    if media == "text/html" || media == OPENAPI_JSON {
+                        continue;
+                    }
+                    let has = !content["example"].is_null()
+                        || content["examples"]
+                            .as_object()
+                            .is_some_and(|examples| !examples.is_empty());
+                    if !has {
+                        missing.push(format!("{method} {template} {status} {media}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(missing.is_empty(), "no recorded example for: {missing:#?}");
+}
+
+/// Every link in the examples to a resource with recorded examples leads
+/// to one of them (the same order, not another): the examples are one
+/// sequence, which a client can follow link by link.
+fn every_link_to_an_example_leads_to_one(recorded: &[Exchange]) {
+    let path_of = |href: &str| href.split('?').next().unwrap_or(href).to_owned();
+    let mut checked = 0;
+    for exchange in recorded {
+        let Some(response) = &exchange.response else {
+            continue;
+        };
+        let mut stack = vec![response];
+        while let Some(value) = stack.pop() {
+            match value {
+                Value::Object(map) => {
+                    for (rel, link) in map
+                        .get("_links")
+                        .and_then(Value::as_object)
+                        .into_iter()
+                        .flatten()
+                    {
+                        let Some(href) = link["href"].as_str() else {
+                            continue;
+                        };
+                        let path = path_of(href.strip_prefix(ONION_URI).unwrap_or(href));
+                        let Some(route) = route_of(&path).filter(|r| r.contains('{')) else {
+                            continue;
+                        };
+                        let examples: Vec<String> = recorded
+                            .iter()
+                            .filter(|e| e.route == route && e.method == "GET")
+                            .map(|e| path_of(&e.path))
+                            .collect();
+                        if examples.is_empty() {
+                            continue;
+                        }
+                        assert!(
+                            examples.contains(&path),
+                            "{} {} links {rel} to {path}, but the examples of {route} are {examples:?}",
+                            exchange.method,
+                            exchange.path
+                        );
+                        checked += 1;
+                    }
+                    stack.extend(map.values());
+                }
+                Value::Array(items) => stack.extend(items),
+                _ => {}
+            }
+        }
+    }
+    assert!(checked > 5, "only {checked} links to examples checked");
+}
+
+/// The API route template `path` is on.
+fn route_of(path: &str) -> Option<&'static str> {
+    catalog::resources()
+        .iter()
+        .map(|r| r.template)
+        .find(|template| {
+            let (a, b): (Vec<&str>, Vec<&str>) =
+                (template.split('/').collect(), path.split('/').collect());
+            a.len() == b.len()
+                && a.iter()
+                    .zip(&b)
+                    .all(|(t, p)| t == p || (t.starts_with('{') && !p.is_empty()))
+        })
+}
+
 fn every_link_names_a_route(recorded: &[Exchange]) {
     let templates: Vec<&str> = catalog::resources().iter().map(|r| r.template).collect();
     let matches = |href: &str| {

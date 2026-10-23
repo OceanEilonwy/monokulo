@@ -27,9 +27,19 @@ async fn the_reference_is_written_from_real_exchanges() {
     // The entry and the store, as each key sees them.
     let entry = &document["paths"]["/api/v1"]["get"]["responses"]["200"]["content"]
         ["application/prs.hal-forms+json"]["examples"];
+    // On a Monokulo without an onion address (the common case) and on
+    // one with: only the second has the onion links.
     for key in ["no-key", "pk", "sk", "ak"] {
-        assert!(entry[key]["value"]["_links"].is_object(), "no {key} entry");
+        let plain = &entry[key]["value"]["_links"];
+        assert!(plain.is_object(), "no {key} entry");
+        assert!(plain["mk:onion-api"].is_null(), "{key}: {plain}");
+        let onion = &entry[format!("{key}-with-onion")]["value"]["_links"];
+        assert!(onion["mk:onion-api"].is_object(), "{key}-with-onion: {onion}");
     }
+    let order = &document["paths"]["/api/v1/orders/{order_id}"]["get"]["responses"]["200"]
+        ["content"]["application/prs.hal-forms+json"]["examples"];
+    assert!(order["sk"]["value"]["_links"]["mk:onion-checkout"].is_null());
+    assert!(order["sk-with-onion"]["value"]["_links"]["mk:onion-checkout"].is_object());
     let store = &document["paths"]["/api/v1/store"]["get"]["responses"]["200"]["content"]
         ["application/prs.hal-forms+json"]["examples"];
     for key in ["sk", "ak"] {
@@ -53,12 +63,14 @@ async fn the_reference_is_written_from_real_exchanges() {
     for handshake in catalog::handshakes() {
         let responses = &document["paths"][handshake.template]
             [handshake.method.to_ascii_lowercase()]["responses"];
+        let answers = &responses["200"]["content"]["application/json"]["examples"];
         assert!(
-            responses["200"]["content"]["application/json"]["example"].is_object(),
-            "{} has no recorded answer",
+            answers["no-key"]["value"]["onion_api"].is_null()
+                && answers["no-key-with-onion"]["value"]["onion_api"].is_string(),
+            "{} has no recorded answer with and without an onion address: {answers}",
             handshake.template
         );
-        for status in ["400", "401", "503"] {
+        for status in ["400", "401", "413", "415", "429", "500", "503"] {
             assert!(
                 responses[status]["content"]["application/problem+json"]["examples"]
                     .as_object()
