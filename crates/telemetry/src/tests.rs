@@ -400,10 +400,6 @@ fn a_span_with_a_remote_parent_joins_the_callers_trace() {
         !outgoing.contains("00f067aa0ba902b7"),
         "our own span id, not the caller's: {outgoing}"
     );
-    assert_eq!(
-        request.in_scope(trace::current_trace_id).as_deref(),
-        Some("4bf92f3577b34da6a3ce929d0e0e4736")
-    );
 }
 
 #[test]

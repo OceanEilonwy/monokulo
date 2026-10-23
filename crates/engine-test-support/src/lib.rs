@@ -482,19 +482,6 @@ impl TestEngineHandle {
         .await
     }
 
-    /// Registers every store on `network` that has no live handle, as the
-    /// scan loop does on its own (within seconds of a handle being lost).
-    pub async fn register_missing_wallets_now(&self, network: &str) -> usize {
-        engine::scanner::register_missing_wallets_checking_state(
-            &self.store,
-            self.key_custody.as_ref(),
-            &self.wallet_handles,
-            None,
-            shared::network::parse_network(network).unwrap(),
-        )
-        .await
-    }
-
     /// This engine's own real, live `SharedStore` - for a caller that needs to
     /// force state a plain HTTP call against the engine can't reach directly
     /// (e.g. tests driving an order

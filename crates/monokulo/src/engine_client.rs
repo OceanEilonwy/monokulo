@@ -523,6 +523,7 @@ impl EngineClient {
             .subscribe(self, connection_id, sk, order_id)
     }
 
+    #[cfg(test)]
     /// How many stores currently hold an open engine event stream.
     pub fn live_upstream_count(&self) -> usize {
         self.target().live.upstream_count()

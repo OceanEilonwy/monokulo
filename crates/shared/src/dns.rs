@@ -366,6 +366,7 @@ impl Resolver {
         }
     }
 
+    #[cfg(test)]
     /// Asks the servers at these IPs at the given socket addresses instead:
     /// name servers played on one loopback address, each on its own port,
     /// stand in for the internet's.

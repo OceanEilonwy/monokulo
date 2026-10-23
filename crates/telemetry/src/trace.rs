@@ -87,8 +87,3 @@ pub fn traceparent(span: &Span) -> Option<String> {
 pub fn current_traceparent() -> Option<String> {
     traceparent(&Span::current())
 }
-
-/// The trace id of the current span, as 32 hex characters.
-pub fn current_trace_id() -> Option<String> {
-    span_context(&Span::current()).map(|c| c.trace_id().to_string())
-}

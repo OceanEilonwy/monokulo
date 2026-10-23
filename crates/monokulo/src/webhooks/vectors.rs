@@ -210,6 +210,7 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
     }
 }
 
+#[cfg(test)]
 /// The vector for `event` (the fiat-priced one): its body's fields, for
 /// the contract test against real deliveries.
 pub(super) fn fields_of(event: &str) -> Option<Vec<String>> {

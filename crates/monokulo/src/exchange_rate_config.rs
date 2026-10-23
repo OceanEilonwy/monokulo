@@ -146,6 +146,7 @@ impl ExchangeRateProviders {
         })
     }
 
+    #[cfg(test)]
     /// Like [`Self::coingecko_only`], for CoinMarketCap.
     pub fn coinmarketcap_only(base_url: impl Into<String>) -> Self {
         ExchangeRateProviders::with(FiatProviders {
@@ -156,6 +157,7 @@ impl ExchangeRateProviders {
         })
     }
 
+    #[cfg(test)]
     /// Both providers, each pointed at its own (test) server.
     pub fn coingecko_and_coinmarketcap(
         coingecko_base_url: impl Into<String>,
@@ -171,6 +173,7 @@ impl ExchangeRateProviders {
         })
     }
 
+    #[cfg(test)]
     /// Like [`Self::coingecko_only`], for Haveno (RetoSwap).
     pub fn haveno_only(base_url: impl Into<String>) -> Self {
         ExchangeRateProviders::with(FiatProviders {
