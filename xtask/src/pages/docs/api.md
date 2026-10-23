@@ -152,6 +152,14 @@ the JS library does it by itself. A server never is: a request with the
 store's secret key or an app's key, both handshakes and every log report
 are only ever rate limited (`rate-limited`, with `Retry-After`).
 
+A `503` is worth retrying: `rates-unavailable` (no exchange rate for the
+order's currency right now: the rate providers are down or rate limiting
+Monokulo, and it has no recent enough rate of its own), `engine-unavailable`
+(the payment engine is busy). Either may carry `retry_after` and
+`Retry-After`; Monokulo keeps pricing from its last rate for a while
+when a provider fails, so `rates-unavailable` means there's genuinely no
+usable rate.
+
 ## Event streams
 
 `mk:events` (the store's sales, for a secret or app key) and
