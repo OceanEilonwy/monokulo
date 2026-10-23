@@ -1,0 +1,19 @@
+# Decisions made while the user was away (test audit, 2026-10-23/24)
+
+1. **Audited commit**: origin/main `f7fb5c9be` (main moved from `99f16892` while setting up; the fresh run used the newer head).
+2. **Fresh data**: `cargo xtask coverage all` locally (Rust + browser, instrumented), plus crates/ui Playwright, node tests and xtask nextest. All 2828 tests passed, so the `failed` column is all 0.
+3. **Coverage diff tool**: llvm-cov's lcov export segfaults on this workspace (with or without `--branch`), so `measure.sh` diffs the JSON export instead. Scope C found the diff counts the removed tests' own bodies as lost; production-only numbers come from `scope-c/prodlost.py`. Raw "lines lost" figures in research A/E suggestions are upper bounds.
+4. **Property tests**: tagged `property` and left out of the audit as asked. They are 645 s of the 1277 s Rust serial time and hold the longest Rust test (38.8 s), so the timing plan lists moving them as an option, flagged as touching an excluded suite.
+5. **WebKit**: could not launch on this machine (CachyOS); its CI cost is estimated, not measured.
+6. **"Test segment" for the 5-minute limit**: read as each CI step that runs tests; job wall time including the build is reported beside it.
+7. **Measurement budget**: 3 per scope (they serialize at ~5 min each across agents).
+8. **Plan reviewers' lenses**: 1 cruft-cutter (the user's values, applied hard), 2 risk guardian (money, keys, security; at least 30 spot-checks), 3 time budgets (only one allowed to run timing experiments, so the machine is quiet for it), 4 delivery (PR slices, CI constraints, keeping cruft from returning). Each writes a complete plan for both goals, so the synthesis can compare them.
+9. **Deliverables**: the final plan goes to `docs/test-audit-plan.md` on branch `worktree-test-audit`, committed and pushed, no PR (the user asked for no PRs). The DB and evidence stay in `target/test-audit/` (gitignored) and are copied to the main checkout's `target/test-audit/`, so they survive the worktree being removed.
+10. **Synthesis: tiers.** Tier 1 holds the actions every reviewer supports once their spot-checks are applied (547 tests). Tier 2 holds plan 1's extra cuts, which only one reviewer checked (131 tests); they wait for the user's yes.
+11. **Overturns applied** (DB `source='final'`): 656 and 1511 kept; 347, 1600, 1653, 1573, 1575, 1910, 1459 and 2623 rewritten; 1075, 2499 and 2502 merged rather than deleted; 1969 changed from merge to delete. Where reviewers disagreed, the safer reviewer's verdict won when it named a behaviour no other test pins.
+12. **Scope C's handler-gap claim is dropped.** Plan 2 read the handlers: 1469, and engine tests 304 and 314, pin both rules. Plan 1 still listed the gap, but it hadn't read the handlers.
+13. **The SQL-failure sweeps get split by fault range, not snapshot/restore.** Plan 2: a snapshot skips the in-process recovery path the sweeps exist to test. Splitting gives the same wall-time win.
+14. **Property tests leave the local default (needs the user's yes), never PR CI.** Plan 2 showed they are the only PR-time check on custody auth histories and on exactly-once credit across forks. The Linux PR Rust step is 198 s, already under the limit.
+15. **WebKit keeps a wider smoke than Firefox** until the counter-tablet browser is known (plan 2's risk view, and the Monokular iOS app runs on WebKit).
+16. **Windows uses nextest partitioning rather than dropping properties**, because partitioning changes no test.
+17. **Timing numbers come from plan 3's uninstrumented measurements.** The DB's instrumented durations overstate the e2e tests up to 12x, because the screenshot capture is counted in them.
