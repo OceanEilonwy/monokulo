@@ -116,7 +116,14 @@ exactly as you sent it. A retry with the same `idempotency_key` gets the same
 order. While your plugin is the store's connected one, orders it makes this
 way show as yours on the dashboard. A refused order is
 `application/problem+json`: its `detail` says why, and its `type` links to
-the problem's page.
+the problem's page. Two are worth retrying rather than showing the
+customer as final: [`rates-unavailable`](../problems/rates-unavailable/)
+(503: the exchange-rate providers are down or rate limiting Monokulo and it
+has no recent rate for the currency) and
+[`engine-unavailable`](../problems/engine-unavailable/) (503: the payment
+engine is busy). Nothing was made; wait `retry_after` seconds (also in
+`Retry-After`) when given, and send the same request with the same
+`idempotency_key`.
 
 ### 3. Send the customer to pay
 
