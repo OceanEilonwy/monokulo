@@ -273,15 +273,15 @@ impl EngineTarget {
             }
             #[cfg(feature = "embedded-engine")]
             Transport::Embedded { router, runtime } => {
-                let call = async {
-                    let response = self.embedded(router, runtime.as_ref(), call, None).await?;
+                let answer = Self::answer(router, self.embedded_request(call, None)?);
+                // Answered and read whole on the engine's runtime: its
+                // body is the engine's to poll.
+                let call = on_engine(runtime.as_ref(), async move {
+                    let response = answer.await;
                     let status = response.status();
-                    let body = http_body_util::BodyExt::collect(response.into_body())
-                        .await
-                        .map_err(|e| EngineClientError::Embedded(e.to_string()))?
-                        .to_bytes();
+                    let body = collect(response).await?;
                     Ok(EngineReply { status, body })
-                };
+                });
                 tokio::time::timeout(ENGINE_CALL_TIMEOUT, call)
                     .await
                     .map_err(|_| {
@@ -326,46 +326,98 @@ impl EngineTarget {
             }
             #[cfg(feature = "embedded-engine")]
             Transport::Embedded { router, runtime } => {
-                let response = tokio::time::timeout(
-                    ENGINE_CALL_TIMEOUT,
-                    self.embedded(router, runtime.as_ref(), call, Some("text/event-stream")),
-                )
-                .await
-                .map_err(|_| {
-                    EngineClientError::Embedded(format!("no answer within {ENGINE_CALL_TIMEOUT:?}"))
-                })??;
-                if !response.status().is_success() {
-                    let status = response.status();
-                    let body = http_body_util::BodyExt::collect(response.into_body())
+                let answer =
+                    Self::answer(router, self.embedded_request(call, Some("text/event-stream"))?);
+                // The timeout is made where it's awaited (lazily), so on the
+                // engine's runtime it's the engine's timer.
+                let opened = async move {
+                    let response = tokio::time::timeout(ENGINE_CALL_TIMEOUT, answer)
                         .await
-                        .map_err(|e| EngineClientError::Embedded(e.to_string()))?
-                        .to_bytes();
-                    return Err(EngineReply { status, body }
-                        .checked()
-                        .expect_err("a failure status is an error"));
-                }
-                Ok(response
-                    .into_body()
-                    .into_data_stream()
-                    .map(|chunk| chunk.map_err(|e| EngineClientError::Embedded(e.to_string())))
-                    .boxed())
+                        .map_err(|_| {
+                            EngineClientError::Embedded(format!(
+                                "no answer within {ENGINE_CALL_TIMEOUT:?}"
+                            ))
+                        })?;
+                    if !response.status().is_success() {
+                        let status = response.status();
+                        let body = collect(response).await?;
+                        return Err(EngineReply { status, body }
+                            .checked()
+                            .expect_err("a failure status is an error"));
+                    }
+                    Ok(response.into_body().into_data_stream().map(|chunk| {
+                        chunk.map_err(|e| EngineClientError::Embedded(e.to_string()))
+                    }))
+                };
+                let Some(runtime) = runtime else {
+                    return Ok(opened.await?.boxed());
+                };
+                // The stream's body (its keep-alive timer above all) belongs
+                // to the engine's runtime, so it's read there and handed
+                // over chunk by chunk: once that runtime stops, the stream
+                // just ends, rather than a reader here polling a timer whose
+                // runtime is gone (a panic when monokulo shut down).
+                let (ready, is_open) = tokio::sync::oneshot::channel();
+                let (chunks, received) = tokio::sync::mpsc::channel(16);
+                runtime.spawn(async move {
+                    let mut stream = match opened.await {
+                        Ok(stream) => {
+                            let _ = ready.send(Ok(()));
+                            std::pin::pin!(stream)
+                        }
+                        Err(e) => {
+                            let _ = ready.send(Err(e));
+                            return;
+                        }
+                    };
+                    loop {
+                        tokio::select! {
+                            () = chunks.closed() => break,
+                            chunk = stream.next() => match chunk {
+                                Some(chunk) => {
+                                    if chunks.send(chunk).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                None => break,
+                            },
+                        }
+                    }
+                });
+                is_open
+                    .await
+                    .map_err(|_| EngineClientError::Embedded("the engine stopped".to_owned()))??;
+                Ok(
+                    futures_util::stream::unfold(received, |mut received| async move {
+                        received.recv().await.map(|chunk| (chunk, received))
+                    })
+                    .boxed(),
+                )
             }
         }
     }
 
-    /// `call` through the engine's router in this process: the headers the
-    /// remote transport would send (the engine token, the store's secret,
-    /// the trace), and the loopback address as the caller, since monokulo
-    /// is on the engine's own machine.
+    /// `request` answered by the engine's router.
     #[cfg(feature = "embedded-engine")]
-    async fn embedded(
-        &self,
+    fn answer(
         router: &axum::Router,
-        runtime: Option<&tokio::runtime::Handle>,
+        request: axum::http::Request<axum::body::Body>,
+    ) -> impl std::future::Future<Output = axum::response::Response> + Send + 'static {
+        use tower::ServiceExt as _;
+        let answer = router.clone().oneshot(request);
+        async move { answer.await.unwrap_or_else(|never| match never {}) }
+    }
+
+    /// `call` as a request to the engine's router in this process: the
+    /// headers the remote transport would send (the engine token, the
+    /// store's secret, the trace), and the loopback address as the caller,
+    /// since monokulo is on the engine's own machine.
+    #[cfg(feature = "embedded-engine")]
+    fn embedded_request(
+        &self,
         call: Call<'_>,
         accept: Option<&'static str>,
-    ) -> Result<axum::response::Response, EngineClientError> {
-        use tower::ServiceExt as _;
+    ) -> Result<axum::http::Request<axum::body::Body>, EngineClientError> {
         let mut request = axum::http::Request::builder()
             .method(call.method)
             .uri(call.path)
@@ -393,19 +445,35 @@ impl EngineTarget {
             }
             None => axum::body::Body::empty(),
         };
-        let request = request
+        request
             .body(body)
-            .map_err(|e| EngineClientError::Embedded(e.to_string()))?;
-        let answer = router.clone().oneshot(request);
-        let response = match runtime {
-            Some(runtime) => runtime
-                .spawn(answer)
-                .await
-                .map_err(|e| EngineClientError::Embedded(e.to_string()))?,
-            None => answer.await,
-        };
-        Ok(response.unwrap_or_else(|never| match never {}))
+            .map_err(|e| EngineClientError::Embedded(e.to_string()))
     }
+}
+
+/// `work` run on the engine's runtime when there is one (an error once
+/// that runtime has stopped), else here.
+#[cfg(feature = "embedded-engine")]
+async fn on_engine<T: Send + 'static>(
+    runtime: Option<&tokio::runtime::Handle>,
+    work: impl std::future::Future<Output = Result<T, EngineClientError>> + Send + 'static,
+) -> Result<T, EngineClientError> {
+    match runtime {
+        Some(runtime) => runtime
+            .spawn(work)
+            .await
+            .map_err(|e| EngineClientError::Embedded(e.to_string()))?,
+        None => work.await,
+    }
+}
+
+/// An embedded answer's whole body.
+#[cfg(feature = "embedded-engine")]
+async fn collect(response: axum::response::Response) -> Result<Bytes, EngineClientError> {
+    Ok(http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .map_err(|e| EngineClientError::Embedded(e.to_string()))?
+        .to_bytes())
 }
 
 impl EngineClient {
@@ -2429,6 +2497,52 @@ mod contract_tests {
         drop(events);
         if let Some(runtime) = engine_runtime {
             runtime.shutdown_background();
+        }
+    }
+
+    /// The engine's runtime stopping (monokulo shutting down) ends an
+    /// event stream monokulo is reading, rather than leaving its reader to
+    /// poll the stream's keep-alive timer on a runtime that is gone, which
+    /// panicked ("A Tokio 1.x context was found, but it is being
+    /// shutdown").
+    #[tokio::test]
+    async fn an_event_stream_ends_when_the_engines_runtime_stops() {
+        let (_engine, client, engine_runtime) = engine_and_client("embedded on its runtime").await;
+        let created = client
+            .create_tenant(CreateTenantRequest {
+                keys: StoreKeys {
+                    view_key_hex: VIEW_KEY_HEX.to_string(),
+                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                    encrypted_keys: None,
+                },
+                network: Some("mainnet".to_string()),
+                confirmations_required: None,
+                order_expiry_seconds: None,
+                key_custody_backend: None,
+            })
+            .await
+            .unwrap();
+        let mut events = client
+            .open_order_events(&created.secret_token)
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        while !seen.contains("event: ready") {
+            let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), events.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            seen.push_str(&String::from_utf8_lossy(&chunk));
+        }
+        engine_runtime.unwrap().shutdown_background();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match tokio::time::timeout_at(deadline, events.next()).await {
+                Ok(None) => break,
+                Ok(Some(_)) => {}
+                Err(_) => panic!("the stream didn't end once the engine's runtime stopped"),
+            }
         }
     }
 }

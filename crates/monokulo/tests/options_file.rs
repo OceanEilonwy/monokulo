@@ -77,6 +77,16 @@ fn text(output: &Output) -> String {
 /// log, when it exits first or doesn't say it's listening within 30
 /// seconds.
 fn start_listening(command: &mut Command, said: &str) -> Result<(Child, SocketAddr), String> {
+    let (child, address, rest) = start_with_log(command, said)?;
+    std::thread::spawn(move || rest.into_iter().for_each(drop));
+    Ok((child, address))
+}
+
+/// [`start_listening`], with the rest of its log, line by line.
+fn start_with_log(
+    command: &mut Command,
+    said: &str,
+) -> Result<(Child, SocketAddr, std::sync::mpsc::Receiver<String>), String> {
     let mut child = command
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -95,8 +105,7 @@ fn start_listening(command: &mut Command, said: &str) -> Result<(Child, SocketAd
     let mut log = String::new();
     while let Ok(line) = read.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         if let Some(address) = listening_on(&line, said) {
-            std::thread::spawn(move || read.into_iter().for_each(drop));
-            return Ok((child, address));
+            return Ok((child, address, read));
         }
         log.push_str(&line);
         log.push('\n');
@@ -315,6 +324,54 @@ fn monokulo_starts_without_a_file_and_follows_one() {
     );
     assert!(dir.0.join("mine.db").exists());
     assert!(dir.0.join("engine.db").exists());
+}
+
+/// Stopped as an operator's service manager stops it (SIGTERM), after
+/// serving a page, monokulo and the engine inside it shut down cleanly:
+/// exit status 0, it says so, and nothing panics on the way out.
+#[cfg(unix)]
+#[test]
+fn monokulo_shuts_down_cleanly_on_sigterm_without_a_panic_over_http() {
+    use std::io::{Read as _, Write as _};
+
+    let dir = TempDir::new("shutdown");
+    let (mut child, address, log) = start_with_log(
+        with_secrets(&dir.0)
+            .env("XDG_DATA_HOME", dir.0.join("data")).env("RUST_BACKTRACE", "1")
+            .arg("--options")
+            .arg(dir.0.join("monokulo.toml"))
+            .arg("--server-bind")
+            .arg("127.0.0.1:0"),
+        "monokulo listening",
+    )
+    .unwrap();
+    let mut stream = std::net::TcpStream::connect(address).unwrap();
+    stream
+        .write_all(b"GET /login HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+
+    let killed = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.id().to_string())
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "monokulo didn't stop");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let log: Vec<String> = log.try_iter().collect();
+    let log = log.join("\n");
+    assert!(!log.contains("panicked"), "it panicked:\n{log}");
+    assert!(log.contains("shut down cleanly"), "{log}");
+    assert!(status.success(), "{status:?}\n{log}");
 }
 
 /// What only one mode of the engine uses is refused in the other, before
