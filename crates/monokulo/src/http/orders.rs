@@ -1294,18 +1294,21 @@ pub async fn create_order(
             .await;
         }
         Err(e) => {
-            tracing::error!(store.id = %row.id, currency = ?currency, error = %e, "exchange rate lookup failed");
-            return render_create_order_page(
+            tracing::warn!(store.id = %row.id, currency = ?currency, error = %e, "no usable exchange rate right now");
+            let Some(unavailable) = e.unavailable(currency) else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            // The form again, saying when to retry: 503, with the
+            // providers' Retry-After when they gave one.
+            let page = render_create_order_page(
                 &state,
                 row,
                 &user,
                 Some(&form),
-                Some(
-                    "Something went wrong looking up the exchange rate. Please try again."
-                        .to_string(),
-                ),
+                Some(unavailable.message()),
             )
             .await;
+            return unavailable.page(page);
         }
     };
     let xmr_amount_piconero =
@@ -1361,8 +1364,18 @@ pub async fn create_order(
     .await
     {
         Ok(resolution) => resolution,
-        Err(message) => {
-            return render_create_order_page(&state, row, &user, Some(&form), Some(message)).await
+        Err(e) => {
+            use crate::confirmation_thresholds::ResolveError;
+            let page =
+                render_create_order_page(&state, row, &user, Some(&form), Some(e.message())).await;
+            return match e {
+                ResolveError::NoRate(_) => page,
+                ResolveError::RatesUnavailable(unavailable) => unavailable.page(page),
+                ResolveError::EngineUnavailable => {
+                    (StatusCode::SERVICE_UNAVAILABLE, page).into_response()
+                }
+                ResolveError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, page).into_response(),
+            };
         }
     };
 

@@ -144,7 +144,7 @@ impl HavenoRateProvider {
             "{}/api/v1/tickers?network={NETWORK}&time_period=24h",
             self.base_url
         );
-        let response = self.client.get(&url).send().await?.error_for_status()?;
+        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let tickers = body.as_object().ok_or_else(|| {
             ExchangeRateError::UnexpectedResponse(format!(
@@ -194,7 +194,7 @@ impl HavenoRateProvider {
             "{}/api/v1/depth/XMR_{currency_upper}?network={NETWORK}",
             self.base_url
         );
-        let response = self.client.get(&url).send().await?.error_for_status()?;
+        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
         let side = |name: &str| -> Result<(u64, f64), ExchangeRateError> {
             let levels = body
@@ -238,8 +238,10 @@ impl HavenoRateProvider {
 
     /// Piconero per one unit of `currency` (case-insensitive), or `Ok(None)`
     /// when the currency has no book right now or its book fails `policy`.
-    /// Data is at most `max_age` old, refreshed first when older. An `Err` is
-    /// a failed refresh, never a "no".
+    /// Data is at most `max_age` old, refreshed first when older; when the
+    /// refresh fails, the data fetched before is used while it is within
+    /// the stale ceiling (`exchange_rate::still_usable`). An `Err` is a
+    /// failed refresh with nothing usable to fall back on, never a "no".
     pub async fn piconero_per_unit_cached(
         &self,
         currency: &str,
@@ -254,8 +256,20 @@ impl HavenoRateProvider {
             None => true,
         };
         if tickers_stale {
-            let books = self.fetch_tickers().await?;
-            cache.tickers = Some((books, std::time::Instant::now()));
+            match self.fetch_tickers().await {
+                Ok(books) => cache.tickers = Some((books, std::time::Instant::now())),
+                // The books fetched before, while not too old to use: a
+                // provider down or rate limited for a while doesn't stop
+                // orders.
+                Err(error)
+                    if cache.tickers.as_ref().is_some_and(|(_, fetched_at)| {
+                        crate::exchange_rate::within_stale_ceiling(*fetched_at, max_age)
+                    }) =>
+                {
+                    tracing::warn!(provider = "haveno", %error, "fetching the books failed - using the last ones");
+                }
+                Err(error) => return Err(error),
+            }
         }
         let Some(book) = cache
             .tickers
@@ -286,10 +300,21 @@ impl HavenoRateProvider {
                 None => true,
             };
             if depth_stale {
-                let depth = self.fetch_depth(&key).await?;
-                cache
-                    .depth
-                    .insert(key.clone(), (depth, std::time::Instant::now()));
+                match self.fetch_depth(&key).await {
+                    Ok(depth) => {
+                        cache
+                            .depth
+                            .insert(key.clone(), (depth, std::time::Instant::now()));
+                    }
+                    Err(error)
+                        if cache.depth.get(&key).is_some_and(|(_, fetched_at)| {
+                            crate::exchange_rate::within_stale_ceiling(*fetched_at, max_age)
+                        }) =>
+                    {
+                        tracing::warn!(provider = "haveno", currency = %key, %error, "fetching the depth failed - using the last one");
+                    }
+                    Err(error) => return Err(error),
+                }
             }
             let depth = cache
                 .depth
@@ -761,6 +786,49 @@ mod tests {
                 .await
                 .unwrap(),
             None
+        );
+    }
+
+    /// Books fetched before, still within the stale ceiling, price an
+    /// order while haveno.markets is rate limited or down; with none, the
+    /// failure is `Unavailable`.
+    #[tokio::test]
+    async fn a_failing_refresh_uses_the_books_fetched_before() {
+        let server = spawn_server(
+            |call| {
+                if call == 0 {
+                    json_body(TICKERS)
+                } else {
+                    status(429)
+                }
+            },
+            |_, _| json_body(DEPTH),
+        )
+        .await;
+        let provider = HavenoRateProvider::new(&server.url);
+        let fresh = provider
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .unwrap();
+        assert!(fresh.is_some());
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", NOW, &policy())
+                .await
+                .unwrap(),
+            fresh,
+            "the refresh failed, so the books from before price it"
+        );
+        assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 2);
+
+        let server = spawn_server(|_| status(503), |_, _| json_body(DEPTH)).await;
+        let err = HavenoRateProvider::new(&server.url)
+            .piconero_per_unit_cached("USD", TTL, &policy())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExchangeRateError::Unavailable { status: 503, .. }),
+            "got {err:?}"
         );
     }
 

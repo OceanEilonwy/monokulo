@@ -24,6 +24,8 @@ bytes = "1.12.1"
 hex = "0.4.3"
 hmac = "0.13.0"
 http = "1.5.0"
+# A provider's `Retry-After` given as a date (`exchange_rate::checked`).
+httpdate = "1.0.3"
 moka = { version = "0.12.16", features = ["future"] }
 monero = "0.22.0"
 rand = "0.10.2"

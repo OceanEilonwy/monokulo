@@ -176,8 +176,10 @@ async fn create(
             return Err(unsupported())
         }
         Err(e) => {
-            tracing::error!(store.id = %row.id, currency = ?currency, error = %e, "exchange rate lookup failed");
-            return Err(internal());
+            tracing::warn!(store.id = %row.id, currency = ?currency, error = %e, "no usable exchange rate right now");
+            return Err(e
+                .unavailable(&currency)
+                .map_or_else(internal, |unavailable| unavailable.problem()));
         }
     };
     let xmr_amount_piconero =
@@ -193,7 +195,7 @@ async fn create(
         xmr_amount_piconero,
     )
     .await
-    .map_err(|message| Problem::InvalidAmount.detail(message))?;
+    .map_err(|e| e.problem())?;
 
     let made = match state
         .engine

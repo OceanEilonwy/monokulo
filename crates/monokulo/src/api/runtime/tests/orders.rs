@@ -1808,3 +1808,140 @@ async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoint
         "checkout.js must not know about its embedder"
     );
 }
+
+/// A local Coingecko that rate limits every request, asking for `secs`.
+async fn spawn_rate_limited_coingecko(secs: u64) -> String {
+    let app = Router::new().fallback(move || async move {
+        use axum::response::IntoResponse;
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", secs.to_string())],
+            r#"{"status":{"error_code":429,"error_message":"You've exceeded the Rate Limit."}}"#,
+        )
+            .into_response()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// With its only rate provider rate limiting this Monokulo (CoinGecko's
+/// `429`) and no rate cached, every route that prices an order answers
+/// that there's no rate right now, with the provider's wait: the API and
+/// the point of sale the `rates-unavailable` problem (`503`, `retry_after`,
+/// `Retry-After`), the dashboard's test order its form again with `503`.
+/// The same for a store whose base currency it is, ordering in XMR (its
+/// confirmations are decided in the base currency). An XMR order of a
+/// store priced in XMR needs no rate and is made.
+#[tokio::test]
+async fn a_rate_limited_provider_is_rates_unavailable_with_its_wait_on_every_pricing_route() {
+    let (mut state, _engine) = test_state_with_real_engine().await;
+    state.exchange_rate = std::sync::Arc::new(
+        crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+            spawn_rate_limited_coingecko(42).await,
+        ),
+    );
+    let router = build_router(state.clone());
+    let session_token = signed_up_and_logged_in_session_token(
+        &router,
+        "rates-unavailable@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let pk = create_connection_with_base_currency(&router, &state, &session_token, "USD").await;
+    let store_id = state
+        .db
+        .lock()
+        .get_store_connection_by_public_key(&pk)
+        .unwrap()
+        .unwrap()
+        .id;
+
+    let check_problem = |response: axum::response::Response, route: &'static str| async move {
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{route}"
+        );
+        assert_eq!(response.headers()["retry-after"], "42", "{route}");
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/problem+json",
+            "{route}"
+        );
+        let problem = body_json(response).await;
+        assert_eq!(
+            problem["type"], "https://docs.monokulo.com/problems/rates-unavailable",
+            "{route}"
+        );
+        assert_eq!(problem["status"], 503, "{route}");
+        assert_eq!(problem["retry_after"], 42, "{route}");
+        assert!(
+            problem["detail"].as_str().unwrap().contains("USD"),
+            "{route}: {problem}"
+        );
+    };
+
+    // The API, in the rate-limited currency and (the store's base
+    // currency deciding its confirmations) in XMR.
+    for currency in ["USD", "XMR"] {
+        let response = router
+            .clone()
+            .oneshot(create_order_request(&pk, "10.00", currency))
+            .await
+            .unwrap();
+        check_problem(response, "POST /api/v1/orders").await;
+    }
+
+    // The point of sale, in the store's base currency.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{store_id}/pos/orders"))
+                .header("content-type", "application/json")
+                .header("cookie", format!("session={session_token}"))
+                .body(Body::from(serde_json::json!({ "amount": "1.50" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    check_problem(response, "POST /stores/{id}/pos/orders").await;
+
+    // The dashboard's test order: its form again, saying when to retry.
+    for currency in ["USD", "XMR"] {
+        let response = router
+            .clone()
+            .oneshot(crate::http::test_support::form_post(
+                &format!("/stores/{store_id}/orders/new"),
+                Some(&format!("session={session_token}")),
+                &[("amount", "10.00"), ("currency", currency)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{currency}"
+        );
+        assert_eq!(response.headers()["retry-after"], "42");
+        let html = body_text(response).await;
+        assert!(
+            html.contains("no exchange rate for USD right now") && html.contains("in 42 s"),
+            "{currency}: {html}"
+        );
+    }
+
+    // A store priced in XMR, ordering in XMR: no rate needed.
+    let xmr_pk = create_connection(&router, &state, &session_token).await;
+    let response = router
+        .clone()
+        .oneshot(create_order_request(&xmr_pk, "0.5", "XMR"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}

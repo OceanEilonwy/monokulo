@@ -102,6 +102,80 @@ pub enum ExchangeRateLookupError {
     Provider(#[from] ExchangeRateError),
 }
 
+/// No usable rate for `currency` right now: every provider the store uses
+/// failed (unreachable, rate limited, a bad answer) and none had a recent
+/// enough rate to fall back on. Worth retrying, unlike an unsupported
+/// currency: the `rates-unavailable` problem (`503`), or the same message
+/// on a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RatesUnavailable {
+    pub currency: String,
+    /// How long a provider asked to wait, when one said.
+    pub retry_after: Option<Duration>,
+}
+
+impl RatesUnavailable {
+    /// What a person is told.
+    pub fn message(&self) -> String {
+        let wait = match self.retry_after {
+            Some(wait) => format!("in {} s", wait.as_secs().max(1)),
+            None => "in a moment".to_owned(),
+        };
+        format!(
+            "There's no exchange rate for {} right now: the rate providers are busy or unreachable. Try again {wait}.",
+            self.currency
+        )
+    }
+
+    /// The seconds to send in `Retry-After`, when a provider said.
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        self.retry_after.map(|wait| wait.as_secs().max(1))
+    }
+
+    /// As the `rates-unavailable` problem, with `retry_after` and
+    /// `Retry-After` when known.
+    pub fn problem(&self) -> crate::api::runtime::problem::ProblemDetails {
+        let mut problem =
+            crate::api::runtime::problem::Problem::RatesUnavailable.detail(self.message());
+        if let Some(secs) = self.retry_after_secs() {
+            problem = problem
+                .with("retry_after", serde_json::json!(secs))
+                .header(
+                    axum::http::header::RETRY_AFTER,
+                    axum::http::HeaderValue::from(secs),
+                );
+        }
+        problem
+    }
+
+    /// A page answer: `503` with `Retry-After` when known.
+    pub fn page(&self, page: axum::response::Response) -> axum::response::Response {
+        let mut page = page;
+        *page.status_mut() = axum::http::StatusCode::SERVICE_UNAVAILABLE;
+        if let Some(secs) = self.retry_after_secs() {
+            page.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from(secs),
+            );
+        }
+        page
+    }
+}
+
+impl ExchangeRateLookupError {
+    /// For `currency`, when this is a provider failure (not an
+    /// unsupported currency): there's no usable rate right now.
+    pub fn unavailable(&self, currency: &str) -> Option<RatesUnavailable> {
+        match self {
+            ExchangeRateLookupError::Provider(error) => Some(RatesUnavailable {
+                currency: currency.to_uppercase(),
+                retry_after: error.retry_after(),
+            }),
+            ExchangeRateLookupError::ProviderNotConfigured(_) => None,
+        }
+    }
+}
+
 /// The real per-order dispatcher `AppState.exchange_rate` holds - built once
 /// at boot (`build`) from the parsed `ExchangeRateConfig`, then shared
 /// read-only across every request. `piconero_per_unit_for` is the single
@@ -350,7 +424,20 @@ impl ExchangeRateProviders {
                 }
                 Err(error) => {
                     tracing::warn!(provider = %name, currency, %error, "exchange rate provider failed - trying the next");
-                    last_error = Some(error);
+                    // The failure whose provider will be back soonest by
+                    // its own word, so the wait a caller is told is the
+                    // shortest that may work.
+                    last_error = Some(match last_error {
+                        Some(earlier)
+                            if earlier.retry_after().is_some()
+                                && error
+                                    .retry_after()
+                                    .is_none_or(|wait| Some(wait) > earlier.retry_after()) =>
+                        {
+                            earlier
+                        }
+                        _ => error,
+                    });
                 }
             }
         }
