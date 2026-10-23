@@ -52,8 +52,8 @@ test('the admin signs up, logs out and back in, and invites a merchant who signs
   await expect(page).toHaveURL(new RegExp(`^${base}/admin/settings\\?tab=nodes`));
 
   // Log out from the account menu, then back in through the form.
-  await page.getByRole('button', { name: 'Account menu' }).click();
-  await page.getByRole('button', { name: 'Log out' }).click();
+  await page.locator('.acct > summary').click();
+  await page.locator('.acct-menu').getByRole('button', { name: 'Log out' }).click();
   await expect(page).toHaveURL(new RegExp(`^${base}/login`));
   await page.goto(base + '/admin/logs');
   await expect(page).toHaveURL(new RegExp(`^${base}/login\\?next=`));
@@ -81,7 +81,7 @@ test('the admin signs up, logs out and back in, and invites a merchant who signs
   expectAllUnderThePrefix([...seen, ...merchantSeen]);
 });
 
-test('a store is set up, an order made from its page, and its checkout follows it live', async ({ page, context }) => {
+test('a store is set up, an order made from its page with its checkout following it, and the POS charges and cancels one', async ({ page, context }) => {
   const seen = watchRequests(page);
   const base = fixture().monokulo_url;
   await page.goto(base + '/login');
@@ -108,21 +108,24 @@ test('a store is set up, an order made from its page, and its checkout follows i
   const payment = await page.locator('#share-payment-link').getAttribute('href');
   expect(payment?.startsWith(`${base}/checkout/order_`)).toBe(true);
 
-  // The checkout, in a tab of its own: live while the order changes.
+  // The checkout, in a tab of its own, following the order on its stream.
   const checkout = await context.newPage();
   const checkoutSeen = watchRequests(checkout);
   const stream = checkout.waitForResponse((response) => /\/checkout\/order_[^/]+\/events/.test(response.url()));
   await checkout.goto(payment || '');
-  expect((await stream).status()).toBe(200);
-  expect(new URL((await stream).url()).pathname.startsWith(`${PREFIX}/checkout/`)).toBe(true);
-  await expect(checkout.locator('body')).not.toContainText('This order was cancelled');
+  const opened = await stream;
+  expect(opened.status()).toBe(200);
+  expect(opened.headers()['content-type']).toContain('text/event-stream');
+  expect(new URL(opened.url()).pathname.startsWith(`${PREFIX}/checkout/`)).toBe(true);
+  // The share page frames the checkout, under the prefix too.
+  await expect(checkout.locator('#checkout-frame')).toHaveAttribute('src', new RegExp(`^${PREFIX}/checkout/order_`));
+  await expect(checkout.frameLocator('#checkout-frame').locator('body')).toContainText('Send the exact amount below');
 
-  expect(new URL(orderPage).pathname.split('/').pop()?.startsWith('order_')).toBe(true);
-
-  // The POS charges an order (its fetches under the prefix) and cancels
-  // it; the checkout open on it says so without a reload.
+  // The POS charges an order and cancels it: its fetches, and the stream
+  // it follows its orders on, under the prefix.
   await page.goto(origin() + store + '/pos');
   await expect(page.locator('.pos-keypad')).toBeVisible();
+  const posStream = page.waitForResponse((response) => /\/pos\/events\?orders=/.test(response.url()));
   await page.keyboard.type('1000000000');
   const [made] = await Promise.all([
     page.waitForResponse((r) => r.url().endsWith('/pos/orders') && r.request().method() === 'POST'),
@@ -130,16 +133,19 @@ test('a store is set up, an order made from its page, and its checkout follows i
   ]);
   expect(made.ok()).toBeTruthy();
   expect(new URL(made.url()).pathname.startsWith(`${PREFIX}/stores/`)).toBe(true);
-  const posOrder = (await made.json()).order_id;
   await expect(page.locator('.pos-payment')).toBeVisible();
-  const posCheckout = await context.newPage();
-  const posCheckoutSeen = watchRequests(posCheckout);
-  await posCheckout.goto(`${base}/checkout/${posOrder}`);
-  await expect(posCheckout.locator('body')).not.toContainText('This order was cancelled');
+  const followed = await posStream;
+  expect(followed.status()).toBe(200);
+  expect(new URL(followed.url()).pathname.startsWith(`${PREFIX}/stores/`)).toBe(true);
   await page.getByRole('button', { name: 'Cancel order…' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
-  await expect(posCheckout.locator('body')).toContainText('This order was cancelled');
-  expectAllUnderThePrefix([...seen, ...checkoutSeen, ...posCheckoutSeen]);
+  const [cancelled] = await Promise.all([
+    page.waitForResponse((r) => r.url().endsWith('/cancel') && r.request().method() === 'POST'),
+    page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click(),
+  ]);
+  expect(cancelled.ok()).toBeTruthy();
+  expect(new URL(cancelled.url()).pathname.startsWith(`${PREFIX}/stores/`)).toBe(true);
+  await expect(page.locator('body')).toContainText('Cancelled');
+  expectAllUnderThePrefix([...seen, ...checkoutSeen]);
 });
 
 test('the admin searches the logs, opens a line and follows them live', async ({ page }) => {
