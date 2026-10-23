@@ -87,7 +87,11 @@ pub enum Problem {
     /// `challenge` (find a nonce such that SHA-256 of the challenge
     /// followed by the nonce starts with `difficulty` zero bits) and send
     /// the request again with `Monokulo-Proof: <challenge>.<nonce>`. The
-    /// embed library does this by itself.
+    /// embed library does this by itself. Only a browser's request is
+    /// asked (the API with the store's public key or no key, the checkout
+    /// page): a request with the secret key or an app's key, the plugin's
+    /// and the app's handshakes and log reports never are, and are
+    /// `rate-limited` instead.
     #[problem(status = 429, title = "Solve a challenge to continue")]
     ChallengeRequired,
     /// This client has as many live update streams open for the store as

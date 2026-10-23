@@ -83,7 +83,6 @@ is one of these:
 | [`too-large`](../problems/too-large/) | 413 | The body is too large. |
 | [`not-found`](../problems/not-found/) | 404 | `slug` isn't a slug. |
 | [`rate-limited`](../problems/rate-limited/) | 429 | Wait `retry_after` seconds. |
-| [`challenge-required`](../problems/challenge-required/) | 429 | Solve the proof of work in `challenge` and send the request again with `Monokulo-Proof`. |
 | [`internal`](../problems/internal/) | 500 | Something failed on the Monokulo after the token was spent: start again. |
 
 ### 2. Create an order

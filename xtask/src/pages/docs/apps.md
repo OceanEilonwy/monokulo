@@ -65,7 +65,6 @@ is one of these:
 | [`unsupported-media-type`](../problems/unsupported-media-type/) | 415 | Send `Content-Type: application/json`. |
 | [`too-large`](../problems/too-large/) | 413 | The body is too large. |
 | [`rate-limited`](../problems/rate-limited/) | 429 | Wait `retry_after` seconds. |
-| [`challenge-required`](../problems/challenge-required/) | 429 | Solve the proof of work in `challenge` and send the request again with `Monokulo-Proof`. |
 | [`internal`](../problems/internal/) | 500 | Something failed on the Monokulo: try again later. |
 
 ## 2. Find your way

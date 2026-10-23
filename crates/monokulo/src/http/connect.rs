@@ -458,7 +458,6 @@ static FINISH_HANDSHAKE: crate::api::runtime::catalog::Handshake =
             Problem::TooLarge,
             Problem::UnsupportedMediaType,
             Problem::RateLimited,
-            Problem::ChallengeRequired,
             Problem::Internal,
             Problem::NoPublicAddress,
         ],

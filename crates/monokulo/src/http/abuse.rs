@@ -25,9 +25,9 @@
 //! | | Allowed | Challenge (past soft, no pass) | Blocked (past hard) |
 //! |---|---|---|---|
 //! | Page (GET) | continue | interstitial (`views::challenge`) | `429` page + `Retry-After` |
-//! | Machine API | continue | `429` problem + `challenge` + `Monokulo-Challenge` | `429` problem + `retry_after` + `Retry-After` |
+//! | Machine API, anonymous or public key (a browser) | continue | `429` problem + `challenge` + `Monokulo-Challenge` | `429` problem + `retry_after` + `Retry-After` |
 //! | Stream (SSE) | continue | `429` (can't solve anything) | `429` + `Retry-After` |
-//! | Other (form posts, plugin calls) | continue | continue | `429` + `Retry-After` |
+//! | Other (form posts, the plugin and app handshakes) | continue | continue | `429` + `Retry-After` |
 //! | Logs (browser, POS and plugin reports) | continue | - | `429` + `Retry-After`, report dropped |
 //!
 //! Log reports have a budget of their own (`abuse.client_logs_per_min`,
