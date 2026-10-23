@@ -91,7 +91,7 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   await expect(page.getByRole('button', { name: 'Change website' })).toBeDisabled();
   await captureCoverageStage(page, 'store-site-change-blocked-page', test.info(), { group: GROUP });
   await page.getByRole('link', { name: 'disconnect it first' }).click();
-  await expect(page).toHaveURL(`${settings()}/connections/${integration}/disconnect`);
+  await expect(page).toHaveURL(`${settings()}/plugins/${integration}/disconnect`);
   await expect(page.getByRole('heading', { level: 1, name: 'Disconnect WooCommerce from “shop.localhost”?' })).toBeVisible();
   await captureCoverageStage(page, 'store-site-disconnect-page', test.info(), { group: GROUP, shapes: ['desktop'] });
   await page.getByLabel('Type “shop.localhost” to confirm').fill('shop.localhost');
