@@ -18,7 +18,7 @@ use std::{env, io, process::ExitCode};
 use support::{root, Exit};
 
 const USAGE: &str = "\
-Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|summary|validate|open>
+Usage: cargo xtask coverage <rust|browser|stagenet|all|report|summary|validate|open>
        cargo xtask stress <ci|full|scale|open> [driver]
        cargo xtask stress rounds
        cargo xtask snp-id-key [--from-env]

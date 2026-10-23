@@ -76,10 +76,7 @@ impl Tab {
             Tab::Overview => true,
             Tab::Tests => !report.cases.is_empty(),
             Tab::Coverage => report.coverage.as_ref().is_some_and(|c| {
-                !c.crates.is_empty()
-                    || c.totals.rust.is_some()
-                    || c.totals.browser.is_some()
-                    || c.totals.woocommerce.is_some()
+                !c.crates.is_empty() || c.totals.rust.is_some() || c.totals.browser.is_some()
             }),
             Tab::Properties => report.properties.is_some(),
             Tab::Fuzzing => !report.fuzz.is_empty(),
@@ -279,7 +276,6 @@ fn figures(report: &Report) -> Markup {
     let lines = |pick: fn(&super::inputs::CoverageRun) -> Option<Counts>| coverage.and_then(pick);
     let shipping = lines(|c| Some(c.shipping.lines).filter(|l| l.total > 0));
     let browser = lines(|c| c.totals.browser.map(|t| t.lines));
-    let woocommerce = lines(|c| c.totals.woocommerce.map(|t| t.lines));
     let nightly = report.properties.as_ref().map(|p| p.tests.len());
     let mut beside = Vec::new();
     if !report.fuzz.is_empty() {
@@ -296,7 +292,6 @@ fn figures(report: &Report) -> Markup {
             &format!("{} passed · {} skipped", format::count(passed), format::count(skipped)), None))
         (coverage_figure("Engine and server", shipping, "Rust"))
         (coverage_figure("Checkout and POS", browser, "browser"))
-        (coverage_figure("WooCommerce", woocommerce, "PHP"))
         (figure("Properties nightly", &nightly.map_or_else(|| NONE.to_string(), format::count),
             &if beside.is_empty() { "no fuzz run yet".to_string() } else { beside.join(" · ") }, None))
     }

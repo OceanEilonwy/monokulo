@@ -1,4 +1,4 @@
-//! `cargo xtask coverage`: the Rust, browser, WooCommerce and stagenet
+//! `cargo xtask coverage`: the Rust, browser and stagenet
 //! collectors, the combined report and index, the job summary and the
 //! artifact validation (`docs/COVERAGE.md`). Each collector runs its steps
 //! from the repository root with `COVERAGE_OUTPUT` naming its folder,
@@ -22,14 +22,12 @@ pub(crate) const HELP: &str = "\
         coverage rust Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         coverage browser\n\
                       Run deterministic Playwright tests and collect authored browser source coverage\n\
-        coverage woocommerce\n\
-                      Run default PHPUnit tests in wp-env and collect plugin coverage\n\
         coverage stagenet\n\
                       Explicit extended run: paid browser tests and separate instrumented report\n\
-        coverage all  Run rust, browser and woocommerce side by side; preserve successful reports if another fails\n\
+        coverage all  Run rust and browser side by side; preserve successful reports if another fails\n\
         coverage report\n\
-                      Combine rust, browser and woocommerce outputs already in target/coverage (as CI's\n\
-                      separate jobs leave them) into one index; validate it once all three passed\n\
+                      Combine rust and browser outputs already in target/coverage (as CI's\n\
+                      separate jobs leave them) into one index; validate it once both passed\n\
         coverage summary\n\
                       Print the coverage components as a GitHub job-summary table (Markdown)\n\
         coverage validate\n\
@@ -42,7 +40,6 @@ pub(crate) const HELP: &str = "\
 pub(crate) enum Component {
     Rust,
     Browser,
-    Woocommerce,
     Stagenet,
 }
 
@@ -51,20 +48,14 @@ impl Component {
         match self {
             Component::Rust => "rust",
             Component::Browser => "browser",
-            Component::Woocommerce => "woocommerce",
             Component::Stagenet => "stagenet",
         }
     }
 
     fn parse(name: &str) -> Option<Self> {
-        [
-            Component::Rust,
-            Component::Browser,
-            Component::Woocommerce,
-            Component::Stagenet,
-        ]
-        .into_iter()
-        .find(|c| c.name() == name)
+        [Component::Rust, Component::Browser, Component::Stagenet]
+            .into_iter()
+            .find(|c| c.name() == name)
     }
 }
 
@@ -75,7 +66,7 @@ impl fmt::Display for Component {
 }
 
 /// The collectors `all` runs, in the order the index and validation expect.
-const ALL: [Component; 3] = [Component::Rust, Component::Browser, Component::Woocommerce];
+const ALL: [Component; 2] = [Component::Rust, Component::Browser];
 
 /// How a collector ended; `unavailable` is a collector that left no result.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,16 +194,6 @@ impl Log {
                 Ok(Exit::NOT_FOUND)
             }
         }
-    }
-
-    /// A step's output, for the steps whose answer the next one needs.
-    fn read(&self, program: &str, args: &[&str]) -> io::Result<String> {
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(root())
-            .stderr(Stdio::from(self.file.try_clone()?))
-            .output()?;
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
 
     /// `MISSING` and why, when a prerequisite is missing.
@@ -477,195 +458,6 @@ fn collect_stagenet(log: &Log) -> io::Result<Exit> {
     )
 }
 
-/// The running wp-env tests-wordpress container that mounts this plugin.
-fn wordpress_container(log: &Log, plugin: &str) -> io::Result<Option<String>> {
-    if let Ok(named) = env::var("COVERAGE_WP_CONTAINER") {
-        if !named.is_empty() {
-            return Ok(Some(named));
-        }
-    }
-    for candidate in log
-        .read(
-            "docker",
-            &[
-                "ps",
-                "--filter",
-                "name=tests-wordpress",
-                "--format",
-                "{{.Names}}",
-            ],
-        )?
-        .lines()
-    {
-        let mounts = log.read(
-            "docker",
-            &[
-                "inspect",
-                candidate,
-                "--format",
-                "{{range .Mounts}}{{.Source}}{{\"\\n\"}}{{end}}",
-            ],
-        )?;
-        if mounts.lines().any(|m| m == plugin) {
-            return Ok(Some(candidate.to_string()));
-        }
-    }
-    Ok(None)
-}
-
-/// The test image: the wp-env container's image with Xdebug added
-/// (plugins/woocommerce/coverage.Dockerfile, fed on stdin).
-fn build_php_image(log: &Log, plugin_dir: &Path, container: &str) -> io::Result<Exit> {
-    let base_image = log
-        .read(
-            "docker",
-            &["inspect", container, "--format", "{{.Config.Image}}"],
-        )?
-        .trim()
-        .to_string();
-    let dockerfile = plugin_dir.join("coverage.Dockerfile");
-    let mut build = Command::new("docker");
-    build
-        .args([
-            "build",
-            "-q",
-            "-t",
-            "monokulo-coverage-php:local",
-            "--build-arg",
-            &format!("BASE_IMAGE={base_image}"),
-            "-",
-        ])
-        .current_dir(root())
-        .stdin(Stdio::from(
-            fs::File::open(&dockerfile).map_err(|e| at(&dockerfile, e))?,
-        ));
-    log.run_command(build, "docker build")
-}
-
-/// PHP in the test image, sharing the wp-env container's volumes, network
-/// and database settings, as the caller's own user so the report is theirs.
-struct Php {
-    user: String,
-    container: String,
-    network: String,
-    mount: String,
-    database: Vec<String>,
-}
-
-impl Php {
-    fn new(log: &Log, container: String) -> io::Result<Self> {
-        let database = log
-            .read(
-                "docker",
-                &[
-                    "inspect",
-                    &container,
-                    "--format",
-                    "{{range .Config.Env}}{{println .}}{{end}}",
-                ],
-            )?
-            .lines()
-            .filter(|l| l.starts_with("WORDPRESS_DB_"))
-            .map(str::to_string)
-            .collect();
-        Ok(Php {
-            user: log.read("id", &["-u"])?.trim().to_string()
-                + ":"
-                + log.read("id", &["-g"])?.trim(),
-            network: format!("container:{container}"),
-            mount: format!("{}:/coverage", log.output.display()),
-            container,
-            database,
-        })
-    }
-
-    fn run(&self, log: &Log, args: &[&str]) -> io::Result<Exit> {
-        let mut all: Vec<&str> = vec![
-            "run",
-            "--rm",
-            "--user",
-            &self.user,
-            "--volumes-from",
-            &self.container,
-            "--network",
-            &self.network,
-            "-v",
-            &self.mount,
-            "-w",
-            "/var/www/html/wp-content/plugins/monokulo",
-            "-e",
-            "WP_TESTS_DIR=/wordpress-phpunit",
-            "-e",
-            "XDEBUG_MODE=coverage",
-        ];
-        for item in &self.database {
-            all.extend(["-e", item]);
-        }
-        all.push("monokulo-coverage-php:local");
-        all.extend(args);
-        log.run("docker", &all, None, &[])
-    }
-}
-
-/// WooCommerce: the plugin's `PHPUnit` suite with path coverage, in an
-/// Xdebug image derived from the running `wp-env` test container.
-fn collect_woocommerce(log: &Log) -> io::Result<Exit> {
-    if !have("docker") {
-        return Ok(log.missing("docker"));
-    }
-    let plugin_dir = root().join("plugins/woocommerce");
-    if !plugin_dir.join("vendor/bin/phpunit").is_file() {
-        return Ok(log.missing(
-            "WooCommerce vendor/bin/phpunit (run composer install in plugins/woocommerce)",
-        ));
-    }
-    let plugin = plugin_dir.display().to_string();
-    let Some(container) = wordpress_container(log, &plugin)? else {
-        return Ok(log.missing("running wp-env tests-wordpress container mounting this plugin"));
-    };
-    step!(build_php_image(log, &plugin_dir, &container));
-    let php = Php::new(log, container)?;
-    if !php
-        .run(
-            log,
-            &[
-                "php",
-                "-r",
-                r#"exit(extension_loaded("xdebug") && in_array("coverage", xdebug_info("mode"), true) ? 0 : 1);"#,
-            ],
-        )?
-        .succeeded()
-    {
-        return Ok(log.missing("Xdebug coverage mode in derived tests-cli image"));
-    }
-    step!(php.run(
-        log,
-        &[
-            "php",
-            "-dauto_prepend_file=/var/www/html/wp-content/plugins/monokulo/coverage-filter.php",
-            "vendor/bin/phpunit",
-            "--configuration",
-            "phpunit.coverage.xml",
-            "--path-coverage",
-            "--coverage-html",
-            "/coverage/html",
-            "--coverage-xml",
-            "/coverage/xml",
-            "--coverage-clover",
-            "/coverage/clover.xml",
-            "--coverage-php",
-            "/coverage/coverage.php",
-            "--log-junit",
-            "/coverage/junit.xml",
-        ]
-    ));
-    step!(php.run(log, &["php", "coverage-summary.php"]));
-    lift_html(&log.output)?;
-    let complete =
-        nonempty(&log.output.join("index.html")) && nonempty(&log.output.join("xml/index.xml"));
-    Ok(Exit::passed(complete))
-}
-
 /// Runs one collector and leaves its result in `<component>/result.json`, so
 /// `report` can combine collectors that ran separately.
 fn run(component: Component, output: &Path) -> io::Result<Collected> {
@@ -693,14 +485,12 @@ fn run_collector(component: Component, output: &Path) -> io::Result<Collected> {
     let exit = match component {
         Component::Rust => collect_rust(&log),
         Component::Browser => collect_browser(&log),
-        Component::Woocommerce => collect_woocommerce(&log),
         Component::Stagenet => collect_stagenet(&log),
     }?;
     let mut passed = exit.succeeded();
     if passed {
         let checked = match component {
             Component::Rust => summarize_rust(output),
-            Component::Woocommerce => summarize_woocommerce(output),
             Component::Stagenet => stagenet_reports(output),
             Component::Browser => Ok(()),
         };
@@ -826,70 +616,6 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
     });
     write_json(&output.join("rust.json"), &manifest)?;
     write_rust_crates(output, files, lines, branches)
-}
-
-fn summarize_woocommerce(output: &Path) -> io::Result<()> {
-    let dir = output.join("woocommerce");
-    let summary: Value = read_json(&dir.join("summary.json"))?;
-    let counts = |name: &str| -> io::Result<Counts> {
-        let value = &summary[name];
-        let covered = value["covered"]
-            .as_u64()
-            .ok_or_else(|| io::Error::other(format!("missing PHP {name}.covered")))?;
-        let total = value["total"]
-            .as_u64()
-            .ok_or_else(|| io::Error::other(format!("missing PHP {name}.total")))?;
-        if total == 0 || covered > total {
-            return Err(io::Error::other(format!("invalid PHP {name} counts")));
-        }
-        Ok(Counts { covered, total })
-    };
-    let lines = counts("lines")?;
-    let branches = counts("branches")?;
-    counts("paths")?;
-    let files = summary["files"]
-        .as_array()
-        .ok_or_else(|| io::Error::other("missing PHP file list"))?;
-    let expected = ["monokulo.php", "class-wc-gateway-monokulo.php"];
-    if files.len() != expected.len()
-        || expected
-            .iter()
-            .any(|name| !files.iter().any(|f| f["name"].as_str() == Some(name)))
-    {
-        return Err(io::Error::other(
-            "PHP coverage contains missing or non-plugin source files",
-        ));
-    }
-    for required in [
-        "index.html",
-        "xml/index.xml",
-        "clover.xml",
-        "junit.xml",
-        "includes/class-wc-gateway-monokulo.php_branch.html",
-    ] {
-        if !dir.join(required).is_file() {
-            return Err(io::Error::other(format!("missing PHP report {required}")));
-        }
-    }
-    let (revision, source_dirty) = revision()?;
-    let versions = &summary["versions"];
-    let named = |tool: &str| {
-        versions[tool]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| io::Error::other(format!("missing {tool} version")))
-    };
-    let (php, phpunit, xdebug) = (named("php")?, named("phpunit")?, named("xdebug")?);
-    let manifest = serde_json::json!({
-        "component":"woocommerce", "revision":revision, "source_dirty":source_dirty,
-        "tools":{"rustc":version("rustc", &["--version"])?, "cargo":version("cargo", &["--version"])?,
-            "collector":format!("PHPUnit {phpunit} / Xdebug {xdebug}"), "php":php},
-        "test":{"status":"passed", "command":"vendor/bin/phpunit --configuration phpunit.coverage.xml --path-coverage",
-            "exit_code":0, "log":"woocommerce/test.log"},
-        "lines": lines, "branches": branches,
-        "report":"woocommerce/index.html", "unavailable":[]
-    });
-    write_json(&output.join("woocommerce.json"), &manifest)
 }
 
 /// A crate's Rust sources, canonical, leaving out its test modules.
@@ -1234,7 +960,7 @@ fn render_index(output: &Path, results: &[Collected]) -> io::Result<()> {
             title { "Monokulo coverage" }
             style { (PreEscaped(INDEX_STYLE)) }
             h1 { "Monokulo coverage" }
-            p { "Coverage from separate Rust, browser, and WooCommerce test runs. Counts use executable lines and branches in authored product source." }
+            p { "Coverage from separate Rust and browser test runs. Counts use executable lines and branches in authored product source." }
             table {
                 thead { tr { th { "Component" } th { "Tests" } th { "Lines" } th { "Branches" } th { "Reports" } } }
                 tbody { @for (result, manifest) in rows.clone() { (component_row(output, result, manifest.as_ref())) } }

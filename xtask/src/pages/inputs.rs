@@ -64,7 +64,6 @@ impl Linked {
 pub(super) struct PerComponent<T> {
     pub(super) rust: Option<T>,
     pub(super) browser: Option<T>,
-    pub(super) woocommerce: Option<T>,
 }
 
 /// Line and branch counts together, as the pages show them.
@@ -190,7 +189,6 @@ pub(super) struct Crate {
 pub(super) struct Tests {
     pub(super) rust: Vec<Test>,
     pub(super) browser: Vec<Test>,
-    pub(super) woocommerce: Vec<Test>,
 }
 
 /// The report pages shipped under reports/, relative to the site.
@@ -198,7 +196,6 @@ pub(super) struct Tests {
 pub(super) struct Reports {
     pub(super) rust: Option<String>,
     pub(super) browser: Option<String>,
-    pub(super) woocommerce: Option<String>,
     pub(super) stress: Option<String>,
 }
 
@@ -268,7 +265,6 @@ fn test_results(src: &Path) -> io::Result<Tests> {
     Ok(Tests {
         rust: read("rust/junit.xml")?,
         browser,
-        woocommerce: read("woocommerce/junit.xml")?,
     })
 }
 
@@ -290,11 +286,6 @@ pub(super) fn coverage(src: &Path) -> io::Result<(CoverageRun, Linked)> {
     for (name, total, tool) in [
         ("rust", &mut totals.rust, &mut tools.rust),
         ("browser", &mut totals.browser, &mut tools.browser),
-        (
-            "woocommerce",
-            &mut totals.woocommerce,
-            &mut tools.woocommerce,
-        ),
     ] {
         if let Some(m) = manifest(src, name)? {
             *total = Some(Coverage {
@@ -338,7 +329,6 @@ pub(super) fn coverage(src: &Path) -> io::Result<(CoverageRun, Linked)> {
     for (name, report) in [
         ("rust", &mut reports.rust),
         ("browser", &mut reports.browser),
-        ("woocommerce", &mut reports.woocommerce),
         ("stress", &mut reports.stress),
     ] {
         let index = format!("{name}/index.html");
