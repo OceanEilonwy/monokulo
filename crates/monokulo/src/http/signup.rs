@@ -1,5 +1,5 @@
-//! Making a monokulo account with a hashed password (WBS 1.1.1), for the
-//! sign-up form (`http/dashboard.rs`) and the first-run admin setup
+//! Making a monokulo account with a hashed password, for the
+//! sign-up form (`http/auth.rs`) and the first-run admin setup
 //! (`http/admin_setup.rs`). Unauthenticated by necessity — nobody has an
 //! account yet.
 //!
@@ -21,7 +21,7 @@ use crate::settings::SignupMode;
 use super::AppState;
 
 /// The ways account creation can fail, for the sign-up form
-/// (`http/dashboard.rs`, WBS 1.3.1) and the first-run admin setup to show.
+/// (`http/auth.rs`) and the first-run admin setup to show.
 pub(super) enum CreateAccountError {
     DuplicateEmail,
     Internal,
@@ -36,7 +36,7 @@ pub(super) enum CreateAccountError {
     /// so the two can get different, clearer messages (and so the
     /// browser-facing form knows to show its "you need an invite" state
     /// rather than a re-fillable form with an error banner - see
-    /// `dashboard::render_signup`'s own doc comment).
+    /// `auth::render_signup`'s own doc comment).
     InviteRequired,
     /// A token was presented, but it doesn't match any invite link with
     /// `used_at_utc IS NULL` - either it's unknown, or (the common real
@@ -46,11 +46,10 @@ pub(super) enum CreateAccountError {
 
 /// The actual account-creation logic - `Db::create_user`/
 /// `Db::redeem_invite_and_create_user` plus `shared::password::Hasher::hash`
-/// — shared by `POST /signup` (below), `POST /signup`
-/// (`http/dashboard.rs`), and the first-run admin setup wizard
-/// (`http/admin_setup.rs`, the one caller that ever passes `is_admin: true`),
-/// so all three surfaces can never drift apart on what "creating an account"
-/// means. `invite_token` is only ever consulted when `is_admin` is `false`
+/// — shared by the sign-up form (`POST /signup`, `http/auth.rs`) and the
+/// first-run admin setup wizard (`http/admin_setup.rs`, the one caller that
+/// ever passes `is_admin: true`), so the two can never drift apart on what
+/// "creating an account" means. `invite_token` is only ever consulted when `is_admin` is `false`
 /// and this instance's `signup.mode` is `"invite_only"` - ignored
 /// (regardless of whether it's `Some` or `None`) in every other case.
 pub(super) async fn create_account(
@@ -76,7 +75,7 @@ pub(super) async fn create_account(
         return Err(CreateAccountError::InviteRequired);
     }
 
-    // Argon2id (`shared::password`, WBS 0.4) — deliberately not
+    // Argon2id (`shared::password`) — deliberately not
     // `shared::auth`'s SHA-256, which is the wrong tool for a low-entropy,
     // human-chosen password (see that module's own doc comment).
     // Off the async threads (`shared::password::run`).

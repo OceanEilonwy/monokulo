@@ -52,11 +52,12 @@
   var knownOrders = {};
 
   // Every element that currently has a live mount, so a re-mount can tear the
-  // previous one down first. `mount()` only removes its `message` listener from
-  // the returned `destroy()`, which nothing calls automatically - so remounting
-  // the same container (a SPA re-render, a "try again" button, a customer
-  // switching between two order widgets) would otherwise stack a second
-  // listener on top of the first and fire every callback once per past mount.
+  // previous one down first. `mount()` only stops following its order (the
+  // event stream or the poll) from the returned `destroy()`, which nothing
+  // calls automatically - so remounting the same container (a SPA re-render,
+  // a "try again" button, a customer switching between two order widgets)
+  // would otherwise follow the order twice and fire every callback once per
+  // past mount.
   // A Map keyed by the element avoids stashing bookkeeping on the merchant's
   // own DOM node; the WeakMap variant is used where available so a detached
   // container doesn't pin its entry forever.
@@ -333,15 +334,11 @@
     iframe.title = "Monero Payment";
     iframe.style.border = "none";
     iframe.style.width = options.width || "420px";
-    // 900px, not the previous 640px: the checkout page's amount, QR, address
-    // card, progress bar, and refund-address form alone already run past
-    // 900px at this default 420px width - 640px was silently cutting real
-    // content off into the frame's own inner scrollbar for every order, not
-    // just wide/edge-case ones. True auto-sizing (matching the framed page's
-    // real content height, the way checkout_share.html.hbs's own same-origin
-    // script does) isn't available here - this iframe's origin is the
-    // caller's own site, not monokulo's, so cross-origin restrictions block
-    // reading its content height directly. A caller who wants a
+    // 900px: the checkout page's amount, QR, address card, progress bar and
+    // refund-address form need about that at this default 420px width.
+    // Auto-sizing to the framed page's content isn't available here: the
+    // frame is cross-origin to the caller's page, so its content height
+    // can't be read. A caller who wants a
     // specifically sized/no-scroll embed should still pass an explicit
     // `height` in `options`.
     iframe.style.height = options.height || "900px";

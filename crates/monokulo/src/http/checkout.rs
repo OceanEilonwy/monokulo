@@ -1,5 +1,4 @@
-//! Control-plane's own real, public checkout/payment page
-//! (`docs/fx_refactor.md` Phase 2) - moved here from the engine. Every
+//! The public checkout/payment page, `/checkout/{order_id}`. Every
 //! engine call it makes goes through the engine's *admin* API with the
 //! connection's own decrypted `sk_...`, entirely server-side (the browser
 //! never sees it): `EngineClient::get_order_detail` (the same call the
@@ -7,16 +6,15 @@
 //! `EngineClient::set_refund_address` for the refund form. The engine is
 //! private; monokulo never uses a public engine route.
 //!
-//! Deliberately **no per-tenant template customization** (`docs/fx_refactor.md`
-//! decision 1, dropped outright) and **no site nav** (`{{> nav}}`) - a
-//! merchant embeds this page in an iframe inside their *own* checkout flow;
-//! Monokulo's own site navigation has no business appearing inside it. It
-//! still uses the shared `_styles` partial for consistent typography/color,
-//! just not the nav.
+//! Deliberately **no per-store template customization** and **no site
+//! nav** - a merchant embeds this page in an iframe inside their *own*
+//! checkout flow; Monokulo's own site navigation has no business appearing
+//! inside it. It still uses the shared theme for consistent
+//! typography/color, just not the nav.
 //!
 //! Fiat display comes entirely from monokulo's own locally recorded
 //! quote (`Db::get_order_currency_metadata`) - the engine has no concept of
-//! fiat at all any more (`docs/fx_refactor.md` Phase 3), so an order with no
+//! fiat at all any more, so an order with no
 //! local record (predates this feature, or was created directly against the
 //! engine rather than through monokulo's own API)
 //! simply shows a dash rather than a fabricated amount.
@@ -37,7 +35,7 @@ use crate::network::{NetworkKind, OnNetwork};
 use crate::views;
 use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
-use super::dashboard::redirect_302;
+use super::auth::redirect_302;
 use super::paths::{CheckoutEventsPath, CheckoutSharePath, RefundAddressPath};
 use super::store_key::RequestStore;
 use super::{ApiError, AppState};
@@ -863,18 +861,16 @@ pub async fn checkout_events(
     )
 }
 
-/// `GET /checkout/{order_id}/share` - a real follow-up to
-/// `docs/fx_refactor.md`: "on the order details page you should be able to
-/// obtain a payment link which can be shared to someone who needs to pay
-/// for the order". `checkout_page` above is deliberately bare (no nav, no
+/// `GET /checkout/{order_id}/share` - the payment link the order page
+/// offers, to share with someone who needs to pay for the order.
+/// `checkout_page` above is deliberately bare (no nav, no
 /// site branding at all - see this module's own doc comment) since it's
 /// built to be iframed inside a *merchant's* own page; handed directly to a
 /// customer with no page of their own around it, that bareness reads as a
 /// broken or unbranded link, not a real invoice. This route wraps the exact
 /// same checkout page in an iframe, inside a real, nav-bearing
 /// monokulo page, so a link shared over chat/email lands somewhere
-/// that visibly is Monokulo - "cohesive" per the same follow-up's
-/// own wording, not a second copy of the payment logic (all of it - live
+/// that visibly is Monokulo - not a second copy of the payment logic (all of it - live
 /// status updates, the QR code, the copy button - still lives in the one
 /// iframed page).
 ///
@@ -1274,12 +1270,9 @@ mod tests {
         let pos_html = body_text(pos_response).await;
         assert!(pos_html.contains("pay-wrap checkout-compact"));
         assert!(!pos_html.contains("id=\"refund_address\""));
-        // `_styles.html.hbs` (included here for base typography/color)
-        // mentions both `.site-nav` and even the literal text `<nav>` in
-        // its own CSS *comments* - a plain substring check for either would
-        // false-positive on those comments even with no nav actually
-        // rendered. `_nav.html.hbs`'s own real opening tag is the one
-        // string that can only appear if `{{> nav}}` genuinely ran.
+        // The shared stylesheet mentions `.site-nav`, so a plain substring
+        // check would false-positive with no nav rendered: the nav's own
+        // opening tag can only appear if the nav genuinely rendered.
         assert!(
             !html.contains(r#"<nav class="site-nav">"#),
             "the checkout page must not carry the site nav, got: {html}"

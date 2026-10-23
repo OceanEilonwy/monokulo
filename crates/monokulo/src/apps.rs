@@ -1,10 +1,9 @@
-//! Connected apps (monokular `docs/design.md` §2): devices, such as a till
-//! running Monokular, connected to one store with a key of their own. An app
-//! names itself with a plugin's rules (`crate::plugins`): monokulo keeps no
-//! list of apps. It connects from a code the store's dashboard shows
-//! (`http::apps`), makes orders through the shop plugins' order API
-//! (`POST /pay/{pk}/orders`, with its key), and follows them on the store's
-//! app event stream (`GET /pay/{pk}/events`).
+//! Connected apps: devices, such as a till running Monokular, connected to
+//! one store with an `ak_` key of their own. An app names itself with a
+//! plugin's rules (`crate::plugins`): monokulo keeps no list of apps. It
+//! connects from a code the store's dashboard shows (`http::apps`), makes
+//! orders through the machine API (`POST /api/v1/orders`, with its key),
+//! and follows them on the store's event stream (`GET /api/v1/events`).
 //!
 //! The stream carries [`SaleEvent`]s, made from what the order API returned
 //! and the engine's order-event log: amounts, addresses and states, never

@@ -1,9 +1,9 @@
-//! Logging in (WBS 1.1.2): verifies email+password and starts a session,
-//! for the login form (`http/dashboard.rs`) and the first-run admin setup.
+//! Logging in: verifies email+password and starts a session, for the
+//! login form (`http/auth.rs`) and the first-run admin setup.
 //!
-//! Deliberately returns the exact same `401` for "no such account" as for
-//! "wrong password" - a client must not be able to tell the two apart via
-//! status code or message (standard account-enumeration defense). The
+//! Deliberately fails the same way for "no such account" as for "wrong
+//! password" - a visitor must not be able to tell the two apart from the
+//! answer (standard account-enumeration defense). The
 //! obvious way to get this wrong is an early return for an unknown email
 //! that skips `Hasher::verify` entirely, which is also observable via
 //! timing; to avoid that specific short-circuit, an unknown email still
@@ -25,8 +25,8 @@ use super::AppState;
 /// Made by the first login's own password job (`shared::password::run`).
 static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 
-/// The two ways login can fail, for the login form (`http/dashboard.rs`,
-/// WBS 1.3.1) to show as a generic, non-enumerating error. Never
+/// The two ways login can fail, for the login form (`http/auth.rs`) to
+/// show as a generic, non-enumerating error. Never
 /// distinguished any further than this - see the module doc comment on why
 /// "unknown email" and "wrong password" must both land on `Unauthorized`.
 pub(super) enum LoginError {
@@ -37,7 +37,7 @@ pub(super) enum LoginError {
 /// The actual login logic - verifying email+password (with the
 /// account-enumeration-safe dummy-hash comparison described in the module
 /// doc comment) and issuing a session - for `POST /login`
-/// (`http/dashboard.rs`) and the first-run admin setup. Returns the
+/// (`http/auth.rs`) and the first-run admin setup. Returns the
 /// resolved user alongside the raw (unhashed) session token, which becomes
 /// the session cookie.
 pub(super) async fn authenticate(

@@ -192,7 +192,7 @@ pub async fn website_form(
         Err(status) => return status.into_response(),
     };
     if row.site.is_none() {
-        return super::dashboard::redirect_303(&format!("/stores/{id}/settings#card-store"));
+        return super::auth::redirect_303(&format!("/stores/{id}/settings#card-store"));
     }
     let change = match (query.remove, query.site) {
         (Some(_), _) => WebsiteChange::Remove,
@@ -226,7 +226,7 @@ pub async fn website_submit(
             .into_response()
     };
     let Some(current) = row.site.clone() else {
-        return super::dashboard::redirect_303(&format!("/stores/{id}/settings#card-store"));
+        return super::auth::redirect_303(&format!("/stores/{id}/settings#card-store"));
     };
     if let Some(active) = &view.active {
         return refuse(format!(
@@ -340,7 +340,7 @@ pub async fn disconnect_form(
             Err(status) => return status.into_response(),
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
-        return super::dashboard::redirect_303(&format!(
+        return super::auth::redirect_303(&format!(
             "/stores/{id}/settings?tab=connections#card-connections"
         ));
     };
@@ -363,7 +363,7 @@ pub async fn disconnect_submit(
             Err(status) => return status.into_response(),
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
-        return super::dashboard::redirect_303(&format!(
+        return super::auth::redirect_303(&format!(
             "/stores/{id}/settings?tab=connections#card-connections"
         ));
     };

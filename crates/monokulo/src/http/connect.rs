@@ -8,7 +8,7 @@
 //!    - the plugin sends the merchant's browser here.
 //! 2. No session yet: redirect to `/login?next=<this same URL>`
 //!    (`next` is checked to be a path on this site before it's followed,
-//!    `dashboard::SafePath`); signing up or logging in comes back here.
+//!    `auth::SafePath`); signing up or logging in comes back here.
 //! 3. A session. A store is a host and no two stores share one
 //!    (`crate::stores`), so the shop's host decides what happens:
 //!    - one of the merchant's stores has it: a page to connect the plugin
@@ -27,7 +27,7 @@
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
 //!    returns `{public_key, secret_token, api}` (`api` is the API's entry,
 //!    `/api/v1`, a path on this instance, never the engine's), `onion_api`
-//!    (the same entry on the onion address) while the instance has one, plus, as of WBS 1.4.4,
+//!    (the same entry on the onion address) while the instance has one, plus
 //!    a `webhook_signing_secret` when the request carried a `webhook_url` -
 //!    see [`finish`]'s own doc comment for the registration/failure policy.
 
@@ -44,7 +44,7 @@ use crate::plugins::{ConnectingPlugin, Plugin, PluginName, PluginSlug};
 use crate::stores::Site;
 use crate::views::connect::PluginRequestView;
 
-use super::dashboard::redirect_302;
+use super::auth::redirect_302;
 use super::AppState;
 use super::AuthedUser;
 
@@ -319,7 +319,7 @@ pub struct ConfirmForm {
     pub name: String,
 }
 
-/// `POST /plugins/connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4):
+/// `POST /plugins/connect/{platform}` (behind [`AuthedUser`]):
 /// gives the plugin its store's key. The store must be the merchant's, and
 /// its site the shop's: without both, a signed-in attacker could have any
 /// store's `sk_...` delivered to a `return_url` of their own via

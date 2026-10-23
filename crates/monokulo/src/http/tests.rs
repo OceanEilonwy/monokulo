@@ -118,7 +118,7 @@ async fn the_protected_test_route_rejects_an_unknown_session() {
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
-// -- WBS 1.3.1: browser-facing signup/login pages ---------------------------
+// -- The sign-up and log-in pages ---------------------------------------------
 
 fn form_request(uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
     let body = fields
@@ -295,7 +295,7 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
         .unwrap();
     // A plain login with no `next` redirects straight to the real dashboard
     // home page (`http/home.rs`) now that one exists - see
-    // `dashboard::login_submit`'s own doc comment.
+    // `auth::login_submit`'s own doc comment.
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(response.headers().get("location").unwrap(), "/");
     let set_cookie = response
@@ -386,7 +386,7 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
 
 /// A browser loading a page it must be signed in for is sent to log in,
 /// and comes back to that page after; anything that isn't a page load (the
-/// JSON API, a script's fetch, a form post) still gets a plain `401`.
+/// machine API, a script's fetch, a form post) still gets a plain `401`.
 /// Signed in, the nav shows the account menu instead of Log in and Sign up.
 #[tokio::test]
 async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401() {
@@ -1474,9 +1474,9 @@ async fn a_store_can_use_a_wallet_already_added_but_only_your_own() {
     crate::http::test_support::store_made(&made);
 }
 
-// -- WBS 1.4.1: `next`-redirect support on dashboard::login_submit ----------
+// -- `next`-redirect support on auth::login_submit ---------------------------
 //
-// The pure open-redirect-rejection proof lives in `dashboard.rs`'s own
+// The pure open-redirect-rejection proof lives in `auth.rs`'s own
 // `#[cfg(test)] mod tests` (`is_safe_redirect_path`'s direct unit tests) -
 // these are the HTTP-level complement: a real login request carrying a
 // malicious `next` must not redirect anywhere attacker-controlled, and a
@@ -1522,7 +1522,7 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
         // exact same `/` redirect a `next`-less login gets - never
         // the attacker-controlled value. The response *is* a redirect
         // either way now that a real dashboard exists (see
-        // `dashboard::login_submit`'s doc comment) - the load-bearing check
+        // `auth::login_submit`'s doc comment) - the load-bearing check
         // is the `Location` value, not whether a redirect happened at all.
         assert_eq!(response.status(), StatusCode::FOUND);
         assert_eq!(

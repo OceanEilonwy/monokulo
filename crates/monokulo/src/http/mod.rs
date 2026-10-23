@@ -1,4 +1,5 @@
-//! The monokulo's HTTP API surface.
+//! Monokulo's HTTP surface: the merchant's and payer's pages, the connect
+//! flows, and the router the machine API (`crate::api`) mounts on.
 //!
 //! Mirrors the engine's own `engine::http` module (see its doc
 //! comment) in shape, not content: a `Clone`-able `AppState` carrying
@@ -12,8 +13,7 @@
 //! which exists because *other* crates need a real socket to reach a
 //! separately-deployed *engine* instance.
 //!
-//! `/signup` and `/login` (`dashboard` module, WBS
-//! 1.1 and 1.3.1) are plain HTML forms over the account and login logic
+//! `/signup` and `/login` (`auth` module) are plain HTML forms over the account and login logic
 //! (`signup`, `login`), ending in a `session` cookie, which the
 //! [`AuthedUser`] extractor below resolves back to a user. The machine API
 //! (`crate::api`) takes a store's or an app's key instead.
@@ -21,12 +21,12 @@
 //! `/setup` (`setup` module) makes a store in three steps (Store, Wallet,
 //! Done) on top of `connections::create_connection_for_user`.
 //!
-//! `/plugins/connect/{platform}` and `/plugins/connect/{platform}/finish` (`connect` module,
-//! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
+//! `/plugins/connect/{platform}` and `/plugins/connect/{platform}/finish`
+//! (`connect` module) are the generic, platform-agnostic "one-click install" flow
 //! for any shop plugin, which names itself (`crate::plugins`): a plugin sends the merchant's
 //! browser to `GET /plugins/connect/{platform}`, which redirects to
 //! `/login` (carrying a validated `next`, see
-//! `dashboard::login_submit`) if there's no session yet; with one, the
+//! `auth::login_submit`) if there's no session yet; with one, the
 //! store with the shop's site gets the plugin, or setup makes one, and
 //! the plugin's `return_url` gets a short-lived, single-use connect token
 //! instead of a raw `sk_...`.
@@ -39,11 +39,11 @@ mod account;
 mod admin_settings;
 mod admin_setup;
 pub(crate) mod apps;
+mod auth;
 mod checkout;
 mod connect;
 mod connections;
 pub mod csrf;
-mod dashboard;
 pub mod embed_domains;
 pub mod engine_page;
 pub mod fx;
@@ -115,7 +115,7 @@ impl std::ops::Deref for OwnedStore {
     }
 }
 
-/// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
+/// Name of the cookie the browser-facing login flow (`auth::login_submit`)
 /// sets and [`AuthedUser`] reads back — a plain constant so the two sides
 /// can't drift apart on the name.
 pub(crate) const SESSION_COOKIE_NAME: &str = "session";
@@ -156,8 +156,8 @@ pub struct Engine {
     /// turned "one user browsing the dashboard" into enough engine requests
     /// to trip its own rate limiter).
     pub status_cache: status_page::StatusCache,
-    /// The engine page's link to the engine's activity
-    /// (`docs/engine_visualizer.md`): one poller per watched network.
+    /// The engine page's link to the engine's activity: one poller per
+    /// watched network.
     pub activity: Arc<crate::engine_view::relay::Relay>,
     /// Bundles handed out with key entry forms, for `key-custody-cli`
     /// (`key_entry`).
@@ -185,17 +185,15 @@ pub struct AppState {
     pub db: Database,
     /// The engine: its client and the cached `GET /status`.
     pub engine: Engine,
-    /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
+    /// AES-256-GCM key used to encrypt the engine's `sk_...`
     /// secret token before it's stored in `store_connections` — see
     /// `crate::crypto` and `http/connections.rs`. Sourced from an
     /// environment variable in the real binary (`main.rs`); tests just
     /// construct a fixed key directly.
     pub encryption_key: crate::crypto::AtRestKey,
-    /// Fiat-to-XMR conversion for monokulo's own order-creation
-    /// endpoint (`docs/fx_refactor.md` Phase 1.4) - the engine no longer
-    /// has any concept of this (per that document's own resolved
-    /// decisions), so monokulo computes the XMR amount itself before
-    /// ever calling the engine. Dispatches per-request to whichever
+    /// Fiat-to-XMR conversion for monokulo's own order creation - the
+    /// engine has no concept of fiat, so monokulo computes the XMR amount
+    /// itself before ever calling the engine. Dispatches per-request to whichever
     /// provider the *store* (not this instance globally) has chosen - see
     /// `exchange_rate_config::ExchangeRateProviders` and
     /// `db::StoreConnectionRow::fx_providers`.
@@ -448,14 +446,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/signup",
-            axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit),
+            axum::routing::get(auth::signup_form).post(auth::signup_submit),
         )
         .route(
             "/login",
-            axum::routing::get(dashboard::login_form).post(dashboard::login_submit),
+            axum::routing::get(auth::login_form).post(auth::login_submit),
         )
-        .route("/logout", axum::routing::post(dashboard::logout_submit))
-        .route("/theme", axum::routing::post(dashboard::theme_submit))
+        .route("/logout", axum::routing::post(auth::logout_submit))
+        .route("/theme", axum::routing::post(auth::theme_submit))
         .route(
             "/setup",
             axum::routing::get(setup::store_form).post(setup::store_submit),
@@ -667,8 +665,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .typed_get(checkout::checkout_events)
         .typed_post(checkout::set_refund_address)
-        // A real follow-up to `docs/fx_refactor.md`: a nav-bearing,
-        // shareable page wrapping the (nav-less) checkout page above in an
+        // A nav-bearing, shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
         .typed_get(checkout::checkout_share_page)
         .merge(api)
@@ -725,8 +722,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let router = router.merge(pay_router);
 
-    // A plain static file, not state-changing - no rate limiter needed
-    // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
+    // A plain static file, not state-changing - no rate limiter needed.
     let router = router.route(
         "/static/monokulo-client.js",
         axum::routing::get(pay::client_library).layer(any_origin_cors_layer()),
@@ -779,8 +775,7 @@ async fn network_headers(
     response
 }
 
-/// Resolves the `session` cookie (set by `dashboard::login_submit`, WBS
-/// 1.3.1) to the user that session belongs to. `401` for a missing cookie
+/// Resolves the `session` cookie (set by `auth::login_submit`) to the user that session belongs to. `401` for a missing cookie
 /// or an unknown/invalid token - never distinguishes the two. A browser
 /// loading a page is sent to log in instead of getting the `401`
 /// ([`unauthenticated`]). The machine API takes keys, not sessions
@@ -788,7 +783,7 @@ async fn network_headers(
 ///
 /// Also carries the presented session's `token_hash` (the same hash
 /// `Db::find_session`/`Db::delete_session` key on) alongside the resolved
-/// user - logging out (`dashboard::logout_submit`) needs to know exactly
+/// user - logging out (`auth::logout_submit`) needs to know exactly
 /// which session row to delete.
 pub struct AuthedUser(pub UserRow, pub TokenHash);
 
@@ -816,7 +811,7 @@ impl FromRequestParts<AppState> for AuthedUser {
 
 /// What a request without a valid session gets: a browser loading a page
 /// is sent to log in, coming back to the page after (`next`); anything
-/// else (the JSON API, a script's fetch, a form post) a plain `401`.
+/// else (a script's fetch, a form post) a plain `401`.
 fn unauthenticated(parts: &Parts) -> Response {
     let headers = &parts.headers;
     let page = matches!(
@@ -831,7 +826,7 @@ fn unauthenticated(parts: &Parts) -> Response {
         return ApiError::Unauthorized.into_response();
     }
     let here = parts.uri.path_and_query().map_or("/", |p| p.as_str());
-    dashboard::redirect_302(&format!(
+    auth::redirect_302(&format!(
         "/login?next={}",
         url::form_urlencoded::byte_serialize(here.as_bytes()).collect::<String>()
     ))
@@ -839,9 +834,8 @@ fn unauthenticated(parts: &Parts) -> Response {
 
 /// Same credential resolution as [`AuthedUser`], plus a real
 /// `user.is_admin` check - the gate for the admin settings page
-/// (`http/admin_settings.rs`, WBS: "only display an 'admin' nav menu entry
-/// if the authenticated user is the admin account" extended to the route
-/// itself, not just the nav link). A missing/invalid session still rejects
+/// (`http/admin_settings.rs`): the route itself is admin-only, not just
+/// the nav link to it. A missing/invalid session still rejects
 /// with the same `401` `AuthedUser` would; a *valid* session that just isn't
 /// the admin account gets `403`, not `401` - see [`ApiError::Forbidden`]'s
 /// own doc comment for why those are kept distinct.
@@ -986,8 +980,7 @@ pub(crate) async fn page_chrome(
         .await
         .unwrap_or_default();
     let mut alerts = store_alerts(&unserved, &stores);
-    // An operator also hears about a block that is taking too long
-    // (docs/engine_scaling.md section 5).
+    // An operator also hears about a block that is taking too long.
     if user.is_some_and(|user| user.is_admin) {
         alerts.extend(status_page::known_slow_blocks(&state.engine));
         alerts.extend(status_page::known_snp_policy_alert(state));
@@ -1015,8 +1008,8 @@ pub(crate) fn store_of_path(path: &str) -> Option<&str> {
     }
 }
 
-/// One alert per store of `user` that the engine can't scan right now
-/// (task 3.7, decision D2). Only ever the signed-in owner's own stores.
+/// One alert per store of `user` that the engine can't scan right now.
+/// Only ever the signed-in owner's own stores.
 fn store_alerts(
     unserved: &[crate::engine_client::UnservedTenant],
     stores: &[crate::db::StoreConnectionRow],
@@ -1054,15 +1047,15 @@ fn store_alerts(
 /// the caller has a valid session, without failing the request outright when
 /// they don't, can reuse the exact same header/cookie parsing and lookup
 /// instead of a parallel reimplementation. `GET /plugins/connect/{platform}`
-/// (`http/connect.rs`, WBS 1.4.1) is the first such caller: an unauthenticated
+/// (`http/connect.rs`) is one such caller: an unauthenticated
 /// request there is a normal, expected case handled with a redirect to
 /// `/login`, not a bare `401` - genuinely different handling from
 /// [`AuthedUser`]'s own rejection, but it must resolve a *valid* session
 /// identically, or the two code paths could quietly drift apart on what
 /// counts as "logged in."
 ///
-/// `None` covers every reason a session doesn't resolve (missing/malformed
-/// header, missing cookie, unknown/invalid token, a database error looking
+/// `None` covers every reason a session doesn't resolve (missing cookie,
+/// unknown/invalid token, a database error looking
 /// either up) - never distinguished further, same as [`AuthedUser`] itself.
 pub(crate) async fn resolve_authed_user(
     state: &AppState,
@@ -1123,10 +1116,8 @@ async fn record_store(request: axum::extract::Request, next: middleware::Next) -
     next.run(request).await
 }
 
-/// Test-only dummy protected route (see WBS 1.1.2): its only purpose is
-/// giving this task's own integration tests something protected by
-/// [`AuthedUser`] to exercise, since no real protected endpoint exists yet.
-/// Not a real API surface - do not build on it.
+/// Test-only route behind [`AuthedUser`] and nothing else, so the session
+/// tests exercise the extractor alone. Not a real API surface.
 #[cfg(test)]
 async fn test_whoami(AuthedUser(user, _): AuthedUser) -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({ "user_id": user.id }))
@@ -1145,12 +1136,8 @@ async fn test_whoami(AuthedUser(user, _): AuthedUser) -> axum::Json<serde_json::
 pub enum ApiError {
     Unauthorized,
     BadRequest(String),
-    /// Added for `http::pay`'s new public order-creation endpoint
-    /// (`docs/fx_refactor.md` Phase 1.4) - an unknown `pk_...` gets a plain
-    /// `404` with a generic message, the same enumeration-defense principle
-    /// `AuthedUser`/every dashboard route's "missing vs. not-yours" `404`
-    /// already applies, extended to "does this tenant even exist" for a
-    /// route with no owner to check against in the first place.
+    /// Missing, or not the caller's: a plain `404` with a generic message
+    /// either way, so a caller can't tell the two apart.
     NotFound,
     /// [`AuthedAdmin`]'s own rejection for a real, valid session that simply
     /// isn't the instance's one admin account - deliberately distinct from

@@ -14,7 +14,7 @@
 //! A successful submission creates the one admin account
 //! (`signup::create_account(.., is_admin: true).await`), marks setup complete, logs
 //! the new admin straight in (the same session-cookie mechanics
-//! `dashboard::login_submit` uses), and redirects to the admin settings page
+//! `auth::login_submit` uses), and redirects to the admin settings page
 //! — so completing the wizard is the entire "first start" experience the
 //! product spec calls for, not a dead end that then demands a second manual
 //! login.
@@ -27,7 +27,7 @@ use serde::Deserialize;
 use crate::views;
 use crate::views::admin::SetupViewModel;
 
-use super::dashboard::redirect_302;
+use super::auth::redirect_302;
 use super::login;
 use super::signup::{self, CreateAccountError};
 use super::AppState;

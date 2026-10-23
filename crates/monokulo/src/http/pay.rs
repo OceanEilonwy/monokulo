@@ -50,8 +50,7 @@ pub(crate) fn order_source(
 }
 
 /// `GET /static/monokulo-client.js` - the thin embed library a merchant's
-/// static site `<script src>`s (`docs/fx_refactor.md` decision 3 / Phase
-/// 4.3): `createOrder` posts to `/api/v1/orders` with the store's public
+/// static site `<script src>`s: `createOrder` posts to `/api/v1/orders` with the store's public
 /// key, and `mount` frames the order's `/checkout/{order_id}`. Served from
 /// this binary rather than a CDN so a self-hoster's static site has no
 /// third-party dependency in its payment path.
@@ -1840,12 +1839,9 @@ mod tests {
         assert!(js.contains("Monokulo"));
         assert!(js.contains("createOrder"));
         assert!(js.contains("mount"));
-        // The real point of this rewrite (`docs/fx_refactor.md` decision 3):
-        // it must call monokulo's own `/api/v1/orders` with the store's
-        // public key as its bearer, not the engine's old
-        // `/api/v1/t/{pk}/orders` - and the mounted iframe must point at
-        // monokulo's own checkout page, not the engine's now-deleted
-        // `/pay/v1/{pk}/{order_id}`.
+        // It calls monokulo's own `/api/v1/orders` with the store's public
+        // key as its bearer, and frames monokulo's own checkout page: never
+        // the engine, which is private.
         assert!(
             js.contains("endpoint + \"/api/v1/orders\"")
                 && js.contains("Authorization: \"Bearer \" + publicKey"),
@@ -1861,7 +1857,7 @@ mod tests {
         );
         assert!(
             !js.contains("/pay/v1/"),
-            "must not reference the engine's own (deleted) checkout route: {js}"
+            "must not reference an engine checkout route: {js}"
         );
         // The iframe does not post messages back, so mount() drives
         // callbacks by following the order itself (its checkout's event
