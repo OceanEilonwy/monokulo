@@ -1,6 +1,6 @@
-//! The committed reference is what the code writes, from exchanges this
-//! test really makes; and the API keeps to its own rules: one resource per
-//! file, every link and form names a route.
+//! The reference is written from exchanges this test really makes, and is
+//! sound; and the API keeps to its own rules: one resource per file, every
+//! link and form names a route.
 
 use std::path::{Path, PathBuf};
 
@@ -177,38 +177,132 @@ async fn record() -> Vec<examples::Exchange> {
     examples::stable(kept)
 }
 
-fn committed(path: &str, expected: &str) {
-    if std::env::var_os("MONOKULO_WRITE_API").is_some() {
-        if let Some(dir) = Path::new(path).parent() {
-            std::fs::create_dir_all(dir).expect("the reference's folder can be made");
+/// Where the docs build asks for the reference (`cargo xtask pages api`
+/// and `cargo xtask api openapi` set it); unset, nothing is written.
+const OUT: &str = "MONOKULO_API_OUT";
+
+/// Every example in `document` fits the schema beside it; returns how
+/// many there are.
+fn examples_fit_their_schemas(document: &Value) -> usize {
+    let escape = |s: &str| {
+        s.replace('~', "~0")
+            .replace('/', "~1")
+            .replace('{', "%7B")
+            .replace('}', "%7D")
+            .replace('+', "%2B")
+    };
+    let mut checked = 0;
+    for (route, operations) in document["paths"].as_object().expect("paths") {
+        for (verb, operation) in operations.as_object().expect("operations") {
+            let responses = operation["responses"].as_object().expect("responses");
+            for (status, response) in responses {
+                let Some(content) = response["content"].as_object() else {
+                    continue;
+                };
+                for (media_type, entry) in content {
+                    let mut examples: Vec<&Value> = entry.get("example").into_iter().collect();
+                    if let Some(named) = entry["examples"].as_object() {
+                        examples.extend(named.values().map(|e| &e["value"]));
+                    }
+                    if examples.is_empty() {
+                        continue;
+                    }
+                    // The schema beside the example, by its place in the
+                    // document, as the recording checks answers.
+                    let mut schema = document.clone();
+                    schema["$ref"] = Value::String(format!(
+                        "#/paths/{}/{verb}/responses/{status}/content/{}/schema",
+                        escape(route),
+                        escape(media_type)
+                    ));
+                    let validator = jsonschema::validator_for(&schema)
+                        .unwrap_or_else(|e| panic!("{verb} {route} {status}: {e}"));
+                    for example in examples {
+                        let errors: Vec<String> = validator
+                            .iter_errors(example)
+                            .map(|e| e.to_string())
+                            .collect();
+                        assert!(
+                            errors.is_empty(),
+                            "{verb} {route} {status} {media_type}: the example doesn't fit:\n{}",
+                            errors.join("\n")
+                        );
+                        checked += 1;
+                    }
+                }
+            }
         }
-        std::fs::write(path, expected).expect("the reference is writable");
     }
-    let found = std::fs::read_to_string(path).unwrap_or_default();
-    assert!(
-        found == expected,
-        "{path} is not what monokulo writes. If the change is meant, write it again with \
-         MONOKULO_WRITE_API=1 cargo nextest run -p monokulo api::runtime::reference (twice when \
-         the examples change)"
-    );
+    checked
 }
 
-/// The committed examples, OpenAPI document and reference are what this
-/// code writes from real exchanges.
+/// The examples, OpenAPI document and reference, written from real
+/// exchanges: the document is OpenAPI 3.1 and every example in it fits its
+/// schema, and every resource and problem has its page. With
+/// `MONOKULO_API_OUT` set, they're written there for the docs build.
 #[tokio::test]
-async fn the_committed_reference_is_what_the_api_says() {
+async fn the_reference_is_written_from_real_exchanges() {
     let recorded = record().await;
-    let examples_text = serde_json::to_string_pretty(&recorded).unwrap() + "\n";
-    committed(EXAMPLES_PATH, &examples_text);
-    committed(OPENAPI_PATH, &openapi::to_text(&openapi::build(&recorded)));
-    committed(REFERENCE_PATH, &to_text(&catalog(&recorded)));
+    every_link_names_a_route(&recorded);
+    let document = openapi::build(&recorded);
+    let reference = catalog(&recorded);
+    let texts = [
+        (
+            "examples.json",
+            serde_json::to_string_pretty(&recorded).unwrap() + "\n",
+        ),
+        ("openapi.json", openapi::to_text(&document)),
+        ("reference.json", to_text(&reference)),
+    ];
+    // What's written reads back as written.
+    for (name, text) in &texts {
+        let _: Value = serde_json::from_str(text).unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    assert_eq!(document["openapi"], "3.1.0");
+    assert!(document["paths"].as_object().is_some_and(|p| !p.is_empty()));
+    let examples = examples_fit_their_schemas(&document);
+    assert!(examples > 10, "only {examples} examples in the document");
+    let resources = reference["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), catalog::resources().len());
+    for resource in catalog::resources() {
+        let page = format!("{DOCS}/rels/{}", resource.rel);
+        assert!(
+            resources
+                .iter()
+                .any(|r| r["rel"] == resource.rel && r["page"] == page),
+            "{} has no page at {page}",
+            resource.rel
+        );
+    }
+    let problems = reference["problems"].as_array().unwrap();
+    for problem in Problem::ALL {
+        assert!(
+            problems
+                .iter()
+                .any(|p| p["slug"] == problem.slug() && p["type"] == problem.type_uri()),
+            "{} isn't in the reference",
+            problem.slug()
+        );
+        assert_eq!(
+            problem.type_uri(),
+            format!("{DOCS}/problems/{}", problem.slug())
+        );
+    }
+    if let Some(dir) = std::env::var_os(OUT) {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("the reference's folder can be made");
+        for (name, text) in &texts {
+            std::fs::write(dir.join(name), text).expect("the reference is writable");
+        }
+    }
 }
 
-/// The served document is the committed one.
+/// The served document is the one built from the code, without examples.
 #[test]
-fn the_served_document_is_the_committed_one() {
-    let committed = std::fs::read_to_string(OPENAPI_PATH).unwrap_or_default();
-    assert_eq!(openapi::to_text(openapi::document()), committed);
+fn the_served_document_has_no_recorded_examples() {
+    let served = openapi::document();
+    assert_eq!(served, &openapi::build(&[]));
+    assert_eq!(examples_fit_their_schemas(served), 0);
 }
 
 /// Each resource is a file of its own, its handlers are in it, and every
@@ -286,10 +380,7 @@ fn every_resource_is_described() {
 
 /// Every link and form target in the recorded answers is a route this
 /// router has, or a page outside the API.
-#[test]
-fn every_link_names_a_route() {
-    let committed: Vec<examples::Exchange> =
-        serde_json::from_str(&std::fs::read_to_string(EXAMPLES_PATH).unwrap()).unwrap();
+fn every_link_names_a_route(recorded: &[examples::Exchange]) {
     let templates: Vec<&str> = catalog::resources().iter().map(|r| r.template).collect();
     let matches = |href: &str| {
         let path = href.split('?').next().unwrap_or(href);
@@ -303,7 +394,7 @@ fn every_link_names_a_route() {
         })
     };
     let mut checked = 0;
-    for exchange in &committed {
+    for exchange in recorded {
         let Some(response) = &exchange.response else {
             continue;
         };

@@ -1,9 +1,9 @@
 //! The API's OpenAPI 3.1 document, built from the catalog: each handler's
 //! method, path, who may call it, its doc comment and the schemas of what
 //! it takes and gives (the same ones its forms show). Its examples are
-//! real exchanges the tests recorded (`super::examples`). Served at
-//! `/api/v1/openapi.json` and committed as `docs/api/openapi.json`
-//! (`super::reference`).
+//! real exchanges the tests recorded (`super::examples`), in the copy the
+//! docs build publishes (`super::reference`). An instance serves it at
+//! `/api/v1/openapi.json` without examples: nothing recorded is built in.
 
 use std::sync::OnceLock;
 
@@ -18,14 +18,6 @@ use super::DOCS;
 
 /// The OpenAPI document's media type.
 pub const OPENAPI_JSON: &str = "application/openapi+json";
-
-/// The recorded exchanges the served document shows, as committed.
-const RECORDED: &str = include_str!("../../../../../docs/api/examples.json");
-
-/// The committed examples.
-pub fn committed_examples() -> Vec<Exchange> {
-    serde_json::from_str(RECORDED).unwrap_or_default()
-}
 
 /// The document, with `examples`.
 pub fn build(examples: &[Exchange]) -> Value {
@@ -193,13 +185,13 @@ pub fn build(examples: &[Exchange]) -> Value {
     })
 }
 
-/// The document as served: with the committed examples.
+/// The document as served: the schemas, without examples.
 pub fn document() -> &'static Value {
     static DOCUMENT: OnceLock<Value> = OnceLock::new();
-    DOCUMENT.get_or_init(|| build(&committed_examples()))
+    DOCUMENT.get_or_init(|| build(&[]))
 }
 
-/// `document` as text, as served and committed.
+/// `document` as text, as served and published.
 pub fn to_text(document: &Value) -> String {
     let mut json = serde_json::to_string_pretty(document).expect("the document is JSON");
     json.push('\n');

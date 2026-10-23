@@ -85,9 +85,9 @@ pub(crate) const HELP: &str = "\
                       per page beside it, /api/, the Geomart sample shop (examples/geomart/) under\n\
                       /geomart/, and a redirect from each page's old address under /docs/\n\
         pages api --site DIR\n\
-                      Build the HTTP API's reference into the site DIR from docs/api/ (which\n\
-                      monokulo's tests write): /api/reference/, /rels/{rel}/, /problems/{slug}/ and\n\
-                      /api/v1/openapi.json\n\
+                      Build the HTTP API's reference into the site DIR, generated from the code and\n\
+                      from exchanges monokulo's tests record (runs its api::runtime::reference test):\n\
+                      /api/reference/, /rels/{rel}/, /problems/{slug}/ and /api/v1/openapi.json\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

@@ -1,3 +1,4 @@
+mod api;
 mod coverage;
 mod exploration;
 mod live;
@@ -47,6 +48,7 @@ fn help() {
         summary::HELP,
         timings::HELP,
         pages::HELP,
+        api::HELP,
         live::HELP,
         recording::HELP,
         ui::HELP,
@@ -103,6 +105,7 @@ fn main() -> ExitCode {
         ["pages", "landing", rest @ ..] => pages::landing(&root(), rest),
         ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),
         ["pages", "api", rest @ ..] => pages::api(&root(), rest),
+        ["api", rest @ ..] => api::api(&root(), rest),
         ["serve", rest @ ..] => pages::serve(rest),
         ["live", rest @ ..] => live::live(&root(), rest),
         ["record-stagenet-node"] => recording::record(&root()),

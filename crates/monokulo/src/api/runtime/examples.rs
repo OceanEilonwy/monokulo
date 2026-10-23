@@ -2,9 +2,9 @@
 //! answer is checked against the OpenAPI document and recorded
 //! ([`record_layer`]). The reference test (`super::reference`) makes one of
 //! each kind against a real engine and keeps them, with their ids and
-//! times made stable ([`stable`]), as `docs/api/examples.json`: the OpenAPI
-//! document's and the docs' examples. So an example is always something
-//! the API really said.
+//! times made stable ([`stable`]): the published OpenAPI document's and the
+//! docs' examples, recorded afresh each time the docs are built. So an
+//! example is always something the API really said.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
