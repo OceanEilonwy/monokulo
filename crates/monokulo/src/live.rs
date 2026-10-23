@@ -15,9 +15,9 @@
 //! instead, which degrades to server-side polling at the retry interval rather
 //! than to no updates at all.
 //!
-//! What monokulo itself holds about an order (the POS backgrounding or
-//! cancelling it) never passes through the engine; [`OrderChanges`] wakes
-//! the streams that show it.
+//! What monokulo itself holds about an order (the POS backgrounding it)
+//! never passes through the engine; [`OrderChanges`] wakes the streams that
+//! show it. A cancellation is the engine's, and arrives like any change.
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -224,7 +224,7 @@ impl Drop for OrderSubscription {
 }
 
 /// Changes monokulo makes to its own record of an order (the POS
-/// backgrounding or cancelling it), which the engine knows nothing of and
+/// backgrounding it), which the engine knows nothing of and
 /// so never reports to a [`LiveHub`]. Held by the database
 /// (`db::Database::order_changes`), which wakes it for every write that
 /// changes such an order, and not by the engine client, so its watchers
