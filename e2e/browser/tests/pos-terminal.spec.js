@@ -56,6 +56,46 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await expect(page.locator('.mk-card')).toContainText('Fixture order');
 });
 
+/** What the customer's checkout must show once the order is cancelled:
+ * told so, nothing to pay (the code faded, the address struck through), and
+ * no more refreshing for a browser without JavaScript. */
+async function expectCancelledCheckout(checkout) {
+  await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'cancelled');
+  await expect(checkout.locator('#live-status .mk-stage')).toContainText('This order was cancelled.');
+  await expect(checkout.locator('#live-pay .qr-wrap.is-spent')).toHaveCount(1);
+  await expect(checkout.locator('#live-address [data-void]')).toHaveCount(1);
+  await expect(checkout.locator('#checkout-refresh')).toHaveCount(0);
+}
+
+test('cancelling on the POS reaches the customer\'s checkout live, after a reload, and without JavaScript', async ({ page, context, browser }) => {
+  // The customer's checkout, open beside the till.
+  const checkoutUrl = `${fixture.base_url}/checkout/${fixture.order_id}`;
+  const checkout = await context.newPage();
+  await checkout.goto(checkoutUrl);
+  await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
+  await expect(checkout.locator('#live-address [data-void]')).toHaveCount(0);
+
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Cancelled');
+
+  // Live, without the customer doing anything.
+  await expectCancelledCheckout(checkout);
+  await captureCoverageStage(checkout, 'checkout-cancelled', test.info());
+  // And after a reload.
+  await checkout.reload();
+  await expectCancelledCheckout(checkout);
+  // And for a customer with JavaScript off (Tor Browser's safest setting).
+  const noJs = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const plain = await noJs.newPage();
+    await plain.goto(checkoutUrl);
+    await expectCancelledCheckout(plain);
+  } finally { await noJs.close(); }
+});
+
 test('real POS header stays above its payment card and its actions stay reachable', async ({ page }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
@@ -123,7 +163,7 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
   await expect(page.locator('.pos-stack-card')).toHaveCount(9);
   await page.evaluate(() => {
     for (const status of ['paid', 'overpaid', 'expired']) window.__status({ order_id: status, status, updated_at: 5000, is_terminal: true });
-    window.__status({ order_id: 'cancelled', status: 'pending', cancelled_at: 2000, updated_at: 5000, is_terminal: false });
+    window.__status({ order_id: 'cancelled', status: 'cancelled', cancelled_at: 2000, updated_at: 5000, is_terminal: true });
   });
   await expect(page.locator('.pos-stack-card')).toHaveCount(5);
   await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');

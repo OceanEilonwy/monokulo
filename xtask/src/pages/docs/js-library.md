@@ -45,7 +45,9 @@ removes it and stops listening.
 | `monokulo`, `publicKey` | string | Only when mounting a bare order id; `publicKey` lets it poll the order where server-sent events can't be used. |
 
 Status values: `pending`, `unconfirmed`, `confirming`, `partial`, `paid`,
-`overpaid`, `expired`. Updates stop at `paid`, `overpaid` or `expired`.
+`overpaid`, `expired`, `cancelled` (the merchant cancelled it before anything
+was paid; only the POS cancels, its own orders). Updates stop at `paid`,
+`overpaid`, `expired` or `cancelled`.
 
 ## Shops on Tor
 

@@ -131,6 +131,9 @@ that links its order (`mk:order`):
   } }
 ```
 
+There's no `sale.cancelled`: only the POS cancels an order, and only its
+own, so an app's order never is.
+
 A comment arrives every 25 s. After `lagged`, or a reconnect, read the
 orders you're showing again: follow each one's `mk:order` link (or the
 order's own `self`), or follow one order's own stream (`mk:order-events`).

@@ -24,7 +24,7 @@ export type Group = 'frontier' | 'catch_up';
 export type Wake = 'interval' | 'new_block';
 export type PoolPath = 'fast' | 'round';
 export type Work = 'tip_request' | 'cache_carry';
-export type OrderStatus = 'pending' | 'unconfirmed' | 'confirming' | 'paid' | 'partial' | 'overpaid' | 'expired';
+export type OrderStatus = 'pending' | 'unconfirmed' | 'confirming' | 'paid' | 'partial' | 'overpaid' | 'expired' | 'cancelled';
 
 /** Everything the page shows about one network at one moment. */
 export interface State {
