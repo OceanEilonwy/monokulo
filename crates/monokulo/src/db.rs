@@ -221,8 +221,9 @@ pub struct OrderListingDetail {
 
 impl Db {
     /// The connection itself, for a test that sets up a state no method
-    /// makes (a store from before wallets).
-    #[cfg(test)]
+    /// makes (a store from before wallets), or the recording breaks one
+    /// on purpose (`api::runtime::recording`).
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn conn_for_test(&self) -> &Connection {
         &self.conn
     }

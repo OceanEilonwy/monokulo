@@ -31,20 +31,31 @@ pub const OPENAPI_JSON: &str = "application/openapi+json";
 /// The media type of a stream of server-sent events.
 const EVENT_STREAM: &str = "text/event-stream";
 
-/// The name an example recorded with `key` has: the key's kind, or
-/// `no-key`.
-fn key_name(key: Option<&str>) -> String {
-    key.map_or_else(|| "no-key".to_owned(), str::to_owned)
+/// The name of the example `exchange` is: its key's kind (or `no-key`),
+/// and `-with-onion` when its Monokulo has an onion address (`sk`,
+/// `sk-with-onion`).
+fn example_name(exchange: &Exchange) -> String {
+    let key = exchange.key.as_deref().unwrap_or("no-key");
+    if exchange.onion {
+        format!("{key}-with-onion")
+    } else {
+        key.to_owned()
+    }
 }
 
-/// What an example recorded with `key` is about.
-fn key_summary(key: Option<&str>) -> &'static str {
-    match key {
+/// What the example `exchange` is about.
+fn example_summary(exchange: &Exchange) -> String {
+    let key = match exchange.key.as_deref() {
         Some("sk") => "With the store's secret key (sk_)",
         Some("ak") => "With a connected app's key (ak_)",
         Some("pk") => "With the store's public key (pk_)",
         Some(_) => "With a key",
         None => "With no key",
+    };
+    if exchange.onion {
+        format!("{key}, on a Monokulo with an onion address")
+    } else {
+        key.to_owned()
     }
 }
 
@@ -79,8 +90,7 @@ fn content_entry(media: &str, schema: Option<Value>, recorded: &[&Exchange]) -> 
     }
     let mut seen = std::collections::BTreeMap::new();
     for exchange in &with_body {
-        seen.entry(key_name(exchange.key.as_deref()))
-            .or_insert(*exchange);
+        seen.entry(example_name(exchange)).or_insert(*exchange);
     }
     match seen.len() {
         0 => {}
@@ -97,7 +107,7 @@ fn content_entry(media: &str, schema: Option<Value>, recorded: &[&Exchange]) -> 
                 .map(|(name, exchange)| {
                     (
                         name,
-                        json!({"summary": key_summary(exchange.key.as_deref()), "value": exchange.response}),
+                        json!({"summary": example_summary(exchange), "value": exchange.response}),
                     )
                 })
                 .collect();

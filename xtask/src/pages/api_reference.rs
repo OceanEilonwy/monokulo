@@ -446,6 +446,7 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
                 h3 {
                     code { (text(example, "method")) " " (text(example, "path")) }
                     @if let Some(key) = example["key"].as_str() { " with a " code { (key) "_" } " key" } @else { " with no key" }
+                    @if example["onion"] == true { ", on a Monokulo with an onion address" }
                     " → " (example["status"])
                 }
                 @if !example["request"].is_null() { (json_block(&example["request"])) }
