@@ -359,7 +359,7 @@ pub fn account_page(chrome: &PageChrome, data: &AccountViewModel) -> Markup {
     let body = html! {
         nav id="settings-tabs" class="tab-bar" aria-label="Account" {
             @for each in AccountTab::ALL {
-                a href=(each.href()) aria-current=[(each == tab).then_some("page")] { (each.label()) }
+                a href=(crate::base::url(each.href())) aria-current=[(each == tab).then_some("page")] { (each.label()) }
             }
         }
         section id="settings-panel" aria-labelledby="settings-panel-title" data-tab=(tab.id()) data-tab-label=(tab.label()) {
@@ -396,7 +396,7 @@ pub fn email_confirm_page(
         }
         p { "From now on you log in with " strong { (submitted.email) } " instead of " (old_email) "." }
         (ui::Hint::new(CHECK_THE_EMAIL))
-        form method="post" action="/account/profile" {
+        form method="post" action=(crate::base::url("/account/profile")) {
             input type="hidden" name="tab" value="profile";
             input type="hidden" name="email" value=(submitted.email);
             input type="hidden" name="theme" value=(submitted.theme.as_str());
@@ -415,7 +415,7 @@ pub fn email_confirm_page(
                     .variant(ui::ButtonVariant::Primary)
                     .kind(ui::ButtonType::Submit)
                     .into(),
-                ui::LinkButton::new("Cancel", "/account").into(),
+                ui::LinkButton::new("Cancel", crate::base::url("/account")).into(),
             ])))
         }
     };
@@ -485,7 +485,9 @@ mod tests {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {html}"))
         };
-        let form = at(r#"<form method="post" action="/account/profile" id="settings-form""#);
+        let form = at(
+            r#"<form method="post" action=(crate::base::url("/account/profile")) id="settings-form""#,
+        );
         let email = at(r#"name="email" role="region""#);
         let appearance = at(r#"name="appearance" role="region""#);
         let time = at(r#"<section id="card-time""#);

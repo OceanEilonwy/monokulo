@@ -14,6 +14,7 @@
 // The page never zooms on the mouse wheel: scrolling scrolls the page.
 import './engine.css';
 import { render } from '@solidjs/web';
+import { siteUrl } from '@monokulo/ui/site';
 import { App } from './App.tsx';
 import { machineView } from './machine.ts';
 import { markText, present, presentRound } from './present.ts';
@@ -129,7 +130,7 @@ type Mode = 'live' | 'paused' | 'replay';
   // ---- the stream ----
   function connect() {
     source?.close();
-    source = new EventSource(`/status/engine/events?network=${encodeURIComponent(network!)}`);
+    source = new EventSource(siteUrl(`/status/engine/events?network=${encodeURIComponent(network!)}`));
     source.addEventListener('history', (e) => {
       const start: Start = JSON.parse(e.data);
       unreachable = false;
@@ -264,7 +265,7 @@ type Mode = 'live' | 'paused' | 'replay';
         const wanted: number = seekWanted;
         seekWanted = null;
         try {
-          const response = await readFrame(`/status/engine/at?network=${encodeURIComponent(network!)}&ms=${Math.round(wanted)}`);
+          const response = await readFrame(siteUrl(`/status/engine/at?network=${encodeURIComponent(network!)}&ms=${Math.round(wanted)}`));
           if (!response.ok) continue;
           const frame: Frame = await response.json();
           if (mode === 'live') break;
@@ -284,7 +285,7 @@ type Mode = 'live' | 'paused' | 'replay';
     replayFetching = true;
     const from = Math.round(head), to = from + REPLAY_MS;
     try {
-      const response = await readFrame(`/status/engine/replay?network=${encodeURIComponent(network!)}&from=${from}&to=${to}`);
+      const response = await readFrame(siteUrl(`/status/engine/replay?network=${encodeURIComponent(network!)}&from=${from}&to=${to}`));
       if (!response.ok) throw new Error(`replay: ${response.status}`);
       if (mode === 'replay') {
         queue = ((await response.json()) as Frame[]).filter((f) => f.at_ms > head);
@@ -345,7 +346,7 @@ type Mode = 'live' | 'paused' | 'replay';
   async function pin(number: number) {
     const asked = ++pinAsked;
     try {
-      const response = await readFrame(`/status/engine/round?network=${encodeURIComponent(network!)}&number=${number}`);
+      const response = await readFrame(siteUrl(`/status/engine/round?network=${encodeURIComponent(network!)}&number=${number}`));
       if (!response.ok) return;
       const frame: Frame = await response.json();
       const round = presentRound(frame.state, frame.tuning);

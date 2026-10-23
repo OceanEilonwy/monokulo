@@ -49,7 +49,7 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
         @if let Some(error) = &data.order_creation_error {
             (ui::Alert::new(error.as_str(), ui::Tone::Error))
         }
-        form method="post" action=(format!("/stores/{}/orders/new", data.connection_id)) {
+        form method="post" action=(crate::base::url(format!("/stores/{}/orders/new", data.connection_id))) {
             label for="amount" { "Amount" }
             input type="hidden" name="request_key" value=(data.request_key);
             (ui::Input::new("amount").id("amount").value(data.amount.as_str()).required(true))

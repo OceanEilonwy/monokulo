@@ -827,7 +827,7 @@ pub async fn take_new_anchor(
         Ok(response) if response.status().is_success() => {
             tracing::warn!(network = ?network, "an operator asked for a new proof-of-work anchor");
             invalidate_status_cache(&state.engine);
-            axum::response::Redirect::to("/status").into_response()
+            crate::base::see_other("/status").into_response()
         }
         Ok(response) => (
             axum::http::StatusCode::BAD_GATEWAY,

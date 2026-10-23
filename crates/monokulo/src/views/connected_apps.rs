@@ -30,21 +30,21 @@ pub struct AppRow {
 
 impl AppsView {
     fn settings(&self) -> String {
-        format!(
+        crate::base::url(format!(
             "/stores/{}/settings?tab=connections#card-apps",
             self.store_id
-        )
+        ))
     }
 
     pub fn connect_path(&self) -> String {
-        format!("/stores/{}/settings/apps/connect", self.store_id)
+        crate::base::url(format!("/stores/{}/settings/apps/connect", self.store_id))
     }
 
     fn disconnect_path(&self, app: &AppRow) -> String {
-        format!(
+        crate::base::url(format!(
             "/stores/{}/settings/apps/{}/disconnect",
             self.store_id, app.id
-        )
+        ))
     }
 }
 
@@ -172,7 +172,7 @@ pub fn code_page(
         (ui::Hint::new("It works once, for 10 minutes. Anyone with it can connect a device to this store, so don't share it."))
         (ui::DialogActions::new(ui::Slot::many([
             ui::LinkButton::new("Done", view.settings()).into(),
-            ui::LinkButton::new("Check it connected", status_path).into(),
+            ui::LinkButton::new("Check it connected", crate::base::url(status_path)).into(),
         ])))
     };
     page(
@@ -204,7 +204,7 @@ pub fn status_page(
             p { "No app has used the code yet. It works for 10 minutes after it was shown." }
             (ui::DialogActions::new(ui::Slot::many([
                 ui::LinkButton::new("Back to settings", view.settings()).into(),
-                ui::LinkButton::new("Refresh", status_path).into(),
+                ui::LinkButton::new("Refresh", crate::base::url(status_path)).into(),
             ])))
         },
     };

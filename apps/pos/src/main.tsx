@@ -7,6 +7,7 @@ import { LOADING_MARK } from './logo';
 import ARROW_LEFT from '@monokulo/ui/icons/arrow-left.svg?raw';
 import { applyTheme, type Theme } from './theme';
 import { createTimeline, routeOf, watchPage } from './timeline';
+import { siteUrl } from '@monokulo/ui/site';
 import '@monokulo/ui/components.css';
 import { Button, Card, CopyValue, Countdown, Dialog, DialogActions, DialogTitle, Field, IconButton, Input, ProgressSteps, SegmentedControl, ShortValue, type ProgressStep, type StepProgress } from '@monokulo/ui/solid';
 import './pos.css';
@@ -33,7 +34,7 @@ const config: Config = {
   currency: root.dataset.currency || 'AUD', decimals: Number(root.dataset.decimals || '2'),
   storeName: root.dataset.storeName || 'Store', clientLogging: root.dataset.clientLogging === 'true',
 };
-const api = `/stores/${encodeURIComponent(config.connectionId)}/pos`;
+const api = siteUrl(`/stores/${encodeURIComponent(config.connectionId)}/pos`);
 /** This session's story for the store's logs, when it opted in. */
 const timeline = createTimeline(config.clientLogging, `${api}/logs`);
 watchPage(timeline);
@@ -229,7 +230,7 @@ function PaymentCard(props: { order: Order }) {
     if (!looksLikeAddress(value) || value === saved()) return;
     setRefundState('saving'); setRefundMessage('');
     try {
-      const response = await fetch(`/checkout/${encodeURIComponent(props.order.order_id)}/refund-address`, {
+      const response = await fetch(siteUrl(`/checkout/${encodeURIComponent(props.order.order_id)}/refund-address`), {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ refund_address: value }),
       });
@@ -371,7 +372,7 @@ function App() {
   let pendingRequest: { amount: string; reference: string; key: string } | null = null;
 
   /** The store's full orders page, optionally searching for `term`. */
-  const allOrdersUrl = (term = '') => `/stores/${encodeURIComponent(config.connectionId)}/orders${term ? `?q=${encodeURIComponent(term)}` : ''}`;
+  const allOrdersUrl = (term = '') => siteUrl(`/stores/${encodeURIComponent(config.connectionId)}/orders${term ? `?q=${encodeURIComponent(term)}` : ''}`);
   function merge(previous: Order, next: Partial<Order> & { updated_at?: number }): Order {
     if (previous.updated_at !== undefined && next.updated_at !== undefined && next.updated_at < previous.updated_at) return previous;
     return { ...previous, ...next, qr_svg: next.qr_svg ?? previous.qr_svg, refund_address: next.refund_address !== undefined ? next.refund_address : previous.refund_address };
@@ -611,7 +612,7 @@ function App() {
     <header class="pos-top">
       <span class="pos-brand-slot" ref={adoptSiteBrand}/>
       <span class="pos-crumb-sep" aria-hidden="true">/</span>
-      <a class="pos-store" href={`/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
+      <a class="pos-store" href={siteUrl(`/stores/${encodeURIComponent(config.connectionId)}`)}>{config.storeName}</a>
       <span class="pos-mode">POS</span>
       <span class="pos-top-end">
         <span class="pos-site-controls" ref={adoptSiteControls}/>

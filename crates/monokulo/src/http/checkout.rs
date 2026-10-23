@@ -35,7 +35,6 @@ use crate::network::{NetworkKind, OnNetwork};
 use crate::views;
 use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
-use super::auth::redirect_302;
 use super::paths::{CheckoutEventsPath, CheckoutSharePath, RefundAddressPath};
 use super::store_key::RequestStore;
 use super::{ApiError, AppState};
@@ -679,7 +678,7 @@ pub async fn set_refund_address(
         .await
     {
         Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(()) => redirect_302(&format!(
+        Ok(()) => crate::base::redirect(&format!(
             "{}{}",
             CheckoutPath {
                 order_id: order_id.clone()

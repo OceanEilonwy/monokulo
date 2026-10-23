@@ -68,7 +68,7 @@ pub fn existing_store_page(
     let body = html! {
         p {
             "The " (request.plugin) " plugin on " strong { (request.host) } " asked to connect. Your store "
-            a href=(format!("/stores/{store_id}")) { (store_name) } " already uses that site, so it "
+            a href=(crate::base::url(format!("/stores/{store_id}"))) { (store_name) } " already uses that site, so it "
             "connects to that store: the same orders, settings and wallet."
         }
         @if let Some(onion) = onion {
@@ -80,7 +80,7 @@ pub fn existing_store_page(
         div class="step-foot" {
             (ui::LinkButton::new("Cancel", request.host.link()))
             span class="spacer" {}
-            form method="post" action=(format!("/plugins/connect/{}", request.plugin.slug())) class="inline-form" {
+            form method="post" action=(crate::base::url(format!("/plugins/connect/{}", request.plugin.slug()))) class="inline-form" {
                 input type="hidden" name="connection_id" value=(store_id);
                 input type="hidden" name="site_url" value=(request.site_url);
                 input type="hidden" name="return_url" value=(request.return_url);
@@ -111,7 +111,7 @@ pub fn cannot_connect_page(
             p { "The " (plugin) " plugin on " strong { (host) } " asked to connect to your account." }
         }
         (ui::Alert::new(why, ui::Tone::Error))
-        p { a href="/" { "Go to your dashboard" } }
+        p { a href=(crate::base::url("/")) { "Go to your dashboard" } }
     };
     super::Page::new("Connect Monero payments - Monokulo", header).render(chrome, body)
 }

@@ -458,7 +458,10 @@ fn settings_card(
 /// anywhere - and the fields are always empty on render. An action of its
 /// own, not part of the settings form.
 fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> Markup {
-    let action = format!("/stores/{}/settings/key-custody", store.connection_id);
+    let action = crate::base::url(format!(
+        "/stores/{}/settings/key-custody",
+        store.connection_id
+    ));
     plain_card(
         StoreSection::KeyStorage.id(),
         "Key storage",
@@ -510,7 +513,7 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
 /// JavaScript the pick posts at once; without, Change wallet does.
 fn wallet_card(store: &StoreSettingsData) -> Markup {
     let wallet = &store.wallet;
-    let action = format!("/stores/{}/settings/wallet", store.connection_id);
+    let action = crate::base::url(format!("/stores/{}/settings/wallet", store.connection_id));
     let picked = wallet
         .pending
         .as_ref()
@@ -588,7 +591,7 @@ fn wallet_card(store: &StoreSettingsData) -> Markup {
                                     td {
                                         @match (&period.wallet_id, &period.wallet_name) {
                                             (Some(id), Some(name)) => {
-                                                a href=(format!("/account/wallets/{id}")) { (name) }
+                                                a href=(crate::base::url(format!("/account/wallets/{id}"))) { (name) }
                                                 @if period.wallet_retired { " " (ui::Tag::new("Retired").tone(ui::TagTone::Unknown)) }
                                             },
                                             _ => span class="muted" { "A deleted wallet" },
@@ -1038,7 +1041,11 @@ fn tab_links(store: &StoreSettingsData) -> Markup {
     let links = StoreTab::ALL
         .into_iter()
         .map(|tab| ui::TabLink {
-            href: format!("/stores/{}/settings?tab={}", store.connection_id, tab.id()),
+            href: crate::base::url(format!(
+                "/stores/{}/settings?tab={}",
+                store.connection_id,
+                tab.id()
+            )),
             label: tab.label().to_string(),
             current: tab == store.tab,
             count: (tab == StoreTab::Wallet && store.wallet.current.is_none())

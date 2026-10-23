@@ -1551,7 +1551,7 @@ pub async fn save(
         let anchor = card
             .map(|card| format!("#{}", card.card_id()))
             .unwrap_or_default();
-        return super::auth::redirect_303(&format!("{}&saved={token}{anchor}", tab.href()));
+        return crate::base::see_other(&format!("{}&saved={token}{anchor}", tab.href()));
     }
     let mut view = build_view_model(&state, &admin_user, tab, result).await;
     view.answers_save = true;
@@ -1712,7 +1712,7 @@ pub async fn reload(
                 result,
                 created: std::time::Instant::now(),
             });
-            super::auth::redirect_303(&format!("{}&saved={token}", tab.href()))
+            crate::base::see_other(&format!("{}&saved={token}", tab.href()))
         }
         Err(error) => {
             let result = SaveResult {

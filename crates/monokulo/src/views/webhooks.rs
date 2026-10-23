@@ -176,7 +176,7 @@ fn health_line(card: &WebhooksCard, entry: &WebhookEntry) -> Markup {
                         " · " (plural(health.waiting, "more waiting", "more waiting"))
                     }
                 }).inline(true))
-                form method="post" action=(paths.retry_failed(entry.webhook.id.as_str())) class="inline-form" {
+                form method="post" action=(crate::base::url(paths.retry_failed(entry.webhook.id.as_str()))) class="inline-form" {
                     (ui::Button::new(format!("Retry failed ({})", health.gave_up))
                         .size(ui::ControlSize::Compact)
                         .kind(ui::ButtonType::Submit))
@@ -235,7 +235,7 @@ pub fn deliveries_table(
                 td data-label="Status" { (state_tag(state)) }
                 td data-label="Event" { code { (delivery.event_type) } }
                 td data-label="Order" {
-                    a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) }
+                    a href=(crate::base::url(paths.order(delivery.order_id.as_str()))) { (short_id(delivery.order_id.as_str())) }
                 }
                 td data-label="Time" { (clock.time(delivery.last_attempt_at.unwrap_or(delivery.created_at))) }
                 td data-label="Response" {
@@ -267,10 +267,10 @@ pub fn deliveries_table(
                 // then Send again or nothing, so each lines up.
                 td class="row-acts" {
                     div class="act-slots" {
-                        a href=(paths.detail(webhook.id.as_str(), delivery.id))
+                        a href=(crate::base::url(paths.detail(webhook.id.as_str(), delivery.id)))
                             data-opens-dialog=(dialog_id(delivery.id)) { "Details" }
                         @if state == DeliveryState::GaveUp {
-                            form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) class="inline-form" {
+                            form method="post" action=(crate::base::url(paths.send_again(webhook.id.as_str(), delivery.id))) class="inline-form" {
                                 // An icon, so the row stays narrow enough to show it.
                                 (ui::IconButton::new("Send again", super::wallets::regenerate_icon()).kind(ui::ButtonType::Submit))
                             }
@@ -301,7 +301,7 @@ pub fn deliveries_results(
     let id = entry.webhook.id.as_str();
     let target = format!("#deliveries-{id}");
     let link = |page: usize, rel: &'static str, text: &'static str| {
-        let href = paths.deliveries_page(id, page);
+        let href = crate::base::url(paths.deliveries_page(id, page));
         html! {
             a href=(href) rel=(rel) fx-action=(href) fx-target=(target) fx-swap="outerHTML" { (text) }
         }
@@ -367,7 +367,7 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                             (ui::Tag::new(plugin.as_str()).tone(ui::TagTone::Unknown))
                         }
                         span class="card-spacer" {}
-                        (ui::LinkButton::new("Delete", paths.delete(id))
+                        (ui::LinkButton::new("Delete", crate::base::url(paths.delete(id)))
                             .variant(ui::ButtonVariant::Danger)
                             .size(ui::ControlSize::Compact)
                             .attr("data-opens-dialog", delete_dialog_id(id)))
@@ -378,7 +378,7 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                             html! { "Recent deliveries " (ui::Hint::new(format!("({PAGE} a page)")).inline(true)) },
                             html! {
                                 (deliveries_results(&paths, &card.clock, card.max_attempts, entry))
-                                (ui::Hint::new(html! { a href=(paths.all(id)) { "All deliveries for this webhook" } }))
+                                (ui::Hint::new(html! { a href=(crate::base::url(paths.all(id))) { "All deliveries for this webhook" } }))
                             },
                         )
                         .open(entry.health.retrying > 0 || entry.health.gave_up > 0)
@@ -387,7 +387,7 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                 }
             }
             h4 { "Add a webhook" }
-            form method="post" action=(paths.add()) {
+            form method="post" action=(crate::base::url(paths.add())) {
                 (super::settings::Field::new("URL", "webhook-url")
                     .help(Some("webhook-url-help"), html! {
                         "Where Monokulo sends this store's order events: an " code { "http(s)://" } " URL your server answers. "
@@ -451,9 +451,9 @@ pub fn delete_content(store_id: &str, entry: &WebhookEntry) -> DialogContent {
         @if entry.health.waiting > 0 {
             p { (plural(entry.health.waiting, "delivery still waiting is", "deliveries still waiting are")) " never sent." }
         }
-        form method="post" action=(paths.delete(id)) {
+        form method="post" action=(crate::base::url(paths.delete(id))) {
             (ui::DialogActions::new(ui::Slot::many([
-                ui::LinkButton::new("Cancel", paths.settings()).flag("data-closes-dialog").into(),
+                ui::LinkButton::new("Cancel", crate::base::url(paths.settings())).flag("data-closes-dialog").into(),
                 ui::Button::new("Delete webhook")
                     .variant(ui::ButtonVariant::Danger)
                     .kind(ui::ButtonType::Submit)
@@ -523,7 +523,7 @@ pub fn detail_content(
         ),
         fact(
             "Order",
-            html! { a href=(paths.order(delivery.order_id.as_str())) { (short_id(delivery.order_id.as_str())) } },
+            html! { a href=(crate::base::url(paths.order(delivery.order_id.as_str()))) { (short_id(delivery.order_id.as_str())) } },
         ),
     ];
     match state {
@@ -594,9 +594,9 @@ pub fn detail_content(
         } @else if let Some(error) = &delivery.last_error {
             (ui::Disclosure::new("Last error", html! { pre { (error) } }).attr("data-disclosure", "request"))
         }
-        form method="post" action=(paths.send_again(webhook.id.as_str(), delivery.id)) {
+        form method="post" action=(crate::base::url(paths.send_again(webhook.id.as_str(), delivery.id))) {
             (ui::DialogActions::new(ui::Slot::many([
-                ui::LinkButton::new("Close", paths.settings()).flag("data-closes-dialog").into(),
+                ui::LinkButton::new("Close", crate::base::url(paths.settings())).flag("data-closes-dialog").into(),
                 ui::Button::new("Send again now").kind(ui::ButtonType::Submit).into(),
             ])))
         }
@@ -712,7 +712,7 @@ pub fn all_page(
             p { code class="wh-url" { (entry.webhook.url) } }
             (ui::Hint::new(format!("Newest first, {PAGE} a page.")))
             (deliveries_results(&paths, &chrome.clock, max_attempts, entry))
-            p { a href=(paths.settings()) { "Back to the store's settings" } }
+            p { a href=(crate::base::url(paths.settings())) { "Back to the store's settings" } }
         }
     };
     page(store_name, "Webhook deliveries", header).render(chrome, body)

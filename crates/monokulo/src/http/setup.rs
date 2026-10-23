@@ -23,7 +23,6 @@ use crate::views;
 use crate::views::setup::{SetupContext, SiteError, StoreStepViewModel};
 use crate::views::wallets::Flow;
 
-use super::auth::redirect_303;
 use super::connections::{
     create_connection_for_user, CreateConnectionError, CreateConnectionFields, SiteTaken,
 };
@@ -299,7 +298,7 @@ pub async fn store_submit(
     Form(draft): Form<StoreDraft>,
 ) -> Response {
     match check(&state, &user, &draft).await {
-        Ok(store) => redirect_303(&format!("/setup/wallet?{}", store.context.query())),
+        Ok(store) => crate::base::see_other(&format!("/setup/wallet?{}", store.context.query())),
         Err(page) => *page,
     }
 }
@@ -380,7 +379,7 @@ async fn make_store(
             }
             let query = query.finish();
             let path = format!("/setup/done/{}", outcome.connection_id);
-            redirect_303(&if query.is_empty() {
+            crate::base::see_other(&if query.is_empty() {
                 path
             } else {
                 format!("{path}?{query}")

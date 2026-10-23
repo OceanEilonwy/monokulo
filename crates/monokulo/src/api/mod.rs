@@ -62,7 +62,7 @@
 //! macros fill (`runtime::catalog`); there's no list of resources anywhere
 //! else. Every link is a path on this host, relative to it, so a client
 //! that came in over the onion address stays there, and starts with the
-//! path this Monokulo is served under (`runtime::path_prefix`); while the
+//! path this Monokulo is served under (`crate::base::for_request`); while the
 //! instance has an onion address, `mk:onion-…` links say where the same
 //! thing is on it, absolute, for a client on the web address serving
 //! someone on Tor.

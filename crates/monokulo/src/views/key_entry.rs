@@ -173,7 +173,7 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
                 }
                 @if ready.bundle_is_file {
                     li {
-                        "Save " a href=(ready.bundle_path) download="key-custody-bundle.json" { "this form's bundle" }
+                        "Save " a href=(crate::base::url(&ready.bundle_path)) download="key-custody-bundle.json" { "this form's bundle" }
                         " as key-custody-bundle.json, in the folder you run the command from."
                     }
                 }

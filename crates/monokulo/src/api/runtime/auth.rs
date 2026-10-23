@@ -101,7 +101,7 @@ pub trait WhoMarker {
 pub struct Context {
     /// The request's key; `None` for none.
     pub key: Option<Key>,
-    /// The path every link starts with (`super::path_prefix`): `/monokulo`
+    /// The path every link starts with (`crate::base::for_request`): `/monokulo`
     /// for a Monokulo served at `https://host/monokulo`, empty at the root
     /// of its host.
     pub base: String,
@@ -135,7 +135,7 @@ impl<W: WhoMarker> FromRequestParts<AppState> for Authorized<W> {
         Ok(Authorized {
             context: Context {
                 key,
-                base: super::path_prefix(state, &parts.extensions),
+                base: crate::base::for_request(state, &parts.extensions),
                 if_none_match: parts
                     .headers
                     .get(axum::http::header::IF_NONE_MATCH)

@@ -36,7 +36,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
         // switch is in it), rendered here so the POS's top bar carries what
         // the site's bar does; the POS app moves them into its top bar.
         div id="pos-site-brand" hidden {
-            a class="pos-brand" href="/" aria-label="Monokulo dashboard" {
+            a class="pos-brand" href=(crate::base::url("/")) aria-label="Monokulo dashboard" {
                 (logo_mark(22, "pos-brand-logo"))
                 span class="pos-brand-name" { "Monokulo" }
             }
@@ -85,7 +85,7 @@ mod tests {
         )));
         assert!(!html.contains("<nav class=\"site-nav\""));
         assert!(
-            html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href="/""#),
+            html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href=(crate::base::url("/"))"#),
             "the POS bar gets the site's mark: {html}"
         );
     }

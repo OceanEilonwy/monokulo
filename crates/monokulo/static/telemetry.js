@@ -15,7 +15,9 @@
 // has passed.
 (function () {
   "use strict";
-  var ENDPOINT = "/telemetry/client";
+  // Under the base path the page says Monokulo is served at (`crate::base`).
+  var base = document.querySelector("meta[name=\"monokulo-base\"]");
+  var ENDPOINT = (base ? base.content : "") + "/telemetry/client";
   var MAX_REPORTS = 10;
   var MAX_TEXT = 1000;
   var sent = 0;

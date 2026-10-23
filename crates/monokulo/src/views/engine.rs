@@ -33,7 +33,7 @@ pub fn page(chrome: &PageChrome, page: &EnginePage) -> Markup {
         .actions(html! {
             // With JavaScript, picking a network goes there; without, Go
             // does.
-            form class="engine-network" method="get" action="/status/engine" {
+            form class="engine-network" method="get" action=(crate::base::url("/status/engine")) {
                 label for="engine-network" class="visually-hidden" { "Network" }
                 (Select::new(
                     "network",

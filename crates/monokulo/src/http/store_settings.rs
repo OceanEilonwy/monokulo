@@ -27,7 +27,6 @@ use crate::engine_client::EngineClientError;
 use crate::stores::Site;
 use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
 
-use super::auth::redirect_303;
 use super::orders::{
     decrypt_sk, load_owned_connection, parse_fx_providers_form, render_store_settings_page_with,
     PageState,
@@ -127,7 +126,7 @@ pub async fn save(
     });
     if plan.is_empty() {
         drop(policy);
-        return redirect_303(
+        return crate::base::see_other(
             &website.unwrap_or_else(|| format!("/stores/{id}/settings?saved=nothing{tab}")),
         );
     }
@@ -146,9 +145,9 @@ pub async fn save(
     let ids: Vec<&str> = saved.iter().map(|section| section.id()).collect();
     tracing::info!(store.id = %id, saved = %ids.join(","), "store settings saved");
     if let Some(website) = website {
-        return redirect_303(&website);
+        return crate::base::see_other(&website);
     }
-    redirect_303(&format!("/stores/{id}/settings?saved={}", ids.join(",")))
+    crate::base::see_other(&format!("/stores/{id}/settings?saved={}", ids.join(",")))
 }
 
 async fn refused(

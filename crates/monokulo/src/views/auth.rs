@@ -60,11 +60,11 @@ pub struct LoginViewModel {
 
 fn with_next(path: &str, next: Option<&str>) -> String {
     match next {
-        Some(next) => format!(
+        Some(next) => crate::base::url(format!(
             "{path}?next={}",
             url::form_urlencoded::byte_serialize(next.as_bytes()).collect::<String>()
-        ),
-        None => path.to_owned(),
+        )),
+        None => crate::base::url(path),
     }
 }
 
@@ -77,11 +77,11 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
         @if data.invite_required {
             p {
                 "This instance is invite-only. "
-                a href="/request-invite" { "Request an invite" }
+                a href=(crate::base::url("/request-invite")) { "Request an invite" }
                 " to join."
             }
         } @else {
-            form method="post" action="/signup" class="signup-form mk-stack" {
+            form method="post" action=(crate::base::url("/signup")) class="signup-form mk-stack" {
                 input type="hidden" name="invite" value=(data.invite_token);
                 @if let Some(next) = &data.next {
                     input type="hidden" name="next" value=(next);
@@ -117,7 +117,7 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
         @if let Some(error) = &data.error {
             (Alert::new(error.as_str(), Tone::Error))
         }
-        form method="post" action="/login" class="mk-stack" {
+        form method="post" action=(crate::base::url("/login")) class="mk-stack" {
             @if let Some(next) = &data.next {
                 input type="hidden" name="next" value=(next);
             }

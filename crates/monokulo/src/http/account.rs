@@ -17,7 +17,6 @@ use crate::db::{Theme, UserRow};
 use crate::views;
 use crate::views::account::{AccountTab, AccountViewModel, Card, Outcome, Profile};
 
-use super::auth::redirect_303;
 use super::signup::{normalize_email, MIN_PASSWORD_LEN};
 use super::{AppState, AuthedUser};
 
@@ -219,7 +218,7 @@ pub async fn save_profile(
     .filter_map(|(card, changed)| changed.then_some(card))
     .collect();
     if changed.is_empty() {
-        return redirect_303("/account?saved=nothing");
+        return crate::base::see_other("/account?saved=nothing");
     }
     let profile_changed = changed.iter().any(|card| *card != Card::Password);
     let (id, new) = (user.id.clone(), profile.clone());
@@ -241,7 +240,7 @@ pub async fn save_profile(
                 tracing::info!(sessions.ended = ended, "a password was changed");
             }
             let cards: Vec<&str> = changed.iter().map(|card| card.id()).collect();
-            redirect_303(&format!("/account?saved={}", cards.join(",")))
+            crate::base::see_other(&format!("/account?saved={}", cards.join(",")))
         }
         Err(e) if e.is_unique_violation() => {
             let outcome = refuse(

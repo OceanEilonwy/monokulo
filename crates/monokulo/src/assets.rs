@@ -116,7 +116,7 @@ pub fn preloads(script: &str) -> impl Iterator<Item = String> {
         .find(|(name, _)| *name == script)
         .map_or(&[][..], |(_, files)| files)
         .iter()
-        .map(|file| format!("/static/{file}"))
+        .map(|file| crate::base::url(format!("/static/{file}")))
 }
 
 const IMMUTABLE: &str = "public, max-age=31536000, immutable";
@@ -128,10 +128,14 @@ pub fn find(name: &str) -> Option<&'static Asset> {
 }
 
 /// The URL a page links the asset called `name` at: with its digest, if
-/// it's fingerprinted. A name that isn't an asset's is a mistake in the
-/// view, caught by any test that renders it.
+/// it's fingerprinted, under the request's base path (`crate::base::url`).
+/// A name that isn't an asset's is a mistake in the view, caught by any
+/// test that renders it.
 pub fn url(name: &str) -> String {
-    format!("/static/{}", static_assets::named(ASSETS, name).file_name())
+    crate::base::url(format!(
+        "/static/{}",
+        static_assets::named(ASSETS, name).file_name()
+    ))
 }
 
 /// `GET /static/{*file}`: the asset published as `file`, its URL's last

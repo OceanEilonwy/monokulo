@@ -83,7 +83,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
                     "Connect a shop plugin, or your own site.",
                     html! { (PreEscaped(icons::PLUS)) },
                 )
-                .href("/setup"))
+                .href(crate::base::url("/setup")))
             }
 
             h2 { "Recent orders" }
@@ -116,7 +116,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
                         "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
                         "guided flow for a shop plugin, or the advanced form if you're integrating something custom."
                     }
-                    (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add a store" }, "/setup").variant(ui::ButtonVariant::Primary)))
+                    (ui::FormActions::new(ui::LinkButton::new(html! { (PreEscaped(icons::PLUS)) "Add a store" }, crate::base::url("/setup")).variant(ui::ButtonVariant::Primary)))
                 }
             }
         }
@@ -129,7 +129,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
 /// settings to hand. A store with no wallet can't take payments, so it
 /// says so, and linking one is what it offers.
 fn store_card(chrome: &PageChrome, store: &HomeStoreRow) -> ui::Card {
-    let base = format!("/stores/{}", store.connection_id);
+    let base = crate::base::url(format!("/stores/{}", store.connection_id));
     let link = |icon: &str, label: &str, href: String| {
         ui::Slot::from(
             ui::LinkButton::new(html! { (PreEscaped(icon)) (label) }, href)
@@ -203,7 +203,7 @@ fn order_row(chrome: &PageChrome, order: &HomeOrderRow) -> ui::Slot {
     ui::Row::new(ui::Slot::many([
         ui::Cell::new(order.display_name.as_str()).part(ui::CellPart::Meta).into(),
         ui::Cell::new(html! {
-            a href=(format!("/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+            a href=(crate::base::url(format!("/stores/{}/orders/{}", order.connection_id, order.order_id))) {
                 (super::short_id(order.order_id.as_str()))
             }
         })
