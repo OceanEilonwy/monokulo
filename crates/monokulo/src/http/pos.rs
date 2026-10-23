@@ -251,8 +251,11 @@ pub async fn create_order(
                 .into_response();
         }
         Err(e) => {
-            tracing::error!(store.id = %row.id, currency = ?currency, error = %e, "exchange rate lookup failed");
-            return ApiError::Internal.into_response();
+            tracing::warn!(store.id = %row.id, currency = ?currency, error = %e, "no usable exchange rate right now");
+            return match e.unavailable(&currency) {
+                Some(unavailable) => unavailable.problem().into_response(),
+                None => ApiError::Internal.into_response(),
+            };
         }
     };
     let xmr_amount_piconero =
@@ -277,7 +280,10 @@ pub async fn create_order(
     .await
     {
         Ok(resolution) => resolution,
-        Err(message) => return ApiError::BadRequest(message).into_response(),
+        Err(crate::confirmation_thresholds::ResolveError::NoRate(message)) => {
+            return ApiError::BadRequest(message).into_response()
+        }
+        Err(e) => return e.problem().into_response(),
     };
 
     match state

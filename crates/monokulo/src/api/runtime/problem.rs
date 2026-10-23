@@ -53,11 +53,21 @@ pub enum Problem {
     /// The body was sent without `Content-Type: application/json`.
     #[problem(status = 415, title = "Send JSON")]
     UnsupportedMediaType,
-    /// The order can't be priced: the currency is unknown, this Monokulo
-    /// has no exchange rate for it right now, or the amount isn't one the
-    /// currency can have.
+    /// The order can't be priced: the currency is unknown, none of the rate
+    /// providers this store uses quotes it, or the amount isn't one the
+    /// currency can have. (Providers that are down or rate limited are
+    /// `rates-unavailable` instead: worth retrying.)
     #[problem(status = 400, title = "The order can't be priced")]
     InvalidAmount,
+    /// There's no exchange rate for the order's currency right now: the
+    /// rate providers this store uses are rate limiting this Monokulo or
+    /// can't be reached, and it has no recent enough rate of its own to use
+    /// instead. Nothing was made. Send the same request again after
+    /// `retry_after` seconds (also in the `Retry-After` header) when given,
+    /// otherwise in a minute; with the same `idempotency_key`, a retry
+    /// never makes a second order. An order in XMR needs no rate.
+    #[problem(status = 503, title = "No exchange rate right now")]
+    RatesUnavailable,
     /// The `idempotency_key` was used before for a different order: a
     /// different amount, currency or reference.
     #[problem(status = 409, title = "Key used for another order")]

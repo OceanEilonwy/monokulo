@@ -23,9 +23,10 @@
 //!   monokulo only asks it for codes from its own `currencies` table; it
 //!   deliberately offers no "supported currencies" list of its own - the
 //!   keyless tier has no fiat map (`/v1/fiat/map` needs a key).
-//! - **Rate limits are per IP and undisclosed.** A `429` is a plain
-//!   `Err`, the same as any transport failure, so the caller's provider
-//!   order moves on to the next provider.
+//! - **Rate limits are per IP and undisclosed.** A `429` (like a `5xx`) is
+//!   `ExchangeRateError::Unavailable`, with its `Retry-After` when sent:
+//!   the last rate is used while still usable, and otherwise the caller's
+//!   provider order moves on to the next provider.
 //!
 //! Same pull-based, caller-supplied-TTL cache as `CoingeckoRateProvider`,
 //! for the same reasons (see its doc comment).
@@ -84,7 +85,7 @@ impl CoinMarketCapRateProvider {
             "{}/v2/tools/price-conversion?amount=1&id={MONERO_ID}&convert={currency_upper}",
             self.base_url
         );
-        let response = self.client.get(&url).send().await?.error_for_status()?;
+        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
 
         if let Some(code) = body.pointer("/status/error_code") {
@@ -130,9 +131,10 @@ impl CoinMarketCapRateProvider {
 
     /// Cached rate lookup with the same semantics as
     /// `CoingeckoRateProvider::piconero_per_unit_cached`: fresh within
-    /// `max_age`, otherwise one live fetch; a failed fetch is an `Err` and
-    /// never refreshes or wipes the cache; a fetch with no usable price
-    /// leaves any earlier cached value untouched.
+    /// `max_age`, otherwise one live fetch; a failed fetch never refreshes
+    /// or wipes the cache, and answers with the earlier rate while it is
+    /// still usable (an `Err` only without one); a fetch with no usable
+    /// price leaves any earlier cached value untouched.
     pub async fn piconero_per_unit_cached(
         &self,
         currency: &str,
@@ -145,8 +147,20 @@ impl CoinMarketCapRateProvider {
             None => true,
         };
         if stale {
-            if let Some(rate) = self.fetch_rate(&key).await? {
-                cache.insert(key.clone(), (rate, std::time::Instant::now()));
+            match self.fetch_rate(&key).await {
+                Ok(Some(rate)) => {
+                    cache.insert(key.clone(), (rate, std::time::Instant::now()));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return crate::exchange_rate::cached_or(
+                        cache.get(&key),
+                        max_age,
+                        "coinmarketcap",
+                        &key,
+                        error,
+                    )
+                }
             }
         }
         Ok(cache.get(&key).and_then(|(rate, fetched_at)| {
@@ -291,7 +305,12 @@ mod tests {
     #[tokio::test]
     async fn a_non_2xx_status_and_a_malformed_body_are_clean_errors() {
         let (url, _) = spawn_server(|_, _| {
-            (axum::http::StatusCode::TOO_MANY_REQUESTS, "slow down").into_response()
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "45")],
+                "slow down",
+            )
+                .into_response()
         })
         .await;
         let err = CoinMarketCapRateProvider::new(url)
@@ -299,12 +318,20 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(
-                err,
-                ExchangeRateError::Request(_) | ExchangeRateError::Middleware(_)
-            ),
+            matches!(err, ExchangeRateError::Unavailable { status: 429, .. }),
             "got {err:?}"
         );
+        assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(45)));
+
+        let (url, _) = spawn_server(|_, _| {
+            (axum::http::StatusCode::FORBIDDEN, "no").into_response()
+        })
+        .await;
+        let err = CoinMarketCapRateProvider::new(url)
+            .piconero_per_unit_cached("USD", TTL)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
 
         let (url, _) = spawn_server(|_, _| json_body("[1, 2, 3]")).await;
         let err = CoinMarketCapRateProvider::new(url)
@@ -383,10 +410,14 @@ mod tests {
             provider.piconero_per_unit_cached("USD", TTL).await.unwrap(),
             Some(10_000_000_000)
         );
-        assert!(provider
-            .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
-            .await
-            .is_err());
+        // Failing: the earlier rate, still within the stale ceiling.
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
+                .await
+                .unwrap(),
+            Some(10_000_000_000)
+        );
         // Bad price: still answers with the earlier cached value.
         assert_eq!(
             provider

@@ -196,6 +196,49 @@ pub struct Resolution {
     pub base_currency_piconero_per_unit: Option<shared::xmr_amount::Piconero>,
 }
 
+/// Why an order's confirmations couldn't be resolved.
+#[derive(Debug)]
+pub enum ResolveError {
+    /// No provider this store uses can price its base currency at all: the
+    /// order can't be priced (`invalid-amount`).
+    NoRate(String),
+    /// The base currency's providers failed and nothing usable is cached:
+    /// worth retrying (`rates-unavailable`).
+    RatesUnavailable(crate::exchange_rate_config::RatesUnavailable),
+    /// The engine couldn't be asked for the store's default threshold.
+    EngineUnavailable,
+    /// Something else went wrong here (the stored policy, the database).
+    Internal,
+}
+
+impl ResolveError {
+    /// What a person is told.
+    pub fn message(&self) -> String {
+        match self {
+            ResolveError::NoRate(message) => message.clone(),
+            ResolveError::RatesUnavailable(unavailable) => unavailable.message(),
+            ResolveError::EngineUnavailable => {
+                "The payment engine is busy or unreachable. Try again in a moment.".to_owned()
+            }
+            ResolveError::Internal => {
+                "Something went wrong resolving the confirmation threshold. Please try again."
+                    .to_owned()
+            }
+        }
+    }
+
+    /// As a problem, for the API and the point of sale.
+    pub fn problem(&self) -> crate::api::runtime::problem::ProblemDetails {
+        use crate::api::runtime::problem::Problem;
+        match self {
+            ResolveError::NoRate(message) => Problem::InvalidAmount.detail(message.clone()),
+            ResolveError::RatesUnavailable(unavailable) => unavailable.problem(),
+            ResolveError::EngineUnavailable => crate::http::ApiError::EngineUnavailable.into(),
+            ResolveError::Internal => crate::api::runtime::problem::internal(),
+        }
+    }
+}
+
 /// The real, async half of this module - does the I/O
 /// (`ExchangeRateProviders::piconero_per_unit_for` for the base-currency
 /// conversion when it differs from the order's own currency, plus
@@ -219,13 +262,10 @@ pub async fn resolve_for_order(
     order_currency: &str,
     order_currency_piconero_per_unit: u64,
     xmr_amount_piconero: u64,
-) -> Result<Resolution, String> {
+) -> Result<Resolution, ResolveError> {
     if !policy.covers(&row.tenant_public_key) {
         tracing::error!(store.id = %row.id, "resolving an order's confirmations under another store's policy lock");
-        return Err(
-            "something went wrong resolving the confirmation threshold. Please try again."
-                .to_string(),
-        );
+        return Err(ResolveError::Internal);
     }
     let base_currency = row.base_currency.clone();
     let same_currency = base_currency.eq_ignore_ascii_case(order_currency);
@@ -240,19 +280,18 @@ pub async fn resolve_for_order(
         {
             Ok(Some((rate, _provider))) => Some(rate),
             Ok(None) | Err(ExchangeRateLookupError::ProviderNotConfigured(_)) => {
-                return Err(format!("no exchange rate provider available for {base_currency} (this store's own base currency)"));
+                return Err(ResolveError::NoRate(format!("no exchange rate provider available for {base_currency} (this store's own base currency)")));
             }
             Err(e) => {
-                tracing::error!(
+                tracing::warn!(
                     store.id = %row.id,
                     currency = ?base_currency,
                     error = %e,
-                    "exchange rate lookup failed resolving the confirmation threshold"
+                    "no usable exchange rate for the store's base currency right now"
                 );
-                return Err(
-                    "something went wrong resolving the confirmation threshold. Please try again."
-                        .to_string(),
-                );
+                return Err(e
+                    .unavailable(&base_currency)
+                    .map_or(ResolveError::Internal, ResolveError::RatesUnavailable));
             }
         }
     };
@@ -261,11 +300,8 @@ pub async fn resolve_for_order(
     let default_confirmations = match state.engine.client.get_tenant(sk).await {
         Ok(tenant) => tenant.confirmations_required,
         Err(e) => {
-            tracing::error!(store.id = %row.id, error = %e, "could not fetch the tenant to resolve the confirmation-threshold default");
-            return Err(
-                "something went wrong resolving the confirmation threshold. Please try again."
-                    .to_string(),
-            );
+            tracing::warn!(store.id = %row.id, error = %e, "could not fetch the tenant to resolve the confirmation-threshold default");
+            return Err(ResolveError::EngineUnavailable);
         }
     };
     let id = row.id.clone();
@@ -274,9 +310,9 @@ pub async fn resolve_for_order(
         .read(move |db| db.list_confirmation_thresholds(&id))
         .await
         .map_err(|e| {
-        tracing::error!(store.id = %row.id, error = %e, "could not load confirmation thresholds");
-        "something went wrong resolving the confirmation threshold. Please try again.".to_string()
-    })?;
+            tracing::error!(store.id = %row.id, error = %e, "could not load confirmation thresholds");
+            ResolveError::Internal
+        })?;
     let confirmations_required = resolve_confirmations_required(
         shared::xmr_amount::Piconero(xmr_amount_piconero),
         shared::xmr_amount::Piconero(effective_rate),
@@ -285,7 +321,7 @@ pub async fn resolve_for_order(
     )
     .map_err(|e| {
         tracing::error!(store.id = %row.id, error = %e, "invalid stored confirmation policy");
-        "something went wrong resolving the confirmation threshold. Please try again.".to_string()
+        ResolveError::Internal
     })?;
 
     Ok(Resolution {

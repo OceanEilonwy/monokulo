@@ -88,6 +88,87 @@ pub enum ExchangeRateError {
     Middleware(#[from] reqwest_middleware::Error),
     #[error("rate provider response was not shaped as expected: {0}")]
     UnexpectedResponse(String),
+    /// The provider said it can't answer now: rate limited (`429`) or
+    /// failing (`5xx`). `retry_after` is its `Retry-After`, when it sent
+    /// one.
+    #[error("the rate provider is unavailable (HTTP {status})")]
+    Unavailable {
+        status: u16,
+        retry_after: Option<std::time::Duration>,
+    },
+}
+
+impl ExchangeRateError {
+    /// How long the provider asked callers to wait, when it said.
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            ExchangeRateError::Unavailable { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+}
+
+/// `response`, if its status is a success. A `429` or `5xx` is
+/// [`ExchangeRateError::Unavailable`] with the provider's `Retry-After`
+/// (seconds or an HTTP date); any other failure status is a `Request`
+/// error.
+pub(crate) fn checked(
+    response: reqwest::Response,
+) -> Result<reqwest::Response, ExchangeRateError> {
+    let status = response.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_retry_after);
+        return Err(ExchangeRateError::Unavailable {
+            status: status.as_u16(),
+            retry_after,
+        });
+    }
+    Ok(response.error_for_status()?)
+}
+
+/// A `Retry-After` value: delay seconds, or an HTTP date (a date already
+/// past is no wait at all).
+fn parse_retry_after(value: &str) -> Option<std::time::Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(seconds));
+    }
+    let when = httpdate::parse_http_date(value).ok()?;
+    Some(
+        when.duration_since(std::time::SystemTime::now())
+            .unwrap_or_default(),
+    )
+}
+
+/// What a lookup whose refresh failed with `error` answers: the rate
+/// cached before it while [`still_usable`], else the error. A provider
+/// that is down or rate limited for a while doesn't stop orders until the
+/// last rate it gave is too old to price one.
+pub(crate) fn cached_or(
+    cached: Option<&(u64, std::time::Instant)>,
+    max_age: std::time::Duration,
+    provider: &str,
+    currency: &str,
+    error: ExchangeRateError,
+) -> Result<Option<u64>, ExchangeRateError> {
+    match cached.and_then(|(rate, fetched_at)| {
+        still_usable(*rate, *fetched_at, max_age, provider, currency)
+    }) {
+        Some(rate) => {
+            tracing::warn!(
+                provider,
+                currency,
+                %error,
+                "the rate provider failed - using the last rate it gave"
+            );
+            Ok(Some(rate))
+        }
+        None => Err(error),
+    }
 }
 
 /// The most of a rate provider's reply that is read: every real reply is a
@@ -286,7 +367,7 @@ impl CoingeckoRateProvider {
             "{}/api/v3/simple/price?ids=monero&vs_currencies={vs_currency}",
             self.base_url
         );
-        let response = self.client.get(&url).send().await?.error_for_status()?;
+        let response = checked(self.client.get(&url).send().await?)?;
         let body: serde_json::Value = read_json(response).await?;
         let monero = body
             .get("monero")
@@ -326,10 +407,9 @@ impl CoingeckoRateProvider {
     /// (`exchange_rate_config`) is what actually decides that value; this
     /// just applies whatever it's given.
     ///
-    /// A failed fetch propagates as `Err` rather than silently falling back
-    /// to a stale cached value - the caller (monokulo's own
-    /// order-creation handler) decides what a lookup failure means for an
-    /// in-progress order, which is not this type's concern. A fetch that
+    /// A failed fetch (unreachable, rate limited, a bad answer) falls back
+    /// to the rate cached before it while that is [`still_usable`]; only
+    /// with no usable rate is it an `Err` ([`cached_or`]). A fetch that
     /// *succeeds* but comes back with no usable price for this currency
     /// leaves any previously cached value exactly as it was (a transient
     /// bad value in one response must not make an already-priced currency
@@ -347,10 +427,16 @@ impl CoingeckoRateProvider {
             None => true,
         };
         if stale {
-            if let Some(rate) = self.fetch_rate(&key).await? {
-                cache
-                    .rates
-                    .insert(key.clone(), (rate, std::time::Instant::now()));
+            match self.fetch_rate(&key).await {
+                Ok(Some(rate)) => {
+                    cache
+                        .rates
+                        .insert(key.clone(), (rate, std::time::Instant::now()));
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return cached_or(cache.rates.get(&key), max_age, "coingecko", &key, error)
+                }
             }
         }
         Ok(cache.rates.get(&key).and_then(|(rate, fetched_at)| {
@@ -362,8 +448,8 @@ impl CoingeckoRateProvider {
     /// (uppercased), cached with the same caller-supplied `max_age` a rate
     /// lookup uses. Exists so monokulo can offer/validate currencies
     /// without a startup whitelist - see the module doc comment. A failed
-    /// fetch propagates as `Err`, leaving any previously cached list
-    /// untouched, same resilience shape as `piconero_per_unit_cached`.
+    /// fetch leaves any previously cached list untouched and answers with
+    /// it; only with none is it an `Err`.
     pub async fn supported_currencies_cached(
         &self,
         max_age: std::time::Duration,
@@ -375,10 +461,26 @@ impl CoingeckoRateProvider {
         };
         if stale {
             let url = format!("{}/api/v3/simple/supported_vs_currencies", self.base_url);
-            let response = self.client.get(&url).send().await?.error_for_status()?;
-            let list: Vec<String> = read_json(response).await?;
-            let uppercased: Vec<String> = list.into_iter().map(|c| c.to_uppercase()).collect();
-            cache.supported_currencies = Some((uppercased, std::time::Instant::now()));
+            let fetched = async {
+                let response = checked(self.client.get(&url).send().await?)?;
+                read_json::<Vec<String>>(response).await
+            }
+            .await;
+            match fetched {
+                Ok(list) => {
+                    let uppercased: Vec<String> =
+                        list.into_iter().map(|c| c.to_uppercase()).collect();
+                    cache.supported_currencies = Some((uppercased, std::time::Instant::now()));
+                }
+                Err(error) if cache.supported_currencies.is_some() => {
+                    tracing::warn!(
+                        provider = "coingecko",
+                        %error,
+                        "listing currencies failed - using the last list"
+                    );
+                }
+                Err(error) => return Err(error),
+            }
         }
         Ok(cache
             .supported_currencies
@@ -400,12 +502,18 @@ pub use crate::xmr_amount::{
 use crate::xmr_amount::{parse_scaled, AMOUNT_SCALE};
 
 /// A cached rate kept through misses (a provider that stops quoting a
-/// currency for a while) is served at most this many `max_age`s after it
+/// currency for a while, or is down or rate limited) is served at most this many `max_age`s after it
 /// was fetched, and never less than [`MIN_STALE_CEILING`]; older, the
 /// currency has no rate rather than a price the market has moved away
 /// from.
 pub const MAX_STALE_FACTOR: u32 = 4;
 pub const MIN_STALE_CEILING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether data fetched at `fetched_at` is still within the stale ceiling
+/// ([`MAX_STALE_FACTOR`] `max_age`s, at least [`MIN_STALE_CEILING`]).
+pub fn within_stale_ceiling(fetched_at: std::time::Instant, max_age: std::time::Duration) -> bool {
+    fetched_at.elapsed() <= (max_age * MAX_STALE_FACTOR).max(MIN_STALE_CEILING)
+}
 
 /// `rate`, unless it was fetched longer ago than the stale ceiling
 /// ([`MAX_STALE_FACTOR`] `max_age`s, at least [`MIN_STALE_CEILING`]).
@@ -416,7 +524,7 @@ pub fn still_usable(
     provider: &str,
     currency: &str,
 ) -> Option<u64> {
-    if fetched_at.elapsed() > (max_age * MAX_STALE_FACTOR).max(MIN_STALE_CEILING) {
+    if !within_stale_ceiling(fetched_at, max_age) {
         tracing::warn!(
             provider,
             currency,
@@ -951,15 +1059,15 @@ mod tests {
                 .unwrap();
             assert_eq!(rate, Some(6_666_666_667));
 
-            let err = provider
+            // A max_age of zero forces a real re-fetch, which fails: the
+            // last good value is still within the stale ceiling, so it is
+            // the answer rather than an error.
+            let rate = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
                 .await
-                .unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
-            // Even though the second call errored (max_age of zero forced a
-            // real re-fetch that then failed), a *third* call within a
-            // generous max_age must still serve the last good value rather
-            // than erroring again - the failed fetch must not have wiped it.
+                .unwrap();
+            assert_eq!(rate, Some(6_666_666_667));
+            // And the failed fetch didn't wipe it.
             let rate = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
@@ -969,6 +1077,71 @@ mod tests {
                 Some(6_666_666_667),
                 "a transient outage must not make an already-priced currency suddenly unavailable"
             );
+        }
+
+        /// CoinGecko rate limiting (`429`) or failing (`5xx`) is
+        /// `Unavailable`, with its `Retry-After` in seconds or as a date;
+        /// any other failure status is a plain request error.
+        #[tokio::test]
+        async fn a_rate_limited_or_failing_provider_is_unavailable_with_its_retry_after() {
+            let url = spawn_server(|_, call| match call {
+                0 => (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "60")],
+                    "slow down",
+                )
+                    .into_response(),
+                1 => (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    [(
+                        "retry-after",
+                        httpdate::fmt_http_date(
+                            std::time::SystemTime::now() + std::time::Duration::from_secs(120),
+                        ),
+                    )],
+                    "down",
+                )
+                    .into_response(),
+                2 => axum::http::StatusCode::BAD_GATEWAY.into_response(),
+                _ => axum::http::StatusCode::NOT_FOUND.into_response(),
+            })
+            .await;
+            let provider = CoingeckoRateProvider::new(url);
+            let lookup = || provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO);
+
+            let err = lookup().await.unwrap_err();
+            assert!(
+                matches!(err, ExchangeRateError::Unavailable { status: 429, .. }),
+                "got {err:?}"
+            );
+            assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(60)));
+
+            let err = lookup().await.unwrap_err();
+            assert!(
+                matches!(err, ExchangeRateError::Unavailable { status: 503, .. }),
+                "got {err:?}"
+            );
+            let wait = err.retry_after().unwrap();
+            assert!(
+                wait > std::time::Duration::from_secs(100)
+                    && wait <= std::time::Duration::from_secs(120),
+                "{wait:?}"
+            );
+
+            let err = lookup().await.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    ExchangeRateError::Unavailable {
+                        status: 502,
+                        retry_after: None
+                    }
+                ),
+                "got {err:?}"
+            );
+
+            let err = lookup().await.unwrap_err();
+            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
         }
 
         #[tokio::test]
@@ -1079,14 +1252,55 @@ mod tests {
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
+            assert!(matches!(err, ExchangeRateError::Unavailable { status: 500, .. }), "got {err:?}");
             // A second call, even with a generous max_age, must try again -
             // a failure must never be cached as if it were a real quote.
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
+            assert!(matches!(err, ExchangeRateError::Unavailable { status: 500, .. }), "got {err:?}");
+        }
+
+        /// A failing provider is an error only once the rate it gave last
+        /// is past the stale ceiling: there's genuinely no usable rate.
+        #[tokio::test]
+        async fn a_failure_is_an_error_once_the_last_rate_is_too_old() {
+            let url = spawn_server(|_, _| {
+                (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "30")],
+                )
+                    .into_response()
+            })
+            .await;
+            let provider = CoingeckoRateProvider::new(url);
+            let max_age = std::time::Duration::from_secs(60);
+            let seed = |age: std::time::Duration| {
+                let provider = &provider;
+                async move {
+                    provider.cache.lock().await.rates.insert(
+                        "USD".to_owned(),
+                        (5, std::time::Instant::now().checked_sub(age).unwrap()),
+                    );
+                }
+            };
+            // Stale (older than max_age) but within the ceiling: used.
+            seed(MIN_STALE_CEILING / 2).await;
+            assert_eq!(
+                provider
+                    .piconero_per_unit_cached("USD", max_age)
+                    .await
+                    .unwrap(),
+                Some(5)
+            );
+            // Past the ceiling: the provider's own error, with its wait.
+            seed(MIN_STALE_CEILING * 2).await;
+            let err = provider
+                .piconero_per_unit_cached("usd", max_age)
+                .await
+                .unwrap_err();
+            assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(30)));
         }
 
         #[tokio::test]
