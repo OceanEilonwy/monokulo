@@ -37,7 +37,15 @@ zeroize = "1.9.0"
 parking_lot = "0.12.5"
 aes-gcm = "0.11.1"
 axum = { version = "0.8.9", features = ["macros"] }
-axum-extra = { version = "0.12.6", features = ["cookie"] }
+axum-extra = { version = "0.12.6", features = ["cookie", "typed-routing"] }
+# The machine API (`api`): each resource is a file the macros turn into
+# its route, auth check, HAL-FORMS links and forms and catalog entry
+# (`linkme` gathers them); its schemas (`schemars`) are the OpenAPI
+# document's and its forms', and its scalars check their values (`regex`).
+api-macros = { path = "../api-macros" }
+linkme = "0.3.37"
+schemars = "1.2.3"
+regex = "1"
 hex = "0.4.3"
 maud = { version = "0.27.0", features = ["axum"] }
 monero = "0.22.0"
@@ -49,7 +57,7 @@ reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions", "hooks"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-shared = { path = "../shared" }
+shared = { path = "../shared", features = ["schemars"] }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
 subtle = "2.6.1"
 # Abuse protection (`crate::abuse`): HMAC-signed challenges, proof-of-work
@@ -108,6 +116,9 @@ serde_json = "1.0.151"
 # Unpack the static files' baked compressed copies (`crate::assets` tests).
 brotli = "7.0.0"
 flate2 = "1.1.10"
+# Every `/api/v1` response the tests see is checked against the OpenAPI
+# document (`http::api::openapi`).
+jsonschema = { version = "0.33.0", default-features = false }
 # Turns on `test-support` for this crate's own integration tests and examples.
 monokulo = { path = ".", features = ["test-support"] }
 # `shared`'s test helpers (the test engine token).

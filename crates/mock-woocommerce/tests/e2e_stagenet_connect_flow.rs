@@ -171,7 +171,7 @@ async fn spawn_test_monokulo(
     use monokulo::http::{build_router, AppState};
 
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
-    // Bound first so monokulo's public address (`/finish`'s `endpoint`) can
+    // Bound first so monokulo's public address (its `public_uri`) can
     // be this very listener - see `mock_woocommerce`'s own `spawn_test_monokulo`.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -345,16 +345,16 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     )
     .await
     .expect("the real stagenet connect flow should succeed end to end against a real engine + control plane");
-    assert_eq!(credentials.endpoint, monokulo_base_url);
+    assert_eq!(credentials.api, "/api/v1");
     println!(
-        "connected: public_key={} endpoint={}",
-        credentials.public_key, credentials.endpoint
+        "connected: public_key={} api={}",
+        credentials.public_key,
+        credentials.api_url()
     );
 
     // Created the way the plugin does it: on monokulo, with the store's key.
     let order = create_order(
-        &credentials.endpoint,
-        &credentials.public_key,
+        &credentials.api_url(),
         &credentials.secret_token,
         TEST_ORDER_AMOUNT,
         TEST_CURRENCY,
@@ -446,14 +446,9 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         // detection one).
         let height = daemon.get_height().await;
         let location = daemon.locate_transaction(&tx_hash_hex).await;
-        // Monokulo's public status route - what the customer's checkout page polls.
-        let order_status: Result<Value, _> = async {
-            reqwest::get(format!("{}/status", order.checkout_url))
-                .await?
-                .json()
-                .await
-        }
-        .await;
+        // The order in monokulo's API, as the plugin reads it with its key.
+        let order_status: Result<Value, _> =
+            mock_woocommerce::read_order(&order, &credentials.secret_token).await;
         eprintln!(
             "DIAG tick {tick}: daemon_height={height:?} tx_location={location:?} order_status={:?} confirmations={:?}",
             order_status.as_ref().ok().and_then(|v| v.get("status")),

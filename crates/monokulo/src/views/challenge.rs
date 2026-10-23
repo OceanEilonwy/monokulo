@@ -108,12 +108,17 @@ mod tests {
         let view = ChallengePageView {
             challenge: "abc.def".to_string(),
             difficulty: 16,
-            continue_url: "/pay/pk/orders/o1".to_string(),
-            wait_url: "/pay/pk/orders/o1?monokulo_wait=tok".to_string(),
+            continue_url: "/checkout/o1".to_string(),
+            wait_url: "/checkout/o1?monokulo_wait=tok".to_string(),
             error: None,
         };
         let html = challenge_page(&PageChrome::from_user(None, "/"), &view).into_string();
-        assert!(html.contains(r#"<meta http-equiv="refresh" content="10;url=/pay/pk/orders/o1?monokulo_wait=tok">"#), "{html}");
+        assert!(
+            html.contains(
+                r#"<meta http-equiv="refresh" content="10;url=/checkout/o1?monokulo_wait=tok">"#
+            ),
+            "{html}"
+        );
         assert!(html.contains("This page continues in 10 seconds."));
         // The state and the way on come before the explanation, so a small
         // frame shows them.

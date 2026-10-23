@@ -1,0 +1,2347 @@
+{
+  "definitions": {
+    "Order": {
+      "description": "One order: what to pay, where, and how far the payment has got.\n\nIts status moves from `pending` through `unconfirmed` and `confirming`\nto `paid` (or `partial`, `overpaid`, `expired`); `is_final` says it\nwon't change again. Follow `mk:order-events` to hear each change as it\nhappens, and send the payer to `mk:checkout`.",
+      "properties": {
+        "_links": {
+          "additionalProperties": false,
+          "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+          "properties": {
+            "collection": {
+              "description": "The store's orders, newest first, a page at a time.",
+              "properties": {
+                "href": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "href"
+              ],
+              "type": "object"
+            },
+            "curies": {
+              "description": "Explains the `mk:` relations: each is a page in the docs.",
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "mk:checkout": {
+              "description": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+              "properties": {
+                "href": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "href"
+              ],
+              "type": "object"
+            },
+            "mk:order-events": {
+              "description": "One order's changes, as server-sent events.",
+              "properties": {
+                "href": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "href"
+              ],
+              "type": "object"
+            },
+            "self": {
+              "description": "This resource.",
+              "properties": {
+                "href": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "href"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "self"
+          ],
+          "type": "object"
+        },
+        "_templates": {
+          "additionalProperties": {
+            "properties": {
+              "contentType": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "properties": {
+                "items": {
+                  "required": [
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "target": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "method",
+              "target",
+              "properties"
+            ],
+            "type": "object"
+          },
+          "description": "HAL-FORMS templates: the forms this key may use here, by name.",
+          "type": "object"
+        },
+        "address": {
+          "description": "The Monero address to pay: a subaddress of the store's wallet, this\norder's alone.",
+          "type": "string"
+        },
+        "amount": {
+          "description": "The price the order was made with, in `currency`; `null` for an\norder Monokulo has no record of.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "amount_received_piconero": {
+          "description": "What has arrived so far, in piconero.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "confirmations": {
+          "description": "Confirmations the payment has.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "confirmations_required": {
+          "description": "Confirmations it needs to count as paid.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_at": {
+          "description": "When it was made, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "currency": {
+          "description": "The currency of `amount`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "What the order is for, as the payer sees it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "description": "When it expires unpaid, in Unix seconds.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "is_final": {
+          "description": "Whether the status can still change.",
+          "type": "boolean"
+        },
+        "merchant_order_id": {
+          "description": "The shop's own reference for the order.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "order_id": {
+          "$ref": "#/$defs/OrderId",
+          "description": "The order's id: `order_` and a UUID."
+        },
+        "show_merchant_order_id": {
+          "description": "Whether the checkout shows the payer `merchant_order_id`.",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/OrderStatus",
+          "description": "Where the payment is."
+        },
+        "xmr_amount_piconero": {
+          "description": "What to pay, in piconero (10^-12 XMR).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "order_id",
+        "status",
+        "is_final",
+        "address",
+        "xmr_amount_piconero",
+        "amount_received_piconero",
+        "amount",
+        "currency",
+        "merchant_order_id",
+        "description",
+        "show_merchant_order_id",
+        "confirmations",
+        "confirmations_required",
+        "created_at",
+        "expires_at"
+      ],
+      "title": "One order: what to pay, where, and how far the payment has got.",
+      "type": "object"
+    },
+    "OrderId": {
+      "type": "string"
+    },
+    "OrderStatus": {
+      "description": "Where the payment is: `pending` (nothing seen), `unconfirmed` (seen, not in a block), `confirming`, `paid`, `partial` (less than asked), `overpaid` or `expired`.",
+      "enum": [
+        "pending",
+        "unconfirmed",
+        "confirming",
+        "paid",
+        "partial",
+        "overpaid",
+        "expired"
+      ],
+      "type": "string"
+    },
+    "StoreWallet": {
+      "description": "A wallet payments go to.",
+      "properties": {
+        "address": {
+          "description": "Its primary address, in full. Shorten it for display yourself.",
+          "type": "string"
+        },
+        "name": {
+          "description": "What the merchant calls the wallet.",
+          "type": "string"
+        },
+        "network": {
+          "description": "`mainnet`, `stagenet` or `testnet`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "network",
+        "address"
+      ],
+      "title": "A wallet payments go to.",
+      "type": "object"
+    }
+  },
+  "problems": [
+    {
+      "doc": "The request carried no key, or one this Monokulo doesn't know: a\nmistyped key, a secret key that has since been replaced (the store's\nplugin was disconnected and connected again), or an app that was\ndisconnected. Send `Authorization: Bearer <key>` with a current key.",
+      "slug": "unauthorized",
+      "status": 401,
+      "title": "No valid key",
+      "type": "https://docs.monokulo.com/problems/unauthorized"
+    },
+    {
+      "doc": "The key is valid but may not do this: each route says which keys it\ntakes. A store's public key (`pk_`) only makes and reads orders;\nonly an app's own key (`ak_`) reads or disconnects the app; only the\nstore's secret key (`sk_`) sends a plugin's logs. A store that takes\norders only from its verified websites also refuses an order made\nwith its public key anywhere else.",
+      "slug": "forbidden",
+      "status": 403,
+      "title": "Not allowed with this key",
+      "type": "https://docs.monokulo.com/problems/forbidden"
+    },
+    {
+      "doc": "There's no such order for the store the key names. An order of\nanother store is not found either.",
+      "slug": "not-found",
+      "status": 404,
+      "title": "Not found",
+      "type": "https://docs.monokulo.com/problems/not-found"
+    },
+    {
+      "doc": "The request body isn't what the form takes: not JSON, a field\nmissing or of the wrong type, or a value its rules refuse (`detail`\nsays which). The form in `_templates` lists every field and its\nrules.",
+      "slug": "invalid-request",
+      "status": 400,
+      "title": "Invalid request",
+      "type": "https://docs.monokulo.com/problems/invalid-request"
+    },
+    {
+      "doc": "The body was sent without `Content-Type: application/json`.",
+      "slug": "unsupported-media-type",
+      "status": 415,
+      "title": "Send JSON",
+      "type": "https://docs.monokulo.com/problems/unsupported-media-type"
+    },
+    {
+      "doc": "The order can't be priced: the currency is unknown, this Monokulo\nhas no exchange rate for it right now, or the amount isn't one the\ncurrency can have.",
+      "slug": "invalid-amount",
+      "status": 400,
+      "title": "The order can't be priced",
+      "type": "https://docs.monokulo.com/problems/invalid-amount"
+    },
+    {
+      "doc": "The `idempotency_key` was used before for a different order: a\ndifferent amount, currency or reference.",
+      "slug": "idempotency-conflict",
+      "status": 409,
+      "title": "Key used for another order",
+      "type": "https://docs.monokulo.com/problems/idempotency-conflict"
+    },
+    {
+      "doc": "The request body is larger than the route takes.",
+      "slug": "too-large",
+      "status": 413,
+      "title": "Request too large",
+      "type": "https://docs.monokulo.com/problems/too-large"
+    },
+    {
+      "doc": "The store hasn't turned on client logs, so its plugin's reports are\nrefused. The merchant turns them on in the store's settings.",
+      "slug": "logs-off",
+      "status": 403,
+      "title": "Client logs are off for this store",
+      "type": "https://docs.monokulo.com/problems/logs-off"
+    },
+    {
+      "doc": "Too many requests from this client. Wait `retry_after` seconds (also\nin the `Retry-After` header) before trying again.",
+      "slug": "rate-limited",
+      "status": 429,
+      "title": "Too many requests",
+      "type": "https://docs.monokulo.com/problems/rate-limited"
+    },
+    {
+      "doc": "Too many requests from this connection: solve the challenge in\n`challenge` (find a nonce such that SHA-256 of the challenge\nfollowed by the nonce starts with `difficulty` zero bits) and send\nthe request again with `Monokulo-Proof: <challenge>.<nonce>`. The\nembed library does this by itself.",
+      "slug": "challenge-required",
+      "status": 429,
+      "title": "Solve a challenge to continue",
+      "type": "https://docs.monokulo.com/problems/challenge-required"
+    },
+    {
+      "doc": "This client has as many live update streams open for the store as\nit may. Close one first.",
+      "slug": "too-many-streams",
+      "status": 429,
+      "title": "Too many open streams",
+      "type": "https://docs.monokulo.com/problems/too-many-streams"
+    },
+    {
+      "doc": "The payment engine is busy or can't be reached. Try again in a\nmoment.",
+      "slug": "engine-unavailable",
+      "status": 503,
+      "title": "Payment engine unavailable",
+      "type": "https://docs.monokulo.com/problems/engine-unavailable"
+    },
+    {
+      "doc": "The store's settings can't be read right now. Try again in a\nmoment.",
+      "slug": "store-unavailable",
+      "status": 503,
+      "title": "Store unavailable",
+      "type": "https://docs.monokulo.com/problems/store-unavailable"
+    },
+    {
+      "doc": "Something went wrong on this Monokulo. Its admin can find it in the\nlogs; try again later.",
+      "slug": "internal",
+      "status": 500,
+      "title": "Internal error",
+      "type": "https://docs.monokulo.com/problems/internal"
+    }
+  ],
+  "resources": [
+    {
+      "body": {
+        "description": "The API's entry: where to go from here.\n\nLinks to the store, its orders and its events (and, for a connected\napp, the app itself), the forms the key may use, and the API's\ndescription. A link or form the key may not use is left out, so a\nclient can find out what its key does by reading this.",
+        "properties": {
+          "_links": {
+            "additionalProperties": false,
+            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+            "properties": {
+              "curies": {
+                "description": "Explains the `mk:` relations: each is a page in the docs.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "mk:app": {
+                "description": "The connected app the key belongs to.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "mk:events": {
+                "description": "The store's sale events, as server-sent events: one stream for all its orders.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "mk:orders": {
+                "description": "The store's orders, newest first, a page at a time.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "mk:store": {
+                "description": "The store the key belongs to, and where its payments go.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "self": {
+                "description": "This resource.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "service-desc": {
+                "description": "The API's OpenAPI 3.1 document.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "service-doc": {
+                "description": "",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "self"
+            ],
+            "type": "object"
+          },
+          "_templates": {
+            "additionalProperties": {
+              "properties": {
+                "contentType": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "properties": {
+                  "items": {
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method",
+                "target",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "description": "HAL-FORMS templates: the forms this key may use here, by name.",
+            "type": "object"
+          }
+        },
+        "required": [],
+        "title": "The API's entry: where to go from here.",
+        "type": "object"
+      },
+      "description": "The API's entry: where to go from here.\n\nLinks to the store, its orders and its events (and, for a connected\napp, the app itself), the forms the key may use, and the API's\ndescription. A link or form the key may not use is left out, so a\nclient can find out what its key does by reading this.",
+      "examples": [
+        {
+          "method": "GET",
+          "path": "/api/v1",
+          "response": {
+            "_links": {
+              "self": {
+                "href": "/api/v1"
+              },
+              "service-desc": {
+                "href": "/api/v1/openapi.json",
+                "title": "The API's OpenAPI 3.1 document.",
+                "type": "application/openapi+json"
+              },
+              "service-doc": {
+                "href": "https://docs.monokulo.com/api/",
+                "type": "text/html"
+              }
+            }
+          },
+          "route": "/api/v1",
+          "status": 200
+        },
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1",
+          "response": {
+            "_links": {
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:events": {
+                "href": "/api/v1/events",
+                "title": "The store's sale events, as server-sent events: one stream for all its orders.",
+                "type": "text/event-stream"
+              },
+              "mk:orders": {
+                "href": "/api/v1/orders",
+                "title": "The store's orders, newest first, a page at a time."
+              },
+              "mk:store": {
+                "href": "/api/v1/store",
+                "title": "The store the key belongs to, and where its payments go."
+              },
+              "self": {
+                "href": "/api/v1"
+              },
+              "service-desc": {
+                "href": "/api/v1/openapi.json",
+                "title": "The API's OpenAPI 3.1 document.",
+                "type": "application/openapi+json"
+              },
+              "service-doc": {
+                "href": "https://docs.monokulo.com/api/",
+                "type": "text/html"
+              }
+            },
+            "_templates": {
+              "create-order": {
+                "contentType": "application/json",
+                "method": "POST",
+                "properties": [
+                  {
+                    "maxLength": 40,
+                    "name": "amount",
+                    "placeholder": "12.50",
+                    "prompt": "The price, in `currency`.",
+                    "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "name": "currency",
+                    "placeholder": "EUR",
+                    "prompt": "The currency of `amount`.",
+                    "regex": "^[A-Za-z0-9]{2,10}$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 140,
+                    "minLength": 1,
+                    "name": "description",
+                    "placeholder": "Order #1042: Blue mug + 2 more",
+                    "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+                    "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "name": "idempotency_key",
+                    "placeholder": "order-1042-total-1250",
+                    "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+                    "regex": "^[!-~]+$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "name": "merchant_order_id",
+                    "placeholder": "1042",
+                    "prompt": "The shop's own reference for the order (its order or cart number).",
+                    "type": "text"
+                  },
+                  {
+                    "name": "show_merchant_order_id",
+                    "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+                    "type": "checkbox"
+                  }
+                ],
+                "target": "/api/v1/orders",
+                "title": "Make an order."
+              }
+            }
+          },
+          "route": "/api/v1",
+          "status": 200
+        },
+        {
+          "key": "pk",
+          "method": "GET",
+          "path": "/api/v1",
+          "response": {
+            "_links": {
+              "self": {
+                "href": "/api/v1"
+              },
+              "service-desc": {
+                "href": "/api/v1/openapi.json",
+                "title": "The API's OpenAPI 3.1 document.",
+                "type": "application/openapi+json"
+              },
+              "service-doc": {
+                "href": "https://docs.monokulo.com/api/",
+                "type": "text/html"
+              }
+            },
+            "_templates": {
+              "create-order": {
+                "contentType": "application/json",
+                "method": "POST",
+                "properties": [
+                  {
+                    "maxLength": 40,
+                    "name": "amount",
+                    "placeholder": "12.50",
+                    "prompt": "The price, in `currency`.",
+                    "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "name": "currency",
+                    "placeholder": "EUR",
+                    "prompt": "The currency of `amount`.",
+                    "regex": "^[A-Za-z0-9]{2,10}$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 140,
+                    "minLength": 1,
+                    "name": "description",
+                    "placeholder": "Order #1042: Blue mug + 2 more",
+                    "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+                    "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "name": "idempotency_key",
+                    "placeholder": "order-1042-total-1250",
+                    "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+                    "regex": "^[!-~]+$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "name": "merchant_order_id",
+                    "placeholder": "1042",
+                    "prompt": "The shop's own reference for the order (its order or cart number).",
+                    "type": "text"
+                  },
+                  {
+                    "name": "show_merchant_order_id",
+                    "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+                    "type": "checkbox"
+                  }
+                ],
+                "target": "/api/v1/orders",
+                "title": "Make an order."
+              }
+            }
+          },
+          "route": "/api/v1",
+          "status": 200
+        },
+        {
+          "key": "ak",
+          "method": "GET",
+          "path": "/api/v1",
+          "response": {
+            "_links": {
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:app": {
+                "href": "/api/v1/app",
+                "title": "The connected app the key belongs to."
+              },
+              "mk:events": {
+                "href": "/api/v1/events",
+                "title": "The store's sale events, as server-sent events: one stream for all its orders.",
+                "type": "text/event-stream"
+              },
+              "mk:orders": {
+                "href": "/api/v1/orders",
+                "title": "The store's orders, newest first, a page at a time."
+              },
+              "mk:store": {
+                "href": "/api/v1/store",
+                "title": "The store the key belongs to, and where its payments go."
+              },
+              "self": {
+                "href": "/api/v1"
+              },
+              "service-desc": {
+                "href": "/api/v1/openapi.json",
+                "title": "The API's OpenAPI 3.1 document.",
+                "type": "application/openapi+json"
+              },
+              "service-doc": {
+                "href": "https://docs.monokulo.com/api/",
+                "type": "text/html"
+              }
+            },
+            "_templates": {
+              "create-order": {
+                "contentType": "application/json",
+                "method": "POST",
+                "properties": [
+                  {
+                    "maxLength": 40,
+                    "name": "amount",
+                    "placeholder": "12.50",
+                    "prompt": "The price, in `currency`.",
+                    "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "name": "currency",
+                    "placeholder": "EUR",
+                    "prompt": "The currency of `amount`.",
+                    "regex": "^[A-Za-z0-9]{2,10}$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 140,
+                    "minLength": 1,
+                    "name": "description",
+                    "placeholder": "Order #1042: Blue mug + 2 more",
+                    "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+                    "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "name": "idempotency_key",
+                    "placeholder": "order-1042-total-1250",
+                    "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+                    "regex": "^[!-~]+$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "name": "merchant_order_id",
+                    "placeholder": "1042",
+                    "prompt": "The shop's own reference for the order (its order or cart number).",
+                    "type": "text"
+                  },
+                  {
+                    "name": "show_merchant_order_id",
+                    "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+                    "type": "checkbox"
+                  }
+                ],
+                "target": "/api/v1/orders",
+                "title": "Make an order."
+              },
+              "disconnect": {
+                "method": "DELETE",
+                "properties": [],
+                "target": "/api/v1/app",
+                "title": "Disconnect this app."
+              }
+            }
+          },
+          "route": "/api/v1",
+          "status": 200
+        }
+      ],
+      "key": "mk:root",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": true,
+          "doc": "Read the entry. Open without a key, so a client can check it found a\nMonokulo API; with one, it shows what that key may do.",
+          "form": null,
+          "keys": [
+            "pk",
+            "sk",
+            "ak",
+            "session"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/root",
+      "rel": "root",
+      "template": "/api/v1",
+      "title": "The API's entry: where to go from here."
+    },
+    {
+      "body": {
+        "description": "The connected app the key belongs to.\n\nOnly an app's own key (`ak_`) has one. The app shows it in its\nsettings, and disconnects itself with the `disconnect` form.",
+        "properties": {
+          "_links": {
+            "additionalProperties": false,
+            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+            "properties": {
+              "curies": {
+                "description": "Explains the `mk:` relations: each is a page in the docs.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "mk:store": {
+                "description": "The store the key belongs to, and where its payments go.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "self": {
+                "description": "This resource.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "self"
+            ],
+            "type": "object"
+          },
+          "_templates": {
+            "additionalProperties": {
+              "properties": {
+                "contentType": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "properties": {
+                  "items": {
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method",
+                "target",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "description": "HAL-FORMS templates: the forms this key may use here, by name.",
+            "type": "object"
+          },
+          "app_id": {
+            "description": "The app's connection id.",
+            "type": "string"
+          },
+          "connected_at": {
+            "description": "When it connected, in Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "device_name": {
+            "description": "What the merchant (or, when they gave none, the app) calls the\ndevice.",
+            "type": "string"
+          },
+          "platform": {
+            "description": "What the app said it runs on (`android`, `ios`); empty when it\ndidn't say.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_id",
+          "device_name",
+          "platform",
+          "connected_at"
+        ],
+        "title": "The connected app the key belongs to.",
+        "type": "object"
+      },
+      "description": "The connected app the key belongs to.\n\nOnly an app's own key (`ak_`) has one. The app shows it in its\nsettings, and disconnects itself with the `disconnect` form.",
+      "examples": [
+        {
+          "key": "ak",
+          "method": "GET",
+          "path": "/api/v1/app",
+          "response": {
+            "_links": {
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:store": {
+                "href": "/api/v1/store",
+                "title": "The store the key belongs to, and where its payments go."
+              },
+              "self": {
+                "href": "/api/v1/app"
+              }
+            },
+            "_templates": {
+              "disconnect": {
+                "method": "DELETE",
+                "properties": [],
+                "target": "/api/v1/app",
+                "title": "Disconnect this app."
+              }
+            },
+            "app_id": "app_00000000000000000000000000000001",
+            "connected_at": 1767225600,
+            "device_name": "Front till",
+            "platform": "android"
+          },
+          "route": "/api/v1/app",
+          "status": 200
+        },
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/app",
+          "response": {
+            "detail": "A sk key may not do this. It takes ak.",
+            "status": 403,
+            "title": "Not allowed with this key",
+            "type": "https://docs.monokulo.com/problems/forbidden"
+          },
+          "route": "/api/v1/app",
+          "status": 403
+        },
+        {
+          "key": "ak",
+          "method": "DELETE",
+          "path": "/api/v1/app",
+          "route": "/api/v1/app",
+          "status": 204
+        }
+      ],
+      "key": "mk:app",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Read the app's own connection.",
+          "form": null,
+          "keys": [
+            "ak"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        },
+        {
+          "anyone": false,
+          "doc": "Disconnect this app.\n\nIts key stops working at once, and its event stream ends. Its orders\nstay, and can still be paid.",
+          "form": "disconnect",
+          "keys": [
+            "ak"
+          ],
+          "method": "DELETE",
+          "name": "delete",
+          "template": {
+            "method": "DELETE",
+            "properties": [],
+            "target": "/api/v1/app",
+            "title": "Disconnect this app."
+          }
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/app",
+      "rel": "app",
+      "template": "/api/v1/app",
+      "title": "The connected app the key belongs to."
+    },
+    {
+      "body": null,
+      "description": "The store's sale events, as server-sent events: one stream for all its orders.\n\nIt starts with `ready`; then each sale event is an `event:` named after it (`sale.waiting`, `sale.paid`, `sale.expired`, ...) with its JSON as data. `lagged` means some were missed: read the orders again. A connected app's stream ends when the app is disconnected.",
+      "examples": [],
+      "key": "mk:events",
+      "media_type": "text/event-stream",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Follow the store's sale events as server-sent events.",
+          "form": null,
+          "keys": [
+            "sk",
+            "ak"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/events",
+      "rel": "events",
+      "template": "/api/v1/events",
+      "title": "The store's sale events, as server-sent events: one stream for all its orders."
+    },
+    {
+      "body": null,
+      "description": "Where a shop plugin sends its warnings and errors, when its \"Send errors to Monokulo\" option is on.\n\nThey are kept, on the instance admin's Logs page, only when the store turned client logs on (structured_logging.md 2.4).",
+      "examples": [
+        {
+          "key": "sk",
+          "method": "POST",
+          "path": "/api/v1/logs",
+          "request": {
+            "entries": [
+              {
+                "level": "error",
+                "message": "Monokulo could not be reached"
+              }
+            ]
+          },
+          "response": {
+            "detail": "This store hasn't turned on client logs. Its owner can turn them on in the store's settings.",
+            "status": 403,
+            "title": "Client logs are off for this store",
+            "type": "https://docs.monokulo.com/problems/logs-off"
+          },
+          "route": "/api/v1/logs",
+          "status": 403
+        },
+        {
+          "key": "sk",
+          "method": "POST",
+          "path": "/api/v1/logs",
+          "request": {
+            "entries": [
+              {
+                "level": "error",
+                "message": "Monokulo could not be reached"
+              }
+            ]
+          },
+          "route": "/api/v1/logs",
+          "status": 204
+        }
+      ],
+      "key": "mk:logs",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Send the plugin's warnings and errors.",
+          "form": null,
+          "keys": [
+            "sk"
+          ],
+          "method": "POST",
+          "name": "send",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/logs",
+      "rel": "logs",
+      "template": "/api/v1/logs",
+      "title": "Where a shop plugin sends its warnings and errors, when its \"Send errors to Monokulo\" option is on."
+    },
+    {
+      "body": null,
+      "description": "The API's OpenAPI 3.1 document.\n\nEvery route, who may call it, what it takes and what it answers, with real examples.",
+      "examples": [
+        {
+          "method": "GET",
+          "path": "/api/v1/openapi.json",
+          "route": "/api/v1/openapi.json",
+          "status": 200
+        }
+      ],
+      "key": "mk:openapi",
+      "media_type": "application/openapi+json",
+      "methods": [
+        {
+          "anyone": true,
+          "doc": "Read the OpenAPI document.",
+          "form": null,
+          "keys": [
+            "pk",
+            "sk",
+            "ak",
+            "session"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/openapi",
+      "rel": "openapi",
+      "template": "/api/v1/openapi.json",
+      "title": "The API's OpenAPI 3.1 document."
+    },
+    {
+      "body": {
+        "description": "The store's orders, newest first, a page at a time.\n\n`next` is the next page, while there may be one. Make an order with the\n`create-order` form.",
+        "properties": {
+          "_links": {
+            "additionalProperties": false,
+            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+            "properties": {
+              "curies": {
+                "description": "Explains the `mk:` relations: each is a page in the docs.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "next": {
+                "description": "The store's orders, newest first, a page at a time.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "self": {
+                "description": "This resource.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "self"
+            ],
+            "type": "object"
+          },
+          "_templates": {
+            "additionalProperties": {
+              "properties": {
+                "contentType": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "properties": {
+                  "items": {
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method",
+                "target",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "description": "HAL-FORMS templates: the forms this key may use here, by name.",
+            "type": "object"
+          },
+          "orders": {
+            "description": "This page's orders.",
+            "items": {
+              "$ref": "#/$defs/Order"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "orders"
+        ],
+        "title": "The store's orders, newest first, a page at a time.",
+        "type": "object"
+      },
+      "description": "The store's orders, newest first, a page at a time.\n\n`next` is the next page, while there may be one. Make an order with the\n`create-order` form.",
+      "examples": [
+        {
+          "key": "sk",
+          "method": "POST",
+          "path": "/api/v1/orders",
+          "request": {
+            "amount": "0.25",
+            "currency": "XMR",
+            "description": "Order #1042: Blue mug + 2 more",
+            "idempotency_key": "order-1042-total-025",
+            "merchant_order_id": "1042",
+            "show_merchant_order_id": true
+          },
+          "response": {
+            "_links": {
+              "collection": {
+                "href": "/api/v1/orders",
+                "title": "The store's orders, newest first, a page at a time."
+              },
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:checkout": {
+                "href": "/checkout/order_00000000-0000-4000-8000-000000000001",
+                "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+                "type": "text/html"
+              },
+              "mk:order-events": {
+                "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001/events",
+                "title": "One order's changes, as server-sent events.",
+                "type": "text/event-stream"
+              },
+              "self": {
+                "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001"
+              }
+            },
+            "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002",
+            "amount": "0.25",
+            "amount_received_piconero": 0,
+            "confirmations": 0,
+            "confirmations_required": 10,
+            "created_at": 1767225600,
+            "currency": "XMR",
+            "description": "Order #1042: Blue mug + 2 more",
+            "expires_at": 1767227400,
+            "is_final": false,
+            "merchant_order_id": "1042",
+            "order_id": "order_00000000-0000-4000-8000-000000000001",
+            "show_merchant_order_id": true,
+            "status": "pending",
+            "xmr_amount_piconero": 250000000000
+          },
+          "route": "/api/v1/orders",
+          "status": 201
+        },
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/orders?limit=1",
+          "response": {
+            "_links": {
+              "next": {
+                "href": "/api/v1/orders?limit=1&offset=1",
+                "title": "The store's orders, newest first, a page at a time."
+              },
+              "self": {
+                "href": "/api/v1/orders"
+              }
+            },
+            "_templates": {
+              "create-order": {
+                "contentType": "application/json",
+                "method": "POST",
+                "properties": [
+                  {
+                    "maxLength": 40,
+                    "name": "amount",
+                    "placeholder": "12.50",
+                    "prompt": "The price, in `currency`.",
+                    "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "name": "currency",
+                    "placeholder": "EUR",
+                    "prompt": "The currency of `amount`.",
+                    "regex": "^[A-Za-z0-9]{2,10}$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 140,
+                    "minLength": 1,
+                    "name": "description",
+                    "placeholder": "Order #1042: Blue mug + 2 more",
+                    "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+                    "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "name": "idempotency_key",
+                    "placeholder": "order-1042-total-1250",
+                    "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+                    "regex": "^[!-~]+$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "name": "merchant_order_id",
+                    "placeholder": "1042",
+                    "prompt": "The shop's own reference for the order (its order or cart number).",
+                    "type": "text"
+                  },
+                  {
+                    "name": "show_merchant_order_id",
+                    "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+                    "type": "checkbox"
+                  }
+                ],
+                "target": "/api/v1/orders",
+                "title": "Make an order."
+              }
+            },
+            "orders": [
+              {
+                "_links": {
+                  "collection": {
+                    "href": "/api/v1/orders",
+                    "title": "The store's orders, newest first, a page at a time."
+                  },
+                  "curies": [
+                    {
+                      "href": "https://docs.monokulo.com/rels/{rel}",
+                      "name": "mk",
+                      "templated": true
+                    }
+                  ],
+                  "mk:checkout": {
+                    "href": "/checkout/order_00000000-0000-4000-8000-000000000001",
+                    "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+                    "type": "text/html"
+                  },
+                  "mk:order-events": {
+                    "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001/events",
+                    "title": "One order's changes, as server-sent events.",
+                    "type": "text/event-stream"
+                  },
+                  "self": {
+                    "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001"
+                  }
+                },
+                "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002",
+                "amount": "0.25",
+                "amount_received_piconero": 0,
+                "confirmations": 0,
+                "confirmations_required": 10,
+                "created_at": 1767225600,
+                "currency": "XMR",
+                "description": "Order #1042: Blue mug + 2 more",
+                "expires_at": 1767227400,
+                "is_final": false,
+                "merchant_order_id": "1042",
+                "order_id": "order_00000000-0000-4000-8000-000000000001",
+                "show_merchant_order_id": true,
+                "status": "pending",
+                "xmr_amount_piconero": 250000000000
+              }
+            ]
+          },
+          "route": "/api/v1/orders",
+          "status": 200
+        },
+        {
+          "key": "pk",
+          "method": "POST",
+          "path": "/api/v1/orders",
+          "request": {
+            "amount": "0.1",
+            "currency": "XMR"
+          },
+          "response": {
+            "_links": {
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:checkout": {
+                "href": "/checkout/order_00000000-0000-4000-8000-000000000002",
+                "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+                "type": "text/html"
+              },
+              "mk:order-events": {
+                "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000002/events",
+                "title": "One order's changes, as server-sent events.",
+                "type": "text/event-stream"
+              },
+              "self": {
+                "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000002"
+              }
+            },
+            "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0003",
+            "amount": "0.1",
+            "amount_received_piconero": 0,
+            "confirmations": 0,
+            "confirmations_required": 10,
+            "created_at": 1767225600,
+            "currency": "XMR",
+            "description": null,
+            "expires_at": 1767227400,
+            "is_final": false,
+            "merchant_order_id": null,
+            "order_id": "order_00000000-0000-4000-8000-000000000002",
+            "show_merchant_order_id": true,
+            "status": "pending",
+            "xmr_amount_piconero": 100000000000
+          },
+          "route": "/api/v1/orders",
+          "status": 201
+        },
+        {
+          "key": "sk",
+          "method": "POST",
+          "path": "/api/v1/orders",
+          "request": {
+            "amount": "twelve",
+            "currency": "XMR"
+          },
+          "response": {
+            "detail": "Failed to deserialize the JSON body into the target type: amount: Amount must match ^[0-9]+(\\.[0-9]{1,12})?$, like 12.50 at line 1 column 18",
+            "status": 400,
+            "title": "Invalid request",
+            "type": "https://docs.monokulo.com/problems/invalid-request"
+          },
+          "route": "/api/v1/orders",
+          "status": 400
+        }
+      ],
+      "key": "mk:orders",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "List the store's orders, newest first.",
+          "form": null,
+          "keys": [
+            "sk",
+            "ak"
+          ],
+          "method": "GET",
+          "name": "list",
+          "template": null
+        },
+        {
+          "anyone": false,
+          "doc": "Make an order.\n\nWith the store's secret key or an app's (a shop's server, a till) it is\nrecorded as made with the key; with the public key it's the website's,\nand a store that takes orders only from its verified websites refuses it\nfrom anywhere else. A shop plugin names itself in `Monokulo-Client:\n<slug>/<version>`. Answers `201 Created` with the order and its\n`Location`.",
+          "form": "create-order",
+          "keys": [
+            "pk",
+            "sk",
+            "ak"
+          ],
+          "method": "POST",
+          "name": "create",
+          "template": {
+            "contentType": "application/json",
+            "method": "POST",
+            "properties": [
+              {
+                "maxLength": 40,
+                "name": "amount",
+                "placeholder": "12.50",
+                "prompt": "The price, in `currency`.",
+                "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+                "required": true,
+                "type": "text"
+              },
+              {
+                "name": "currency",
+                "placeholder": "EUR",
+                "prompt": "The currency of `amount`.",
+                "regex": "^[A-Za-z0-9]{2,10}$",
+                "required": true,
+                "type": "text"
+              },
+              {
+                "maxLength": 140,
+                "minLength": 1,
+                "name": "description",
+                "placeholder": "Order #1042: Blue mug + 2 more",
+                "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+                "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+                "type": "text"
+              },
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "name": "idempotency_key",
+                "placeholder": "order-1042-total-1250",
+                "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+                "regex": "^[!-~]+$",
+                "type": "text"
+              },
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "name": "merchant_order_id",
+                "placeholder": "1042",
+                "prompt": "The shop's own reference for the order (its order or cart number).",
+                "type": "text"
+              },
+              {
+                "name": "show_merchant_order_id",
+                "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+                "type": "checkbox"
+              }
+            ],
+            "target": "/api/v1/orders",
+            "title": "Make an order."
+          }
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/orders",
+      "rel": "orders",
+      "template": "/api/v1/orders",
+      "title": "The store's orders, newest first, a page at a time."
+    },
+    {
+      "body": {
+        "description": "One order: what to pay, where, and how far the payment has got.\n\nIts status moves from `pending` through `unconfirmed` and `confirming`\nto `paid` (or `partial`, `overpaid`, `expired`); `is_final` says it\nwon't change again. Follow `mk:order-events` to hear each change as it\nhappens, and send the payer to `mk:checkout`.",
+        "properties": {
+          "_links": {
+            "additionalProperties": false,
+            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+            "properties": {
+              "collection": {
+                "description": "The store's orders, newest first, a page at a time.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "curies": {
+                "description": "Explains the `mk:` relations: each is a page in the docs.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "mk:checkout": {
+                "description": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "mk:order-events": {
+                "description": "One order's changes, as server-sent events.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "self": {
+                "description": "This resource.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "self"
+            ],
+            "type": "object"
+          },
+          "_templates": {
+            "additionalProperties": {
+              "properties": {
+                "contentType": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "properties": {
+                  "items": {
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method",
+                "target",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "description": "HAL-FORMS templates: the forms this key may use here, by name.",
+            "type": "object"
+          },
+          "address": {
+            "description": "The Monero address to pay: a subaddress of the store's wallet, this\norder's alone.",
+            "type": "string"
+          },
+          "amount": {
+            "description": "The price the order was made with, in `currency`; `null` for an\norder Monokulo has no record of.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "amount_received_piconero": {
+            "description": "What has arrived so far, in piconero.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "confirmations": {
+            "description": "Confirmations the payment has.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "confirmations_required": {
+            "description": "Confirmations it needs to count as paid.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created_at": {
+            "description": "When it was made, in Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "currency": {
+            "description": "The currency of `amount`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "description": "What the order is for, as the payer sees it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "description": "When it expires unpaid, in Unix seconds.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "is_final": {
+            "description": "Whether the status can still change.",
+            "type": "boolean"
+          },
+          "merchant_order_id": {
+            "description": "The shop's own reference for the order.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order_id": {
+            "$ref": "#/$defs/OrderId",
+            "description": "The order's id: `order_` and a UUID."
+          },
+          "show_merchant_order_id": {
+            "description": "Whether the checkout shows the payer `merchant_order_id`.",
+            "type": "boolean"
+          },
+          "status": {
+            "$ref": "#/$defs/OrderStatus",
+            "description": "Where the payment is."
+          },
+          "xmr_amount_piconero": {
+            "description": "What to pay, in piconero (10^-12 XMR).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id",
+          "status",
+          "is_final",
+          "address",
+          "xmr_amount_piconero",
+          "amount_received_piconero",
+          "amount",
+          "currency",
+          "merchant_order_id",
+          "description",
+          "show_merchant_order_id",
+          "confirmations",
+          "confirmations_required",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "One order: what to pay, where, and how far the payment has got.",
+        "type": "object"
+      },
+      "description": "One order: what to pay, where, and how far the payment has got.\n\nIts status moves from `pending` through `unconfirmed` and `confirming`\nto `paid` (or `partial`, `overpaid`, `expired`); `is_final` says it\nwon't change again. Follow `mk:order-events` to hear each change as it\nhappens, and send the payer to `mk:checkout`.",
+      "examples": [
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001",
+          "response": {
+            "_links": {
+              "collection": {
+                "href": "/api/v1/orders",
+                "title": "The store's orders, newest first, a page at a time."
+              },
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:checkout": {
+                "href": "/checkout/order_00000000-0000-4000-8000-000000000001",
+                "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+                "type": "text/html"
+              },
+              "mk:order-events": {
+                "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001/events",
+                "title": "One order's changes, as server-sent events.",
+                "type": "text/event-stream"
+              },
+              "self": {
+                "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001"
+              }
+            },
+            "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002",
+            "amount": "0.25",
+            "amount_received_piconero": 0,
+            "confirmations": 0,
+            "confirmations_required": 10,
+            "created_at": 1767225600,
+            "currency": "XMR",
+            "description": "Order #1042: Blue mug + 2 more",
+            "expires_at": 1767227400,
+            "is_final": false,
+            "merchant_order_id": "1042",
+            "order_id": "order_00000000-0000-4000-8000-000000000001",
+            "show_merchant_order_id": true,
+            "status": "pending",
+            "xmr_amount_piconero": 250000000000
+          },
+          "route": "/api/v1/orders/{order_id}",
+          "status": 200
+        },
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/orders/order_00000000-0000-4000-8000-000000000003",
+          "response": {
+            "detail": "There's no such order for this store.",
+            "status": 404,
+            "title": "Not found",
+            "type": "https://docs.monokulo.com/problems/not-found"
+          },
+          "route": "/api/v1/orders/{order_id}",
+          "status": 404
+        }
+      ],
+      "key": "mk:order",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Read one of the store's orders.",
+          "form": null,
+          "keys": [
+            "pk",
+            "sk",
+            "ak"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/order",
+      "rel": "order",
+      "template": "/api/v1/orders/{order_id}",
+      "title": "One order: what to pay, where, and how far the payment has got."
+    },
+    {
+      "body": null,
+      "description": "One order's changes, as server-sent events.\n\nAn `order` event carries the order (the same JSON as reading it) each time it changes, and every 30 seconds as its time to pay runs down; the stream ends once the order is final, after a last `order` event. `done` with `not_found` ends it for an order that's gone.",
+      "examples": [],
+      "key": "mk:order-events",
+      "media_type": "text/event-stream",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Follow one order's changes as server-sent events.",
+          "form": null,
+          "keys": [
+            "pk",
+            "sk",
+            "ak"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/order-events",
+      "rel": "order-events",
+      "template": "/api/v1/orders/{order_id}/events",
+      "title": "One order's changes, as server-sent events."
+    },
+    {
+      "body": {
+        "description": "The store the key belongs to, and where its payments go.\n\nRead it each time it's shown: the merchant can rename the store or move\nit to another wallet at any time.",
+        "properties": {
+          "_links": {
+            "additionalProperties": false,
+            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+            "properties": {
+              "curies": {
+                "description": "Explains the `mk:` relations: each is a page in the docs.",
+                "items": {
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "mk:app": {
+                "description": "The connected app the key belongs to.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "mk:events": {
+                "description": "The store's sale events, as server-sent events: one stream for all its orders.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "mk:orders": {
+                "description": "The store's orders, newest first, a page at a time.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              },
+              "self": {
+                "description": "This resource.",
+                "properties": {
+                  "href": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "href"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "self"
+            ],
+            "type": "object"
+          },
+          "_templates": {
+            "additionalProperties": {
+              "properties": {
+                "contentType": {
+                  "type": "string"
+                },
+                "method": {
+                  "type": "string"
+                },
+                "properties": {
+                  "items": {
+                    "required": [
+                      "name"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "target": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "method",
+                "target",
+                "properties"
+              ],
+              "type": "object"
+            },
+            "description": "HAL-FORMS templates: the forms this key may use here, by name.",
+            "type": "object"
+          },
+          "base_currency": {
+            "description": "The currency the store's confirmation rules are counted in (`EUR`).",
+            "type": "string"
+          },
+          "name": {
+            "description": "What the merchant calls the store.",
+            "type": "string"
+          },
+          "wallet": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/StoreWallet"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The wallet the store's payments go to; `null` for a store without\none."
+          }
+        },
+        "required": [
+          "name",
+          "base_currency",
+          "wallet"
+        ],
+        "title": "The store the key belongs to, and where its payments go.",
+        "type": "object"
+      },
+      "description": "The store the key belongs to, and where its payments go.\n\nRead it each time it's shown: the merchant can rename the store or move\nit to another wallet at any time.",
+      "examples": [
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/store",
+          "response": {
+            "_links": {
+              "curies": [
+                {
+                  "href": "https://docs.monokulo.com/rels/{rel}",
+                  "name": "mk",
+                  "templated": true
+                }
+              ],
+              "mk:events": {
+                "href": "/api/v1/events",
+                "title": "The store's sale events, as server-sent events: one stream for all its orders.",
+                "type": "text/event-stream"
+              },
+              "mk:orders": {
+                "href": "/api/v1/orders",
+                "title": "The store's orders, newest first, a page at a time."
+              },
+              "self": {
+                "href": "/api/v1/store"
+              }
+            },
+            "_templates": {
+              "create-order": {
+                "contentType": "application/json",
+                "method": "POST",
+                "properties": [
+                  {
+                    "maxLength": 40,
+                    "name": "amount",
+                    "placeholder": "12.50",
+                    "prompt": "The price, in `currency`.",
+                    "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "name": "currency",
+                    "placeholder": "EUR",
+                    "prompt": "The currency of `amount`.",
+                    "regex": "^[A-Za-z0-9]{2,10}$",
+                    "required": true,
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 140,
+                    "minLength": 1,
+                    "name": "description",
+                    "placeholder": "Order #1042: Blue mug + 2 more",
+                    "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+                    "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 100,
+                    "minLength": 1,
+                    "name": "idempotency_key",
+                    "placeholder": "order-1042-total-1250",
+                    "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+                    "regex": "^[!-~]+$",
+                    "type": "text"
+                  },
+                  {
+                    "maxLength": 120,
+                    "minLength": 1,
+                    "name": "merchant_order_id",
+                    "placeholder": "1042",
+                    "prompt": "The shop's own reference for the order (its order or cart number).",
+                    "type": "text"
+                  },
+                  {
+                    "name": "show_merchant_order_id",
+                    "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+                    "type": "checkbox"
+                  }
+                ],
+                "target": "/api/v1/orders",
+                "title": "Make an order."
+              }
+            },
+            "base_currency": "XMR",
+            "name": "bakery.example",
+            "wallet": {
+              "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0001",
+              "name": "Shop wallet",
+              "network": "mainnet"
+            }
+          },
+          "route": "/api/v1/store",
+          "status": 200
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/store",
+          "response": {
+            "detail": "Send a key: Authorization: Bearer <key>. This takes sk, ak.",
+            "status": 401,
+            "title": "No valid key",
+            "type": "https://docs.monokulo.com/problems/unauthorized"
+          },
+          "route": "/api/v1/store",
+          "status": 401
+        },
+        {
+          "key": "pk",
+          "method": "GET",
+          "path": "/api/v1/store",
+          "response": {
+            "detail": "A pk key may not do this. It takes sk, ak.",
+            "status": 403,
+            "title": "Not allowed with this key",
+            "type": "https://docs.monokulo.com/problems/forbidden"
+          },
+          "route": "/api/v1/store",
+          "status": 403
+        }
+      ],
+      "key": "mk:store",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Read the store and its wallet, as they are now.",
+          "form": null,
+          "keys": [
+            "sk",
+            "ak"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/store",
+      "rel": "store",
+      "template": "/api/v1/store",
+      "title": "The store the key belongs to, and where its payments go."
+    },
+    {
+      "body": null,
+      "description": "The page the payer pays on: the amount, the address and its QR code, and live progress.\n\nSend the payer there, or show it in a frame on the shop's page (`monokulo-client.js` does). It works without JavaScript.",
+      "examples": [],
+      "key": "checkout",
+      "media_type": "text/html",
+      "methods": [],
+      "page": "https://docs.monokulo.com/rels/checkout",
+      "rel": "checkout",
+      "template": "/checkout/{order_id}",
+      "title": "The page the payer pays on: the amount, the address and its QR code, and live progress."
+    }
+  ]
+}

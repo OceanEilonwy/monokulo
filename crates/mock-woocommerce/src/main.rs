@@ -27,7 +27,7 @@ async fn main() -> ExitCode {
         Ok(credentials) => {
             println!("connect flow succeeded against {monokulo_base_url}");
             println!("public_key={}", credentials.public_key);
-            println!("endpoint={}", credentials.endpoint);
+            println!("api={}", credentials.api_url());
             println!("secret_token={}", credentials.secret_token);
             ExitCode::SUCCESS
         }

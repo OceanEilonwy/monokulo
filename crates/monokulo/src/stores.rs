@@ -165,6 +165,42 @@ pub fn stored_site(site: Option<&Site>) -> &str {
     site.map_or("", Site::as_str)
 }
 
+/// Records the hash of each store's secret key that doesn't have one yet
+/// (migration 0044), so the API can find the store by its key. Run once at
+/// start; a store whose key can't be decrypted is logged and left without,
+/// and can't use the API with its key until it can. Returns how many it
+/// filled.
+pub fn fill_secret_key_hashes(db: &crate::db::Db, key: &crate::crypto::AtRestKey) -> usize {
+    let missing = match db.stores_missing_secret_key_hash() {
+        Ok(missing) => missing,
+        Err(e) => {
+            tracing::error!(error = %e, "stores' secret key hashes could not be read");
+            return 0;
+        }
+    };
+    let mut filled = 0;
+    for (id, encrypted) in missing {
+        let hash = match crate::crypto::decrypt(
+            key,
+            crate::crypto::Binding::StoreSecret(id.as_str()),
+            &encrypted,
+        ) {
+            Ok(secret) => shared::auth::RawToken::presented(&secret).hash(),
+            Err(e) => {
+                tracing::error!(store.id = %id, error = %e, "a store's secret key could not be decrypted to record its hash");
+                continue;
+            }
+        };
+        match db.set_secret_key_hash(&id, &hash) {
+            Ok(()) => filled += 1,
+            Err(e) => {
+                tracing::error!(store.id = %id, error = %e, "a store's secret key hash could not be recorded")
+            }
+        }
+    }
+    filled
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

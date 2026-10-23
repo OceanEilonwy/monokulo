@@ -53,6 +53,23 @@ impl fmt::Display for OrderStatus {
     }
 }
 
+/// One of [`OrderStatus::ALL`]'s names.
+#[cfg(feature = "schemars")]
+impl schemars::JsonSchema for OrderStatus {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "OrderStatus".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let names: Vec<&str> = OrderStatus::ALL.iter().map(|s| s.as_str()).collect();
+        schemars::json_schema!({
+            "type": "string",
+            "enum": names,
+            "description": "Where the payment is: `pending` (nothing seen), `unconfirmed` (seen, not in a block), `confirming`, `paid`, `partial` (less than asked), `overpaid` or `expired`."
+        })
+    }
+}
+
 /// A status name that isn't one.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown order status: {0:?}")]

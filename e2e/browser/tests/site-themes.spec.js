@@ -67,7 +67,6 @@ test('the site, the POS and the hosted payment page share one theme, light and d
   await expect(page.locator('.pos-keypad').or(page.locator('.pos-payment'))).toBeVisible();
   if (await page.locator('.pos-payment').isVisible()) await page.getByRole('button', { name: 'Background order', exact: true }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
-  const publicKey = await page.locator('#pos-root').getAttribute('data-public-key');
   await page.keyboard.type('420000000000');
   await page.locator('#pos-reference').fill('Table 4');
   const [response] = await Promise.all([
@@ -124,7 +123,7 @@ test('the site, the POS and the hosted payment page share one theme, light and d
 
       // The hosted payment page: the card and the framed checkout are one
       // surface, in the theme the merchant chose.
-      await page.goto(`${base}/pay/${publicKey}/orders/${orderId}/share`);
+      await page.goto(`${base}/checkout/${orderId}/share`);
       const frame = page.frameLocator('#checkout-frame');
       await expect(frame.locator('#checkout-root')).toBeVisible();
       await expect(frame.locator('html')).toHaveAttribute('data-theme', theme);

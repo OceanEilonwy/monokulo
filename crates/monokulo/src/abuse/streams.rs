@@ -1,5 +1,6 @@
-//! A cap on how many live-update streams (`/pay/{pk}/orders/{id}/events`)
-//! one client may hold open at once against one store.
+//! A cap on how many live-update streams (`/checkout/{order_id}/events`,
+//! `/api/v1/orders/{order_id}/events`, `/api/v1/events`) one client may hold
+//! open at once against one store.
 //!
 //! The rate limiter counts requests as they arrive, which bounded the old
 //! status polling (every check was a request) but not a stream: one request

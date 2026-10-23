@@ -454,12 +454,14 @@ async fn live_tor_takes_our_torrc_and_hands_monokulo_a_circuit_identity() {
         onion: hostname.clone(),
     };
     let visitor = visitor("visitor");
-    let status_path = format!("/pay/{}/orders/{}/status", store.pk, store.order_id);
+    // The order, read through the API with the store's public key.
+    let order_path = format!("/api/v1/orders/{}", store.order_id);
+    let key_header = format!("Authorization: Bearer {}\r\n", store.pk);
 
     // -- wait until the descriptor is published and reachable ---------------
     let deadline = Instant::now() + REACHABLE_TIMEOUT;
     let first = loop {
-        match visitor.get(&status_path, "").await {
+        match visitor.get(&order_path, &key_header).await {
             Ok(reply) => break reply,
             Err(e) => {
                 assert!(

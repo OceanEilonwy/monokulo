@@ -1,5 +1,5 @@
 //! `http/checkout.rs` - the real, public checkout/payment page
-//! (`GET /pay/{pk}/orders/{order_id}`), its "order not found" fallback,
+//! (`GET /checkout/{order_id}`), its "order not found" fallback,
 //! and the nav-bearing `/share` wrapper around it.
 //!
 //! **`checkout_page`/`not_found_page` deliberately carry no site nav at
@@ -107,8 +107,23 @@ pub struct CheckoutViewModel {
     pub auto_refresh: bool,
     pub toggled_refresh_suffix: String,
     pub payment_error: Option<String>,
-    pub pk: String,
     pub payments: Vec<CheckoutPaymentViewModel>,
+}
+
+/// The order's checkout page (`crate::api::checkout`).
+fn checkout_path(order_id: &crate::db::OrderId) -> String {
+    crate::api::checkout::Path {
+        order_id: order_id.clone(),
+    }
+    .to_string()
+}
+
+/// Where the order's refund address form posts.
+fn refund_path(order_id: &crate::db::OrderId) -> String {
+    crate::http::paths::RefundAddressPath {
+        order_id: order_id.clone(),
+    }
+    .to_string()
 }
 
 /// Checkout styling, adapted from the old `checkout.html.hbs` style block.
@@ -265,8 +280,11 @@ fn events_url(data: &CheckoutViewModel) -> String {
         '&'
     };
     format!(
-        "/pay/{}/orders/{}/events{}{join}routed=true",
-        data.pk, data.order_id, data.query_suffix
+        "{}{}{join}routed=true",
+        crate::http::paths::CheckoutEventsPath {
+            order_id: data.order_id.clone()
+        },
+        data.query_suffix
     )
 }
 
@@ -299,7 +317,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             @if !data.is_terminal {
                 noscript {
                     p class="refresh-toggle" {
-                        a href=(format!("/pay/{}/orders/{}{}", data.pk, data.order_id, data.toggled_refresh_suffix)) {
+                        a href=(format!("{}{}", checkout_path(&data.order_id), data.toggled_refresh_suffix)) {
                             "Auto Refresh: " (if data.auto_refresh { "ON" } else { "OFF" })
                         }
                     }
@@ -325,8 +343,8 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     (live_progress(data))
 
                     @if data.refund_enabled { div class="section" {
-                        form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
-                            fx-action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
+                        form method="post" id="refund-form" action=(format!("{}{}", refund_path(&data.order_id), data.query_suffix))
+                            fx-action=(format!("{}{}", refund_path(&data.order_id), data.query_suffix))
                             fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors
                             // The QR decoder, fetched by checkout.js only
                             // when a customer scans or picks an image.
@@ -767,11 +785,10 @@ fn share_frame_src(chrome: &PageChrome, data: &CheckoutShareViewModel) -> String
     } else {
         format!("?{}", params.join("&"))
     };
-    format!("/pay/{}/orders/{}{query}", data.pk, data.order_id)
+    format!("{}{query}", checkout_path(&data.order_id))
 }
 
 pub struct CheckoutShareViewModel {
-    pub pk: String,
     pub order_id: crate::db::OrderId,
     /// Whether the order actually exists - `false` renders a real
     /// not-found state (still with the site's own nav around it, unlike
@@ -865,7 +882,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/pay/pk_abc123/orders/pay_abc123")
+        PageChrome::from_user(None, "/checkout/pay_abc123")
     }
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
@@ -903,7 +920,6 @@ mod tests {
             auto_refresh: true,
             toggled_refresh_suffix: "?refresh=false".to_string(),
             payment_error: None,
-            pk: "pk_abc123".to_string(),
             payments: vec![],
         }
     }
@@ -925,7 +941,7 @@ mod tests {
         assert!(html.contains(
             r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
         ));
-        assert!(html.contains(r#"<noscript><p class="refresh-toggle"><a href="/pay/pk_abc123/orders/pay_abc123?refresh=false">Auto Refresh: ON</a></p></noscript>"#), "got: {html}");
+        assert!(html.contains(r#"<noscript><p class="refresh-toggle"><a href="/checkout/pay_abc123?refresh=false">Auto Refresh: ON</a></p></noscript>"#), "got: {html}");
         assert!(html.contains(
             r#"<noscript><div class="form-actions"><button class="mk-btn" type="submit">Save</button></div></noscript>"#
         ));
@@ -961,12 +977,15 @@ mod tests {
             "auto refresh off must drop the meta refresh, got: {html}"
         );
         assert!(
-            html.contains(
-                r#"<a href="/pay/pk_abc123/orders/pay_abc123?view=compact">Auto Refresh: OFF</a>"#
-            ),
+            html.contains(r#"<a href="/checkout/pay_abc123?view=compact">Auto Refresh: OFF</a>"#),
             "got: {html}"
         );
-        assert!(html.contains(r#"action="/pay/pk_abc123/orders/pay_abc123/refund-address?view=compact&amp;refresh=false""#), "saving must keep auto refresh off, got: {html}");
+        assert!(
+            html.contains(
+                r#"action="/checkout/pay_abc123/refund-address?view=compact&amp;refresh=false""#
+            ),
+            "saving must keep auto refresh off, got: {html}"
+        );
 
         let terminal = checkout_page(&chrome(), &test_checkout_view_model(true)).into_string();
         assert!(
@@ -1363,21 +1382,19 @@ mod tests {
     #[test]
     fn share_page_wraps_the_iframe_with_the_site_nav_when_found() {
         let data = CheckoutShareViewModel {
-            pk: "pk_abc123".to_string(),
             order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             found: true,
         };
         let html = share_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="site-nav""#));
         assert!(html.contains("Monokulo"));
-        assert!(html.contains(r#"src="/pay/pk_abc123/orders/pay_abc123""#));
+        assert!(html.contains(r#"src="/checkout/pay_abc123""#));
         assert!(!html.contains("Order not found"));
     }
 
     #[test]
     fn share_page_shows_a_not_found_state_with_the_site_nav_when_not_found() {
         let data = CheckoutShareViewModel {
-            pk: "pk_abc123".to_string(),
             order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
             found: false,
         };

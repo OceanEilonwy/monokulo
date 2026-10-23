@@ -1,5 +1,7 @@
-//! `POST /signup` (WBS 1.1.1): creates a monokulo user account with a
-//! hashed password. Unauthenticated by necessity — nobody has an account yet.
+//! Making a monokulo account with a hashed password (WBS 1.1.1), for the
+//! sign-up form (`http/dashboard.rs`) and the first-run admin setup
+//! (`http/admin_setup.rs`). Unauthenticated by necessity — nobody has an
+//! account yet.
 //!
 //! Gated on this instance's `signup.mode` setting (`crate::settings::SIGNUP_MODE`)
 //! — `"public"` (any visitor may sign up, the original behavior) or
@@ -10,39 +12,16 @@
 //! `is_admin: true` skips the mode check outright, since a fresh instance
 //! has no invite system worth gating its own bootstrap on.
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::Json;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::db::RedeemInviteResult;
 use crate::now_unix;
 use crate::settings::SignupMode;
 
-use super::{ApiError, AppState};
+use super::AppState;
 
-#[derive(Deserialize)]
-pub struct SignupRequest {
-    pub email: String,
-    pub password: String,
-    /// Only consulted (and only required) when this instance's `signup.mode`
-    /// is `"invite_only"` - ignored entirely in `"public"` mode, same as
-    /// the form field `http/dashboard.rs`'s `SignupForm::invite` is.
-    #[serde(default)]
-    pub invite_token: Option<String>,
-}
-
-#[derive(Serialize)]
-pub struct SignupResponse {
-    pub user_id: String,
-}
-
-/// The ways account creation can fail - kept separate from [`ApiError`]
-/// so the browser-facing form handler (`http/dashboard.rs`, WBS 1.3.1) can
-/// map a duplicate email to a re-rendered form with a visible error instead
-/// of a bare JSON `409`, while the JSON handler below keeps its existing
-/// `ApiError::Conflict`/`ApiError::Internal` shape.
+/// The ways account creation can fail, for the sign-up form
+/// (`http/dashboard.rs`, WBS 1.3.1) and the first-run admin setup to show.
 pub(super) enum CreateAccountError {
     DuplicateEmail,
     Internal,
@@ -183,38 +162,6 @@ pub(super) fn normalize_email(email: &str) -> Option<String> {
 impl From<shared::sqlite::PoolError> for CreateAccountError {
     fn from(_: shared::sqlite::PoolError) -> Self {
         CreateAccountError::Internal
-    }
-}
-
-pub async fn signup(
-    State(state): State<AppState>,
-    Json(req): Json<SignupRequest>,
-) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
-    match create_account(
-        &state,
-        &req.email,
-        &req.password,
-        false,
-        req.invite_token.as_deref(),
-    )
-    .await
-    {
-        Ok(id) => Ok((StatusCode::CREATED, Json(SignupResponse { user_id: id }))),
-        Err(CreateAccountError::DuplicateEmail) => Err(ApiError::Conflict),
-        Err(CreateAccountError::Internal) => Err(ApiError::Internal),
-        Err(CreateAccountError::InviteRequired) => Err(ApiError::BadRequest(
-            "an invite token is required to sign up".to_string(),
-        )),
-        Err(CreateAccountError::InvalidOrUsedInvite) => Err(ApiError::BadRequest(
-            "that invite link is invalid or has already been used".to_string(),
-        )),
-        Err(CreateAccountError::WeakPassword) => Err(ApiError::BadRequest(format!(
-            "the password must be at least {MIN_PASSWORD_LEN} characters"
-        ))),
-        Err(CreateAccountError::InvalidEmail) => Err(ApiError::BadRequest(
-            "that is not an email address".to_string(),
-        )),
-        Err(CreateAccountError::AlreadySetUp) => Err(ApiError::Conflict),
     }
 }
 

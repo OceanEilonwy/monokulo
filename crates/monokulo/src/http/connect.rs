@@ -25,8 +25,8 @@
 //!    [`AuthedUser`]: the plugin calls this server-to-server, with no
 //!    monokulo session at all. Redeems the token exactly once (see
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
-//!    returns `{public_key, secret_token, endpoint}` (`endpoint` is this
-//!    instance's public address, never the engine's) plus, as of WBS 1.4.4,
+//!    returns `{public_key, secret_token, api}` (`api` is the API's entry,
+//!    `/api/v1`, a path on this instance, never the engine's) plus, as of WBS 1.4.4,
 //!    a `webhook_signing_secret` when the request carried a `webhook_url` -
 //!    see [`finish`]'s own doc comment for the registration/failure policy.
 
@@ -416,25 +416,20 @@ pub struct FinishRequest {
 
 #[derive(Serialize)]
 pub struct FinishResponse {
+    /// The store's public key, for the shop's pages that embed the checkout
+    /// with `monokulo-client.js`.
     pub public_key: String,
+    /// The store's secret key: `Authorization: Bearer sk_…` on the API,
+    /// from the shop's server only.
     pub secret_token: String,
-    /// This instance's public address (`crate::settings::public_uri`): where
-    /// the plugin creates orders (`POST {endpoint}/pay/{pk}/orders` with the
-    /// secret key) and sends customers (`{endpoint}/pay/{pk}/orders/{id}`).
-    /// Never the engine's address - the engine is private.
-    pub endpoint: String,
-    /// This instance's onion address, while it has one
-    /// (`crate::network::onion_uri`): where the plugin sends a customer
-    /// who is shopping on the shop's own onion address, so they never
-    /// leave Tor. Orders are still created at `endpoint`, from the shop's
-    /// server. Left out when there's none, so the wire shape is unchanged
-    /// for an instance without Tor and a plugin that doesn't know it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub onion_endpoint: Option<String>,
-    /// Present only when `webhook_url` was supplied and registration succeeded.
-    /// `skip_serializing_if` keeps the wire shape for a caller with no webhook
-    /// exactly what it always was — a bare `{public_key, secret_token, endpoint}` —
-    /// rather than growing a permanent `null` field for every existing caller.
+    /// The API's entry, `/api/v1` (`crate::api`): a path, which the plugin
+    /// resolves against the address it called this at. Every other URL
+    /// (making orders, an order's checkout page) is a link from there, so
+    /// the plugin builds none itself. Never the engine's address - the
+    /// engine is private.
+    pub api: String,
+    /// Present only when `webhook_url` was supplied and registration
+    /// succeeded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_signing_secret: Option<String>,
 }
@@ -477,16 +472,13 @@ pub async fn finish(
     let Some(slug) = PluginSlug::parse(&platform) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let endpoint = match public_uri_for_plugins(&state).await {
-        Ok(url) => url,
-        Err(why) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(serde_json::json!({ "error": why.to_string() })),
-            )
-                .into_response()
-        }
-    };
+    if let Err(why) = public_uri_for_plugins(&state).await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": why.to_string() })),
+        )
+            .into_response();
+    }
     let token_hash = shared::auth::RawToken::presented(&req.token).hash();
 
     // The token is spent and its connection read in one write job.
@@ -610,8 +602,7 @@ pub async fn finish(
     Json(FinishResponse {
         public_key: row.tenant_public_key,
         secret_token: secret_token.expose().to_string(),
-        endpoint,
-        onion_endpoint: crate::network::onion_uri(&state.settings, &state.tor),
+        api: crate::api::v1::root::Path {}.to_string(),
         webhook_signing_secret,
     })
     .into_response()
@@ -918,17 +909,27 @@ mod tests {
         assert!(public_key.starts_with("pk_"));
         let secret_token = obj.get("secret_token").unwrap().as_str().unwrap();
         assert!(secret_token.starts_with("sk_"));
-        let endpoint = obj.get("endpoint").unwrap().as_str().unwrap();
-        assert_eq!(
-            endpoint, TEST_PUBLIC_URI,
-            "plugins get monokulo's public address"
-        );
-        assert_ne!(
-            endpoint,
-            format!("http://{}", engine.addr),
-            "never the engine's"
-        );
+        // The API's path on monokulo, the address the plugin already
+        // reached it at; never the engine's.
+        assert_eq!(obj["api"], "/api/v1");
+        assert!(!obj.contains_key("endpoint"));
+        assert!(!obj.contains_key("onion_endpoint"));
+        assert!(!finish_body.to_string().contains(&engine.addr.to_string()));
         assert!(!obj.contains_key("webhook_signing_secret"));
+
+        // The secret key works on monokulo's API, naming this store.
+        let store = router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "GET",
+                "/api/v1/store",
+                Some(secret_token),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(store.status(), StatusCode::OK);
+        assert_eq!(body_json(store).await["name"], "Shop");
 
         // The secret token is the tenant's real, working credential.
         let engine_client = EngineClient::embedded_for_tests(engine.router());
@@ -1378,7 +1379,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders"))
+                    .uri("/api/v1/orders")
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {}", new_sk.expose()))
                     .header("monokulo-client", "acme-cart/0.4.1")
@@ -1389,7 +1390,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(order.status(), StatusCode::OK);
+        assert_eq!(order.status(), StatusCode::CREATED);
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert_eq!(rows[0].version, "0.4.1");
         assert!(rows[0].last_seen_at.is_some());
@@ -1803,44 +1804,8 @@ mod tests {
         let response = finish(&router, serde_json::json!({ "token": token })).await;
         assert_eq!(response.status(), StatusCode::OK, "the token was not spent");
         let body = body_json(response).await;
-        assert_eq!(body["endpoint"], TEST_PUBLIC_URI);
+        assert_eq!(body["api"], "/api/v1");
         assert!(!body.to_string().contains(&engine.addr.to_string()));
-        assert!(body.get("onion_endpoint").is_none(), "no Tor here: {body}");
-    }
-
-    /// With an onion address, the plugin is given it too, for customers who
-    /// shop on the shop's own onion address; orders are still created at
-    /// the web address.
-    #[tokio::test]
-    async fn a_plugin_is_given_the_onion_address_beside_the_web_one() {
-        const ONION: &str = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
-        let (state, _engine) = test_state_with_real_engine().await;
-        let state = AppState {
-            settings: state.settings.with_tor(crate::settings::TorConfig {
-                mode: crate::settings::TorMode::External,
-                onion_uri: Some(ONION.to_string()),
-                ..crate::settings::TorConfig::defaults()
-            }),
-            ..state
-        };
-        let router = build_router(state);
-        let cookie =
-            signed_up_and_logged_in_session_cookie(&router, "onion-shop@example.com").await;
-        let submit = connect_through_setup(
-            &router,
-            &cookie,
-            "https://shop.example.com",
-            "https://shop.example.com/cb",
-            "n1",
-            &[],
-        )
-        .await;
-        let token = parse_query_params(&location(&submit))["token"].clone();
-        let response = finish(&router, serde_json::json!({ "token": token })).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body_json(response).await;
-        assert_eq!(body["endpoint"], TEST_PUBLIC_URI);
-        assert_eq!(body["onion_endpoint"], ONION);
     }
 
     #[test]

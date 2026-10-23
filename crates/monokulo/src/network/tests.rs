@@ -144,7 +144,7 @@ fn only_pages_get_onion_location() {
     json.insert("content-type", "application/json".parse().unwrap());
     state
         .network_of(NetworkKind::Web)
-        .response_headers("/pay/pk/orders/1/status", &mut json);
+        .response_headers("/api/v1/orders/1", &mut json);
     assert!(json.get("onion-location").is_none());
 }
 
@@ -162,8 +162,11 @@ fn each_visitor_gets_links_on_the_address_they_used() {
         &headers,
         &Extensions::new(),
     );
-    assert_eq!(web.link("/pay/x"), format!("{WEB}/pay/x"));
-    assert_eq!(onion.link("/pay/x"), format!("http://{ONION}/pay/x"));
+    assert_eq!(web.link("/checkout/x"), format!("{WEB}/checkout/x"));
+    assert_eq!(
+        onion.link("/checkout/x"),
+        format!("http://{ONION}/checkout/x")
+    );
     assert!(web.may_load_external);
     assert!(!onion.may_load_external);
 }

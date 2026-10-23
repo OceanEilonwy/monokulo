@@ -11,7 +11,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use crate::engine_client::EngineClient;
-use crate::http::test_support::{admin_session_cookie, body_json, body_text, form_post};
+use crate::http::test_support::{
+    admin_session_cookie, api_request, body_json, body_text, form_post, store_with_keys,
+};
 use crate::http::{build_router, AppState};
 
 const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
@@ -31,9 +33,8 @@ async fn state_with_engine(options: &str) -> (AppState, engine_test_support::Tes
     (state, engine)
 }
 
-/// A store of the seeded admin's: its id and public key, and the admin's
-/// cookie.
-async fn store(router: &Router, state: &AppState) -> (String, String, String) {
+/// A store of the seeded admin's: its id, and the admin's cookie.
+async fn store(router: &Router) -> (String, String) {
     let cookie = admin_session_cookie(router).await;
     let made = crate::http::test_support::set_up_store_with_keys(
         router,
@@ -46,15 +47,7 @@ async fn store(router: &Router, state: &AppState) -> (String, String, String) {
         ],
     )
     .await;
-    let id = crate::http::test_support::store_made(&made);
-    let pk = state
-        .db
-        .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.clone()))
-        .unwrap()
-        .unwrap()
-        .tenant_public_key;
-    (id, pk, cookie)
+    (crate::http::test_support::store_made(&made), cookie)
 }
 
 async fn get(router: &Router, uri: &str, cookie: &str) -> axum::response::Response {
@@ -130,10 +123,11 @@ fn connect_body(token: &str) -> serde_json::Value {
     })
 }
 
-fn order(pk: &str, key: &str, idempotency_key: &str) -> Request<Body> {
+/// An order made with `key`, as a till makes one.
+fn order(key: &str, idempotency_key: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
-        .uri(format!("/pay/{pk}/orders"))
+        .uri("/api/v1/orders")
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {key}"))
         .header("monokulo-client", "monokular/0.1.1")
@@ -147,6 +141,16 @@ fn order(pk: &str, key: &str, idempotency_key: &str) -> Request<Body> {
             .to_string(),
         ))
         .unwrap()
+}
+
+/// `GET uri` on the API with `key`: its status and body.
+async fn read(router: &Router, uri: &str, key: &str) -> (StatusCode, serde_json::Value) {
+    let response = router
+        .clone()
+        .oneshot(api_request("GET", uri, Some(key), None))
+        .await
+        .unwrap();
+    (response.status(), body_json(response).await)
 }
 
 /// The next server-sent event on `body`: its name and data.
@@ -180,13 +184,14 @@ async fn next_event(body: &mut Body, buffer: &mut String) -> (String, serde_json
 }
 
 /// The whole flow: a code from the dashboard, redeemed once for a key; the
-/// key makes orders that are the app's and announced on the store's stream;
-/// the dashboard lists the device; disconnecting it stops the key.
+/// key reads its store and its own connection, makes orders that are the
+/// app's and announced on the store's stream; the dashboard lists the
+/// device; disconnecting it stops the key.
 #[tokio::test]
 async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let (state, _engine) = state_with_engine(&format!("public_uri = \"{PUBLIC_URI}\"\n")).await;
     let router = build_router(state.clone());
-    let (id, pk, cookie) = store(&router, &state).await;
+    let (id, cookie) = store(&router).await;
 
     let (token, status) = code(&router, &id, &cookie, "Front counter").await;
     assert!(token.starts_with("ct_"), "{token}");
@@ -204,16 +209,23 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let response = redeem(&router, connect_body(&token)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let creds = body_json(response).await;
-    assert_eq!(creds["public_key"], pk.as_str());
-    assert_eq!(creds["endpoint"], PUBLIC_URI);
-    assert_eq!(
-        creds["device_name"], "Front counter",
-        "the merchant's name wins"
-    );
-    assert_eq!(creds["store"]["name"], "Bakery");
-    assert_eq!(creds["wallet"]["network"], "mainnet");
+    // Only the key and where the API is: the rest the app reads with it.
+    assert_eq!(creds["api"], "/api/v1");
+    assert_eq!(creds.as_object().unwrap().len(), 2, "{creds}");
     let key = creds["app_key"].as_str().unwrap().to_owned();
     assert!(key.starts_with("ak_"));
+
+    let (status_code, app) = read(&router, "/api/v1/app", &key).await;
+    assert_eq!(status_code, StatusCode::OK);
+    assert_eq!(
+        app["device_name"], "Front counter",
+        "the merchant's name wins"
+    );
+    assert_eq!(app["platform"], "android");
+    let (status_code, store) = read(&router, "/api/v1/store", &key).await;
+    assert_eq!(status_code, StatusCode::OK);
+    assert_eq!(store["name"], "Bakery");
+    assert_eq!(store["wallet"]["network"], "mainnet");
 
     // Once only.
     assert_eq!(
@@ -237,24 +249,13 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     // The stream is for keys only.
     let anonymous = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/pay/{pk}/events"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(api_request("GET", "/api/v1/events", None, None))
         .await
         .unwrap();
     assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
     let stream = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("/pay/{pk}/events"))
-                .header("authorization", format!("Bearer {key}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(api_request("GET", "/api/v1/events", Some(&key), None))
         .await
         .unwrap();
     assert_eq!(stream.status(), StatusCode::OK);
@@ -262,23 +263,12 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     let mut buffer = String::new();
     assert_eq!(next_event(&mut body, &mut buffer).await.0, "ready");
 
-    let made = router
-        .clone()
-        .oneshot(order(&pk, &key, "sq:abc"))
-        .await
-        .unwrap();
-    assert_eq!(made.status(), StatusCode::OK);
+    let made = router.clone().oneshot(order(&key, "sq:abc")).await.unwrap();
+    assert_eq!(made.status(), StatusCode::CREATED);
     let made = body_json(made).await;
     let order_id = made["order_id"].as_str().unwrap().to_owned();
     // A second till finding the same sale gets the same order.
-    let again = body_json(
-        router
-            .clone()
-            .oneshot(order(&pk, &key, "sq:abc"))
-            .await
-            .unwrap(),
-    )
-    .await;
+    let again = body_json(router.clone().oneshot(order(&key, "sq:abc")).await.unwrap()).await;
     assert_eq!(again["order_id"], order_id.as_str());
 
     let (name, event) = next_event(&mut body, &mut buffer).await;
@@ -311,7 +301,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     );
 
     // Disconnected from the dashboard: the key stops working.
-    let app_id = creds["app_id"].as_str().unwrap();
+    let app_id = app["app_id"].as_str().unwrap();
     let gone = router
         .clone()
         .oneshot(form_post(
@@ -322,11 +312,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
         .await
         .unwrap();
     assert_eq!(gone.status(), StatusCode::SEE_OTHER);
-    let refused = router
-        .clone()
-        .oneshot(order(&pk, &key, "sq:def"))
-        .await
-        .unwrap();
+    let refused = router.clone().oneshot(order(&key, "sq:def")).await.unwrap();
     assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
     // Its open stream ends, so the app learns at once.
     let ended = tokio::time::timeout(Duration::from_secs(5), async {
@@ -339,45 +325,57 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
 }
 
 /// An app disconnects itself with its own key; the store's key can't do it
-/// for an app, and an app's key is no good for another store.
+/// for an app, and an app's key is no good for another store's orders.
 #[tokio::test]
 async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
     let (state, _engine) = state_with_engine(&format!("public_uri = \"{PUBLIC_URI}\"\n")).await;
     let router = build_router(state.clone());
-    let (id, pk, cookie) = store(&router, &state).await;
+    let (id, cookie) = store(&router).await;
     let (token, _) = code(&router, &id, &cookie, "").await;
     let creds = body_json(redeem(&router, connect_body(&token)).await).await;
+    let key = creds["app_key"].as_str().unwrap().to_owned();
+    let (_, app) = read(&router, "/api/v1/app", &key).await;
     assert_eq!(
-        creds["device_name"], "Pixel 8",
+        app["device_name"], "Pixel 8",
         "the app names the device when the merchant didn't"
     );
-    let key = creds["app_key"].as_str().unwrap().to_owned();
 
-    // Another store's public key with this app's key.
-    let elsewhere = router
+    // Another store's order, made with that store's secret key: not this
+    // app's to read.
+    let session = cookie.strip_prefix("session=").unwrap();
+    let other = store_with_keys(&router, &state, session, "", "XMR").await;
+    let theirs = router
         .clone()
-        .oneshot(order("pk_someone_else", &key, "sq:1"))
+        .oneshot(order(&other.secret_key, "sq:1"))
         .await
         .unwrap();
-    assert_eq!(elsewhere.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(theirs.status(), StatusCode::CREATED);
+    let theirs = body_json(theirs).await["order_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let uri = format!("/api/v1/orders/{theirs}");
+    assert_eq!(
+        read(&router, &uri, &other.secret_key).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(read(&router, &uri, &key).await.0, StatusCode::NOT_FOUND);
 
     let delete = |key: String| {
-        let (router, pk) = (router.clone(), pk.clone());
+        let router = router.clone();
         async move {
             router
-                .oneshot(
-                    Request::builder()
-                        .method("DELETE")
-                        .uri(format!("/pay/{pk}/app"))
-                        .header("authorization", format!("Bearer {key}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(api_request("DELETE", "/api/v1/app", Some(&key), None))
                 .await
                 .unwrap()
                 .status()
         }
     };
+    assert_eq!(
+        delete(other.secret_key.clone()).await,
+        StatusCode::FORBIDDEN,
+        "a store's key is not an app"
+    );
     assert_eq!(delete(key.clone()).await, StatusCode::NO_CONTENT);
     assert_eq!(delete(key.clone()).await, StatusCode::UNAUTHORIZED);
     assert!(state
@@ -395,7 +393,7 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
 async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
     let (state, _engine) = state_with_engine("").await;
     let router = build_router(state.clone());
-    let (id, _, cookie) = store(&router, &state).await;
+    let (id, cookie) = store(&router).await;
     let page = router
         .clone()
         .oneshot(form_post(

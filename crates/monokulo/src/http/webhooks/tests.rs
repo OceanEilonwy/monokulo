@@ -12,7 +12,7 @@ use super::parse_extra_headers;
 use crate::db::{Attempt, AttemptOutcome, LoggedEvent, OrderId};
 use crate::engine_client::EngineClient;
 use crate::http::test_support::{
-    body_json, body_text, signed_up_and_logged_in_session_token, urlencoding_encode,
+    body_text, signed_up_and_logged_in_session_token, store_with_keys, urlencoding_encode,
 };
 use crate::http::{build_router, AppState};
 
@@ -29,39 +29,25 @@ async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEn
 }
 
 /// A store for `session_token`'s account: `(connection_id, public_key)`.
-async fn create_connection(router: &Router, session_token: &str) -> (String, String) {
+async fn create_connection(
+    router: &Router,
+    state: &AppState,
+    session_token: &str,
+) -> (String, String) {
     static STORES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let body = serde_json::json!({
-        "site_url": format!("https://shop-{n}.example.com"),
-        "view_key_hex": "0707070707070707070707070707070707070707070707070707070707070707",
-        "spend_pubkey_hex": "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90",
-        "network": "mainnet",
-        "domains": [],
-        "base_currency": "XMR",
-    });
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/connections")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {session_token}"))
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let body = body_json(response).await;
-    (
-        body["connection_id"].as_str().unwrap().to_string(),
-        body["public_key"].as_str().unwrap().to_string(),
+    let store = store_with_keys(
+        router,
+        state,
+        session_token,
+        &format!("https://shop-{n}.example.com"),
+        "XMR",
     )
+    .await;
+    (store.id, store.public_key)
 }
 
-fn form_post_request(uri: &str, bearer: &str, fields: &[(&str, &str)]) -> Request<Body> {
+fn form_post_request(uri: &str, session: &str, fields: &[(&str, &str)]) -> Request<Body> {
     let body = fields
         .iter()
         .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
@@ -71,18 +57,18 @@ fn form_post_request(uri: &str, bearer: &str, fields: &[(&str, &str)]) -> Reques
         .method("POST")
         .uri(uri)
         .header("content-type", "application/x-www-form-urlencoded")
-        .header("authorization", format!("Bearer {bearer}"))
+        .header("cookie", format!("session={session}"))
         .body(Body::from(body))
         .unwrap()
 }
 
-async fn get(router: &Router, uri: &str, bearer: &str) -> axum::response::Response {
+async fn get(router: &Router, uri: &str, session: &str) -> axum::response::Response {
     router
         .clone()
         .oneshot(
             Request::builder()
                 .uri(uri)
-                .header("authorization", format!("Bearer {bearer}"))
+                .header("cookie", format!("session={session}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -145,7 +131,7 @@ async fn creating_a_webhook_with_custom_headers_keeps_them() {
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
     let response = router
         .oneshot(form_post_request(
             &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
@@ -224,7 +210,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
     let html = body_text(
         router
             .clone()
@@ -325,7 +311,7 @@ async fn store_with_deliveries(
     let router = build_router(state.clone());
     let session =
         signed_up_and_logged_in_session_token(&router, email, "correct horse battery staple").await;
-    let (store, pk) = create_connection(&router, &session).await;
+    let (store, pk) = create_connection(&router, state, &session).await;
     let created = crate::webhooks::create(
         &state.db,
         &state.encryption_key,
@@ -541,7 +527,7 @@ async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_a
         "correct horse battery staple",
     )
     .await;
-    let (empty, _) = create_connection(&router2, &other).await;
+    let (empty, _) = create_connection(&router2, &state, &other).await;
     let html = body_text(
         get(
             &router2,
@@ -747,7 +733,7 @@ async fn another_accounts_webhooks_and_deliveries_are_not_found() {
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
     }
     // And their own store can't reach another webhook's delivery by id.
-    let (own, _) = create_connection(&router, &intruder).await;
+    let (own, _) = create_connection(&router, &state, &intruder).await;
     let uri = format!("/dashboard/stores/{own}/settings/webhooks/{webhook}/deliveries/{delivered}");
     assert_eq!(
         get(&router, &uri, &intruder).await.status(),
@@ -768,7 +754,7 @@ async fn another_accounts_webhooks_and_deliveries_are_not_found() {
 async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and_registers_nothing()
 {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -776,7 +762,7 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
     let response = router
         .clone()
@@ -808,7 +794,7 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
                 .uri(format!(
                     "/dashboard/stores/{connection_id}/settings?tab=connections"
                 ))
-                .header("authorization", format!("Bearer {session_token}"))
+                .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -824,7 +810,7 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
 #[tokio::test]
 async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward() {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -832,7 +818,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
     let response = router
         .clone()
@@ -864,7 +850,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
                 .uri(format!(
                     "/dashboard/stores/{connection_id}/settings?tab=connections"
                 ))
-                .header("authorization", format!("Bearer {session_token}"))
+                .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -881,7 +867,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
 #[tokio::test]
 async fn creating_a_webhook_with_an_empty_url_shows_a_clear_error() {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -889,7 +875,7 @@ async fn creating_a_webhook_with_an_empty_url_shows_a_clear_error() {
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
     let response = router
         .oneshot(form_post_request(
@@ -910,7 +896,7 @@ async fn creating_a_webhook_with_an_empty_url_shows_a_clear_error() {
 #[tokio::test]
 async fn creating_a_webhook_with_an_invalid_url_says_why() {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -918,7 +904,7 @@ async fn creating_a_webhook_with_an_invalid_url_says_why() {
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
     let response = router
         .oneshot(form_post_request(
@@ -939,7 +925,7 @@ async fn creating_a_webhook_with_an_invalid_url_says_why() {
 #[tokio::test]
 async fn deleting_a_webhook_removes_it_from_the_list() {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -947,7 +933,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
 
     let create_response = router
         .clone()
@@ -970,7 +956,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
                 .uri(format!(
                     "/dashboard/stores/{connection_id}/settings?tab=connections"
                 ))
-                .header("authorization", format!("Bearer {session_token}"))
+                .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1009,7 +995,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
                 .uri(format!(
                     "/dashboard/stores/{connection_id}/settings?tab=connections"
                 ))
-                .header("authorization", format!("Bearer {session_token}"))
+                .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1025,7 +1011,7 @@ async fn deleting_a_webhook_removes_it_from_the_list() {
 #[tokio::test]
 async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_connection() {
     let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state);
+    let router = build_router(state.clone());
 
     let owner_token = signed_up_and_logged_in_session_token(
         &router,
@@ -1033,7 +1019,7 @@ async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_conn
         "correct horse battery staple",
     )
     .await;
-    let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+    let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
 
     let intruder_token = signed_up_and_logged_in_session_token(
         &router,
@@ -1078,7 +1064,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
         "correct horse battery staple",
     )
     .await;
-    let (store, pk) = create_connection(&router, &session).await;
+    let (store, pk) = create_connection(&router, &state, &session).await;
     let created = crate::webhooks::create(
         &state.db,
         &state.encryption_key,
@@ -1178,7 +1164,7 @@ async fn a_webhooks_deliveries_page_twenty_at_a_time() {
         .oneshot(
             Request::builder()
                 .uri(format!("{base}?page=1"))
-                .header("authorization", format!("Bearer {session}"))
+                .header("cookie", format!("session={session}"))
                 .header("fx-request", "true")
                 .body(Body::empty())
                 .unwrap(),

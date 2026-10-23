@@ -1,8 +1,8 @@
 //! Real end-to-end test for the "Confirmation Thresholds" feature
 //! (`docs/WOOCOMMERCE_ROADMAP.md`): a real store, connected against a real
-//! stagenet-configured engine through monokulo's own public HTTP surface (no
-//! cookie jar, no browser-facing connect flow - see this file's own doc
-//! comment below on why), gets one real custom confirmation threshold whose
+//! stagenet-configured engine through monokulo's own dashboard forms (no
+//! browser-facing connect flow - see this file's own doc comment below on
+//! why), gets one real custom confirmation threshold whose
 //! `confirmations_required` (1) is deliberately far below the tenant's own
 //! plain default (99, set explicitly so it can never be mistaken for the
 //! threshold actually being applied), then a real order priced above that
@@ -30,13 +30,12 @@
 //! stagenet test (`e2e_stagenet_connect_flow.rs`) uses hands back a
 //! `pk_...`/`sk_...` credential pair for a "plugin" integration, never the
 //! `connection_id`/session a real merchant's own browser would have. This
-//! test signs up and logs in directly instead (the exact same raw-HTTP
-//! pattern `mock-woocommerce/src/lib.rs`'s own
-//! `a_callback_with_a_mismatched_nonce_is_rejected_and_never_consumes_the_token`
-//! test already uses), then uses the resulting session token as a `Bearer`
-//! header throughout - `http::resolve_authed_user` accepts a session token
-//! either as a cookie *or* an `Authorization: Bearer` header identically, so
-//! this needs no cookie jar at all, unlike the browser-shaped connect flow.
+//! test signs up on `/dashboard/signup` and sets the store up through
+//! `/setup` directly instead, as a browser without JavaScript does (the same
+//! forms `mock-woocommerce/src/lib.rs`'s `walk_setup` posts), keeping the
+//! `session` cookie in a cookie-persisting client: sessions are cookies
+//! only. The order is made the way the store's website does it, `POST
+//! /api/v1/orders` with the store's public key.
 //!
 //! ## Running this test
 //!
@@ -81,8 +80,8 @@ const TEST_ORDER_AMOUNT_PICONERO: u64 = 335_000_000;
 /// `confirmation_thresholds::resolve_for_order`'s own "same currency" case),
 /// so this order unambiguously qualifies for it.
 const THRESHOLD_UNIT_AMOUNT: &str = "0.0001";
-/// Far below the tenant's own plain default (99, set explicitly on
-/// `POST /connections` below) - if the real engine's stored order ever
+/// Far below the tenant's own plain default (99, set explicitly through
+/// store setup below) - if the real engine's stored order ever
 /// showed this tenant default instead, the two are different enough that no
 /// test flakiness could produce a false pass.
 const THRESHOLD_CONFIRMATIONS_REQUIRED: u64 = 1;
@@ -129,6 +128,8 @@ where
 /// shared.
 struct TestControlPlaneHandle {
     addr: std::net::SocketAddr,
+    /// monokulo's database, which holds the store this test sets up.
+    db: monokulo::db::Database,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -153,6 +154,7 @@ async fn spawn_test_monokulo(
         settings: AppState::test_settings(None),
         ..AppState::for_tests_with_db(db.into_shared())
     };
+    let db = state.db.clone();
     let router = build_router(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -164,7 +166,7 @@ async fn spawn_test_monokulo(
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    TestControlPlaneHandle { addr, task }
+    TestControlPlaneHandle { addr, db, task }
 }
 
 async fn body_json(response: reqwest::Response) -> Value {
@@ -253,79 +255,89 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let monokulo = spawn_test_monokulo(&engine).await;
     let monokulo_base_url = format!("http://{}", monokulo.addr);
 
-    let client = reqwest::Client::new();
+    // A browser's cookie jar: signing up sets the `session` cookie every
+    // dashboard form below sends. Redirects are followed, as a browser does,
+    // so each step's response is the page it lands on.
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .unwrap();
     let email = format!("e2e-threshold+{}@example.com", uuid::Uuid::new_v4());
     let password = "correct horse battery staple";
 
     let signup = client
-        .post(format!("{monokulo_base_url}/signup"))
-        .json(&json!({ "email": email, "password": password }))
+        .post(format!("{monokulo_base_url}/dashboard/signup"))
+        .form(&[("email", email.as_str()), ("password", password)])
         .send()
         .await
         .unwrap();
     assert!(
-        signup.status().is_success(),
-        "signup failed: {}",
-        signup.status()
+        signup.status().is_success() && !signup.url().path().starts_with("/dashboard/signup"),
+        "signup failed: {} at {}",
+        signup.status(),
+        signup.url()
     );
 
-    let login = client
-        .post(format!("{monokulo_base_url}/login"))
-        .json(&json!({ "email": email, "password": password }))
-        .send()
-        .await
-        .unwrap();
-    assert!(
-        login.status().is_success(),
-        "login failed: {}",
-        login.status()
-    );
-    let session_token = body_json(login).await["session_token"]
-        .as_str()
-        .expect("expected a real session_token")
-        .to_string();
-    let bearer = format!("Bearer {session_token}");
-
-    // A real store, connected against the real stagenet-configured engine -
+    // A real store, set up against the real stagenet-configured engine -
     // the tenant's own plain default (99) is deliberately far from the
     // custom threshold's own value (1) set below, so the two can never be
-    // mistaken for each other in the assertions that follow.
-    let connect_response = client
-        .post(format!("{monokulo_base_url}/connections"))
-        .header("authorization", &bearer)
-        .json(&json!({
-            "site_url": "https://e2e-threshold.example.com",
-            "view_key_hex": merchant.private_view_key_hex.clone(),
-            "spend_pubkey_hex": merchant.spend_public_key_hex().unwrap(),
-            "network": "stagenet",
-            "domains": [],
-            "confirmations_required": TENANT_DEFAULT_CONFIRMATIONS_REQUIRED,
-            "base_currency": "XMR",
-        }))
+    // mistaken for each other in the assertions that follow. The store step,
+    // then the wallet brought in with its keys, which makes the store.
+    let tenant_default = TENANT_DEFAULT_CONFIRMATIONS_REQUIRED.to_string();
+    let spend_pubkey_hex = merchant.spend_public_key_hex().unwrap();
+    let fields = [
+        ("store_name", "E2E threshold shop"),
+        ("store_site", "https://e2e-threshold.example.com"),
+        ("base_currency", "XMR"),
+        ("confirmations_required", tenant_default.as_str()),
+        ("name", "Merchant wallet"),
+        ("network", "stagenet"),
+        ("view_key_hex", merchant.private_view_key_hex.as_str()),
+        ("spend_pubkey_hex", spend_pubkey_hex.as_str()),
+    ];
+    let store_step = client
+        .post(format!("{monokulo_base_url}/setup"))
+        .form(&fields)
         .send()
         .await
         .unwrap();
     assert!(
-        connect_response.status().is_success(),
-        "creating the real stagenet connection failed: {}",
-        connect_response.status()
+        store_step.status().is_success() && store_step.url().path().starts_with("/setup/wallet"),
+        "the store step failed: {} at {}",
+        store_step.status(),
+        store_step.url()
     );
-    let connect_body = body_json(connect_response).await;
-    let connection_id = connect_body["connection_id"]
-        .as_str()
-        .expect("expected a real connection_id")
+    let made = client
+        .post(format!("{monokulo_base_url}/setup/wallet/keys"))
+        .form(&fields)
+        .send()
+        .await
+        .unwrap();
+    let connection_id = made
+        .url()
+        .path()
+        .strip_prefix("/setup/done/")
+        .unwrap_or_else(|| {
+            panic!(
+                "setting up the real stagenet store failed: {} at {}",
+                made.status(),
+                made.url()
+            )
+        })
         .to_string();
-    let public_key = connect_body["public_key"]
-        .as_str()
-        .expect("expected a real public_key")
-        .to_string();
+    let public_key = monokulo
+        .db
+        .lock()
+        .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.clone()))
+        .unwrap()
+        .expect("the store setup made")
+        .tenant_public_key;
     println!("connected: connection_id={connection_id} public_key={public_key}");
 
     // The real point of this test: one real custom confirmation threshold,
     // added through the store settings form (`http::store_settings::save`),
     // which saves only the fields it is sent, scoped to this exact store.
-    // `client` is a plain `reqwest::Client::new()`, which follows redirects
-    // by default - so a real success here lands as a 200 on the settings
+    // `client` follows redirects - so a real success here lands as a 200 on the settings
     // page the save's own 303 points at, not the 303 itself; checking the
     // landing page actually shows the new row is a stronger proof of
     // success than a raw status code would be anyway.
@@ -333,7 +345,6 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .post(format!(
             "{monokulo_base_url}/dashboard/stores/{connection_id}/settings"
         ))
-        .header("authorization", &bearer)
         .form(&[
             ("new_unit_amount", THRESHOLD_UNIT_AMOUNT),
             (
@@ -360,10 +371,11 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     println!("created a real confirmation threshold: {THRESHOLD_UNIT_AMOUNT} XMR -> {THRESHOLD_CONFIRMATIONS_REQUIRED} confirmations");
 
     // A real order, priced above the threshold's own unit_amount, through
-    // monokulo's own real public order-creation endpoint - the same one a
-    // real WooCommerce checkout page would call.
+    // monokulo's own real order-creation API with the store's public key -
+    // the same call a real shop's checkout page makes.
     let order_response = client
-        .post(format!("{monokulo_base_url}/pay/{public_key}/orders"))
+        .post(format!("{monokulo_base_url}/api/v1/orders"))
+        .bearer_auth(&public_key)
         .json(&json!({ "amount": TEST_ORDER_AMOUNT_XMR, "currency": "XMR" }))
         .send()
         .await
@@ -420,7 +432,6 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .get(format!(
             "{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{order_id}"
         ))
-        .header("authorization", &bearer)
         .send()
         .await
         .unwrap()
@@ -478,15 +489,17 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             eprintln!("DIAG tick {tick}: scan tick failed, continuing: {e}");
         }
 
-        // Monokulo's public status route - what the customer's checkout page polls.
-        let order_status: Value = reqwest::get(format!(
-            "{monokulo_base_url}/pay/{public_key}/orders/{order_id}/status"
-        ))
-        .await
-        .expect("order status request failed")
-        .json()
-        .await
-        .expect("order status response was not valid JSON");
+        // The order in monokulo's API, read with the public key - what the
+        // embed polls when its live updates can't connect.
+        let order_status: Value = client
+            .get(format!("{monokulo_base_url}/api/v1/orders/{order_id}"))
+            .bearer_auth(&public_key)
+            .send()
+            .await
+            .expect("order status request failed")
+            .json()
+            .await
+            .expect("order status response was not valid JSON");
         let status = order_status["status"].as_str().unwrap_or("?").to_string();
         eprintln!(
             "DIAG tick {tick}: status={status} confirmations={:?}",

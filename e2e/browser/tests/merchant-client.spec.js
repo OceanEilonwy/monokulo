@@ -39,6 +39,10 @@ test('merchant site creates an order, mounts the checkout, and is told once when
     return created;
   }, fixture.public_key);
   expect(order.endpoint).toBe(fixture.base_url);
+  // The order's own links, resolved against where it was made.
+  expect(order.checkoutUrl).toBe(`${fixture.base_url}/checkout/${order.orderId}`);
+  expect(order.orderUrl).toBe(`${fixture.base_url}/api/v1/orders/${order.orderId}`);
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', order.checkoutUrl);
   expect(order.merchantOrderId).toBe('cart-1042');
   expect(order.description).toBe('Two prints');
   expect(order.currency).toBe('XMR');
@@ -120,14 +124,17 @@ test('merchant site keeps following an order through a status outage when its st
   // merchant's callbacks (window.events), which the library calls before
   // setting the next wait.
   await recordFetches(page);
-  const polled = async () => (await fetches(page)).filter(call => call.url.endsWith('/status'));
+  // A poll reads the order from the API (not the POST that made it).
+  const polled = async () => (await fetches(page)).filter(call => /\/api\/v1\/orders\/[^/?]+$/.test(call.url));
   await openShop(page);
   let polls = 0;
-  await page.route(`${fixture.base_url}/pay/*/orders/*/events`, route => route.fulfill({ status: 503, body: '' }));
-  await page.route(`${fixture.base_url}/pay/*/orders/*/status`, route => {
+  await page.route(`${fixture.base_url}/checkout/*/events`, route => route.fulfill({ status: 503, body: '' }));
+  await page.route(`${fixture.base_url}/api/v1/orders/*`, route => {
     polls++;
     // The first poll lands during a server hiccup.
-    return polls === 1 ? route.fulfill({ status: 502, json: { error: 'bad gateway' } }) : route.continue();
+    return polls === 1
+      ? route.fulfill({ status: 502, contentType: 'application/problem+json', json: { title: 'Bad gateway', status: 502, detail: 'bad gateway' } })
+      : route.continue();
   });
   const order = await page.evaluate(async publicKey => {
     const created = await window.Monokulo.createOrder({ publicKey, amount: 1, currency: 'XMR' });
@@ -168,7 +175,7 @@ test('merchant site keeps following an order through a status outage when its st
 
 test('a visitor past the rate limit, or asked for proof on a plain-HTTP shop, gets a clear failure', async ({ page }) => {
   let answer;
-  await page.route(`${fixture.base_url}/pay/*/orders`, route => route.fulfill(answer()));
+  await page.route(`${fixture.base_url}/api/v1/orders`, route => route.fulfill(answer()));
   await openShop(page);
   const attempt = () => page.evaluate(publicKey => window.Monokulo.createOrder({ publicKey, amount: 1, currency: 'XMR' })
     .then(() => 'created', error => error.message), fixture.public_key);
@@ -176,13 +183,15 @@ test('a visitor past the rate limit, or asked for proof on a plain-HTTP shop, ge
 
   // Past the hard limit monokulo answers 429 without a challenge: nothing to
   // solve, so the call fails with the server's reason for the merchant to retry.
-  answer = () => ({ status: 429, headers: { ...cors, 'retry-after': '60' }, json: { error: 'Too many requests. Try again later.' } });
+  answer = () => ({ status: 429, headers: { ...cors, 'retry-after': '60', 'content-type': 'application/problem+json' },
+    body: JSON.stringify({ type: 'https://docs.monokulo.com/problems/rate-limited', title: 'Too many requests', status: 429, detail: 'Too many requests. Try again later.', retry_after: 60 }) });
   expect(await attempt()).toBe('Too many requests. Try again later.');
 
   // A shop served over plain HTTP is not a secure context: no Web Crypto,
   // so a proof-of-work challenge cannot be solved in this browser.
   await page.evaluate(() => { Object.defineProperty(window.crypto, 'subtle', { value: undefined }); });
-  answer = () => ({ status: 429, headers: cors, json: { error: 'Too many requests', challenge: { challenge: 'c0ffee', difficulty: 8 } } });
+  answer = () => ({ status: 429, headers: { ...cors, 'content-type': 'application/problem+json' },
+    body: JSON.stringify({ type: 'https://docs.monokulo.com/problems/challenge-required', title: 'Solve a challenge to continue', status: 429, detail: 'Too many requests', challenge: { challenge: 'c0ffee', difficulty: 8 } }) });
   expect(await attempt()).toContain("can't solve monokulo's challenge");
 });
 
@@ -193,15 +202,15 @@ test('a merchant wiring up the library wrongly gets an error saying what to fix'
     return {
       // The container id was mistyped.
       missing: attempt(() => window.Monokulo.mount('#paymnet', { orderId: 'order_x', endpoint, publicKey })),
-      // An order id kept from a previous visit, without its store's key.
-      noKey: attempt(() => window.Monokulo.mount('#pay', 'order_from_last_visit')),
-      // With the key it mounts: the endpoint comes from the script tag.
-      withKey: attempt(() => window.Monokulo.mount('#pay', 'order_from_last_visit', { publicKey })),
+      // No order id at all (a value the app never stored).
+      noOrder: attempt(() => window.Monokulo.mount('#pay', '')),
+      // An order id kept from a previous visit mounts without the store's
+      // key: the endpoint comes from the script tag.
+      lastVisit: attempt(() => window.Monokulo.mount('#pay', 'order_from_last_visit')),
     };
   }, { publicKey: fixture.public_key, endpoint: fixture.base_url });
   expect(problems.missing).toBe('Monokulo.mount: target element not found: #paymnet');
-  expect(problems.noKey).toContain('could not resolve orderId/endpoint/publicKey');
-  expect(problems.noKey).toContain('{endpoint, publicKey} in options for an orderId from a previous visit');
-  expect(problems.withKey).toBe('mounted');
-  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/pay/${fixture.public_key}/orders/order_from_last_visit`);
+  expect(problems.noOrder).toBe('Monokulo.mount: could not resolve orderId/endpoint - pass an order object from createOrder(), or {endpoint} in options for an orderId from a previous visit');
+  expect(problems.lastVisit).toBe('mounted');
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/checkout/order_from_last_visit`);
 });

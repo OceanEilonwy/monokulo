@@ -1,0 +1,845 @@
+[
+  {
+    "method": "GET",
+    "route": "/api/v1",
+    "path": "/api/v1",
+    "status": 200,
+    "response": {
+      "_links": {
+        "self": {
+          "href": "/api/v1"
+        },
+        "service-desc": {
+          "href": "/api/v1/openapi.json",
+          "title": "The API's OpenAPI 3.1 document.",
+          "type": "application/openapi+json"
+        },
+        "service-doc": {
+          "href": "https://docs.monokulo.com/api/",
+          "type": "text/html"
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1",
+    "path": "/api/v1",
+    "key": "sk",
+    "status": 200,
+    "response": {
+      "_links": {
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:events": {
+          "href": "/api/v1/events",
+          "title": "The store's sale events, as server-sent events: one stream for all its orders.",
+          "type": "text/event-stream"
+        },
+        "mk:orders": {
+          "href": "/api/v1/orders",
+          "title": "The store's orders, newest first, a page at a time."
+        },
+        "mk:store": {
+          "href": "/api/v1/store",
+          "title": "The store the key belongs to, and where its payments go."
+        },
+        "self": {
+          "href": "/api/v1"
+        },
+        "service-desc": {
+          "href": "/api/v1/openapi.json",
+          "title": "The API's OpenAPI 3.1 document.",
+          "type": "application/openapi+json"
+        },
+        "service-doc": {
+          "href": "https://docs.monokulo.com/api/",
+          "type": "text/html"
+        }
+      },
+      "_templates": {
+        "create-order": {
+          "contentType": "application/json",
+          "method": "POST",
+          "properties": [
+            {
+              "maxLength": 40,
+              "name": "amount",
+              "placeholder": "12.50",
+              "prompt": "The price, in `currency`.",
+              "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "currency",
+              "placeholder": "EUR",
+              "prompt": "The currency of `amount`.",
+              "regex": "^[A-Za-z0-9]{2,10}$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "maxLength": 140,
+              "minLength": 1,
+              "name": "description",
+              "placeholder": "Order #1042: Blue mug + 2 more",
+              "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+              "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+              "type": "text"
+            },
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "name": "idempotency_key",
+              "placeholder": "order-1042-total-1250",
+              "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+              "regex": "^[!-~]+$",
+              "type": "text"
+            },
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "name": "merchant_order_id",
+              "placeholder": "1042",
+              "prompt": "The shop's own reference for the order (its order or cart number).",
+              "type": "text"
+            },
+            {
+              "name": "show_merchant_order_id",
+              "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+              "type": "checkbox"
+            }
+          ],
+          "target": "/api/v1/orders",
+          "title": "Make an order."
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1",
+    "path": "/api/v1",
+    "key": "pk",
+    "status": 200,
+    "response": {
+      "_links": {
+        "self": {
+          "href": "/api/v1"
+        },
+        "service-desc": {
+          "href": "/api/v1/openapi.json",
+          "title": "The API's OpenAPI 3.1 document.",
+          "type": "application/openapi+json"
+        },
+        "service-doc": {
+          "href": "https://docs.monokulo.com/api/",
+          "type": "text/html"
+        }
+      },
+      "_templates": {
+        "create-order": {
+          "contentType": "application/json",
+          "method": "POST",
+          "properties": [
+            {
+              "maxLength": 40,
+              "name": "amount",
+              "placeholder": "12.50",
+              "prompt": "The price, in `currency`.",
+              "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "currency",
+              "placeholder": "EUR",
+              "prompt": "The currency of `amount`.",
+              "regex": "^[A-Za-z0-9]{2,10}$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "maxLength": 140,
+              "minLength": 1,
+              "name": "description",
+              "placeholder": "Order #1042: Blue mug + 2 more",
+              "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+              "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+              "type": "text"
+            },
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "name": "idempotency_key",
+              "placeholder": "order-1042-total-1250",
+              "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+              "regex": "^[!-~]+$",
+              "type": "text"
+            },
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "name": "merchant_order_id",
+              "placeholder": "1042",
+              "prompt": "The shop's own reference for the order (its order or cart number).",
+              "type": "text"
+            },
+            {
+              "name": "show_merchant_order_id",
+              "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+              "type": "checkbox"
+            }
+          ],
+          "target": "/api/v1/orders",
+          "title": "Make an order."
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1",
+    "path": "/api/v1",
+    "key": "ak",
+    "status": 200,
+    "response": {
+      "_links": {
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:app": {
+          "href": "/api/v1/app",
+          "title": "The connected app the key belongs to."
+        },
+        "mk:events": {
+          "href": "/api/v1/events",
+          "title": "The store's sale events, as server-sent events: one stream for all its orders.",
+          "type": "text/event-stream"
+        },
+        "mk:orders": {
+          "href": "/api/v1/orders",
+          "title": "The store's orders, newest first, a page at a time."
+        },
+        "mk:store": {
+          "href": "/api/v1/store",
+          "title": "The store the key belongs to, and where its payments go."
+        },
+        "self": {
+          "href": "/api/v1"
+        },
+        "service-desc": {
+          "href": "/api/v1/openapi.json",
+          "title": "The API's OpenAPI 3.1 document.",
+          "type": "application/openapi+json"
+        },
+        "service-doc": {
+          "href": "https://docs.monokulo.com/api/",
+          "type": "text/html"
+        }
+      },
+      "_templates": {
+        "create-order": {
+          "contentType": "application/json",
+          "method": "POST",
+          "properties": [
+            {
+              "maxLength": 40,
+              "name": "amount",
+              "placeholder": "12.50",
+              "prompt": "The price, in `currency`.",
+              "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "currency",
+              "placeholder": "EUR",
+              "prompt": "The currency of `amount`.",
+              "regex": "^[A-Za-z0-9]{2,10}$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "maxLength": 140,
+              "minLength": 1,
+              "name": "description",
+              "placeholder": "Order #1042: Blue mug + 2 more",
+              "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+              "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+              "type": "text"
+            },
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "name": "idempotency_key",
+              "placeholder": "order-1042-total-1250",
+              "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+              "regex": "^[!-~]+$",
+              "type": "text"
+            },
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "name": "merchant_order_id",
+              "placeholder": "1042",
+              "prompt": "The shop's own reference for the order (its order or cart number).",
+              "type": "text"
+            },
+            {
+              "name": "show_merchant_order_id",
+              "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+              "type": "checkbox"
+            }
+          ],
+          "target": "/api/v1/orders",
+          "title": "Make an order."
+        },
+        "disconnect": {
+          "method": "DELETE",
+          "properties": [],
+          "target": "/api/v1/app",
+          "title": "Disconnect this app."
+        }
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/store",
+    "path": "/api/v1/store",
+    "key": "sk",
+    "status": 200,
+    "response": {
+      "_links": {
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:events": {
+          "href": "/api/v1/events",
+          "title": "The store's sale events, as server-sent events: one stream for all its orders.",
+          "type": "text/event-stream"
+        },
+        "mk:orders": {
+          "href": "/api/v1/orders",
+          "title": "The store's orders, newest first, a page at a time."
+        },
+        "self": {
+          "href": "/api/v1/store"
+        }
+      },
+      "_templates": {
+        "create-order": {
+          "contentType": "application/json",
+          "method": "POST",
+          "properties": [
+            {
+              "maxLength": 40,
+              "name": "amount",
+              "placeholder": "12.50",
+              "prompt": "The price, in `currency`.",
+              "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "currency",
+              "placeholder": "EUR",
+              "prompt": "The currency of `amount`.",
+              "regex": "^[A-Za-z0-9]{2,10}$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "maxLength": 140,
+              "minLength": 1,
+              "name": "description",
+              "placeholder": "Order #1042: Blue mug + 2 more",
+              "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+              "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+              "type": "text"
+            },
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "name": "idempotency_key",
+              "placeholder": "order-1042-total-1250",
+              "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+              "regex": "^[!-~]+$",
+              "type": "text"
+            },
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "name": "merchant_order_id",
+              "placeholder": "1042",
+              "prompt": "The shop's own reference for the order (its order or cart number).",
+              "type": "text"
+            },
+            {
+              "name": "show_merchant_order_id",
+              "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+              "type": "checkbox"
+            }
+          ],
+          "target": "/api/v1/orders",
+          "title": "Make an order."
+        }
+      },
+      "base_currency": "XMR",
+      "name": "bakery.example",
+      "wallet": {
+        "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0001",
+        "name": "Shop wallet",
+        "network": "mainnet"
+      }
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/store",
+    "path": "/api/v1/store",
+    "status": 401,
+    "response": {
+      "detail": "Send a key: Authorization: Bearer <key>. This takes sk, ak.",
+      "status": 401,
+      "title": "No valid key",
+      "type": "https://docs.monokulo.com/problems/unauthorized"
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/store",
+    "path": "/api/v1/store",
+    "key": "pk",
+    "status": 403,
+    "response": {
+      "detail": "A pk key may not do this. It takes sk, ak.",
+      "status": 403,
+      "title": "Not allowed with this key",
+      "type": "https://docs.monokulo.com/problems/forbidden"
+    }
+  },
+  {
+    "method": "POST",
+    "route": "/api/v1/orders",
+    "path": "/api/v1/orders",
+    "key": "sk",
+    "request": {
+      "amount": "0.25",
+      "currency": "XMR",
+      "description": "Order #1042: Blue mug + 2 more",
+      "idempotency_key": "order-1042-total-025",
+      "merchant_order_id": "1042",
+      "show_merchant_order_id": true
+    },
+    "status": 201,
+    "response": {
+      "_links": {
+        "collection": {
+          "href": "/api/v1/orders",
+          "title": "The store's orders, newest first, a page at a time."
+        },
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:checkout": {
+          "href": "/checkout/order_00000000-0000-4000-8000-000000000001",
+          "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+          "type": "text/html"
+        },
+        "mk:order-events": {
+          "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001/events",
+          "title": "One order's changes, as server-sent events.",
+          "type": "text/event-stream"
+        },
+        "self": {
+          "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001"
+        }
+      },
+      "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002",
+      "amount": "0.25",
+      "amount_received_piconero": 0,
+      "confirmations": 0,
+      "confirmations_required": 10,
+      "created_at": 1767225600,
+      "currency": "XMR",
+      "description": "Order #1042: Blue mug + 2 more",
+      "expires_at": 1767227400,
+      "is_final": false,
+      "merchant_order_id": "1042",
+      "order_id": "order_00000000-0000-4000-8000-000000000001",
+      "show_merchant_order_id": true,
+      "status": "pending",
+      "xmr_amount_piconero": 250000000000
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/orders",
+    "path": "/api/v1/orders?limit=1",
+    "key": "sk",
+    "status": 200,
+    "response": {
+      "_links": {
+        "next": {
+          "href": "/api/v1/orders?limit=1&offset=1",
+          "title": "The store's orders, newest first, a page at a time."
+        },
+        "self": {
+          "href": "/api/v1/orders"
+        }
+      },
+      "_templates": {
+        "create-order": {
+          "contentType": "application/json",
+          "method": "POST",
+          "properties": [
+            {
+              "maxLength": 40,
+              "name": "amount",
+              "placeholder": "12.50",
+              "prompt": "The price, in `currency`.",
+              "regex": "^[0-9]+(\\.[0-9]{1,12})?$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "name": "currency",
+              "placeholder": "EUR",
+              "prompt": "The currency of `amount`.",
+              "regex": "^[A-Za-z0-9]{2,10}$",
+              "required": true,
+              "type": "text"
+            },
+            {
+              "maxLength": 140,
+              "minLength": 1,
+              "name": "description",
+              "placeholder": "Order #1042: Blue mug + 2 more",
+              "prompt": "What the order is for, shown to the payer under the store's name.\nWithout one the checkout shows the store's payment description.",
+              "regex": "^[^\\x00-\\x1F\\x7F-\\x9F]*$",
+              "type": "text"
+            },
+            {
+              "maxLength": 100,
+              "minLength": 1,
+              "name": "idempotency_key",
+              "placeholder": "order-1042-total-1250",
+              "prompt": "The caller's key for this one purchase: a retry with the same key\ngets the order the first attempt made, never a second one.",
+              "regex": "^[!-~]+$",
+              "type": "text"
+            },
+            {
+              "maxLength": 120,
+              "minLength": 1,
+              "name": "merchant_order_id",
+              "placeholder": "1042",
+              "prompt": "The shop's own reference for the order (its order or cart number).",
+              "type": "text"
+            },
+            {
+              "name": "show_merchant_order_id",
+              "prompt": "Whether the checkout shows the payer `merchant_order_id`; true when\nleft out. A shop whose reference means nothing to its customers\nsends false.",
+              "type": "checkbox"
+            }
+          ],
+          "target": "/api/v1/orders",
+          "title": "Make an order."
+        }
+      },
+      "orders": [
+        {
+          "_links": {
+            "collection": {
+              "href": "/api/v1/orders",
+              "title": "The store's orders, newest first, a page at a time."
+            },
+            "curies": [
+              {
+                "href": "https://docs.monokulo.com/rels/{rel}",
+                "name": "mk",
+                "templated": true
+              }
+            ],
+            "mk:checkout": {
+              "href": "/checkout/order_00000000-0000-4000-8000-000000000001",
+              "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+              "type": "text/html"
+            },
+            "mk:order-events": {
+              "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001/events",
+              "title": "One order's changes, as server-sent events.",
+              "type": "text/event-stream"
+            },
+            "self": {
+              "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001"
+            }
+          },
+          "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002",
+          "amount": "0.25",
+          "amount_received_piconero": 0,
+          "confirmations": 0,
+          "confirmations_required": 10,
+          "created_at": 1767225600,
+          "currency": "XMR",
+          "description": "Order #1042: Blue mug + 2 more",
+          "expires_at": 1767227400,
+          "is_final": false,
+          "merchant_order_id": "1042",
+          "order_id": "order_00000000-0000-4000-8000-000000000001",
+          "show_merchant_order_id": true,
+          "status": "pending",
+          "xmr_amount_piconero": 250000000000
+        }
+      ]
+    }
+  },
+  {
+    "method": "POST",
+    "route": "/api/v1/orders",
+    "path": "/api/v1/orders",
+    "key": "pk",
+    "request": {
+      "amount": "0.1",
+      "currency": "XMR"
+    },
+    "status": 201,
+    "response": {
+      "_links": {
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:checkout": {
+          "href": "/checkout/order_00000000-0000-4000-8000-000000000002",
+          "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+          "type": "text/html"
+        },
+        "mk:order-events": {
+          "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000002/events",
+          "title": "One order's changes, as server-sent events.",
+          "type": "text/event-stream"
+        },
+        "self": {
+          "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000002"
+        }
+      },
+      "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0003",
+      "amount": "0.1",
+      "amount_received_piconero": 0,
+      "confirmations": 0,
+      "confirmations_required": 10,
+      "created_at": 1767225600,
+      "currency": "XMR",
+      "description": null,
+      "expires_at": 1767227400,
+      "is_final": false,
+      "merchant_order_id": null,
+      "order_id": "order_00000000-0000-4000-8000-000000000002",
+      "show_merchant_order_id": true,
+      "status": "pending",
+      "xmr_amount_piconero": 100000000000
+    }
+  },
+  {
+    "method": "POST",
+    "route": "/api/v1/orders",
+    "path": "/api/v1/orders",
+    "key": "sk",
+    "request": {
+      "amount": "twelve",
+      "currency": "XMR"
+    },
+    "status": 400,
+    "response": {
+      "detail": "Failed to deserialize the JSON body into the target type: amount: Amount must match ^[0-9]+(\\.[0-9]{1,12})?$, like 12.50 at line 1 column 18",
+      "status": 400,
+      "title": "Invalid request",
+      "type": "https://docs.monokulo.com/problems/invalid-request"
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/orders/{order_id}",
+    "path": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001",
+    "key": "sk",
+    "status": 200,
+    "response": {
+      "_links": {
+        "collection": {
+          "href": "/api/v1/orders",
+          "title": "The store's orders, newest first, a page at a time."
+        },
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:checkout": {
+          "href": "/checkout/order_00000000-0000-4000-8000-000000000001",
+          "title": "The page the payer pays on: the amount, the address and its QR code, and live progress.",
+          "type": "text/html"
+        },
+        "mk:order-events": {
+          "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001/events",
+          "title": "One order's changes, as server-sent events.",
+          "type": "text/event-stream"
+        },
+        "self": {
+          "href": "/api/v1/orders/order_00000000-0000-4000-8000-000000000001"
+        }
+      },
+      "address": "8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA0002",
+      "amount": "0.25",
+      "amount_received_piconero": 0,
+      "confirmations": 0,
+      "confirmations_required": 10,
+      "created_at": 1767225600,
+      "currency": "XMR",
+      "description": "Order #1042: Blue mug + 2 more",
+      "expires_at": 1767227400,
+      "is_final": false,
+      "merchant_order_id": "1042",
+      "order_id": "order_00000000-0000-4000-8000-000000000001",
+      "show_merchant_order_id": true,
+      "status": "pending",
+      "xmr_amount_piconero": 250000000000
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/orders/{order_id}",
+    "path": "/api/v1/orders/order_00000000-0000-4000-8000-000000000003",
+    "key": "sk",
+    "status": 404,
+    "response": {
+      "detail": "There's no such order for this store.",
+      "status": 404,
+      "title": "Not found",
+      "type": "https://docs.monokulo.com/problems/not-found"
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/app",
+    "path": "/api/v1/app",
+    "key": "ak",
+    "status": 200,
+    "response": {
+      "_links": {
+        "curies": [
+          {
+            "href": "https://docs.monokulo.com/rels/{rel}",
+            "name": "mk",
+            "templated": true
+          }
+        ],
+        "mk:store": {
+          "href": "/api/v1/store",
+          "title": "The store the key belongs to, and where its payments go."
+        },
+        "self": {
+          "href": "/api/v1/app"
+        }
+      },
+      "_templates": {
+        "disconnect": {
+          "method": "DELETE",
+          "properties": [],
+          "target": "/api/v1/app",
+          "title": "Disconnect this app."
+        }
+      },
+      "app_id": "app_00000000000000000000000000000001",
+      "connected_at": 1767225600,
+      "device_name": "Front till",
+      "platform": "android"
+    }
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/app",
+    "path": "/api/v1/app",
+    "key": "sk",
+    "status": 403,
+    "response": {
+      "detail": "A sk key may not do this. It takes ak.",
+      "status": 403,
+      "title": "Not allowed with this key",
+      "type": "https://docs.monokulo.com/problems/forbidden"
+    }
+  },
+  {
+    "method": "POST",
+    "route": "/api/v1/logs",
+    "path": "/api/v1/logs",
+    "key": "sk",
+    "request": {
+      "entries": [
+        {
+          "level": "error",
+          "message": "Monokulo could not be reached"
+        }
+      ]
+    },
+    "status": 403,
+    "response": {
+      "detail": "This store hasn't turned on client logs. Its owner can turn them on in the store's settings.",
+      "status": 403,
+      "title": "Client logs are off for this store",
+      "type": "https://docs.monokulo.com/problems/logs-off"
+    }
+  },
+  {
+    "method": "POST",
+    "route": "/api/v1/logs",
+    "path": "/api/v1/logs",
+    "key": "sk",
+    "request": {
+      "entries": [
+        {
+          "level": "error",
+          "message": "Monokulo could not be reached"
+        }
+      ]
+    },
+    "status": 204
+  },
+  {
+    "method": "GET",
+    "route": "/api/v1/openapi.json",
+    "path": "/api/v1/openapi.json",
+    "status": 200
+  },
+  {
+    "method": "DELETE",
+    "route": "/api/v1/app",
+    "path": "/api/v1/app",
+    "key": "ak",
+    "status": 204
+  }
+]

@@ -1,5 +1,5 @@
-//! `POST /login` (WBS 1.1.2): verifies email+password and issues a session
-//! token.
+//! Logging in (WBS 1.1.2): verifies email+password and starts a session,
+//! for the login form (`http/dashboard.rs`) and the first-run admin setup.
 //!
 //! Deliberately returns the exact same `401` for "no such account" as for
 //! "wrong password" - a client must not be able to tell the two apart via
@@ -14,25 +14,9 @@
 
 use std::sync::OnceLock;
 
-use axum::extract::State;
-use axum::http::StatusCode;
-use axum::response::Json;
-use serde::{Deserialize, Serialize};
-
 use crate::now_unix;
 
-use super::{ApiError, AppState};
-
-#[derive(Deserialize)]
-pub struct LoginRequest {
-    pub email: String,
-    pub password: String,
-}
-
-#[derive(Serialize)]
-pub struct LoginResponse {
-    pub session_token: String,
-}
+use super::AppState;
 
 /// A real Argon2id hash of a fixed, nobody-has-this-password string,
 /// computed once and reused - just something for the "unknown email" path
@@ -41,14 +25,10 @@ pub struct LoginResponse {
 /// Made by the first login's own password job (`shared::password::run`).
 static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 
-/// The two ways login can fail - kept separate from [`ApiError`] so the
-/// browser-facing form handler (`http/dashboard.rs`, WBS 1.3.1) can map a
-/// wrong password/unknown email to a re-rendered form with a generic,
-/// non-enumerating error instead of a bare JSON `401`, while the JSON
-/// handler below keeps its existing `ApiError::Unauthorized`/
-/// `ApiError::Internal` shape. Never distinguished any further than this -
-/// see the module doc comment on why "unknown email" and "wrong password"
-/// must both land on `Unauthorized`.
+/// The two ways login can fail, for the login form (`http/dashboard.rs`,
+/// WBS 1.3.1) to show as a generic, non-enumerating error. Never
+/// distinguished any further than this - see the module doc comment on why
+/// "unknown email" and "wrong password" must both land on `Unauthorized`.
 pub(super) enum LoginError {
     Unauthorized,
     Internal,
@@ -56,13 +36,10 @@ pub(super) enum LoginError {
 
 /// The actual login logic - verifying email+password (with the
 /// account-enumeration-safe dummy-hash comparison described in the module
-/// doc comment) and issuing a session - shared by `POST /login` (below) and
-/// `POST /dashboard/login` (`http/dashboard.rs`), so the two surfaces can
-/// never drift apart on what "logging in" means or on the enumeration
-/// defense. Returns the resolved user alongside the raw (unhashed) session
-/// token, since the caller needs both: `POST /login`'s JSON body only ever
-/// contains the token, while `POST /dashboard/login` also wants the user for
-/// its own confirmation page.
+/// doc comment) and issuing a session - for `POST /dashboard/login`
+/// (`http/dashboard.rs`) and the first-run admin setup. Returns the
+/// resolved user alongside the raw (unhashed) session token, which becomes
+/// the session cookie.
 pub(super) async fn authenticate(
     state: &AppState,
     email: &str,
@@ -138,20 +115,4 @@ pub(super) async fn start_session(
     // The sign-in's own lines start the session's.
     super::record_identity(user_id.as_str(), &token_hash);
     Ok(raw_token)
-}
-
-pub async fn login(
-    State(state): State<AppState>,
-    Json(req): Json<LoginRequest>,
-) -> Result<(StatusCode, Json<LoginResponse>), ApiError> {
-    match authenticate(&state, &req.email, &req.password).await {
-        Ok((_user, raw_token)) => Ok((
-            StatusCode::OK,
-            Json(LoginResponse {
-                session_token: raw_token.expose().to_string(),
-            }),
-        )),
-        Err(LoginError::Unauthorized) => Err(ApiError::Unauthorized),
-        Err(LoginError::Internal) => Err(ApiError::Internal),
-    }
 }

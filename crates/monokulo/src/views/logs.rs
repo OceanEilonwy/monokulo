@@ -557,7 +557,7 @@ const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
         &[
             ("message contains 'timeout'", "anywhere in the text"),
             (
-                "http.route like '/pay/%'",
+                "http.route like '/api/v1/%'",
                 "% is any run of characters, _ one character",
             ),
             ("payment not seen", "plain words search the message"),

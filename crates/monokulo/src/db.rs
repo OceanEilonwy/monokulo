@@ -8,6 +8,7 @@
 //! reads, one writing connection for writes, each on its own thread.
 
 use parking_lot::Mutex;
+use shared::auth::TokenHash;
 pub use shared::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use shared::sqlite::{Pool, PoolError, Unsigned};
 use shared::xmr_amount::Piconero;
@@ -162,6 +163,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0042_store_integration_name.sql"),
     ),
     (43, include_str!("../migrations/0043_connected_apps.sql")),
+    (44, include_str!("../migrations/0044_api_v1_lookups.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1561,18 +1563,81 @@ impl Db {
         Ok(changed == 1)
     }
 
-    /// The store's secret key, encrypted at rest, after the engine rotated
-    /// it.
+    /// The store's secret key, encrypted at rest, and its hash (what the
+    /// API finds the store by), after the engine rotated it.
     pub fn set_store_secret(
         &self,
         id: &ConnectionId,
         tenant_secret_token_encrypted: &str,
+        secret_key_hash: &TokenHash,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE store_connections SET tenant_secret_token_encrypted = ?2 WHERE id = ?1",
-            params![id, tenant_secret_token_encrypted],
+            "UPDATE store_connections SET tenant_secret_token_encrypted = ?2, secret_key_hash = ?3 WHERE id = ?1",
+            params![id, tenant_secret_token_encrypted, secret_key_hash],
         )?;
         Ok(())
+    }
+
+    /// The hash of the store's secret key (migration 0044), which the API
+    /// finds the store by.
+    pub fn set_secret_key_hash(
+        &self,
+        id: &ConnectionId,
+        secret_key_hash: &TokenHash,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE store_connections SET secret_key_hash = ?2 WHERE id = ?1",
+            params![id, secret_key_hash],
+        )?;
+        Ok(())
+    }
+
+    /// Stores whose secret key's hash isn't recorded yet, with the key as
+    /// stored (encrypted): each made before migration 0044.
+    pub fn stores_missing_secret_key_hash(&self) -> Result<Vec<(ConnectionId, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, tenant_secret_token_encrypted FROM store_connections WHERE secret_key_hash IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The store whose secret key hashes to `secret_key_hash`.
+    pub fn get_store_connection_by_secret_key_hash(
+        &self,
+        secret_key_hash: &TokenHash,
+    ) -> Result<Option<StoreConnectionRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
+                 FROM store_connections WHERE secret_key_hash = ?1",
+                params![secret_key_hash],
+                store_from_row,
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// The store an order belongs to, from monokulo's own record of the
+    /// order (`order_currency_metadata`, which every order made through
+    /// monokulo has): an order id is unique across stores. `None` for an
+    /// order monokulo has no record of.
+    pub fn get_store_connection_by_order(
+        &self,
+        order_id: &OrderId,
+    ) -> Result<Option<StoreConnectionRow>> {
+        self.conn
+            .query_row(
+                "SELECT s.id, s.user_id, s.site, s.tenant_public_key, s.tenant_secret_token_encrypted, s.created_at_utc, s.fx_providers, s.base_currency, s.fx_provider_settings, s.wallet_id, s.name, s.payment_description
+                 FROM order_currency_metadata m JOIN store_connections s ON s.id = m.connection_id
+                 WHERE m.order_id = ?1",
+                params![order_id],
+                store_from_row,
+            )
+            .optional()
+            .map_err(DbError::from)
     }
 
     // -- Wallets (migration 0031) --------------------------------------
@@ -2565,12 +2630,15 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// [`Db::client_logging`], for a store known by its public key.
-    pub fn client_logging_by_public_key(&self, tenant_public_key: &str) -> Result<bool> {
+    /// [`Db::client_logging`], for the store an order belongs to
+    /// ([`Db::get_store_connection_by_order`]): `false` for an order
+    /// monokulo has no record of.
+    pub fn client_logging_by_order(&self, order_id: &OrderId) -> Result<bool> {
         self.conn
             .query_row(
-                "SELECT client_logging FROM store_connections WHERE tenant_public_key = ?1",
-                params![tenant_public_key],
+                "SELECT s.client_logging FROM order_currency_metadata m
+                 JOIN store_connections s ON s.id = m.connection_id WHERE m.order_id = ?1",
+                params![order_id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()
@@ -4164,19 +4232,38 @@ mod tests {
         assert!(!db
             .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
             .unwrap());
-        assert!(!db.client_logging_by_public_key("pk_cl").unwrap());
+        let order = OrderId::new("order_cl");
+        db.create_order_currency_metadata(
+            &ConnectionId::new("conn-cl"),
+            &order,
+            "XMR",
+            "1",
+            Piconero(1),
+            "xmr",
+            3000,
+            "XMR",
+            None,
+            10,
+            false,
+            None,
+            true,
+        )
+        .unwrap();
+        assert!(!db.client_logging_by_order(&order).unwrap());
         db.set_client_logging(&shared::ids::ConnectionId::new("conn-cl"), true)
             .unwrap();
         assert!(db
             .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
             .unwrap());
-        assert!(db.client_logging_by_public_key("pk_cl").unwrap());
+        assert!(db.client_logging_by_order(&order).unwrap());
         assert!(
             !db.client_logging(&shared::ids::ConnectionId::new("conn-missing"))
                 .unwrap(),
             "no store, no logs"
         );
-        assert!(!db.client_logging_by_public_key("pk_missing").unwrap());
+        assert!(!db
+            .client_logging_by_order(&OrderId::new("order_missing"))
+            .unwrap());
     }
 
     #[test]

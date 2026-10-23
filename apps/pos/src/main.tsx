@@ -24,12 +24,12 @@ type Order = {
   refund_address?: string | null; qr_svg?: string;
 };
 type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr' | 'qr_svg' | 'backgrounded' | 'cancelled_at' | 'refund_address'> & { is_terminal: boolean };
-type Config = { connectionId: string; publicKey: string; currency: string; decimals: number; storeName: string; clientLogging: boolean };
+type Config = { connectionId: string; currency: string; decimals: number; storeName: string; clientLogging: boolean };
 
 const root = document.getElementById('pos-root');
 if (!root) throw new Error('POS root missing');
 const config: Config = {
-  connectionId: root.dataset.connectionId || '', publicKey: root.dataset.publicKey || '',
+  connectionId: root.dataset.connectionId || '',
   currency: root.dataset.currency || 'AUD', decimals: Number(root.dataset.decimals || '2'),
   storeName: root.dataset.storeName || 'Store', clientLogging: root.dataset.clientLogging === 'true',
 };
@@ -229,7 +229,7 @@ function PaymentCard(props: { order: Order }) {
     if (!looksLikeAddress(value) || value === saved()) return;
     setRefundState('saving'); setRefundMessage('');
     try {
-      const response = await fetch(`/pay/${encodeURIComponent(config.publicKey)}/orders/${encodeURIComponent(props.order.order_id)}/refund-address`, {
+      const response = await fetch(`/checkout/${encodeURIComponent(props.order.order_id)}/refund-address`, {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({ refund_address: value }),
       });

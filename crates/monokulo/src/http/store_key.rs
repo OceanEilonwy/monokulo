@@ -1,55 +1,69 @@
-//! A shop's own server authenticating to monokulo's public `/pay/{pk}/...`
-//! routes with its store's secret key (`Authorization: Bearer sk_...`), the
-//! same `sk_` the store's engine tenant was created with and monokulo keeps
-//! encrypted in `store_connections.tenant_secret_token_encrypted`. The
-//! store's shop plugin is such a caller: it creates orders with the
-//! key, so a store that restricts embedding to its verified domains
-//! (`http::embed_domains::embed_policy_middleware`) can still take orders
-//! from its own server, and those orders are recorded as created with the
-//! key (`order_currency_metadata.created_with_key`).
+//! Who is calling the machine API (`/api/v1`, `http::api`): the
+//! `Authorization: Bearer <key>` header names the store, so no URL carries
+//! one. Three kinds of key:
 //!
-//! `super::abuse::abuse_middleware` runs [`check`] on every `/pay/...`
-//! request carrying an `Authorization` header:
+//! - `sk_...`, the store's secret key (the same `sk_` the store's engine
+//!   tenant was made with, kept encrypted in
+//!   `store_connections.tenant_secret_token_encrypted` and found by its hash,
+//!   `secret_key_hash`): a shop's own server, such as its plugin;
+//! - `ak_...`, a connected app's key (`crate::apps`), found by its hash in
+//!   `app_connections`; disconnecting the app makes it unknown at once;
+//! - `pk_...`, the store's public key, for a browser page that embeds the
+//!   checkout (`monokulo-client.js`). It proves nothing, so it may only
+//!   create orders, as anyone could before keys were sent
+//!   (`http::api`).
 //!
-//! - the right key for the store in the path marks the request
-//!   [`StoreKeyAuthenticated`] and the client becomes that store, with its
-//!   own budget instead of the anonymous per-client one;
-//! - any other value (a wrong key, another store's key, not a bearer token
-//!   at all) gets `401`. The failed attempt still spends the anonymous
-//!   client's budget, so the endpoint can't be used to guess keys quickly.
-//!
-//! A connected app (`crate::apps`) sends its own key, `ak_...`, instead: it
-//! counts as the store's key for its store and adds [`AppKeyAuthenticated`],
-//! naming the app. Disconnecting the app makes it `Invalid` at once.
-//!
-//! A browser can't send this header cross-origin (CORS doesn't allow it),
-//! so an embedding page never trips the `401`.
+//! `super::abuse::pay_middleware` runs [`check`] on every `/api/v1` request
+//! with an `Authorization` header. A known key adds [`ApiCaller`] to the
+//! request; a secret or app key also makes the client that store, with its
+//! own budget instead of the anonymous per-client one. Anything else (an
+//! unknown key, not a bearer token at all) gets `401`, after spending the
+//! anonymous client's budget, so keys can't be guessed quickly.
 
 use axum::http::header;
 use subtle::ConstantTimeEq;
 
 use super::AppState;
+use crate::db::{AppConnection, StoreConnectionRow};
 
-/// Request extension: this request carried the right secret key for the
-/// store in its path.
-#[derive(Clone, Copy, Debug)]
-pub struct StoreKeyAuthenticated;
+/// Which kind of key a caller presented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Credential {
+    /// The store's secret key, `sk_...`.
+    Secret,
+    /// A connected app's key, `ak_...`: this app.
+    App(AppConnection),
+    /// The store's public key, `pk_...`: a browser page.
+    Public,
+}
 
-/// Request extension: this request carried a connected app's key for the
-/// store in its path, and this is the app.
-#[derive(Clone, Debug)]
-pub struct AppKeyAuthenticated(pub crate::db::AppConnection);
+impl Credential {
+    /// A key that proves the caller is the store (its own or an app's).
+    pub fn is_store_key(&self) -> bool {
+        !matches!(self, Credential::Public)
+    }
+}
 
-/// What a request's `Authorization` header says about the store in its
-/// path.
-#[derive(Debug, PartialEq, Eq)]
+/// Request extension: the store an `/api/v1` request's key names, and the
+/// kind of key it was.
+#[derive(Clone)]
+pub struct ApiCaller {
+    pub store: std::sync::Arc<StoreConnectionRow>,
+    pub credential: Credential,
+}
+
+/// Request extension: the store a public request is about, found by
+/// `super::abuse::pay_middleware` from the API key or the checkout's order,
+/// for the embed policy (`super::embed_domains`) and the checkout pages.
+#[derive(Clone)]
+pub struct RequestStore(pub std::sync::Arc<StoreConnectionRow>);
+
+/// What a request's `Authorization` header says.
 pub enum KeyCheck {
     /// No `Authorization` header at all.
     Absent,
-    /// The store's own secret key.
-    Valid,
-    /// A key of one of the store's connected apps.
-    App(crate::db::AppConnection),
+    /// A key this instance knows.
+    Known(ApiCaller),
     /// Anything else.
     Invalid,
 }
@@ -76,56 +90,87 @@ pub fn key_matches(
     }
 }
 
-/// Checks a request's `Authorization` header against the store with public
-/// key `pk`. An unknown store is `Invalid` whenever a header is present:
-/// there is no key it could match.
-pub async fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) -> KeyCheck {
-    let Some(value) = headers.get(header::AUTHORIZATION) else {
+/// The bearer token in `headers`, `Some(None)` for an `Authorization`
+/// header that isn't one, `None` for no header.
+fn bearer(headers: &axum::http::HeaderMap) -> Option<Option<String>> {
+    let value = headers.get(header::AUTHORIZATION)?;
+    // The scheme is case-insensitive (RFC 9110 §11.1).
+    Some(
+        value
+            .to_str()
+            .ok()
+            .and_then(|v| v.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+            .map(|(_, token)| token.trim().to_owned())
+            .filter(|token| !token.is_empty()),
+    )
+}
+
+/// Checks a request's `Authorization` header: which store's key it is, and
+/// which kind.
+pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyCheck {
+    let Some(presented) = bearer(headers) else {
         return KeyCheck::Absent;
     };
-    // The scheme is case-insensitive (RFC 9110 §11.1).
-    let Some(presented) = value
-        .to_str()
-        .ok()
-        .and_then(|v| v.split_once(' '))
-        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-        .map(|(_, token)| token)
-    else {
+    let Some(presented) = presented else {
         return KeyCheck::Invalid;
     };
-    let presented = presented.trim();
-    let key = pk.to_string();
-    if presented.starts_with("ak_") {
-        let hash = shared::auth::RawToken::presented(presented).hash();
-        let found = state
+    let found = if presented.starts_with("ak_") {
+        let hash = shared::auth::RawToken::presented(&presented).hash();
+        state
             .db
             .read(move |db| {
-                let app = db.app_by_key(&hash)?;
-                let store = db.get_store_connection_by_public_key(&key)?;
-                Ok::<_, crate::db::DbError>(app.zip(store))
+                let Some(app) = db.app_by_key(&hash)? else {
+                    return Ok(None);
+                };
+                let store = db.get_store_connection_by_id(&app.store_id)?;
+                Ok::<_, crate::db::DbError>(store.map(|store| ApiCaller {
+                    store: std::sync::Arc::new(store),
+                    credential: Credential::App(app),
+                }))
             })
-            .await;
-        return match found {
-            Ok(Some((app, store))) if app.store_id == store.id => KeyCheck::App(app),
-            _ => KeyCheck::Invalid,
-        };
-    }
-    let row = match state
-        .db
-        .read(move |db| db.get_store_connection_by_public_key(&key))
-        .await
-    {
-        Ok(Some(row)) => row,
-        _ => return KeyCheck::Invalid,
-    };
-    if key_matches(
-        state,
-        row.id.as_str(),
-        &row.tenant_secret_token_encrypted,
-        presented,
-    ) {
-        KeyCheck::Valid
+            .await
+    } else if presented.starts_with("pk_") {
+        state
+            .db
+            .read(move |db| db.get_store_connection_by_public_key(&presented))
+            .await
+            .map(|store| {
+                store.map(|store| ApiCaller {
+                    store: std::sync::Arc::new(store),
+                    credential: Credential::Public,
+                })
+            })
     } else {
-        KeyCheck::Invalid
+        let hash = shared::auth::RawToken::presented(&presented).hash();
+        let found = state
+            .db
+            .read(move |db| db.get_store_connection_by_secret_key_hash(&hash))
+            .await;
+        // The hash found the store; the stored key itself must match too,
+        // so a stale hash can never let an old key in.
+        found.map(|store| {
+            store
+                .filter(|store| {
+                    key_matches(
+                        state,
+                        store.id.as_str(),
+                        &store.tenant_secret_token_encrypted,
+                        &presented,
+                    )
+                })
+                .map(|store| ApiCaller {
+                    store: std::sync::Arc::new(store),
+                    credential: Credential::Secret,
+                })
+        })
+    };
+    match found {
+        Ok(Some(caller)) => KeyCheck::Known(caller),
+        Ok(None) => KeyCheck::Invalid,
+        Err(e) => {
+            tracing::error!(error = %e, "a presented key could not be looked up");
+            KeyCheck::Invalid
+        }
     }
 }

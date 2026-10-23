@@ -6,7 +6,7 @@ use axum::Router;
 use tower::ServiceExt;
 
 use crate::http::test_support::{
-    body_text, signed_up_and_logged_in_session_token, urlencoding_encode,
+    body_text, form_post, signed_up_and_logged_in_session_token, urlencoding_encode,
 };
 use crate::http::{build_router, AppState};
 
@@ -27,7 +27,7 @@ impl Merchant {
     async fn get_with(&self, uri: &str, cookie: Option<&str>) -> (StatusCode, String) {
         let mut request = Request::builder()
             .uri(uri)
-            .header("authorization", format!("Bearer {}", self.session));
+            .header("cookie", format!("session={}", self.session));
         if let Some(cookie) = cookie {
             request = request.header("cookie", cookie);
         }
@@ -68,7 +68,7 @@ impl Merchant {
                 Request::builder()
                     .method("POST")
                     .uri(uri)
-                    .header("authorization", format!("Bearer {session}"))
+                    .header("cookie", format!("session={session}"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(body))
                     .unwrap(),
@@ -82,29 +82,27 @@ impl Merchant {
         }
     }
 
-    /// Logs in through the JSON API: the new session's token, if the
+    /// Logs in through the login form: the new session's token, if the
     /// credentials are right.
     async fn log_in(&self, email: &str, password: &str) -> Option<String> {
         let response = self
             .router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/login")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "email": email, "password": password }).to_string(),
-                    ))
-                    .unwrap(),
-            )
+            .oneshot(form_post(
+                "/dashboard/login",
+                None,
+                &[("email", email), ("password", password)],
+            ))
             .await
             .unwrap();
-        if response.status() != StatusCode::OK {
-            return None;
-        }
-        let body: serde_json::Value = serde_json::from_str(&body_text(response).await).unwrap();
-        Some(body["session_token"].as_str().unwrap().to_string())
+        response
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .find_map(|v| v.split(';').next()?.strip_prefix("session="))
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned)
     }
 
     /// Whether `session` is still signed in.
@@ -115,7 +113,7 @@ impl Merchant {
             .oneshot(
                 Request::builder()
                     .uri("/_test/whoami")
-                    .header("authorization", format!("Bearer {session}"))
+                    .header("cookie", format!("session={session}"))
                     .body(Body::empty())
                     .unwrap(),
             )

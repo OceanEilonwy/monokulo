@@ -221,7 +221,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         db: monokulo::db::Database::inline(cp_db),
         encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         // `docs/fx_refactor.md` Phase 5: order creation now goes through
-        // monokulo's own `/pay/{pk}/orders`, the real path a production
+        // monokulo's own `POST /api/v1/orders`, the real path a production
         // storefront takes. The order below is priced directly in `"XMR"` -
         // needs no exchange rate provider configured at all - at a genuinely
         // tiny 335_000_000-piconero (0.000335 XMR) amount, matching
@@ -373,16 +373,18 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         "the real connect flow should have registered exactly one tenant"
     );
 
-    // ---- 3. create a real order through monokulo's own public
-    // `/pay/{pk}/orders` (this is what a real storefront - or the
-    // WooCommerce plugin - actually calls in production; the engine's own
+    // ---- 3. create a real order through monokulo's own
+    // `POST /api/v1/orders` with the store's public key (this is what a
+    // real storefront - or the WooCommerce plugin, with its secret key -
+    // actually calls in production; the engine's own
     // API is XMR-only and developer-facing now, `docs/fx_refactor.md` Phase 5) ----
     let order_response = cp_router
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/pay/{public_key}/orders"))
+                .uri("/api/v1/orders")
+                .header("authorization", format!("Bearer {public_key}"))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     json!({ "amount": "0.000335", "currency": "XMR" }).to_string(),
@@ -393,7 +395,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .unwrap();
     assert_eq!(
         order_response.status(),
-        StatusCode::OK,
+        StatusCode::CREATED,
         "real order creation through monokulo must succeed"
     );
     let order: Value = body_json(order_response).await;

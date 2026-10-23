@@ -1,0 +1,25 @@
+[package]
+name = "api-macros"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+publish = false
+
+# The macros monokulo's machine API is written with (`monokulo::api`):
+# `resource!`, `#[get]`/`#[post]`/`#[delete]`, `#[body]`, `#[object]`,
+# `#[input]`, `#[scalar]` and `#[derive(Problem)]`. Each resource is one file;
+# these turn it into its route, its auth check, its HAL-FORMS links and forms,
+# its schema and its entry in the catalog the router, the OpenAPI document and
+# the docs are read from. A missing doc comment is a compile error: the docs
+# are written from them.
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "extra-traits"] }
+
+[lints]
+workspace = true

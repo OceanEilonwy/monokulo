@@ -2440,13 +2440,16 @@ mod tests {
         let state = test_app_state_over_http(shared::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
+        // The sign-up form: a `302` on to setup once the account is made.
         let signup = |email: &'static str| {
-            Request::builder()
-                .method("POST")
-                .uri("/signup")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::json!({ "email": email, "password": "correct horse battery staple" }).to_string()))
-                .unwrap()
+            crate::http::test_support::form_post(
+                "/dashboard/signup",
+                None,
+                &[
+                    ("email", email),
+                    ("password", "correct horse battery staple"),
+                ],
+            )
         };
         // The test instance starts with public signup (`Db::seed_test_admin`).
         assert_eq!(
@@ -2456,7 +2459,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::CREATED
+            StatusCode::FOUND
         );
 
         let saved = router
@@ -2477,7 +2480,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::CREATED,
+            StatusCode::FOUND,
             "needs an invite now"
         );
 
@@ -2498,7 +2501,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::CREATED,
+            StatusCode::FOUND,
             "and back"
         );
     }
