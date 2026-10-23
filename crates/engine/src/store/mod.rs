@@ -152,6 +152,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (29, include_str!("../../migrations/0029_wallet_changes.sql")),
     (30, include_str!("../../migrations/0030_order_events.sql")),
     (31, include_str!("../../migrations/0031_drop_webhooks.sql")),
+    (
+        32,
+        include_str!("../../migrations/0032_cancelled_orders.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database
@@ -570,6 +574,9 @@ pub struct Order {
     /// When the order first became terminal (migration 0016), kept while it
     /// stays so; `None` while it is open.
     pub closed_at: Option<i64>,
+    /// When the merchant cancelled it ([`Store::cancel_order`], migration
+    /// 0032); `None` unless it was.
+    pub cancelled_at: Option<i64>,
 }
 
 impl Order {
@@ -587,6 +594,17 @@ impl Order {
             .closed_at
             .is_some_and(|closed_at| closed_at >= now - grace_period_seconds)
     }
+}
+
+/// What [`Store::cancel_order`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOrder {
+    /// Cancelled; its status is still to be recomputed.
+    Cancelled,
+    /// It already was.
+    AlreadyCancelled,
+    /// Something reached it, or it is closed: it keeps this status.
+    Refused(OrderStatus),
 }
 
 pub struct NewOrder {
@@ -644,11 +662,12 @@ fn status_to_str(s: OrderStatus) -> &'static str {
     s.as_str()
 }
 
-/// Paid, overpaid and expired orders are closed: nothing more is expected.
+/// Paid, overpaid, expired and cancelled orders are closed: nothing more is
+/// expected.
 fn is_terminal(s: OrderStatus) -> bool {
     matches!(
         s,
-        OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired
+        OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired | OrderStatus::Cancelled
     )
 }
 
@@ -721,6 +740,19 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
             expires_at: order.expires_at,
         },
     );
+    // A cancelled order stays cancelled while it is short of its amount (a
+    // payment sent anyway shows in what it received). Paid in full anyway,
+    // it is paid like an expired order paid late: the money is the
+    // merchant's to ship against or refund, and is never hidden.
+    let derived = if order.cancelled_at.is_some()
+        && matches!(
+            derived,
+            OrderStatus::Pending | OrderStatus::Partial | OrderStatus::Expired
+        ) {
+        OrderStatus::Cancelled
+    } else {
+        derived
+    };
     // While the tenant is behind the network, an order mustn't become
     // expired: its payment may be in a block not yet scanned for it, and an
     // `order.expired` event can make a shop cancel an order that turns out
@@ -2232,6 +2264,7 @@ impl Store {
                 .get::<_, Option<shared::sqlite::Unsigned<u64>>>("confirmations_required_override")?
                 .map(|v| v.0),
             closed_at: row.get("closed_at_utc")?,
+            cancelled_at: row.get("cancelled_at_utc")?,
         })
     }
 
@@ -2278,6 +2311,43 @@ impl Store {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// Cancels one of `tenant_id`'s orders, if nothing has reached it: it
+    /// takes no payment from now (`cancelled_at_utc`, and its deadline
+    /// brought forward to `now`, so the scanner keeps watching it for the
+    /// grace period an expired order gets). Writes the row only; the caller
+    /// recomputes its status (to `cancelled`) and announces it in the same
+    /// transaction, against [`Store::scanned_tip`]. Scoped by `tenant_id`
+    /// like `get_order`.
+    pub fn cancel_order(
+        &self,
+        tenant_id: &TenantId,
+        order_id: &OrderId,
+        now: i64,
+    ) -> Result<CancelOrder> {
+        let Some(order) = self.get_order(tenant_id, order_id)? else {
+            return Err(StoreError::NotFound);
+        };
+        if order.status == OrderStatus::Cancelled {
+            return Ok(CancelOrder::AlreadyCancelled);
+        }
+        if order.status != OrderStatus::Pending || order.amount_received_piconero > 0 {
+            return Ok(CancelOrder::Refused(order.status));
+        }
+        self.conn.execute(
+            "UPDATE orders SET cancelled_at_utc = ?2, expires_at_utc = MIN(expires_at_utc, ?2)
+             WHERE id = ?1",
+            params![order_id, now],
+        )?;
+        Ok(CancelOrder::Cancelled)
+    }
+
+    /// The highest block recorded on `tenant_id`'s network (`0` before the
+    /// first), for a status recompute made outside the scanner.
+    pub fn scanned_tip(&self, tenant_id: &TenantId) -> Result<u64> {
+        let (_, network, _) = self.recompute_facts(tenant_id)?;
+        Ok(self.max_scanned_height(network)?.unwrap_or(0))
     }
 
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Records
@@ -2653,10 +2723,10 @@ impl Store {
         // noticed (its store may have been catching up). Written only if
         // something changed: most recomputes change nothing, and a write that
         // changes nothing still costs a page write on slow storage.
-        let closed_at = if plan.status == OrderStatus::Expired {
-            order.expires_at.min(now)
-        } else {
-            now
+        let closed_at = match plan.status {
+            OrderStatus::Expired => order.expires_at.min(now),
+            OrderStatus::Cancelled => order.cancelled_at.unwrap_or(now).min(now),
+            _ => now,
         };
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
@@ -3078,6 +3148,7 @@ mod tests {
             status,
             confirmations: 0,
             double_spend_detected_at: None,
+            cancelled_at: None,
             refund_address: None,
             description: None,
             created_at: 0,
@@ -3279,6 +3350,107 @@ mod tests {
                 case.what
             );
         }
+    }
+
+    /// A cancelled order (deadline brought forward to when it was
+    /// cancelled) stays cancelled while it is short of its amount, closed
+    /// at once even while the store is behind the network (the merchant
+    /// decided, nothing is guessed); paid in full anyway, it is paid.
+    #[test]
+    fn a_cancelled_order_stays_cancelled_until_paid_in_full() {
+        use OrderStatus::*;
+        for (views, lagging, expect) in [
+            (vec![], false, Cancelled),
+            (vec![], true, Cancelled),
+            (vec![mined(40, 12)], false, Cancelled),
+            (vec![pooled(40)], false, Cancelled),
+            (vec![pooled(100)], false, Unconfirmed),
+            (vec![mined(100, 3)], false, Confirming),
+            (vec![mined(100, 12)], false, Paid),
+            (vec![mined(150, 12)], false, Overpaid),
+        ] {
+            let mut order = order(Pending, 400);
+            order.cancelled_at = Some(400);
+            let plan = plan_status(&StatusFacts {
+                order: &order,
+                views: &views,
+                confirmations_required: 10,
+                tenant_lagging: lagging,
+                settlement_frozen: false,
+                conflicted: false,
+                proven_views: None,
+                current_height: 50,
+                now: 400,
+            });
+            assert_eq!(plan.status, expect, "{views:?}, lagging {lagging}");
+            if expect == Cancelled {
+                assert_eq!((plan.next_due_at, plan.next_due_height), (None, None));
+            }
+        }
+    }
+
+    /// Cancelling: only a pending order nothing has reached, scoped to its
+    /// tenant; its deadline comes forward, and its recompute closes it as
+    /// cancelled when it was cancelled.
+    #[test]
+    fn cancel_order_cancels_only_an_untouched_pending_order_of_its_tenant() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let other = new_tenant(&store);
+        let order = new_order(&store, tenant.tenant.id.as_str(), 1);
+        assert!(matches!(
+            store.cancel_order(&other.tenant.id, &order.id, 1500),
+            Err(StoreError::NotFound)
+        ));
+        assert_eq!(
+            store
+                .cancel_order(&tenant.tenant.id, &order.id, 1500)
+                .unwrap(),
+            CancelOrder::Cancelled
+        );
+        store.recompute_order_status(&order.id, 10, 1500).unwrap();
+        let cancelled = store
+            .get_order(&tenant.tenant.id, &order.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancelled.status, OrderStatus::Cancelled);
+        assert_eq!(cancelled.cancelled_at, Some(1500));
+        assert_eq!(cancelled.expires_at, 1500);
+        assert_eq!(cancelled.closed_at, Some(1500));
+        assert_eq!(
+            store
+                .cancel_order(&tenant.tenant.id, &order.id, 1600)
+                .unwrap(),
+            CancelOrder::AlreadyCancelled
+        );
+        assert_eq!(
+            store
+                .get_order(&tenant.tenant.id, &order.id)
+                .unwrap()
+                .unwrap()
+                .cancelled_at,
+            Some(1500)
+        );
+
+        let paid = new_order(&store, tenant.tenant.id.as_str(), 2);
+        store
+            .record_payment_match(&paid.id, "tx", 0, 1, "[]", 1500, None, None)
+            .unwrap();
+        store.recompute_order_status(&paid.id, 10, 1500).unwrap();
+        assert_eq!(
+            store
+                .cancel_order(&tenant.tenant.id, &paid.id, 1500)
+                .unwrap(),
+            CancelOrder::Refused(OrderStatus::Partial)
+        );
+        assert_eq!(
+            store
+                .get_order(&tenant.tenant.id, &paid.id)
+                .unwrap()
+                .unwrap()
+                .cancelled_at,
+            None
+        );
     }
 
     /// An order settles only on its payments as proven;

@@ -1195,6 +1195,176 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
     assert_eq!(body_json(detail).await["refund_address"], "refund-here");
 }
 
+/// Cancelling (the POS's Cancel, through monokulo): only the owner's
+/// order, only while nothing has reached it. A cancelled order says so in
+/// its status and `cancelled_at`, is announced as `order.cancelled`, is no
+/// longer open, and cancelling it again changes nothing. A payment sent
+/// anyway is still counted: a little leaves it cancelled, in full it is
+/// paid, keeping when it was cancelled.
+#[tokio::test]
+async fn the_admin_cancel_route_cancels_an_unpaid_order_of_the_tenant_behind_the_secret_key() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
+    let router = build_router(state, 1_000_000);
+    let a = create_tenant(&router, 64).await;
+    let b = create_tenant(&router, 66).await;
+    let create = |token: String| {
+        let router = router.clone();
+        async move {
+            body_json(
+                router
+                    .oneshot(json_request(
+                        "POST",
+                        "/api/v1/admin/tenant/orders",
+                        Some(&token),
+                        &serde_json::json!({ "xmr_amount_piconero": 1_000u64 }),
+                    ))
+                    .await
+                    .unwrap(),
+            )
+            .await["order_id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        }
+    };
+    let send = |method: &'static str, uri: String, token: Option<String>| {
+        let router = router.clone();
+        async move {
+            router
+                .oneshot(json_request(
+                    method,
+                    &uri,
+                    token.as_deref(),
+                    &serde_json::Value::Null,
+                ))
+                .await
+                .unwrap()
+        }
+    };
+    let pay = |order: &str, amount: u64, txid: &str| {
+        let store = store.lock();
+        let order = shared::ids::OrderId::new(order.to_owned());
+        store
+            .record_payment_match(
+                &order,
+                txid,
+                0,
+                amount,
+                "[]",
+                crate::now_unix(),
+                Some(10),
+                None,
+            )
+            .unwrap();
+        crate::scanner::recompute_and_notify(&store, &order, 100, crate::now_unix()).unwrap();
+    };
+    let order = create(a.secret_token.clone()).await;
+    let cancel = format!("/api/v1/admin/tenant/orders/{order}/cancel");
+    let detail = format!("/api/v1/admin/tenant/orders/{order}");
+
+    assert_eq!(
+        send("POST", cancel.clone(), None).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        send("POST", cancel.clone(), Some(b.secret_token.clone()))
+            .await
+            .status(),
+        StatusCode::NOT_FOUND,
+        "tenant B must not cancel tenant A's order"
+    );
+    let before = body_json(send("GET", detail.clone(), Some(a.secret_token.clone())).await).await;
+    assert_eq!(before["status"], "pending");
+    assert!(before["cancelled_at"].is_null());
+
+    assert_eq!(
+        send("POST", cancel.clone(), Some(a.secret_token.clone()))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let cancelled =
+        body_json(send("GET", detail.clone(), Some(a.secret_token.clone())).await).await;
+    assert_eq!(cancelled["status"], "cancelled");
+    let at = cancelled["cancelled_at"].as_i64().expect("cancelled_at");
+    assert!(cancelled["expires_at"].as_i64().unwrap() <= at);
+    assert_eq!(
+        cancelled["currently_scanning"], true,
+        "watched for its grace period, like an expired order"
+    );
+    let events: Vec<_> = store
+        .lock()
+        .order_events_for_test()
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.order_id.as_str() == order)
+        .map(|e| e.event_type)
+        .collect();
+    assert_eq!(events, ["order.cancelled"]);
+    let open = body_json(
+        send(
+            "GET",
+            "/api/v1/admin/tenant/orders?open=true".into(),
+            Some(a.secret_token.clone()),
+        )
+        .await,
+    )
+    .await;
+    assert!(open.as_array().unwrap().is_empty(), "{open}");
+    let by_status = body_json(
+        send(
+            "GET",
+            "/api/v1/admin/tenant/orders?status=cancelled".into(),
+            Some(a.secret_token.clone()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(by_status[0]["order_id"], order.as_str());
+
+    // Again: nothing changes, and nothing more is announced.
+    assert_eq!(
+        send("POST", cancel.clone(), Some(a.secret_token.clone()))
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(store.lock().order_events_for_test().unwrap().len(), 1);
+
+    // Money sent anyway: a little shows in what it received; the rest pays it.
+    pay(&order, 400, "tx_late_1");
+    let late = body_json(send("GET", detail.clone(), Some(a.secret_token.clone())).await).await;
+    assert_eq!(late["status"], "cancelled");
+    assert_eq!(late["amount_received_piconero"], 400);
+    pay(&order, 600, "tx_late_2");
+    let paid = body_json(send("GET", detail.clone(), Some(a.secret_token.clone())).await).await;
+    assert_eq!(paid["status"], "paid");
+    assert_eq!(paid["cancelled_at"], at);
+
+    // An order something has reached can't be cancelled.
+    let partly_paid = create(a.secret_token.clone()).await;
+    pay(&partly_paid, 1, "tx_partial");
+    let refused = send(
+        "POST",
+        format!("/api/v1/admin/tenant/orders/{partly_paid}/cancel"),
+        Some(a.secret_token.clone()),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let still = body_json(
+        send(
+            "GET",
+            format!("/api/v1/admin/tenant/orders/{partly_paid}"),
+            Some(a.secret_token.clone()),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(still["status"], "partial");
+    assert!(still["cancelled_at"].is_null());
+}
+
 #[tokio::test]
 async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     // The structural IDOR fix is only a guarantee if it holds for

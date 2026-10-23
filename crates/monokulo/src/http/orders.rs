@@ -103,8 +103,7 @@ async fn build_orders_view_model(
 }
 
 /// The orders table's rows: the engine's view of each order, with what only
-/// monokulo knows - its fiat amount, where it came from, and whether the
-/// POS cancelled it.
+/// monokulo knows - its fiat amount and where it came from.
 pub(super) async fn order_rows(
     state: &AppState,
     row: &super::OwnedStore,
@@ -143,23 +142,11 @@ pub(super) async fn order_rows(
                 None => ("—".to_string(), "".to_string()),
             };
             let detail = details.get(&o.order_id).cloned().unwrap_or_default();
-            // A POS cancellation only matters while nothing was paid: a
-            // payment that arrived anyway keeps the engine's status.
-            let status = if detail.pos_cancelled_at.is_some()
-                && matches!(
-                    o.status,
-                    shared::order_status::OrderStatus::Pending
-                        | shared::order_status::OrderStatus::Expired
-                ) {
-                crate::views::DisplayStatus::Cancelled
-            } else {
-                o.status.into()
-            };
             OrderRowViewModel {
                 order_id: o.order_id,
                 reference: o.merchant_order_id,
                 source: source_label(detail.source.as_deref(), &plugins),
-                status,
+                status: o.status,
                 amount,
                 currency,
                 created_at: o.created_at,
@@ -460,12 +447,13 @@ async fn order_detail_data(
                 rate_provider,
                 xmr_amount_piconero: detail.order.xmr_amount_piconero,
                 amount_received_piconero: detail.order.amount_received_piconero,
-                status: detail.order.status.into(),
+                status: detail.order.status,
                 confirmations: detail.order.confirmations,
                 confirmations_required_display,
                 base_currency_display,
                 base_currency_rate_display,
                 double_spend_detected_at: detail.order.double_spend_detected_at,
+                cancelled_at: detail.order.cancelled_at,
                 refund_address: detail.order.refund_address,
                 created_at: detail.order.created_at,
                 expires_at: detail.order.expires_at,
@@ -5881,6 +5869,7 @@ mod tests {
             base_currency_display: "XMR".to_string(),
             base_currency_rate_display: "same as order currency".to_string(),
             double_spend_detected_at: None,
+            cancelled_at: None,
             refund_address: None,
             created_at: 1000,
             expires_at: 2000,

@@ -6,7 +6,7 @@ use maud::{html, Markup, PreEscaped};
 
 use shared::exchange_rate::format_piconero_as_xmr;
 
-use super::{DisplayStatus, OrderStatus, PageChrome};
+use super::{OrderStatus, PageChrome};
 
 /// One row of the orders list page - just the fields the table shows, not
 /// the full engine `OrderView`.
@@ -19,7 +19,7 @@ pub struct OrderRowViewModel {
     pub source: String,
     /// The engine's status, or "cancelled" for an unpaid order the POS
     /// cancelled (the engine does not know about POS cancellations).
-    pub status: super::DisplayStatus,
+    pub status: OrderStatus,
     pub amount: String,
     pub currency: String,
     pub created_at: i64,
@@ -244,12 +244,14 @@ pub struct OrderDetailData {
     pub rate_provider: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
-    pub status: super::DisplayStatus,
+    pub status: OrderStatus,
     pub confirmations: u64,
     pub confirmations_required_display: String,
     pub base_currency_display: String,
     pub base_currency_rate_display: String,
     pub double_spend_detected_at: Option<i64>,
+    /// When the merchant cancelled it (on the POS), if they did.
+    pub cancelled_at: Option<i64>,
     /// Same caller-supplied-text caveat as `merchant_order_id` above.
     pub refund_address: Option<String>,
     pub created_at: i64,
@@ -357,6 +359,9 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
     if let Some(at) = order.double_spend_detected_at {
         facts.push(fact("Double-spend detected at", clock.time(at)));
     }
+    if let Some(at) = order.cancelled_at {
+        facts.push(fact("Cancelled at", clock.time(at)));
+    }
     facts.extend([
         fact(
             "Refund address",
@@ -387,13 +392,16 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
 fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
     if order.payments.is_empty() {
         let (title, text) = match order.status {
-            DisplayStatus::Order(OrderStatus::Expired) => (
+            OrderStatus::Expired => (
                 "No payments were made",
                 html! { "This order expired at " (clock.time(order.expires_at)) " before any payment arrived. There's nothing to refund." },
             ),
-            DisplayStatus::Cancelled => (
+            OrderStatus::Cancelled => (
                 "No payments were made",
-                html! { "This order was cancelled before any payment arrived." },
+                html! {
+                    "This order was cancelled at " (clock.time(order.cancelled_at.unwrap_or(order.updated_at)))
+                    " before any payment arrived. A payment sent to its address anyway still shows here."
+                },
             ),
             _ => (
                 "No payments have been made yet",
@@ -404,10 +412,7 @@ fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
                 },
             ),
         };
-        let open = matches!(
-            order.status,
-            DisplayStatus::Order(OrderStatus::Pending | OrderStatus::Partial)
-        );
+        let open = matches!(order.status, OrderStatus::Pending | OrderStatus::Partial);
         let mut empty = ui::EmptyState::new(title)
             .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) })
             .text(text)
@@ -482,17 +487,39 @@ fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
             events.push((at, event));
         }
     }
+    // Cancelled, then whatever arrived anyway: the payments seen after it
+    // sort above it, and it says what is left to do about them.
+    if let Some(at) = order.cancelled_at {
+        let late = order
+            .payments
+            .iter()
+            .filter(|payment| payment.first_seen_at >= at && payment.voided_at.is_none())
+            .fold(0u64, |sum, payment| {
+                sum.saturating_add(payment.amount_piconero)
+            });
+        events.push((
+            at,
+            ui::Event::new(clock.text(at), "Cancelled")
+                .detail(if late > 0 {
+                    format!(
+                        "{} arrived after it was cancelled: refund it, or keep it and fulfil the order.",
+                        xmr(late)
+                    )
+                } else {
+                    "Cancelled before any payment arrived.".to_string()
+                })
+                .tone(ui::Tone::Warning),
+        ));
+    }
     let ended = match order.status {
-        DisplayStatus::Order(OrderStatus::Paid) => Some(("Paid", ui::Tone::Success)),
-        DisplayStatus::Order(OrderStatus::Overpaid) => {
-            Some(("Paid, with extra", ui::Tone::Success))
-        }
-        DisplayStatus::Order(OrderStatus::Expired) => Some(("Expired", ui::Tone::Warning)),
-        DisplayStatus::Cancelled => Some(("Cancelled", ui::Tone::Warning)),
+        OrderStatus::Paid => Some(("Paid", ui::Tone::Success)),
+        OrderStatus::Overpaid => Some(("Paid, with extra", ui::Tone::Success)),
+        OrderStatus::Expired => Some(("Expired", ui::Tone::Warning)),
+        // A cancellation is its own event, above.
         _ => None,
     };
     if let Some((what, tone)) = ended {
-        let at = if order.status == DisplayStatus::Order(OrderStatus::Expired) {
+        let at = if order.status == OrderStatus::Expired {
             order.expires_at
         } else {
             order.updated_at
@@ -700,6 +727,7 @@ mod tests {
             base_currency_display: "XMR".to_string(),
             base_currency_rate_display: "same as order currency".to_string(),
             double_spend_detected_at,
+            cancelled_at: None,
             refund_address: None,
             created_at: 1000,
             expires_at: 2000,
@@ -824,6 +852,41 @@ mod tests {
         assert!(html.contains("No payments were made"), "{html}");
         assert!(html.contains("There's nothing to refund."), "{html}");
         assert!(!html.contains("Share payment link"), "{html}");
+    }
+
+    /// Money sent to a cancelled order anyway shows as a payment after the
+    /// cancellation, which says how much arrived and what to do about it;
+    /// paid in full, the order reads paid and still shows it was cancelled.
+    #[test]
+    fn a_payment_after_a_cancellation_shows_after_it_with_what_to_do() {
+        use shared::order_status::OrderStatus;
+        for (status, amount) in [
+            (OrderStatus::Cancelled, 100_000_000_000),
+            (OrderStatus::Paid, 500_000_000_000),
+        ] {
+            let order = OrderDetailData {
+                status,
+                cancelled_at: Some(1_200),
+                amount_received_piconero: amount,
+                payments: vec![payment("late", amount, 1_300)],
+                ..test_order_detail_data(None)
+            };
+            let html = live_fragment(&order, &chrome().clock).into_string();
+            let activity = &html[html.find("Activity").expect("the activity")..];
+            let cancelled = activity.find(">Cancelled<").expect("a cancellation event");
+            let seen = activity.find("Payment seen").expect("the payment");
+            assert!(
+                seen < cancelled,
+                "{status}: the payment, newer, comes first"
+            );
+            assert!(
+                html.contains(
+                    "arrived after it was cancelled: refund it, or keep it and fulfil the order."
+                ),
+                "{status}"
+            );
+            assert!(html.contains("Cancelled at"), "{status}: the fact");
+        }
     }
 
     /// Payments are the timeline, newest first: each seen, a reversed one

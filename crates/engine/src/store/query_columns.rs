@@ -36,6 +36,7 @@ pub const COLUMNS: Classification = Classification {
         ("orders", "status", Visible),
         ("orders", "confirmations", Visible),
         ("orders", "double_spend_detected_at_utc", Visible),
+        ("orders", "cancelled_at_utc", Visible),
         ("orders", "refund_address", Visible),
         ("orders", "description", Visible),
         ("orders", "created_at_utc", Visible),

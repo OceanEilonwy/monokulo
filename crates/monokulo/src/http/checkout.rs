@@ -605,7 +605,7 @@ pub async fn set_refund_address(
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    // Once the order is settled (paid, overpaid or expired) a refund
+    // Once the order is settled (paid, overpaid, expired or cancelled) a refund
     // address already on record is locked: a refund may be on its way to
     // it, and anyone who comes by the order URL later (a shared link, a
     // browser history) must not be able to redirect it. An order with
@@ -615,6 +615,7 @@ pub async fn set_refund_address(
         shared::order_status::OrderStatus::Paid
             | shared::order_status::OrderStatus::Overpaid
             | shared::order_status::OrderStatus::Expired
+            | shared::order_status::OrderStatus::Cancelled
     );
     if settled && detail.order.refund_address.is_some() {
         if wants_json {
@@ -707,7 +708,7 @@ pub async fn set_refund_address(
 
 #[derive(Serialize)]
 pub struct CheckoutStatusResponse {
-    pub status: crate::views::DisplayStatus,
+    pub status: shared::order_status::OrderStatus,
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
@@ -1005,6 +1006,7 @@ mod tests {
             status: shared::order_status::OrderStatus::Partial,
             confirmations: 0,
             double_spend_detected_at: None,
+            cancelled_at: None,
             refund_address: None,
             created_at: 0,
             expires_at: 1800,

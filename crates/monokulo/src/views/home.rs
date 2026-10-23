@@ -40,7 +40,7 @@ pub struct HomeOrderRow {
     pub connection_id: crate::db::ConnectionId,
     pub display_name: String,
     pub order_id: crate::db::OrderId,
-    pub status: super::DisplayStatus,
+    pub status: super::OrderStatus,
     pub amount: String,
     pub currency: String,
     pub created_at: i64,

@@ -15,7 +15,8 @@ api::resource!(
 /// One order: what to pay, where, and how far the payment has got.
 ///
 /// Its status moves from `pending` through `unconfirmed` and `confirming`
-/// to `paid` (or `partial`, `overpaid`, `expired`); `is_final` says it
+/// to `paid` (or `partial`, `overpaid`, `expired`, or `cancelled` when the
+/// merchant called it off before anything was paid); `is_final` says it
 /// won't change again. Follow `mk:order-events` to hear each change as it
 /// happens, and send the payer to `mk:checkout`, or, when they're on Tor,
 /// to `mk:onion-checkout`. The store's secret key also gets
@@ -52,8 +53,14 @@ struct Body {
     confirmations_required: u64,
     /// When it was made, in Unix seconds.
     created_at: i64,
-    /// When it expires unpaid, in Unix seconds.
+    /// When it expires unpaid, in Unix seconds. A cancelled order's is
+    /// when it was cancelled.
     expires_at: i64,
+    /// When the merchant cancelled it, in Unix seconds; `null` unless they
+    /// did. A payment sent anyway is still recorded: in
+    /// `amount_received_piconero` while the order stays `cancelled`, and,
+    /// paid in full, the order is paid like any other and keeps this time.
+    cancelled_at: Option<i64>,
     collection: Link<orders::Path>,
     events: Link<order_events::Path>,
     checkout: Link<checkout::Path>,
@@ -102,6 +109,7 @@ pub(crate) fn of(
         confirmations_required,
         created_at: order.created_at,
         expires_at: order.expires_at,
+        cancelled_at: order.cancelled_at,
         collection: Link::new(orders::Path {}),
         events: Link::new(order_events::Path {
             order_id: order_id.clone(),

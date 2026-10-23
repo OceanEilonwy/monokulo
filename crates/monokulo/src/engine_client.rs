@@ -968,6 +968,24 @@ impl EngineClient {
         .map(drop)
     }
 
+    /// `POST /api/v1/admin/tenant/orders/{order_id}/cancel`: calls off
+    /// one of `sk`'s tenant's orders, while nothing has been paid to it.
+    /// The engine decides that in one transaction with the change, and
+    /// refuses an order with payment activity with its own `409`, surfaced
+    /// as `EngineClientError::EngineError { status: 409, .. }`. Cancelling
+    /// a cancelled order again succeeds.
+    pub async fn cancel_order(
+        &self,
+        sk: &RawToken,
+        order_id: &shared::ids::OrderId,
+    ) -> Result<(), EngineClientError> {
+        let order_id = path_id(order_id.as_str())?;
+        self.send(Call::post(format!("/api/v1/admin/tenant/orders/{order_id}/cancel")).store(sk))
+            .await?
+            .checked()
+            .map(drop)
+    }
+
     /// `GET /status` — the engine's own live node/scanner report
     /// (`src/http/status_page.rs` at the repo root). No store secret: it
     /// reports on the whole instance, not any one tenant. This is data only;
@@ -1247,6 +1265,8 @@ pub struct OrderView {
     pub status: shared::order_status::OrderStatus,
     pub confirmations: u64,
     pub double_spend_detected_at: Option<i64>,
+    /// When the merchant cancelled it (the POS's Cancel), if it was.
+    pub cancelled_at: Option<i64>,
     pub refund_address: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,

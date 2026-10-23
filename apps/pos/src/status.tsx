@@ -5,13 +5,12 @@ import STATUS_SYMBOLS from '@monokulo/ui/status/symbols.svg?raw';
 /** What the POS needs to know about an order to show its status. */
 export type StatusSource = {
   status: string; confirmations: number; confirmations_required: number;
-  error: string | null; cancelled_at: number | null;
+  error: string | null;
 };
 
 /** The visual state: the engine's status, refined by what the POS knows. */
 export function stateOf(order: StatusSource, offline = false): OrderState {
   if (offline) return 'offline';
-  if (order.cancelled_at) return 'cancelled';
   if (order.error?.includes('Double-spend')) return 'double-spend';
   if (order.status === 'confirming' && order.confirmations === 0) return 'unconfirmed';
   return order.status as OrderState;
