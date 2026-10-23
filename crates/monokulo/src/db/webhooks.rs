@@ -243,22 +243,6 @@ impl Db {
         Ok(rows)
     }
 
-    /// One of the store's webhooks; `None` when it isn't the store's.
-    pub fn get_webhook(
-        &self,
-        store_id: &ConnectionId,
-        id: &WebhookId,
-    ) -> Result<Option<WebhookRow>> {
-        self.conn
-            .query_row(
-                &format!("SELECT {WEBHOOK_COLUMNS} FROM webhooks WHERE id = ?1 AND store_id = ?2"),
-                params![id, store_id],
-                webhook_from_row,
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
     /// Deletes one of the store's webhooks and its deliveries. `false` when
     /// it isn't the store's (or is gone already).
     pub fn delete_webhook(&self, store_id: &ConnectionId, id: &WebhookId) -> Result<bool> {

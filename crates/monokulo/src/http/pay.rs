@@ -837,13 +837,11 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold_with_limit(
+            .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                "corrupt",
                 &row.id,
-                "not-an-amount",
-                20,
-                crate::now_unix(),
+                &[],
+                Some(("corrupt", "not-an-amount", 20, crate::now_unix())),
             )
             .unwrap();
         let response = router

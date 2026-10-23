@@ -117,14 +117,6 @@ impl Clock {
         self.render(unix, true)
     }
 
-    /// [`Self::time`], or a muted dash for nothing.
-    pub fn time_or_dash(&self, unix: Option<i64>) -> Markup {
-        match unix {
-            Some(unix) => self.time(unix),
-            None => html! { span class="muted" { "-" } },
-        }
-    }
-
     /// The short text alone, for a page title or attribute.
     pub fn text(&self, unix: i64) -> String {
         let Some(zoned) = self.zoned(unix) else {
