@@ -259,17 +259,4 @@ impl Db {
             .optional()
             .map_err(Into::into)
     }
-
-    /// A store's app orders made since `since`, oldest first: what a newly
-    /// opened event stream starts with.
-    pub fn recent_app_orders(&self, store_id: &ConnectionId, since: i64) -> Result<Vec<AppOrder>> {
-        let mut stmt = self.conn.prepare_cached(
-            "SELECT * FROM app_orders WHERE store_id = ?1 AND created_at_utc >= ?2
-             ORDER BY created_at_utc, rowid",
-        )?;
-        let rows = stmt
-            .query_map(params![store_id, since], order_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
 }

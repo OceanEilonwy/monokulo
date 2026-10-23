@@ -4124,13 +4124,11 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold_with_limit(
+            .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                "old",
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
-                "50",
-                20,
-                crate::now_unix(),
+                &[],
+                Some(("old", "50", 20, crate::now_unix())),
             )
             .unwrap();
         // A custom-tier save must not depend on engine availability.
@@ -4174,13 +4172,11 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold_with_limit(
+            .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                "keep",
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
-                "50",
-                20,
-                crate::now_unix(),
+                &[],
+                Some(("keep", "50", 20, crate::now_unix())),
             )
             .unwrap();
         let response = router
@@ -4290,13 +4286,11 @@ mod tests {
         state
             .db
             .lock()
-            .create_confirmation_threshold_with_limit(
+            .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                existing_id,
                 &shared::ids::ConnectionId::new(connection_id.to_string()),
-                "50",
-                20,
-                crate::now_unix(),
+                &[],
+                Some((existing_id, "50", 20, crate::now_unix())),
             )
             .unwrap();
         let delete_field = format!("delete_{existing_id}");
@@ -4449,9 +4443,10 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
+                .map(|rows| rows.len())
                 .unwrap(),
             1
         );
@@ -4468,9 +4463,10 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
+                .map(|rows| rows.len())
                 .unwrap(),
             0,
             "every custom threshold must be gone after a base currency change"
@@ -4561,9 +4557,10 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
+                .map(|rows| rows.len())
                 .unwrap(),
             0,
             "expected the threshold to be gone"
@@ -4903,9 +4900,10 @@ mod tests {
             state
                 .db
                 .lock()
-                .count_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
+                .map(|rows| rows.len())
                 .unwrap(),
             0
         );
