@@ -57,19 +57,24 @@ It answers once per token:
 {
   "public_key": "pk_…",
   "secret_token": "sk_…",
-  "endpoint": "https://pay.example.com",
+  "api": "/api/v1",
   "webhook_signing_secret": "whsec_…"
 }
 ```
 
-Keep all four. `endpoint` is where everything below goes. A `503` with
-`{"error": …}` means the Monokulo can't connect plugins yet; show the error.
-Any other failure is a `401`: start again.
+Keep all four. `secret_token` is the store's key for your server, in
+`Authorization: Bearer` on the [HTTP API](../api/); `public_key` is for the
+shop's pages, if they embed the checkout with the [JS library](../js-library/).
+`api` is the API's entry, a path: resolve it against the address you called
+`/finish` at. A `503` with `{"error": …}` means the Monokulo can't connect
+plugins yet; show the error. Any other failure is a `401`: start again.
 
 ### 2. Create an order
 
+`GET /api/v1` with the key lists what it may do; the `create-order` form is:
+
 ```
-POST {endpoint}/pay/{public_key}/orders
+POST {monokulo}/api/v1/orders
 Authorization: Bearer {secret_token}
 Monokulo-Client: {slug}/{your version}
 Content-Type: application/json
@@ -84,14 +89,20 @@ Content-Type: application/json
 }
 ```
 
-Monokulo prices fiat in XMR itself. A retry with the same `idempotency_key`
-gets the same order. While your plugin is the store's connected one, orders
-it makes this way show as yours on the dashboard.
+It answers `201 Created` with the order and its `Location`. Monokulo prices
+fiat in XMR itself. A retry with the same `idempotency_key` gets the same
+order. While your plugin is the store's connected one, orders it makes this
+way show as yours on the dashboard. A refused order is
+`application/problem+json`: its `detail` says why, and its `type` links to
+the problem's page.
 
 ### 3. Send the customer to pay
 
-To `{endpoint}/pay/{public_key}/orders/{order_id}`, or show that page in an
-iframe on yours. The [JS library](../js-library/) can mount it too.
+To the order's `mk:checkout` link (`/checkout/{order_id}`, resolved against
+the address you call Monokulo at), or show that page in an iframe on yours.
+The [JS library](../js-library/) can mount it too. Read the order again with
+its `self` link (`GET /api/v1/orders/{order_id}`), or follow its changes on
+`mk:order-events`; but mark the shop's order paid from the webhook.
 
 ### 4. Take webhooks
 
@@ -102,15 +113,17 @@ has the body and how to check it. Mark the shop's order paid on
 ### 5. Forward your errors (optional)
 
 ```
-POST {endpoint}/pay/{public_key}/logs
+POST {monokulo}/api/v1/logs
 Authorization: Bearer {secret_token}
 Monokulo-Client: {slug}/{your version}
+Content-Type: application/json
 
 { "entries": [ { "level": "error", "message": "…", "trace_id": "…" } ] }
 ```
 
-Kept only when the store turned on client logs. Levels are PSR-3's
-(`error`, `warning`, …).
+Kept only when the store turned on client logs (otherwise a `403`
+`logs-off` problem). Levels are PSR-3's (`error`, `warning`, …); at most 20
+entries a time.
 
 ## Test your receiver
 

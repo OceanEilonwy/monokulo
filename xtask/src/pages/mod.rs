@@ -13,6 +13,7 @@
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
 //! shown (ZMQ unless told otherwise): they run each build separately.
 
+mod api_reference;
 mod docs;
 mod fetch;
 mod format;
@@ -26,6 +27,7 @@ pub(crate) mod site_header;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use api_reference::build as api;
 pub(crate) use docs::build as docs;
 pub(crate) use fetch::fetch;
 pub(crate) use inputs::{junit, Test, TestStatus};
@@ -82,6 +84,10 @@ pub(crate) const HELP: &str = "\
                       Build the docs into the site DIR from xtask/src/pages/docs/*.md: /guide/, a folder\n\
                       per page beside it, /api/, the Geomart sample shop (examples/geomart/) under\n\
                       /geomart/, and a redirect from each page's old address under /docs/\n\
+        pages api --site DIR\n\
+                      Build the HTTP API's reference into the site DIR from docs/api/ (which\n\
+                      monokulo's tests write): /api/reference/, /rels/{rel}/, /problems/{slug}/ and\n\
+                      /api/v1/openapi.json\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

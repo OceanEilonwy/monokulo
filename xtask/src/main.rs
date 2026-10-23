@@ -102,6 +102,7 @@ fn main() -> ExitCode {
         ["pages", "fetch", rest @ ..] => pages::fetch(rest),
         ["pages", "landing", rest @ ..] => pages::landing(&root(), rest),
         ["pages", "docs", rest @ ..] => pages::docs(&root(), rest),
+        ["pages", "api", rest @ ..] => pages::api(&root(), rest),
         ["serve", rest @ ..] => pages::serve(rest),
         ["live", rest @ ..] => live::live(&root(), rest),
         ["record-stagenet-node"] => recording::record(&root()),
