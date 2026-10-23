@@ -18,7 +18,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use super::{DisplayStatus, OrderStatus};
+use super::OrderStatus;
 
 use super::{layout_bare, layout_bare_with_head, script, Load, PageChrome};
 
@@ -50,7 +50,7 @@ pub struct CheckoutViewModel {
     /// never for a visitor on Tor, who would be sent off Tor for it.
     pub merchant_icon: bool,
     pub status_label: String,
-    pub status: super::DisplayStatus,
+    pub status: OrderStatus,
     pub address: String,
     /// The QR code (`http::checkout::payment_qr_svg`); asks for
     /// `amount_due_xmr` while one is due.
@@ -426,10 +426,7 @@ pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
 /// Whether the customer still owes something: the whole amount, or the rest
 /// after a partial payment. Only then is the code live; otherwise it fades.
 fn awaiting_payment(data: &CheckoutViewModel) -> bool {
-    matches!(
-        data.status,
-        DisplayStatus::Order(OrderStatus::Pending | OrderStatus::Partial)
-    )
+    matches!(data.status, OrderStatus::Pending | OrderStatus::Partial)
 }
 
 /// The track: Send, Confirm, Paid - without Confirm when the store counts a
@@ -442,15 +439,13 @@ fn stage_steps(data: &CheckoutViewModel) -> Vec<ui::ProgressStep> {
         [Step::Fail, Step::Todo, Step::Todo]
     } else {
         match data.status {
-            DisplayStatus::Order(OrderStatus::Pending) => [Step::Now, Step::Todo, Step::Todo],
-            DisplayStatus::Order(OrderStatus::Partial) => [Step::Part, Step::Todo, Step::Todo],
-            DisplayStatus::Order(OrderStatus::Unconfirmed)
-            | DisplayStatus::Order(OrderStatus::Confirming) => [Step::Done, Step::Now, Step::Todo],
-            DisplayStatus::Order(OrderStatus::Paid)
-            | DisplayStatus::Order(OrderStatus::Overpaid) => [Step::Done, Step::Done, Step::Done],
-            DisplayStatus::Order(OrderStatus::Expired) | DisplayStatus::Cancelled => {
-                [Step::Fail, Step::Todo, Step::Todo]
+            OrderStatus::Pending => [Step::Now, Step::Todo, Step::Todo],
+            OrderStatus::Partial => [Step::Part, Step::Todo, Step::Todo],
+            OrderStatus::Unconfirmed | OrderStatus::Confirming => {
+                [Step::Done, Step::Now, Step::Todo]
             }
+            OrderStatus::Paid | OrderStatus::Overpaid => [Step::Done, Step::Done, Step::Done],
+            OrderStatus::Expired | OrderStatus::Cancelled => [Step::Fail, Step::Todo, Step::Todo],
         }
     };
     let steps = if data.confirmations_required == 0 {
@@ -497,42 +492,45 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
         };
     }
     match data.status {
-        DisplayStatus::Order(OrderStatus::Pending) => (
+        OrderStatus::Pending => (
             "Send the exact amount below".to_string(),
             html! { "Scan the code with your wallet, or copy the address." },
         ),
-        DisplayStatus::Order(OrderStatus::Partial) => (
+        OrderStatus::Partial => (
             format!("Send the remaining {due} XMR"),
             html! { (received) " of " (total) " XMR received. This new code asks for the rest." },
         ),
-        DisplayStatus::Order(OrderStatus::Unconfirmed) => (
+        OrderStatus::Unconfirmed => (
             "Waiting for confirmation".to_string(),
             html! { (received) " XMR seen on the network. Don't send it again; this page updates by itself." },
         ),
-        DisplayStatus::Order(OrderStatus::Confirming) => (
+        OrderStatus::Confirming => (
             "Confirming".to_string(),
             html! { (data.confirmations) " of " (data.confirmations_required) " confirmations. Don't send it again; this page updates by itself." },
         ),
-        DisplayStatus::Order(OrderStatus::Paid) => (
+        OrderStatus::Paid => (
             "Paid".to_string(),
             html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." },
         ),
-        DisplayStatus::Order(OrderStatus::Overpaid) => (
+        OrderStatus::Overpaid => (
             "Paid, with extra".to_string(),
             html! {
                 @if let Some(message) = &data.payment_error { (message) } @else { "Don't send more. Contact the merchant about the extra amount." }
             },
         ),
-        DisplayStatus::Order(OrderStatus::Expired) => (
+        OrderStatus::Expired => (
             "This payment expired".to_string(),
             html! {
                 @if received == "0" { "Nothing arrived in time. Don't send to this address; go back to the shop to start again." }
                 @else { (received) " XMR arrived before it expired. Don't send more; contact the merchant about it." }
             },
         ),
-        DisplayStatus::Cancelled => (
-            "Cancelled".to_string(),
-            html! { "This order was cancelled. Don't send to this address." },
+        OrderStatus::Cancelled => (
+            "This order was cancelled".to_string(),
+            html! {
+                @if received == "0" { "Don't send to this address; ask the merchant for a new order if you still want to pay." }
+                @else { (received) " XMR arrived after it was cancelled. Don't send more; contact the merchant about a refund." }
+            },
         ),
     }
 }
@@ -591,7 +589,7 @@ fn refund_actions(data: &CheckoutViewModel) -> ui::Slot {
 fn live_pay(data: &CheckoutViewModel) -> Markup {
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
-    let partial = data.status == DisplayStatus::Order(OrderStatus::Partial);
+    let partial = data.status == OrderStatus::Partial;
     let (label, amount) = if partial {
         ("Still to pay", due)
     } else if awaiting_payment(data) {
@@ -681,8 +679,8 @@ fn live_address(data: &CheckoutViewModel) -> Markup {
     html! {
         div class="address-block" id="live-address" data-live {
             span class="address-label" id="address-label" {
-                @if data.status == DisplayStatus::Order(OrderStatus::Partial) { "Send the remaining amount to" }
-                @else if data.status == DisplayStatus::Order(OrderStatus::Pending) { "Send exactly this amount to" }
+                @if data.status == OrderStatus::Partial { "Send the remaining amount to" }
+                @else if data.status == OrderStatus::Pending { "Send exactly this amount to" }
                 @else { "Payment address" }
             }
             (address)
@@ -1207,7 +1205,7 @@ mod tests {
                 status,
                 "pending" | "partial" | "unconfirmed" | "confirming"
             ));
-            data.status = super::DisplayStatus::named(status);
+            data.status = status.parse().expect("a known status");
             let html = checkout_page(&chrome(), &data).into_string();
             let stage = html
                 .find(r#"class="stage-slot""#)
@@ -1241,10 +1239,28 @@ mod tests {
             ("cancelled", true),
         ] {
             let mut data = test_checkout_view_model(false);
-            data.status = super::DisplayStatus::named(status);
+            data.status = status.parse().expect("a known status");
             let html = checkout_page(&chrome(), &data).into_string();
             assert_eq!(html.contains("qr-wrap is-spent"), faded, "{status}: {html}");
         }
+    }
+
+    /// A cancelled order tells the payer not to pay; money that arrived
+    /// anyway is acknowledged, with whom to ask about a refund.
+    #[test]
+    fn a_cancelled_order_says_not_to_pay_and_owns_up_to_money_sent_anyway() {
+        let mut data = test_checkout_view_model(false);
+        data.status = OrderStatus::Cancelled;
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(html.contains("This order was cancelled"));
+        assert!(
+            html.contains("Don&#39;t send to this address")
+                || html.contains("Don't send to this address")
+        );
+        data.amount_received_xmr = "0.100000000000".to_string();
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(html.contains("0.1 XMR arrived after it was cancelled"));
+        assert!(html.contains("contact the merchant about a refund"));
     }
 
     #[test]

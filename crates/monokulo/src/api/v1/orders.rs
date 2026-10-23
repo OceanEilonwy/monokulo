@@ -354,6 +354,7 @@ async fn create(
             status: shared::order_status::OrderStatus::Pending,
             confirmations: 0,
             double_spend_detected_at: None,
+            cancelled_at: None,
             refund_address: None,
             created_at: now_unix(),
             expires_at: made.expires_at,

@@ -204,6 +204,8 @@ mod tests {
             assert!(SaleEvent::NAMES.contains(&e.event), "{engine}");
         }
         assert!(SaleEvent::from_logged(&o, &logged("order.double_spend_reversed")).is_none());
+        // Only the POS cancels an order, and only its own: an app's never is.
+        assert!(SaleEvent::from_logged(&o, &logged("order.cancelled")).is_none());
         assert_eq!(SaleEvent::waiting(&o).event, "sale.waiting");
         assert!(SaleEvent::NAMES.contains(&"sale.waiting"));
     }

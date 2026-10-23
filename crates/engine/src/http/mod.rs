@@ -258,6 +258,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             post(admin::set_order_refund_address),
         )
         .route(
+            "/api/v1/admin/tenant/orders/{order_id}/cancel",
+            post(admin::cancel_order),
+        )
+        .route(
             "/api/v1/admin/tenant/payments/lookup",
             post(admin::lookup_payment),
         )
@@ -563,18 +567,8 @@ pub use crate::now_unix;
 pub use crate::network::{network_str, parse_network};
 
 pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
-    match s {
-        "pending" => Ok(OrderStatus::Pending),
-        "unconfirmed" => Ok(OrderStatus::Unconfirmed),
-        "confirming" => Ok(OrderStatus::Confirming),
-        "paid" => Ok(OrderStatus::Paid),
-        "partial" => Ok(OrderStatus::Partial),
-        "overpaid" => Ok(OrderStatus::Overpaid),
-        "expired" => Ok(OrderStatus::Expired),
-        other => Err(ApiError::BadRequest(format!(
-            "unknown status filter: {other}"
-        ))),
-    }
+    s.parse()
+        .map_err(|_| ApiError::BadRequest(format!("unknown status filter: {s}")))
 }
 
 /// Resolves a tenant *entirely* from the presented `sk_` bearer token - never from

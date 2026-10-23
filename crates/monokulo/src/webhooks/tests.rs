@@ -555,6 +555,8 @@ struct Shop {
     engine: engine_test_support::TestEngineHandle,
     router: axum::Router,
     pk: String,
+    /// The store's secret key, for what its POS does through the engine.
+    sk: String,
     store: ConnectionId,
 }
 
@@ -580,13 +582,14 @@ async fn shop() -> Shop {
     )
     .await;
     let made = store_with_keys(&router, &state, &session, "https://bakery.example", "XMR").await;
-    let pk = made.public_key;
+    let (pk, sk) = (made.public_key, made.secret_key);
     let store = ConnectionId::new(made.id);
     Shop {
         state,
         engine,
         router,
         pk,
+        sk,
         store,
     }
 }
@@ -783,6 +786,17 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
     pay(&over, 1_000_000_000_000_000, Some(101));
     let expired = order().await;
     shop.engine.mark_order_expired(&expired).unwrap();
+    // Cancelled, as the POS cancels one through the engine.
+    let cancelled = order().await;
+    shop.state
+        .engine
+        .client
+        .cancel_order(
+            &shared::auth::RawToken::presented(&shop.sk),
+            &shared::ids::OrderId::new(cancelled),
+        )
+        .await
+        .unwrap();
     // The double-spend events come only from the scanner voiding a real
     // payment, which no test engine fakes: their vectors are checked
     // against the body builder alone (`vectors.rs`).
@@ -808,6 +822,7 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
         "order.paid",
         "order.overpaid",
         "order.expired",
+        "order.cancelled",
     ] {
         assert!(events.contains(event), "{event} delivered: {events:?}");
     }

@@ -38,7 +38,10 @@ const api = siteUrl(`/stores/${encodeURIComponent(config.connectionId)}/pos`);
 /** This session's story for the store's logs, when it opted in. */
 const timeline = createTimeline(config.clientLogging, `${api}/logs`);
 watchPage(timeline);
-const terminal = (o: Order) => Boolean(o.cancelled_at) || ['paid', 'overpaid', 'expired'].includes(o.status);
+const terminal = (o: Order) => ['paid', 'overpaid', 'expired', 'cancelled'].includes(o.status);
+/** Money arrived after the order was cancelled: some (it stays cancelled)
+ * or all of it (it is paid). Either way the merchant reviews it. */
+const paidAfterCancel = (o: Order) => Boolean(o.cancelled_at) && trimXmr(o.received_xmr || '0') !== '0';
 
 /** `#a8723b…b0d44e` - the order ID as the server shortened it, marked with `#`. */
 const shortId = (o: Order) => `#${o.order_id_short}`;
@@ -156,14 +159,14 @@ function adoptSiteBrand(slot: HTMLElement) {
 }
 
 /** Whether the customer still owes something: only then is the code live. */
-const awaitingPayment = (o: Order) => ['pending', 'partial'].includes(o.status) && !o.cancelled_at;
+const awaitingPayment = (o: Order) => ['pending', 'partial'].includes(o.status);
 
 /** The stage's track: Send, Confirm, Paid - without Confirm when the store
  * counts a payment as soon as it's seen (`confirmations_required` 0). */
 function stageSteps(o: Order): ProgressStep[] {
   const state = stateOf(o);
   const [send, confirm, paid]: StepProgress[] =
-    o.cancelled_at || (state === 'double-spend' && !awaitingPayment(o)) ? ['fail', 'todo', 'todo']
+    o.status === 'cancelled' || (state === 'double-spend' && !awaitingPayment(o)) ? ['fail', 'todo', 'todo']
     : o.status === 'pending' ? ['now', 'todo', 'todo']
     : o.status === 'partial' ? ['part', 'todo', 'todo']
     : ['unconfirmed', 'confirming'].includes(o.status) ? ['done', 'now', 'todo']
@@ -177,7 +180,7 @@ function stageSteps(o: Order): ProgressStep[] {
 /** The stage's words: a short title, then what to do now. */
 function stageMessage(o: Order): [string, string] {
   const received = trimXmr(o.received_xmr || '0'), total = trimXmr(o.xmr_amount);
-  if (o.cancelled_at) return ['Cancelled', o.status === 'pending' ? 'If money still arrives at its address, it will show in the order for review.' : 'Payment activity arrived after this order was cancelled. Review it in the order details.'];
+  if (o.status === 'cancelled') return ['Cancelled', paidAfterCancel(o) ? 'Payment activity arrived after this order was cancelled. Review it in the order details.' : 'If money still arrives at its address, it will show in the order for review.'];
   switch (stateOf(o)) {
     case 'double-spend': return ['Payment reversed', o.error || 'Double spend detected. Do not treat this payment as paid.'];
     case 'pending': return ['Send the exact amount below', 'Scan the code with your wallet, or copy the address.'];
@@ -224,7 +227,7 @@ function PaymentCard(props: { order: Order }) {
   // Awaiting: the customer still has to pay (all of it, or the rest).
   // Otherwise the code fades rather than inviting a second payment.
   const awaiting = () => awaitingPayment(props.order);
-  const partial = () => props.order.status === 'partial' && !props.order.cancelled_at;
+  const partial = () => props.order.status === 'partial';
 
   async function save(value: string) {
     if (!looksLikeAddress(value) || value === saved()) return;
@@ -399,10 +402,10 @@ function App() {
     const next = orders();
     for (const o of next) {
       const was = before.get(o.order_id);
-      if (was && (was.status !== o.status || Boolean(was.cancelled_at) !== Boolean(o.cancelled_at) || was.error !== o.error)) {
+      if (was && (was.status !== o.status || was.error !== o.error)) {
         timeline.record('order.status', {
           order_id: o.order_id, from: was.status, to: o.status, confirmations: o.confirmations,
-          cancelled: Boolean(o.cancelled_at), error: o.error ?? undefined,
+          error: o.error ?? undefined,
         }, stateOf(o) === 'double-spend' || o.error ? 'warn' : 'info');
       }
     }
@@ -410,7 +413,7 @@ function App() {
     const recorded = finishedAt();
     const newlyFinished = next.filter(o => terminal(o) && seenOpen.has(o.order_id) && recorded[o.order_id] === undefined);
     if (newlyFinished.length) {
-      for (const o of newlyFinished) timeline.record('order.finished', { order_id: o.order_id, status: o.cancelled_at ? 'cancelled' : o.status });
+      for (const o of newlyFinished) timeline.record('order.finished', { order_id: o.order_id, status: o.status });
       const at = Math.floor(Date.now() / 1000);
       setFinishedAt({ ...recorded, ...Object.fromEntries(newlyFinished.map(o => [o.order_id, at])) });
     }
@@ -459,7 +462,7 @@ function App() {
     const foreground = current && !terminal(current) ? [current.order_id] : [];
     const onScreen = screen() === 'list' ? visible().filter(o => !terminal(o)).map(o => o.order_id) : background().map(o => o.order_id);
     const otherActive = activeOrders().map(o => o.order_id);
-    const cancelled = orders().filter(o => o.cancelled_at && o.status === 'pending').slice(0, 8).map(o => o.order_id);
+    const cancelled = orders().filter(o => o.status === 'cancelled').slice(0, 8).map(o => o.order_id);
     return [...new Set([...foreground, ...onScreen, ...otherActive, ...cancelled])].slice(0, 32).join(',');
   });
   function markConnected() { window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); }
@@ -594,7 +597,8 @@ function App() {
   /** The card's one-line state detail (sketch 4): short, never the
    * engine's full message. */
   const cardDetail = (o: Order) => {
-    if (o.cancelled_at) return o.status === 'pending' ? 'Cancelled before payment' : 'Payment after cancellation · review';
+    if (paidAfterCancel(o)) return 'Payment after cancellation · review';
+    if (o.status === 'cancelled') return 'Cancelled before payment';
     switch (stateOf(o)) {
       case 'pending': return `Expires in ${durationUntil(o.expires_at, now())}`;
       case 'unconfirmed': return 'Payment seen, not yet confirmed';

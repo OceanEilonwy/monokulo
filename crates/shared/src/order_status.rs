@@ -21,10 +21,13 @@ pub enum OrderStatus {
     Partial,
     Overpaid,
     Expired,
+    /// The merchant called the order off before anything was paid (the
+    /// POS's Cancel): it takes no payment, like an expired one.
+    Cancelled,
 }
 
 impl OrderStatus {
-    pub const ALL: [OrderStatus; 7] = [
+    pub const ALL: [OrderStatus; 8] = [
         OrderStatus::Pending,
         OrderStatus::Unconfirmed,
         OrderStatus::Confirming,
@@ -32,6 +35,7 @@ impl OrderStatus {
         OrderStatus::Partial,
         OrderStatus::Overpaid,
         OrderStatus::Expired,
+        OrderStatus::Cancelled,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -43,6 +47,7 @@ impl OrderStatus {
             OrderStatus::Partial => "partial",
             OrderStatus::Overpaid => "overpaid",
             OrderStatus::Expired => "expired",
+            OrderStatus::Cancelled => "cancelled",
         }
     }
 }
@@ -65,7 +70,7 @@ impl schemars::JsonSchema for OrderStatus {
         schemars::json_schema!({
             "type": "string",
             "enum": names,
-            "description": "Where the payment is: `pending` (nothing seen), `unconfirmed` (seen, not in a block), `confirming`, `paid`, `partial` (less than asked), `overpaid` or `expired`."
+            "description": "Where the payment is: `pending` (nothing seen), `unconfirmed` (seen, not in a block), `confirming`, `paid`, `partial` (less than asked), `overpaid`, `expired`, or `cancelled` (the merchant called it off before anything was paid)."
         })
     }
 }
@@ -98,6 +103,6 @@ mod tests {
             assert_eq!(json, format!("\"{}\"", status.as_str()));
             assert_eq!(serde_json::from_str::<OrderStatus>(&json).unwrap(), status);
         }
-        assert!("cancelled".parse::<OrderStatus>().is_err());
+        assert!("canceled".parse::<OrderStatus>().is_err());
     }
 }

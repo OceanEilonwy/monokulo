@@ -82,6 +82,15 @@
         "X-Monokulo-Signature": "t=1760020380,v1=8ed6f3e14d644bd0f8d50672299acd44df36c6196e9cded075c9ee754fc69d66"
       },
       "name": "order.paid priced in XMR"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000010\",\"event\":\"order.cancelled\",\"created_at\":1760020330,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"cancelled\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"}}",
+      "headers": {
+        "X-Monokulo-Event": "order.cancelled",
+        "X-Monokulo-Event-Id": "evt_0000000000000010",
+        "X-Monokulo-Signature": "t=1760020380,v1=c8830a8ba09fb1f61c639e63203839ae04c2cee05ce36a17268dc77cc0d9eed6"
+      },
+      "name": "order.cancelled"
     }
   ],
   "refuse": [

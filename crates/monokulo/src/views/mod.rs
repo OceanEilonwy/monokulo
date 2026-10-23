@@ -499,103 +499,41 @@ pub fn logo_mark(size: u32, class: &str) -> Markup {
     }
 }
 
-/// What a page shows as an order's status: the engine's, or `Cancelled`
-/// for a POS order cancelled before anything was paid (monokulo's own
-/// record; the engine has no such status). Serialized by name, as the POS
-/// app and the pages' `data-status` attributes read it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DisplayStatus {
-    Order(OrderStatus),
-    Cancelled,
-}
-
-impl From<OrderStatus> for DisplayStatus {
-    fn from(status: OrderStatus) -> Self {
-        DisplayStatus::Order(status)
-    }
-}
-
-impl From<&OrderStatus> for DisplayStatus {
-    fn from(status: &OrderStatus) -> Self {
-        DisplayStatus::Order(*status)
-    }
-}
-
-impl From<&DisplayStatus> for DisplayStatus {
-    fn from(status: &DisplayStatus) -> Self {
-        *status
-    }
-}
-
-impl DisplayStatus {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            DisplayStatus::Order(status) => status.as_str(),
-            DisplayStatus::Cancelled => "cancelled",
-        }
-    }
-}
-
-impl DisplayStatus {
-    /// A status by its name, `cancelled` included, for tests.
-    #[cfg(test)]
-    pub fn named(name: &str) -> Self {
-        match name {
-            "cancelled" => DisplayStatus::Cancelled,
-            other => DisplayStatus::Order(other.parse().expect("a known status")),
-        }
-    }
-}
-
-impl std::fmt::Display for DisplayStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl serde::Serialize for DisplayStatus {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
 /// An order status's words and its `.state-*` colour class, and whether the
 /// order can still change. The checkout, the POS and the dashboard show a
 /// status with the same words and colours.
-pub fn order_state(status: impl Into<DisplayStatus>) -> (&'static str, ui::OrderState, bool) {
+pub fn order_state(status: OrderStatus) -> (&'static str, ui::OrderState, bool) {
     use OrderStatus::*;
     match status.into() {
-        DisplayStatus::Order(Pending) => ("Waiting for payment", ui::OrderState::Pending, false),
-        DisplayStatus::Order(Unconfirmed) => (
+        Pending => ("Waiting for payment", ui::OrderState::Pending, false),
+        Unconfirmed => (
             "Payment seen, unconfirmed",
             ui::OrderState::Unconfirmed,
             false,
         ),
-        DisplayStatus::Order(Confirming) => ("Confirming", ui::OrderState::Confirming, false),
-        DisplayStatus::Order(Partial) => {
-            ("Partial payment received", ui::OrderState::Partial, false)
-        }
-        DisplayStatus::Order(Paid) => ("Paid", ui::OrderState::Paid, true),
-        DisplayStatus::Order(Overpaid) => ("Overpaid", ui::OrderState::Overpaid, true),
-        DisplayStatus::Order(Expired) => ("Expired", ui::OrderState::Expired, true),
-        DisplayStatus::Cancelled => ("Cancelled", ui::OrderState::Cancelled, true),
+        Confirming => ("Confirming", ui::OrderState::Confirming, false),
+        Partial => ("Partial payment received", ui::OrderState::Partial, false),
+        Paid => ("Paid", ui::OrderState::Paid, true),
+        Overpaid => ("Overpaid", ui::OrderState::Overpaid, true),
+        Expired => ("Expired", ui::OrderState::Expired, true),
+        OrderStatus::Cancelled => ("Cancelled", ui::OrderState::Cancelled, true),
     }
 }
 
 /// A status's words short enough for a phone's table column ("Waiting"
 /// for "Waiting for payment"). The long words stay for screen readers.
-pub fn order_state_short(status: impl Into<DisplayStatus>) -> &'static str {
+pub fn order_state_short(status: OrderStatus) -> &'static str {
     match status.into() {
-        DisplayStatus::Order(OrderStatus::Pending) => "Waiting",
-        DisplayStatus::Order(OrderStatus::Unconfirmed) => "Seen",
-        DisplayStatus::Order(OrderStatus::Partial) => "Part paid",
+        OrderStatus::Pending => "Waiting",
+        OrderStatus::Unconfirmed => "Seen",
+        OrderStatus::Partial => "Part paid",
         other => order_state(other).0,
     }
 }
 
 /// An order's status as a badge ([`order_state`]): the full words, and the
 /// short ones that replace them on a narrow screen (`.label-short`).
-pub fn state_badge(status: impl Into<DisplayStatus> + Copy) -> Markup {
+pub fn state_badge(status: OrderStatus) -> Markup {
     let (label, state, _) = order_state(status);
     let short = order_state_short(status);
     let tag = ui::Tag::new(label).state(state);

@@ -98,7 +98,6 @@ pub const COLUMNS: Classification = Classification {
         ("pos_orders", "request_key", Visible),
         ("pos_orders", "reference", Visible),
         ("pos_orders", "backgrounded", Visible),
-        ("pos_orders", "cancelled_at_utc", Visible),
         ("pos_orders", "created_at_utc", Visible),
         ("saved_log_searches", "id", Visible),
         ("saved_log_searches", "user_id", Visible),

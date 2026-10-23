@@ -1101,6 +1101,8 @@ pub(super) struct OrderView {
     status: String,
     confirmations: u64,
     double_spend_detected_at: Option<i64>,
+    /// When the merchant cancelled it (`Store::cancel_order`), if it was.
+    cancelled_at: Option<i64>,
     refund_address: Option<String>,
     created_at: i64,
     expires_at: i64,
@@ -1132,6 +1134,7 @@ fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderV
         status: order.status.as_str().to_owned(),
         confirmations: order.confirmations,
         double_spend_detected_at: order.double_spend_detected_at,
+        cancelled_at: order.cancelled_at,
         refund_address: order.refund_address,
         created_at: order.created_at,
         expires_at: order.expires_at,
@@ -1308,6 +1311,47 @@ pub(super) async fn get_order_detail(
         order: order_view,
         payments: payments.into_iter().map(PaymentView::from).collect(),
     }))
+}
+
+/// `POST /api/v1/admin/tenant/orders/{order_id}/cancel` - the merchant
+/// calls off one of the authenticated tenant's orders (monokulo's POS
+/// Cancel). Only while nothing has reached it: the check and the change
+/// are one transaction, so a payment the scanner records first refuses the
+/// cancel (`409`), and one recorded after it is still counted (see
+/// `plan_status`). The status becomes `cancelled`, announced like any
+/// other change (`order.cancelled`, and the tenant's change stream).
+/// Cancelling a cancelled order again does nothing. `204` either way.
+pub(super) async fn cancel_order(
+    AuthedTenant(tenant): AuthedTenant,
+    Path(order_id): Path<crate::store::OrderId>,
+    State(db): State<Database>,
+) -> Result<StatusCode, ApiError> {
+    let now = now_unix();
+    let outcome = db
+        .write(move |store| {
+            store.in_transaction(|store| {
+                let outcome = store.cancel_order(&tenant.id, &order_id, now)?;
+                if outcome == crate::store::CancelOrder::Cancelled {
+                    let current_height = store.scanned_tip(&tenant.id)?;
+                    crate::scanner::recompute_and_notify_in_tx(
+                        store,
+                        &order_id,
+                        current_height,
+                        now,
+                    )?;
+                }
+                Ok::<_, crate::scanner::ScannerError>(outcome)
+            })
+        })
+        .await?;
+    match outcome {
+        crate::store::CancelOrder::Cancelled | crate::store::CancelOrder::AlreadyCancelled => {
+            Ok(StatusCode::NO_CONTENT)
+        }
+        crate::store::CancelOrder::Refused(status) => Err(ApiError::Conflict(format!(
+            "the order is {status}: only a pending order nothing has been paid to can be cancelled"
+        ))),
+    }
 }
 
 #[derive(Deserialize)]

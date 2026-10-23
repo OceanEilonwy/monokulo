@@ -120,6 +120,12 @@ fn vectors() -> Value {
         &event(9, "order.paid"),
         &metadata("XMR", "0.08124531", 1_000_000_000_000),
     ));
+    // Added after the others, so their ids stay as plugins pinned them.
+    deliveries.push(delivery(
+        "order.cancelled",
+        &event(10, "order.cancelled"),
+        &eur,
+    ));
 
     let paid = body_v2(&event(4, "order.paid"), &store(), Some(&eur));
     let signed = shared::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
@@ -198,7 +204,7 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
         )
     };
     let deliveries = vectors["deliveries"].as_array().unwrap();
-    assert_eq!(deliveries.len(), 9);
+    assert_eq!(deliveries.len(), 10);
     for delivery in deliveries {
         assert!(verifies(delivery), "{delivery}");
         let body: Value = serde_json::from_str(delivery["body"].as_str().unwrap()).unwrap();

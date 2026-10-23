@@ -164,6 +164,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (43, include_str!("../migrations/0043_connected_apps.sql")),
     (44, include_str!("../migrations/0044_api_v1_lookups.sql")),
+    (
+        45,
+        include_str!("../migrations/0045_pos_cancellation_in_engine.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -204,7 +208,6 @@ pub const INVITE_LIFETIME_SECONDS: i64 = 14 * 24 * 60 * 60;
 pub struct PosOrderRow {
     pub order_id: OrderId,
     pub backgrounded: bool,
-    pub cancelled_at: Option<i64>,
     pub created_at: i64,
 }
 
@@ -214,8 +217,6 @@ pub struct PosOrderRow {
 pub struct OrderListingDetail {
     /// `pos`, `dashboard`, `api`, `website`, or `None` when unknown.
     pub source: Option<String>,
-    /// Set when the order was cancelled on the POS.
-    pub pos_cancelled_at: Option<i64>,
 }
 
 impl Db {
@@ -289,9 +290,9 @@ impl Db {
         order_id: &OrderId,
     ) -> Result<Option<PosOrderRow>> {
         self.conn.query_row(
-            "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
+            "SELECT order_id, backgrounded, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
             params![connection_id, order_id], |row| Ok(PosOrderRow {
-                order_id: row.get(0)?, backgrounded: row.get(1)?, cancelled_at: row.get(2)?, created_at: row.get(3)?,
+                order_id: row.get(0)?, backgrounded: row.get(1)?, created_at: row.get(2)?,
             }),
         ).optional().map_err(DbError::from)
     }
@@ -304,7 +305,7 @@ impl Db {
         search: Option<&str>,
     ) -> Result<Vec<PosOrderRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders
+            "SELECT order_id, backgrounded, created_at_utc FROM pos_orders
              WHERE connection_id = ?1 AND (?4 IS NULL OR instr(lower(order_id), lower(?4)) > 0 OR instr(lower(coalesce(reference, '')), lower(?4)) > 0)
              ORDER BY created_at_utc DESC, order_id DESC LIMIT ?2 OFFSET ?3",
         )?;
@@ -312,8 +313,7 @@ impl Db {
             Ok(PosOrderRow {
                 order_id: row.get(0)?,
                 backgrounded: row.get(1)?,
-                cancelled_at: row.get(2)?,
-                created_at: row.get(3)?,
+                created_at: row.get(2)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -336,7 +336,7 @@ impl Db {
     ) -> Result<Vec<PosOrderRow>> {
         let mut rows = Vec::with_capacity(order_ids.len());
         let mut stmt = self.conn.prepare(
-            "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
+            "SELECT order_id, backgrounded, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
         )?;
         for order_id in order_ids {
             if let Some(row) = stmt
@@ -344,8 +344,7 @@ impl Db {
                     Ok(PosOrderRow {
                         order_id: row.get(0)?,
                         backgrounded: row.get(1)?,
-                        cancelled_at: row.get(2)?,
-                        created_at: row.get(3)?,
+                        created_at: row.get(2)?,
                     })
                 })
                 .optional()?
@@ -356,8 +355,8 @@ impl Db {
         Ok(rows)
     }
 
-    /// Source and POS cancellation for each of `order_ids` monokulo knows
-    /// anything about; orders it knows nothing about are left out.
+    /// The source of each of `order_ids` monokulo knows anything about;
+    /// orders it knows nothing about are left out.
     pub fn order_listing_details(
         &self,
         connection_id: &ConnectionId,
@@ -367,14 +366,14 @@ impl Db {
         let mut source = self.conn.prepare(
             "SELECT source FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
         )?;
-        let mut pos = self.conn.prepare(
-            "SELECT cancelled_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
-        )?;
+        let mut pos = self
+            .conn
+            .prepare("SELECT 1 FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2")?;
         for order_id in order_ids {
             let known_source: Option<Option<String>> = source
                 .query_row(params![connection_id, order_id], |row| row.get(0))
                 .optional()?;
-            let pos_row: Option<Option<i64>> = pos
+            let pos_row: Option<i64> = pos
                 .query_row(params![connection_id, order_id], |row| row.get(0))
                 .optional()?;
             if known_source.is_none() && pos_row.is_none() {
@@ -386,7 +385,6 @@ impl Db {
                     source: known_source
                         .flatten()
                         .or_else(|| pos_row.map(|_| "pos".to_string())),
-                    pos_cancelled_at: pos_row.flatten(),
                 },
             );
         }
@@ -398,28 +396,8 @@ impl Db {
         connection_id: &ConnectionId,
         order_id: &OrderId,
     ) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE pos_orders SET backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id])? > 0)
-    }
-
-    pub fn cancel_pos_order(
-        &self,
-        connection_id: &ConnectionId,
-        order_id: &OrderId,
-        cancelled_at: i64,
-    ) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE pos_orders SET cancelled_at_utc = ?3, backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id, cancelled_at])? > 0)
-    }
-
-    /// Takes a cancellation back, leaving the order backgrounded (for
-    /// review): for an order a payment reached between the check that it
-    /// had none and the cancellation.
-    pub fn uncancel_pos_order(
-        &self,
-        connection_id: &ConnectionId,
-        order_id: &OrderId,
-    ) -> Result<bool> {
         Ok(self.conn.execute(
-            "UPDATE pos_orders SET cancelled_at_utc = NULL WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NOT NULL",
+            "UPDATE pos_orders SET backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2",
             params![connection_id, order_id],
         )? > 0)
     }
@@ -3129,7 +3107,7 @@ mod tests {
     }
 
     #[test]
-    fn pos_orders_are_store_scoped_persist_background_and_cancel_state() {
+    fn pos_orders_are_store_scoped_and_persist_background_state() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
             &shared::ids::UserId::new("merchant"),
@@ -3206,30 +3184,6 @@ mod tests {
             .unwrap()
             .backgrounded
         );
-        assert!(db
-            .cancel_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-1"),
-                20
-            )
-            .unwrap());
-        assert_eq!(
-            db.get_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-1")
-            )
-            .unwrap()
-            .unwrap()
-            .cancelled_at,
-            Some(20)
-        );
-        assert!(!db
-            .cancel_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-1"),
-                21
-            )
-            .unwrap());
         assert_eq!(
             db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 1, 0, None)
                 .unwrap()
@@ -3355,7 +3309,7 @@ mod tests {
         let inside = db.order_changes().subscribe(&store, &first);
         db.write(move |db| {
             let transaction = db.conn.unchecked_transaction()?;
-            db.cancel_pos_order(&s, &o, 2)?;
+            db.background_pos_order(&s, &o)?;
             assert!(!inside.changed.has_changed().unwrap(), "before its commit");
             Ok::<_, DbError>(transaction.commit()?)
         })
