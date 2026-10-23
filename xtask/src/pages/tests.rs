@@ -254,6 +254,12 @@ fn live_artifact(root: &Path) {
                 3.0,
                 "",
             ),
+            (
+                "shared",
+                "coinmarketcap::tests::live_coinmarketcap_api_quotes_usd",
+                31.0,
+                "",
+            ),
         ]),
     );
     put(
@@ -290,7 +296,11 @@ fn live_artifact(root: &Path) {
                 "engine › daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value": "needs a live mainnet node",
                 "monokulo › embed_domains::tests::live_system_resolver_reads_real_txt_records": "needs live DNS",
                 "shared › haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies": "needs the live haveno.markets API",
+                "shared › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "needs the live CoinMarketCap API",
                 "pos-stagenet-payments.spec.js › a 0-conf-trusted payment shows shared success and stays reviewable": "needs the live stagenet node and the funded test wallets"
+            },
+            "inconclusive": {
+                "shared › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "CoinMarketCap's keyless API still rate-limited this address (HTTP 429)"
             }
         }),
     );
@@ -818,6 +828,13 @@ fn the_live_page_puts_each_failure_down_to_the_code_or_a_service() {
         page.contains("Not answering") && page.contains("Not checked"),
         "{page}"
     );
+    // A pass that could not tell is shown as such, with why.
+    assert!(page.contains("Inconclusive"), "{page}");
+    assert!(
+        page.contains("keyless API still rate-limited this address (HTTP 429)"),
+        "{page}"
+    );
+    assert!(page.contains("1 inconclusive"), "{page}");
     // One failure is the code's, so the run line doesn't claim all passed.
     assert!(page.contains("Some checks failed"), "{page}");
     assert!(page.contains(r#"href="live.html""#), "{page}");

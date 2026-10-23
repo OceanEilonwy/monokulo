@@ -32,6 +32,9 @@ final-status-level = "slow"
 
 [profile.live.junit]
 path = "junit.xml"
+# A passing test's output too: an inconclusive one says so there
+# (xtask/src/live.rs, INCONCLUSIVE), and the report lists it.
+store-success-output = true
 
 # The public stagenet nodes allow about one connection per address at a
 # time, so the tests that talk to one take turns rather than reset each

@@ -398,7 +398,12 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
 /// down is put down to that service.
 fn live_result(t: &LiveTest) -> Markup {
     match (t.test.status, &t.unreachable) {
-        (TestStatus::Passed, _) => html! { "Passed" },
+        (TestStatus::Passed, _) => match &t.inconclusive {
+            Some(reason) => {
+                html! { span.lowtag { "Inconclusive" } span.muted.desc { (reason) } }
+            }
+            None => html! { "Passed" },
+        },
         (TestStatus::Skipped, _) => html! { "Skipped" },
         (TestStatus::Failed, Some(service)) => {
             html! { span.lowtag { "Service unreachable" } span.muted.desc { (service) " didn’t answer" } }
@@ -428,6 +433,11 @@ pub(super) fn live(report: &Report) -> Markup {
         "Once a day, the tests that need the outside world run against it: real Monero nodes on mainnet and stagenet, the exchange-rate services Monokulo can price with, DNS, the Tor network, and real stagenet payments from a pair of test wallets. None of these is Monokulo’s, so each is checked just before the tests start. A test that failed while a service it needs wasn’t answering is shown as that service’s outage, not as a failure of the code."
     };
     let count_of = |status| run.tests.iter().filter(|t| t.test.status == status).count();
+    let inconclusive = run
+        .tests
+        .iter()
+        .filter(|t| t.inconclusive.is_some())
+        .count();
     let failed = run.failures().count();
     let outages = count_of(TestStatus::Failed) - failed;
     let probed: Vec<_> = run
@@ -449,13 +459,14 @@ pub(super) fn live(report: &Report) -> Markup {
     tests.sort_by_key(|t| match (t.test.status, &t.unreachable) {
         (TestStatus::Failed, None) => 0,
         (TestStatus::Failed, Some(_)) => 1,
-        _ => 2,
+        _ if t.inconclusive.is_some() => 2,
+        _ => 3,
     });
     html! {
         (heading("Live tests", &intro, run_pill(report, report.sources.live.as_ref())))
         dl.kv {
             (key_figure("Tests", &html! { (count(run.tests.len())) " " small { @if failed == 0 { "none failed" } @else { (count(failed)) " failed" } } }))
-            (key_figure("Passed", &html! { (count(count_of(TestStatus::Passed))) }))
+            (key_figure("Passed", &html! { (count(count_of(TestStatus::Passed) - inconclusive)) @if inconclusive > 0 { " " small { (count(inconclusive)) " inconclusive" } } }))
             (key_figure("Service outages", &html! { (count(outages)) " " small { (plural(outages, "test hit one", "tests hit one")) } }))
             (key_figure("Services answering", &html! { (count(answered)) " " small { "of " (count(probed.len())) " checked" } }))
         }
