@@ -32,13 +32,13 @@ async function openShop(page) {
 
 test('merchant site creates an order, mounts the checkout, and is told once when it is paid', async ({ page, request }) => {
   await openShop(page);
-  // No endpoint given: the library infers monokulo's origin from its own script tag.
+  // No Monokulo address given: the library infers it from its own script tag.
   const order = await page.evaluate(async publicKey => {
     const created = await window.Monokulo.createOrder({ publicKey, amount: '0.5', currency: 'XMR', merchantOrderId: 'cart-1042', description: 'Two prints' });
     window.Monokulo.mount('#pay', created, { onStatusChange: window.track('change'), onPaid: window.track('paid'), onExpired: window.track('expired') });
     return created;
   }, fixture.public_key);
-  expect(order.endpoint).toBe(fixture.base_url);
+  expect(order.monokulo).toBe(fixture.base_url);
   // The order's own links, resolved against where it was made.
   expect(order.checkoutUrl).toBe(`${fixture.base_url}/checkout/${order.orderId}`);
   expect(order.orderUrl).toBe(`${fixture.base_url}/api/v1/orders/${order.orderId}`);
@@ -197,20 +197,20 @@ test('a visitor past the rate limit, or asked for proof on a plain-HTTP shop, ge
 
 test('a merchant wiring up the library wrongly gets an error saying what to fix', async ({ page }) => {
   await openShop(page);
-  const problems = await page.evaluate(({ publicKey, endpoint }) => {
+  const problems = await page.evaluate(({ publicKey, monokulo }) => {
     const attempt = fn => { try { fn(); return 'mounted'; } catch (error) { return error.message; } };
     return {
       // The container id was mistyped.
-      missing: attempt(() => window.Monokulo.mount('#paymnet', { orderId: 'order_x', endpoint, publicKey })),
+      missing: attempt(() => window.Monokulo.mount('#paymnet', { orderId: 'order_x', monokulo, publicKey })),
       // No order id at all (a value the app never stored).
       noOrder: attempt(() => window.Monokulo.mount('#pay', '')),
       // An order id kept from a previous visit mounts without the store's
-      // key: the endpoint comes from the script tag.
+      // key: the Monokulo address comes from the script tag.
       lastVisit: attempt(() => window.Monokulo.mount('#pay', 'order_from_last_visit')),
     };
-  }, { publicKey: fixture.public_key, endpoint: fixture.base_url });
+  }, { publicKey: fixture.public_key, monokulo: fixture.base_url });
   expect(problems.missing).toBe('Monokulo.mount: target element not found: #paymnet');
-  expect(problems.noOrder).toBe('Monokulo.mount: could not resolve orderId/endpoint - pass an order object from createOrder(), or {endpoint} in options for an orderId from a previous visit');
+  expect(problems.noOrder).toBe('Monokulo.mount: could not resolve orderId or the Monokulo address - pass an order object from createOrder(), or {monokulo} (the Monokulo address) in options for an orderId from a previous visit');
   expect(problems.lastVisit).toBe('mounted');
   await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/checkout/order_from_last_visit`);
 });

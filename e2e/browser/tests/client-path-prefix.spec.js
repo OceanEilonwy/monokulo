@@ -57,7 +57,7 @@ test('a Monokulo served under a path is called, and framed, under it', async ({ 
     window.Monokulo.mount('#pay', created);
     return created;
   });
-  expect(order.endpoint).toBe(MONOKULO);
+  expect(order.monokulo).toBe(MONOKULO);
   expect(order.checkoutUrl).toBe(`${MONOKULO}/checkout/order_1`);
   expect(order.orderUrl).toBe(`${MONOKULO}/api/v1/orders/order_1`);
   expect(calls[0]).toBe(`POST ${MONOKULO}/api/v1/orders`);
