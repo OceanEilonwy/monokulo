@@ -33,7 +33,7 @@ use crate::views::orders::{
     OrderDetailData, OrderDetailViewModel, OrderRowViewModel, OrdersViewModel, PaymentRowViewModel,
 };
 
-use super::dashboard::redirect_302;
+use super::auth::redirect_302;
 use super::fx::FxRequest;
 use super::{AppState, AuthedUser};
 use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
@@ -59,8 +59,7 @@ pub(super) async fn load_owned_connection(
 /// Decrypts the connection's stored `sk_...` token under `state`'s
 /// encryption key. A failure here means a row this service itself wrote and
 /// encrypted can't be decrypted with its own key - shouldn't happen, but
-/// handled as a plain internal error rather than unwrapped/panicked on (see
-/// the task's own note on this).
+/// handled as a plain internal error rather than unwrapped/panicked on.
 pub(crate) fn decrypt_sk(
     encryption_key: &crate::crypto::AtRestKey,
     row: &StoreConnectionRow,
@@ -171,7 +170,7 @@ pub(super) async fn order_rows(
 }
 
 /// How an order's source reads in the orders table. Any other source is a
-/// plugin's slug (`http::pay`'s `order_source`), shown by the name the
+/// plugin's slug (`http::pay::order_source`), shown by the name the
 /// store's newest integration of that plugin gave (`plugins`, newest
 /// first), else by the slug.
 fn source_label(source: Option<&str>, plugins: &[crate::db::StoreIntegrationRow]) -> String {
@@ -383,8 +382,8 @@ async fn order_detail_data(
 ) -> Result<Option<OrderDetailData>, ()> {
     match state.engine.client.get_order_detail(sk, order_id).await {
         Ok(detail) => {
-            // The engine has no concept of fiat any more (`docs/fx_refactor.md`
-            // Phase 3) - fiat display comes entirely from monokulo's own
+            // The engine has no concept of fiat - fiat display comes entirely
+            // from monokulo's own
             // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
             let (id, order) = (row.id.clone(), order_id.clone());
@@ -584,7 +583,7 @@ fn payment_link_for(on: &OnNetwork, order_id: &crate::db::OrderId) -> String {
 /// the merchant's own `site_url` (nothing here does that): whether the
 /// engine actually answers `GET /api/v1/admin/tenant` for this connection's
 /// `sk_...`. `("ok", "healthy")`/`("error", "unreachable")` are used
-/// directly as a CSS class suffix (`tag-{{health}}`, see `_styles.html.hbs`)
+/// directly as a CSS class suffix (`tag-ok`, `tag-error`)
 /// and a human label respectively - kept as two separate strings rather than
 /// deriving one from the other so the template never has to.
 pub(super) fn health_of_tenant_lookup<T>(
@@ -1040,7 +1039,7 @@ pub(super) async fn render_store_settings_page_with(
 /// After a successful action: back to the page (303), whose toast says
 /// what was done, at the action's card.
 pub(super) fn saved(id: &crate::db::ConnectionId, section: StoreSection) -> Response {
-    super::dashboard::redirect_303(&format!(
+    super::auth::redirect_303(&format!(
         "/stores/{id}/settings?saved={}#{}",
         section.id(),
         views::settings::card_id(section.id())
@@ -1248,7 +1247,7 @@ pub async fn create_order(
 
     // Selection-time validation first, entirely independent of whether any
     // provider can actually price it - see `crate::currencies`'s own doc
-    // comment and `http::pay::create_order`'s matching check for why
+    // comment and `api::v1::orders::create`'s matching check for why
     // "unknown currency" and "unsupported currency" are kept as distinct
     // messages rather than collapsed into one.
     let wanted = currency.to_string();
@@ -1271,9 +1270,9 @@ pub async fn create_order(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 
-    // The engine has no concept of currency any more (`docs/fx_refactor.md`
-    // Phase 3) - monokulo's own exchange rate does the same computation
-    // `http::pay::create_order` does for a real storefront call. `"XMR"`
+    // The engine has no concept of currency - monokulo's own exchange rate
+    // does the same computation `api::v1::orders::create` does for a real
+    // storefront call. `"XMR"`
     // always uses the trivial identity rate regardless of this store's
     // chosen ordered `fx_providers`; every other currency goes through it.
     let (piconero_per_unit, provider) = match state
@@ -1550,8 +1549,7 @@ pub struct ChangeWalletForm {
 }
 
 /// `POST /stores/{id}/settings/wallet` - changes the wallet the
-/// store takes payments into (docs/wallets.md, "Changing a store's
-/// wallet"). Picking a wallet first shows what will happen, with the
+/// store takes payments into. Picking a wallet first shows what will happen, with the
 /// store's open orders counted; confirming makes the change in the engine
 /// and then records the new period here. A wallet on another network is
 /// refused, here and by the engine.
@@ -2196,7 +2194,7 @@ mod tests {
             html.contains(r#"aria-label="Refresh page" title="Refresh page" data-reload"#),
             "a Reload button instead: {html}"
         );
-        // The real point of this follow-up: a real, absolute, shareable
+        // The point: a real, absolute, shareable
         // payment link for this exact order, built from the request's own
         // Host header (`test.example` here, set by `oneshot`'s default) -
         // not a placeholder or a bare relative path.
@@ -3727,7 +3725,7 @@ mod tests {
         assert!(!settings_html.contains(r#"<option value="coingecko""#), "expected no coingecko <option> since this instance never enabled it, got: {settings_html}");
         assert!(!settings_html.contains(r#"<option value="fixed""#), "the removed \"fixed\" provider must never appear as a real option, got: {settings_html}");
 
-        // The real point of this follow-up: with no fiat provider available
+        // The point: with no fiat provider available
         // at all, the "create an order" currency field must be a plain
         // readonly "XMR" field, not a one-option `<select>` (a dropdown with
         // nothing to actually choose between is misleading busywork).
@@ -5008,8 +5006,8 @@ mod tests {
             "a dashboard order is the merchant's own, as trusted as the key"
         );
 
-        // The whole point of the snapshot (WBS: "makes it clear how the
-        // confirmation threshold was decided") - the order's own detail
+        // The whole point of the snapshot (making it clear how the
+        // confirmation threshold was decided) - the order's own detail
         // page must actually show it, not just record it in the database.
         let detail_response = router
             .oneshot(
@@ -5255,12 +5253,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
-    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - the direct
-    /// replacement for the rescan trigger form above. `with_admin_lookup_
-    /// daemon`'s inert `NoopDaemonClient` always reports a txid as not found,
-    /// which is real, deterministic behavior to assert against rather than a
-    /// guess - the real-match/no-match cases are already exhaustively covered
-    /// at the engine's own `http/tests.rs` level.
     /// The store's Orders page is the full history: every order with its
     /// reference and where it came from (POS, dashboard, the store's
     /// connected plugin with the store key and its slug in the
@@ -5760,7 +5752,7 @@ mod tests {
         );
     }
 
-    // -- "Scan range" row (`docs/order_rescan_wbs.md` Phase 5.4) ------------
+    // -- "Scan range" row ------------
 
     #[tokio::test]
     async fn scan_range_row_shows_a_muted_dash_for_an_order_with_no_first_tick_yet() {

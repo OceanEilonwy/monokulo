@@ -26,7 +26,7 @@ use crate::now_unix;
 use crate::views;
 use crate::views::admin::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
 
-use super::dashboard::redirect_302;
+use super::auth::redirect_302;
 use super::fx::FxRequest;
 use super::{AppState, AuthedAdmin};
 
@@ -176,7 +176,7 @@ fn build_mailto_href(email: &str, raw_invite_link: &str) -> String {
 
 /// The full, absolute signup URL a raw invite token resolves to -
 /// `GET /signup?invite=<token>` carries it straight into the
-/// form's hidden field (`http::dashboard::signup_form`).
+/// form's hidden field (`http::auth::signup_form`).
 fn invite_signup_url(base_url: &str, raw_token: &str) -> String {
     format!("{base_url}/signup?invite={raw_token}")
 }

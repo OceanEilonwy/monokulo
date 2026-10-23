@@ -484,7 +484,7 @@ async fn build_view_model(
         // The Monero nodes tab waits for a current answer (monokulo's short
         // cache) to show each node's status; every other tab only marks the
         // tab bar with whatever is already known, rather than wait on node
-        // probes to show, say, the Logging tab (decision D10).
+        // probes to show, say, the Logging tab.
         let unserved = if tab == SettingsTab::Nodes {
             match super::status_page::get_status_cached(&state.engine).await {
                 Ok(status) => {
@@ -829,7 +829,7 @@ async fn commit_monokulo(
             let mut notes = Vec::new();
             for warning in &report.warnings {
                 // The only monokulo warning today: the engine didn't answer
-                // at the saved URL (decision D4).
+                // at the saved URL.
                 notes.push(SaveNote::Banner(warning.message.clone()));
             }
             if !report.env_overridden.is_empty() {
@@ -1551,7 +1551,7 @@ pub async fn save(
         let anchor = card
             .map(|card| format!("#{}", card.card_id()))
             .unwrap_or_default();
-        return super::dashboard::redirect_303(&format!("{}&saved={token}{anchor}", tab.href()));
+        return super::auth::redirect_303(&format!("{}&saved={token}{anchor}", tab.href()));
     }
     let mut view = build_view_model(&state, &admin_user, tab, result).await;
     view.answers_save = true;
@@ -1712,7 +1712,7 @@ pub async fn reload(
                 result,
                 created: std::time::Instant::now(),
             });
-            super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()))
+            super::auth::redirect_303(&format!("{}&saved={token}", tab.href()))
         }
         Err(error) => {
             let result = SaveResult {
@@ -1963,7 +1963,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The status page's "Take a new anchor" button (docs/proof_of_work.md):
+    /// The status page's "Take a new anchor" button:
     /// for the admin only; the engine forgets the network's anchor and the
     /// page goes back to the status; refused where checking is off or for no
     /// network.
@@ -4983,7 +4983,7 @@ mod tests {
             html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#),
             "{html}"
         );
-        // How the engine is doing (docs/engine_scaling.md section 6) is on
+        // How the engine is doing is on
         // the engine page, which the network's card links to.
         assert!(
             html.contains(r#"<a class="engine-link" href="/status/engine?network=stagenet">See it on the engine page</a>"#),

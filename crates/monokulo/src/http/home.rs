@@ -8,7 +8,7 @@ use crate::db::UserRow;
 use crate::views;
 use crate::views::home::{HomeOrderRow, HomeStoreRow, HomeViewModel};
 
-use super::dashboard::redirect_302;
+use super::auth::redirect_302;
 use super::orders::health_of_tenant_lookup;
 use super::{resolve_authed_user, AppState};
 
@@ -129,8 +129,7 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
 
     all_orders.sort_by_key(|order| std::cmp::Reverse(order.created_at));
     all_orders.truncate(10);
-    // The engine has no concept of fiat any more (`docs/fx_refactor.md`
-    // Phase 3) - fiat display comes entirely from monokulo's own local
+    // The engine has no concept of fiat - fiat display comes entirely from monokulo's own local
     // `order_currency_metadata`, read for just the orders shown.
     let shown: Vec<(crate::db::ConnectionId, crate::db::OrderId)> = all_orders
         .iter()

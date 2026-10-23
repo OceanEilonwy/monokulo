@@ -23,10 +23,10 @@ use crate::views;
 use crate::views::setup::{SetupContext, SiteError, StoreStepViewModel};
 use crate::views::wallets::Flow;
 
+use super::auth::redirect_303;
 use super::connections::{
     create_connection_for_user, CreateConnectionError, CreateConnectionFields, SiteTaken,
 };
-use super::dashboard::redirect_303;
 use super::wallets::{CreateForm, ImportForm, NameQuery};
 use super::{AppState, AuthedUser};
 

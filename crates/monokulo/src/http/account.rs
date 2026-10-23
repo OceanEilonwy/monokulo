@@ -17,7 +17,7 @@ use crate::db::{Theme, UserRow};
 use crate::views;
 use crate::views::account::{AccountTab, AccountViewModel, Card, Outcome, Profile};
 
-use super::dashboard::redirect_303;
+use super::auth::redirect_303;
 use super::signup::{normalize_email, MIN_PASSWORD_LEN};
 use super::{AppState, AuthedUser};
 

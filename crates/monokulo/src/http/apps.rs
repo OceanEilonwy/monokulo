@@ -221,7 +221,7 @@ pub async fn disconnect_submit(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     state.apps.disconnected(&app_id);
-    super::dashboard::redirect_303(&format!("/stores/{id}/settings?tab=connections#card-apps"))
+    super::auth::redirect_303(&format!("/stores/{id}/settings?tab=connections#card-apps"))
 }
 
 // -- The app's API -----------------------------------------------------------------

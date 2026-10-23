@@ -27,7 +27,7 @@ use crate::engine_client::EngineClientError;
 use crate::stores::Site;
 use crate::views::store_settings::{StoreOutcome, StoreSection, StoreTab};
 
-use super::dashboard::redirect_303;
+use super::auth::redirect_303;
 use super::orders::{
     decrypt_sk, load_owned_connection, parse_fx_providers_form, render_store_settings_page_with,
     PageState,

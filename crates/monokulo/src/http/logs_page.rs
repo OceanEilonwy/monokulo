@@ -1539,7 +1539,7 @@ pub async fn save_search(
         return if fx.0 {
             super::fx::invalid(saved_fragment(&state, &admin, &query_string, Some(error)).await)
         } else {
-            super::dashboard::redirect_302(&back)
+            super::auth::redirect_302(&back)
         };
     }
     let (admin_id, name, saved_query) = (admin.id.clone(), name.to_string(), query_string.clone());
@@ -1621,7 +1621,7 @@ async fn saved_response(
     if fx.0 {
         Html(fragment.await.into_string()).into_response()
     } else {
-        super::dashboard::redirect_302(back)
+        super::auth::redirect_302(back)
     }
 }
 

@@ -1,4 +1,4 @@
-//! A merchant's wallets (docs/wallets.md): `/account?tab=wallets` and its
+//! A merchant's wallets: `/account?tab=wallets` and its
 //! pages. Adding one from the Account page (`/account/wallets/add`):
 //! bringing one's own (keys pasted in, works without JavaScript) or making
 //! a new one in the browser (the phrase never leaves the page; only
@@ -23,7 +23,7 @@ use crate::views::wallets::{
 };
 use crate::wallets::{clean_name, friendly_name};
 
-use super::dashboard::redirect_303;
+use super::auth::redirect_303;
 use super::wallet_service::{add_wallet, adopt_unlinked_stores, AddWallet, AddWalletError};
 use super::{AppState, AuthedUser};
 
@@ -965,7 +965,7 @@ pub struct RetireForm {
 }
 
 /// `POST /account/wallets/{id}/retire`: the wallet is offered nowhere
-/// again and its keys are deleted (docs/wallets.md, "Retiring a wallet").
+/// again and its keys are deleted.
 /// Refused unless its name was typed, while a store uses it, or while an
 /// order on it can still be paid.
 pub async fn retire(

@@ -1,20 +1,9 @@
-//! Browser-facing signup/login pages (WBS 1.3.1) - a separate, human-facing
-//! surface layered on top of the same account-creation/login logic the JSON
-//! `POST /signup`/`POST /login` API uses (`signup::create_account`,
-//! `login::authenticate` - factored out of those handlers for exactly this
-//! reuse, see their own doc comments). The JSON API stays exactly as-is;
-//! nothing here changes its behavior, request/response shape, or routes.
-//!
-//! Ends in a session cookie rather than a bearer token a human would have
-//! to copy-paste out of a JSON body, per the WBS's own design decision for
-//! this task. The cookie holds the exact same raw session token
-//! `POST /login`'s JSON response returns as `session_token` - just delivered
-//! as `Set-Cookie` instead. [`super::AuthedUser`] accepts either form (see
-//! its doc comment), so this is genuinely one auth system with two ways in,
-//! not two parallel ones.
-//!
-//! A plain HTML `<form>` posts `application/x-www-form-urlencoded`, not
-//! JSON - hence `axum::extract::Form` here instead of `axum::extract::Json`.
+//! The sign-up, log-in, log-out and theme forms, on top of
+//! `signup::create_account` and `login::authenticate` (which the first-run
+//! admin setup shares). Logging in or signing up ends in the session
+//! cookie [`super::AuthedUser`] reads back. Plus the redirect helpers every
+//! form handler uses, and [`SafePath`], the check a `next` value passes
+//! before anything redirects to it.
 
 use axum::extract::{Form, Query, State};
 use axum::http::{header, StatusCode};
@@ -35,9 +24,9 @@ use crate::db::Database;
 pub struct SignupForm {
     pub email: String,
     pub password: String,
-    /// The hidden field `signup.html.hbs` always renders (see
-    /// `views::auth::SignupViewModel::invite_token`'s own doc comment) - empty in
-    /// `"public"` mode, where it's submitted but simply ignored.
+    /// The hidden field `views::auth::signup_page` always renders (see
+    /// `views::auth::SignupViewModel::invite_token`) - empty in `"public"`
+    /// mode, where it's submitted but ignored.
     #[serde(default)]
     pub invite: String,
     /// Where the visitor was going before signing up (a plugin's connect
@@ -67,15 +56,13 @@ pub struct LoginForm {
     pub email: String,
     pub password: String,
     /// Carried through from `GET /login?next=...`'s hidden form
-    /// field (see `LoginQuery`/`login_form` below) - `None` whenever no
-    /// `next` was ever in play, which keeps every existing caller that never
-    /// sends this field working unchanged (see module doc comment on
-    /// `login_submit`). Never trusted as a redirect target as-is - see
+    /// field (see `LoginQuery`/`login_form` below) - `None` when there was
+    /// no `next`. Never trusted as a redirect target as-is - see
     /// [`is_safe_redirect_path`].
     pub next: Option<String>,
 }
 
-/// Query parameters `GET /login` accepts (WBS 1.4.1) - just the
+/// Query parameters `GET /login` accepts - just the
 /// optional `next` value the generic connect flow (`http/connect.rs`)
 /// redirects here with when the browser has no session yet. Rendered
 /// straight into the login page's hidden `next` field, unvalidated - see
@@ -178,11 +165,8 @@ async fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>)
     views::auth::login_page(&chrome, &data).into_response()
 }
 
-/// `303`-free, deliberate `302 Found` redirect (axum's own `Redirect::to`
-/// issues `303 See Other` instead - see its doc comment - and the WBS spec
-/// for this task calls out `302` specifically). `pub(super)` since the
-/// generic connect flow (`http/connect.rs`, WBS 1.4.1) issues the exact same
-/// kind of redirect and shouldn't reimplement it.
+/// A `302 Found` redirect (axum's own `Redirect::to` issues `303 See
+/// Other`), for sending a browser on after a `GET` or after logging in.
 pub(crate) fn redirect_302(location: &str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
@@ -305,18 +289,11 @@ pub async fn login_form(
     render_login(&state, None, query.next.as_deref()).await
 }
 
-/// `POST /logout` - the browser-facing nav's "log out" link (a
-/// tiny same-origin form, not a bare `<a href>`, since this is a
-/// state-changing action - see `_nav.html.hbs`). Behind [`AuthedUser`] like
-/// every other signed-in page, so it accepts the session cookie the
-/// same way every other protected page already does; reuses the exact same
-/// delete-session logic `POST /logout` (the JSON API, `http/logout.rs`)
-/// runs, just via `AuthedUser`'s cookie path rather than its `Bearer` one.
-/// Clears the cookie in the response (an empty value with `max_age(0)`) so
-/// the browser doesn't keep presenting a now-deleted session token on its
-/// next request, then redirects to the login page - a human clicking "log out" expects
-/// a real page back, not `logout::logout`'s bare `204` (which is correct
-/// for the JSON API, wrong for a browser form submission).
+/// `POST /logout` - the nav's "Log out" button (a small same-origin form,
+/// not a bare `<a href>`, since it changes state). Behind [`AuthedUser`]
+/// like every other signed-in page. Deletes the session, clears the cookie
+/// (an empty value with `max_age(0)`) so the browser stops presenting it,
+/// and redirects to the login page.
 pub async fn logout_submit(
     State(db): State<Database>,
     on: crate::network::OnNetwork,
@@ -388,16 +365,11 @@ mod theme_selector_tests {
     }
 }
 
-/// `POST /login`. WBS 1.4.1 adds `next`-redirect support on top of
-/// WBS 1.3.1's original behavior: if a *validated* `next` was carried
-/// through the form (see [`is_safe_redirect_path`]), a successful login
-/// redirects there instead of rendering the inline "you're logged in"
-/// confirmation below - this is what lets the generic connect flow
-/// (`http/connect.rs`) send an unauthenticated browser to log in and land
-/// back exactly where it started. When `next` is absent (the overwhelming
-/// majority of logins - anyone reaching `/login` directly, not via
-/// the connect flow) or fails validation, behavior is *exactly* what it was
-/// before this task: the same inline confirmation, unchanged.
+/// `POST /login`. If a *validated* `next` was carried through the form
+/// (see [`is_safe_redirect_path`]), a successful login redirects there -
+/// this is what lets the connect flow (`http/connect.rs`) send a browser
+/// with no session to log in and land back where it started. Otherwise
+/// (no `next`, or one that fails validation) it goes to the home page.
 pub async fn login_submit(
     State(state): State<AppState>,
     on: crate::network::OnNetwork,
@@ -409,15 +381,13 @@ pub async fn login_submit(
             let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
 
-            // A validated `next` wins over the default confirmation - see
-            // this function's own doc comment and [`is_safe_redirect_path`].
+            // A validated `next` wins over the home page - see this
+            // function's own doc comment and [`is_safe_redirect_path`].
             if let Some(next) = form.next.as_deref().and_then(SafePath::parse) {
                 return (jar, redirect_to(&next)).into_response();
             }
 
-            // A real dashboard home page exists now (`http/home.rs`) - a
-            // plain login with no `next` lands there, same as any other
-            // "you're logged in, here's your stuff" flow.
+            // A plain login lands on the home page (`http/home.rs`).
             (jar, redirect_302("/")).into_response()
         }
         Err(LoginError::Unauthorized) => {
@@ -454,7 +424,7 @@ mod tests {
         assert!(SafePath::parse("https://evil.example.com").is_none());
     }
 
-    // The load-bearing open-redirect proof (WBS 1.4.1): every one of these
+    // The load-bearing open-redirect proof: every one of these
     // must be *rejected* - if any were accepted, `login_submit` would follow
     // an attacker-controlled `next` value after a real, successful login.
     #[test]
