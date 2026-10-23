@@ -39,7 +39,7 @@ pub enum Problem {
     /// There's no such thing here for this caller: an order the key's
     /// store doesn't have (an order of another store is not found either),
     /// a store or order that isn't the signed-in merchant's, a key bundle
-    /// that has expired, or a plugin connect URL whose platform isn't a
+    /// that has expired, or a plugin connect URL whose `slug` isn't a
     /// plugin's slug (a lowercase letter, then 1 to 31 lowercase letters,
     /// digits or hyphens).
     #[problem(status = 404, title = "Not found")]

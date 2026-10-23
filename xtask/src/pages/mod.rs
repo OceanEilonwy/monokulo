@@ -86,7 +86,7 @@ pub(crate) const HELP: &str = "\
                       /geomart/, and a redirect from each page's old address under /docs/\n\
         pages api --site DIR\n\
                       Build the HTTP API's reference into the site DIR, generated from the code and\n\
-                      from exchanges monokulo's tests record (runs its api::runtime::reference test):\n\
+                      from exchanges recorded against a test engine (runs monokulo's api_reference example):\n\
                       /api/reference/, /rels/{rel}/, /problems/{slug}/ and /api/v1/openapi.json\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";

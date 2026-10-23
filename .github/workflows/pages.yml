@@ -74,9 +74,10 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v7
-      # Builds xtask, and monokulo's library tests for the API reference,
-      # which the Rust tests job's cache holds; the npm dependencies are for
-      # monokulo's build and the ui islands script the site's pages load.
+      # Builds xtask, and monokulo's library and api_reference example for
+      # the API reference, whose dependencies the Rust tests job's cache
+      # holds; the npm dependencies are for the ui islands script the site's
+      # pages load.
       - uses: ./.github/actions/setup-rust
         with:
           shared-key: dev
@@ -108,8 +109,9 @@ jobs:
         run: cargo xtask pages docs --site target/pages/site
       # The HTTP API's reference beside the docs' /api/ page, generated here
       # from the code and from real exchanges: it runs monokulo's
-      # api::runtime::reference test, which records them and writes the
-      # reference into target/api/. Nothing of it is committed.
+      # api_reference example (no tests, no browser code), which records them
+      # against a test engine and writes the reference into target/api/.
+      # Nothing of it is committed.
       - name: Build the API reference beside the docs
         run: cargo xtask pages api --site target/pages/site
       # Every ui component, in both themes, from apps/stylebook in this

@@ -1,7 +1,8 @@
 name: lint
 
-# Formatting, clippy (every warning an error) and the checks that keep test
-# code out of what ships. Called by checks.yml (pull requests) and
+# Formatting, clippy (every warning an error), the checks that keep test
+# code out of what ships, and the OpenAPI document written as a plugin or
+# app writes it. Called by checks.yml (pull requests) and
 # release.yml (main, version tags).
 
 on:
@@ -42,3 +43,20 @@ jobs:
             echo '::error::test-support may only add code; the lines above replace shipped behaviour under it.'
             exit 1
           fi
+
+  openapi:
+    name: OpenAPI document without Node
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # No npm dependencies: what a plugin or app runs to generate its client
+      # (xtask/src/pages/docs/api.md) needs Rust only. Without them a build
+      # of monokulo that wanted its browser code would stop.
+      - uses: ./.github/actions/setup-rust
+        with:
+          pos-app: 'false'
+          shared-key: dev
+          save: 'false'
+      - name: Write the OpenAPI document with recorded examples
+        run: cargo xtask api openapi --out target/openapi.json

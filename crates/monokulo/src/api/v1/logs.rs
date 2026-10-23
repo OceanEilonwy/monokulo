@@ -3,7 +3,7 @@ use crate::api::{self, prelude::*};
 api::resource!(
     "/api/v1/logs",
     rel = "logs",
-    doc = "Where a shop plugin sends its warnings and errors, when its \"Send errors to Monokulo\" option is on.\n\nThey are kept, on the instance admin's Logs page, only when the store turned client logs on (structured_logging.md 2.4)."
+    doc = "Where a shop plugin sends its warnings and errors, when its \"Send errors to Monokulo\" option is on.\n\nThey are kept, on the instance admin's Logs page, only when the store turned client logs on."
 );
 
 /// Most entries one request may carry.
