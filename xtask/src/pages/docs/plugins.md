@@ -58,16 +58,31 @@ It answers once per token:
   "public_key": "pk_…",
   "secret_token": "sk_…",
   "api": "/api/v1",
+  "onion_api": "http://2gzy…wid.onion/api/v1",
   "webhook_signing_secret": "whsec_…"
 }
 ```
 
-Keep all four. `secret_token` is the store's key for your server, in
+`onion_api` is there only while the Monokulo has an onion address, and
+`webhook_signing_secret` only when you sent a `webhook_url`. Keep them all. `secret_token` is the store's key for your server, in
 `Authorization: Bearer` on the [HTTP API](../api/); `public_key` is for the
 shop's pages, if they embed the checkout with the [JS library](../js-library/).
 `api` is the API's entry, a path: resolve it against the address you called
-`/finish` at. A `503` with `{"error": …}` means the Monokulo can't connect
-plugins yet; show the error. Any other failure is a `401`: start again.
+`/finish` at.
+
+Every error is `application/problem+json`; show its `detail`. Its `type`
+is one of these:
+
+| Problem | Status | What to do |
+| --- | --- | --- |
+| [`invalid-connect-code`](../problems/invalid-connect-code/) | 401 | The token is unknown, used or expired: start connecting again. |
+| [`no-public-address`](../problems/no-public-address/) | 503 | The Monokulo's admin hasn't set its address yet. The token isn't spent: try again later. |
+| [`invalid-request`](../problems/invalid-request/) | 400 | The body isn't what `/finish` takes, or `webhook_url` isn't an http(s) URL. The token isn't spent: fix it and send it again. |
+| [`unsupported-media-type`](../problems/unsupported-media-type/) | 415 | Send `Content-Type: application/json`. |
+| [`too-large`](../problems/too-large/) | 413 | The body is too large. |
+| [`not-found`](../problems/not-found/) | 404 | `slug` isn't a slug. |
+| [`rate-limited`](../problems/rate-limited/) | 429 | Wait `retry_after` seconds. |
+| [`internal`](../problems/internal/) | 500 | Something failed on the Monokulo after the token was spent: start again. |
 
 ### 2. Create an order
 
@@ -103,6 +118,13 @@ the problem's page.
 
 To the order's `mk:checkout` link (`/checkout/{order_id}`, resolved against
 the address you call Monokulo at), or show that page in an iframe on yours.
+
+A customer browsing the shop's own `.onion` address must stay on Tor: send
+them to the order's `mk:onion-checkout` instead, an absolute URL on
+Monokulo's onion address, never to `mk:checkout` resolved against the web
+address you called. Tell them apart by the host their request came to. If
+the order has no `mk:onion-checkout`, the Monokulo has no onion address;
+say so to the merchant rather than sending a Tor customer to the web.
 The [JS library](../js-library/) can mount it too. Read the order again with
 its `self` link (`GET /api/v1/orders/{order_id}`), or follow its changes on
 `mk:order-events`; but mark the shop's order paid from the webhook.

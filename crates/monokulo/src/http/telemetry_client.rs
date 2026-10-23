@@ -20,6 +20,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
+use crate::api::runtime::problem::{Problem, ProblemDetails};
 use crate::db::Database;
 use crate::db::Db;
 
@@ -59,12 +60,14 @@ pub fn page_may_report(db: &Db, page: &str) -> bool {
     true
 }
 
-pub async fn client_report(State(db): State<Database>, body: Bytes) -> StatusCode {
+pub async fn client_report(
+    State(db): State<Database>,
+    body: Bytes,
+) -> Result<StatusCode, ProblemDetails> {
     // Parsed from the bytes, not with the `Json` extractor, so the content
     // type doesn't matter (a beacon's can vary).
-    let Ok(report) = serde_json::from_slice::<ClientReport>(&body) else {
-        return StatusCode::BAD_REQUEST;
-    };
+    let report = serde_json::from_slice::<ClientReport>(&body)
+        .map_err(|e| Problem::InvalidRequest.detail(format!("That isn't a client report: {e}.")))?;
     let page = report.page.clone().unwrap_or_default();
     let may_report = db
         .read(move |db| Ok::<_, crate::db::DbError>(page_may_report(db, &page)))
@@ -72,7 +75,7 @@ pub async fn client_report(State(db): State<Database>, body: Bytes) -> StatusCod
         .unwrap_or(false);
     if !may_report {
         // Accepted and dropped, as a store that opted out would expect.
-        return StatusCode::NO_CONTENT;
+        return Ok(StatusCode::NO_CONTENT);
     }
     let span = tracing::info_span!(parent: None, "browser report", source = "browser");
     if let Some(traceparent) = &report.traceparent {
@@ -85,7 +88,7 @@ pub async fn client_report(State(db): State<Database>, body: Bytes) -> StatusCod
         report.detail.as_deref().map(clip),
     );
     tracing::warn!(browser.kind = %kind, url.path = page, detail, "{}", clip(&report.message));
-    StatusCode::NO_CONTENT
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

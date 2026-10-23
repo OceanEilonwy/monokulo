@@ -74,6 +74,36 @@ impl<T: Resource> Link<T> {
     }
 }
 
+/// The resource at `T`, absolute, on this instance's onion address
+/// (`http://….onion/…`), whichever network the request came on: a body's
+/// `Option<OnionLink<T>>` field, under its own relation (`mk:onion-…`,
+/// the field's name), whose page is the field's doc comment. `None` while
+/// the instance has no onion address, so the link is simply absent.
+///
+/// The API's other links are paths, relative to wherever the client called;
+/// these are for a client that called over the web address but serves
+/// someone on Tor: a shop plugin sending a visitor of the shop's own onion
+/// address to the onion checkout, or a client switching to Tor.
+pub struct OnionLink<T> {
+    href: String,
+    target: PhantomData<T>,
+}
+
+impl<T: Resource> OnionLink<T> {
+    /// `path` on `onion` (`http://….onion`, from `AppState::onion_uri`),
+    /// or `None` with no onion address.
+    pub fn new(onion: Option<&str>, path: T) -> Option<Self> {
+        onion.map(|base| OnionLink {
+            href: format!("{}{path}", base.trim_end_matches('/')),
+            target: PhantomData,
+        })
+    }
+
+    pub fn href(&self) -> &str {
+        &self.href
+    }
+}
+
 /// A link outside the API (the docs), under a registered relation.
 pub struct Href {
     pub href: String,
@@ -156,6 +186,27 @@ impl LinksBuilder {
             LinkObject {
                 href: link.href.clone(),
                 title: catalog::title(info),
+                type_: if info.kind == Kind::Hal {
+                    ""
+                } else {
+                    info.kind.media_type()
+                },
+            },
+        ));
+    }
+
+    /// Adds `link` under `key` (`mk:onion-…`) with `title`, when the
+    /// caller may follow a link to `T`.
+    pub fn add_onion<T: Resource>(&mut self, link: &OnionLink<T>, key: &str, title: &str) {
+        let info = T::info();
+        if !may_follow(info) {
+            return;
+        }
+        self.links.push((
+            key.to_owned(),
+            LinkObject {
+                href: link.href.clone(),
+                title: title.to_owned(),
                 type_: if info.kind == Kind::Hal {
                     ""
                 } else {

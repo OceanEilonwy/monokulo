@@ -210,6 +210,7 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     assert_eq!(response.status(), StatusCode::OK);
     let creds = body_json(response).await;
     // Only the key and where the API is: the rest the app reads with it.
+    // No onion address here, so no `onion_api`.
     assert_eq!(creds["api"], "/api/v1");
     assert_eq!(creds.as_object().unwrap().len(), 2, "{creds}");
     let key = creds["app_key"].as_str().unwrap().to_owned();
@@ -228,10 +229,11 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     assert_eq!(store["wallet"]["network"], "mainnet");
 
     // Once only.
-    assert_eq!(
-        redeem(&router, connect_body(&token)).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
+    crate::http::test_support::assert_problem(
+        redeem(&router, connect_body(&token)).await,
+        "invalid-connect-code",
+    )
+    .await;
     let used = body_text(
         get(
             &router,
@@ -387,10 +389,12 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
 }
 
 /// Without a public address the code can't be made, and redeeming says so
-/// with a 503 before spending a code; a bad slug is a 400; an unknown code
-/// a bare 401.
+/// with a `no-public-address` problem before spending a code; a bad slug
+/// or body is `invalid-request`, an unknown code `invalid-connect-code`:
+/// every error a documented problem.
 #[tokio::test]
 async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
+    use crate::http::test_support::assert_problem;
     let (state, _engine) = state_with_engine("").await;
     let router = build_router(state.clone());
     let (id, cookie) = store(&router).await;
@@ -414,25 +418,62 @@ async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
         .lock()
         .create_app_connect_token(&hash, &store_id, "", crate::now_unix())
         .unwrap();
-    assert_eq!(
-        redeem(&router, connect_body("ct_test")).await.status(),
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+    assert_problem(
+        redeem(&router, connect_body("ct_test")).await,
+        "no-public-address",
+    )
+    .await;
     let state = state
         .with_options(&format!("public_uri = \"{PUBLIC_URI}\"\n"))
         .await;
     let router = build_router(state.clone());
     let mut bad = connect_body("ct_test");
     bad["slug"] = "Monokular!".into();
-    assert_eq!(redeem(&router, bad).await.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(
-        redeem(&router, connect_body("ct_nope")).await.status(),
-        StatusCode::UNAUTHORIZED
-    );
+    assert_problem(redeem(&router, bad).await, "invalid-request").await;
+    assert_problem(
+        redeem(&router, serde_json::json!({ "slug": "monokular" })).await,
+        "invalid-request",
+    )
+    .await;
+    let not_json = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/apps/connect")
+                .body(Body::from("token=ct_test"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_problem(not_json, "unsupported-media-type").await;
+    assert_problem(
+        redeem(&router, connect_body("ct_nope")).await,
+        "invalid-connect-code",
+    )
+    .await;
     assert_eq!(
         redeem(&router, connect_body("ct_test")).await.status(),
         StatusCode::OK
     );
+}
+
+/// With an onion address, an app is given the API's entry on it too
+/// (`onion_api`), absolute, so an app that can use Tor reaches Monokulo
+/// over it from the start.
+#[tokio::test]
+async fn an_app_is_given_the_onion_entry_while_there_is_one() {
+    const ONION: &str = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+    let (state, _engine) = state_with_engine(&format!(
+        "public_uri = \"{PUBLIC_URI}\"\nonion_uri = \"{ONION}\"\n[tor]\nmode = \"external\"\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
+    ))
+    .await;
+    let router = build_router(state);
+    let (id, cookie) = store(&router).await;
+    let (token, _) = code(&router, &id, &cookie, "Till").await;
+    let creds = body_json(redeem(&router, connect_body(&token)).await).await;
+    assert_eq!(creds["api"], "/api/v1");
+    assert_eq!(creds["onion_api"], format!("{ONION}/api/v1"));
 }
 
 /// A connect link opened in a browser explains itself, and names no app.

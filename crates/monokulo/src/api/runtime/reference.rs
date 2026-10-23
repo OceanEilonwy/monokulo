@@ -7,9 +7,10 @@
 //! - `openapi.json`: the OpenAPI document with those examples
 //!   (`super::openapi`);
 //! - `reference.json`: every resource (its description, methods, who may
-//!   call them, body schema, forms and examples) and every problem, which
-//!   `cargo xtask pages api` turns into the docs site's `/api/reference/`,
-//!   `/rels/{rel}/` and `/problems/{slug}/` pages.
+//!   call them, body schema, forms and examples), every onion link's
+//!   relation (`mk:onion-…`) and every problem, which `cargo xtask pages
+//!   api` turns into the docs site's `/api/reference/`, `/rels/{rel}/` and
+//!   `/problems/{slug}/` pages.
 //!
 //! The test makes the exchanges against a real engine and checks what it
 //! writes: the document is OpenAPI 3.1, every example fits its schema,
@@ -68,8 +69,35 @@ pub fn catalog(examples: &[Exchange]) -> Value {
         })
         .collect();
     let definitions = generator.take_definitions(true);
+    // The onion links' own relations: each a page, like a resource's.
+    let rels: Vec<Value> = catalog::rels()
+        .into_iter()
+        .map(|rel| {
+            let target = (rel.target)();
+            let target_key = if target.kind == Kind::Page {
+                target.rel.to_owned()
+            } else {
+                target.link_key()
+            };
+            json!({
+                "rel": rel.rel,
+                "key": rel.link_key(),
+                "template": format!("http://….onion{}", target.template),
+                "media_type": target.kind.media_type(),
+                "title": catalog::summary(rel.doc),
+                "description": rel.doc,
+                "page": format!("{DOCS}/rels/{}", rel.rel),
+                "target": {
+                    "rel": target.rel,
+                    "key": target_key,
+                    "template": target.template,
+                },
+            })
+        })
+        .collect();
     json!({
         "resources": resources,
+        "rels": rels,
         "definitions": definitions,
         "problems": Problem::ALL.iter().map(|problem| json!({
             "slug": problem.slug(),

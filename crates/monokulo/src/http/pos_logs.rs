@@ -26,6 +26,7 @@ use serde_json::{Map, Value};
 
 use super::orders::load_owned_connection;
 use super::AuthedUser;
+use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
 use crate::db::Database;
 
 /// Most events one batch may carry.
@@ -137,11 +138,11 @@ pub async fn receive(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
     body: Bytes,
-) -> StatusCode {
+) -> Result<StatusCode, ProblemDetails> {
     let row = match load_owned_connection(&db, &user, &id).await {
         Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(None) => return Err(Problem::NotFound.detail("There's no such store for this account.")),
+        Err(()) => return Err(internal()),
     };
     let id = row.id.clone();
     if !db
@@ -149,18 +150,17 @@ pub async fn receive(
         .await
         .unwrap_or(false)
     {
-        return StatusCode::FORBIDDEN;
+        return Err(Problem::LogsOff.detail("Client logs are off for this store."));
     }
     // Parsed from the bytes: a beacon sent as the page hides may carry any
     // content type.
-    let Ok(logs) = serde_json::from_slice::<PosLogs>(&body) else {
-        return StatusCode::BAD_REQUEST;
-    };
+    let logs = serde_json::from_slice::<PosLogs>(&body)
+        .map_err(|e| Problem::InvalidRequest.detail(format!("That isn't a log report: {e}.")))?;
     if !is_session_id(&logs.session) {
-        return StatusCode::BAD_REQUEST;
+        return Err(Problem::InvalidRequest.detail("session isn't a session id."));
     }
     if logs.events.len() > MAX_EVENTS {
-        return StatusCode::PAYLOAD_TOO_LARGE;
+        return Err(Problem::TooLarge.detail(format!("At most {MAX_EVENTS} events at a time.")));
     }
     let span = tracing::info_span!(parent: None, "pos report", source = "pos", store.id = %row.id, pos.session = %logs.session);
     let _entered = span.enter();
@@ -192,7 +192,7 @@ pub async fn receive(
             _ => line!(info),
         }
     }
-    StatusCode::NO_CONTENT
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// [`detail_text`] read back into its pairs.

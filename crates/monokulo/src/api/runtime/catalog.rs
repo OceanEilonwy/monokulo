@@ -69,8 +69,30 @@ pub struct BodyInfo {
     pub schema: fn(&mut schemars::SchemaGenerator) -> schemars::Schema,
 }
 
+/// A relation of its own for an absolute onion link
+/// (`hal::OnionLink`): a body's `Option<OnionLink<T>>` field.
+pub struct RelInfo {
+    /// `onion-checkout`: the field's name.
+    pub rel: &'static str,
+    /// The field's doc comment: the relation's page.
+    pub doc: &'static str,
+    /// The resource it links to.
+    pub target: fn() -> &'static ResourceInfo,
+    pub file: &'static str,
+}
+
+impl RelInfo {
+    /// The key a link under it has: `mk:<rel>`.
+    pub fn link_key(&self) -> String {
+        format!("mk:{}", self.rel)
+    }
+}
+
 #[linkme::distributed_slice]
 pub static RESOURCES: [ResourceInfo];
+
+#[linkme::distributed_slice]
+pub static RELS: [RelInfo];
 
 #[linkme::distributed_slice]
 pub static HANDLERS: [HandlerInfo];
@@ -82,6 +104,15 @@ pub static BODIES: [BodyInfo];
 pub fn resources() -> Vec<&'static ResourceInfo> {
     let mut all: Vec<&ResourceInfo> = RESOURCES.iter().collect();
     all.sort_by_key(|r| r.template);
+    all
+}
+
+/// Every onion link relation, by name, once each (two bodies may carry
+/// the same one: an order in a list and on its own).
+pub fn rels() -> Vec<&'static RelInfo> {
+    let mut all: Vec<&RelInfo> = RELS.iter().collect();
+    all.sort_by_key(|r| r.rel);
+    all.dedup_by_key(|r| r.rel);
     all
 }
 

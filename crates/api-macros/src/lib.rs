@@ -562,6 +562,15 @@ enum FieldKind {
     },
     /// `Href`: a link outside the API, under a registered relation.
     Href,
+    /// `Option<OnionLink<T>>`: the resource at `T`, absolute, on the
+    /// instance's onion address; its own relation (`mk:onion-…`), which
+    /// the field's doc comment describes.
+    OnionLink {
+        target: Type,
+    },
+    /// `OnionLink<T>` that isn't an `Option`: refused, since an instance
+    /// with no onion address has no such link.
+    BareOnionLink,
 }
 
 /// The `T` in `Name<T>`, when `ty` is that.
@@ -590,11 +599,19 @@ fn field_kind(ty: &Type) -> FieldKind {
             optional: false,
         };
     }
+    if generic_of(ty, "OnionLink").is_some() {
+        return FieldKind::BareOnionLink;
+    }
     if let Some(inner) = generic_of(ty, "Option") {
         if let Some(target) = generic_of(inner, "Link") {
             return FieldKind::Link {
                 target: target.clone(),
                 optional: true,
+            };
+        }
+        if let Some(target) = generic_of(inner, "OnionLink") {
+            return FieldKind::OnionLink {
+                target: target.clone(),
             };
         }
     }
@@ -663,6 +680,7 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
     let mut links = Vec::new();
     let mut forms = Vec::new();
     let mut hrefs = Vec::new();
+    let mut onions = Vec::new();
     for field in &fields {
         let ident = field.ident.clone().expect("named");
         match field_kind(&field.ty) {
@@ -697,6 +715,27 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
                     ));
                 }
                 hrefs.push((ident, rel));
+            }
+            FieldKind::BareOnionLink => {
+                return Err(Error::new(
+                    field.ty.span(),
+                    "an onion link is an `Option<OnionLink<T>>`: absent while the instance has no onion address",
+                ));
+            }
+            FieldKind::OnionLink { target } => {
+                let rel = ident.to_string().replace('_', "-");
+                if !resource || !rel.starts_with("onion-") {
+                    return Err(Error::new(
+                        ident.span(),
+                        "an `OnionLink` goes on a resource's `#[api::body]`, in a field named `onion_…`",
+                    ));
+                }
+                let doc = require_doc(
+                    &field.attrs,
+                    ident.span(),
+                    "onion link (its relation's page)",
+                )?;
+                onions.push((ident, target, rel, doc));
             }
         }
     }
@@ -735,6 +774,34 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
     let form_adds = forms
         .iter()
         .map(|(_, target)| quote!(templates.add::<#target>();));
+    let onion_adds = onions.iter().map(|(ident, target, rel, doc)| {
+        let key = format!("mk:{rel}");
+        let title = summary(doc);
+        quote!(if let ::core::option::Option::Some(link) = &self.#ident { links.add_onion::<#target>(link, #key, #title); })
+    });
+    let onion_schemas = onions.iter().map(|(_, _, rel, doc)| {
+        let key = format!("mk:{rel}");
+        let title = summary(doc);
+        quote!(links.push((::std::string::String::from(#key), ::std::string::String::from(#title)));)
+    });
+    let onion_registers = onions.iter().map(|(ident, target, rel, doc)| {
+        let info = format_ident!(
+            "API_REL_{}_{}",
+            name.to_string().to_uppercase(),
+            ident.to_string().to_uppercase()
+        );
+        quote! {
+            #[#p::linkme::distributed_slice(#p::RELS)]
+            #[linkme(crate = crate::api::__private::linkme)]
+            #[allow(non_upper_case_globals)]
+            static #info: #p::RelInfo = #p::RelInfo {
+                rel: #rel,
+                doc: #doc,
+                target: <#target as #p::Resource>::info,
+                file: ::core::file!(),
+            };
+        }
+    });
     let name_text = name.to_string();
     let register = if resource {
         let info = format_ident!("API_BODY_{}", name.to_string().to_uppercase());
@@ -756,6 +823,8 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
                     api_self_path!(self)
                 }
             }
+
+            #(#onion_registers)*
         }
     } else {
         quote!()
@@ -764,6 +833,7 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
         quote! {
             let mut links = #p::LinksBuilder::new(&<#name as #p::Body>::self_path(self));
             #(#link_adds)*
+            #(#onion_adds)*
             #(#href_adds)*
             map.serialize_entry("_links", &links)?;
             let mut templates = #p::TemplatesBuilder::for_resource::<Path>();
@@ -779,6 +849,7 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
         quote! {
             let mut links: ::std::vec::Vec<(::std::string::String, ::std::string::String)> = ::std::vec::Vec::new();
             #(#link_schemas)*
+            #(#onion_schemas)*
             #(#href_schemas)*
             #p::hal_parts(generator, &mut properties, links);
         }
@@ -1091,6 +1162,16 @@ pub fn derive_problem(input: TokenStream) -> TokenStream {
     expand_problem(input)
         .unwrap_or_else(Error::into_compile_error)
         .into()
+}
+
+/// The first paragraph of `doc`, on one line: a link's title.
+fn summary(doc: &str) -> String {
+    doc.split("\n\n")
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn kebab(name: &str) -> String {

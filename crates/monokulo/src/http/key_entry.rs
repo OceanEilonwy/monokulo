@@ -22,10 +22,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
-use axum::http::{header, StatusCode};
+use axum::http::header;
 use axum::response::{IntoResponse, Response};
 
 use super::AppState;
+use crate::api::runtime::problem::Problem;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
 use shared::ids::UserId;
@@ -543,10 +544,8 @@ pub async fn bundle(State(state): State<AppState>, Path(id): Path<String>) -> Re
             json.to_string(),
         )
             .into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            "This bundle has expired or never existed. Load the key entry form again for a new one.",
-        )
+        None => Problem::NotFound
+            .detail("This bundle has expired or never existed. Load the key entry form again for a new one.")
             .into_response(),
     }
 }

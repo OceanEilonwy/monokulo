@@ -26,7 +26,8 @@
 //!    monokulo session at all. Redeems the token exactly once (see
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
 //!    returns `{public_key, secret_token, api}` (`api` is the API's entry,
-//!    `/api/v1`, a path on this instance, never the engine's) plus, as of WBS 1.4.4,
+//!    `/api/v1`, a path on this instance, never the engine's), `onion_api`
+//!    (the same entry on the onion address) while the instance has one, plus, as of WBS 1.4.4,
 //!    a `webhook_signing_secret` when the request carried a `webhook_url` -
 //!    see [`finish`]'s own doc comment for the registration/failure policy.
 
@@ -36,6 +37,8 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::api::runtime::extract::JsonBody;
+use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
 use crate::now_unix;
 use crate::plugins::{ConnectingPlugin, Plugin, PluginName, PluginSlug};
 use crate::stores::Site;
@@ -425,6 +428,12 @@ pub struct FinishResponse {
     /// the plugin builds none itself. Never the engine's address - the
     /// engine is private.
     pub api: String,
+    /// The API's entry on this instance's onion address
+    /// (`http://….onion/api/v1`), while it has one; absent otherwise. A
+    /// plugin keeps it so it can reach Monokulo over Tor; every order
+    /// carries its own onion checkout (`mk:onion-checkout`) either way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onion_api: Option<String>,
     /// Present only when `webhook_url` was supplied and registration
     /// succeeded.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -437,23 +446,24 @@ pub struct FinishResponse {
 /// browser, not the plugin's backend, that ever holds one). Redeems the
 /// connect token exactly once (see [`crate::db::Db::consume_connect_token`])
 /// and returns the real credentials - plus, when `webhook_url` was supplied,
-/// registers a real webhook against the engine (via
-/// [`crate::engine_client::EngineClient::create_webhook`]) and returns its
-/// `signing_secret`.
+/// registers a webhook for the store and returns its `signing_secret`.
 ///
-/// Every failure mode - unknown token, already-consumed token, expired
-/// token, a connection/decrypt failure that should never actually happen for
-/// a row this service itself wrote, or (new in 1.4.4) a failed webhook
-/// registration - collapses to a bare `401`. That's deliberate for the first
-/// three, same enumeration-defense principle used everywhere else in this
-/// crate; for webhook registration specifically it is a considered policy
-/// choice, not just "reuse the existing pattern" - see the doc comment
-/// immediately above the webhook-registration branch below for the tradeoff
-/// this accepts and why.
+/// Every error is a problem (`application/problem+json`,
+/// `crate::api::runtime::problem`), each with its page in the docs:
 ///
-/// While this instance has no public address, `/finish` answers `503` with
-/// a JSON `{"error": ...}` the plugin can show, *before* redeeming the
-/// token, so the same token still works once the operator sets it.
+/// - `not-found` (404): `platform` isn't a plugin's slug;
+/// - `invalid-request` (400) / `unsupported-media-type` (415) /
+///   `too-large` (413): the body isn't the JSON this takes, or
+///   `webhook_url` isn't an http(s) URL - checked before the token is
+///   spent, so the plugin can send it again fixed;
+/// - `no-public-address` (503): this instance has no public address yet,
+///   also before the token is spent, so the same token still works once
+///   the operator sets one;
+/// - `invalid-connect-code` (401): the token is unknown, already used or
+///   expired, all alike (nothing to enumerate);
+/// - `internal` (500): something failed here after the token was spent;
+///   the plugin starts connecting again;
+/// - `rate-limited` (429), from `http::abuse`, before any of this.
 ///
 /// Once it succeeds, the store has an active integration
 /// (`store_integrations`): the plugin's slug and name, the store's site,
@@ -464,17 +474,20 @@ pub async fn finish(
     State(state): State<AppState>,
     Path(platform): Path<String>,
     headers: axum::http::HeaderMap,
-    Json(req): Json<FinishRequest>,
-) -> Response {
+    JsonBody(req): JsonBody<FinishRequest>,
+) -> Result<Json<FinishResponse>, ProblemDetails> {
     let Some(slug) = PluginSlug::parse(&platform) else {
-        return StatusCode::NOT_FOUND.into_response();
+        return Err(Problem::NotFound.detail(format!(
+            "{platform} isn't a plugin's slug: a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens."
+        )));
     };
     if let Err(why) = public_uri_for_plugins(&state).await {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "error": why.to_string() })),
-        )
-            .into_response();
+        return Err(Problem::NoPublicAddress.detail(why.to_string()));
+    }
+    // A webhook URL that can't be one is refused before the token is
+    // spent, so the plugin can send it again fixed.
+    if let Some(url) = &req.webhook_url {
+        crate::webhooks::check_url(url).map_err(|why| Problem::InvalidRequest.detail(why))?;
     }
     let token_hash = shared::auth::RawToken::presented(&req.token).hash();
 
@@ -488,39 +501,29 @@ pub async fn finish(
             }
         })
         .await;
-    let row = match row {
-        Ok(Some(row)) => row,
-        // An unknown or expired token, or one pointing at a connection that
-        // no longer exists - shouldn't happen (nothing deletes
-        // `store_connections` rows), but this is this service's own
-        // problem, not a credential the caller could have gotten right some
-        // other way.
-        Ok(None) | Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+    let row =
+        match row {
+            Ok(Some(row)) => row,
+            // An unknown, used or expired token, or one pointing at a
+            // connection that no longer exists (nothing deletes
+            // `store_connections` rows), all alike.
+            Ok(None) => return Err(Problem::InvalidConnectCode.detail(
+                "This connect code is unknown, already used or expired. Start connecting again.",
+            )),
+            Err(e) => {
+                tracing::error!(error = %e, "a plugin's connect token could not be redeemed");
+                return Err(internal());
+            }
+        };
 
-    let secret_token = match super::orders::decrypt_sk(&state.encryption_key, &row) {
-        Ok(v) => v,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
-    };
+    let secret_token = super::orders::decrypt_sk(&state.encryption_key, &row).map_err(|_| {
+        tracing::error!(store.id = %row.id, "a connecting store's secret key could not be read");
+        internal()
+    })?;
 
-    // Webhook registration (WBS 1.4.4): only attempted when the caller supplied a
-    // `webhook_url`. On failure this collapses the *entire* `/finish` call to `401`,
-    // exactly like every other failure mode above - deliberately, per this task's own
-    // spec, even though the token has by this point already been irreversibly
-    // consumed (see `consume_connect_token`'s atomicity doc comment) and a
-    // registration failure here is `EngineClientError`-shaped, not enumeration-shaped
-    // (unlike the branches above, this one has nothing to hide from a legitimate
-    // caller - a network blip or a rejected URL isn't a secret). The accepted
-    // tradeoff: a plugin whose *webhook* registration fails (a transient network
-    // issue between the control plane and the engine, say, with credential retrieval
-    // itself having fully succeeded) gets no credentials at all and cannot retry with
-    // the same token - it must restart the whole connect flow from `GET
-    // /plugins/connect/{platform}` to mint a fresh one. This was judged the safer default
-    // over the alternative (return credentials anyway, with no webhook and no way to
-    // signal that clearly in a shape existing callers already parse) rather than
-    // because the collapse-to-401 pattern was merely convenient to reuse - flagged
-    // here explicitly in case a real deployment prefers "credentials now, webhook
-    // registration retried separately" instead.
+    // The webhook: its URL was checked above, so what can still fail here
+    // is this instance's own database. The token is spent by then; the
+    // plugin starts connecting again (an `internal` problem says so).
     let (webhook_id, webhook_signing_secret) = match &req.webhook_url {
         Some(url) => match crate::webhooks::create(
             &state.db,
@@ -535,9 +538,12 @@ pub async fn finish(
                 Some(created.webhook.id.to_string()),
                 Some(created.signing_secret),
             ),
+            Err(crate::webhooks::CreateError::Invalid(why)) => {
+                return Err(Problem::InvalidRequest.detail(why))
+            }
             Err(e) => {
-                tracing::warn!(store.id = %row.id, error = %e, "the plugin's webhook could not be added");
-                return StatusCode::UNAUTHORIZED.into_response();
+                tracing::error!(store.id = %row.id, error = %e, "the plugin's webhook could not be added");
+                return Err(internal());
             }
         },
         None => (None, None),
@@ -596,13 +602,14 @@ pub async fn finish(
         tracing::error!(store.id = %row.id, error = %e, "a plugin connected but it couldn't be recorded");
     }
 
-    Json(FinishResponse {
+    let api = crate::api::v1::root::Path {}.to_string();
+    Ok(Json(FinishResponse {
         public_key: row.tenant_public_key,
         secret_token: secret_token.expose().to_string(),
-        api: crate::api::v1::root::Path {}.to_string(),
+        onion_api: state.onion_uri().map(|onion| format!("{onion}{api}")),
+        api,
         webhook_signing_secret,
-    })
-    .into_response()
+    }))
 }
 
 #[cfg(test)]
@@ -910,7 +917,8 @@ mod tests {
         // reached it at; never the engine's.
         assert_eq!(obj["api"], "/api/v1");
         assert!(!obj.contains_key("endpoint"));
-        assert!(!obj.contains_key("onion_endpoint"));
+        // No onion address here, so no onion entry.
+        assert!(!obj.contains_key("onion_api"));
         assert!(!finish_body.to_string().contains(&engine.addr.to_string()));
         assert!(!obj.contains_key("webhook_signing_secret"));
 
@@ -937,6 +945,189 @@ mod tests {
         assert_eq!(tenant_view.public_key, public_key);
     }
 
+    /// The Tor Project's own v3 address, as this instance's onion address.
+    const ONION: &str = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+
+    /// With an onion address, a plugin that connected over the web address
+    /// is given the API's entry on it (`onion_api`), and every order it
+    /// makes over the web address carries the order's onion checkout
+    /// (`mk:onion-checkout`): where it sends a customer browsing the shop's
+    /// own `.onion` address, so they never leave Tor. The relative links
+    /// stay as they were.
+    #[tokio::test]
+    async fn a_plugin_on_the_web_address_is_given_the_onion_entry_and_onion_checkouts() {
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let state = AppState {
+            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
+            ..AppState::for_tests()
+        }
+        .with_options(&format!(
+            "public_uri = \"{TEST_PUBLIC_URI}\"\nonion_uri = \"{ONION}\"\n[signup]\nmode = \"public\"\n[tor]\nmode = \"external\"\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
+        ))
+        .await;
+        let router = build_router(state);
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "onion-shop@example.com").await;
+        let post_response = connect_through_setup(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-onion",
+            &[],
+        )
+        .await;
+        let token = parse_query_params(&location(&post_response))["token"].clone();
+        let finished =
+            body_json(finish(&router, serde_json::json!({ "token": token })).await).await;
+        assert_eq!(finished["api"], "/api/v1");
+        assert_eq!(finished["onion_api"], format!("{ONION}/api/v1"));
+        let sk = finished["secret_token"].as_str().unwrap();
+
+        // The entry, read over the web address, names itself on the onion one.
+        let entry = router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "GET",
+                "/api/v1",
+                Some(sk),
+                None,
+            ))
+            .await
+            .unwrap();
+        let entry = body_json(entry).await;
+        assert_eq!(
+            entry["_links"]["mk:onion-api"]["href"],
+            format!("{ONION}/api/v1")
+        );
+        assert_eq!(entry["_links"]["self"]["href"], "/api/v1");
+
+        // The order, as made and as read, and in the store's list.
+        let created = router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(sk),
+                Some(serde_json::json!({ "amount": "1.00", "currency": "XMR" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let location = created.headers()["location"].to_str().unwrap().to_owned();
+        assert!(location.starts_with("/api/v1/orders/order_"), "{location}");
+        let created = body_json(created).await;
+        let order_id = created["order_id"].as_str().unwrap();
+        let read = router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "GET",
+                &location,
+                Some(sk),
+                None,
+            ))
+            .await
+            .unwrap();
+        let read = body_json(read).await;
+        let list = router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "GET",
+                "/api/v1/orders",
+                Some(sk),
+                None,
+            ))
+            .await
+            .unwrap();
+        let list = body_json(list).await;
+        let listed = list["orders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["order_id"] == order_id)
+            .unwrap()
+            .clone();
+        for order in [&created, &read, &listed] {
+            let links = &order["_links"];
+            assert_eq!(
+                links["mk:onion-checkout"]["href"],
+                format!("{ONION}/checkout/{order_id}"),
+                "{order}"
+            );
+            assert_eq!(links["mk:onion-checkout"]["type"], "text/html");
+            assert_eq!(
+                links["mk:checkout"]["href"],
+                format!("/checkout/{order_id}")
+            );
+        }
+    }
+
+    /// Everything a plugin can get wrong, or find wrong, at `/finish` is a
+    /// documented problem, never a bare status or `{"error": ...}`.
+    #[tokio::test]
+    async fn every_finish_error_is_a_documented_problem() {
+        use crate::http::test_support::assert_problem;
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let send = |uri: &'static str, content_type: Option<&'static str>, body: &'static str| {
+            let router = router.clone();
+            async move {
+                let mut request = Request::builder().method("POST").uri(uri);
+                if let Some(content_type) = content_type {
+                    request = request.header("content-type", content_type);
+                }
+                router
+                    .oneshot(request.body(Body::from(body)).unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+        let json = Some("application/json");
+        let finish_uri = "/plugins/connect/acme-cart/finish";
+        assert_problem(
+            send(
+                finish_uri,
+                json,
+                r#"{"token": "conn_nobody_ever_issued_this"}"#,
+            )
+            .await,
+            "invalid-connect-code",
+        )
+        .await;
+        assert_problem(
+            send(
+                "/plugins/connect/Not_A_Slug/finish",
+                json,
+                r#"{"token": "x"}"#,
+            )
+            .await,
+            "not-found",
+        )
+        .await;
+        assert_problem(
+            send(finish_uri, None, r#"{"token": "x"}"#).await,
+            "unsupported-media-type",
+        )
+        .await;
+        assert_problem(send(finish_uri, json, "{not json").await, "invalid-request").await;
+        assert_problem(
+            send(finish_uri, json, r#"{"nonce": "x"}"#).await,
+            "invalid-request",
+        )
+        .await;
+        assert_problem(
+            send(
+                finish_uri,
+                json,
+                r#"{"token": "x", "webhook_url": "not a url"}"#,
+            )
+            .await,
+            "invalid-request",
+        )
+        .await;
+    }
+
     #[tokio::test]
     async fn finishing_the_same_token_twice_only_succeeds_once() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -960,11 +1151,7 @@ mod tests {
             "the first finish call succeeds"
         );
         let second = finish(&router, serde_json::json!({ "token": token })).await;
-        assert_eq!(
-            second.status(),
-            StatusCode::UNAUTHORIZED,
-            "a spent token fails"
-        );
+        crate::http::test_support::assert_problem(second, "invalid-connect-code").await;
     }
 
     #[tokio::test]
@@ -1412,7 +1599,9 @@ mod tests {
     /// A `webhook_url` the engine rejects fails the whole `/finish` call
     /// (WBS 1.4.4's collapse-to-401 policy, see `finish`).
     #[tokio::test]
-    async fn finish_with_a_rejected_webhook_url_fails_the_whole_call() {
+    /// A webhook URL that can't be one is refused as an `invalid-request`
+    /// problem before the token is spent: the plugin sends it again fixed.
+    async fn finish_with_a_rejected_webhook_url_is_refused_and_the_token_kept() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
         let cookie =
@@ -1432,7 +1621,23 @@ mod tests {
             serde_json::json!({ "token": token, "webhook_url": "ftp://not-http.example/hook" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/problem+json"
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["type"],
+            "https://docs.monokulo.com/problems/invalid-request"
+        );
+        assert!(body["detail"].as_str().unwrap().contains("http"), "{body}");
+        let response = finish(
+            &router,
+            serde_json::json!({ "token": token, "webhook_url": "https://shop.example.com/hook" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "the token was kept");
     }
 
     #[tokio::test]
@@ -1791,9 +1996,17 @@ mod tests {
 
         let response = finish(&router, serde_json::json!({ "token": token })).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers()["content-type"],
+            "application/problem+json"
+        );
         let body = body_json(response).await;
+        assert_eq!(
+            body["type"],
+            "https://docs.monokulo.com/problems/no-public-address"
+        );
         assert!(
-            body["error"].as_str().unwrap().contains("public address"),
+            body["detail"].as_str().unwrap().contains("public address"),
             "{body}"
         );
 

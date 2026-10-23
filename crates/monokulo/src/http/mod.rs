@@ -52,6 +52,8 @@ mod invites;
 pub mod key_entry;
 mod login;
 mod logs_page;
+#[cfg(test)]
+mod machine_tests;
 mod orders;
 pub mod paths;
 pub(crate) mod pay;
@@ -76,14 +78,13 @@ mod webhooks;
 use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
-use axum::http::{header, request::Parts, HeaderMap, StatusCode};
+use axum::http::{header, request::Parts, HeaderMap};
 use axum::middleware;
-use axum::response::{IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
 use axum_extra::extract::CookieJar;
 use axum_extra::routing::RouterExt;
-use serde_json::json;
 
 use crate::db::{Database, UserRow};
 use crate::engine_client::EngineClient;
@@ -227,6 +228,14 @@ impl AppState {
     /// (`crate::network`), reading this state's settings.
     pub fn network(&self, extensions: &axum::http::Extensions) -> crate::network::Reached<'_> {
         self.network_of(crate::network::NetworkKind::of(extensions))
+    }
+
+    /// This instance's onion address (`http://….onion`, no trailing `/`)
+    /// while it has one (`crate::network::onion_uri`), whichever network a
+    /// request came on: what absolute onion links (`mk:onion-checkout`,
+    /// `onion_api`) are built on.
+    pub fn onion_uri(&self) -> Option<String> {
+        crate::network::onion_uri(&self.settings, &self.tor)
     }
 
     /// The network `kind`, reading this state's settings.
@@ -1119,8 +1128,8 @@ async fn record_store(request: axum::extract::Request, next: middleware::Next) -
 /// [`AuthedUser`] to exercise, since no real protected endpoint exists yet.
 /// Not a real API surface - do not build on it.
 #[cfg(test)]
-async fn test_whoami(AuthedUser(user, _): AuthedUser) -> Json<serde_json::Value> {
-    Json(json!({ "user_id": user.id }))
+async fn test_whoami(AuthedUser(user, _): AuthedUser) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({ "user_id": user.id }))
 }
 
 /// `Unauthorized` (a missing/invalid session), `BadRequest` (a request
@@ -1128,7 +1137,7 @@ async fn test_whoami(AuthedUser(user, _): AuthedUser) -> Json<serde_json::Value>
 /// anything else. Every message on `Unauthorized`/`Internal` is fixed and
 /// generic — `Internal` never describes *why* the underlying operation
 /// failed — so a client can't use error-message differences to
-/// fingerprint internals. The machine API answers with problems instead
+/// fingerprint internals. Each is answered as a problem
 /// (`crate::api::runtime::problem`, which converts these).
 /// `BadRequest` is the one variant that *does* carry a real message,
 /// deliberately: it's surfacing the engine's own validation error back to
@@ -1156,21 +1165,10 @@ pub enum ApiError {
 }
 
 impl IntoResponse for ApiError {
+    /// As a problem (`application/problem+json`,
+    /// `crate::api::runtime::problem`): every JSON error this site answers
+    /// with has the same shape.
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
-            ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
-            ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
-            ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
-            ApiError::EngineUnavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "The payment engine is busy or unreachable. Try again in a moment.".to_string(),
-            ),
-            ApiError::Internal => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error".to_string(),
-            ),
-        };
-        (status, Json(json!({ "error": message }))).into_response()
+        crate::api::runtime::problem::ProblemDetails::from(self).into_response()
     }
 }
