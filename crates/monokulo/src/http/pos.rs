@@ -40,11 +40,12 @@
 use shared::order_status::OrderStatus;
 use std::collections::HashMap;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::api::runtime::extract::{JsonBody, QueryParams};
 use crate::engine_client::{EngineClientError, OrderView};
 use crate::views;
 use crate::views::pos::PosViewModel;
@@ -141,7 +142,7 @@ pub async fn create_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
-    Json(req): Json<PosCreateOrderRequest>,
+    JsonBody(req): JsonBody<PosCreateOrderRequest>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
@@ -650,7 +651,7 @@ pub async fn list_orders(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
-    Query(query): Query<PosListQuery>,
+    QueryParams(query): QueryParams<PosListQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
@@ -977,7 +978,7 @@ pub async fn order_events(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
-    Query(query): Query<PosEventsQuery>,
+    QueryParams(query): QueryParams<PosEventsQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
@@ -2532,7 +2533,7 @@ mod tests {
                 continue;
             }
             assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-            let error = body_json(response).await["error"]
+            let error = body_json(response).await["detail"]
                 .as_str()
                 .unwrap()
                 .to_string();

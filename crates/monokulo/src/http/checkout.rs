@@ -42,6 +42,7 @@ use super::paths::{CheckoutEventsPath, CheckoutSharePath, RefundAddressPath};
 use super::store_key::RequestStore;
 use super::{ApiError, AppState};
 use crate::api::checkout::Path as CheckoutPath;
+use crate::api::runtime::problem::{internal, Problem};
 
 /// Customer-facing amount guidance; POS keeps its own merchant-facing alerts.
 fn checkout_payment_message(order: &OrderView) -> Option<String> {
@@ -579,16 +580,31 @@ pub async fn set_refund_address(
     Query(mut options): Query<CheckoutOptions>,
     on: OnNetwork,
     headers: HeaderMap,
-    Form(form): Form<SetRefundAddressForm>,
+    form: Result<Form<SetRefundAddressForm>, axum::extract::rejection::FormRejection>,
 ) -> Response {
     options.onion = on.kind == NetworkKind::Onion;
     let wants_json = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("application/json"));
+    let form = match form {
+        Ok(Form(form)) => form,
+        Err(rejection) if wants_json => {
+            return Problem::InvalidRequest
+                .detail(rejection.body_text())
+                .into_response()
+        }
+        Err(rejection) => return rejection.into_response(),
+    };
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
+        Err(LoadError::NotFound) if wants_json => {
+            return Problem::NotFound
+                .detail("There's no such order.")
+                .into_response()
+        }
         Err(LoadError::NotFound) => return not_found_response(),
+        Err(LoadError::Internal) if wants_json => return internal().into_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
@@ -605,10 +621,8 @@ pub async fn set_refund_address(
     );
     if settled && detail.order.refund_address.is_some() {
         if wants_json {
-            return (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "The refund address for this order can no longer be changed."})),
-            )
+            return Problem::RefundAddressLocked
+                .detail("The refund address for this order can no longer be changed.")
                 .into_response();
         }
         return render_checkout_page(
@@ -625,10 +639,8 @@ pub async fn set_refund_address(
     let refund_address = form.refund_address.trim();
     if refund_address.is_empty() {
         if wants_json {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "Enter a refund address."})),
-            )
+            return Problem::InvalidRefundAddress
+                .detail("Enter a refund address.")
                 .into_response();
         }
         return render_checkout_page(
@@ -647,7 +659,9 @@ pub async fn set_refund_address(
     if !matches!((&parsed, &payment_address), (Ok(refund), Ok(payment)) if refund.network == payment.network)
     {
         if wants_json {
-            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Enter a valid Monero address for this store's network."}))).into_response();
+            return Problem::InvalidRefundAddress
+                .detail("Enter a valid Monero address for this store's network.")
+                .into_response();
         }
         return render_checkout_page(
             &state,
@@ -677,7 +691,9 @@ pub async fn set_refund_address(
         Err(e) => {
             tracing::error!(order.id = %order_id, store.id = %row.id, error = %e, "failed to set a refund address");
             if wants_json {
-                return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Something went wrong saving that. Please try again."}))).into_response();
+                return Problem::EngineUnavailable
+                    .detail("Something went wrong saving that. Please try again.")
+                    .into_response();
             }
             render_checkout_page(
                 &state,
@@ -738,10 +754,8 @@ pub async fn checkout_events(
         {
             Some(permit) => Some(permit),
             None => {
-                return (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    Json(serde_json::json!({ "error": "too many open update streams" })),
-                )
+                return Problem::TooManyStreams
+                    .detail("Too many open update streams for this store. Close one first.")
                     .into_response()
             }
         },

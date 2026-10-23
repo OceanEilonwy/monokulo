@@ -42,7 +42,9 @@
 //! - `#[api::body]` is the resource's body: `Link<T>` fields become
 //!   `_links` (`mk:<T's rel>`), `Form<H>` fields and the resource's own
 //!   forms `_templates`, each only when the caller's key may use it, and
-//!   `self` is the body's own `Path`. `#[api::object]` is a part of a body,
+//!   `self` is the body's own `Path`. An `Option<OnionLink<T>>` field
+//!   named `onion_…` is `T` absolute on the onion address, under its own
+//!   relation (`mk:onion-…`) that the field's doc comment describes. `#[api::object]` is a part of a body,
 //!   `#[api::input]` what a form sends, and `#[api::scalar]` a checked
 //!   string (`runtime::scalars`).
 //! - A missing doc comment on a body, object, input, scalar, field,
@@ -52,7 +54,9 @@
 //! and the docs' reference (`runtime::reference`) read the catalog the
 //! macros fill (`runtime::catalog`); there's no list of resources anywhere
 //! else. Every link is a path on this host, relative to it, so a client
-//! that came in over the onion address stays there.
+//! that came in over the onion address stays there; while the instance has
+//! an onion address, `mk:onion-…` links say where the same thing is on it,
+//! absolute, for a client on the web address serving someone on Tor.
 
 pub(crate) mod checkout;
 pub mod runtime;
@@ -68,7 +72,7 @@ pub mod prelude {
     pub use super::runtime::extract::{
         Apps, Caller, Client, ConnectedApp, Instance, Orders, Page, Store, StreamSlot,
     };
-    pub use super::runtime::hal::{Created, EventStream, Form, Href, Link, NoContent};
+    pub use super::runtime::hal::{Created, EventStream, Form, Href, Link, NoContent, OnionLink};
     pub use super::runtime::problem::{internal, not_found, Problem};
     pub use super::runtime::scalars::{
         Amount, CurrencyCode, Description, IdempotencyKey, MerchantRef,
@@ -82,7 +86,7 @@ pub mod prelude {
 pub mod __private {
     pub use super::runtime::auth::{respond, Authorized, Who, WhoMarker};
     pub use super::runtime::catalog::{
-        BodyInfo, HandlerInfo, Kind, ResourceInfo, BODIES, HANDLERS, RESOURCES,
+        BodyInfo, HandlerInfo, Kind, RelInfo, ResourceInfo, BODIES, HANDLERS, RELS, RESOURCES,
     };
     pub use super::runtime::extract::{json_body, ApiParam, Input, OperationDoc};
     pub use super::runtime::hal::{

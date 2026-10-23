@@ -20,6 +20,16 @@
  *
  * Errors are `application/problem+json`: `detail` says what went wrong.
  *
+ * Tor: on a page served from a `.onion` address, everything goes to
+ * Monokulo's own onion address, never its web address, so a customer on
+ * Tor stays on Tor. Monokulo's API entry (`GET /api/v1`, open without a
+ * key) names its onion address as `mk:onion-api` while it has one; the
+ * library reads it once per endpoint and then makes the order, frames the
+ * checkout and follows it there. Loading this file from the onion address
+ * (`<script src="http://<monokulo>.onion/static/monokulo-client.js">`)
+ * skips the lookup. A Monokulo with no onion address has nowhere else to
+ * send them, so its web address is used.
+ *
  * Abuse protection: a visitor making a lot of requests may be asked to
  * prove it's a real browser. monokulo then answers `createOrder` or the
  * order poll with `429` and a problem body with a `challenge` member,
@@ -72,6 +82,54 @@
 
   function scriptOrigin() {
     return SCRIPT_ORIGIN;
+  }
+
+  function isOnionHost(hostname) {
+    return /\.onion\.?$/i.test(hostname || "");
+  }
+
+  // Whether the merchant's page itself is on Tor.
+  function onOnionPage() {
+    try {
+      return isOnionHost(global.location.hostname);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function isOnionUrl(url) {
+    try {
+      return isOnionHost(new URL(url).hostname);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Whether calls to `endpoint` from this page should go to Monokulo's
+  // onion address instead: the page is on Tor and the endpoint isn't.
+  function wantsOnion(endpoint) {
+    return onOnionPage() && !isOnionUrl(endpoint);
+  }
+
+  // Each endpoint's onion address, looked up once (see the header comment).
+  var onionEndpoints = {};
+
+  // Resolves to where this page calls Monokulo at: `endpoint`, or, from a
+  // page on Tor, the origin of Monokulo's onion API entry (`mk:onion-api`)
+  // when it has one.
+  function callEndpoint(endpoint) {
+    if (!wantsOnion(endpoint)) return Promise.resolve(endpoint);
+    if (!onionEndpoints[endpoint]) {
+      onionEndpoints[endpoint] = fetchSolvingChallenges(endpoint + "/api/v1", {})
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .catch(function () { return null; })
+        .then(function (entry) {
+          var link = entry && entry._links && entry._links["mk:onion-api"];
+          if (!link || !link.href || !isOnionUrl(link.href)) return endpoint;
+          return new URL(link.href).origin;
+        });
+    }
+    return onionEndpoints[endpoint];
   }
 
   function leadingZeroBits(bytes) {
@@ -144,23 +202,26 @@
       return Promise.reject(new Error("Monokulo.createOrder: amount and currency are required (currency: \"XMR\", or any fiat currency this store's exchange rate provider supports)"));
     }
 
-    return fetchSolvingChallenges(endpoint + "/api/v1/orders", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + publicKey },
-      body: JSON.stringify({
-        amount: String(params.amount),
-        currency: params.currency,
-        // Optional - a storefront's own order/cart id, undefined/omitted
-        // when the caller doesn't have one (the server's own `#[serde(default)]`
-        // treats a missing key the same as an explicit `null`).
-        merchant_order_id: params.merchantOrderId || undefined,
-        // Optional - what the order is for, shown to the payer under the
-        // store's name; the store's payment description when left out.
-        description: params.description || undefined,
-        // Optional - false keeps merchantOrderId off the checkout; the
-        // server shows it when this is left out.
-        show_merchant_order_id: typeof params.showMerchantOrderId === "boolean" ? params.showMerchantOrderId : undefined,
-      }),
+    return callEndpoint(endpoint).then(function (resolved) {
+      endpoint = resolved;
+      return fetchSolvingChallenges(endpoint + "/api/v1/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + publicKey },
+        body: JSON.stringify({
+          amount: String(params.amount),
+          currency: params.currency,
+          // Optional - a storefront's own order/cart id, undefined/omitted
+          // when the caller doesn't have one (the server's own `#[serde(default)]`
+          // treats a missing key the same as an explicit `null`).
+          merchant_order_id: params.merchantOrderId || undefined,
+          // Optional - what the order is for, shown to the payer under the
+          // store's name; the store's payment description when left out.
+          description: params.description || undefined,
+          // Optional - false keeps merchantOrderId off the checkout; the
+          // server shows it when this is left out.
+          show_merchant_order_id: typeof params.showMerchantOrderId === "boolean" ? params.showMerchantOrderId : undefined,
+        }),
+      });
     })
       .then(function (response) {
         if (!response.ok) {
@@ -182,6 +243,13 @@
         var link = function (rel) {
           return links[rel] && links[rel].href ? new URL(links[rel].href, endpoint + "/").href : null;
         };
+        // A page on Tor whose Monokulo was reached on its web address
+        // anyway (its onion entry couldn't be read just then) still
+        // sends the customer to the onion checkout when there is one.
+        var checkoutUrl = link("mk:checkout");
+        if (onOnionPage() && !isOnionUrl(checkoutUrl) && link("mk:onion-checkout")) {
+          checkoutUrl = link("mk:onion-checkout");
+        }
         var order = {
           orderId: data.order_id,
           address: data.address,
@@ -194,7 +262,7 @@
           endpoint: endpoint,
           publicKey: publicKey,
           // The payer's page, to link to or frame.
-          checkoutUrl: link("mk:checkout"),
+          checkoutUrl: checkoutUrl,
           // The order itself, to read its status.
           orderUrl: link("self"),
         };
@@ -246,24 +314,22 @@
       previous.destroy();
     }
 
-    // The order's own links when this page made it; for an order from an
-    // earlier visit, the same paths built from its id.
-    var checkoutUrl = known.checkoutUrl || endpoint + "/checkout/" + encodeURIComponent(orderId);
-    var orderUrl = known.orderUrl || endpoint + "/api/v1/orders/" + encodeURIComponent(orderId);
+    try {
+      new URL(endpoint + "/checkout/", global.location.href);
+    } catch (e) {
+      throw new Error("Monokulo.mount: endpoint is not a valid URL: " + endpoint);
+    }
     // `theme: "light" | "dark"` pins the checkout's theme to match the
     // merchant's site; left out, it follows the customer's device.
     var query = [];
     if (options.refund === false) query.push("refund=false");
     if (options.theme === "light" || options.theme === "dark") query.push("theme=" + options.theme);
-    var iframeSrc = checkoutUrl + (query.length ? "?" + query.join("&") : "");
-    try {
-      new URL(iframeSrc, global.location.href);
-    } catch (e) {
-      throw new Error("Monokulo.mount: endpoint is not a valid URL: " + endpoint);
-    }
+    // The order's own links when this page made it; for an order from an
+    // earlier visit, the same paths built from its id, on the endpoint
+    // this page calls (the onion one, from a page on Tor).
+    var checkoutUrl = null, orderUrl = null;
 
     var iframe = document.createElement("iframe");
-    iframe.src = iframeSrc;
     iframe.title = "Monero Payment";
     iframe.style.border = "none";
     iframe.style.width = options.width || "420px";
@@ -358,10 +424,23 @@
       });
     }
 
-    if (typeof EventSource === "function") {
-      listen();
-    } else if (publicKey) {
-      pollTimer = setTimeout(poll, 3000);
+    // `endpoint`: where this page calls Monokulo (`callEndpoint`).
+    function start(endpoint) {
+      if (destroyed) return;
+      checkoutUrl = known.checkoutUrl || endpoint + "/checkout/" + encodeURIComponent(orderId);
+      orderUrl = known.orderUrl || endpoint + "/api/v1/orders/" + encodeURIComponent(orderId);
+      iframe.src = checkoutUrl + (query.length ? "?" + query.join("&") : "");
+      if (typeof EventSource === "function") {
+        listen();
+      } else if (publicKey) {
+        pollTimer = setTimeout(poll, 3000);
+      }
+    }
+
+    if (known.checkoutUrl || !wantsOnion(endpoint)) {
+      start(endpoint);
+    } else {
+      callEndpoint(endpoint).then(start);
     }
 
     var handle = {

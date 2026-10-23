@@ -200,7 +200,7 @@ pub async fn pay_middleware(
                     if let Tier::Blocked { retry_after_secs } =
                         state.abuse.check(anonymous, false, crate::now_unix())
                     {
-                        return blocked(&state, class, true, retry_after_secs);
+                        return blocked(&state, class, retry_after_secs);
                     }
                 }
                 return Problem::Unauthorized
@@ -316,7 +316,7 @@ async fn guard(
                 report.source = source,
                 "log reports dropped: a client is past abuse.client_logs_per_min"
             );
-            return blocked(state, class, api, retry_after_secs);
+            return blocked(state, class, retry_after_secs);
         }
         request.extensions_mut().insert(client);
         return next.run(request).await;
@@ -346,7 +346,7 @@ async fn guard(
                 if class == RouteClass::Page {
                     // Counted, so redemption itself can't be hammered.
                     if let Tier::Blocked { retry_after_secs } = abuse.check(&client, false, now) {
-                        return blocked(state, class, api, retry_after_secs);
+                        return blocked(state, class, retry_after_secs);
                     }
                     return see_other(&url_without_challenge_params(&request));
                 }
@@ -364,7 +364,7 @@ async fn guard(
         Tier::Allowed => {}
         Tier::Blocked { retry_after_secs } => {
             abuse.stats.record(Event::Refused, now);
-            return blocked(state, class, api, retry_after_secs);
+            return blocked(state, class, retry_after_secs);
         }
         Tier::Challenge => match class {
             RouteClass::Page if request.method() == Method::GET => {
@@ -375,16 +375,14 @@ async fn guard(
                 abuse.stats.record(Event::Issued, now);
                 return challenge_json(state, &client, redeem_error, now);
             }
-            RouteClass::Stream if api => {
+            // A stream can't carry a challenge: past the soft limit it's
+            // refused for a moment, as its problem's page says.
+            RouteClass::Stream => {
+                const RETRY_AFTER_SECS: u64 = 5;
                 return Problem::RateLimited
                     .detail("Too many requests; retry shortly.".to_owned())
-                    .into_response();
-            }
-            RouteClass::Stream => {
-                return (
-                    StatusCode::TOO_MANY_REQUESTS,
-                    axum::Json(json!({ "error": "too many requests; retry shortly" })),
-                )
+                    .with("retry_after", json!(RETRY_AFTER_SECS))
+                    .header(header::RETRY_AFTER, HeaderValue::from(RETRY_AFTER_SECS))
                     .into_response();
             }
             _ => {}
@@ -509,7 +507,7 @@ fn challenge_json(
     no_store(problem.into_response())
 }
 
-fn blocked(state: &AppState, class: RouteClass, api: bool, retry_after_secs: u64) -> Response {
+fn blocked(state: &AppState, class: RouteClass, retry_after_secs: u64) -> Response {
     let _ = state;
     let mut response = if class == RouteClass::Page {
         let chrome = views::PageChrome::from_user(None, "/");
@@ -518,18 +516,14 @@ fn blocked(state: &AppState, class: RouteClass, api: bool, retry_after_secs: u64
             views::challenge::too_many_requests_page(&chrome, retry_after_secs),
         )
             .into_response()
-    } else if api {
+    } else {
+        // Everything but a page is a machine's (the API, a plugin's or
+        // app's handshake, a script's fetch, a stream): a problem.
         Problem::RateLimited
             .detail(format!(
                 "Rate limit exceeded; retry in {retry_after_secs} s."
             ))
             .with("retry_after", json!(retry_after_secs))
-            .into_response()
-    } else {
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(json!({ "error": "rate limit exceeded", "retry_after": retry_after_secs })),
-        )
             .into_response()
     };
     response
@@ -666,6 +660,71 @@ mod tests {
     fn attribute(html: &str, name: &str) -> String {
         let start = html.find(&format!("{name}=\"")).unwrap() + name.len() + 2;
         html[start..start + html[start..].find('"').unwrap()].replace("&amp;", "&")
+    }
+
+    /// A plugin's or app's handshake, a browser's log report, a stream and
+    /// the API past their limit all get the `rate-limited` problem with
+    /// `Retry-After`, never `{"error": ...}`: only a page gets a page.
+    #[tokio::test]
+    async fn every_machine_route_past_its_limit_gets_the_rate_limited_problem() {
+        let router = build_router(state(AbuseConfig {
+            soft_per_min: 1,
+            hard_per_min: 1,
+            client_logs_per_min: 1,
+            ..Default::default()
+        }));
+        let post = |uri: &str, peer: &str| {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                peer.parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            request
+        };
+        let routes = [
+            (
+                post("/plugins/connect/acme-cart/finish", "203.0.113.1:1"),
+                "203.0.113.1:1",
+            ),
+            (post("/apps/connect", "203.0.113.2:1"), "203.0.113.2:1"),
+            (post("/telemetry/client", "203.0.113.3:1"), "203.0.113.3:1"),
+            (get("/checkout/o1/events", "203.0.113.4:1"), "203.0.113.4:1"),
+            (get("/api/v1/orders/o1", "203.0.113.5:1"), "203.0.113.5:1"),
+        ];
+        for (request, peer) in routes {
+            let (method, uri) = (request.method().clone(), request.uri().clone());
+            let again = || {
+                let mut request = Request::builder()
+                    .method(method.clone())
+                    .uri(uri.clone())
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap();
+                request.extensions_mut().insert(axum::extract::ConnectInfo(
+                    peer.parse::<std::net::SocketAddr>().unwrap(),
+                ));
+                request
+            };
+            let _ = router.clone().oneshot(request).await.unwrap();
+            let mut limited = None;
+            for _ in 0..20 {
+                let response = router.clone().oneshot(again()).await.unwrap();
+                if response.status() == StatusCode::TOO_MANY_REQUESTS
+                    && !response.headers().contains_key("monokulo-challenge")
+                {
+                    limited = Some(response);
+                    break;
+                }
+            }
+            let limited = limited.unwrap_or_else(|| panic!("{uri} was never limited"));
+            assert!(limited.headers().contains_key("retry-after"), "{uri}");
+            let body = crate::http::test_support::assert_problem(limited, "rate-limited").await;
+            assert!(body["retry_after"].is_u64(), "{uri}: {body}");
+        }
     }
 
     fn low_limits() -> AbuseConfig {

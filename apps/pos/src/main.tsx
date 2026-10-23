@@ -104,7 +104,7 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   timeline.record('request', { method, route: routeOf(url), status: response.status, ms: Math.round(performance.now() - started) }, response.ok ? 'info' : 'warn');
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed (${response.status})`);
+    throw new Error(body.detail || `Request failed (${response.status})`);
   }
   return response.status === 204 ? undefined as T : response.json();
 }
@@ -237,7 +237,7 @@ function PaymentCard(props: { order: Order }) {
       timeline.record(response.ok ? 'refund.saved' : 'refund.rejected', { order_id: props.order.order_id, status: response.status }, response.ok ? 'info' : 'warn');
       if (refund().trim() !== value) return;
       if (response.ok) { setSaved(value); setRefundState('saved'); }
-      else { setRefundState('invalid'); setRefundMessage(body.error || 'That address was not accepted.'); }
+      else { setRefundState('invalid'); setRefundMessage(body.detail || 'That address was not accepted.'); }
     } catch (e) {
       timeline.record('refund.save_failed', { order_id: props.order.order_id, error: (e as Error).message }, 'warn');
       if (refund().trim() === value) { setRefundState('idle'); setRefundMessage('Could not save. Check the connection and try again.'); }

@@ -46,6 +46,17 @@ removes it and stops listening.
 Status values: `pending`, `unconfirmed`, `confirming`, `partial`, `paid`,
 `overpaid`, `expired`. Updates stop at `paid`, `overpaid` or `expired`.
 
+## Shops on Tor
+
+On a page served from a `.onion` address, the library makes the order,
+frames the checkout and follows it on Monokulo's own onion address, so the
+customer never leaves Tor. It finds that address once, from the API's entry
+(`mk:onion-api`, see [Tor](../api/#tor)); load the script from the onion
+address instead
+(`<script src="http://….onion/static/monokulo-client.js">`) and it needn't
+look. `endpoint` and `checkoutUrl` are then onion addresses. A Monokulo with
+no onion address has nowhere else to send them, so its web address is used.
+
 ## When is an order really paid?
 
 - **In the page** (`onPaid`, `onStatusChange`): for the customer's

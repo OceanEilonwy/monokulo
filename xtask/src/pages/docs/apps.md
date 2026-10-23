@@ -43,14 +43,27 @@ Content-Type: application/json
 It answers once per token:
 
 ```json
-{ "app_key": "ak_…", "api": "/api/v1" }
+{ "app_key": "ak_…", "api": "/api/v1", "onion_api": "http://2gzy…wid.onion/api/v1" }
 ```
 
 Keep `app_key` somewhere safe on the device: it isn't shown again. `api` is
 the API's entry, a path: resolve it against the address you connected at
-(an app that connected over the onion address stays on it). A `503` with
-`{"error": …}` means the Monokulo has no public address yet (the token is
-still good); any other failure is a `401`.
+(an app that connected over the onion address stays on it). `onion_api` is
+there only while the Monokulo has an onion address: the same entry on it,
+for an app that can reach Monokulo over Tor (see [Tor](../api/#tor)).
+
+Every error is `application/problem+json`; show its `detail`. Its `type`
+is one of these:
+
+| Problem | Status | What to do |
+| --- | --- | --- |
+| [`invalid-connect-code`](../problems/invalid-connect-code/) | 401 | The code is unknown, used or expired: ask the merchant for a new one. |
+| [`no-public-address`](../problems/no-public-address/) | 503 | The Monokulo's admin hasn't set its address yet. The code isn't spent: try again later. |
+| [`invalid-request`](../problems/invalid-request/) | 400 | The body isn't what this takes, or `slug` isn't a slug. |
+| [`unsupported-media-type`](../problems/unsupported-media-type/) | 415 | Send `Content-Type: application/json`. |
+| [`too-large`](../problems/too-large/) | 413 | The body is too large. |
+| [`rate-limited`](../problems/rate-limited/) | 429 | Wait `retry_after` seconds. |
+| [`internal`](../problems/internal/) | 500 | Something failed on the Monokulo: try again later. |
 
 ## 2. Find your way
 

@@ -534,7 +534,7 @@ test('busy store sees every open order at once and narrows them by search', asyn
 test('an order list that failed to load when the POS opened comes back with Retry', async ({ page }) => {
   let failures = 1;
   await page.route('**/pos/orders?state=active', route => (failures-- > 0
-    ? route.fulfill({ status: 503, json: { error: 'The payment engine is busy or unreachable. Try again in a moment.' } })
+    ? route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ type: 'https://docs.monokulo.com/problems/engine-unavailable', title: 'Payment engine unavailable', status: 503, detail: 'The payment engine is busy or unreachable. Try again in a moment.' }) })
     : route.continue()));
   await page.goto(posUrl());
   await expect(page.locator('.pos-error')).toContainText('The payment engine is busy');

@@ -16,6 +16,9 @@ use crate::http::test_support::{
 use crate::http::{build_router, AppState};
 
 const PUBLIC_URI: &str = "https://www.monokulo.com";
+/// The onion address the recorded instance has, so the examples show the
+/// onion links (`mk:onion-checkout`, `mk:onion-api`). The Tor Project's own.
+const ONION_URI: &str = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
 
 async fn state() -> (AppState, engine_test_support::TestEngineHandle) {
     let engine =
@@ -26,7 +29,9 @@ async fn state() -> (AppState, engine_test_support::TestEngineHandle) {
         )),
         ..AppState::for_tests()
     }
-    .with_options(&format!("public_uri = \"{PUBLIC_URI}\"\n"))
+    .with_options(&format!(
+        "public_uri = \"{PUBLIC_URI}\"\nonion_uri = \"{ONION_URI}\"\n\n[tor]\nmode = \"external\"\n\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
+    ))
     .await;
     (state, engine)
 }
@@ -66,7 +71,10 @@ async fn connect_app(router: &axum::Router, id: &str, cookie: &str) -> String {
         .unwrap();
     assert_eq!(redeemed.status(), StatusCode::OK);
     let body = crate::http::test_support::body_json(redeemed).await;
-    assert_eq!(body, json!({"app_key": body["app_key"], "api": "/api/v1"}));
+    assert_eq!(
+        body,
+        json!({"app_key": body["app_key"], "api": "/api/v1", "onion_api": format!("{ONION_URI}/api/v1")})
+    );
     body["app_key"].as_str().unwrap().to_owned()
 }
 
@@ -274,6 +282,29 @@ async fn the_reference_is_written_from_real_exchanges() {
             resource.rel
         );
     }
+    // Every onion link's relation has a page too, named apart from every
+    // resource's.
+    let rels = reference["rels"].as_array().unwrap();
+    let onion_rels = catalog::rels();
+    assert_eq!(rels.len(), onion_rels.len());
+    for rel in &onion_rels {
+        assert!(rel.rel.starts_with("onion-"), "{}", rel.rel);
+        assert!(
+            catalog::resources().iter().all(|r| r.rel != rel.rel),
+            "{} is a resource's relation too",
+            rel.rel
+        );
+        assert!(
+            rels.iter().any(|r| r["rel"] == rel.rel
+                && r["page"] == format!("{DOCS}/rels/{}", rel.rel)
+                && !r["description"].as_str().unwrap_or_default().is_empty()),
+            "{} has no page",
+            rel.rel
+        );
+    }
+    for wanted in ["onion-checkout", "onion-api"] {
+        assert!(onion_rels.iter().any(|r| r.rel == wanted), "no {wanted}");
+    }
     let problems = reference["problems"].as_array().unwrap();
     for problem in Problem::ALL {
         assert!(
@@ -411,6 +442,14 @@ fn every_link_names_a_route(recorded: &[examples::Exchange]) {
                             if href.starts_with("https://") {
                                 continue;
                             }
+                            // An onion link: a route, on the onion address.
+                            let href = match href.strip_prefix(ONION_URI) {
+                                Some(path) => {
+                                    assert!(rel.starts_with("mk:onion-"), "{rel}: {href}");
+                                    path
+                                }
+                                None => href,
+                            };
                             assert!(matches(href), "{rel}: {href} is no route");
                             checked += 1;
                         }

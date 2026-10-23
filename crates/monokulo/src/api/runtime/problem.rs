@@ -1,4 +1,7 @@
-//! The API's errors, as `application/problem+json` (RFC 9457). Each kind
+//! The errors every machine client gets, as `application/problem+json`
+//! (RFC 9457): the API's, the plugin and app handshakes', and the JSON the
+//! site's own scripts read (the checkout's refund address, the point of
+//! sale, client logs). Only pages for people answer with HTML. Each kind
 //! is a [`Problem`] variant, whose doc comment is its page in the docs and
 //! whose `type` is that page (`https://docs.monokulo.com/problems/{slug}`),
 //! so a response can't name a type that has no page. A response is a
@@ -33,14 +36,18 @@ pub enum Problem {
     /// with its public key anywhere else.
     #[problem(status = 403, title = "Not allowed with this key")]
     Forbidden,
-    /// There's no such order for the store the key names. An order of
-    /// another store is not found either.
+    /// There's no such thing here for this caller: an order the key's
+    /// store doesn't have (an order of another store is not found either),
+    /// a store or order that isn't the signed-in merchant's, a key bundle
+    /// that has expired, or a plugin connect URL whose platform isn't a
+    /// plugin's slug (a lowercase letter, then 1 to 31 lowercase letters,
+    /// digits or hyphens).
     #[problem(status = 404, title = "Not found")]
     NotFound,
-    /// The request body isn't what the form takes: not JSON, a field
-    /// missing or of the wrong type, or a value its rules refuse (`detail`
-    /// says which). The form in `_templates` lists every field and its
-    /// rules.
+    /// The request isn't what the route takes: not JSON, a field missing or
+    /// of the wrong type, or a value its rules refuse (`detail` says
+    /// which). In the API, the form in `_templates` lists every field and
+    /// its rules.
     #[problem(status = 400, title = "Invalid request")]
     InvalidRequest,
     /// The body was sent without `Content-Type: application/json`.
@@ -89,6 +96,34 @@ pub enum Problem {
     /// logs; try again later.
     #[problem(status = 500, title = "Internal error")]
     Internal,
+    /// The connect code is unknown, already used, or expired. A plugin's
+    /// code (the `token` its return URL was given) lasts 10 minutes and an
+    /// app's (the `token` in its connect link) as long as its connect page
+    /// says; each works once. Start connecting again for a new one.
+    #[problem(status = 401, title = "Connect code not valid")]
+    InvalidConnectCode,
+    /// This Monokulo's admin hasn't set its web address (`public_uri`) yet,
+    /// so nothing can connect to it. The connect code was not spent: send
+    /// it again once the admin has set one.
+    #[problem(status = 503, title = "No public address yet")]
+    NoPublicAddress,
+    /// The request needs a signed-in merchant (the point of sale and the
+    /// dashboard's own scripts call it), and its session is missing or has
+    /// ended. Sign in again.
+    #[problem(status = 401, title = "Not signed in")]
+    SignedOut,
+    /// Only this Monokulo's admin may do this.
+    #[problem(status = 403, title = "Only the admin may do this")]
+    AdminOnly,
+    /// The refund address isn't a Monero address on the store's network,
+    /// or is empty.
+    #[problem(status = 400, title = "Not a refund address for this store")]
+    InvalidRefundAddress,
+    /// The order is settled (paid, overpaid or expired) and already has a
+    /// refund address, which can no longer be changed: a refund may be on
+    /// its way to it.
+    #[problem(status = 409, title = "The refund address can't be changed")]
+    RefundAddressLocked,
 }
 
 impl Problem {
@@ -184,10 +219,10 @@ impl IntoResponse for ProblemDetails {
 impl From<ApiError> for ProblemDetails {
     fn from(error: ApiError) -> Self {
         match error {
-            ApiError::Unauthorized => Problem::Unauthorized.detail("Send a key."),
+            ApiError::Unauthorized => Problem::SignedOut.detail("Sign in again."),
             ApiError::BadRequest(message) => Problem::InvalidRequest.detail(message),
-            ApiError::NotFound => not_found(),
-            ApiError::Forbidden => Problem::Forbidden.detail("This key may not do that."),
+            ApiError::NotFound => Problem::NotFound.detail("There's no such thing here."),
+            ApiError::Forbidden => Problem::AdminOnly.detail("Only the admin may do this."),
             ApiError::EngineUnavailable => Problem::EngineUnavailable
                 .detail("The payment engine is busy or unreachable. Try again in a moment."),
             ApiError::Internal => Problem::Internal

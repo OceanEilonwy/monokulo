@@ -68,7 +68,7 @@ module.exports = defineConfig({
   projects: [
     {
       name: 'fixture',
-      ...fixtureProject('chromium', ['client-challenge-protocol.spec.js', 'checkout.spec.js', 'connection-challenge.spec.js', 'merchant-client.spec.js', ...POS_FIXTURE_SPECS, 'live-view.spec.js', 'live-view-hidden-tab.spec.js',
+      ...fixtureProject('chromium', ['client-challenge-protocol.spec.js', 'client-onion.spec.js', 'checkout.spec.js', 'connection-challenge.spec.js', 'merchant-client.spec.js', ...POS_FIXTURE_SPECS, 'live-view.spec.js', 'live-view-hidden-tab.spec.js',
         'store-settings.spec.js', 'domains.spec.js', 'dropdowns.spec.js', 'order-creation.spec.js', 'javascript-disabled.spec.js', 'account-settings.spec.js', 'live-view-performance.spec.js', 'wallets-networks.spec.js', 'wallet-details.spec.js', 'disclosures.spec.js', 'short-values.spec.js', 'wallet-page.spec.js', 'store-site.spec.js', 'status-network-card.spec.js', 'store-webhooks.spec.js', 'pages-gallery-themes.spec.js']),
       // The preexisting local surface badge case duplicates the real POS badge
       // test; keep the user's working edit without adding it to this suite.

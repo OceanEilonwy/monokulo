@@ -68,7 +68,7 @@ test('real checkout validates, shows saving, rejects a response, and retries', a
   await page.route(`${url}/refund-address*`, async route => {
     if (responseStatus === 400) await new Promise(resolve => { release = resolve; });
     await route.fulfill({ status: responseStatus, contentType: 'application/json',
-      body: JSON.stringify(responseStatus === 200 ? { ok: true } : { ok: false, error: 'invalid' }) });
+      body: JSON.stringify(responseStatus === 200 ? { ok: true } : { type: 'https://docs.monokulo.com/problems/invalid-refund-address', title: 'Not a refund address for this store', status: 400, detail: 'invalid' }) });
   });
   await page.goto(url);
   const input = page.locator('#refund_address');

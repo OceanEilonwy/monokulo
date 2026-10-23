@@ -81,6 +81,13 @@ pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
         )?;
         pages += 1;
     }
+    for rel in list(&reference, "rels") {
+        put(
+            site.join("rels").join(text(rel, "rel")).join("index.html"),
+            onion_rel_page(rel).into_string(),
+        )?;
+        pages += 1;
+    }
     for problem in list(&reference, "problems") {
         let slug = text(problem, "slug");
         put(
@@ -105,7 +112,8 @@ fn points_here(reference: &Value) -> io::Result<()> {
             "{what} points at {found}, not {expected} where this site publishes it"
         ))
     };
-    for resource in list(reference, "resources") {
+    let resources = list(reference, "resources").iter();
+    for resource in resources.chain(list(reference, "rels")) {
         let expected = format!("{}/rels/{}", site_header::SITE_URL, text(resource, "rel"));
         if text(resource, "page") != expected {
             return Err(wrong(
@@ -209,6 +217,25 @@ fn index(reference: &Value) -> Markup {
                 }
             }
         } }
+        @if !list(reference, "rels").is_empty() {
+            h2 { "Onion links" }
+            p {
+                "While a Monokulo has an onion address, these say where a resource is on it, as absolute URLs, "
+                "whichever address the client called. Without one they're absent."
+            }
+            div.tbl { table {
+                thead { tr { th { "Relation" } th { "URL" } th { "What it is" } } }
+                tbody {
+                    @for rel in list(reference, "rels") {
+                        tr {
+                            td { a href=(format!("{up}rels/{}/", text(rel, "rel"))) { code { (text(rel, "key")) } } }
+                            td { code { (text(rel, "template")) } }
+                            td { (text(rel, "title")) }
+                        }
+                    }
+                }
+            } }
+        }
         h2 { "Problems" }
         div.tbl { table {
             thead { tr { th { "Type" } th { "Status" } th { "Title" } } }
@@ -367,6 +394,26 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
     page(up, text(resource, "key"), text(resource, "title"), markup)
 }
 
+/// The page of an onion link's relation (`mk:onion-…`).
+fn onion_rel_page(rel: &Value) -> Markup {
+    let up = "../../";
+    let target = &rel["target"];
+    let markup = html! {
+        h1 { code { (text(rel, "key")) } }
+        p.lede { (text(rel, "title")) }
+        (markdown_html(text(rel, "description").split_once("\n\n").map_or("", |(_, rest)| rest)))
+        h2 { "URL" }
+        p {
+            code { (text(rel, "template")) } " · " code { (text(rel, "media_type")) }
+            ": the same resource as "
+            a href=(format!("{up}rels/{}/", text(target, "rel"))) { code { (text(target, "key")) } }
+            " (" code { (text(target, "template")) } "), absolute, on the onion address."
+        }
+        p { "Present only while this Monokulo has an onion address; absent otherwise. A link the caller's key may not follow is left out." }
+    };
+    page(up, text(rel, "key"), text(rel, "title"), markup)
+}
+
 fn problem_page(problem: &Value, reference: &Value) -> Markup {
     let up = "../../";
     let slug = text(problem, "slug");
@@ -401,8 +448,8 @@ mod tests {
     use crate::support::Scratch;
     use serde_json::json;
 
-    /// A reference shaped as monokulo writes it: two resources and a
-    /// problem. Monokulo's own test checks the real one has every resource
+    /// A reference shaped as monokulo writes it: two resources, an onion
+    /// link's relation and a problem. Monokulo's own test checks the real one has every resource
     /// and problem; this one checks each gets its page.
     fn reference(site: &str) -> Value {
         json!({
@@ -456,6 +503,16 @@ mod tests {
                 }
             ],
             "definitions": {"Wallet": {"type": "object"}},
+            "rels": [{
+                "rel": "onion-order",
+                "key": "mk:onion-order",
+                "template": "http://….onion/api/v1/orders/{order_id}",
+                "media_type": "application/prs.hal-forms+json",
+                "title": "The order on the onion address.",
+                "description": "The order on the onion address.\n\nFor a client on Tor.",
+                "page": format!("{site}/rels/onion-order"),
+                "target": {"rel": "order", "key": "mk:order", "template": "/api/v1/orders/{order_id}"}
+            }],
             "problems": [{
                 "slug": "not-found",
                 "type": format!("{site}/problems/not-found"),
@@ -486,7 +543,7 @@ mod tests {
         let scratch = Scratch::new("api-reference");
         let site = scratch.path().join("site");
         let pages = write(&generated(&scratch, &reference), &site).unwrap();
-        assert_eq!(pages, 4);
+        assert_eq!(pages, 5);
         for resource in list(&reference, "resources") {
             let html = fs::read_to_string(
                 site.join("rels")
@@ -498,6 +555,9 @@ mod tests {
             let linked = site_assets::assert_links_published(&html, &site.join("assets"));
             assert!(linked.contains(&"styles.css"));
         }
+        let onion = fs::read_to_string(site.join("rels/onion-order/index.html")).unwrap();
+        assert!(onion.contains("For a client on Tor."), "{onion}");
+        assert!(onion.contains(r#"href="../../rels/order/""#), "{onion}");
         let order = fs::read_to_string(site.join("rels/order/index.html")).unwrap();
         assert!(order.contains("Wallet"), "{order}");
         assert!(order.contains("Real exchanges"), "{order}");
@@ -509,6 +569,10 @@ mod tests {
         assert_eq!(openapi["openapi"], "3.1.0");
         let index = fs::read_to_string(site.join("api/reference/index.html")).unwrap();
         assert!(index.contains(r#"href="../../rels/order/""#), "{index}");
+        assert!(
+            index.contains(r#"href="../../rels/onion-order/""#),
+            "{index}"
+        );
     }
 
     /// A reference whose links point at another site isn't published.

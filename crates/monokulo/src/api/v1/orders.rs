@@ -27,6 +27,7 @@ async fn list(orders: Orders, page: Page) -> api::Result<Body> {
     let limit = page.limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
     let offset = page.offset.unwrap_or(0);
     let state = &orders.state;
+    let onion = state.onion_uri();
     let store = &orders.store;
     let views = match state
         .engine
@@ -76,7 +77,7 @@ async fn list(orders: Orders, page: Page) -> api::Result<Body> {
                 let required = metadata
                     .and_then(|m| m.confirmations_required_applied)
                     .unwrap_or(fallback);
-                order::of(view, metadata, required)
+                order::of(view, metadata, required, onion.as_deref())
             })
             .collect(),
         next: full.then(|| {
@@ -128,6 +129,7 @@ async fn create(
     input: Input,
 ) -> api::Result<Created<order::Body>> {
     let state = orders.state.clone();
+    let onion = state.onion_uri();
     let row = orders.store.clone();
     let caller = caller.0;
     let created_with_key = caller.credential.is_store_key();
@@ -375,7 +377,12 @@ async fn create(
             created_with_key,
             show_merchant_order_id,
         };
-        order::of(&view, Some(&metadata), resolution.confirmations_required)
+        order::of(
+            &view,
+            Some(&metadata),
+            resolution.confirmations_required,
+            onion.as_deref(),
+        )
     });
     Ok(Created(body))
 }

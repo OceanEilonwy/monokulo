@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! dashboard: Connect an app ──▶ code: https://{public_uri}/apps/connect#token=ct_…
-//! app:       POST /apps/connect {token, slug, name, …} ──▶ {app_key, api: "/api/v1"}
+//! app:       POST /apps/connect {token, slug, name, …} ──▶ {app_key, api: "/api/v1", onion_api?}
 //!            GET  /api/v1                     (Authorization: Bearer ak_…): links
 //!            GET  /api/v1/store, /api/v1/app, POST /api/v1/orders, GET /api/v1/events, …
 //!            DELETE /api/v1/app               (disconnects itself)
@@ -19,6 +19,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::api::runtime::extract::JsonBody;
+use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
 use crate::apps::{clean_device_name, CONNECT_TOKEN_TTL_SECONDS};
 use crate::db::{AppConnection, ConnectionId, UserRow};
 use crate::now_unix;
@@ -256,32 +258,41 @@ pub struct RedeemResponse {
     /// stays on it. Everything else (the store, its wallet, the app's own
     /// connection) is a link from there.
     pub api: String,
-}
-
-fn api_error(status: StatusCode, error: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": error }))).into_response()
+    /// The API's entry on this instance's onion address
+    /// (`http://….onion/api/v1`), while it has one; absent otherwise: an
+    /// app that can use Tor keeps it to reach Monokulo over Tor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onion_api: Option<String>,
 }
 
 /// `POST /apps/connect`: an app redeems a code, once, for a key of its own.
-/// An unknown, spent or expired code is a bare `401`, all alike. While the
-/// instance has no public address it's a `503` before the code is spent,
-/// so the same code still works once an admin sets one.
+///
+/// Every error is a problem (`application/problem+json`,
+/// `crate::api::runtime::problem`), each with its page in the docs:
+///
+/// - `invalid-request` (400) / `unsupported-media-type` (415) /
+///   `too-large` (413): the body isn't the JSON this takes, or `slug`
+///   isn't a slug;
+/// - `no-public-address` (503): the instance has no public address yet,
+///   before the code is spent, so the same code still works once an admin
+///   sets one;
+/// - `invalid-connect-code` (401): the code is unknown, used or expired,
+///   all alike;
+/// - `internal` (500): something failed here;
+/// - `rate-limited` (429), from `http::abuse`, before any of this.
 pub async fn redeem(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<RedeemRequest>,
-) -> Response {
+    JsonBody(req): JsonBody<RedeemRequest>,
+) -> Result<Json<RedeemResponse>, ProblemDetails> {
     let Some(slug) = PluginSlug::parse(&req.slug) else {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "slug must be a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens",
-        );
+        return Err(Problem::InvalidRequest.detail(
+            "slug must be a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens.",
+        ));
     };
     if state.settings.public_uri().is_none() {
-        return api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "This Monokulo has no public address yet. Ask its admin to set one.",
-        );
+        return Err(Problem::NoPublicAddress
+            .detail("This Monokulo has no public address yet. Ask its admin to set one."));
     }
     let name = req
         .name
@@ -326,18 +337,23 @@ pub async fn redeem(
         .await;
     let app = match redeemed {
         Ok(Some(app)) => app,
-        Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
+        Ok(None) => {
+            return Err(Problem::InvalidConnectCode.detail(
+                "This connect code is unknown, already used or expired. Make a new one on the store's Apps card.",
+            ))
+        }
         Err(e) => {
             tracing::error!(error = %e, "an app's connect code could not be redeemed");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return Err(internal());
         }
     };
     tracing::info!(store.id = %app.store_id, app.id = %app.id, app.slug = %app.slug, "an app connected");
-    Json(RedeemResponse {
+    let api = crate::api::v1::root::Path {}.to_string();
+    Ok(Json(RedeemResponse {
         app_key: key.expose().to_owned(),
-        api: crate::api::v1::root::Path {}.to_string(),
-    })
-    .into_response()
+        onion_api: state.onion_uri().map(|onion| format!("{onion}{api}")),
+        api,
+    }))
 }
 
 #[cfg(test)]

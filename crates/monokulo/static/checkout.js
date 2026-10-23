@@ -114,7 +114,7 @@
       var response = event.detail.cfg.response, result = {};
       try { result = JSON.parse(event.detail.cfg.text); } catch (_) {}
       if (response.ok && result.ok) { saveFinished(null); return; }
-      var failure = new Error(result.error || 'Could not save the refund address. Try again.');
+      var failure = new Error(result.detail || 'Could not save the refund address. Try again.');
       failure.invalid = response.status === 400;
       saveFinished(failure);
     });

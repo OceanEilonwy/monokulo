@@ -18,6 +18,41 @@ pub(crate) async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// Checks `response` is the problem `slug`, as every machine client is
+/// answered (`crate::api::runtime::problem`): `application/problem+json`,
+/// its documented `type`, `title` and `status` (which the response's own
+/// status matches) and a `detail`. Returns the body.
+pub(crate) async fn assert_problem(
+    response: axum::response::Response,
+    slug: &str,
+) -> serde_json::Value {
+    use crate::api::runtime::problem::{Problem, PROBLEM_JSON};
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let body = body_text(response).await;
+    assert_eq!(content_type, PROBLEM_JSON, "{status}: {body}");
+    let body: serde_json::Value = serde_json::from_str(&body).expect("a problem is JSON");
+    let problem = Problem::ALL
+        .iter()
+        .find(|p| p.slug() == slug)
+        .unwrap_or_else(|| panic!("{slug} isn't a documented problem"));
+    assert_eq!(body["type"], problem.type_uri(), "{body}");
+    assert_eq!(body["title"], problem.title(), "{body}");
+    assert_eq!(body["status"], status.as_u16(), "{body}");
+    assert_eq!(status, problem.status(), "{body}");
+    assert!(
+        body["detail"].as_str().is_some_and(|d| !d.is_empty()),
+        "{body}"
+    );
+    assert!(body.get("error").is_none(), "{body}");
+    body
+}
+
 /// `s` encoded for a form body or query string.
 pub(crate) fn urlencoding_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()

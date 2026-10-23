@@ -98,6 +98,33 @@ pub async fn json_body<T: serde::de::DeserializeOwned, S: Send + Sync>(
     }
 }
 
+/// A JSON body for a route a machine calls outside the API (a plugin's or
+/// app's handshake, the point of sale): `T`, or the problem
+/// [`json_body`] answers with, never axum's plain-text rejection.
+pub struct JsonBody<T>(pub T);
+
+impl<T: serde::de::DeserializeOwned, S: Send + Sync> FromRequest<S> for JsonBody<T> {
+    type Rejection = ProblemDetails;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, ProblemDetails> {
+        json_body(request, state).await.map(JsonBody)
+    }
+}
+
+/// A query string for such a route: `T`, or an `invalid-request` problem.
+pub struct QueryParams<T>(pub T);
+
+impl<T: serde::de::DeserializeOwned, S: Send + Sync> FromRequestParts<S> for QueryParams<T> {
+    type Rejection = ProblemDetails;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, ProblemDetails> {
+        axum::extract::Query::<T>::from_request_parts(parts, state)
+            .await
+            .map(|axum::extract::Query(query)| QueryParams(query))
+            .map_err(|rejection| Problem::InvalidRequest.detail(rejection.body_text()))
+    }
+}
+
 fn caller(parts: &Parts) -> Result<&ApiCaller, ProblemDetails> {
     parts
         .extensions
