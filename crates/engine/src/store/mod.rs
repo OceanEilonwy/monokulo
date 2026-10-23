@@ -3748,7 +3748,7 @@ mod tests {
         // binary, since every other test in this file opens a fresh `:memory:` db
         // exactly once and would never exercise a second `open_file` call against
         // the same path.
-        let path = std::env::temp_dir().join(format!("moneropay_test_{}.db", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("engine_store_test_{}.db", Uuid::new_v4()));
         let path_str = path.to_str().unwrap();
 
         let store = Store::open_file(path_str).unwrap();
@@ -4925,7 +4925,7 @@ mod tests {
         // disabled - the exact opposite of what the schema documents. Asserting it
         // on a *reopened* file is the whole point: a fresh database passes either
         // way, which is why this went unnoticed.
-        let path = std::env::temp_dir().join(format!("moneropay_fk_test_{}.db", Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("engine_store_fk_test_{}.db", Uuid::new_v4()));
         let path_str = path.to_str().unwrap();
 
         let store = Store::open_file(path_str).unwrap();
