@@ -694,7 +694,14 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     call(&router, "GET", "/api/v1/app".into(), Some(&ak), None).await;
     call(&router, "GET", "/api/v1/app".into(), Some(sk), None).await;
     let logs = json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]});
-    call(&router, "POST", "/api/v1/logs".into(), Some(sk), Some(logs.clone())).await;
+    call(
+        &router,
+        "POST",
+        "/api/v1/logs".into(),
+        Some(sk),
+        Some(logs.clone()),
+    )
+    .await;
     state
         .db
         .lock()

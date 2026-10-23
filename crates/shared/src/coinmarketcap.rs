@@ -323,10 +323,8 @@ mod tests {
         );
         assert_eq!(err.retry_after(), Some(std::time::Duration::from_secs(45)));
 
-        let (url, _) = spawn_server(|_, _| {
-            (axum::http::StatusCode::FORBIDDEN, "no").into_response()
-        })
-        .await;
+        let (url, _) =
+            spawn_server(|_, _| (axum::http::StatusCode::FORBIDDEN, "no").into_response()).await;
         let err = CoinMarketCapRateProvider::new(url)
             .piconero_per_unit_cached("USD", TTL)
             .await

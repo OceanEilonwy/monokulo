@@ -486,7 +486,8 @@ static FINISH_HANDSHAKE: crate::api::runtime::catalog::Handshake =
 ///   expired, all alike (nothing to enumerate);
 /// - `internal` (500): something failed here after the token was spent;
 ///   the plugin starts connecting again;
-/// - `rate-limited` or `challenge-required` (429), from `http::abuse`,
+/// - `rate-limited` (429), from `http::abuse` (a handshake is never
+///   challenged: a server can't solve one),
 ///   before any of this.
 ///
 /// Once it succeeds, the store has an active integration

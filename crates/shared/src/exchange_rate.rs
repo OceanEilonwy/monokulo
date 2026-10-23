@@ -112,9 +112,7 @@ impl ExchangeRateError {
 /// [`ExchangeRateError::Unavailable`] with the provider's `Retry-After`
 /// (seconds or an HTTP date); any other failure status is a `Request`
 /// error.
-pub(crate) fn checked(
-    response: reqwest::Response,
-) -> Result<reqwest::Response, ExchangeRateError> {
+pub(crate) fn checked(response: reqwest::Response) -> Result<reqwest::Response, ExchangeRateError> {
     let status = response.status();
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
         let retry_after = response
@@ -1252,14 +1250,20 @@ mod tests {
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Unavailable { status: 500, .. }), "got {err:?}");
+            assert!(
+                matches!(err, ExchangeRateError::Unavailable { status: 500, .. }),
+                "got {err:?}"
+            );
             // A second call, even with a generous max_age, must try again -
             // a failure must never be cached as if it were a real quote.
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Unavailable { status: 500, .. }), "got {err:?}");
+            assert!(
+                matches!(err, ExchangeRateError::Unavailable { status: 500, .. }),
+                "got {err:?}"
+            );
         }
 
         /// A failing provider is an error only once the rate it gave last

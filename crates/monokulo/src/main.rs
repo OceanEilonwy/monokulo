@@ -241,8 +241,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             webhooks.clone(),
             apps.clone(),
         );
-        let addresses =
-            monokulo::webhooks::Addresses::new(monokulo_settings.clone(), tor.clone());
+        let addresses = monokulo::webhooks::Addresses::new(monokulo_settings.clone(), tor.clone());
         shared::supervise::supervise("order-event subscriber", move || {
             monokulo::webhooks::subscriber::run_subscriber(
                 db.clone(),

@@ -284,9 +284,13 @@ mod tests {
     /// and the store.
     #[test]
     fn an_order_monokulo_has_no_record_of_still_gets_a_body() {
-        let body: serde_json::Value =
-            serde_json::from_str(&body_v2(&event("order.expired"), &store(), None, &LinkBases::default()))
-                .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&body_v2(
+            &event("order.expired"),
+            &store(),
+            None,
+            &LinkBases::default(),
+        ))
+        .unwrap();
         assert_eq!(body["api_version"], 2);
         assert_eq!(body["store"]["name"], "Bakery");
         for absent in ["amount", "currency", "fx_source", "fx_rate"] {
@@ -301,7 +305,12 @@ mod tests {
     /// sends no links.
     #[test]
     fn a_body_links_its_order_absolute_on_this_monokulos_addresses() {
-        for name in ["order.paid", "order.expired", "order.cancelled", "order.double_spend_detected"] {
+        for name in [
+            "order.paid",
+            "order.expired",
+            "order.cancelled",
+            "order.double_spend_detected",
+        ] {
             let body: serde_json::Value = serde_json::from_str(&body_v2(
                 &event(name),
                 &store(),
@@ -313,13 +322,17 @@ mod tests {
             ))
             .unwrap();
             let links = &body["_links"];
-            assert_eq!(links["curies"][0]["href"], "https://docs.monokulo.com/rels/{rel}");
             assert_eq!(
-                links["mk:order"]["href"],
-                "https://pay.example/monokulo/api/v1/orders/5f01c9a7",
+                links["curies"][0]["href"],
+                "https://docs.monokulo.com/rels/{rel}"
+            );
+            assert_eq!(
+                links["mk:order"]["href"], "https://pay.example/monokulo/api/v1/orders/5f01c9a7",
                 "{name}"
             );
-            assert!(links["mk:order"]["title"].as_str().is_some_and(|t| !t.is_empty()));
+            assert!(links["mk:order"]["title"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty()));
             assert_eq!(
                 links["mk:dashboard-order"]["href"],
                 "https://pay.example/monokulo/stores/917701c2/orders/5f01c9a7"

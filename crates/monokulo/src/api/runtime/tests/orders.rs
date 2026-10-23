@@ -460,7 +460,12 @@ async fn no_answer_repeats_a_header() {
         ("GET", "/api/v1".into(), None, true),
         ("GET", "/api/v1".into(), Some(pk.as_str()), true),
         ("GET", "/api/v1/store".into(), Some(pk.as_str()), true),
-        ("GET", format!("/api/v1/orders/{order_id}"), Some(pk.as_str()), true),
+        (
+            "GET",
+            format!("/api/v1/orders/{order_id}"),
+            Some(pk.as_str()),
+            true,
+        ),
         ("GET", "/api/v1".into(), Some("sk_0000"), true),
         ("OPTIONS", "/api/v1/orders".into(), None, true),
         ("GET", "/api/v1/openapi.json".into(), None, true),
@@ -473,9 +478,24 @@ async fn no_answer_repeats_a_header() {
         ("GET", "/login".into(), None, false),
         ("GET", "/status".into(), None, false),
         ("GET", format!("/stores/{store_id}"), Some("cookie"), false),
-        ("GET", format!("/stores/{store_id}/pos"), Some("cookie"), false),
-        ("GET", format!("/stores/{store_id}/pos/orders"), Some("cookie"), false),
-        ("GET", format!("/stores/{store_id}/orders/{order_id}"), Some("cookie"), false),
+        (
+            "GET",
+            format!("/stores/{store_id}/pos"),
+            Some("cookie"),
+            false,
+        ),
+        (
+            "GET",
+            format!("/stores/{store_id}/pos/orders"),
+            Some("cookie"),
+            false,
+        ),
+        (
+            "GET",
+            format!("/stores/{store_id}/orders/{order_id}"),
+            Some("cookie"),
+            false,
+        ),
     ];
     for (method, path, key, cross_origin) in requests {
         let mut request = Request::builder().method(method).uri(&path);
@@ -490,7 +510,10 @@ async fn no_answer_repeats_a_header() {
         if method == "OPTIONS" {
             request = request
                 .header("access-control-request-method", "POST")
-                .header("access-control-request-headers", "authorization, content-type");
+                .header(
+                    "access-control-request-headers",
+                    "authorization, content-type",
+                );
         }
         let response = router
             .clone()
@@ -1927,7 +1950,8 @@ async fn spawn_rate_limited_coingecko(secs: u64) -> String {
 /// unreachable, it is `engine-unavailable` (503) everywhere, the checkout
 /// page too.
 #[tokio::test]
-async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_route_that_makes_an_order() {
+async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_route_that_makes_an_order(
+) {
     let (mut state, _engine) = test_state_with_real_engine().await;
     state.exchange_rate = std::sync::Arc::new(
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
@@ -1995,7 +2019,9 @@ async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_rout
                 .uri(format!("/stores/{store_id}/pos/orders"))
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={session_token}"))
-                .body(Body::from(serde_json::json!({ "amount": "1.50" }).to_string()))
+                .body(Body::from(
+                    serde_json::json!({ "amount": "1.50" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -2073,7 +2099,9 @@ async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_rout
                 .uri(format!("/stores/{xmr_store}/pos/orders"))
                 .header("content-type", "application/json")
                 .header("cookie", format!("session={session_token}"))
-                .body(Body::from(serde_json::json!({ "amount": "1.50" }).to_string()))
+                .body(Body::from(
+                    serde_json::json!({ "amount": "1.50" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await

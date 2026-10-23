@@ -34,7 +34,10 @@ async fn the_reference_is_written_from_real_exchanges() {
         assert!(plain.is_object(), "no {key} entry");
         assert!(plain["mk:onion-api"].is_null(), "{key}: {plain}");
         let onion = &entry[format!("{key}-with-onion")]["value"]["_links"];
-        assert!(onion["mk:onion-api"].is_object(), "{key}-with-onion: {onion}");
+        assert!(
+            onion["mk:onion-api"].is_object(),
+            "{key}-with-onion: {onion}"
+        );
     }
     let order = &document["paths"]["/api/v1/orders/{order_id}"]["get"]["responses"]["200"]
         ["content"]["application/prs.hal-forms+json"]["examples"];

@@ -337,7 +337,8 @@ fn monokulo_shuts_down_cleanly_on_sigterm_without_a_panic_over_http() {
     let dir = TempDir::new("shutdown");
     let (mut child, address, log) = start_with_log(
         with_secrets(&dir.0)
-            .env("XDG_DATA_HOME", dir.0.join("data")).env("RUST_BACKTRACE", "1")
+            .env("XDG_DATA_HOME", dir.0.join("data"))
+            .env("RUST_BACKTRACE", "1")
             .arg("--options")
             .arg(dir.0.join("monokulo.toml"))
             .arg("--server-bind")
