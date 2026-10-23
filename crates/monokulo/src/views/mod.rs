@@ -630,17 +630,36 @@ fn network_tag(network: &str) -> ui::NetworkBadge {
 }
 
 /// An amount for people to read: XMR without its trailing zeros
-/// (`0.420000000000` is `0.42`), anything else as given (`12.50` stays).
+/// (`0.420000000000` is `0.42`), anything else with the currency's usual
+/// decimal places ([`fiat_amount`]).
 pub fn display_amount(amount: &str, currency: &str) -> String {
-    let amount = if currency == "XMR" {
-        trim_xmr(amount)
-    } else {
-        amount
-    };
     if currency.is_empty() {
         amount.to_string()
+    } else if currency == "XMR" {
+        format!("{} {currency}", trim_xmr(amount))
     } else {
-        format!("{amount} {currency}")
+        format!("{} {currency}", fiat_amount(amount, currency))
+    }
+}
+
+/// A fiat amount as the order was priced, written with the currency's
+/// usual minor units (`crate::currencies::minor_units`): trailing zeros
+/// past them dropped, and missing ones added, so `12.50000000` USD and
+/// `12.5` USD both read `12.50` and `1200.00` JPY reads `1200`. A
+/// significant digit is never dropped (`12.505` USD stays). Anything that
+/// isn't a plain decimal is shown as given.
+pub fn fiat_amount(amount: &str, currency: &str) -> String {
+    let (whole, fraction) = amount.split_once('.').unwrap_or((amount, ""));
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    if whole.is_empty() || !digits(whole) || !digits(fraction) {
+        return amount.to_string();
+    }
+    let minor = usize::from(crate::currencies::minor_units(currency));
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.is_empty() && minor == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{fraction:0<minor$}")
     }
 }
 
@@ -820,6 +839,21 @@ mod theme_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_fiat_amount_reads_with_its_currencys_usual_decimals() {
+        // What the OpenCart plugin sends.
+        assert_eq!(display_amount("12.50000000", "USD"), "12.50 USD");
+        assert_eq!(display_amount("12.5", "EUR"), "12.50 EUR");
+        assert_eq!(display_amount("12", "EUR"), "12.00 EUR");
+        assert_eq!(display_amount("1200.00", "JPY"), "1200 JPY");
+        assert_eq!(display_amount("1.5", "KWD"), "1.500 KWD");
+        // A significant digit past the usual places stays.
+        assert_eq!(display_amount("12.505000", "USD"), "12.505 USD");
+        assert_eq!(display_amount("0.00012300", "BTC"), "0.000123 BTC");
+        assert_eq!(display_amount("0.420000000000", "XMR"), "0.42 XMR");
+        assert_eq!(display_amount("—", ""), "—");
+    }
 
     #[test]
     fn a_page_asks_for_its_islands_behaviours_with_the_script_each_once() {

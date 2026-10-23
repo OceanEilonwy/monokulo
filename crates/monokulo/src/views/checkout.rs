@@ -602,7 +602,7 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
             }
             // A fiat equivalent only for an order priced in fiat.
             @if !partial && priced_in_fiat(data) {
-                div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
+                div class="fiat-amount" { "≈ " (super::display_amount(&data.amount, &data.currency)) }
             }
             @if awaiting_payment(data) {
                 div class="countdown-slot" { (countdown(data)) }
@@ -952,6 +952,18 @@ mod tests {
         assert!(
             !html.contains("Monokulo"),
             "the checkout page must not carry the site brand/logo, got: {html}"
+        );
+    }
+
+    #[test]
+    fn a_fiat_price_sent_with_padding_reads_in_its_currencys_usual_decimals() {
+        let mut data = test_checkout_view_model(false);
+        data.amount = "12.50000000".to_string();
+        data.currency = "USD".to_string();
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(
+            html.contains(r#"<div class="fiat-amount">≈ 12.50 USD</div>"#),
+            "{html}"
         );
     }
 

@@ -65,7 +65,7 @@ plus the headers you added. The body:
 | `txid` | The transaction concerned. On the two double-spend events only. |
 | `merchant_order_id` | Your own order id, when you passed one (`merchantOrderId`). Sent even when the checkout doesn't show it (`showMerchantOrderId: false`). |
 | `description` | What the order is for, when you gave it one (`description`). Not the store's payment description. |
-| `amount`, `currency` | The price as you set it, fiat or XMR, as a decimal string. |
+| `amount`, `currency` | The price as you set it, fiat or XMR: the decimal string you sent, exactly (`12.50000000` stays `12.50000000`). |
 | `xmr_amount` | What the customer was asked to pay, in XMR with 12 decimals. |
 | `fx_source`, `fx_rate` | Who priced the order and the rate used: 1 XMR in `currency`, a decimal string with up to 8 decimals. Not there for orders priced in XMR. |
 | `store` | The store: `{ "id", "name" }`. |

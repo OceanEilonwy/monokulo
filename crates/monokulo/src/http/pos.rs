@@ -67,17 +67,10 @@ pub async fn pos_page(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    // Fiat currencies here are always exactly 2 decimal places (the same
-    // assumption `shared::exchange_rate::compute_xmr_amount` already
-    // enforces server-side) - XMR itself carries its own native 12-decimal
-    // precision (`shared::exchange_rate::parse_xmr_to_piconero`), which a
-    // 2-decimal keypad would silently truncate. See this task's own "Decimal
-    // entry" decision.
-    let base_currency_decimals: u8 = if row.base_currency.eq_ignore_ascii_case("XMR") {
-        12
-    } else {
-        2
-    };
+    // The keypad types in the currency's usual minor units (cents for USD,
+    // whole yen, all 12 places for XMR). The server takes up to 12 in any
+    // currency, so this only shapes what's typed, never what's accepted.
+    let base_currency_decimals = crate::currencies::minor_units(&row.base_currency);
 
     let store_id = row.id.clone();
     let client_logging = state

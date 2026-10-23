@@ -7,7 +7,7 @@
 //!
 //! `exchange_rate::compute_xmr_amount` (fiat amount + rate -> piconero) is the one
 //! function that genuinely is about fiat, and stays in that module; it reuses
-//! `split_decimal`/`AmountError` from here rather than duplicating them.
+//! `parse_scaled`/`AmountError` from here rather than duplicating them.
 
 /// Piconero per whole XMR - the fixed unit conversion factor (1 XMR = 1e12
 /// piconero), used both by this module's own decimal<->piconero conversions
@@ -51,29 +51,55 @@ pub(crate) fn split_decimal(s: &str) -> Result<(&str, &str), AmountError> {
     Ok((whole, fraction))
 }
 
-/// Converts an XMR-denominated decimal string (up to 12 decimal places - XMR's own
-/// precision) into piconero. Used for turning a config file's human-entered rate
-/// (e.g. `"0.0067"` XMR per USD) into the integer `piconero_per_unit` an
-/// `ExchangeRateProvider` deals in - kept separate from `compute_xmr_amount` since
-/// that one assumes 2 fiat decimal places, not 12.
-pub fn parse_xmr_to_piconero(xmr_amount: &str) -> Result<u64, AmountError> {
-    let (whole, fraction) = split_decimal(xmr_amount)?;
-    if fraction.len() > 12 {
-        return Err(AmountError::TooManyDecimalPlaces { max: 12 });
+/// The most decimal places an amount may have, in any currency: XMR's own
+/// precision (one piconero is 10^-12 XMR), and the API's `Amount` type.
+/// Trailing zeros don't count (`12.50000000000000` is `12.5`). See
+/// `exchange_rate::compute_xmr_amount` for why 12 suits fiat too.
+pub const MAX_AMOUNT_DECIMALS: u8 = 12;
+
+/// 10^[`MAX_AMOUNT_DECIMALS`]: one whole unit counted in its smallest
+/// accepted fraction.
+pub(crate) const AMOUNT_SCALE: u128 = 10u128.pow(MAX_AMOUNT_DECIMALS as u32);
+// `parse_xmr_to_piconero` relies on the scale being exactly one piconero.
+const _: () = assert!(AMOUNT_SCALE == PICONERO_PER_XMR as u128);
+
+/// `amount` times 10^[`MAX_AMOUNT_DECIMALS`], exactly, after dropping the
+/// fraction's trailing zeros. More significant decimals than that is an
+/// error, never a silent truncation of what someone typed; a number too
+/// big for `u128` is [`AmountError::TooLarge`], never a wrap.
+pub(crate) fn parse_scaled(amount: &str) -> Result<u128, AmountError> {
+    let (whole, fraction) = split_decimal(amount)?;
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.len() > MAX_AMOUNT_DECIMALS as usize {
+        return Err(AmountError::TooManyDecimalPlaces {
+            max: MAX_AMOUNT_DECIMALS,
+        });
     }
     let whole: u128 = if whole.is_empty() {
         0
     } else {
         whole.parse().map_err(|_| AmountError::TooLarge)?
     };
-    let fraction_padded = format!("{fraction:0<12}");
+    let width = MAX_AMOUNT_DECIMALS as usize;
+    let fraction_padded = format!("{fraction:0<width$}"); // "5" -> "500000000000"
     let frac: u128 = fraction_padded
         .parse()
         .map_err(|_| AmountError::InvalidDecimal)?;
-    let piconero = whole
-        .checked_mul(1_000_000_000_000)
+    whole
+        .checked_mul(AMOUNT_SCALE)
         .and_then(|p| p.checked_add(frac))
-        .ok_or(AmountError::TooLarge)?;
+        .ok_or(AmountError::TooLarge)
+}
+
+/// Converts an XMR-denominated decimal string (up to [`MAX_AMOUNT_DECIMALS`]
+/// significant decimal places - XMR's own precision) into piconero. Used for
+/// turning a config file's human-entered rate (e.g. `"0.0067"` XMR per USD)
+/// into the integer `piconero_per_unit` an `ExchangeRateProvider` deals in,
+/// and for XMR-priced orders.
+pub fn parse_xmr_to_piconero(xmr_amount: &str) -> Result<u64, AmountError> {
+    // One piconero is exactly the 12th decimal, so the scaled amount is
+    // already the piconero count.
+    let piconero = parse_scaled(xmr_amount)?;
     // u64 tops out just short of 18.45M XMR - close enough to the total supply that
     // a plausible-looking config value can cross it. `as u64` would wrap it to
     // something small and wrong, and since this feeds `piconero_per_unit` for a whole
@@ -152,10 +178,17 @@ mod tests {
         assert_eq!(parse_xmr_to_piconero("0.0067").unwrap(), 6_700_000_000);
         assert_eq!(parse_xmr_to_piconero("1").unwrap(), 1_000_000_000_000);
         assert_eq!(parse_xmr_to_piconero("0.000000000001").unwrap(), 1); // one piconero
+                                                                         // 13 places.
         assert_eq!(
             parse_xmr_to_piconero("0.0000000000001"),
             Err(AmountError::TooManyDecimalPlaces { max: 12 })
-        ); // 13 places
+        );
+        // Trailing zeros don't count.
+        assert_eq!(parse_xmr_to_piconero("0.0000000000010").unwrap(), 1);
+        assert_eq!(
+            parse_xmr_to_piconero("1.500000000000000000").unwrap(),
+            1_500_000_000_000
+        );
     }
 
     #[test]

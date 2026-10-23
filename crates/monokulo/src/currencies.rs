@@ -143,10 +143,46 @@ pub fn new_store_default(can_price_fiat: bool, accept_language: &str) -> &'stati
         .unwrap_or("XMR")
 }
 
+/// The decimal places a currency is usually written with (its ISO 4217
+/// minor units): 12 for XMR, 0 for yen-like currencies, 3 or 4 for the few
+/// that use them, and 2 for everything else. Only for showing and typing
+/// amounts; what an order may be priced with is
+/// `shared::exchange_rate::MAX_AMOUNT_DECIMALS` in every currency.
+pub fn minor_units(code: &str) -> u8 {
+    const ZERO: &[&str] = &[
+        "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG", "RWF", "UGX", "UYI", "VND",
+        "VUV", "XAF", "XOF", "XPF",
+    ];
+    const THREE: &[&str] = &["BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"];
+    const FOUR: &[&str] = &["CLF", "UYW"];
+    let is = |list: &[&str]| list.iter().any(|c| c.eq_ignore_ascii_case(code));
+    if code.eq_ignore_ascii_case("XMR") {
+        shared::exchange_rate::MAX_AMOUNT_DECIMALS
+    } else if is(ZERO) {
+        0
+    } else if is(THREE) {
+        3
+    } else if is(FOUR) {
+        4
+    } else {
+        2
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db::Db;
+
+    #[test]
+    fn a_currency_is_written_with_its_usual_minor_units() {
+        assert_eq!(minor_units("USD"), 2);
+        assert_eq!(minor_units("jpy"), 0);
+        assert_eq!(minor_units("KWD"), 3);
+        assert_eq!(minor_units("XMR"), 12);
+        // Anything not listed, including codes the table doesn't know.
+        assert_eq!(minor_units("BTC"), 2);
+    }
 
     #[test]
     fn a_browsers_first_language_with_a_known_region_names_the_currency() {

@@ -86,10 +86,9 @@ mod node_fixture {
 /// suite could otherwise keep nothing-mocked about) - 335_000_000 piconero
 /// (0.000335 XMR), matching `tests/e2e_stagenet.rs`'s own tiny-payment
 /// target at the repo root, so both real-stagenet tests move the same order
-/// of magnitude of real (worthless, stagenet) XMR. Parsed at XMR's own
-/// native 12-decimal precision (`shared::exchange_rate::compute_order_amount`),
-/// not fiat's 2-decimal-place rounding - this amount genuinely needs that
-/// precision (0.01 XMR granularity would round it to zero).
+/// of magnitude of real (worthless, stagenet) XMR. Read as XMR at its
+/// own precision (`shared::exchange_rate::compute_order_amount`), with no
+/// rate to multiply through.
 const TEST_ORDER_AMOUNT: &str = "0.000335";
 const TEST_CURRENCY: &str = "XMR";
 
