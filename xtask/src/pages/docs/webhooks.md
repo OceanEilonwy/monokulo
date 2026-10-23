@@ -12,8 +12,8 @@ delivery (an API key for your endpoint, say). Monokulo shows the webhook's
 signing secret once, there and then: keep it on your server. Lost it?
 Delete the webhook and add a new one.
 
-The WooCommerce plugin adds its own webhook when it connects, and
-disconnecting it deletes it.
+A shop plugin adds its own webhook when it connects, and disconnecting
+it deletes it.
 
 **A new webhook gets only the events that happen from the moment it's
 added.** Nothing from before is sent to it: no earlier status changes, not

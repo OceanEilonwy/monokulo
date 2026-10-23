@@ -205,14 +205,14 @@ pub(crate) fn validate(repo: &Path, root: &Path) -> io::Result<()> {
         .iter()
         .filter_map(|c| c["component"].as_str())
         .collect();
-    ensure(names == ["rust", "browser", "woocommerce"], || {
-        "all run needs three ordered components".into()
+    ensure(names == ["rust", "browser"], || {
+        "all run needs two ordered components".into()
     })?;
     for item in components {
         check_component(&rules, root, &run, item)?;
     }
     check_html(&local_file(root, "index.html")?)?;
-    for area in ["rust", "browser", "woocommerce", "screenshots"] {
+    for area in ["rust", "browser", "screenshots"] {
         for page in files_under(&root.join(area), |_| false)? {
             if page.extension().is_some_and(|e| e == "html") {
                 check_html(&page)?;
@@ -249,19 +249,8 @@ fn check_screenshots(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// The PHP and browser reports measured exactly the authored sources.
+/// The browser report measured exactly the authored sources.
 fn check_sources(root: &Path) -> io::Result<()> {
-    let php: Value = read_json(&local_file(root, "woocommerce/summary.json")?)?;
-    let php: BTreeSet<&str> = php["files"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|f| f["name"].as_str())
-        .collect();
-    ensure(
-        php == BTreeSet::from(["monokulo.php", "class-wc-gateway-monokulo.php"]),
-        || "unexpected PHP source".into(),
-    )?;
     let browser: Value = read_json(&local_file(root, "browser/coverage-final.json")?)?;
     let browser: BTreeSet<String> = browser
         .as_object()
@@ -364,7 +353,7 @@ mod tests {
         let repo = crate::root();
         fs::write(
             root.join("run.json"),
-            r#"{"revision":"x","components":[{"status":"passed","exit_code":0},{"component":"rust"},{"component":"browser"},{"component":"woocommerce"}]}"#,
+            r#"{"revision":"x","components":[{"status":"passed","exit_code":0},{"component":"rust"},{"component":"browser"}]}"#,
         )
         .unwrap();
         let error = validate(&repo, root).unwrap_err();

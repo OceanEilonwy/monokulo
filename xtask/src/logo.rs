@@ -421,7 +421,7 @@ fn render(path: &str) -> String {
         "crates/monokulo/static/logo.svg" => standalone(Kind::Full, "Monokulo", false, &STANDALONE),
         "docs/readme/logo.svg" => standalone(Kind::Hero, "Monokulo", false, &STANDALONE),
         "docs/readme/logo-dark.svg" => standalone(Kind::Hero, "Monokulo", false, &ON_DARK),
-        "crates/monokulo/static/favicon.svg" | "plugins/woocommerce/assets/monokulo-icon.svg" => {
+        "crates/monokulo/static/favicon.svg" => {
             standalone(Kind::Icon, "Monokulo", true, &STANDALONE)
         }
         "crates/monokulo/src/views/logo_art.rs" => rust_module(),
@@ -435,12 +435,11 @@ fn render(path: &str) -> String {
     }
 }
 
-const OUTPUTS: [&str; 12] = [
+const OUTPUTS: [&str; 11] = [
     "crates/monokulo/static/logo.svg",
     "docs/readme/logo.svg",
     "docs/readme/logo-dark.svg",
     "crates/monokulo/static/favicon.svg",
-    "plugins/woocommerce/assets/monokulo-icon.svg",
     "crates/monokulo/src/views/logo_art.rs",
     "crates/monokulo/pos-ui/src/logo.ts",
     "crates/ui/web/brand/full.svg",

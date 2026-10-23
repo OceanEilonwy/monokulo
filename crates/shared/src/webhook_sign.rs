@@ -504,9 +504,9 @@ mod tests {
     // --- Cross-language known-vector (WBS 0.3 / 1.5.4) -----------------------------
     //
     // This secret/payload/signature triple is what the WooCommerce plugin's own PHP
-    // test (`WebhookSignatureTest.php`) mirrors, to check its HMAC-SHA256 signing
-    // against this Rust implementation - a regression/drift guard for both sides, not
-    // an external contract: if `sign_payload` genuinely changes, update this constant
+    // test (`WebhookSignatureTest.php`, in OceanEilonwy/monokulo-woocommerce) mirrors,
+    // to check its HMAC-SHA256 signing against this Rust implementation - a
+    // regression/drift guard for both sides, not an external contract: if `sign_payload` genuinely changes, update this constant
     // (and the PHP copy) deliberately, the same as any other hardcoded expected value.
     //
     // PHP equivalent to check against:

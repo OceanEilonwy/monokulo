@@ -1,5 +1,5 @@
 //! Coverage: the totals, every Rust crate with its files lowest first, and
-//! the browser and WooCommerce reports.
+//! the browser report.
 
 use super::{heading, key_figure, meter};
 use crate::coverage::Counts;
@@ -49,7 +49,7 @@ pub(super) fn page(report: &Report) -> Markup {
     });
     let (shipping, tools): (Vec<&Crate>, Vec<&Crate>) = crates.into_iter().partition(|c| !c.tool);
     let others = other_reports(run);
-    let measured_with: Vec<&str> = [&run.tools.rust, &run.tools.browser, &run.tools.woocommerce]
+    let measured_with: Vec<&str> = [&run.tools.rust, &run.tools.browser]
         .into_iter()
         .filter_map(Option::as_deref)
         .collect();
@@ -59,7 +59,6 @@ pub(super) fn page(report: &Report) -> Markup {
             @if run.shipping.lines.total > 0 { (total("Rust, shipping crates", run.shipping)) }
             @if let Some(c) = run.totals.rust { (total("Rust, whole workspace", c)) }
             @if let Some(c) = run.totals.browser { (total("Browser", c)) }
-            @if let Some(c) = run.totals.woocommerce { (total("WooCommerce", c)) }
         }
         div.card {
             div.tree.cov {
@@ -105,7 +104,6 @@ fn total(title: &str, c: Coverage) -> Markup {
 fn other_reports(run: &CoverageRun) -> Vec<Markup> {
     [
         ("Browser", "checkout, embed, POS", run.totals.browser, &run.reports.browser),
-        ("WooCommerce", "plugin", run.totals.woocommerce, &run.reports.woocommerce),
     ]
     .into_iter()
     .filter_map(|(title, note, totals, report)| {

@@ -2,8 +2,8 @@ name: platform
 
 # One platform's build and test suites, called by checks.yml (pull requests) and
 # release.yml (main, version tags), each suite a job of its own: the Rust
-# tests on every platform, the browser, WooCommerce, engine progress and scale suites
-# on Linux. With `coverage` (Linux only), each but scale runs through its
+# tests on every platform, the browser, engine progress and scale suites on
+# Linux. With `coverage` (Linux only), each but scale runs through its
 # coverage collector (`cargo xtask coverage <suite>`) and uploads what it
 # collected.
 # Summary then passes only when every suite did, and with coverage joins
@@ -36,7 +36,7 @@ jobs:
   #
   # The Rust cache: the Rust tests job builds the whole workspace's tests
   # (its Build the tests step) and saves the cache; the Linux suites that
-  # build less of it (browser, WooCommerce, engine progress, scale) restore
+  # build less of it (browser, engine progress, scale) restore
   # that one and save nothing, so the repository keeps one Linux cache
   # instead of one a suite. Cargo resolves a dependency's features per
   # build, so they still compile the few crates a narrower build resolves
@@ -224,71 +224,6 @@ jobs:
         if: always()
         run: test '${{ steps.tests.outcome }}' = success
 
-  woocommerce:
-    name: woocommerce tests
-    if: inputs.platform == 'linux'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-      # For `cargo xtask`; the plugin's tests build no Rust.
-      - uses: ./.github/actions/setup-rust
-        with:
-          cache-key: ${{ inputs.coverage && 'coverage' || '' }}
-          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
-          save: ${{ inputs.coverage }}
-          pos-app: 'false'
-      - name: Install PHP and Composer
-        uses: shivammathur/setup-php@v2
-        with:
-          # Matches the wp-env test container (`phpVersion` in
-          # plugins/woocommerce/.wp-env*.json) and composer.json's platform
-          # pin, so the lock file always suits the PHP the tests run on.
-          php-version: '8.5'
-          tools: composer:v2
-      - name: Start WordPress with WooCommerce and the plugin
-        env:
-          NODE_OPTIONS: --dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -y ripgrep
-          composer install --working-dir=plugins/woocommerce --no-interaction --prefer-dist
-          npm install --global @wordpress/env@latest
-          cd plugins/woocommerce
-          wp-env start --config=.wp-env.coverage.json
-      - name: Run tests
-        id: tests
-        continue-on-error: true
-        run: |
-          if ${{ inputs.coverage }}; then
-            cargo xtask coverage woocommerce
-          else
-            mkdir -p target/coverage/woocommerce
-            cd plugins/woocommerce
-            # The config `wp-env start` was given names the environment.
-            wp-env run --config=.wp-env.coverage.json tests-cli \
-              --env-cwd=wp-content/plugins/monokulo vendor/bin/phpunit --log-junit junit.xml
-            mv junit.xml ../../target/coverage/woocommerce/junit.xml
-          fi
-      - name: Summarize
-        if: always()
-        run: |
-          cargo xtask test-summary 'WooCommerce tests' \
-            woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload WooCommerce coverage
-        if: always() && inputs.coverage
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-woocommerce-${{ github.sha }}
-          path: target/coverage/
-          if-no-files-found: warn
-      - name: Fail on test failure
-        if: always()
-        run: test '${{ steps.tests.outcome }}' = success
-
   stress:
     # The engine's one-CPU scanner capacity sweep and fault recovery. With
     # coverage, its report joins the coverage artifact.
@@ -361,7 +296,7 @@ jobs:
     # skipped). With coverage, also the one artifact and index from the
     # collectors, checked as `cargo xtask coverage all` checks a local run.
     name: summary
-    needs: [rust, browser, woocommerce, stress, scale]
+    needs: [rust, browser, stress, scale]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -392,8 +327,7 @@ jobs:
           cargo xtask coverage summary >> "$GITHUB_STEP_SUMMARY"
           cargo xtask test-summary 'Coverage tests' \
             rust=target/coverage/rust/junit.xml \
-            browser=target/coverage/browser/junit.xml \
-            woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
+            browser=target/coverage/browser/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the coverage report
         if: always() && inputs.coverage
         uses: actions/upload-artifact@v7

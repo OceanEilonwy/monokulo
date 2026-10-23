@@ -363,9 +363,15 @@ fn coverage_links_each_file_to_its_annotated_source() {
     assert!(f.out().join(link).is_file());
     // The file the profile couldn't instrument is listed, relative to its crate.
     assert!(page.contains("<td>src/lib.rs</td>"), "{page}");
-    // There's no WooCommerce manifest, so there is no WooCommerce row or figure.
     assert!(page.contains(">Browser</a>"));
-    assert!(!page.contains("WooCommerce</dt>"));
+    assert!(!f.page("index.html").contains("not measured in this run"));
+}
+
+#[test]
+fn a_suite_without_a_manifest_is_not_measured_in_that_run() {
+    let f = Fixture::new();
+    fs::remove_file(f.scratch.join("coverage/browser.json")).unwrap();
+    f.build(&["--coverage", &f.path("coverage")]);
     assert!(f.page("index.html").contains("not measured in this run"));
 }
 
@@ -488,7 +494,7 @@ fn artifact_text_is_escaped_everywhere_it_is_shown() {
     let f = Fixture::new();
     let hostile = "<img src=x onerror=alert(1)>\"'";
     put(
-        &f.scratch.join("coverage/woocommerce/junit.xml"),
+        &f.scratch.join("coverage/rust/junit.xml"),
         format!(
             r#"<testsuites><testcase classname="Plugin&lt;/script&gt;" name="{}" time="1"/></testsuites>"#,
             hostile

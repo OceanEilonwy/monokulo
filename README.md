@@ -25,14 +25,14 @@
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
   <a href="https://monokulo.com/"><b>Docs</b></a> ·
   <a href="https://monokulo.com/testing/"><b>How it's tested</b></a> ·
-  <a href="plugins/woocommerce"><b>WooCommerce</b></a>
+  <a href="https://github.com/OceanEilonwy/monokulo-woocommerce"><b>WooCommerce</b></a>
 </p>
 
 ## Why Monokulo
 
 - **Watch-only.** Each store gives Monokulo its view key, never its spend key. It sees payments arrive and can never move your coins.
 - **Fast.** Payments show up about a second after they reach the network and confirm as blocks arrive.
-- **Checkout anywhere.** A hosted checkout page, an embed for static sites, a point-of-sale screen, signed webhooks and a WooCommerce plugin. The checkout works without JavaScript.
+- **Checkout anywhere.** A hosted checkout page, an embed for static sites, a point-of-sale screen, signed webhooks and a [WooCommerce plugin](https://github.com/OceanEilonwy/monokulo-woocommerce). The checkout works without JavaScript.
 - **One small program.** One executable and SQLite. Runs on Linux, macOS, Windows, Docker or a GL.iNet Flint 2 router.
 - **Many stores, one install.** Each store has its own wallet, view key and webhooks.
 - **Checks the chain itself.** Verifies every block's proof of work, so a node can't make up confirmations.

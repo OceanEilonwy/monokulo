@@ -36,23 +36,6 @@
         "total": 546
       },
       "floor_lines": 480
-    },
-    "woocommerce": {
-      "tools": {
-        "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
-        "collector": "PHPUnit 9.6.36 / Xdebug 3.5.3",
-        "php": "8.3.33",
-        "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)"
-      },
-      "measured_lines": {
-        "covered": 378,
-        "total": 429
-      },
-      "measured_branches": {
-        "covered": 181,
-        "total": 225
-      },
-      "floor_lines": 370
     }
   }
 }

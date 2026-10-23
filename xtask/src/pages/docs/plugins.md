@@ -9,9 +9,9 @@ works with any Monokulo.
 
 | Shop | Plugin |
 | --- | --- |
-| WooCommerce | [The WooCommerce plugin](../woocommerce/) |
+| WooCommerce | [monokulo-woocommerce](https://github.com/OceanEilonwy/monokulo-woocommerce) |
 
-Each plugin's own page says how to install it and what it needs.
+Each plugin's own repository says how to install it and what it needs.
 
 ## Writing a plugin
 

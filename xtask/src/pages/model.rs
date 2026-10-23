@@ -16,25 +16,18 @@ use std::sync::LazyLock;
 pub(super) enum Suite {
     Rust,
     Browser,
-    WooCommerce,
     /// The nightly property run: listed with the rest, but not counted in
     /// the per-change figures.
     Property,
 }
 
 impl Suite {
-    pub(super) const ALL: [Suite; 4] = [
-        Suite::Rust,
-        Suite::Browser,
-        Suite::WooCommerce,
-        Suite::Property,
-    ];
+    pub(super) const ALL: [Suite; 3] = [Suite::Rust, Suite::Browser, Suite::Property];
 
     pub(super) fn name(self) -> &'static str {
         match self {
             Suite::Rust => "Rust",
             Suite::Browser => "Browser",
-            Suite::WooCommerce => "WooCommerce",
             Suite::Property => "Property",
         }
     }
@@ -111,7 +104,7 @@ impl Area {
             Area::Rates => "Exchange rates",
             Area::Abuse => "Abuse protection",
             Area::Logs => "Logs and tracing",
-            Area::Woo => "WooCommerce plugin",
+            Area::Woo => "Shop plugins",
             Area::Tools => "Test tools",
             Area::Other => "Everything else",
         }
@@ -120,7 +113,7 @@ impl Area {
     pub(super) fn description(self) -> &'static str {
         match self {
             Area::Payments => "Scanning blocks and the mempool, confirmations, reorgs, proof of work and the order statuses customers see.",
-            Area::Webhooks => "Signed deliveries to the shop, retries and backoff, and the WooCommerce receiver checking them.",
+            Area::Webhooks => "Signed deliveries to the shop, retries and backoff, and receivers checking them.",
             Area::Checkout => "The hosted payment page with and without JavaScript, the embed, and the point-of-sale screen on phones and tablets.",
             Area::Dashboard => "Admin pages, stores, nodes, every setting and where its value comes from, and options-file handling.",
             Area::Custody => "Encrypting view keys at rest, routing between custody backends, and SEV-SNP attestation.",
@@ -128,7 +121,7 @@ impl Area {
             Area::Rates => "Fiat prices from each provider, currency handling and their settings.",
             Area::Abuse => "Rate limits, client challenges and the under-attack switch.",
             Area::Logs => "Structured logs, the log viewer, trace context across engine, server and plugin.",
-            Area::Woo => "Connecting a store, taking payment, and mapping webhook statuses to WooCommerce orders.",
+            Area::Woo => "A shop plugin connecting a store, taking payment and receiving its webhooks, played by the mock WooCommerce plugin.",
             Area::Tools => "The stagenet test wallet and fixtures the other suites stand on. Tested too.",
             Area::Other => "Shared types, HTTP plumbing and helpers.",
         }
@@ -178,7 +171,7 @@ impl Area {
             Area::Rates => RATES.is_match(group),
             Area::Abuse => ABUSE.is_match(group),
             Area::Logs => krate == "telemetry" || LOGS.is_match(group),
-            Area::Woo => suite == Suite::WooCommerce || krate == "mock-woocommerce",
+            Area::Woo => krate == "mock-woocommerce",
             Area::Tools => tool && krate != "mock-woocommerce",
             Area::Other => true,
         }
@@ -188,7 +181,7 @@ impl Area {
 /// One test, as the pages list it.
 pub(super) struct Case {
     pub(super) suite: Suite,
-    /// The crate, or `browser` / `woocommerce`.
+    /// The crate, or `browser`.
     pub(super) krate: String,
     /// The module or spec file it sits in.
     pub(super) group: String,
@@ -271,20 +264,6 @@ fn browser_case(t: &Test) -> Case {
     }
 }
 
-fn woocommerce_case(t: &Test) -> Case {
-    Case {
-        suite: Suite::WooCommerce,
-        krate: "woocommerce".into(),
-        group: t.class.clone(),
-        label: sentence(&t.name),
-        leaf: t.name.clone(),
-        raw: format!("{}::{}", t.class, t.name),
-        secs: t.secs,
-        status: t.status,
-        area: Area::Other,
-    }
-}
-
 fn property_case(t: &Test) -> Case {
     let (_, leaf) = split_leaf(&t.name);
     Case {
@@ -330,7 +309,6 @@ impl Report {
         if let Some(c) = &coverage {
             cases.extend(c.tests.rust.iter().map(rust_case));
             cases.extend(c.tests.browser.iter().map(browser_case));
-            cases.extend(c.tests.woocommerce.iter().map(woocommerce_case));
             tools.extend(c.crates.iter().filter(|c| c.tool).map(|c| c.name.as_str()));
         }
         if let Some(p) = &properties {
