@@ -11,7 +11,7 @@
 # afterwards), and prints what each snapshot holds, so an operator or a cron
 # log has something concrete to look at on every run, not just an exit code.
 # The data folder is ~/.local/share/monokulo by default, /srv/monokulo on
-# OpenWrt and /var/lib/monokulo in the Docker image (docs/RUNNING.md).
+# OpenWrt and /var/lib/monokulo in the Docker image.
 #
 # What a restore also needs, and this does not copy: the encryption key
 # (MONOKULO_ENCRYPTION_KEY, which encrypts monokulo's data at rest) and the

@@ -251,7 +251,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     let backup_payment_count = count_order_payments(backup_file.to_str().unwrap());
     drop(backup_snapshot);
 
-    // The literal WBS pass condition: diff tenant/order counts between the
+    // The pass condition: diff tenant/order counts between the
     // backup that was taken and the restored copy on the "fresh box".
     let restored_tenant_count = Store::open_file(restore_dest.to_str().unwrap())
         .unwrap()

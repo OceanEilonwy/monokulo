@@ -26,7 +26,7 @@ use crate::settings::MoneroNodeSetting;
 use crate::store::SharedStore;
 
 choice_value! {
-    /// Where tenants' view keys are held (see `docs/DESIGN.md` §6).
+    /// Where tenants' view keys are held.
     pub enum CustodyBackend { Plain = "plain", Snp = "snp" }
 }
 
@@ -337,7 +337,7 @@ settings! {
 /// Settings that only mean something for the standalone engine.
 ///
 /// They are its listen address, the token its HTTP clients carry, and its
-/// own process's logging (`docs/engine_as_library.md` §4). An engine
+/// own process's logging. An engine
 /// embedded in monokulo has no listener, is given a token by monokulo, and
 /// logs through monokulo's logger, so these do nothing there: given to it,
 /// they stop it at start, and its settings API leaves them out.
@@ -490,8 +490,7 @@ pub struct ScanConfig {
     /// How long the order-event log keeps an event, in seconds
     /// (`order_events.retention_days`); the upkeep tier prunes older ones.
     pub order_event_retention_secs: i64,
-    /// The networks whose blocks' proof of work is checked
-    /// (`docs/proof_of_work.md`).
+    /// The networks whose blocks' proof of work is checked.
     pub proof_of_work: Vec<monero::Network>,
 }
 
@@ -551,7 +550,7 @@ impl Section for ScanConfig {
 }
 
 /// The share of the engine's memory every network's scan budget may take
-/// together (`docs/engine_scaling.md` section 3).
+/// together.
 const SCAN_MEMORY_SHARE: f64 = 0.8;
 /// What a budget really costs: the block cache, plus a response being
 /// decoded (at most an eighth of the budget, held briefly twice).

@@ -1,7 +1,7 @@
 //! What each network's scanner has been doing, for monokulo's engine page.
 //!
 //! Its rounds and units, blocks fetched and scanned, reorgs, the pool,
-//! recomputes (`docs/engine_visualizer.md`). The scan loops record events as
+//! recomputes. The scan loops record events as
 //! they work; the admin API streams them to monokulo (`http::activity`),
 //! woken by each event recorded ([`Activity::subscribe`]), never polling.
 //!

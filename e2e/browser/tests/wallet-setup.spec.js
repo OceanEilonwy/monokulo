@@ -1,5 +1,5 @@
 // @ts-check
-// Store setup and wallets (docs/wallets.md) against the real binaries.
+// Store setup and wallets against the real binaries.
 //
 // Setup (/setup): the store step, then the wallet step, whose own small
 // steps sit beside it. A new wallet is made in the browser (the

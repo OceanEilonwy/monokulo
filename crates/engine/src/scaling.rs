@@ -1,5 +1,4 @@
-//! What one network's block scan is doing, kept live for `/status`
-//! (`docs/engine_scaling.md` sections 2, 5 and 6).
+//! What one network's block scan is doing, kept live for `/status`.
 //!
 //! How requests are sized, the block in progress and how long it has taken,
 //! how fast recent blocks went, and where the time goes.
@@ -27,8 +26,7 @@ const MAX_SAMPLES: usize = 4096;
 /// One network's scan progress, shared between its scan loop and `/status`.
 ///
 /// How long blocks' headers are read before the blocks after the last sign
-/// that a block may be too large to fetch whole (`docs/engine_scaling.md`
-/// section 4).
+/// that a block may be too large to fetch whole.
 pub const HEADERS_FIRST_SECS: i64 = 60 * 60;
 
 pub type SharedProgress = Arc<Mutex<ScanProgress>>;
@@ -59,10 +57,9 @@ pub struct ScanProgress {
     /// The same, by when, for the last [`RECENT_SECS`].
     pub discarded_recent: VecDeque<(i64, u64)>,
     /// The time the last round was given: the base, unless one page of a
-    /// large block needed more (`docs/engine_scaling.md` section 4).
+    /// large block needed more.
     pub round_budget: std::time::Duration,
-    /// Until when blocks' headers are read before the blocks, and why
-    /// (`docs/engine_scaling.md` section 4).
+    /// Until when blocks' headers are read before the blocks, and why.
     pub headers_first: Option<(i64, HeadersFirstReason)>,
 }
 
@@ -281,8 +278,7 @@ mod tests {
     use super::*;
 
     /// Headers come first for an hour after the last sign that blocks may
-    /// be large, and each sign starts the hour again
-    /// (`docs/engine_scaling.md` section 4).
+    /// be large, and each sign starts the hour again.
     #[test]
     fn headers_come_first_for_an_hour_after_each_sign() {
         let mut progress = ScanProgress::default();

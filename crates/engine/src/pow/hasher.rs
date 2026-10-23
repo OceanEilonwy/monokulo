@@ -1,5 +1,4 @@
-//! `RandomX` hashing for block verification, on a thread of its own
-//! (`docs/proof_of_work.md`).
+//! `RandomX` hashing for block verification, on a thread of its own.
 //!
 //! `RandomX`'s objects can't leave the thread that made them, and hashing is
 //! CPU work that mustn't run on a Tokio worker, so one thread per network

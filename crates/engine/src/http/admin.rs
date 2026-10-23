@@ -1007,7 +1007,7 @@ pub(super) struct WalletChangeView {
 }
 
 /// `PUT /api/v1/admin/tenant/wallet` - changes the wallet the store takes
-/// payments into (docs/wallets.md, "Changing a store's wallet"). New orders
+/// payments into. New orders
 /// get addresses on the new wallet; the store's orders on the old one keep
 /// their addresses and go on being watched with the old wallet's keys, by a
 /// scan-only row (`Store::change_tenant_wallet`). `409` for a wallet on
@@ -1105,8 +1105,7 @@ pub(super) struct OrderView {
     created_at: i64,
     expires_at: i64,
     updated_at: i64,
-    /// `docs/order_rescan_wbs.md` Phase 5.3 - mirrors `Order::first_scanned_height`/
-    /// `last_scanned_height` (Phase 5.1) unchanged.
+    /// Mirrors `Order::first_scanned_height`/`last_scanned_height` unchanged.
     first_scanned_height: Option<i64>,
     last_scanned_height: Option<i64>,
     /// Computed, not a stored column - `true` if this order is presently examined
@@ -1346,8 +1345,7 @@ pub(super) struct LookupPaymentRequest {
     txid: String,
 }
 
-/// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B's own direct replacement
-/// for the manual chain-rescan feature above: no block-range walk, no
+/// The direct replacement for the manual chain-rescan feature above: no block-range walk, no
 /// background job, no per-tenant "one at a time" guardrail to enforce - one
 /// daemon call for the transaction and where it is (`find_transaction`), one
 /// for the chain height if it pays an order, and the same
@@ -1373,8 +1371,7 @@ pub(super) enum PaymentLookupView {
     },
 }
 
-/// `POST /api/v1/admin/tenant/payments/lookup` - `docs/txid_lookup_and_scan_
-/// chunking_wbs.md` Part B.2. Unlike the rescan trigger above, this is scoped
+/// `POST /api/v1/admin/tenant/payments/lookup`. Unlike the rescan trigger above, this is scoped
 /// to the whole tenant (`0..tenant.next_minor_index`), not one specific
 /// order's `minor_index`: a merchant who has a customer's txid doesn't
 /// necessarily know which order it belongs to ahead of time - that's exactly
@@ -1424,8 +1421,7 @@ pub(super) async fn lookup_payment(
     };
     let now = now_unix();
     // The block's own list of transactions, so that under proof-of-work
-    // checking the payment settles only if that block is the proven one
-    // (docs/proof_of_work.md).
+    // checking the payment settles only if that block is the proven one.
     let found_in = match block_height {
         Some(height) => crate::work::chain::block_holding(daemon.as_ref(), &txid, height).await,
         None => None,

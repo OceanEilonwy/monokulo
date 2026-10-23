@@ -1,7 +1,6 @@
-//! A generic panic-catching supervisor for a long-running background loop -
-//! moved here from the engine's own `src/main.rs` (`docs/fx_refactor.md`
-//! Phase 1.1) so monokulo's own background loops (its Coingecko
-//! exchange-rate refresh loop, first) can reuse the exact same
+//! A generic panic-catching supervisor for a long-running background loop,
+//! shared so monokulo's own background loops (its exchange-rate refresh
+//! loop, for one) reuse the exact same
 //! catch-panic-and-restart shape instead of reimplementing it.
 //!
 //! `make_loop` is a factory, not the loop itself: the loop is expected to

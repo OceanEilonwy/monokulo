@@ -1,4 +1,4 @@
-//! The blocks tier: scanning blocks for tenants (`docs/scanner_microtasks.md`).
+//! The blocks tier: scanning blocks for tenants.
 //!
 //! Tenants are grouped by their cursor (the highest block scanned for them).
 //! A unit takes one group and scans the next few blocks for it: one fetch
@@ -27,7 +27,7 @@
 //! them at a time): a block too large for one answer, or for the node's
 //! link to send in time, is scanned a page of transactions at a time from
 //! its outline (its transactions' ids), a page per step, across as many
-//! units and rounds as it takes (`docs/engine_scaling.md` section 4). Blocks
+//! units and rounds as it takes. Blocks
 //! around it are fetched whole. Headers are read first only for an hour
 //! after a sign that blocks may be large: a block request that ran out of
 //! time or came back too large, or a block within a quarter of the size
@@ -105,8 +105,7 @@ pub(crate) struct BlockState {
     carried: parking_lot::Mutex<Option<Carried>>,
 }
 
-/// A large block being scanned a page at a time (`docs/engine_scaling.md`
-/// section 4).
+/// A large block being scanned a page at a time.
 #[derive(Clone)]
 struct Paged {
     outline: Arc<BlockOutline>,
@@ -146,7 +145,7 @@ impl BlockState {
         }
     }
 
-    /// The time a round needs (`docs/engine_scaling.md` section 4): the base,
+    /// The time a round needs: the base,
     /// unless the smallest unit of a large block in progress (one page of
     /// one transaction, fetched and scanned for `stores` stores) is
     /// expected to need more than the round's share for blocks. Then half
@@ -275,7 +274,7 @@ impl BlockState {
 }
 
 /// Fetches `count` blocks from `from`, given the time the node's link needs
-/// for that many (`docs/engine_scaling.md` section 2).
+/// for that many.
 /// Records a run of blocks fetched from `from` for the engine page.
 fn record_fetched(state: &super::ScanState, from: u64, chunk: &[ChainBlock], ahead: bool) {
     state.activity().record(Event::Fetched {
@@ -1629,8 +1628,7 @@ fn commit(
                     staged.output_key.as_deref(),
                 )?;
                 // Found in this block, whose id the scan computed from it:
-                // what proof-of-work checking settles on
-                // (docs/proof_of_work.md).
+                // what proof-of-work checking settles on.
                 s.attest_payment_block(&staged.txid, height, &block.hash)?;
             }
             for scan in &scanned.scans {
@@ -1802,8 +1800,8 @@ async fn scan_txs(
     true
 }
 
-/// Scans a large block a page of transactions at a time
-/// (`docs/engine_scaling.md` section 4), from the first transaction some
+/// Scans a large block a page of transactions at a time,
+/// from the first transaction some
 /// tenant still needs: a page is fetched, scanned for every tenant due it
 /// and dropped before the next. `Ok(false)` if the unit's time ran out
 /// first.

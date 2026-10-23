@@ -15,7 +15,7 @@ use super::{
     AuthedTenant, UNKNOWN_WALLET_RETRIES,
 };
 
-/// XMR-only, per `docs/fx_refactor.md` Phase 3: this process has no concept of fiat
+/// XMR-only: this process has no concept of fiat
 /// or exchange rates at all any more. The caller (monokulo) supplies the exact
 /// `xmr_amount_piconero` an order is worth; this engine only ever watches the
 /// chain for that amount arriving. Any fiat

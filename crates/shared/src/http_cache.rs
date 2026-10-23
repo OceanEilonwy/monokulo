@@ -1,5 +1,5 @@
-//! A byte-bounded, RFC-7234-lite HTTP response cache for outbound requests -
-//! `docs/order_rescan_wbs.md` Phase 3.1. Adopted as the *default* transport for
+//! A byte-bounded, RFC-7234-lite HTTP response cache for outbound requests,
+//! the *default* transport for
 //! every outbound HTTP call this workspace makes (`EngineClient` in
 //! `monokulo`, `exchange_rate::CoingeckoRateProvider` here), not built for
 //! one endpoint - see [`build_client`]'s own doc comment for why that's safe.
@@ -14,7 +14,7 @@
 //! not the same type as our 0.5.x `Middleware` trait, so it cannot actually be
 //! attached to our `ClientBuilder` at all (confirmed by trying it: `cargo tree -i
 //! reqwest` shows both `reqwest@0.12.28` and `reqwest@0.13.5` once it's added).
-//! The WBS's own text anticipated needing a custom `CacheManager` if the
+//! The plan anticipated needing a custom `CacheManager` if the
 //! off-the-shelf crate's manager trait didn't expose a byte-weigher directly;
 //! this is that same fallback, just one layer further out (the whole middleware,
 //! not only its manager) once the actual incompatibility turned out to be
@@ -28,7 +28,7 @@
 //! a stale entry) - a stale entry is simply discarded and the next request is a
 //! full, ordinary fetch. That is a deliberate, smaller surface than a general-
 //! purpose HTTP cache: the one endpoint this exists for
-//! (`GET .../tenant/rescans`, `docs/order_rescan_wbs.md` 2.3) already tells its
+//! (`GET .../tenant/rescans`) already tells its
 //! *own* caller (a human refreshing a dashboard) everything a full RFC 7234
 //! implementation would buy here, and a from-scratch conditional-revalidation
 //! path is real complexity this feature doesn't need yet.
@@ -477,7 +477,7 @@ mod tests {
     async fn the_configured_byte_cap_actually_evicts_the_oldest_entry_once_exceeded() {
         // Each cached body is ~1KB; a 3KB cap comfortably holds two but not three -
         // proving the bound is real bytes and enforced, not merely configured and
-        // ignored (WBS 3.1's own explicit test requirement).
+        // ignored.
         let big_body = "x".repeat(1024);
         let calls = Arc::new(AtomicU64::new(0));
         let calls_for_handler = calls.clone();

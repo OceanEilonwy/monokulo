@@ -1,4 +1,4 @@
-//! The snapshot the engine page rebuilds from (`docs/engine_visualizer.md`):
+//! The snapshot the engine page rebuilds from:
 //! what the database and the scheduler's memory say about one network at
 //! one moment. The scan loop records one every
 //! [`crate::activity::SNAPSHOT_EVERY`].

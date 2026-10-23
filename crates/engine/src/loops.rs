@@ -101,8 +101,8 @@ pub async fn run_fast_mempool_loop(
                 ),
             }
         }
-        // Sooner when the node announces a new pool transaction
-        // (docs/monero_zmq.md): then its answer from a moment ago won't do.
+        // Sooner when the node announces a new pool transaction:
+        // then its answer from a moment ago won't do.
         if scan_state.node_wakes().pool_or(interval).await {
             if let Some(daemon) = daemons.get(network) {
                 crate::daemon::MoneroDaemonClient::pool_changed(daemon.as_ref());
@@ -151,7 +151,7 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
 /// [`tick_deadline`], or room for the largest block request the node's link
 /// allows under `tuning` (fetched and prefetched in one unit) after the
 /// round's own budget, whichever is longer. A slow link's requests aren't
-/// abandoned by the round around them (`docs/engine_scaling.md` section 2).
+/// abandoned by the round around them.
 fn round_deadline(
     poll_interval: Duration,
     daemon: &dyn crate::daemon::MoneroDaemonClient,
@@ -218,8 +218,8 @@ pub async fn manage_network_loops(
             let (stop, stopped) = tokio::sync::watch::channel(false);
             let mut tasks = Vec::new();
             // Checking on before any loop starts, so no order settles on
-            // unchecked blocks while the proof loop gets going
-            // (docs/proof_of_work.md). Its own rounds turn it off if not.
+            // unchecked blocks while the proof loop gets going.
+            // Its own rounds turn it off if not.
             if settings.scan.load().checks_proof_of_work(network) {
                 let now = now_unix();
                 if let Err(error) = db
@@ -548,8 +548,8 @@ fn record_node_pool(
     });
 }
 
-/// Records `network`'s snapshot for the engine page
-/// (`docs/engine_visualizer.md`). One that can't be taken is skipped: the
+/// Records `network`'s snapshot for the engine page.
+/// One that can't be taken is skipped: the
 /// next is due in seconds, and scanning matters more.
 async fn record_snapshot(
     scan_state: &crate::work::ScanState,
@@ -724,7 +724,7 @@ mod tests {
     }
 
     /// With an hour between polls, a round still runs as soon as the node
-    /// announces a block (`docs/monero_zmq.md`).
+    /// announces a block.
     #[tokio::test]
     async fn the_node_s_announcements_cut_the_wait_between_polls_short() {
         let defaults = EngineSettings::defaults();

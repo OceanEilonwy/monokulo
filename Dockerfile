@@ -17,8 +17,8 @@ ARG DEBIAN_VERSION=bookworm
 FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS node
 
 FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS build
-# The engine builds RandomX, to check blocks' proof of work
-# (docs/proof_of_work.md), from C++ with CMake.
+# The engine builds RandomX, to check blocks' proof of work,
+# from C++ with CMake.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends cmake \
  && rm -rf /var/lib/apt/lists/*
@@ -37,7 +37,7 @@ COPY rust-toolchain.toml ./
 RUN rustup toolchain install
 COPY . .
 # More of the engine's optional features, beyond its default `zmq` (a node's
-# ZMQ announcements wake the scan at once, docs/monero_zmq.md): for example
+# ZMQ announcements wake the scan at once): for example
 # `--build-arg ENGINE_FEATURES=snp`.
 ARG ENGINE_FEATURES=
 # Which release this is, for the key-custody-cli links monokulo's key entry

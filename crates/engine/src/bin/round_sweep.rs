@@ -1,4 +1,4 @@
-//! One point of `cargo xtask stress rounds` (`docs/engine_stress.md)`: the
+//! One point of `cargo xtask stress rounds`: the
 //! production scheduler catching up a backlog of blocks from a scripted node
 //! whose link has a set round trip, time to first byte and rate, with
 //! rounds of a set length run back to back as the engine's own loop runs

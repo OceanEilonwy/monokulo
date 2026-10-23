@@ -1,4 +1,4 @@
-//! Durable state for proof-of-work checking (`docs/proof_of_work.md)`: which
+//! Durable state for proof-of-work checking: which
 //! networks check, each one's anchor, its proven chain and the `RandomX` keys
 //! below it, and the settlement ceiling those give.
 

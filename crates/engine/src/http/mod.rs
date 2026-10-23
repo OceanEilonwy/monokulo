@@ -1,4 +1,4 @@
-//! The HTTP API surface. See `docs/DESIGN.md` §10.
+//! The HTTP API surface.
 //!
 //! Three simplifications worth naming up front, all reasonable for this pass and
 //! all noted rather than hidden:
@@ -14,10 +14,9 @@
 //!    after boot.
 //! 3. Rate limiting (`rate_limit`) is a fixed-window counter per store and one
 //!    for the instance's other calls, not a proper token bucket - simpler, and
-//!    sufficient for the actual goal (§DESIGN.md §12).
+//!    sufficient for the actual goal.
 //!
-//! **The engine is private** (`docs/DESIGN.md` §4 and the monokulo boundary
-//! section): the only thing meant to reach it is monokulo. Every request
+//! **The engine is private**: the only thing meant to reach it is monokulo. Every request
 //! must carry the engine token (`ENGINE_TOKEN`) in
 //! [`shared::auth::ENGINE_TOKEN_HEADER`], checked before any route
 //! ([`engine_token_middleware`]); a store's routes also need that store's
@@ -304,7 +303,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     // The long-lived streams (a store's order changes, one per store
     // monokulo is watching, the order-event log monokulo delivers
     // webhooks from, and what the scanner is doing on a network monokulo's
-    // engine page watches, docs/engine_visualizer.md) are kept out of the request limits below: a request
+    // engine page watches) are kept out of the request limits below: a request
     // timeout would cut streams off, and a shared concurrency limit would
     // fill up with them. Streams get a cap of their own instead (task 7.10).
     let limits = RequestLimits::default();
@@ -581,7 +580,7 @@ pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
 /// Resolves a tenant *entirely* from the presented `sk_` bearer token - never from
 /// any path parameter.
 ///
-/// This is the structural fix from `docs/DESIGN.md` §10.1: there is nothing in a
+/// This is the structural IDOR fix: there is nothing in a
 /// `/api/v1/admin/tenant/*` route for a leaked or guessed identifier to authorize,
 /// because none of them accept one.
 pub struct AuthedTenant(pub Tenant);

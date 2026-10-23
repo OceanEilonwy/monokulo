@@ -1,7 +1,7 @@
 //! AMD Key Distribution Service (KDS) client - fetches the two pieces of
 //! certificate material this tool needs directly from AMD, deliberately
 //! never through a cloud provider's own attestation service. That's the
-//! whole point of "direct-to-AMD" (per this WBS item's own decision): the
+//! whole point of "direct-to-AMD": the
 //! provider is exactly the party a confidential-computing attestation is
 //! meant to not have to trust, so routing verification through *their*
 //! attestation wrapper would defeat it.

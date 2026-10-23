@@ -1,5 +1,4 @@
-//! The engine's database worker (`docs/scanner_microtasks.md`, "Database
-//! access"): one thread owns a connection and runs every job sent to it, so
+//! The engine's database worker: one thread owns a connection and runs every job sent to it, so
 //! SQLite work never blocks a Tokio worker thread.
 //!
 //! Callers are sorted into [`Class`]es, each with its own bounded queue,

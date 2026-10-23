@@ -44,8 +44,8 @@ struct Shared {
 /// The options file, or one table of it.
 ///
 /// A handle is cheap to clone, and clones share the file. Two services in
-/// one process (monokulo and an engine embedded in it,
-/// docs/engine_as_library.md) share one file this way: monokulo's handle
+/// one process (monokulo and an engine embedded in it) share one file this
+/// way: monokulo's handle
 /// leaves the engine's table alone ([`OptionsFile::leaving`]), and the
 /// engine's handle is that table ([`OptionsFile::scoped`]), where it reads
 /// and writes its own keys under their own names. Saving through either

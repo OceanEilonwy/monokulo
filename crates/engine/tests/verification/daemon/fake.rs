@@ -191,9 +191,7 @@ impl FakeDaemonClient {
     /// Makes `get_height` report an arbitrary height, however far from the
     /// blocks this fake can actually serve. The generalisation of
     /// `advance_height_without_a_block`, for the case where the discrepancy is
-    /// not a one-block lag but a daemon simply asserting something untrue - see
-    /// `docs/DESIGN.md` §7.7 on what the scanner does and does not take on
-    /// trust from its configured node.
+    /// not a one-block lag but a daemon simply asserting something untrue.
     pub fn report_height(&self, height: u64) {
         self.state.lock().height_override = Some(height);
     }

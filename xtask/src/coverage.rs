@@ -1,6 +1,6 @@
 //! `cargo xtask coverage`: the Rust, browser and stagenet
 //! collectors, the combined report and index, the job summary and the
-//! artifact validation (`docs/COVERAGE.md`). Each collector runs its steps
+//! artifact validation. Each collector runs its steps
 //! from the repository root with `COVERAGE_OUTPUT` naming its folder,
 //! everything they print going to that folder's `test.log`.
 

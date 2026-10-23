@@ -1,4 +1,4 @@
-//! The engine as a library (`docs/engine_as_library.md`, phase 1): everything
+//! The engine as a library: everything
 //! a running engine is, started by [`Engine::start`] and stopped by
 //! [`Engine::shutdown`], without owning the process.
 //!
@@ -225,8 +225,7 @@ impl Engine {
         ));
 
         // The database worker: its own connection, on its own thread, for
-        // the scanner and API writes
-        // (docs/scanner_microtasks.md).
+        // the scanner and API writes.
         let db =
             crate::store::Db::open(&db_file, &store.lock()).map_err(StartError::DatabaseWorker)?;
         let read_pool =

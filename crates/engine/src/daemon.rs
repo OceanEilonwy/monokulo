@@ -3,8 +3,6 @@
 //! A trait, so reorg/double-spend logic (`src/scanner.rs`) can be tested
 //! against a deterministic scripted fake instead of a live node.
 //!
-//! See `docs/DESIGN.md` §7.1.
-//!
 //! The trait holds what the engine asks of a node and nothing else: the real
 //! implementation is `daemon_rpc::RpcDaemonClient`, behind
 //! `daemon_fallback::FallbackDaemonClient`; the scripted fake is here.
@@ -42,7 +40,7 @@ pub enum DaemonError {
 
 impl DaemonError {
     /// Whether asking for less might succeed where this failed: a timeout
-    /// or an answer over the size cap (`docs/engine_scaling.md` section 2).
+    /// or an answer over the size cap.
     pub fn asks_for_less(&self) -> bool {
         matches!(self, Self::TimedOut(_) | Self::TooLarge(_))
     }
@@ -111,7 +109,7 @@ pub struct ChainBlock {
     /// hours ahead of real time.
     pub timestamp: u64,
     /// The block's transactions, without the coinbase, as the scan keeps
-    /// them (`docs/engine_scaling.md` section 3).
+    /// them.
     pub txs: Vec<ScanTx>,
     /// The id of each of `txs` (lowercase hex), in order. They come with
     /// the block: a pruned transaction can't be hashed to its id
@@ -135,7 +133,7 @@ impl ChainBlock {
     }
 }
 
-/// What the scan keeps of one transaction (`docs/engine_scaling.md` section 3).
+/// What the scan keeps of one transaction.
 ///
 /// What a view key reads ([`ScanInput`]: the outputs, `extra`, the unlock
 /// time, the encrypted amounts and commitments) and the inputs' key images,
@@ -180,8 +178,7 @@ pub struct ChainHeader {
     pub prev_hash: String,
     pub timestamp: u64,
     /// The block's weight in bytes, when the node said: whether it is
-    /// fetched whole or a page of transactions at a time depends on it
-    /// (`docs/engine_scaling.md` section 4).
+    /// fetched whole or a page of transactions at a time depends on it.
     pub weight: Option<u64>,
     /// How many transactions it holds besides the coinbase, when the node
     /// said.
@@ -192,7 +189,7 @@ pub struct ChainHeader {
 /// bodies ([`MoneroDaemonClient::get_block_outline`]).
 ///
 /// A block too large to fetch whole is scanned from this, a page of
-/// transactions at a time (`docs/engine_scaling.md` section 4).
+/// transactions at a time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockOutline {
     pub height: u64,
@@ -207,7 +204,7 @@ pub struct BlockOutline {
 
 /// A block header with what the node says of its difficulty
 /// ([`MoneroDaemonClient::get_difficulty_headers`]): taken on the nodes'
-/// word only for an anchor's window (`docs/proof_of_work.md`).
+/// word only for an anchor's window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DifficultyHeader {
     pub height: u64,
@@ -283,8 +280,8 @@ pub trait MoneroDaemonClient: Send + Sync {
         Some(NodeKey::default())
     }
 
-    /// What this client has measured of its node's link
-    /// (`docs/engine_scaling.md` section 1), if it measures one.
+    /// What this client has measured of its node's link,
+    /// if it measures one.
     fn link(&self) -> Option<crate::link::LinkSnapshot> {
         None
     }
@@ -310,7 +307,7 @@ pub trait MoneroDaemonClient: Send + Sync {
         crate::link::MIN_TIMEOUT
     }
 
-    /// The node announced a change to its pool (`docs/monero_zmq.md)`: the
+    /// The node announced a change to its pool: the
     /// next poll asks it, rather than reusing an answer from just before.
     /// Nothing for a client that doesn't reuse answers.
     fn pool_changed(&self) {}
@@ -427,7 +424,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     }
 
     /// Block `height` as the node stores it: its header, coinbase and its
-    /// transactions' ids, without the transactions (`docs/proof_of_work.md`).
+    /// transactions' ids, without the transactions.
     /// Nothing in it is taken on trust: its id and its proof of work are
     /// computed from it. `RpcDaemonClient` asks monerod's `get_block`.
     async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
@@ -438,7 +435,7 @@ pub trait MoneroDaemonClient: Send + Sync {
 
     /// Up to `count` headers from `start_height`, with what the node says
     /// of their difficulty: for an anchor's window, the one thing taken on
-    /// the nodes' word (`docs/proof_of_work.md`). May be shorter than
+    /// the nodes' word. May be shorter than
     /// `count`; empty only if nothing at `start_height` is available.
     async fn get_difficulty_headers(
         &self,
@@ -525,7 +522,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// node (see `daemon_fallback::FallbackDaemonClient::is_key_image_spent_corroborated`)
     /// - corroborates the answer across all of them before ever affirming
     /// `SpentInBlockchain`, since a false positive here permanently voids a real
-    /// payment (`docs/DESIGN.md` §7.7). The default here, inherited by every
+    /// payment. The default here, inherited by every
     /// single-node client (`RpcDaemonClient`, every test double), simply delegates:
     /// with exactly one source of truth to consult, there is nothing to corroborate
     /// against, so behavior is unchanged from plain `is_key_image_spent`.
@@ -540,7 +537,7 @@ pub trait MoneroDaemonClient: Send + Sync {
 /// Test double for `MoneroDaemonClient`, scripted via a small timeline API.
 ///
 /// Lets reorg/double-spend scenarios be constructed deterministically, without a
-/// live or regtest `monerod` - see `docs/TESTING.md` §3 for why this matters
+/// live or regtest `monerod`. That matters
 /// (reorgs are rare in production, so bugs here are exactly the kind that go
 /// unnoticed for a long time otherwise).
 #[cfg(any(test, feature = "fuzzing"))]

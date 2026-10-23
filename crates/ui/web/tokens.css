@@ -44,7 +44,7 @@
      common colour-vision deficiencies, each 3:1 against the card. */
   --chart-engine: #0072b2;
   --chart-monokulo: #c25400;
-  /* The engine page's five scanner tiers (docs/engine_visualizer.md): the
+  /* The engine page's five scanner tiers: the
      dataviz reference categorical slots, in tier order. Three are under
      3:1 on the card in light mode, so the page names a tier wherever it
      colours one, never colour alone. */

@@ -1,9 +1,7 @@
 //! `shared`: logic shared between the engine (`engine`) and the
-//! monokulo (accounts, store connections, dashboard backend).
-//!
-//! See WBS items 0.2-0.5 in `docs/WOOCOMMERCE_WBS.md` for what lands here
-//! (secret-token hashing, HMAC webhook signing, an argon2 password-hashing
-//! helper, and a generic SQLite migration runner), and helpers both sides use
+//! monokulo (accounts, stores, merchant pages): secret-token hashing, HMAC
+//! webhook signing, an argon2 password-hashing helper, a generic SQLite
+//! migration runner, and helpers both sides use
 //! for Monero data (`network`, `monero_tx`). Key custody has a crate of its own
 //! (`key-custody`).
 

@@ -9,7 +9,7 @@
 //! first; that must not get the honest payment refused.
 //!
 //! - Once one of them is in a block (under proof-of-work checking, the
-//!   proven block at its height: `docs/proof_of_work.md`), the earliest such
+//!   proven block at its height), the earliest such
 //!   is credited and the others are voided, marked `superseded_by` it.
 //! - Until then none is settled on: only one of them counts toward what was
 //!   received, and the order can't settle.

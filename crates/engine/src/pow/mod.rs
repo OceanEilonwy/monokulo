@@ -1,5 +1,4 @@
-//! Monero's proof-of-work rules, as monerod applies them to a block
-//! (`docs/proof_of_work.md`).
+//! Monero's proof-of-work rules, as monerod applies them to a block.
 //!
 //! The `RandomX` seed a block is hashed with, the difficulty it must meet
 //! (computed from the blocks before it, never taken from a node), the check

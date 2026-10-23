@@ -1,6 +1,6 @@
 # Monokulo with Docker Compose: one container from the image the Dockerfile
 # builds, with the engine running inside monokulo (engine.mode = "embedded",
-# the default; docs/engine_as_library.md).
+# the default).
 #
 # Put the one secret in a .env file beside this one (never commit it):
 #

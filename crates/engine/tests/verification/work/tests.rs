@@ -4589,7 +4589,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
     );
 }
 
-// -- What a round asks of the node (docs/node_rpc_efficiency.md) --------------
+// -- What a round asks of the node --------------
 
 /// A fake node that keeps the name of every call made to it, in order.
 struct Asked<'a> {
@@ -4685,7 +4685,7 @@ impl MoneroDaemonClient for Asked<'_> {
     }
 }
 
-/// A node on a thin link (`docs/engine_scaling.md` section 2): a block request
+/// A node on a thin link: a block request
 /// for more than `capacity` blocks runs out of time, and every request
 /// takes `delay` (on the test's clock) before it answers. Its client says a
 /// block request may take `timeout`.
@@ -5359,7 +5359,7 @@ impl MoneroDaemonClient for PagedNode<'_> {
 
 /// A block too large to fetch whole (a 200 MB header; the bytes themselves
 /// aren't needed) is scanned a page of transactions at a time across
-/// rounds (`docs/engine_scaling.md` section 4). Headers aren't read first
+/// rounds. Headers aren't read first
 /// until something says blocks may be large: here the one request for it
 /// whole, refused as too large. From then on its outline is asked for once
 /// and each page fits the response cap. Its payment is staged until the

@@ -413,7 +413,7 @@ impl Telemetry {
 
     /// Names lines from a service that runs inside this process after it,
     /// not after this process's own service: an engine embedded in
-    /// monokulo (docs/engine_as_library.md). A line is the guest's when its
+    /// monokulo. A line is the guest's when its
     /// target is in one of `crates` (`engine` covers `engine::loops`), or
     /// when it is logged on a thread whose name starts with
     /// `thread_prefix` (the guest's own runtime, so a shared library's line

@@ -41,8 +41,8 @@ monero = "0.22.0"
 # resulting raw transaction blobs into `monero::Transaction` the same way
 # every other daemon call already does (`monero::consensus::encode::deserialize`).
 monero-epee = "0.2.1"
-# RandomX, to check the proof of work of the blocks payments are counted in
-# (docs/proof_of_work.md): bindings to tevador's C++ library, built with
+# RandomX, to check the proof of work of the blocks payments are counted in:
+# bindings to tevador's C++ library, built with
 # cmake, as Cuprate uses. Light mode only (256 MiB a key).
 randomx-rs = "1.6.0"
 rand = "0.10.2"
@@ -80,7 +80,7 @@ snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # adds code tests call; it never changes what the engine does.
 test-support = ["shared/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
-# a pool transaction arrived (docs/monero_zmq.md). Polling stays on as the
+# a pool transaction arrived. Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
 # refused, so it can't be saved and silently ignored. On by default: every
 # build that ships has it (`--no-default-features` builds without).
@@ -243,8 +243,8 @@ significant_drop_tightening = "allow"   # nursery; known false positives on guar
 assert_is_empty = "allow"               # its fix, `assert_eq!(v, [] as [T; 0])`,
                                         # is a trivial cast that trivial_casts refuses
 
-# Range lints: enabled by step 6 of docs/engine_arithmetic_audit.md, once the
-# unit types (step 5) have removed most sites, so each remaining one gets a
+# Range lints: enabled once the
+# unit types have removed most sites, so each remaining one gets a
 # reasoned `#[expect]` rather than one now that the types then delete.
 arithmetic_side_effects = "allow"
 as_conversions = "allow"

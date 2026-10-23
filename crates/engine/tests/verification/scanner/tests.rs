@@ -5,13 +5,13 @@
 //! real-world chain and network condition* rather than around functions. The map
 //! below exists so a future maintainer can see at a glance which conditions are
 //! claimed to be covered - and, just as importantly, which limitations are
-//! deliberate. `docs/TESTING.md` §3 is the prose companion to this list.
+//! deliberate.
 //!
 //! 1. **Reorgs, every depth.**
 //!    `a_reorg_is_detected_at_its_true_fork_point_at_every_depth_the_window_covers`
 //!    (1 block through the full `reorg_check_depth` window, one case per depth);
 //!    `a_reorg_deeper_than_the_window_is_reported_at_the_window_edge_and_leaves_older_payments_alone`
-//!    (the documented limitation, §DESIGN.md 3);
+//!    (the documented limitation);
 //!    `a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_required_orphans_its_payment`
 //!    (the September 2025 mainnet shape: 18 blocks against 10 confirmations);
 //!    `a_reorg_whose_fork_is_below_every_recorded_block_rewinds_to_that_oldest_block` and
@@ -52,8 +52,8 @@
 //!    `a_store_failure_recording_a_block_match_leaves_that_block_unscanned_for_the_next_tick`,
 //!    `a_store_failure_marking_a_block_scanned_does_not_discard_the_ticks_mempool_matches`,
 //!    `a_status_change_whose_order_event_cannot_be_written_is_rolled_back_rather_than_lost`.
-//! 5. **Dishonest or swapped daemons** (see `docs/DESIGN.md` §7.7 for which of
-//!    these are closed and which are accepted trust boundaries).
+//! 5. **Dishonest or swapped daemons** (some closed, some accepted trust
+//!    boundaries).
 //!    `swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg`
 //!    (a node presenting a different history is handled by, and is indistinguishable
 //!    from, ordinary reorg detection - which is why no per-daemon sync state exists);
@@ -62,8 +62,7 @@
 //!    `an_inflated_reported_height_inflates_confirmations_which_is_an_accepted_trust_boundary`;
 //!    `a_daemon_far_behind_the_recorded_high_water_mark_neither_rescans_nor_discards_its_window`.
 //!    The same scenarios composed through the real `daemon_fallback::FallbackDaemonClient`
-//!    rather than a hand-swapped daemon (see `docs/DESIGN.md` §7.7's "Fallback nodes widen
-//!    this trust boundary"):
+//!    rather than a hand-swapped daemon (fallback nodes widen this trust boundary):
 //!    `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`,
 //!    `failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`,
 //!    `every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`,
@@ -95,8 +94,8 @@
 //! one subaddress within a tenant (`UNIQUE(tenant_id, minor_index)` makes it
 //! unreachable, and store.rs's `concurrent_minor_index_allocation_never_duplicates`
 //! covers the allocation path that could otherwise reach it); proof-of-work,
-//! difficulty and timestamp validation of blocks (never performed - see
-//! §DESIGN.md 7.7).
+//! difficulty and timestamp validation of blocks (the scanner never performs
+//! it; proof-of-work checking is its own loop, tested on its own).
 
 use super::*;
 
@@ -131,8 +130,8 @@ use monero::{Address, PrivateKey, PublicKey};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Wraps a real `KeyCustody` and counts calls to `scan_tx_outputs` - the direct
-/// way to prove the active-watchlist optimization actually engages (§DESIGN.md
-/// §7.3), rather than trusting it by inspection. Delegates every other method
+/// way to prove the active-watchlist optimization actually engages, rather
+/// than trusting it by inspection. Delegates every other method
 /// unchanged.
 #[derive(Default)]
 struct CountingKeyCustody {
@@ -314,9 +313,8 @@ enum DaemonCall {
     /// Counts calls to `get_chain_blocks`, the block scan's one fetch for a
     /// run of blocks with their ids.
     ChainBlocks,
-    /// Counts calls to `get_block_hash` - proves the deliberate scope limit
-    /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A's own "why the
-    /// target moved" section): block-hash fetching for `scanned_blocks`
+    /// Counts calls to `get_block_hash` - proves the deliberate scope limit:
+    /// block-hash fetching for `scanned_blocks`
     /// stays one call per height regardless of how transaction-fetching is
     /// chunked.
     BlockHash,
@@ -499,7 +497,7 @@ pub(crate) struct ReconcileReport {
     /// The subset of `dirty_orders` where the change was specifically a proven
     /// double-spend (a payment voided because its key image was confirmed spent by
     /// a different transaction) - callers use this to enqueue the independent
-    /// `order.double_spend_detected` order event (see `docs/DESIGN.md` §11),
+    /// `order.double_spend_detected` order event,
     /// separate from whatever `order.<status>` event the recompute may also imply.
     pub double_spent_orders: Vec<crate::store::OrderId>,
 }
@@ -507,8 +505,8 @@ pub(crate) struct ReconcileReport {
 /// Checks for a reorg within the last `reorg_check_depth` blocks and, if one is
 /// found (or one is already being reconciled), runs its reconciliation as far
 /// as it can go now: every affected payment re-examined, then the rewind to
-/// the common ancestor. Never voids a payment on ambiguous evidence
-/// (§DESIGN.md 7.5) - only when `is_key_image_spent` affirmatively proves a
+/// the common ancestor. Never voids a payment on ambiguous evidence:
+/// only when `is_key_image_spent` affirmatively proves a
 /// different transaction consumed the same inputs.
 ///
 /// The scheduler runs the same work in bounded units (`work::chain`); this
@@ -748,8 +746,7 @@ async fn setup_with_expiry(
     )
 }
 
-/// `docs/order_rescan_wbs.md` Phase 4 - the default grace period for
-/// recently-expired orders.
+/// The default grace period for recently-expired orders.
 #[tokio::test]
 async fn a_recently_expired_orders_late_payment_is_still_matched_within_its_grace_period() {
     let now = crate::now_unix();
@@ -972,7 +969,7 @@ async fn a_run_of_transactions_is_scanned_for_each_store_from_where_it_had_got_t
     );
 }
 
-// -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) ---------
+// -- Scanned block range ---------
 
 /// A block interrupted partway keeps its matches staged, never as
 /// payments; they come back only for the same block (height and hash),
@@ -1626,9 +1623,8 @@ fn arbitrary_wallet_material(seed: u8) -> ([u8; 32], [u8; 32]) {
 
 #[tokio::test]
 async fn run_scan_tick_never_calls_key_custody_for_a_tenant_with_no_pending_orders() {
-    // Direct proof of docs/DESIGN.md §7.3's active-watchlist optimization,
-    // using a call-counting spy rather than trusting it by inspection - see
-    // docs/TESTING.md §4. Tenant A has a pending order and a real fixture view
+    // Direct proof of the active-watchlist optimization, using a
+    // call-counting spy rather than trusting it by inspection. Tenant A has a pending order and a real fixture view
     // pair (so a genuine match happens); tenant B is registered with
     // KeyCustody but has never had any order at all.
     let key_custody = CountingKeyCustody::default();
@@ -1688,7 +1684,7 @@ async fn run_scan_tick_never_calls_key_custody_for_a_tenant_with_no_pending_orde
 #[tokio::test]
 async fn run_scan_tick_never_scans_a_tenant_on_a_different_network_even_if_included_in_the_input_list(
 ) {
-    // Defense-in-depth for the multi-network design (§DESIGN.md §7): a
+    // Defense-in-depth for the multi-network design: a
     // mainnet-network tick must not touch a pending stagenet tenant's data at
     // all, even though `active_tenants_page` already scopes by network - this
     // proves the *second*, independent filter (`t.network == network` in
@@ -3476,7 +3472,7 @@ async fn a_reorg_is_detected_at_its_true_fork_point_at_every_depth_the_window_co
 #[tokio::test]
 async fn a_reorg_deeper_than_the_window_is_reported_at_the_window_edge_and_leaves_older_payments_alone(
 ) {
-    // The documented limitation (§DESIGN.md 3: "defending against reorgs deeper
+    // The documented limitation ("defending against reorgs deeper
     // than a configured window" is a non-goal), pinned down as executable
     // behavior rather than left as prose. What actually happens is worth being
     // precise about, because it is *not* "the reorg is missed": every stored hash
@@ -4178,7 +4174,7 @@ async fn a_double_spend_mined_in_a_different_block_than_the_original_voids_it_on
 
 #[tokio::test]
 async fn voiding_one_of_an_orders_two_payments_leaves_the_other_counting() {
-    // §TESTING.md 3's "exact two-transaction scenario from design review", at the
+    // The two-transaction scenario from design review, at the
     // scanner level rather than the status-function level: an order paid by two
     // independent transactions, one of which is double-spent. The surviving
     // payment must keep counting, the order's total must fall by exactly the
@@ -4955,7 +4951,7 @@ async fn a_failed_recheck_leaves_its_payment_voided_and_the_next_pass_retries_it
 async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful_void_a_single_lying_node_would_cause(
 ) {
     // The prevention half of the fix for `is_key_image_spent`'s single-node trust
-    // boundary (docs/DESIGN.md §7.7): the exact same attack shape as
+    // boundary: the exact same attack shape as
     // `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
     // above, except the *accusation itself* is false - only one of two configured
     // nodes claims the key image is spent in the blockchain. Routed through a
@@ -5423,8 +5419,8 @@ async fn a_failed_mempool_poll_skips_the_vanished_payment_sweep_rather_than_assu
 async fn a_node_failing_the_fetch_of_a_scan_chunk_retries_the_whole_chunk_next_tick() {
     // A tick is not atomic - it is a sequence of independent RPCs - so "the node
     // went away mid-tick" has as many shapes as there are calls in it. The
-    // block-fetching path reads blocks in `get_chain_blocks` chunks
-    // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A): one
+    // block-fetching path reads blocks in `get_chain_blocks` chunks:
+    // one
     // `get_blocks.bin` call answers for a run of blocks or for none of them,
     // there is no partial response. So a failed fetch abandons the whole
     // chunk: the high-water mark doesn't move past wherever the chunk started
@@ -5496,8 +5492,8 @@ async fn a_node_failing_the_fetch_of_a_scan_chunk_retries_the_whole_chunk_next_t
 
 #[tokio::test]
 async fn run_scan_tick_batches_a_wide_catchup_range_into_far_fewer_daemon_calls_than_blocks() {
-    // The real-world case this whole mechanism exists for
-    // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A): a process that was
+    // The real-world case this whole mechanism exists for:
+    // a process that was
     // down for a while faces a scan range spanning many blocks on its very next
     // tick. Before batching, that was one fetch per
     // block; now it should be a small number of `get_chain_blocks` calls
@@ -6264,7 +6260,7 @@ async fn a_node_that_dies_as_a_block_is_read_has_its_hash_and_contents_come_from
     // transactions come in one call (`get_chain_blocks`): whichever node
     // answers it answers for both. So a primary that can't serve a block
     // never has its own contents paired with the fallback's hash for the
-    // same height (the gap `docs/DESIGN.md` §7.7 used to accept, when the
+    // same height (the gap the scanner used to accept, when the
     // two were separate calls).
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
     let tx = fixture_tx();
@@ -6562,13 +6558,13 @@ async fn an_inflated_reported_height_inflates_confirmations_which_is_an_accepted
     // therefore ages payments faster than the chain does.
     //
     // This is not separately fixable, and the reason is worth stating: the
-    // scanner validates no proof of work anywhere (by design - that is monerod's
-    // job, §DESIGN.md 7.5), so a node willing to lie about its height can just as
+    // scanner itself validates no proof of work (without proof-of-work
+    // checking on, that is the node's job), so a node willing to lie about its height can just as
     // cheaply serve a fabricated chain of block hashes to back the lie up.
     // Clamping confirmations to the scanner's own high-water mark would raise the
     // cost of the lie by nothing while making every honest post-reorg rewind
     // briefly under-count confirmations. The boundary is "the configured node is
-    // trusted about the chain" - see docs/DESIGN.md §7.7.
+    // trusted about the chain".
     let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
     let store = store.into_shared();
 
@@ -7226,7 +7222,7 @@ async fn a_divergence_at_the_genesis_block_has_no_ancestor_to_re_anchor_to() {
 
 #[tokio::test]
 async fn the_scanned_block_window_stays_bounded_as_the_chain_grows() {
-    // §TESTING.md 3's resource item, and the reason `prune_scanned_blocks_below`
+    // The resource bound, and the reason `prune_scanned_blocks_below`
     // exists. Two minutes per block means ~260k rows a year of pure growth for a
     // table nothing ever reads more than `reorg_check_depth` blocks back into,
     // on hardware that is often a router with an SD card.

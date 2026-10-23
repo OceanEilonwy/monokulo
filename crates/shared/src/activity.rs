@@ -1,5 +1,5 @@
 //! What the engine's scanner is doing, event by event, for monokulo's engine
-//! page (docs/engine_visualizer.md). The engine records these as its loops
+//! page. The engine records these as its loops
 //! work and serves them on its admin API; monokulo turns them into the
 //! page's sentences and animation.
 //!
@@ -147,7 +147,7 @@ pub enum PoolPath {
 pub enum Wake {
     /// The poll interval ran out.
     Interval,
-    /// The node announced a new block (docs/monero_zmq.md).
+    /// The node announced a new block.
     NewBlock,
 }
 
@@ -432,8 +432,7 @@ pub struct Pool {
     pub txids: Vec<String>,
 }
 
-/// The engine's database worker (docs/scanner_microtasks.md, "Database
-/// access").
+/// The engine's database worker.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Database {
     /// Jobs queued for the Scanner and Admin classes.

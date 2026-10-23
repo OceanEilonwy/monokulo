@@ -106,8 +106,7 @@ rustup target add "$TARGET"
 	export CARGO_PROFILE_RELEASE_STRIP=symbols
 	# The engine is built into monokulo (its default `embedded-engine`
 	# feature), so there is one binary to ship, with the engine's default
-	# `zmq` feature: a node's ZMQ announcements wake the scan at once
-	# (docs/monero_zmq.md).
+	# `zmq` feature: a node's ZMQ announcements wake the scan at once.
 	cargo build --release --locked --target "$TARGET" \
 		-p monokulo --bin monokulo
 )

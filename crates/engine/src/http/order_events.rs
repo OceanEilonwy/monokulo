@@ -1,6 +1,6 @@
 //! `GET /api/v1/admin/order-events`: the order-event log
 //! (`store::order_events`) as server-sent events, for monokulo, which
-//! delivers every store's webhooks from it (`docs/DESIGN.md` §11).
+//! delivers every store's webhooks from it.
 //!
 //! The protocol:
 //!

@@ -1,4 +1,4 @@
-//! `cargo xtask stress rounds`: the round length sweep (docs/engine_stress.md).
+//! `cargo xtask stress rounds`: the round length sweep.
 //!
 //! Runs `round_sweep` once for each scenario of
 //! `xtask/stress/round_sweep_v2.json` at each round length, pinned to one
@@ -20,7 +20,7 @@ use crate::stress::{fresh_db, profile, target_dir};
 use crate::support::{escape_html, root, write_json};
 
 pub(crate) const HELP: &str =
-    "        stress rounds Round length sweep: throughput, refetches and waits (docs/engine_stress.md)";
+    "        stress rounds Round length sweep: throughput, refetches and waits";
 
 /// The columns of each scenario's table: field, heading, decimals.
 const COLUMNS: [(&str, &str, usize); 9] = [
@@ -144,7 +144,7 @@ pub fn run() -> io::Result<bool> {
 }
 
 fn report(output: &std::path::Path, scenarios: &[Value], results: &[Value]) -> io::Result<()> {
-    let mut page = String::from("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Round length sweep</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:1rem auto;padding:0 1rem;color:#17212b}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd3db;text-align:right;padding:.4rem}th:first-child,td:first-child{text-align:left}.bad{color:#a32}</style><h1>Round length sweep</h1><p>Catch-up through a backlog of blocks at each round length (docs/engine_stress.md). \"Sent per distinct\" above 1 is blocks the node sent again: fetched ahead, then dropped before their scan. Blocks/s counts each group's blocks, averaged over its tenants.</p>");
+    let mut page = String::from("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Round length sweep</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:1rem auto;padding:0 1rem;color:#17212b}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd3db;text-align:right;padding:.4rem}th:first-child,td:first-child{text-align:left}.bad{color:#a32}</style><h1>Round length sweep</h1><p>Catch-up through a backlog of blocks at each round length. \"Sent per distinct\" above 1 is blocks the node sent again: fetched ahead, then dropped before their scan. Blocks/s counts each group's blocks, averaged over its tenants.</p>");
     for case in scenarios {
         let name = case["name"].as_str().unwrap_or("unnamed");
         page.push_str(&format!(

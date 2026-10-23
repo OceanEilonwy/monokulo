@@ -1,5 +1,5 @@
-//! What the engine reports in `/status` about its nodes' ZMQ announcements
-//! (docs/monero_zmq.md): each publisher it listens to, and how often an
+//! What the engine reports in `/status` about its nodes' ZMQ announcements:
+//! each publisher it listens to, and how often an
 //! announcement started a scan pass early. The engine fills these in;
 //! monokulo shows them to operators on the status page.
 

@@ -166,7 +166,7 @@ pub fn values(
 /// the command line, each named under `prefix`: `--engine-payment-…` for
 /// `payment.…` with `prefix` `engine`. For the settings of a service that
 /// runs inside this process and keeps its options in this process's file,
-/// under `[prefix.…]` (an embedded engine, docs/engine_as_library.md). Their
+/// under `[prefix.…]` (an embedded engine). Their
 /// environment variables are their own. Each option's help names the
 /// default in effect under `defaults`: the host's own
 /// ([`Env::with_defaults`](crate::Env::with_defaults)) where it gives one.
