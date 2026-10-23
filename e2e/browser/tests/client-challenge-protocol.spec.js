@@ -79,8 +79,8 @@ function challengeServer({ difficulty = 8 } = {}) {
     return proof.slice(0, at) === challenge && zeroBits(crypto.createHash('sha256').update(proof.slice(0, at) + proof.slice(at + 1)).digest()) >= difficulty;
   };
   const interstitial = () => `<!doctype html><html><head><title>Checking your connection</title>
-    <noscript><meta http-equiv="refresh" content="10;url=/pay?monokulo_wait=tok"></noscript></head><body>
-    <main id="challenge" aria-busy="true" data-challenge="${challenge}" data-difficulty="${difficulty}" data-continue="/pay" data-wait="/pay?monokulo_wait=tok">
+    <noscript><meta http-equiv="refresh" content="10;url=/checkout/order-9?monokulo_wait=tok"></noscript></head><body>
+    <main id="challenge" aria-busy="true" data-challenge="${challenge}" data-difficulty="${difficulty}" data-continue="/checkout/order-9" data-wait="/checkout/order-9?monokulo_wait=tok">
     <h1>Checking your connection</h1>
     <noscript><p role="status">Checking your connection, this page continues in 10 seconds.</p></noscript>
     <p id="challenge-progress" role="status" aria-live="polite" hidden>Checking your connection…</p></main>
@@ -94,7 +94,7 @@ function challengeServer({ difficulty = 8 } = {}) {
     }
     if (url.pathname === '/shop') {
       res.writeHead(200, { 'content-type': 'text/html' });
-      return res.end(`<iframe id="checkout" src="http://checkout.localhost:${server.address().port}/pay"></iframe>`);
+      return res.end(`<iframe id="checkout" src="http://checkout.localhost:${server.address().port}/checkout/order-9"></iframe>`);
     }
     if (url.pathname === '/merchant') {
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -118,12 +118,12 @@ function challengeServer({ difficulty = 8 } = {}) {
         detail: 'Too many requests', challenge: { challenge, difficulty, expires_in: 300 },
       }));
     }
-    if (url.pathname === '/pay') {
+    if (url.pathname === '/checkout/order-9') {
       const proof = url.searchParams.get('monokulo_proof');
       const wait = url.searchParams.get('monokulo_wait');
       if ((proof && solved(proof)) || (wait === 'tok' && Date.now() - state.waitIssuedAt >= 10000)) {
         state.passed = true;
-        res.writeHead(303, { location: '/pay' });
+        res.writeHead(303, { location: '/checkout/order-9' });
         return res.end();
       }
       if (state.passed) {
