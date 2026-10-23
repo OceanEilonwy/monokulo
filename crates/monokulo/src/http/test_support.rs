@@ -7,13 +7,13 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 /// The response body as JSON.
-pub(crate) async fn body_json(response: axum::response::Response) -> serde_json::Value {
+pub async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 /// The response body as text.
-pub(crate) async fn body_text(response: axum::response::Response) -> String {
+pub async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
 }
@@ -22,10 +22,7 @@ pub(crate) async fn body_text(response: axum::response::Response) -> String {
 /// answered (`crate::api::runtime::problem`): `application/problem+json`,
 /// its documented `type`, `title` and `status` (which the response's own
 /// status matches) and a `detail`. Returns the body.
-pub(crate) async fn assert_problem(
-    response: axum::response::Response,
-    slug: &str,
-) -> serde_json::Value {
+pub async fn assert_problem(response: axum::response::Response, slug: &str) -> serde_json::Value {
     use crate::api::runtime::problem::{Problem, PROBLEM_JSON};
     let status = response.status();
     let content_type = response
@@ -54,14 +51,14 @@ pub(crate) async fn assert_problem(
 }
 
 /// `s` encoded for a form body or query string.
-pub(crate) fn urlencoding_encode(s: &str) -> String {
+pub fn urlencoding_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
 /// Signs up a fresh user against `router` through the sign-up form (which
 /// logs them in), returning their session token: the `session` cookie's
 /// value. Send it as `cookie: session=<token>`.
-pub(crate) async fn signed_up_and_logged_in_session_token(
+pub async fn signed_up_and_logged_in_session_token(
     router: &Router,
     email: &str,
     password: &str,
@@ -94,13 +91,13 @@ pub(crate) async fn signed_up_and_logged_in_session_token(
 
 /// The test wallet's keys: the fixed-scalar pair the engine's own tests
 /// use, which pass its real wallet-material validation.
-pub(crate) const TEST_VIEW_KEY_HEX: &str =
+pub const TEST_VIEW_KEY_HEX: &str =
     "0707070707070707070707070707070707070707070707070707070707070707";
-pub(crate) const TEST_SPEND_PUBKEY_HEX: &str =
+pub const TEST_SPEND_PUBKEY_HEX: &str =
     "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
 /// A store made through store setup for a test.
-pub(crate) struct TestStore {
+pub struct TestStore {
     pub id: String,
     pub public_key: String,
     /// Its secret key, as the store's plugin is given it.
@@ -110,7 +107,7 @@ pub(crate) struct TestStore {
 /// Makes a store for the account behind `session_token` on the test
 /// wallet, as `/setup` does (the account's wallet is reused for its second
 /// store): `site` may be empty, `base_currency` is its code.
-pub(crate) async fn store_with_keys(
+pub async fn store_with_keys(
     router: &Router,
     state: &crate::http::AppState,
     session_token: &str,
@@ -189,7 +186,7 @@ pub(crate) async fn store_with_keys(
 }
 
 /// A JSON request to the API, with `key` as its bearer token.
-pub(crate) fn api_request(
+pub fn api_request(
     method: &str,
     uri: &str,
     key: Option<&str>,
@@ -211,7 +208,7 @@ pub(crate) fn api_request(
 /// Logs in as the harness-seeded admin account (`Db::seed_test_admin`) and
 /// returns its session cookie's `name=value` pair, ready to attach as a
 /// `cookie` header.
-pub(crate) async fn admin_session_cookie(router: &Router) -> String {
+pub async fn admin_session_cookie(router: &Router) -> String {
     let body = format!(
         "email={}&password={}",
         urlencoding_encode(crate::db::TEST_ADMIN_EMAIL),
@@ -239,7 +236,7 @@ pub(crate) async fn admin_session_cookie(router: &Router) -> String {
 }
 
 /// A form post, as a browser sends one, with `cookie` (`session=...`).
-pub(crate) fn form_post(uri: &str, cookie: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
+pub fn form_post(uri: &str, cookie: Option<&str>, fields: &[(&str, &str)]) -> Request<Body> {
     let body = fields
         .iter()
         .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
@@ -261,7 +258,7 @@ pub(crate) fn form_post(uri: &str, cookie: Option<&str>, fields: &[(&str, &str)]
 /// `store_name`, `store_site`, `view_key_hex`, ...). The keys form's
 /// response: a `303` to `/setup/done/{id}` once the store is made; the
 /// store step's response when it refused the answers.
-pub(crate) async fn set_up_store_with_keys(
+pub async fn set_up_store_with_keys(
     router: &Router,
     cookie: &str,
     fields: &[(&str, &str)],
@@ -284,7 +281,7 @@ pub(crate) async fn set_up_store_with_keys(
 /// Sets up a store (with no site when `site` is empty)
 /// on one of the account's wallets: the response to
 /// `POST /setup/wallet/existing`.
-pub(crate) async fn set_up_store_on_wallet(
+pub async fn set_up_store_on_wallet(
     router: &Router,
     cookie: &str,
     name: &str,
@@ -308,7 +305,7 @@ pub(crate) async fn set_up_store_on_wallet(
 
 /// The store a `/setup` response made: the id in its `/setup/done/{id}`
 /// location.
-pub(crate) fn store_made(response: &axum::response::Response) -> String {
+pub fn store_made(response: &axum::response::Response) -> String {
     assert_eq!(
         response.status(),
         StatusCode::SEE_OTHER,

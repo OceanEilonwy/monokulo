@@ -47,8 +47,10 @@ It answers once per token:
 ```
 
 Keep `app_key` somewhere safe on the device: it isn't shown again. `api` is
-the API's entry, a path: resolve it against the address you connected at
-(an app that connected over the onion address stays on it). `onion_api` is
+the API's entry, a path (`/api/v1`, or `/monokulo/api/v1` for a Monokulo
+served [under a path](../api/#under-a-path)): resolve it against the
+address you connected at (an app that connected over the onion address
+stays on it). `onion_api` is
 there only while the Monokulo has an onion address: the same entry on it,
 for an app that can reach Monokulo over Tor (see [Tor](../api/#tor)).
 
@@ -63,6 +65,7 @@ is one of these:
 | [`unsupported-media-type`](../problems/unsupported-media-type/) | 415 | Send `Content-Type: application/json`. |
 | [`too-large`](../problems/too-large/) | 413 | The body is too large. |
 | [`rate-limited`](../problems/rate-limited/) | 429 | Wait `retry_after` seconds. |
+| [`challenge-required`](../problems/challenge-required/) | 429 | Solve the proof of work in `challenge` and send the request again with `Monokulo-Proof`. |
 | [`internal`](../problems/internal/) | 500 | Something failed on the Monokulo: try again later. |
 
 ## 2. Find your way
@@ -79,9 +82,11 @@ The entry links to the store (`mk:store`: its name, base currency and the
 wallet its payments go to, with the full address), its orders, its events,
 and your app's own connection (`mk:app`), and carries the forms your key may
 use (`create-order`, `disconnect`). Follow the links rather than building
-paths: they're relative, so resolve them against the URL you used. Read
-`GET /api/v1/store` each time you show the store; the merchant can rename it
-or move it to another wallet.
+paths: they're relative, so resolve them against the URL you used. Keep the
+entry as its `Cache-Control` says, and read it again when it expires or a
+link from it answers `401`, `404` or `405` (see
+[Find your way](../api/#find-your-way)). Read the store (`mk:store`) each
+time you show it; the merchant can rename it or move it to another wallet.
 
 ## 3. Make orders
 
@@ -112,18 +117,24 @@ Authorization: Bearer {app_key}
 
 Server-sent events for every order the store's apps make: `ready` first,
 then `sale.waiting`, `sale.seen`, `sale.confirming`, `sale.paid`,
-`sale.partial`, `sale.expired` and `sale.double_spend`, each with JSON data:
+`sale.partial`, `sale.expired` and `sale.double_spend`, each with JSON data
+that links its order (`mk:order`):
 
 ```json
-{ "event": "sale.paid", "order_id": "…", "amount": "24.50", "currency": "USD",
+{ "event": "sale.paid", "order_id": "order_9f3c…", "amount": "24.50", "currency": "USD",
   "address": "8…", "xmr_amount_piconero": 141900000000,
   "merchant_order_id": "#1042", "expires_at": 1761312000,
-  "device_name": "Front counter", "at": 1761310260 }
+  "device_name": "Front counter", "at": 1761310260,
+  "_links": {
+    "mk:order": { "href": "/api/v1/orders/order_9f3c…", "title": "One order: what to pay, where, and how far the payment has got." },
+    "curies": [{ "name": "mk", "href": "https://docs.monokulo.com/rels/{rel}", "templated": true }]
+  } }
 ```
 
 A comment arrives every 25 s. After `lagged`, or a reconnect, read the
-orders you're showing again: `GET /api/v1/orders/{order_id}` (the order's
-`self` link), or follow one order's own stream (`mk:order-events`).
+orders you're showing again: follow each one's `mk:order` link (or the
+order's own `self`), or follow one order's own stream (`mk:order-events`).
+Never build an order's URL from its id.
 
 ## 5. Disconnect
 

@@ -70,19 +70,22 @@
   // event handler or a module, and their own page's origin when called from
   // another classic <script src>. The endpoint inference then either fails
   // outright or - worse - silently points the payment API at the merchant's
-  // own static host.
-  var SCRIPT_ORIGIN = (function () {
+  // own static host. It is the script's URL without `/static/<file>`, so a
+  // Monokulo a proxy serves under a path (`https://example.com/monokulo`)
+  // keeps it.
+  var SCRIPT_BASE = (function () {
     var script = document.currentScript;
     if (!script || !script.src) return null;
     try {
-      return new URL(script.src).origin;
+      var url = new URL(script.src);
+      return url.origin + url.pathname.replace(/\/static\/[^/]*$/, "");
     } catch (e) {
       return null;
     }
   })();
 
-  function scriptOrigin() {
-    return SCRIPT_ORIGIN;
+  function scriptBase() {
+    return SCRIPT_BASE;
   }
 
   function isOnionHost(hostname) {
@@ -191,7 +194,7 @@
 
   function createOrder(params) {
     params = params || {};
-    var endpoint = (params.endpoint || scriptOrigin() || "").replace(/\/+$/, "");
+    var endpoint = (params.endpoint || scriptBase() || "").replace(/\/+$/, "");
     var publicKey = params.publicKey;
     if (!endpoint) {
       return Promise.reject(new Error("Monokulo.createOrder: endpoint is required (could not infer it from the script tag)"));
@@ -297,7 +300,7 @@
       orderId = orderIdOrOrder;
       known = knownOrders[orderId] || {};
     }
-    endpoint = (options.endpoint || known.endpoint || scriptOrigin() || "").replace(/\/+$/, "");
+    endpoint = (options.endpoint || known.endpoint || scriptBase() || "").replace(/\/+$/, "");
     // Only needed to poll the order where Server-Sent Events can't be used.
     publicKey = options.publicKey || known.publicKey;
 

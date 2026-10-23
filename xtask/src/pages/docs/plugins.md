@@ -67,8 +67,9 @@ It answers once per token:
 `webhook_signing_secret` only when you sent a `webhook_url`. Keep them all. `secret_token` is the store's key for your server, in
 `Authorization: Bearer` on the [HTTP API](../api/); `public_key` is for the
 shop's pages, if they embed the checkout with the [JS library](../js-library/).
-`api` is the API's entry, a path: resolve it against the address you called
-`/finish` at.
+`api` is the API's entry, a path (`/api/v1`, or `/monokulo/api/v1` for a
+Monokulo served [under a path](../api/#under-a-path)): resolve it against
+the address you called `/finish` at, and keep the result.
 
 Every error is `application/problem+json`; show its `detail`. Its `type`
 is one of these:
@@ -82,11 +83,15 @@ is one of these:
 | [`too-large`](../problems/too-large/) | 413 | The body is too large. |
 | [`not-found`](../problems/not-found/) | 404 | `slug` isn't a slug. |
 | [`rate-limited`](../problems/rate-limited/) | 429 | Wait `retry_after` seconds. |
+| [`challenge-required`](../problems/challenge-required/) | 429 | Solve the proof of work in `challenge` and send the request again with `Monokulo-Proof`. |
 | [`internal`](../problems/internal/) | 500 | Something failed on the Monokulo after the token was spent: start again. |
 
 ### 2. Create an order
 
-`GET /api/v1` with the key lists what it may do; the `create-order` form is:
+The entry (`GET {api}` with the key) lists what it may do. Keep it as its
+`Cache-Control` says and read it again when it expires or a form from it is
+refused with `401`, `404` or `405` (see [Find your way](../api/#find-your-way)),
+so making an order is one request. Its `create-order` form is:
 
 ```
 POST {monokulo}/api/v1/orders
@@ -128,6 +133,11 @@ say so to the merchant rather than sending a Tor customer to the web.
 The [JS library](../js-library/) can mount it too. Read the order again with
 its `self` link (`GET /api/v1/orders/{order_id}`), or follow its changes on
 `mk:order-events`; but mark the shop's order paid from the webhook.
+
+On the shop's own order page, link the merchant to the order in Monokulo
+with its [`mk:dashboard-order`](../rels/dashboard-order/) link (resolved
+like the others): its page on the merchant's dashboard. Only your secret
+key is given it; keep it with the order rather than building it.
 
 ### 4. Take webhooks
 

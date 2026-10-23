@@ -58,6 +58,8 @@ struct ResourceArgs {
     params: Vec<(Ident, Type)>,
     kind: Ident,
     doc: Option<LitStr>,
+    /// For a page: who a link to it is offered to.
+    who: Vec<Ident>,
 }
 
 impl Parse for ResourceArgs {
@@ -67,6 +69,7 @@ impl Parse for ResourceArgs {
         let mut params = Vec::new();
         let mut kind = Ident::new("hal", Span::call_site());
         let mut doc = None;
+        let mut who = Vec::new();
         while !input.is_empty() {
             input.parse::<Token![,]>()?;
             if input.is_empty() {
@@ -89,6 +92,14 @@ impl Parse for ResourceArgs {
                     input.parse::<Token![=]>()?;
                     doc = Some(input.parse::<LitStr>()?);
                 }
+                "who" => {
+                    input.parse::<Token![=]>()?;
+                    who.push(input.parse::<Ident>()?);
+                    while input.peek(Token![|]) {
+                        input.parse::<Token![|]>()?;
+                        who.push(input.parse()?);
+                    }
+                }
                 "params" => {
                     let content;
                     syn::parenthesized!(content in input);
@@ -98,18 +109,27 @@ impl Parse for ResourceArgs {
                 _ => {
                     return Err(Error::new(
                         key.span(),
-                        "expected `rel = \"...\"`, `params(name: Type, ...)`, `kind = ...` or `doc = \"...\"`",
+                        "expected `rel = \"...\"`, `params(name: Type, ...)`, `kind = ...`, `doc = \"...\"` or `who = ...`",
                     ))
                 }
             }
         }
         let rel = rel.ok_or_else(|| Error::new(path.span(), "a resource needs `rel = \"...\"`"))?;
+        if let Some(first) = who.first() {
+            if kind != "page" {
+                return Err(Error::new(
+                    first.span(),
+                    "only a page says who it's offered to; a resource's `GET` says who may read it",
+                ));
+            }
+        }
         Ok(ResourceArgs {
             path,
             rel,
             params,
             kind,
             doc,
+            who,
         })
     }
 }
@@ -217,6 +237,12 @@ fn expand_resource(args: ResourceArgs) -> syn::Result<Tokens> {
         Some(doc) => quote!(::core::option::Option::Some(#doc)),
         None => quote!(::core::option::Option::None),
     };
+    let who = if args.who.is_empty() {
+        quote!(::core::option::Option::None)
+    } else {
+        let bits = who_bits(&args.who, args.rel.span())?;
+        quote!(::core::option::Option::Some(#p::Who(#bits)))
+    };
     let field_names: Vec<&Ident> = args.params.iter().map(|(n, _)| n).collect();
     let field_types: Vec<&Type> = args.params.iter().map(|(_, t)| t).collect();
     let writes = parts.iter().map(|segment| match segment {
@@ -271,6 +297,7 @@ fn expand_resource(args: ResourceArgs) -> syn::Result<Tokens> {
             kind: #kind,
             doc: #doc,
             params: &[#(#param_names),*],
+            who: #who,
             file: ::core::file!(),
             module: ::core::module_path!(),
         };
@@ -688,15 +715,7 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
                 let doc = require_doc(&field.attrs, ident.span(), "field")?;
                 data.push((ident, field.ty.clone(), doc, field));
             }
-            FieldKind::Link { target, optional } => {
-                if !resource {
-                    return Err(Error::new(
-                        field.ty.span(),
-                        "links go on the resource's `#[api::body]`",
-                    ));
-                }
-                links.push((ident, target, optional));
-            }
+            FieldKind::Link { target, optional } => links.push((ident, target, optional)),
             FieldKind::Form { target } => {
                 if !resource {
                     return Err(Error::new(
@@ -842,6 +861,13 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
                 map.serialize_entry("_templates", &templates)?;
             }
         }
+    } else if !links.is_empty() {
+        // A part of a body with links: `_links`, without `self`.
+        quote! {
+            let mut links = #p::LinksBuilder::without_self();
+            #(#link_adds)*
+            map.serialize_entry("_links", &links)?;
+        }
     } else {
         quote!()
     };
@@ -851,7 +877,13 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
             #(#link_schemas)*
             #(#onion_schemas)*
             #(#href_schemas)*
-            #p::hal_parts(generator, &mut properties, links);
+            #p::hal_parts(&mut properties, links);
+        }
+    } else if !links.is_empty() {
+        quote! {
+            let mut links: ::std::vec::Vec<(::std::string::String, ::std::string::String)> = ::std::vec::Vec::new();
+            #(#link_schemas)*
+            #p::object_links(&mut properties, links);
         }
     } else {
         quote!()

@@ -1,6 +1,6 @@
 //! `cargo xtask pages api --site DIR`: the HTTP API's reference, generated
 //! from the code and from real exchanges (`crate::api`, which runs
-//! monokulo's `api::runtime::reference` test into `target/api/`; nothing is
+//! monokulo's `api_reference` example into `target/api/`; nothing is
 //! committed), into the site beside the docs' `/api/` page:
 //!
 //! - `api/reference/`: every resource, with its methods and who may call
@@ -14,7 +14,8 @@
 //! - `api/v1/openapi.json`: the OpenAPI document.
 //!
 //! Every word comes from monokulo's doc comments, every example from a
-//! request the tests really made, so the pages can't drift from the API.
+//! request really made against a test engine, so the pages can't drift
+//! from the API.
 
 use super::docs::markdown_html;
 use super::site_assets;
@@ -174,6 +175,18 @@ fn page(up: &str, title: &str, description: &str, body: Markup) -> Markup {
     }
 }
 
+/// The keys a page's link is offered to, in words.
+fn offered(keys: &[Value]) -> String {
+    keys.iter()
+        .filter_map(Value::as_str)
+        .map(|key| match key {
+            "session" => "the merchant's own session".to_owned(),
+            key => format!("the {key}_ key"),
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
 /// Who may call a method, in words.
 fn who(method: &Value) -> String {
     let keys: Vec<&str> = list(method, "keys")
@@ -231,6 +244,29 @@ fn index(reference: &Value) -> Markup {
                             td { a href=(format!("{up}rels/{}/", text(rel, "rel"))) { code { (text(rel, "key")) } } }
                             td { code { (text(rel, "template")) } }
                             td { (text(rel, "title")) }
+                        }
+                    }
+                }
+            } }
+        }
+        @if !list(reference, "handshakes").is_empty() {
+            h2 { "Handshakes" }
+            p {
+                "Beside the API: where a " a href=(format!("{up}plugins/")) { "shop plugin" } " or a "
+                a href=(format!("{up}apps/")) { "connected app" } " gets its key, once. They answer with the problems listed."
+            }
+            div.tbl { table {
+                thead { tr { th { "Route" } th { "What it does" } th { "Problems" } } }
+                tbody {
+                    @for handshake in list(reference, "handshakes") {
+                        tr {
+                            td { code { (text(handshake, "method")) " " (text(handshake, "template")) } }
+                            td { (text(handshake, "title")) }
+                            td {
+                                @for slug in list(handshake, "problems").iter().filter_map(Value::as_str) {
+                                    a href=(format!("{up}problems/{slug}/")) { code { (slug) } } " "
+                                }
+                            }
                         }
                     }
                 }
@@ -330,7 +366,16 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
         (markdown_html(text(resource, "description").split_once("\n\n").map_or("", |(_, rest)| rest)))
         h2 { "URL" }
         p { code { (text(resource, "template")) } " · " code { (text(resource, "media_type")) } }
-        h2 { "Methods" }
+        @if list(resource, "methods").is_empty() {
+            h2 { "Who gets the link" }
+            @if let Some(keys) = resource["offered_to"].as_array() {
+                p { "Only " (offered(keys)) ". Anyone else's answer leaves the link out." }
+            } @else {
+                p { "Anyone who reads something that links it: the page is open to whoever has its URL." }
+            }
+        } @else {
+            h2 { "Methods" }
+        }
         @for method in list(resource, "methods") {
             h3 id=(text(method, "name")) { code { (text(method, "method")) } " · " (who(method)) }
             (markdown_html(text(method, "doc")))
@@ -356,6 +401,23 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
                 }
             }
         }
+        @let events = list(resource, "events");
+        @if !events.is_empty() {
+            h2 { "Events" }
+            p { "Each event is an " code { "event:" } " line with its name, then a " code { "data:" } " line." }
+            div.tbl { table {
+                thead { tr { th { "Event" } th { "Data" } th { "What it means" } } }
+                tbody {
+                    @for event in events {
+                        tr {
+                            td { code { (text(event, "name")) } }
+                            td { (type_name(&event["data"], definitions)) }
+                            td { (markdown_html(text(event, "doc"))) }
+                        }
+                    }
+                }
+            } }
+        }
         @if body.is_object() {
             h2 { "Body" }
             div.tbl { table {
@@ -379,7 +441,7 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
         @let examples = list(resource, "examples");
         @if !examples.is_empty() {
             h2 { "Examples" }
-            p { "Real exchanges, recorded by Monokulo's tests (ids, addresses and times made stable)." }
+            p { "Real exchanges, recorded against a test engine (ids, keys, addresses and times made stable)." }
             @for example in examples {
                 h3 {
                     code { (text(example, "method")) " " (text(example, "path")) }
@@ -419,6 +481,7 @@ fn problem_page(problem: &Value, reference: &Value) -> Markup {
     let slug = text(problem, "slug");
     let example = list(reference, "resources")
         .iter()
+        .chain(list(reference, "handshakes"))
         .flat_map(|r| list(r, "examples"))
         .find(|e| {
             e["response"]["type"]

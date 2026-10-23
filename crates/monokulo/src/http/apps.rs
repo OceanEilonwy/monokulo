@@ -3,7 +3,7 @@
 //! an app uses the API (`crate::api`) with its own key.
 //!
 //! ```text
-//! dashboard: Connect an app ──▶ code: https://{public_uri}/apps/connect#token=ct_…
+//! dashboard: Connect an app ──▶ code: {public_uri}/apps/connect#token=ct_…
 //! app:       POST /apps/connect {token, slug, name, …} ──▶ {app_key, api: "/api/v1", onion_api?}
 //!            GET  /api/v1                     (Authorization: Bearer ak_…): links
 //!            GET  /api/v1/store, /api/v1/app, POST /api/v1/orders, GET /api/v1/events, …
@@ -232,38 +232,72 @@ pub async fn landing(State(state): State<AppState>) -> Response {
     crate::views::connected_apps::landing_page(&chrome).into_response()
 }
 
-#[derive(Deserialize)]
+/// What an app sends to connect.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "AppConnect")]
 pub struct RedeemRequest {
+    /// The connect code: the `token` in the `#` part of the connect link.
     pub token: String,
-    /// What the app calls itself in URLs and headers: a plugin's slug rules.
+    /// What the app calls itself in URLs and headers, by a plugin's slug
+    /// rules: a lowercase letter, then 1 to 31 lowercase letters, digits
+    /// or hyphens.
     pub slug: String,
-    /// What it calls itself on pages; optional.
+    /// What the app calls itself on pages, up to 40 characters.
     #[serde(default)]
     pub name: Option<String>,
-    /// Its own name for the device, used when the merchant gave none.
+    /// The app's own name for the device, used when the merchant gave it
+    /// none.
     #[serde(default)]
     pub device_name: Option<String>,
-    /// What it runs on (`android`, `ios`); optional.
+    /// What the app runs on (`android`, `ios`).
     #[serde(default)]
     pub platform: Option<String>,
 }
 
-#[derive(Serialize)]
+/// The app's key and where the API is: its connection.
+#[derive(Serialize, schemars::JsonSchema)]
+#[schemars(rename = "AppConnection")]
 pub struct RedeemResponse {
     /// The app's own key, given once: `Authorization: Bearer ak_…` on the
     /// API. It names the store, so the app needs nothing else.
     pub app_key: String,
-    /// The API's entry, `/api/v1`: a path, to resolve against the URL the
-    /// app connected at, so an app that connected over the onion address
-    /// stays on it. Everything else (the store, its wallet, the app's own
+    /// The API's entry: a path (`/api/v1`, with this Monokulo's path
+    /// prefix when it has one), to resolve against the URL the app
+    /// connected at, so an app that connected over the onion address stays
+    /// on it. Everything else (the store, its wallet, the app's own
     /// connection) is a link from there.
     pub api: String,
-    /// The API's entry on this instance's onion address
+    /// The API's entry on this Monokulo's onion address
     /// (`http://….onion/api/v1`), while it has one; absent otherwise: an
     /// app that can use Tor keeps it to reach Monokulo over Tor.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub onion_api: Option<String>,
 }
+
+/// The app handshake's route: [`redeem`] (and, opened in a browser,
+/// [`landing`]).
+pub const CONNECT: &str = "/apps/connect";
+
+#[linkme::distributed_slice(crate::api::runtime::catalog::HANDSHAKES)]
+static CONNECT_HANDSHAKE: crate::api::runtime::catalog::Handshake =
+    crate::api::runtime::catalog::Handshake {
+        method: "POST",
+        template: CONNECT,
+        operation: "app-connect.redeem",
+        doc: "Connect an app: its own key, for a connect code.\n\nThe merchant makes the code on the store's settings (Connections, Apps, Connect an app); it is the `token` in the `#` part of the link they show, works once, for 10 minutes. Send it to this route on the link's own address. Monokulo-Client: `<slug>/<version>` records the app's version. See the docs' Connected apps page.",
+        request: |g| g.subschema_for::<RedeemRequest>().to_value(),
+        response: |g| g.subschema_for::<RedeemResponse>().to_value(),
+        problems: &[
+            Problem::InvalidRequest,
+            Problem::InvalidConnectCode,
+            Problem::TooLarge,
+            Problem::UnsupportedMediaType,
+            Problem::RateLimited,
+            Problem::ChallengeRequired,
+            Problem::Internal,
+            Problem::NoPublicAddress,
+        ],
+    };
 
 /// `POST /apps/connect`: an app redeems a code, once, for a key of its own.
 ///
@@ -279,10 +313,14 @@ pub struct RedeemResponse {
 /// - `invalid-connect-code` (401): the code is unknown, used or expired,
 ///   all alike;
 /// - `internal` (500): something failed here;
-/// - `rate-limited` (429), from `http::abuse`, before any of this.
+/// - `rate-limited` or `challenge-required` (429), from `http::abuse`,
+///   before any of this.
+///
+/// Each is listed in [`CONNECT_HANDSHAKE`] for the OpenAPI document.
 pub async fn redeem(
     State(state): State<AppState>,
     headers: HeaderMap,
+    extensions: axum::http::Extensions,
     JsonBody(req): JsonBody<RedeemRequest>,
 ) -> Result<Json<RedeemResponse>, ProblemDetails> {
     let Some(slug) = PluginSlug::parse(&req.slug) else {
@@ -348,11 +386,11 @@ pub async fn redeem(
         }
     };
     tracing::info!(store.id = %app.store_id, app.id = %app.id, app.slug = %app.slug, "an app connected");
-    let api = crate::api::v1::root::Path {}.to_string();
+    let (api, onion_api) = crate::api::v1::root::entry(&state, &extensions);
     Ok(Json(RedeemResponse {
         app_key: key.expose().to_owned(),
-        onion_api: state.onion_uri().map(|onion| format!("{onion}{api}")),
         api,
+        onion_api,
     }))
 }
 

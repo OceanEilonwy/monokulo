@@ -12,7 +12,10 @@
 //!
 //! A debug build gets Solid's development build (its diagnostics, unminified
 //! code); a release build gets the minified production one.
-//! `MONOKULO_POS_BUILD=development|production` overrides the choice.
+//! `MONOKULO_POS_BUILD=development|production` overrides the choice, and
+//! `MONOKULO_POS_BUILD=none` builds no browser code at all (needing neither
+//! Node nor the WebAssembly target), for writing the API's reference: a
+//! binary built so won't run.
 //!
 //! Needs Node and the apps' dependencies installed from their lockfile (`npm
 //! ci` at the repository root). This script never installs anything itself:
@@ -31,13 +34,15 @@ use std::process::Command;
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     println!("cargo:rerun-if-env-changed=MONOKULO_POS_BUILD");
+    println!("cargo::rustc-check-cfg=cfg(monokulo_without_browser_code)");
 
     let mode = match std::env::var("MONOKULO_POS_BUILD").ok().as_deref() {
         Some("development") => "development",
         Some("production") => "production",
-        Some(other) => {
-            panic!("MONOKULO_POS_BUILD must be \"development\" or \"production\", got {other:?}")
-        }
+        Some("none") => return without_browser_code(),
+        Some(other) => panic!(
+            "MONOKULO_POS_BUILD must be \"development\", \"production\" or \"none\", got {other:?}"
+        ),
         None if std::env::var("PROFILE").as_deref() == Ok("release") => "production",
         None => "development",
     };
@@ -113,6 +118,34 @@ fn main() {
 
     build_key_custody_wasm(&manifest);
     build_wallet_setup_wasm(&manifest);
+    release_identity();
+}
+
+/// `MONOKULO_POS_BUILD=none`: no browser code at all, so neither Node nor
+/// the WebAssembly target is needed. Every file the binary embeds is an
+/// empty stand-in, and `monokulo_without_browser_code` is set, so the
+/// binary refuses to serve (`main`). For what never shows a page: `cargo
+/// xtask api openapi` writing the API's reference.
+fn without_browser_code() {
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    for dir in ["pos", "web"] {
+        std::fs::create_dir_all(out.join(dir)).expect("OUT_DIR");
+    }
+    for file in [
+        "pos/pos-app.js",
+        "pos/pos-app.css",
+        "web/ui-islands.js",
+        "web/engine-view.js",
+        "web/engine-view.css",
+        "key_custody.wasm",
+        "wallet_setup.wasm",
+    ] {
+        std::fs::write(out.join(file), "").expect("a stand-in in OUT_DIR");
+    }
+    for list in ["web/chunks.rs", "web/preloads.rs"] {
+        std::fs::write(out.join(list), "&[]\n").expect("a stand-in in OUT_DIR");
+    }
+    println!("cargo:rustc-cfg=monokulo_without_browser_code");
     release_identity();
 }
 

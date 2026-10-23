@@ -41,7 +41,7 @@ mod admin_setup;
 pub(crate) mod apps;
 mod auth;
 mod checkout;
-mod connect;
+pub(crate) mod connect;
 mod connections;
 pub mod csrf;
 pub mod embed_domains;
@@ -67,8 +67,9 @@ pub mod store_key;
 mod store_settings;
 mod store_site;
 mod telemetry_client;
-#[cfg(test)]
-pub(crate) mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_support;
 #[cfg(test)]
 mod tests;
 mod wallet_service;
@@ -315,7 +316,7 @@ impl AppState {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl AppState {
     /// This state with a real settings registry, over an options file in
     /// memory holding `options` (TOML), so a test can save settings as the
@@ -626,7 +627,7 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(orders::lookup_payment),
         )
         .route(
-            "/stores/{id}/orders/{order_id}",
+            crate::api::dashboard_order::Path::TEMPLATE,
             axum::routing::get(orders::order_detail),
         )
         .route(
@@ -634,12 +635,12 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(orders::order_detail_events),
         )
         .route(
-            "/plugins/connect/{platform}",
+            "/plugins/connect/{slug}",
             axum::routing::get(connect::start).post(connect::confirm_submit),
         )
-        .route("/plugins/connect/{platform}/finish", post(connect::finish))
+        .route(connect::FINISH, post(connect::finish))
         .route(
-            "/apps/connect",
+            apps::CONNECT,
             axum::routing::get(apps::landing).post(apps::redeem),
         )
         .route(
@@ -651,11 +652,11 @@ pub fn build_router(state: AppState) -> Router {
 
     // The machine API (`crate::api`): every resource's routes, from the
     // catalog its macros fill. Under test each answer is also checked
-    // against the OpenAPI document and recorded (`api::runtime::examples`).
+    // against the OpenAPI document (`api::runtime::examples`).
     let api = crate::api::runtime::router();
     #[cfg(test)]
     let api = api.layer(middleware::from_fn(
-        crate::api::runtime::examples::record_layer,
+        crate::api::runtime::examples::check_layer,
     ));
     // The payer's pages, keyed by the order alone, and the machine API:
     // the surfaces a shop, an app or a customer's browser reaches, under

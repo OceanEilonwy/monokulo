@@ -5,13 +5,12 @@
 //! orders through the machine API (`POST /api/v1/orders`, with its key),
 //! and follows them on the store's event stream (`GET /api/v1/events`).
 //!
-//! The stream carries [`SaleEvent`]s, made from what the order API returned
+//! The stream carries [`SaleEvent`]s, made from the orders the apps made
 //! and the engine's order-event log: amounts, addresses and states, never
 //! anything about what was bought.
 
 use std::sync::Arc;
 
-use serde::Serialize;
 use tokio::sync::broadcast;
 
 use crate::db::{AppOrder, LoggedEvent};
@@ -32,7 +31,7 @@ pub fn clean_device_name(raw: &str) -> String {
 }
 
 /// One change to an order an app made, as the store's apps see it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaleEvent {
     /// `sale.waiting`, `sale.seen`, `sale.confirming`, `sale.paid`,
     /// `sale.partial`, `sale.expired` or `sale.double_spend`.
@@ -42,7 +41,6 @@ pub struct SaleEvent {
     pub currency: String,
     pub address: String,
     pub xmr_amount_piconero: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub merchant_order_id: Option<String>,
     pub expires_at: i64,
     /// The device that made the order.
@@ -52,6 +50,17 @@ pub struct SaleEvent {
 }
 
 impl SaleEvent {
+    /// Every sale event's name, in the order a sale can go through them.
+    pub const NAMES: [&'static str; 7] = [
+        "sale.waiting",
+        "sale.seen",
+        "sale.confirming",
+        "sale.paid",
+        "sale.partial",
+        "sale.expired",
+        "sale.double_spend",
+    ];
+
     /// The event an app's new order is.
     pub fn waiting(order: &AppOrder) -> Self {
         Self::of(order, "sale.waiting", order.created_at)
@@ -192,31 +201,11 @@ mod tests {
         ] {
             let e = SaleEvent::from_logged(&o, &logged(engine)).unwrap();
             assert_eq!((e.event, e.at), (sale, 1_500), "{engine}");
+            assert!(SaleEvent::NAMES.contains(&e.event), "{engine}");
         }
         assert!(SaleEvent::from_logged(&o, &logged("order.double_spend_reversed")).is_none());
         assert_eq!(SaleEvent::waiting(&o).event, "sale.waiting");
-    }
-
-    #[test]
-    fn a_sale_event_says_nothing_about_items() {
-        let json = serde_json::to_value(SaleEvent::waiting(&order())).unwrap();
-        let mut keys: Vec<_> = json.as_object().unwrap().keys().cloned().collect();
-        keys.sort();
-        assert_eq!(
-            keys,
-            [
-                "address",
-                "amount",
-                "at",
-                "currency",
-                "device_name",
-                "event",
-                "expires_at",
-                "merchant_order_id",
-                "order_id",
-                "xmr_amount_piconero"
-            ]
-        );
+        assert!(SaleEvent::NAMES.contains(&"sale.waiting"));
     }
 
     #[tokio::test]

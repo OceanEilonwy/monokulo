@@ -68,10 +68,6 @@ impl<T: Resource> Link<T> {
             target: PhantomData,
         }
     }
-
-    pub fn href(&self) -> &str {
-        &self.href
-    }
 }
 
 /// The resource at `T`, absolute, on this instance's onion address
@@ -126,11 +122,10 @@ impl<H> Form<H> {
 }
 
 /// Whether the caller may follow a link to `resource`: its `GET` admits
-/// their key.
+/// their key, or, for a page, it is offered to them.
 fn may_follow(resource: &ResourceInfo) -> bool {
     match resource.kind {
-        // A page for people: anyone with the link.
-        Kind::Page => true,
+        Kind::Page => resource.offered_to(auth::current()),
         _ => catalog::get_of(resource.template).is_some_and(|get| get.who.admits(auth::current())),
     }
 }
@@ -156,22 +151,35 @@ struct LinkObject {
     type_: &'static str,
 }
 
-/// A body's `_links` while it's written.
+/// A body's `_links` while it's written. Every path in it starts with the
+/// request's [`auth::base`].
 pub struct LinksBuilder {
+    base: String,
     links: Vec<(String, LinkObject)>,
 }
 
 impl LinksBuilder {
+    /// A resource's links, starting with `self`.
     pub fn new<P: Resource>(self_path: &P) -> Self {
+        let mut builder = Self::without_self();
+        let href = format!("{}{self_path}", builder.base);
+        builder.links.push((
+            "self".to_owned(),
+            LinkObject {
+                href,
+                title: String::new(),
+                type_: "",
+            },
+        ));
+        builder
+    }
+
+    /// The links of a part of a body (`#[api::object]`), which has no
+    /// `self`.
+    pub fn without_self() -> Self {
         LinksBuilder {
-            links: vec![(
-                "self".to_owned(),
-                LinkObject {
-                    href: self_path.to_string(),
-                    title: String::new(),
-                    type_: "",
-                },
-            )],
+            base: auth::base(),
+            links: Vec::new(),
         }
     }
 
@@ -184,7 +192,7 @@ impl LinksBuilder {
         self.links.push((
             link_key::<T>(registered),
             LinkObject {
-                href: link.href.clone(),
+                href: format!("{}{}", self.base, link.href),
                 title: catalog::title(info),
                 type_: if info.kind == Kind::Hal {
                     ""
@@ -330,7 +338,7 @@ pub fn template(handler: &HandlerInfo) -> Template {
     let body = operation.body.take();
     let definitions = generator.take_definitions(true);
     // A form on a path with parameters isn't offered; there is none.
-    let target = handler.template.to_owned();
+    let target = format!("{}{}", auth::base(), handler.template);
     Template {
         title: catalog::summary(handler.doc),
         method: handler.method,
@@ -456,43 +464,8 @@ pub fn object_schema(doc: &str, properties: Map<String, Value>, required: Vec<&s
 
 /// Adds `_links` (self and `links`, each `(key, title)`) and `_templates`
 /// to a body's `properties`.
-pub fn hal_parts(
-    generator: &mut SchemaGenerator,
-    properties: &mut Map<String, Value>,
-    links: Vec<(String, String)>,
-) {
-    let _ = generator;
-    let link = |title: &str| {
-        json!({
-            "type": "object",
-            "description": title,
-            "properties": {
-                "href": {"type": "string"},
-                "title": {"type": "string"},
-                "type": {"type": "string"}
-            },
-            "required": ["href"]
-        })
-    };
-    let mut link_properties = Map::new();
-    link_properties.insert("self".into(), link("This resource."));
-    link_properties.insert(
-        "curies".into(),
-        json!({"type": "array", "description": "Explains the `mk:` relations: each is a page in the docs.", "items": {"type": "object"}}),
-    );
-    for (key, title) in links {
-        link_properties.insert(key, link(&title));
-    }
-    properties.insert(
-        "_links".into(),
-        json!({
-            "type": "object",
-            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
-            "properties": link_properties,
-            "required": ["self"],
-            "additionalProperties": false
-        }),
-    );
+pub fn hal_parts(properties: &mut Map<String, Value>, links: Vec<(String, String)>) {
+    links_part(properties, links, true);
     properties.insert(
         "_templates".into(),
         json!({
@@ -509,6 +482,49 @@ pub fn hal_parts(
                 },
                 "required": ["method", "target", "properties"]
             }
+        }),
+    );
+}
+
+/// Adds `_links` (`links`, each `(key, title)`, and no `self`) to the
+/// `properties` of a part of a body (`#[api::object]`) that has links.
+pub fn object_links(properties: &mut Map<String, Value>, links: Vec<(String, String)>) {
+    links_part(properties, links, false);
+}
+
+fn links_part(properties: &mut Map<String, Value>, links: Vec<(String, String)>, with_self: bool) {
+    let link = |title: &str| {
+        json!({
+            "type": "object",
+            "description": title,
+            "properties": {
+                "href": {"type": "string"},
+                "title": {"type": "string"},
+                "type": {"type": "string"}
+            },
+            "required": ["href"]
+        })
+    };
+    let mut link_properties = Map::new();
+    if with_self {
+        link_properties.insert("self".into(), link("This resource."));
+    }
+    link_properties.insert(
+        "curies".into(),
+        json!({"type": "array", "description": "Explains the `mk:` relations: each is a page in the docs.", "items": {"type": "object"}}),
+    );
+    for (key, title) in links {
+        link_properties.insert(key, link(&title));
+    }
+    let required: Vec<&str> = if with_self { vec!["self"] } else { Vec::new() };
+    properties.insert(
+        "_links".into(),
+        json!({
+            "type": "object",
+            "description": "Links to what this key may read next, by relation. A link the key may not follow is left out.",
+            "properties": link_properties,
+            "required": required,
+            "additionalProperties": false
         }),
     );
 }
@@ -567,7 +583,7 @@ pub struct Created<B>(pub B);
 
 impl<B: Body> Respond for Created<B> {
     fn respond(self) -> Response {
-        let location = self.0.self_path().to_string();
+        let location = format!("{}{}", auth::base(), self.0.self_path());
         let mut response = hal(StatusCode::CREATED, &self.0);
         if let Ok(location) = HeaderValue::from_str(&location) {
             response.headers_mut().insert(header::LOCATION, location);
@@ -593,16 +609,107 @@ impl Respond for NoContent {
     }
 }
 
-/// A stream of server-sent events.
-pub struct EventStream(pub Response);
+/// A body whose caller may keep it for a while: `Cache-Control: private`
+/// for `max_age` seconds, `Vary: Authorization` (each key sees its own),
+/// and an `ETag` of the body, so a client that sends it back in
+/// `If-None-Match` gets `304 Not Modified` while it still holds.
+pub struct Cached<B> {
+    pub body: B,
+    pub max_age: u32,
+}
 
-impl Respond for EventStream {
+impl<B: Body> Respond for Cached<B> {
     fn respond(self) -> Response {
-        self.0
+        use sha2::Digest;
+        let json = match serde_json::to_string(&self.body) {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!(error = %e, "an API resource could not be written");
+                return super::problem::internal().into_response();
+            }
+        };
+        let digest = sha2::Sha256::digest(json.as_bytes());
+        let etag = format!("\"{}\"", hex::encode(&digest[..16]));
+        let fresh = auth::context()
+            .if_none_match
+            .is_some_and(|tags| if_none_match_hits(&tags, &etag));
+        let mut response = if fresh {
+            StatusCode::NOT_MODIFIED.into_response()
+        } else {
+            (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, HeaderValue::from_static(HAL_FORMS))],
+                json,
+            )
+                .into_response()
+        };
+        let headers = response.headers_mut();
+        if let Ok(etag) = HeaderValue::from_str(&etag) {
+            headers.insert(header::ETAG, etag);
+        }
+        if let Ok(cache) = HeaderValue::from_str(&format!("private, max-age={}", self.max_age)) {
+            headers.insert(header::CACHE_CONTROL, cache);
+        }
+        headers.append(header::VARY, HeaderValue::from_static("Authorization"));
+        response
+    }
+
+    fn describe(operation: &mut OperationDoc<'_>) {
+        operation.answer::<B>(StatusCode::OK);
+        operation.answer_empty(StatusCode::NOT_MODIFIED);
+    }
+}
+
+/// Whether an `If-None-Match` value names `etag` (or is `*`), comparing
+/// weakly, as RFC 9110 §13.1.2 says.
+fn if_none_match_hits(header: &str, etag: &str) -> bool {
+    let bare = |tag: &str| tag.trim().trim_start_matches("W/").to_owned();
+    header.trim() == "*" || header.split(',').any(|tag| bare(tag) == bare(etag))
+}
+
+/// One kind of event a stream sends: its `event:` name, what it means, and
+/// the schema of its `data:`.
+pub struct StreamEvent {
+    pub name: &'static str,
+    pub doc: &'static str,
+    pub data: fn(&mut SchemaGenerator) -> Value,
+}
+
+/// The events a stream sends, for the OpenAPI document and the docs.
+pub trait Events {
+    fn events() -> Vec<StreamEvent>;
+}
+
+/// A stream of server-sent events, of the kinds `E` lists.
+pub struct EventStream<E> {
+    response: Response,
+    events: PhantomData<E>,
+}
+
+impl<E: Events> EventStream<E> {
+    pub fn new(response: Response) -> Self {
+        EventStream {
+            response,
+            events: PhantomData,
+        }
+    }
+}
+
+impl<E: Events> Respond for EventStream<E> {
+    fn respond(self) -> Response {
+        self.response
     }
 
     fn describe(operation: &mut OperationDoc<'_>) {
         operation.answer_media(StatusCode::OK, "text/event-stream");
+        let events = E::events()
+            .into_iter()
+            .map(|event| {
+                let data = (event.data)(operation.generator);
+                (event.name, event.doc, data)
+            })
+            .collect();
+        operation.events = events;
     }
 }
 

@@ -39,6 +39,10 @@ fn main() {
     // The command line first: `--help`, `--init` and a mistyped option end
     // here.
     let args = monokulo::cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    // Built for writing the API's reference only (`build.rs`): its pages
+    // would have no scripts.
+    #[cfg(monokulo_without_browser_code)]
+    stop("This monokulo was built with MONOKULO_POS_BUILD=none, without its pages' scripts. Build it again without that to run it.");
     let start = args.start;
     if start.init {
         match monokulo::cli::write_init(&start.options) {

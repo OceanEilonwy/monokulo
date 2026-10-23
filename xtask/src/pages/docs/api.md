@@ -19,7 +19,29 @@ no URL has the store in it.
 
 `GET /api/v1` takes no key, so a client can check it found a Monokulo. A
 route that needs a key answers `401` without one, and `403` with one that
-may not use it.
+may not use it. A key this Monokulo doesn't know (mistyped, replaced, or a
+disconnected app's) is `401` on every route, the entry included: never the
+entry as if no key had been sent.
+
+## Find your way
+
+Start at the entry, `GET /api/v1`, with your key. It links everything your
+key may read and carries every form it may use, so creating an order is the
+`create-order` form's `target`, not a path you build.
+
+The entry can be kept: it answers `Cache-Control: private, max-age=3600`,
+`Vary: Authorization` and an `ETag`.
+
+- Keep it for as long as `max-age` says, per key, and use its links and
+  forms from your copy: making an order is then one request.
+- When it has expired, ask again with `If-None-Match: <its ETag>`. While it
+  is the same you get `304 Not Modified` with no body, and keep your copy
+  for another `max-age`.
+- Read it again at once when something you followed from it answers `401`,
+  `404` or `405`: your key changed, or the API moved on.
+
+Everything else (the store, orders, events) is `Cache-Control: no-store`:
+read it each time.
 
 ## Follow links, use forms
 
@@ -49,6 +71,23 @@ each field's rules.
 - Monokulo's own relations are written `mk:<name>`; the `mk` curie points at
   each one's page, [`/rels/{name}/`](reference/).
 - Making something answers `201 Created` with its `Location`.
+- An order links its payer's page, `mk:checkout`, and, for the store's
+  secret key only, its page on the merchant's dashboard,
+  [`mk:dashboard-order`](../rels/dashboard-order/): show that one to the
+  merchant ("View in Monokulo") rather than building its URL.
+
+### Under a path
+
+A Monokulo behind a reverse proxy can be served under a path,
+`https://example.com/monokulo/`, the proxy passing
+`https://example.com/monokulo/api/v1` on as `/api/v1`. Its admin then sets
+`public_uri` to `https://example.com/monokulo`, and every link, form
+`target` and `Location` the API gives starts with `/monokulo`, as does the
+`api` the plugin and app handshakes give. Resolved against the host you
+called, they reach Monokulo; build nothing from `/api/v1` yourself. Onion
+links have no such path: tor reaches Monokulo directly. (This is the API
+and its handshakes; Monokulo's own pages, the dashboard and the checkout,
+still expect the root of their host.)
 
 ## Amounts
 
@@ -109,6 +148,58 @@ sale, the checkout's own scripts); only pages for people answer with HTML:
 [reference](reference/). A busy client may be asked to
 solve a small proof of work (`challenge-required`); the JS library does it
 by itself.
+
+## Event streams
+
+`mk:events` (the store's sales, for a secret or app key) and
+`mk:order-events` (one order) are server-sent events
+(`text/event-stream`): each event an `event:` line with its name and a
+`data:` line, mostly JSON, and a comment now and then while nothing
+happens. A sale event links its order, so you follow the link rather than
+build the order's URL:
+
+```json
+{
+  "event": "sale.paid",
+  "order_id": "order_9f3c…",
+  "amount": "24.50",
+  "currency": "USD",
+  "_links": {
+    "mk:order": { "href": "/api/v1/orders/order_9f3c…", "title": "One order: what to pay, where, and how far the payment has got." },
+    "curies": [{ "name": "mk", "href": "https://docs.monokulo.com/rels/{rel}", "templated": true }]
+  }
+}
+```
+
+Each stream's page in the [reference](reference/) lists its events and
+their data; the OpenAPI document has them as `x-events` on the
+`text/event-stream` answer (OpenAPI 3.1 has no schema for a stream's
+events), with a recorded stream as its example.
+
+## The OpenAPI document
+
+Every Monokulo serves its [OpenAPI 3.1 document](v1/openapi.json) at
+`/api/v1/openapi.json` (the entry's `service-desc`). It has every route,
+who may call it, what it takes and answers; the pages the API links
+(`text/html`); the plugin and app handshakes with every problem they
+answer; and each stream's events. The copy on this site also has examples,
+real exchanges recorded against a test engine: the entry and the store as
+each key sees them, orders, streams, problems.
+
+To generate a client at a pinned Monokulo commit, write the same document
+from its source:
+
+```
+git clone https://github.com/OceanEilonwy/monokulo && cd monokulo
+cargo xtask api openapi --out openapi.json
+```
+
+It needs Rust only: `rustup` installs the toolchain the repository names
+(`rust-toolchain.toml`: nightly, with the WebAssembly target) by itself.
+It builds monokulo's library and one example, no tests and no browser
+code, so neither Node nor `npm ci` is needed. The example records the
+exchanges against an in-process test engine, checks each against the
+document, and writes it with them as examples.
 
 ## Versions
 

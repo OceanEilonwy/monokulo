@@ -41,8 +41,30 @@ pub struct ResourceInfo {
     /// Its description, for a resource with no body.
     pub doc: Option<&'static str>,
     pub params: &'static [&'static str],
+    /// For a page: who a link to it is offered to (`who = …` in
+    /// `resource!`); `None` for anyone with the link. A resource the API
+    /// serves offers its link to whoever its `GET` admits instead.
+    pub who: Option<Who>,
     pub file: &'static str,
     pub module: &'static str,
+}
+
+/// A route a machine calls outside the API, beside it in the OpenAPI
+/// document: a plugin's or app's handshake, which hands out the key the
+/// API is then called with. Registered next to its handler.
+pub struct Handshake {
+    pub method: &'static str,
+    pub template: &'static str,
+    /// Its operation's id in the OpenAPI document.
+    pub operation: &'static str,
+    /// What it does: its summary, then the rest.
+    pub doc: &'static str,
+    /// The schema of what it takes (a reference to it, from the generator).
+    pub request: fn(&mut schemars::SchemaGenerator) -> serde_json::Value,
+    /// The schema of what it answers.
+    pub response: fn(&mut schemars::SchemaGenerator) -> serde_json::Value,
+    /// Every problem it answers with.
+    pub problems: &'static [super::problem::Problem],
 }
 
 /// A handler: a method on a resource.
@@ -99,6 +121,16 @@ pub static HANDLERS: [HandlerInfo];
 
 #[linkme::distributed_slice]
 pub static BODIES: [BodyInfo];
+
+#[linkme::distributed_slice]
+pub static HANDSHAKES: [Handshake];
+
+/// Every handshake, by template.
+pub fn handshakes() -> Vec<&'static Handshake> {
+    let mut all: Vec<&Handshake> = HANDSHAKES.iter().collect();
+    all.sort_by_key(|h| h.template);
+    all
+}
 
 /// Every resource, by template.
 pub fn resources() -> Vec<&'static ResourceInfo> {
@@ -169,5 +201,10 @@ impl ResourceInfo {
     /// The key a link to it has: `mk:<rel>`.
     pub fn link_key(&self) -> String {
         format!("mk:{}", self.rel)
+    }
+
+    /// For a page: whether a link to it is offered to a caller with `key`.
+    pub fn offered_to(&self, key: Option<super::auth::Key>) -> bool {
+        self.who.is_none_or(|who| who.admits(key))
     }
 }
