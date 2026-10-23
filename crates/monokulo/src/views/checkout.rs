@@ -899,7 +899,7 @@ mod tests {
             merchant_site: None,
             merchant_icon: true,
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
-            status: if is_terminal { shared::order_status::OrderStatus::Paid.into() } else { shared::order_status::OrderStatus::Pending.into() },
+            status: if is_terminal { shared::order_status::OrderStatus::Paid } else { shared::order_status::OrderStatus::Pending },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             qr_code_svg: crate::qr::QrSvg::for_test("<svg></svg>"),
             xmr_amount: "0.500000000000".to_string(),
@@ -1029,7 +1029,7 @@ mod tests {
     #[test]
     fn live_fragment_carries_every_changing_region_and_nothing_else() {
         let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Partial.into();
+        data.status = shared::order_status::OrderStatus::Partial;
         data.payments = vec![CheckoutPaymentViewModel {
             txid: format!("abcd12{}ef5678", "0".repeat(52)),
             amount_xmr: "0.200000000000".to_string(),
@@ -1154,7 +1154,7 @@ mod tests {
     #[test]
     fn partial_payment_shows_remaining_amount_and_deadline() {
         let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Partial.into();
+        data.status = shared::order_status::OrderStatus::Partial;
         data.status_label = "Partial payment received".to_string();
         data.amount_received_xmr = "0.200000000000".to_string();
         data.payment_error = Some(
@@ -1274,14 +1274,14 @@ mod tests {
         assert!(html.contains("Confirm<span"));
 
         data.confirmations_required = 0;
-        data.status = shared::order_status::OrderStatus::Unconfirmed.into();
+        data.status = shared::order_status::OrderStatus::Unconfirmed;
         let html = checkout_page(&chrome(), &data).into_string();
         assert_eq!(html.matches("<li class=\"step-").count(), 2, "{html}");
         assert!(!html.contains("Confirm<span"), "{html}");
         // Seen is the last step before Paid, so Paid is where the order is.
         assert!(html.contains(r#"<li class="step-now"><span class="mk-track-dot" aria-hidden="true"></span><span class="mk-track-name">Paid<span class="visually-hidden">, now</span>"#), "{html}");
 
-        data.status = shared::order_status::OrderStatus::Paid.into();
+        data.status = shared::order_status::OrderStatus::Paid;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("XMR received. Nothing more to send."),
@@ -1292,14 +1292,14 @@ mod tests {
     #[test]
     fn full_payment_hides_deadline_and_overpayment_explains_excess() {
         let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Confirming.into();
+        data.status = shared::order_status::OrderStatus::Confirming;
         data.status_label = "Confirming".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains(" left</span>"));
         assert!(!html.contains("Expires in"));
         assert!(html.contains("Payment address"));
 
-        data.status = shared::order_status::OrderStatus::Overpaid.into();
+        data.status = shared::order_status::OrderStatus::Overpaid;
         data.status_label = "Overpaid".to_string();
         data.is_terminal = true;
         data.amount_received_xmr = "0.600000000000".to_string();
@@ -1357,7 +1357,7 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains(r#"<div class="qr-wrap is-spent">"#));
-        data.status = shared::order_status::OrderStatus::Unconfirmed.into();
+        data.status = shared::order_status::OrderStatus::Unconfirmed;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("Payment reversed")
@@ -1366,7 +1366,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<li class="step-fail">"#));
-        data.status = shared::order_status::OrderStatus::Pending.into();
+        data.status = shared::order_status::OrderStatus::Pending;
         // UTC, marked for the script to show in the customer's own zone.
         assert!(html.contains(r#"<time class="when" datetime="2023-11-14T22:13:20Z" title="Tuesday 14 November 2023, 22:13:20 (UTC)" data-local>14 Nov 2023, 22:13</time>"#), "{html}");
         // With `?timezone=`, that zone, and nothing for the script to change.

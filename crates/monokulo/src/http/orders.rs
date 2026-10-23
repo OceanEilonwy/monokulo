@@ -5863,7 +5863,7 @@ mod tests {
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 500_000_000_000,
-            status: shared::order_status::OrderStatus::Paid.into(),
+            status: shared::order_status::OrderStatus::Paid,
             confirmations: 10,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),

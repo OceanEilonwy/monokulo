@@ -463,7 +463,7 @@ async fn build_checkout_view(
         merchant_site: header.merchant_site,
         merchant_icon: !options.onion,
         status_label: status_text.to_string(),
-        status: detail.order.status.into(),
+        status: detail.order.status,
         address: detail.order.address.clone(),
         qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
         amount_due_xmr: shared::exchange_rate::format_piconero_as_xmr(

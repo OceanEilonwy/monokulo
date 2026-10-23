@@ -629,7 +629,7 @@ mod tests {
                 order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
                 reference: Some("wc-1042".to_string()),
                 source: "WooCommerce".to_string(),
-                status: shared::order_status::OrderStatus::Paid.into(),
+                status: shared::order_status::OrderStatus::Paid,
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),
                 created_at: 1000,
@@ -691,7 +691,7 @@ mod tests {
                 order_id: shared::ids::OrderId::new(order_id.to_string()),
                 reference: None,
                 source: "WooCommerce".to_string(),
-                status: shared::order_status::OrderStatus::Paid.into(),
+                status: shared::order_status::OrderStatus::Paid,
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),
                 created_at: 1000,
@@ -721,7 +721,7 @@ mod tests {
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 0,
-            status: shared::order_status::OrderStatus::Pending.into(),
+            status: shared::order_status::OrderStatus::Pending,
             confirmations: 0,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),
@@ -845,7 +845,7 @@ mod tests {
     #[test]
     fn an_expired_order_with_no_payments_says_none_were_made_and_offers_nothing() {
         let order = OrderDetailData {
-            status: shared::order_status::OrderStatus::Expired.into(),
+            status: shared::order_status::OrderStatus::Expired,
             ..test_order_detail_data(None)
         };
         let html = live_fragment(&order, &chrome().clock).into_string();
@@ -899,7 +899,7 @@ mod tests {
             ..payment("aaaa1111", 50_000_000_000, 1100)
         };
         let order = OrderDetailData {
-            status: shared::order_status::OrderStatus::Partial.into(),
+            status: shared::order_status::OrderStatus::Partial,
             amount_received_piconero: 200_000_000_000,
             payments: vec![reversed, payment("bbbb2222", 200_000_000_000, 1200)],
             ..test_order_detail_data(None)
@@ -922,7 +922,7 @@ mod tests {
     #[test]
     fn a_paid_order_ends_its_timeline_paid() {
         let order = OrderDetailData {
-            status: shared::order_status::OrderStatus::Paid.into(),
+            status: shared::order_status::OrderStatus::Paid,
             amount_received_piconero: 500_000_000_000,
             confirmations: 10,
             updated_at: 1500,

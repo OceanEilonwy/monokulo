@@ -522,7 +522,7 @@ fn pos_order_view(
             .as_ref()
             .map(|m| m.currency.clone())
             .unwrap_or_else(|| "XMR".to_string()),
-        status: order.status.into(),
+        status: order.status,
         updated_at: order.updated_at,
         confirmations: order.confirmations,
         confirmations_required,
@@ -908,7 +908,7 @@ async fn pos_status(
     // met, so there's no separate threshold check to fold in here.
     let (_, _, is_terminal) = crate::views::order_state(order.status);
     PosStatusResponse {
-        status: order.status.into(),
+        status: order.status,
         updated_at: order.updated_at,
         confirmations: order.confirmations,
         confirmations_required,

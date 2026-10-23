@@ -568,7 +568,9 @@ pub use crate::network::{network_str, parse_network};
 
 pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
     s.parse()
-        .map_err(|_| ApiError::BadRequest(format!("unknown status filter: {s}")))
+        .map_err(|unknown: shared::order_status::UnknownStatus| {
+            ApiError::BadRequest(format!("unknown status filter: {}", unknown.0))
+        })
 }
 
 /// Resolves a tenant *entirely* from the presented `sk_` bearer token - never from

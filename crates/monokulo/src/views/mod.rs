@@ -504,7 +504,7 @@ pub fn logo_mark(size: u32, class: &str) -> Markup {
 /// status with the same words and colours.
 pub fn order_state(status: OrderStatus) -> (&'static str, ui::OrderState, bool) {
     use OrderStatus::*;
-    match status.into() {
+    match status {
         Pending => ("Waiting for payment", ui::OrderState::Pending, false),
         Unconfirmed => (
             "Payment seen, unconfirmed",
@@ -523,7 +523,7 @@ pub fn order_state(status: OrderStatus) -> (&'static str, ui::OrderState, bool) 
 /// A status's words short enough for a phone's table column ("Waiting"
 /// for "Waiting for payment"). The long words stay for screen readers.
 pub fn order_state_short(status: OrderStatus) -> &'static str {
-    match status.into() {
+    match status {
         OrderStatus::Pending => "Waiting",
         OrderStatus::Unconfirmed => "Seen",
         OrderStatus::Partial => "Part paid",
