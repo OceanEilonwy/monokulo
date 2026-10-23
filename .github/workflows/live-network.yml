@@ -148,13 +148,25 @@ jobs:
           name: live-network-${{ github.run_id }}
           path: target/live/
           if-no-files-found: warn
+      # Each failed test (and each inconclusive one) as an annotation on the
+      # run's page, then each failed step by name, before failing.
       - name: Fail on a failed step
         if: always()
         run: |
-          for outcome in '${{ steps.wallets.outcome }}' '${{ steps.rust.outcome }}' \
-            '${{ steps.browser.outcome }}' '${{ steps.keep.outcome }}'; do
-            test "$outcome" = success
+          if test -f target/live/annotations.txt; then
+            cat target/live/annotations.txt
+          fi
+          failed=0
+          for step in 'Check the wallets=${{ steps.wallets.outcome }}' \
+            'Run the Rust tests=${{ steps.rust.outcome }}' \
+            'Run the browser tests=${{ steps.browser.outcome }}' \
+            'Keep the wallets funded=${{ steps.keep.outcome }}'; do
+            if test "${step#*=}" != success; then
+              echo "::error title=Live network step failed::${step%%=*}: ${step#*=}"
+              failed=1
+            fi
           done
+          exit "$failed"
 
   pages:
     # This run's Live tests page, with every other part of the site as it
