@@ -527,7 +527,8 @@ mod tests {
                 continue;
             };
             for (n, line) in text.lines().enumerate() {
-                let lower = line.to_ascii_lowercase();
+                // Unescaped, so a test's regex (`github\.io\/…`) counts too.
+                let lower = line.replace('\\', "").to_ascii_lowercase();
                 if lower.contains(github_pages) || bare.iter().any(|b| lower.contains(b)) {
                     stale.push(format!("{name}:{}: {line}", n + 1));
                 }

@@ -166,7 +166,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.getByText('Not taking payments yet')).toBeVisible();
   await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Connect a shop plugin', 'Open the till (POS)']);
   const guide = page.getByRole('link', { name: /Open the guide/ });
-  await expect(guide).toHaveAttribute('href', /oceaneilonwy\.github\.io\/monokulo\/docs\//);
+  await expect(guide).toHaveAttribute('href', /^https:\/\/docs\.monokulo\.com\/guide\/$/);
   await expect(page.locator('[data-variant="primary"]')).toHaveCount(1);
   await expect(guide).toHaveAttribute('data-variant', 'primary');
   await captureCoverageStage(page, 'setup-done-website', test.info(), { group: GROUP });
@@ -175,7 +175,7 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   const store = await finishStoreSetup(page);
   await expect(page.getByRole('heading', { name: 'Geomart' })).toBeVisible();
   await expect(page.locator('.store-site')).toHaveText('geomart.example');
-  await expect(page.getByRole('link', { name: /Help/ })).toHaveAttribute('href', /\/monokulo\/docs\//);
+  await expect(page.getByRole('link', { name: /Help/ })).toHaveAttribute('href', /^https:\/\/docs\.monokulo\.com\/guide\/$/);
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: 'Geomart', exact: true }).click();
   await expect(page.locator('.where-banner strong')).toHaveText('Backed up to Feather');
