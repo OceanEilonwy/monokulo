@@ -1453,15 +1453,22 @@ pub async fn create_order(
         {
             render_create_order_page(&state, row, &user, Some(&form), Some(message)).await
         }
-        Err(_) => {
-            render_create_order_page(
-                &state,
-                row,
-                &user,
-                Some(&form),
-                Some("Something went wrong. Please try again.".to_string()),
-            )
-            .await
+        Err(e) => {
+            let (status, message) = if e.is_unavailable() {
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "The payment engine is busy or unreachable. Try again in a moment.",
+                )
+            } else {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong. Please try again.",
+                )
+            };
+            let page =
+                render_create_order_page(&state, row, &user, Some(&form), Some(message.to_string()))
+                    .await;
+            (status, page).into_response()
         }
     }
 }

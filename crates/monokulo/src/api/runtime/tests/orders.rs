@@ -1835,9 +1835,11 @@ async fn spawn_rate_limited_coingecko(secs: u64) -> String {
 /// `Retry-After`), the dashboard's test order its form again with `503`.
 /// The same for a store whose base currency it is, ordering in XMR (its
 /// confirmations are decided in the base currency). An XMR order of a
-/// store priced in XMR needs no rate and is made.
+/// store priced in XMR needs no rate and is made; with the engine then
+/// unreachable, it is `engine-unavailable` (503) everywhere, the checkout
+/// page too.
 #[tokio::test]
-async fn a_rate_limited_provider_is_rates_unavailable_with_its_wait_on_every_pricing_route() {
+async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_route_that_makes_an_order() {
     let (mut state, _engine) = test_state_with_real_engine().await;
     state.exchange_rate = std::sync::Arc::new(
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
@@ -1944,4 +1946,71 @@ async fn a_rate_limited_provider_is_rates_unavailable_with_its_wait_on_every_pri
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
+    let order_id = body_json(response).await["order_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // And with the engine unreachable: every route that makes or reads an
+    // order says the engine is unavailable (503), not that something broke
+    // here (500).
+    let mut down = state.clone();
+    down.engine = crate::http::Engine::new(EngineClient::for_tests(format!(
+        "http://{}",
+        shared::unreachable::address()
+    )));
+    let router = build_router(down);
+    let response = router
+        .clone()
+        .oneshot(create_order_request(&xmr_pk, "0.5", "XMR"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body_json(response).await["type"],
+        "https://docs.monokulo.com/problems/engine-unavailable"
+    );
+    let xmr_store = state
+        .db
+        .lock()
+        .get_store_connection_by_public_key(&xmr_pk)
+        .unwrap()
+        .unwrap()
+        .id;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{xmr_store}/pos/orders"))
+                .header("content-type", "application/json")
+                .header("cookie", format!("session={session_token}"))
+                .body(Body::from(serde_json::json!({ "amount": "1.50" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let response = router
+        .clone()
+        .oneshot(crate::http::test_support::form_post(
+            &format!("/stores/{xmr_store}/orders/new"),
+            Some(&format!("session={session_token}")),
+            &[("amount", "1.50"), ("currency", "XMR")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_text(response).await.contains("busy or unreachable"));
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/checkout/{order_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

@@ -1203,6 +1203,24 @@ pub enum EngineClientError {
     NotAdminRoute(String),
 }
 
+impl EngineClientError {
+    /// Whether the engine is busy or can't be reached right now (no
+    /// answer, its rate limit, a server error), so the caller should be
+    /// told to retry (`503`, `engine-unavailable`) rather than that
+    /// something broke here.
+    pub fn is_unavailable(&self) -> bool {
+        match self {
+            EngineClientError::Request(_)
+            | EngineClientError::Middleware(_)
+            | EngineClientError::Embedded(_) => true,
+            EngineClientError::EngineError { status, .. } => {
+                *status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+            }
+            EngineClientError::Unreadable(_) | EngineClientError::NotAdminRoute(_) => false,
+        }
+    }
+}
+
 /// Mirrors the engine's own `CreateTenantRequest` (`src/http/admin.rs` at the
 /// repo root) field-for-field. There is no origin list: embedding policy is
 /// monokulo's alone (`crate::embed_domains`).
