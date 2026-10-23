@@ -3,8 +3,9 @@
 //! which the caller then records with [`crate::Wallet::add_output`].
 //!
 //! - `xmr-tw` (<https://stagenet-faucet.xmr-tw.org/>): stagenet only, a
-//!   `GET /send_tx/?addr=` whose JSON `tx_id` is either the txid or a
-//!   message saying why it wasn't sent.
+//!   `POST /send_tx/` of `{"addr": ...}` as JSON (as its page sends it;
+//!   the `GET /send_tx/?addr=` it once took is a 405 since 2026-10), whose
+//!   JSON `tx_id` is either the txid or a message saying why it wasn't sent.
 //! - `cypherfaucet` (<https://cypherfaucet.com/api>): stagenet and testnet,
 //!   0.01 XMR per address and per IP an hour, through its keyless API for
 //!   CI and tooling (the web page's form wants a captcha; the API doesn't).
@@ -95,8 +96,8 @@ pub async fn claim(
                 )));
             }
             let response = client
-                // Base58: nothing in an address needs escaping.
-                .get(format!("{url}/send_tx/?addr={address}"))
+                .post(format!("{url}/send_tx/"))
+                .json(&serde_json::json!({ "addr": address }))
                 .send()
                 .await
                 .map_err(|e| refused(format!("request failed: {e}")))?;
@@ -263,8 +264,15 @@ mod tests {
             }
         );
         let request = request.await.unwrap();
+        assert!(request.starts_with("POST /send_tx/ "), "{request}");
         assert!(
-            request.starts_with(&format!("GET /send_tx/?addr={ADDRESS} ")),
+            request
+                .to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "{request}"
+        );
+        assert!(
+            request.ends_with(&format!(r#"{{"addr":"{ADDRESS}"}}"#)),
             "{request}"
         );
     }
