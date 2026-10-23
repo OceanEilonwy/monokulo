@@ -240,7 +240,7 @@ pub async fn save_profile(
                 tracing::info!(sessions.ended = ended, "a password was changed");
             }
             let cards: Vec<&str> = changed.iter().map(|card| card.id()).collect();
-            crate::base::see_other(&format!("/account?saved={}", cards.join(",")))
+            crate::base::see_other(format!("/account?saved={}", cards.join(",")))
         }
         Err(e) if e.is_unique_violation() => {
             let outcome = refuse(

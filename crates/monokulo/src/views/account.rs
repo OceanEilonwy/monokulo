@@ -485,9 +485,7 @@ mod tests {
             html.find(needle)
                 .unwrap_or_else(|| panic!("{needle} in {html}"))
         };
-        let form = at(
-            r#"<form method="post" action=(crate::base::url("/account/profile")) id="settings-form""#,
-        );
+        let form = at(r#"<form method="post" action="/account/profile" id="settings-form""#);
         let email = at(r#"name="email" role="region""#);
         let appearance = at(r#"name="appearance" role="region""#);
         let time = at(r#"<section id="card-time""#);

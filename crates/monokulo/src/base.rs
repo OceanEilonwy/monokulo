@@ -68,9 +68,12 @@ pub fn path() -> String {
 
 /// `path`, a path on this site starting with `/` (with any query or
 /// fragment), as the URL to give a browser: under the current request's
-/// base path.
+/// base path. An empty path stays empty: the page itself, wherever it is.
 pub fn url(path: impl AsRef<str>) -> String {
     let path = path.as_ref();
+    if path.is_empty() {
+        return String::new();
+    }
     debug_assert!(
         path.starts_with('/') && !path.starts_with("//"),
         "not a path on this site: {path}"
@@ -157,6 +160,7 @@ mod tests {
             assert_eq!(path(), "/monokulo");
         });
         sync_scope("", || assert_eq!(url("/login"), "/login"));
+        sync_scope("/monokulo", || assert_eq!(url(""), ""));
     }
 
     #[test]

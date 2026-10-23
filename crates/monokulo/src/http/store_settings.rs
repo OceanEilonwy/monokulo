@@ -127,7 +127,7 @@ pub async fn save(
     if plan.is_empty() {
         drop(policy);
         return crate::base::see_other(
-            &website.unwrap_or_else(|| format!("/stores/{id}/settings?saved=nothing{tab}")),
+            website.unwrap_or_else(|| format!("/stores/{id}/settings?saved=nothing{tab}")),
         );
     }
 
@@ -147,7 +147,7 @@ pub async fn save(
     if let Some(website) = website {
         return crate::base::see_other(&website);
     }
-    crate::base::see_other(&format!("/stores/{id}/settings?saved={}", ids.join(",")))
+    crate::base::see_other(format!("/stores/{id}/settings?saved={}", ids.join(",")))
 }
 
 async fn refused(

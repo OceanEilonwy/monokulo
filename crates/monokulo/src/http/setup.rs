@@ -298,7 +298,7 @@ pub async fn store_submit(
     Form(draft): Form<StoreDraft>,
 ) -> Response {
     match check(&state, &user, &draft).await {
-        Ok(store) => crate::base::see_other(&format!("/setup/wallet?{}", store.context.query())),
+        Ok(store) => crate::base::see_other(format!("/setup/wallet?{}", store.context.query())),
         Err(page) => *page,
     }
 }

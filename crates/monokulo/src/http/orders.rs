@@ -1038,7 +1038,7 @@ pub(super) async fn render_store_settings_page_with(
 /// After a successful action: back to the page (303), whose toast says
 /// what was done, at the action's card.
 pub(super) fn saved(id: &crate::db::ConnectionId, section: StoreSection) -> Response {
-    crate::base::see_other(&format!(
+    crate::base::see_other(format!(
         "/stores/{id}/settings?saved={}#{}",
         section.id(),
         views::settings::card_id(section.id())
@@ -1226,7 +1226,7 @@ pub async fn create_order(
             .await
         {
             Ok(Some(order)) => {
-                return crate::base::redirect(&format!("/stores/{id}/orders/{order}"))
+                return crate::base::redirect(format!("/stores/{id}/orders/{order}"))
             }
             Ok(None) => {}
             Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1445,7 +1445,7 @@ pub async fn create_order(
                      response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
-            crate::base::redirect(&format!("/stores/{id}/orders/{}", order.order_id))
+            crate::base::redirect(format!("/stores/{id}/orders/{}", order.order_id))
         }
         Err(EngineClientError::EngineError { status, message })
             if status == reqwest::StatusCode::BAD_REQUEST =>

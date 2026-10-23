@@ -678,7 +678,7 @@ pub async fn set_refund_address(
         .await
     {
         Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
-        Ok(()) => crate::base::redirect(&format!(
+        Ok(()) => crate::base::redirect(format!(
             "{}{}",
             CheckoutPath {
                 order_id: order_id.clone()
