@@ -106,7 +106,7 @@ enum LoadError {
 }
 
 /// The store a checkout request is about: the one its order belongs to,
-/// which `super::abuse::pay_middleware` found from monokulo's own record of
+/// which `super::abuse::api_and_checkout_middleware` found from monokulo's own record of
 /// the order ([`RequestStore`]). `None` for an order monokulo doesn't know.
 type OrderStore = Option<Extension<RequestStore>>;
 

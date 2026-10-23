@@ -4,7 +4,7 @@
 //!
 //! Two middlewares share [`guard`]:
 //!
-//! - [`pay_middleware`] on the public routes, the machine API (`/api/v1`)
+//! - [`api_and_checkout_middleware`] on the public routes, the machine API (`/api/v1`)
 //!   and the payer's pages (`/checkout/{order_id}`), inside their CORS
 //!   layer, so a `429` is still readable cross-origin. It also finds the
 //!   store the request is about ([`super::store_key::RequestStore`]): on
@@ -117,7 +117,7 @@ pub fn anonymous_identity(
 }
 
 /// The class of a public route, by its method and route template.
-fn pay_route_class(method: &Method, route: &str) -> RouteClass {
+fn api_and_checkout_route_class(method: &Method, route: &str) -> RouteClass {
     use super::paths::{CheckoutEventsPath, CheckoutSharePath};
     use crate::api::runtime::catalog::{self, Kind};
     use axum_extra::routing::TypedPath;
@@ -163,12 +163,12 @@ fn site_route_class(method: &Method, path: &str) -> RouteClass {
 }
 
 /// See the module doc comment.
-pub async fn pay_middleware(
+pub async fn api_and_checkout_middleware(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    let class = pay_route_class(request.method(), &route_of(&request));
+    let class = api_and_checkout_route_class(request.method(), &route_of(&request));
     let api = super::paths::is_api(request.uri().path());
     let config = state.abuse.config();
     let anonymous = anonymous_identity(
@@ -1025,7 +1025,7 @@ mod tests {
             super::RouteClass::Other
         );
         assert_eq!(
-            super::pay_route_class(&Method::POST, "/api/v1/logs"),
+            super::api_and_checkout_route_class(&Method::POST, "/api/v1/logs"),
             super::RouteClass::Logs
         );
     }
@@ -1051,7 +1051,7 @@ mod tests {
             (Method::POST, "/checkout/{order_id}/refund-address", Other),
         ] {
             assert_eq!(
-                super::pay_route_class(&method, route),
+                super::api_and_checkout_route_class(&method, route),
                 class,
                 "{method} {route}"
             );

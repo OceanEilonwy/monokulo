@@ -13,7 +13,7 @@
 //!   create orders, as anyone could before keys were sent
 //!   (`http::api`).
 //!
-//! `super::abuse::pay_middleware` runs [`check`] on every `/api/v1` request
+//! `super::abuse::api_and_checkout_middleware` runs [`check`] on every `/api/v1` request
 //! with an `Authorization` header. A known key adds [`ApiCaller`] to the
 //! request; a secret or app key also makes the client that store, with its
 //! own budget instead of the anonymous per-client one. Anything else (an
@@ -53,7 +53,7 @@ pub struct ApiCaller {
 }
 
 /// Request extension: the store a public request is about, found by
-/// `super::abuse::pay_middleware` from the API key or the checkout's order,
+/// `super::abuse::api_and_checkout_middleware` from the API key or the checkout's order,
 /// for the embed policy (`super::embed_domains`) and the checkout pages.
 #[derive(Clone)]
 pub struct RequestStore(pub std::sync::Arc<StoreConnectionRow>);
