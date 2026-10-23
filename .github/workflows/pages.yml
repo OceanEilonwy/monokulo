@@ -1,12 +1,19 @@
-# The GitHub Pages site:
+# The GitHub Pages site, at https://docs.monokulo.com (the repository's Pages
+# custom domain; monokulo.com is a hosted Monokulo, not this site):
 #   /           the landing page (`cargo xtask pages landing`; xtask/src/pages/landing/)
-#               and the signed apk repository (the OpenWrt workflow's
-#               openwrt-repo artifact)
+#               and the signed apk repository under /openwrt/ (the OpenWrt
+#               workflow's openwrt-repo artifact)
 #   /testing/   the coverage report (`cargo xtask pages build`): tests,
 #               coverage, screenshots, property tests, fuzzing, scale and the
 #               live-network tests
-#   /docs/      the guides for adding Monokulo to a site (`cargo xtask
-#               pages docs`, from xtask/src/pages/docs/), and the Geomart sample shop
+#   /guide/     the guides for adding Monokulo to a site (`cargo xtask pages
+#               docs`, from xtask/src/pages/docs/), with a folder per page
+#               beside it (/webhooks/, /plugins/, ...), the Geomart sample
+#               shop under /geomart/, and a redirect from each page's old
+#               address under /docs/
+#   /api/       the HTTP API's section: its front page from the docs; the
+#               reference generated from the API under /api/reference/,
+#               /api/v1/openapi.json, /rels/ and /problems/
 #   /stylebook/ the ui components' stylebook (`npm run build -w @monokulo/stylebook`,
 #               apps/stylebook), from this checkout
 #
@@ -94,9 +101,10 @@ jobs:
           done
           cargo xtask pages build "${args[@]}"
       # The guides for adding Monokulo to a site, from xtask/src/pages/docs/ in this
-      # checkout, with the Geomart sample shop under /docs/geomart/.
+      # checkout, a folder each at the site's top level, with the Geomart
+      # sample shop under /geomart/ and the redirects from /docs/.
       - name: Build the docs beside the landing page
-        run: cargo xtask pages docs --out target/pages/site/docs
+        run: cargo xtask pages docs --site target/pages/site
       # Every ui component, in both themes, from apps/stylebook in this
       # checkout. Its asset links are relative (base './'), and its typeface
       # is the site's shared assets/ copy, which the landing page wrote.

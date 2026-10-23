@@ -1,5 +1,5 @@
 {
-  "about": "Webhook deliveries as monokulo sends them, for testing a plugin's receiver. Check each with your clock at `sent_at` and the webhook's `signing_secret`: every one under `deliveries` verifies, every one under `refuse` must not. See https://oceaneilonwy.github.io/monokulo/docs/webhooks/.",
+  "about": "Webhook deliveries as monokulo sends them, for testing a plugin's receiver. Check each with your clock at `sent_at` and the webhook's `signing_secret`: every one under `deliveries` verifies, every one under `refuse` must not. See https://docs.monokulo.com/webhooks/.",
   "api_version": 2,
   "deliveries": [
     {

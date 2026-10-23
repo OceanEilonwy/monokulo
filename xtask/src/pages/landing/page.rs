@@ -13,7 +13,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 /// instructions that depend on the OpenWrt version are written once per
 /// repository; the page's dropdown (or, without JavaScript, the labels)
 /// says which is which.
-pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo]) -> Markup {
+pub(super) fn render(github_url: &str, site_url: &str, key: &str, repos: &[Repo]) -> Markup {
     let version = repos[0].version();
     let releases = distinct(repos.iter().map(|r| r.release.clone()), " / ");
     let arches = distinct(repos.iter().map(|r| r.arch.clone()), ", ");
@@ -439,7 +439,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             (ui::CopyBlock::new(key).copy_label("Copy the signing key"))
                                             p class="muted small" {
                                                 "Or paste this address instead of the key: "
-                                                code { (format!("{pages_url}/openwrt/monokulo.pem")) }
+                                                code { (format!("{site_url}/openwrt/monokulo.pem")) }
                                                 ". It’s the same key that signs Kringle, so if you already trust that, skip this step."
                                             }
                                         }
@@ -466,7 +466,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             @for r in repos {
                                                 div class="target" data-target=(r.id()) {
                                                     p class="target-label muted small" { "OpenWrt " (r.release) " · " (r.arch) }
-                                                    (command(format!("{pages_url}/{}/packages.adb", r.path), "Copy the repository line"))
+                                                    (command(format!("{site_url}/{}/packages.adb", r.path), "Copy the repository line"))
                                                 }
                                             }
                                         }
@@ -553,7 +553,7 @@ pub(super) fn render(github_url: &str, pages_url: &str, key: &str, repos: &[Repo
                                             @for r in repos {
                                                 div class="target" data-target=(r.id()) {
                                                     p class="target-label muted small" { "OpenWrt " (r.release) " · " (r.arch) }
-                                                    (command(format!("wget -O /etc/apk/keys/monokulo.pem {pages_url}/openwrt/monokulo.pem\necho \"{pages_url}/{}/packages.adb\" >> /etc/apk/repositories.d/customfeeds.list", r.path), "Copy the key and repository commands"))
+                                                    (command(format!("wget -O /etc/apk/keys/monokulo.pem {site_url}/openwrt/monokulo.pem\necho \"{site_url}/{}/packages.adb\" >> /etc/apk/repositories.d/customfeeds.list", r.path), "Copy the key and repository commands"))
                                                 }
                                             }
                                         }

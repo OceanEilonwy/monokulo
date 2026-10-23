@@ -14,17 +14,17 @@
 
 <p align="center">
   <a href="https://github.com/OceanEilonwy/monokulo/actions/workflows/release.yml"><img src="https://github.com/OceanEilonwy/monokulo/actions/workflows/release.yml/badge.svg?branch=main" alt="Release"></a>
-  <a href="https://monokulo.com/testing/coverage.html"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fmonokulo.com%2Ftesting%2Fbadge.json" alt="Coverage"></a>
+  <a href="https://docs.monokulo.com/testing/coverage.html"><img src="https://img.shields.io/endpoint?url=https%3A%2F%2Fdocs.monokulo.com%2Ftesting%2Fbadge.json" alt="Coverage"></a>
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><img src="https://img.shields.io/badge/download-latest--main-e05d00" alt="Download latest-main"></a>
-  <a href="https://monokulo.com/"><img src="https://img.shields.io/badge/docs-monokulo.com-0969da" alt="Docs"></a>
+  <a href="https://docs.monokulo.com/guide/"><img src="https://img.shields.io/badge/docs-docs.monokulo.com-0969da" alt="Docs"></a>
 </p>
 
 <p align="center">
-  <a href="https://monokulo.com"><b>Website</b></a> ·
-  <a href="https://monokulo.com/#install"><b>Install</b></a> ·
+  <a href="https://docs.monokulo.com/"><b>Website</b></a> ·
+  <a href="https://docs.monokulo.com/#install"><b>Install</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
-  <a href="https://monokulo.com/"><b>Docs</b></a> ·
-  <a href="https://monokulo.com/testing/"><b>How it's tested</b></a> ·
+  <a href="https://docs.monokulo.com/guide/"><b>Docs</b></a> ·
+  <a href="https://docs.monokulo.com/testing/"><b>How it's tested</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo-woocommerce"><b>WooCommerce</b></a>
 </p>
 
@@ -36,11 +36,11 @@
 - **One small program.** One executable and SQLite. Runs on Linux, macOS, Windows, Docker or a GL.iNet Flint 2 router.
 - **Many stores, one install.** Each store has its own wallet, view key and webhooks.
 - **Checks the chain itself.** Verifies every block's proof of work, so a node can't make up confirmations.
-- **Tested in depth.** Property tests against an independent ledger model, fuzzing and mutation testing run alongside the unit, browser and stagenet tests. See [how it's tested](https://monokulo.com/testing/): every test, coverage, the property and fuzz runs, and screenshots of every screen.
+- **Tested in depth.** Property tests against an independent ledger model, fuzzing and mutation testing run alongside the unit, browser and stagenet tests. See [how it's tested](https://docs.monokulo.com/testing/): every test, coverage, the property and fuzz runs, and screenshots of every screen.
 
 ## Get started
 
-**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://monokulo.com/#install) or Docker (see the [install guide](https://monokulo.com/#install)).
+**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://docs.monokulo.com/#install) or Docker (see the [install guide](https://docs.monokulo.com/#install)).
 
 **2. Start it** with an encryption key you keep:
 
@@ -51,7 +51,7 @@ MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo
 
 **3. Open <http://127.0.0.1:8081>**, create your admin account, then add a Monero node and your first store.
 
-Step-by-step instructions for every platform are in the **[install guide](https://monokulo.com/#install)**.
+Step-by-step instructions for every platform are in the **[install guide](https://docs.monokulo.com/#install)**.
 
 ## Contributing
 

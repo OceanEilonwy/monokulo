@@ -9,12 +9,20 @@ use maud::{html, Markup, PreEscaped};
 /// The repository the site links to when no other is given.
 pub(crate) const GITHUB_URL: &str = "https://github.com/OceanEilonwy/monokulo";
 
+/// Where the site is published (GitHub Pages, custom domain), with no
+/// trailing slash: the address the landing page tells routers to install
+/// from, and the one the docs' redirects name as canonical. monokulo.com
+/// itself is a hosted Monokulo, not this site.
+pub(crate) const SITE_URL: &str = "https://docs.monokulo.com";
+
 /// The part of the site a page is in; the header marks its link as current.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Section {
     /// The landing page, whose own sections the first two links open.
     Home,
     Docs,
+    /// The HTTP API reference (/api/, /rels/, /problems/).
+    Api,
     Testing,
     Stylebook,
 }
@@ -38,7 +46,8 @@ pub(crate) fn render(current: Section, root: &str, github_url: &str) -> Markup {
     let links = html! {
         a href=(format!("{root}#how")) { "How it works" }
         a href=(format!("{root}#install")) { "Install" }
-        (link(Section::Docs, format!("{root}docs/"), "Docs"))
+        (link(Section::Docs, format!("{root}guide/"), "Docs"))
+        (link(Section::Api, format!("{root}api/"), "API"))
         (link(Section::Testing, format!("{root}testing/"), "Testing"))
         (link(Section::Stylebook, format!("{root}stylebook/"), "Stylebook"))
         a href=(github_url) { "Source code" }
@@ -60,7 +69,7 @@ mod tests {
         let pages = [
             (Section::Home, "", None),
             (Section::Docs, "../", Some("Docs")),
-            (Section::Docs, "../../", Some("Docs")),
+            (Section::Api, "../", Some("API")),
             (Section::Testing, "../", Some("Testing")),
             (Section::Stylebook, "../", Some("Stylebook")),
         ];
@@ -78,13 +87,21 @@ mod tests {
                     "How it works",
                     "Install",
                     "Docs",
+                    "API",
                     "Testing",
                     "Stylebook",
                     "Source code"
                 ],
                 "{section:?} at {root:?}"
             );
-            for href in ["#how", "#install", "docs/", "testing/", "stylebook/"] {
+            for href in [
+                "#how",
+                "#install",
+                "guide/",
+                "api/",
+                "testing/",
+                "stylebook/",
+            ] {
                 assert!(
                     html.contains(&format!(r#"href="{root}{href}""#)),
                     "{href} {html}"
