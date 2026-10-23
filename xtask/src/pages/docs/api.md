@@ -49,6 +49,14 @@ each field's rules.
   each one's page, [`/rels/{name}/`](reference/).
 - Making something answers `201 Created` with its `Location`.
 
+## Amounts
+
+An amount is a decimal string in its currency, with up to 12 decimals in
+any currency (XMR's own precision). Trailing zeros don't count:
+`12.50000000` is `12.50`. Monokulo keeps the amount as you sent it and
+gives it back unchanged; its pages show it with the currency's usual
+decimals.
+
 ## Errors
 
 An error is `application/problem+json` (RFC 9457):

@@ -395,30 +395,17 @@ impl CoingeckoRateProvider {
     }
 }
 
-use crate::xmr_amount::split_decimal;
 /// `AmountError`, `parse_xmr_to_piconero`, and `format_piconero_as_xmr` are pure XMR
 /// decimal<->piconero conversions with no fiat concept - they live in
 /// `crate::xmr_amount` so the engine can depend on that module alone (e.g. for
 /// XMR-denominated amounts) without pulling in anything fiat-shaped. Re-exported
 /// here unchanged so every existing `exchange_rate::{AmountError, parse_xmr_to_piconero,
 /// format_piconero_as_xmr}` caller keeps compiling.
-pub use crate::xmr_amount::{format_piconero_as_xmr, parse_xmr_to_piconero, AmountError};
+pub use crate::xmr_amount::{
+    format_piconero_as_xmr, parse_xmr_to_piconero, AmountError, MAX_AMOUNT_DECIMALS,
+};
+use crate::xmr_amount::{parse_scaled, AMOUNT_SCALE};
 
-/// Converts a decimal fiat amount string (e.g. "24.99", "5", "5.5") into piconero,
-/// given a rate expressed as piconero-per-whole-unit. Fiat amounts are assumed to
-/// have at most 2 decimal places (true of every currency this is likely to see in
-/// v1) - rejected outright otherwise, rather than silently truncating a customer's
-/// entered amount.
-///
-/// Rounds *up* to the next whole piconero when the division isn't exact. The
-/// remainder is at most one piconero (1e-12 XMR, economically nothing either way),
-/// but the direction still has to be chosen deliberately rather than fall out of
-/// whatever `/` happens to do: rounding down would make the order's target amount
-/// strictly less than the fiat price, so a customer paying it exactly would leave
-/// the merchant short and the order would still settle as `Paid`. Rounding up can
-/// only ever ask for a hair more than the price, which the status ladder already
-/// handles as an overpayment. Erring against the party who chose the amount is the
-/// safe direction.
 /// A cached rate kept through misses (a provider that stops quoting a
 /// currency for a while) is served at most this many `max_age`s after it
 /// was fetched, and never less than [`MIN_STALE_CEILING`]; older, the
@@ -448,58 +435,70 @@ pub fn still_usable(
     }
 }
 
+/// Converts a decimal fiat amount string (e.g. "24.99", "5", "5.5",
+/// "12.50000000") into piconero, given a rate expressed as
+/// piconero-per-whole-unit.
+///
+/// The amount may have up to [`MAX_AMOUNT_DECIMALS`] (12) decimal places,
+/// and trailing zeros don't count: shop software often sends a price padded
+/// to its own fixed width (OpenCart sends `12.50000000`), which is still
+/// 12.5. Why 12: it's XMR's own precision and what the API's `Amount` type
+/// takes, one limit for every currency. Real currencies use 0-3 places and
+/// Bitcoin-like ones 8, so 12 leaves room for any of them. Why no more: the
+/// price ends up as whole piconero anyway, so a thirteenth place could only
+/// matter for a unit worth more than 10 XMR, and each further place takes a
+/// factor of ten out of the `u128` headroom for large orders. More
+/// significant places than 12 are rejected outright, never silently
+/// truncated off a customer's amount.
+///
+/// Headroom: `amount * 10^12 * rate` has to fit a `u128` (about 3.4e38).
+/// A rate of 1e15 piconero per unit (1000 XMR per unit, far above any
+/// currency's) leaves room for amounts up to about 3.4e11 units. Any
+/// result that fits the `u64` piconero an order holds (about 1.8e19, or
+/// 18.4M XMR) needs `amount * 10^12 * rate` of at most about 1.8e31, so
+/// overflow is only ever reached for amounts that are too large anyway. The
+/// API's `Amount` accepts up to 40 characters, i.e. integers far past
+/// `u128`; every overflow along the way is a clean [`AmountError::TooLarge`],
+/// never a wrap or a panic.
+///
+/// Rounds *up* to the next whole piconero when the division isn't exact. The
+/// remainder is at most one piconero (1e-12 XMR, economically nothing either way),
+/// but the direction still has to be chosen deliberately rather than fall out of
+/// whatever `/` happens to do: rounding down would make the order's target amount
+/// strictly less than the fiat price, so a customer paying it exactly would leave
+/// the merchant short and the order would still settle as `Paid`. Rounding up can
+/// only ever ask for a hair more than the price, which the status ladder already
+/// handles as an overpayment. Erring against the party who chose the amount is the
+/// safe direction.
 pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u64, AmountError> {
-    let (whole, fraction) = split_decimal(fiat_amount)?;
-    if fraction.len() > 2 {
-        return Err(AmountError::TooManyDecimalPlaces { max: 2 });
-    }
-    let whole: u128 = if whole.is_empty() {
-        0
-    } else {
-        whole.parse().map_err(|_| AmountError::TooLarge)?
-    };
-    let fraction_padded = format!("{fraction:0<2}"); // "5" -> "50", "" -> "00"
-    let frac: u128 = fraction_padded
-        .parse()
-        .map_err(|_| AmountError::InvalidDecimal)?;
-    let cents = whole
-        .checked_mul(100)
-        .and_then(|c| c.checked_add(frac))
-        .ok_or(AmountError::TooLarge)?;
-    if cents == 0 {
+    // The amount in units of 10^-12.
+    let scaled_amount = parse_scaled(fiat_amount)?;
+    if scaled_amount == 0 {
         return Err(AmountError::NotPositive);
     }
-    let scaled = cents
+    let scaled = scaled_amount
         .checked_mul(piconero_per_unit as u128)
         .ok_or(AmountError::TooLarge)?;
-    let piconero = scaled.div_ceil(100);
+    let piconero = scaled.div_ceil(AMOUNT_SCALE);
     // `as u64` here would wrap silently, turning a huge order into a trivially cheap
     // one - the exact shape of bug that costs a merchant real money without ever
     // producing an error to notice.
     let piconero = u64::try_from(piconero).map_err(|_| AmountError::TooLarge)?;
     if piconero == 0 {
-        // Only reachable with a zero (or absurdly small) configured rate, but an
-        // order for zero piconero would be satisfied by paying nothing at all -
+        // Only reachable with a zero configured rate (anything positive
+        // rounds up to at least one piconero), but an order for zero
+        // piconero would be satisfied by paying nothing at all -
         // `derive_status` would call it `Paid` on an empty payment set.
         return Err(AmountError::NotPositive);
     }
     Ok(piconero)
 }
 
-/// Converts an order amount into piconero, choosing the right precision for
-/// the currency: `"XMR"` (case-insensitively) is parsed at XMR's own native
-/// 12-decimal precision via `parse_xmr_to_piconero` - `piconero_per_unit` is
-/// not consulted at all for it, since the rate is always trivially exact (1
-/// XMR per XMR), not something to multiply through. Every other currency
-/// goes through `compute_xmr_amount`'s fiat-shaped (2-decimal-place,
-/// rate-multiplied) arithmetic instead.
-///
-/// A single fiat-shaped `compute_xmr_amount` call for *every* currency
-/// (including `"XMR"`, with `piconero_per_unit` fixed at `PICONERO_PER_XMR`)
-/// was the first version of this - wrong, because it silently capped every
-/// XMR-denominated order to 0.01 XMR granularity (fiat's 2-decimal-place
-/// assumption), a real precision loss for what is, for an XMR order, not a
-/// fiat amount at all.
+/// Converts an order amount into piconero: `"XMR"` (case-insensitively) is
+/// read as XMR itself via `parse_xmr_to_piconero`, and `piconero_per_unit`
+/// is not consulted at all for it, since the rate is always exactly 1 XMR
+/// per XMR. Every other currency is multiplied through its rate by
+/// `compute_xmr_amount`. Both take the same [`MAX_AMOUNT_DECIMALS`].
 pub fn compute_order_amount(
     currency: &str,
     amount: &str,
@@ -517,11 +516,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compute_order_amount_uses_xmrs_own_12_decimal_precision_for_xmr_not_2_decimal_fiat_rounding()
-    {
-        // 0.000335 XMR - below the 0.01 granularity `compute_xmr_amount`
-        // would have silently rounded this down to (in fact to 0, since it
-        // rejects more than 2 decimal places outright).
+    fn compute_order_amount_reads_xmr_as_itself_without_a_rate() {
         assert_eq!(
             compute_order_amount("XMR", "0.000335", 1_000_000_000_000).unwrap(),
             335_000_000
@@ -540,15 +535,14 @@ mod tests {
     }
 
     #[test]
-    fn compute_order_amount_uses_fiat_shaped_2_decimal_arithmetic_for_a_real_fiat_currency() {
+    fn compute_order_amount_multiplies_a_fiat_amount_through_its_rate() {
         assert_eq!(
             compute_order_amount("USD", "25.00", 6_700_000_000).unwrap(),
             167_500_000_000
         );
-        // More than 2 decimal places is rejected for a fiat currency, unlike XMR.
         assert_eq!(
-            compute_order_amount("USD", "25.001", 6_700_000_000),
-            Err(AmountError::TooManyDecimalPlaces { max: 2 })
+            compute_order_amount("USD", "25.001", 6_700_000_000).unwrap(),
+            167_506_700_000
         );
     }
 
@@ -571,10 +565,63 @@ mod tests {
     }
 
     #[test]
-    fn more_than_two_decimal_places_is_rejected_not_truncated() {
+    fn up_to_twelve_decimal_places_are_priced_exactly() {
+        // 12.345 at 1e9 piconero per unit.
         assert_eq!(
-            compute_xmr_amount("5.123", 1_000_000),
-            Err(AmountError::TooManyDecimalPlaces { max: 2 })
+            compute_xmr_amount("12.345", 1_000_000_000).unwrap(),
+            12_345_000_000
+        );
+        // Bitcoin-like 8 places.
+        assert_eq!(
+            compute_xmr_amount("0.00012345", 1_000_000_000_000).unwrap(),
+            123_450_000
+        );
+        // The twelfth place, at one XMR per unit, is one piconero.
+        assert_eq!(
+            compute_xmr_amount("0.000000000001", 1_000_000_000_000).unwrap(),
+            1
+        );
+        assert_eq!(
+            compute_xmr_amount("1.000000000001", 1_000_000_000_000).unwrap(),
+            1_000_000_000_001
+        );
+        // A twelfth place below a piconero still rounds up to one.
+        assert_eq!(compute_xmr_amount("0.000000000001", 1).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_thirteenth_significant_decimal_place_is_rejected_not_truncated() {
+        assert_eq!(
+            compute_xmr_amount("5.1234567890123", 1_000_000),
+            Err(AmountError::TooManyDecimalPlaces {
+                max: MAX_AMOUNT_DECIMALS
+            })
+        );
+        assert_eq!(
+            compute_xmr_amount("0.0000000000001", 1_000_000_000_000),
+            Err(AmountError::TooManyDecimalPlaces { max: 12 })
+        );
+    }
+
+    #[test]
+    fn trailing_zeros_never_count_against_the_limit() {
+        // What the OpenCart plugin sends for 12.50.
+        assert_eq!(
+            compute_xmr_amount("12.50000000", 1_000_000).unwrap(),
+            compute_xmr_amount("12.50", 1_000_000).unwrap()
+        );
+        assert_eq!(
+            compute_xmr_amount("12.500000000000000000000", 1_000_000).unwrap(),
+            12_500_000
+        );
+        assert_eq!(
+            compute_xmr_amount("1.000000000001000", 1_000_000_000_000).unwrap(),
+            1_000_000_000_001
+        );
+        assert_eq!(compute_xmr_amount("5.", 1_000_000).unwrap(), 5_000_000);
+        assert_eq!(
+            compute_xmr_amount("0.000000000000000", 1_000_000),
+            Err(AmountError::NotPositive)
         );
     }
 
@@ -609,6 +656,42 @@ mod tests {
         // guard for `parse_xmr_to_piconero` directly.
         assert_eq!(
             compute_xmr_amount("99999999999", 6_700_000_000),
+            Err(AmountError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn the_largest_amounts_the_api_accepts_are_too_large_never_a_panic_or_a_wrong_price() {
+        // The API's `Amount` takes up to 40 characters.
+        let max_rate = u64::MAX;
+        for amount in [
+            // Overflows `u128` while parsing.
+            "9".repeat(40),
+            // Fits `u128`, overflows when scaled by 10^12.
+            "9".repeat(27),
+            format!("{}.{}", "9".repeat(27), "9".repeat(12)),
+            // Fits scaled, overflows times the rate.
+            "99999999".to_string(),
+            // Fits times the rate, too big for `u64` piconero.
+            "2".to_string(),
+        ] {
+            assert_eq!(
+                compute_xmr_amount(&amount, max_rate),
+                Err(AmountError::TooLarge),
+                "{amount}"
+            );
+        }
+        // One unit at the largest rate a `u64` holds is exactly that rate.
+        assert_eq!(compute_xmr_amount("1", max_rate).unwrap(), u64::MAX);
+        // At 1000 XMR per unit (far above any real currency), the edge of
+        // what a `u64` holds is priced exactly, and just past it is refused.
+        let thousand_xmr = 1_000 * PICONERO_PER_XMR;
+        assert_eq!(
+            compute_xmr_amount("18446.744073709", thousand_xmr).unwrap(),
+            18_446_744_073_709_000_000
+        );
+        assert_eq!(
+            compute_xmr_amount("18446.744073710", thousand_xmr),
             Err(AmountError::TooLarge)
         );
     }

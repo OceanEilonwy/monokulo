@@ -10,7 +10,7 @@ you pass `endpoint`.
 | Param | Type | What it is |
 | --- | --- | --- |
 | `publicKey` | string, required | The store's `pk_…`. |
-| `amount` | number or string, required | The price, in `currency`. |
+| `amount` | number or string, required | The price, in `currency`: up to 12 decimals, trailing zeros not counted (`"12.50000000"` is fine). A string keeps it exact. |
 | `currency` | string, required | `"XMR"`, or a currency the store's exchange rate provider prices (`"EUR"`). |
 | `merchantOrderId` | string, optional | Your own order or cart id, kept with the order and shown on its page in the dashboard. |
 | `description` | string, optional | What the order is for, shown to the payer under your store's name. Up to 140 characters, plain text. Anyone with the payment link can read it. |
