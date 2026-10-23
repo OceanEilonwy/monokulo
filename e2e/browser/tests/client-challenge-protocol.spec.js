@@ -145,7 +145,7 @@ test('monokulo-client.js solves an order-creation challenge on its own', async (
   try {
     await page.goto(`http://shop.localhost:${port}/merchant`);
     const order = await page.evaluate(port => window.Monokulo.createOrder({
-      endpoint: `http://checkout.localhost:${port}`, publicKey: 'pk', amount: 1, currency: 'XMR',
+      monokulo: `http://checkout.localhost:${port}`, publicKey: 'pk', amount: 1, currency: 'XMR',
     }), port);
     expect(order.orderId).toBe('order-9');
     expect(order.checkoutUrl).toBe(`http://checkout.localhost:${port}/checkout/order-9`);

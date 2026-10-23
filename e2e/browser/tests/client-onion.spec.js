@@ -77,7 +77,7 @@ test('a shop on Tor makes the order and shows the checkout on Monokulo\'s onion 
     window.Monokulo.mount('#pay', created);
     return created;
   });
-  expect(order.endpoint).toBe(MONOKULO_ONION);
+  expect(order.monokulo).toBe(MONOKULO_ONION);
   expect(order.checkoutUrl).toBe(`${MONOKULO_ONION}/checkout/order_1`);
   expect(order.orderUrl).toBe(`${MONOKULO_ONION}/api/v1/orders/order_1`);
   await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${MONOKULO_ONION}/checkout/order_1`);
@@ -108,7 +108,7 @@ test('a shop on Tor whose Monokulo has no onion address uses its web address', a
   const calls = await monokulo(page, { onion: false });
   await openShop(page, SHOP_ONION);
   const order = await page.evaluate(() => window.Monokulo.createOrder({ publicKey: 'pk_test', amount: '1', currency: 'XMR' }));
-  expect(order.endpoint).toBe(WEB);
+  expect(order.monokulo).toBe(WEB);
   expect(order.checkoutUrl).toBe(`${WEB}/checkout/order_1`);
   expect(calls).toEqual([`GET ${WEB}/api/v1`, `POST ${WEB}/api/v1/orders`]);
 });

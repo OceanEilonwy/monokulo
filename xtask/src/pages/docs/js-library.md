@@ -4,7 +4,7 @@
 one global, `window.Monokulo`, with two functions. No build step, no
 dependencies. Monokulo's address is taken from the script's own URL, less
 its `/static/monokulo-client.js` (so a Monokulo served under a path keeps
-it), unless you pass `endpoint`.
+it), unless you pass it as `monokulo`.
 
 ## `Monokulo.createOrder(params) → Promise<Order>`
 
@@ -16,11 +16,11 @@ it), unless you pass `endpoint`.
 | `merchantOrderId` | string, optional | Your own order or cart id, kept with the order and shown on its page in the dashboard. |
 | `description` | string, optional | What the order is for, shown to the payer under your store's name. Up to 140 characters, plain text. Anyone with the payment link can read it. |
 | `showMerchantOrderId` | boolean, optional, default true | Set false to keep `merchantOrderId` off the checkout; it still shows in the dashboard and in webhooks. |
-| `endpoint` | string, optional | Monokulo's address, if it can't be read from the script tag. |
+| `monokulo` | string, optional | Monokulo's address (`https://pay.example.com`, or `https://example.com/monokulo` under a path), if it can't be read from the script tag. The library finds the API and the checkout under it. |
 
 Resolves to `{ orderId, address, xmrAmountPiconero, amount, currency,
-merchantOrderId, description, expiresAt, endpoint, publicKey, checkoutUrl, orderUrl }`. It
-posts to [the API](../api/)'s `create-order` form with the public key
+merchantOrderId, description, expiresAt, monokulo, publicKey, checkoutUrl, orderUrl }`, `monokulo` being the
+address the order was made at. It posts to [the API](../api/)'s `create-order` form with the public key
 (`Authorization: Bearer pk_…`). Rejects with an `Error`
 carrying the problem's `detail`. If Monokulo asks a busy visitor for a proof of
 work, the library solves it and tries again by itself.
@@ -29,7 +29,7 @@ work, the library solves it and tries again by itself.
 
 `target` is a selector or an element; its content is replaced by the
 checkout's iframe. `orderOrId` is the object from `createOrder`, or an order
-id (then pass `endpoint`, and `publicKey` for the polling fallback, in
+id (then pass `monokulo`, and `publicKey` for the polling fallback, in
 `options`, say after a reload).
 Mounting the same element again replaces the old checkout; `destroy()`
 removes it and stops listening.
@@ -42,7 +42,7 @@ removes it and stops listening.
 | `theme` | `"light"` or `"dark"` | Pins the checkout's theme; left out, it follows the customer's device. |
 | `refund` | `false` | Hides the refund-address form. |
 | `width`, `height` | CSS length | The iframe's size (420px × 900px unless set). |
-| `endpoint`, `publicKey` | string | Only when mounting a bare order id; `publicKey` lets it poll the order where server-sent events can't be used. |
+| `monokulo`, `publicKey` | string | Only when mounting a bare order id; `publicKey` lets it poll the order where server-sent events can't be used. |
 
 Status values: `pending`, `unconfirmed`, `confirming`, `partial`, `paid`,
 `overpaid`, `expired`. Updates stop at `paid`, `overpaid` or `expired`.
@@ -55,7 +55,7 @@ customer never leaves Tor. It finds that address once, from the API's entry
 (`mk:onion-api`, see [Tor](../api/#tor)); load the script from the onion
 address instead
 (`<script src="http://….onion/static/monokulo-client.js">`) and it needn't
-look. `endpoint` and `checkoutUrl` are then onion addresses. A Monokulo with
+look. `monokulo` and `checkoutUrl` are then onion addresses. A Monokulo with
 no onion address has nowhere else to send them, so its web address is used.
 
 ## When is an order really paid?
