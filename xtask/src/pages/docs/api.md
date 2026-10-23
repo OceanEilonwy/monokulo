@@ -146,9 +146,11 @@ sale, the checkout's own scripts); only pages for people answer with HTML:
 
 `type` is the problem's page, which says what it means and what to do;
 `detail` says what went wrong this time. Every problem is listed in the
-[reference](reference/). A busy client may be asked to
-solve a small proof of work (`challenge-required`); the JS library does it
-by itself.
+[reference](reference/). A busy browser (a request with the public key, or
+no key) may be asked to solve a small proof of work (`challenge-required`);
+the JS library does it by itself. A server never is: a request with the
+store's secret key or an app's key, both handshakes and every log report
+are only ever rate limited (`rate-limited`, with `Retry-After`).
 
 ## Event streams
 

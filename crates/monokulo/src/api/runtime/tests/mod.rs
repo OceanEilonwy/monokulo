@@ -78,6 +78,99 @@ fn hrefs(body: &Value) -> Vec<String> {
     out
 }
 
+/// A shop's or an app's server can't solve a browser's proof of work, so
+/// no machine route ever answers `challenge-required`: not the plugin's
+/// or the app's handshake, not the API with the store's secret key or an
+/// app's, not any log report, even under attack and past the soft limit
+/// (past the hard limit each is `rate-limited` with `Retry-After`, tested
+/// in `http::abuse`). Only an anonymous caller, a browser with the public
+/// key or none, is asked to solve one.
+#[tokio::test]
+async fn no_machine_route_is_ever_challenged() {
+    let engine = engine().await;
+    let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
+    fixture
+        .state
+        .abuse
+        .reload(crate::abuse::AbuseConfig {
+            under_attack: true,
+            soft_per_min: 1,
+            hard_per_min: 10_000,
+            signed_in_per_min: 10_000,
+            per_store_key_per_min: 10_000,
+            client_logs_per_min: 10_000,
+            ..fixture.state.abuse.config()
+        });
+    let from_one_peer = |mut request: Request<Body>| {
+        request.extensions_mut().insert(axum::extract::ConnectInfo(
+            "198.51.100.9:4000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        request
+    };
+    let json_post = |uri: &str, body: Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let (sk, ak) = (fixture.sk.as_str(), fixture.ak.as_str());
+    let logs = json!({"entries": [{"level": "error", "message": "unreachable"}]});
+    let order = json!({"amount": "0.5", "currency": "XMR"});
+    for _ in 0..3 {
+        let requests = [
+            json_post(
+                &crate::http::connect::FINISH.replace("{slug}", "prestashop"),
+                json!({"token": "conn_0"}),
+            ),
+            json_post(
+                crate::http::apps::CONNECT,
+                json!({"token": "ct_0", "slug": "monokular"}),
+            ),
+            api_request("GET", "/api/v1", Some(sk), None),
+            api_request("GET", "/api/v1", Some(ak), None),
+            api_request("POST", "/api/v1/orders", Some(sk), Some(order.clone())),
+            api_request("POST", "/api/v1/orders", Some(ak), Some(order.clone())),
+            api_request("POST", "/api/v1/logs", Some(sk), Some(logs.clone())),
+            json_post("/telemetry/client", json!({"entries": []})),
+        ];
+        for request in requests {
+            let (method, uri) = (request.method().clone(), request.uri().clone());
+            let response = fixture
+                .router
+                .clone()
+                .oneshot(from_one_peer(request))
+                .await
+                .unwrap();
+            assert!(
+                !response
+                    .headers()
+                    .contains_key(crate::http::abuse::CHALLENGE_HEADER),
+                "{method} {uri} was challenged"
+            );
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(
+                !String::from_utf8_lossy(&body).contains("challenge-required"),
+                "{method} {uri} ({status}) was challenged"
+            );
+        }
+    }
+    // The same peer with no key is a browser's, and is asked.
+    let anonymous = fixture
+        .router
+        .clone()
+        .oneshot(from_one_peer(api_request("GET", "/api/v1", None, None)))
+        .await
+        .unwrap();
+    assert!(anonymous
+        .headers()
+        .contains_key(crate::http::abuse::CHALLENGE_HEADER));
+}
+
 /// A key this Monokulo doesn't know is refused with `401` on every route
 /// of the API, the entry and the OpenAPI document included, never answered
 /// as if no key were sent; with no key at all the entry stays open.
