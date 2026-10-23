@@ -249,7 +249,7 @@ fn level_class(severity: Severity) -> &'static str {
 pub fn row(row: &RowView) -> Markup {
     let props_id = format!("{}-props", row.dom_id);
     html! {
-        @if let Some(url) = &row.properties_url {
+        @if let Some(url) = row.properties_url.as_deref().map(crate::base::url) {
             details class="log-row" id=(row.dom_id) open[row.open] fx-action=(url) fx-trigger="toggle" fx-target=(format!("#{props_id}")) fx-swap="outerHTML" {
                 (summary(row))
                 div class="props" id=(props_id) { a href=(url) { "Show this line's properties" } }
@@ -272,10 +272,10 @@ fn summary(row: &RowView) -> Markup {
             span class="msg" { (row.message) }
             span class="row-acts" {
                 @if let Some(trace) = &row.trace_url {
-                    a href=(trace) title="Show trace" aria-label="Show trace" { (icon(TRACE_ICON)) }
+                    a href=(crate::base::url(trace)) title="Show trace" aria-label="Show trace" { (icon(TRACE_ICON)) }
                 } @else { span {} }
                 @if let Some(session) = row.session_url.as_ref().or(row.pos_session_url.as_ref()) {
-                    a href=(session) title="Show session" aria-label="Show session" { (icon(SESSION_ICON)) }
+                    a href=(crate::base::url(session)) title="Show session" aria-label="Show session" { (icon(SESSION_ICON)) }
                 } @else { span {} }
             }
         }
@@ -312,10 +312,10 @@ pub fn properties(row: &RowView) -> Markup {
                         @if let Some(note) = &property.note { " " span class="muted" { (note) } }
                     }, html! {
                         @if let Some(find) = &property.find_url {
-                            a href=(find) title=(format!("Only lines where {} is this", property.name)) { "Find" }
+                            a href=(crate::base::url(find)) title=(format!("Only lines where {} is this", property.name)) { "Find" }
                         }
                         @if let Some(exclude) = &property.exclude_url {
-                            a href=(exclude) title=(format!("Hide lines where {} is this", property.name)) { "Exclude" }
+                            a href=(crate::base::url(exclude)) title=(format!("Hide lines where {} is this", property.name)) { "Exclude" }
                         }
                     }))
                 }
@@ -323,13 +323,13 @@ pub fn properties(row: &RowView) -> Markup {
             .look(ui::TableLook::Facts)
             .scroll(false))
             @if let Some(trace) = &row.trace_url {
-                p { a href=(trace) { "Show the whole trace" } }
+                p { a href=(crate::base::url(trace)) { "Show the whole trace" } }
             }
             @if let Some(session) = &row.session_url {
-                p { a href=(session) { "Show the whole session" } }
+                p { a href=(crate::base::url(session)) { "Show the whole session" } }
             }
             @if let Some(session) = &row.pos_session_url {
-                p { a href=(session) { "Show the POS session timeline" } }
+                p { a href=(crate::base::url(session)) { "Show the POS session timeline" } }
             }
         }
     }
@@ -357,7 +357,7 @@ pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str)
         } @else {
             p class="muted" { "This line is no longer kept: log retention has deleted it." }
         }
-        p { a href=(back_url) { "Back to the search" } }
+        p { a href=(crate::base::url(back_url)) { "Back to the search" } }
     };
     super::Page::new("Log line - Monokulo", header)
         .wide()
@@ -372,8 +372,8 @@ fn more(more_url: Option<&str>, older_url: Option<&str>) -> Markup {
         div id="log-more" {
             @if let (Some(older), Some(more)) = (older_url, more_url) {
                 p class="log-paging" {
-                    (ui::LinkButton::new("Older", older)
-                        .attr("fx-action", more)
+                    (ui::LinkButton::new("Older", crate::base::url(older))
+                        .attr("fx-action", crate::base::url(more))
                         .attr("fx-target", "#log-more")
                         .attr("fx-swap", "outerHTML"))
                 }
@@ -414,7 +414,7 @@ fn histogram(histogram: &HistogramView) -> Markup {
         div class="log-histogram-box" {
             div class="log-histogram" role="img" aria-label="Lines over time" {
                 @for bar in &histogram.bars {
-                    a href=(bar.href) style=(format!("height:{}%", bar.height_pct)) title=(bar.label) aria-label=(bar.label) {}
+                    a href=(crate::base::url(&bar.href)) style=(format!("height:{}%", bar.height_pct)) title=(bar.label) aria-label=(bar.label) {}
                 }
             }
             div class="log-histogram-axis" { span { (histogram.from_label) } span { (histogram.to_label) } }
@@ -442,20 +442,20 @@ pub fn results(vm: &LogsViewModel) -> Markup {
             // Shown above the search form (`.log-histogram-box`).
             @if let Some(h) = &vm.histogram { (histogram(h)) }
             @if let Some(newer) = &vm.newer_url {
-                p class="log-paging" { (ui::LinkButton::new("Newer", newer.as_str())) }
+                p class="log-paging" { (ui::LinkButton::new("Newer", crate::base::url(newer))) }
             }
             @if vm.rows.is_empty() && vm.query_error.is_none() {
                 p class="muted log-empty" { "No lines match." }
             }
-            div id="log-rows" class="log-rows" data-tail-url=[vm.tail_url.as_deref()] {
+            div id="log-rows" class="log-rows" data-tail-url=[vm.tail_url.as_deref().map(crate::base::url)] {
                 @for r in &vm.rows { (row(r)) }
                 (more(vm.more_url.as_deref(), vm.older_url.as_deref()))
             }
             p class="log-paging" {
                 "Download these lines: "
-                a href=(vm.export_ndjson_url) download { "NDJSON" }
+                a href=(crate::base::url(&vm.export_ndjson_url)) download { "NDJSON" }
                 " · "
-                a href=(vm.export_csv_url) download { "CSV" }
+                a href=(crate::base::url(&vm.export_csv_url)) download { "CSV" }
             }
         }
     }
@@ -464,7 +464,8 @@ pub fn results(vm: &LogsViewModel) -> Markup {
 /// The saved searches box: swapped by itself when one is saved or removed.
 pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Option<&str>) -> Markup {
     // fixi swaps the whole card for what a save or a removal answers.
-    let fixi = |action: String| {
+    let fixi = |path: String| {
+        let action = crate::base::url(path);
         move |body: Markup| {
             html! {
                 form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target="#card-saved-searches" {
@@ -493,7 +494,7 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
                 (ui::Table::new(html! {
                     @for s in saved {
                         tr {
-                            td { a href=(format!("/admin/logs?{}", s.query_string)) { (s.name) } }
+                            td { a href=(crate::base::url(format!("/admin/logs?{}", s.query_string))) { (s.name) } }
                             td class="row-acts" {
                                 (fixi(format!("/admin/logs/saved/{}/delete", s.id))(html! {
                                     (ui::Button::new("Remove")
@@ -588,7 +589,7 @@ fn syntax(names: &[String], in_dialog: bool) -> Markup {
                     li {
                         code { (query) }
                         span class="qh-what" { (what) }
-                        (ui::LinkButton::new("Use", format!("/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()))
+                        (ui::LinkButton::new("Use", crate::base::url(format!("/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>())))
                             .size(ui::ControlSize::Compact)
                             .attr("data-q", *query))
                     }
@@ -664,7 +665,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
             .disabled(vm.tail_url.is_none())
             .attr("id", "log-live")
             .attr("aria-pressed", "false")
-            .attr("fx-action", vm.tail_url.as_deref().unwrap_or(LIVE_NONE))
+            .attr("fx-action", crate::base::url(vm.tail_url.as_deref().unwrap_or(LIVE_NONE)))
             .attr("fx-target", "#log-rows")
             .attr("fx-swap", "afterbegin")
             .attr("fx-sse-reconnect", "")
@@ -672,8 +673,8 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
         });
     let body = html! {
         div class="logs-body" {
-            form id="log-search" class="logs-search" method="get" action="/admin/logs"
-                fx-action="/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
+            form id="log-search" class="logs-search" method="get" action=(crate::base::url("/admin/logs"))
+                fx-action=(crate::base::url("/admin/logs")) fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
                 div class="q-row" {
                     label for="log-q" class="sr-only" { "Search" }
                     (ui::Input::new("q")
@@ -691,7 +692,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                             circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
                         }
                         span class="q-help-label" { "Syntax" }
-                    }, SYNTAX_PAGE)
+                    }, crate::base::url(SYNTAX_PAGE))
                     .attr("id", "query-help-link")
                     .attr("aria-haspopup", "dialog")
                     .attr("data-opens-dialog", "query-help"))
@@ -775,7 +776,7 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
     let body = html! {
         (ui::Hint::new(html! {
             code { (vm.session) }
-            @if let Some((name, href)) = &vm.store { " · " a href=(href) { (name) } }
+            @if let Some((name, href)) = &vm.store { " · " a href=(crate::base::url(href)) { (name) } }
             @if let Some(device) = &vm.device { br; span class="muted" { (device) } }
         }))
         @for problem in &vm.problems { (status_problem(problem)) }
@@ -792,11 +793,11 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
                 div { dt { "Warnings and errors" } dd { (vm.summary.problems) } }
             }
             @if vm.truncated {
-                (ui::Hint::new(html! { "Only the first events of a very long session are shown. " a href=(vm.logs_url) { "Search them all" } }))
+                (ui::Hint::new(html! { "Only the first events of a very long session are shown. " a href=(crate::base::url(&vm.logs_url)) { "Search them all" } }))
             }
             (ui::Hint::new(html! {
                 "Times are the tablet's clock, in " (vm.zone_label) ". "
-                a href=(vm.logs_url) { "Show these lines in Logs" }
+                a href=(crate::base::url(&vm.logs_url)) { "Show these lines in Logs" }
             }))
             ol class="pos-timeline" {
                 @for entry in &vm.entries {
@@ -806,7 +807,7 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
                         span class="since muted" { (entry.since_previous) }
                         span class="kind" { (entry.kind) }
                         span class="about" {
-                            @if let Some((label, href)) = &entry.order { a href=(href) { (label) } " " }
+                            @if let Some((label, href)) = &entry.order { a href=(crate::base::url(href)) { (label) } " " }
                             @if let Some(period) = &entry.period { strong class="period" { (period) } " " }
                             @for (name, value) in &entry.detail { span class="kv" { span class="muted" { (name) "=" } (value) } " " }
                             @if let Some(late) = &entry.late { span class="late muted" { "(" (late) ")" } }
@@ -898,7 +899,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
             }
         }
         h2 { "Lines" }
-        (ui::Hint::new(html! { a href=(vm.logs_url) { "Search these lines" } }))
+        (ui::Hint::new(html! { a href=(crate::base::url(&vm.logs_url)) { "Search these lines" } }))
         div class="log-rows" { @for r in &vm.rows { (row(r)) } }
     };
     super::Page::new("Trace - Monokulo", header)

@@ -125,7 +125,7 @@ impl SafePath {
 
 /// A `302` to a checked path that came from a request.
 pub(crate) fn redirect_to(path: &SafePath) -> Response {
-    redirect_302(path.as_str())
+    crate::base::redirect(path.as_str())
 }
 
 /// `chrome.logged_in` is always `false` here, not a real per-request
@@ -165,16 +165,10 @@ async fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>)
     views::auth::login_page(&chrome, &data).into_response()
 }
 
-/// A `302 Found` redirect (axum's own `Redirect::to` issues `303 See
-/// Other`), for sending a browser on after a `GET` or after logging in.
-pub(crate) fn redirect_302(location: &str) -> Response {
-    (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
-}
-
-/// After a form post: "see this page", fetched with a `GET` whatever the
-/// post was, so reloading it never posts again.
-pub(crate) fn redirect_303(location: &str) -> Response {
-    (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
+/// A `302 Found` to a URL off this site (a plugin's return address);
+/// a path on this site goes through `crate::base::redirect`.
+pub(crate) fn redirect_away(url: &url::Url) -> Response {
+    (StatusCode::FOUND, [(header::LOCATION, url.as_str())]).into_response()
 }
 
 pub async fn signup_form(
@@ -232,7 +226,7 @@ pub async fn signup_submit(
                 }
             }
             let Ok(raw_token) = login::start_session(&state, &user_id).await else {
-                return redirect_302("/login");
+                return crate::base::redirect("/login");
             };
             let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
             let jar = CookieJar::new().add(cookie);
@@ -240,7 +234,7 @@ pub async fn signup_submit(
                 Some(next) => next.as_str().to_owned(),
                 None => "/setup".to_owned(),
             };
-            return (jar, redirect_302(&setup)).into_response();
+            return (jar, crate::base::redirect(&setup)).into_response();
         }
         Err(CreateAccountError::DuplicateEmail) => (
             Some("That email is already registered. Try logging in instead.".to_string()),
@@ -270,7 +264,7 @@ pub async fn signup_submit(
             form.invite.as_str(),
         ),
         // Not a path a non-admin signup takes.
-        Err(CreateAccountError::AlreadySetUp) => return redirect_302("/login"),
+        Err(CreateAccountError::AlreadySetUp) => return crate::base::redirect("/login"),
     };
     render_signup(
         &state,
@@ -307,7 +301,7 @@ pub async fn logout_submit(
     let mut cookie = super::session_cookie(on.secure, String::new());
     cookie.set_max_age(time::Duration::ZERO);
     let jar = CookieJar::new().add(cookie);
-    (jar, redirect_302("/login")).into_response()
+    (jar, crate::base::redirect("/login")).into_response()
 }
 
 #[derive(Deserialize)]
@@ -346,7 +340,7 @@ pub async fn theme_submit(
         .ok();
     match form.next.as_deref().and_then(SafePath::parse) {
         Some(next) => redirect_to(&next),
-        None => redirect_302("/"),
+        None => crate::base::redirect("/"),
     }
 }
 
@@ -388,7 +382,7 @@ pub async fn login_submit(
             }
 
             // A plain login lands on the home page (`http/home.rs`).
-            (jar, redirect_302("/")).into_response()
+            (jar, crate::base::redirect("/")).into_response()
         }
         Err(LoginError::Unauthorized) => {
             render_login(

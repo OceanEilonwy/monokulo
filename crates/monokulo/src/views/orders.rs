@@ -60,7 +60,7 @@ pub fn orders_table(
     ));
     let rows = orders.iter().map(|order| {
         ui::Slot::from(ui::Row::new(ui::Slot::many([
-            ui::Cell::new(html! { a href=(format!("/stores/{connection_id}/orders/{}", order.order_id)) { (super::short_id(order.order_id.as_str())) } })
+            ui::Cell::new(html! { a href=(crate::base::url(format!("/stores/{connection_id}/orders/{}", order.order_id))) { (super::short_id(order.order_id.as_str())) } })
                 .part(ui::CellPart::Title)
                 .into(),
             ui::Cell::new(html! { @if let Some(reference) = &order.reference { (reference) } @else { (super::no_reference()) } })
@@ -103,7 +103,7 @@ pub fn lookup_payment_card(
                 "Payments are watched for while an order is open and for a while after it's paid or expires. \
                  A payment sent later than that isn't picked up by itself: look it up here to record it.",
             ))
-            form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target="#payment-lookup" {
+            form method="post" action=(crate::base::url(action)) fx-action=(crate::base::url(action)) fx-method="POST" fx-target="#payment-lookup" {
                 (ui::Input::new("txid")
                     .value(txid_value)
                     .placeholder("Transaction ID (64 hex characters)")
@@ -117,7 +117,7 @@ pub fn lookup_payment_card(
                     (message)
                     @if let Some(order_id) = found_order_id {
                         " "
-                        a href=(order_href(order_id)) { "View order →" }
+                        a href=(crate::base::url(order_href(order_id))) { "View order →" }
                     }
                 }
             }
@@ -126,7 +126,7 @@ pub fn lookup_payment_card(
 }
 
 fn orders_base(data: &OrdersViewModel) -> String {
-    format!("/stores/{}/orders", data.connection_id)
+    crate::base::url(format!("/stores/{}/orders", data.connection_id))
 }
 
 /// The list and its paging: what a search or a page change replaces. With
@@ -554,7 +554,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                 (super::logs_link(chrome, "order.id", order.order_id.as_str(), "Logs for this order"))
                 @if order.from_pos && chrome.is_admin {
                     " "
-                    a class="logs-link" href=(format!("/admin/logs/orders/{}/pos", order.order_id)) {
+                    a class="logs-link" href=(crate::base::url(format!("/admin/logs/orders/{}/pos", order.order_id))) {
                         "POS session"
                     }
                 }
@@ -562,7 +562,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
             (live_fragment(order, &chrome.clock))
             // Streams the part above as the order changes, when
             // JavaScript is on (fixi starts it as soon as it's seen).
-            span hidden fx-action=(format!("/stores/{}/orders/{}/events", data.connection_id, order.order_id))
+            span hidden fx-action=(crate::base::url(format!("/stores/{}/orders/{}/events", data.connection_id, order.order_id)))
                 fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
 
         } @else {

@@ -110,20 +110,24 @@ pub struct CheckoutViewModel {
     pub payments: Vec<CheckoutPaymentViewModel>,
 }
 
-/// The order's checkout page (`crate::api::checkout`).
-fn checkout_path(order_id: &crate::db::OrderId) -> String {
-    crate::api::checkout::Path {
-        order_id: order_id.clone(),
-    }
-    .to_string()
+/// The URL of the order's checkout page (`crate::api::checkout`).
+fn checkout_url(order_id: &crate::db::OrderId) -> String {
+    crate::base::url(
+        crate::api::checkout::Path {
+            order_id: order_id.clone(),
+        }
+        .to_string(),
+    )
 }
 
-/// Where the order's refund address form posts.
-fn refund_path(order_id: &crate::db::OrderId) -> String {
-    crate::http::paths::RefundAddressPath {
-        order_id: order_id.clone(),
-    }
-    .to_string()
+/// The URL the order's refund address form posts to.
+fn refund_url(order_id: &crate::db::OrderId) -> String {
+    crate::base::url(
+        crate::http::paths::RefundAddressPath {
+            order_id: order_id.clone(),
+        }
+        .to_string(),
+    )
 }
 
 /// The checkout's own styling, on top of the shared theme.
@@ -281,9 +285,12 @@ fn events_url(data: &CheckoutViewModel) -> String {
     };
     format!(
         "{}{}{join}routed=true",
-        crate::http::paths::CheckoutEventsPath {
-            order_id: data.order_id.clone()
-        },
+        crate::base::url(
+            crate::http::paths::CheckoutEventsPath {
+                order_id: data.order_id.clone()
+            }
+            .to_string()
+        ),
         data.query_suffix
     )
 }
@@ -317,7 +324,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             @if !data.is_terminal {
                 noscript {
                     p class="refresh-toggle" {
-                        a href=(format!("{}{}", checkout_path(&data.order_id), data.toggled_refresh_suffix)) {
+                        a href=(format!("{}{}", checkout_url(&data.order_id), data.toggled_refresh_suffix)) {
                             "Auto Refresh: " (if data.auto_refresh { "ON" } else { "OFF" })
                         }
                     }
@@ -343,8 +350,8 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     (live_progress(data))
 
                     @if data.refund_enabled { div class="section" {
-                        form method="post" id="refund-form" action=(format!("{}{}", refund_path(&data.order_id), data.query_suffix))
-                            fx-action=(format!("{}{}", refund_path(&data.order_id), data.query_suffix))
+                        form method="post" id="refund-form" action=(format!("{}{}", refund_url(&data.order_id), data.query_suffix))
+                            fx-action=(format!("{}{}", refund_url(&data.order_id), data.query_suffix))
                             fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors
                             // The QR decoder, fetched by checkout.js only
                             // when a customer scans or picks an image.
@@ -785,7 +792,7 @@ fn share_frame_src(chrome: &PageChrome, data: &CheckoutShareViewModel) -> String
     } else {
         format!("?{}", params.join("&"))
     };
-    format!("{}{query}", checkout_path(&data.order_id))
+    format!("{}{query}", checkout_url(&data.order_id))
 }
 
 pub struct CheckoutShareViewModel {

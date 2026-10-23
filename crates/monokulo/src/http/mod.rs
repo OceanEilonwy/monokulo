@@ -58,6 +58,8 @@ mod orders;
 pub mod paths;
 mod pos;
 mod pos_logs;
+#[cfg(test)]
+mod prefix_tests;
 pub(crate) mod query_page;
 mod setup;
 mod signup;
@@ -127,22 +129,28 @@ pub(crate) use telemetry_client::clip as clip_report;
 
 /// The session cookie as it is set and cleared: `HttpOnly` (never readable
 /// from page JS), `SameSite=Lax` (sent on top-level navigation, not on
-/// cross-site subrequests; `http::csrf` covers the rest), `Path=/` (every
-/// route `AuthedUser` guards), and `Secure` when the visitor's connection is
-/// `https` (`crate::network::OnNetwork::secure`), so a session is never sent
-/// back over plain HTTP once it was made over TLS. Not `Secure` on a
-/// plain-HTTP instance or an onion address, where it would never be sent
-/// at all.
+/// cross-site subrequests; `http::csrf` covers the rest), on the base path
+/// (`crate::base`: `Path=/monokulo` behind a proxy serving Monokulo there,
+/// so the rest of that host never sees it; `Path=/` at the root and over
+/// Tor), and `Secure` when the visitor's connection is `https`
+/// (`crate::network::OnNetwork::secure`), so a session is never sent back
+/// over plain HTTP once it was made over TLS. Not `Secure` on a plain-HTTP
+/// instance or an onion address, where it would never be sent at all.
 pub(crate) fn session_cookie(
     secure: bool,
     value: String,
 ) -> axum_extra::extract::cookie::Cookie<'static> {
     use axum_extra::extract::cookie::{Cookie, SameSite};
+    let base = crate::base::path();
     Cookie::build((SESSION_COOKIE_NAME, value))
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(secure)
-        .path("/")
+        .path(if base.is_empty() {
+            "/".to_owned()
+        } else {
+            base
+        })
         .build()
 }
 
@@ -751,6 +759,12 @@ pub fn build_router(state: AppState) -> Router {
             state.clone(),
             network_headers,
         ))
+        // The base path every URL this request gives starts with
+        // (`crate::base`), kept for everything above and the response body.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::base::layer,
+        ))
         .layer(middleware::from_fn(record_store))
         .layer(middleware::from_fn(telemetry::http::server))
         .with_state(state)
@@ -828,7 +842,7 @@ fn unauthenticated(parts: &Parts) -> Response {
         return ApiError::Unauthorized.into_response();
     }
     let here = parts.uri.path_and_query().map_or("/", |p| p.as_str());
-    auth::redirect_302(&format!(
+    crate::base::redirect(&format!(
         "/login?next={}",
         url::form_urlencoded::byte_serialize(here.as_bytes()).collect::<String>()
     ))

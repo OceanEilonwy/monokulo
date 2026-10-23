@@ -23,7 +23,8 @@
     "./monitoring.css": "./web/components/monitoring.css",
     "./status/*": "./web/status/*",
     "./solid": "./solid/index.ts",
-    "./islands": "./web/islands.ts"
+    "./islands": "./web/islands.ts",
+    "./site": "./web/site.ts"
   },
   "scripts": {
     "build": "vite build",

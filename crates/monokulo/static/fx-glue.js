@@ -45,7 +45,10 @@
   var zone = "";
   try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
   // Also as a cookie, so full page loads show times in it too.
-  if (zone) document.cookie = "tz=" + encodeURIComponent(zone) + "; path=/; max-age=31536000; SameSite=Lax";
+  // On the base path Monokulo is served at (`crate::base`), as the session is.
+  var base = document.querySelector("meta[name=\"monokulo-base\"]");
+  var path = (base && base.content) || "/";
+  if (zone) document.cookie = "tz=" + encodeURIComponent(zone) + "; path=" + path + "; max-age=31536000; SameSite=Lax";
   // No view transitions: they flash on every small section swap.
   window.fixiCfg = { transition: false, headers: zone ? { "X-Timezone": zone } : {} };
 

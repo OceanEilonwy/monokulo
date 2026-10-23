@@ -31,7 +31,7 @@ pub fn setup_page(chrome: &PageChrome, data: &SetupViewModel) -> Markup {
         @if let Some(error) = &data.error {
             (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
         }
-        form method="post" action="/admin/setup" class="mk-stack" {
+        form method="post" action=(crate::base::url("/admin/setup")) class="mk-stack" {
             (ui::Field::new("Email", "setup-email", "email")
                 .kind(ui::InputType::Email)
                 .value(data.email.as_str())
@@ -73,7 +73,7 @@ pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -
                 (ui::Alert::new(error.as_str(), ui::Tone::Error).quiet(true))
             }
             p { "This instance is invite-only right now. Tell us a bit about what you'd like to use it for and we'll follow up." }
-            form method="post" action="/request-invite" class="mk-stack" {
+            form method="post" action=(crate::base::url("/request-invite")) class="mk-stack" {
                 (ui::Field::new("Email", "request-invite-email", "email")
                     .kind(ui::InputType::Email)
                     .required(true)
@@ -131,7 +131,7 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> ui::Row {
     let actions: Vec<ui::Slot> = if row.just_deleted {
         vec![ui::Cell::new("deleted").attr("colspan", "2").into()]
     } else {
-        let delete = format!("/admin/invites/{}/delete?page={}", row.id, page);
+        let delete = crate::base::url(format!("/admin/invites/{}/delete?page={}", row.id, page));
         vec![
             action(html! {
                 @if let Some(href) = &row.mailto_href {
@@ -192,8 +192,8 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
                 (ui::Alert::new(success.as_str(), ui::Tone::Success).flag("data-fx-focus").attr("tabindex", "-1"))
             }
 
-            form method="post" action="/admin/invites/create-link"
-                fx-action="/admin/invites/create-link" fx-method="POST" fx-target=(target) {
+            form method="post" action=(crate::base::url("/admin/invites/create-link"))
+                fx-action=(crate::base::url("/admin/invites/create-link")) fx-method="POST" fx-target=(target) {
                 (ui::FormActions::new(ui::Button::new("Create invite link")
                     .variant(ui::ButtonVariant::Primary)
                     .kind(ui::ButtonType::Submit)))
@@ -212,12 +212,12 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
                         .map(|row| invite_row(row, data.page)),
                 ))
                 (ui::Pagination::new("Invite request pages")
-                    .maybe_previous(data.has_previous.then(|| format!("/admin/invites?page={}", data.previous_page)))
-                    .maybe_next(data.has_next.then(|| format!("/admin/invites?page={}", data.next_page)))
+                    .maybe_previous(data.has_previous.then(|| crate::base::url(format!("/admin/invites?page={}", data.previous_page))))
+                    .maybe_next(data.has_next.then(|| crate::base::url(format!("/admin/invites?page={}", data.next_page))))
                     .status(format!("Page {} of {}", data.page, data.total_pages))
                     .fixi_target(target))
-                form method="post" action="/admin/invites/delete-all"
-                    fx-action="/admin/invites/delete-all" fx-method="POST" fx-target=(target) {
+                form method="post" action=(crate::base::url("/admin/invites/delete-all"))
+                    fx-action=(crate::base::url("/admin/invites/delete-all")) fx-method="POST" fx-target=(target) {
                     (ui::FormActions::new(ui::Button::new("Delete all").kind(ui::ButtonType::Submit)))
                 }
             } @else if let Some(deleted) = &data.just_deleted_row {
@@ -1403,7 +1403,7 @@ fn options_file_bars(data: &AdminSettingsViewModel) -> Markup {
                         SettingOwner::Engine => "the engine",
                     };
                     (ui::Panel::new(html! {
-                        form class="options-file" method="post" action="/admin/settings/reload" {
+                        form class="options-file" method="post" action=(crate::base::url("/admin/settings/reload")) {
                             input type="hidden" name="tab" value=(data.tab.id());
                             input type="hidden" name="owner" value=(match file.owner {
                                 SettingOwner::Monokulo => "monokulo",
@@ -1548,7 +1548,7 @@ pub fn tab_bar(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     html! {
         nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-leave-asks data-fx-oob[oob] {
             @for tab in SettingsTab::ALL.into_iter().filter(|tab| tab_shown(data, *tab)) {
-                @let href = tab.href();
+                @let href = crate::base::url(tab.href());
                 a href=(href) fx-action=(href) fx-target="#settings-panel" fx-push-url aria-current=[(tab == data.tab).then_some("page")] {
                     (tab.label())
                     @if needs_attention(data, tab) {
@@ -1936,7 +1936,7 @@ fn network_card(
         // How the network's scan and its node in use are doing is on the
         // engine page.
         .link(html! {
-            a class="engine-link" href=(format!("/status/engine?network={n}")) { "See it on the engine page" }
+            a class="engine-link" href=(crate::base::url(format!("/status/engine?network={n}"))) { "See it on the engine page" }
         })
         .render(html! {
             @if open {

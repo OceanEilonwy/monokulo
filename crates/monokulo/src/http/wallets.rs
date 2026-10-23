@@ -23,7 +23,6 @@ use crate::views::wallets::{
 };
 use crate::wallets::{clean_name, friendly_name};
 
-use super::auth::redirect_303;
 use super::wallet_service::{add_wallet, adopt_unlinked_stores, AddWallet, AddWalletError};
 use super::{AppState, AuthedUser};
 
@@ -328,7 +327,7 @@ pub async fn import_submit(
     Form(form): Form<ImportForm>,
 ) -> Response {
     match add_imported(&state, &user, Flow::Account, &form).await {
-        Ok(wallet) => redirect_303(&format!("/account/wallets/{}?added=1", wallet.id)),
+        Ok(wallet) => crate::base::see_other(&format!("/account/wallets/{}?added=1", wallet.id)),
         Err(page) => *page,
     }
 }
@@ -514,7 +513,7 @@ pub async fn create_submit(
             } else {
                 ""
             };
-            redirect_303(&format!("/account/wallets/{}?added=1{skipped}", wallet.id))
+            crate::base::see_other(&format!("/account/wallets/{}?added=1{skipped}", wallet.id))
         }
         Err(page) => *page,
     }
@@ -641,17 +640,17 @@ async fn render_detail(
                 },
                 "renamed" => html! { "Renamed from \u{201c}" (event.detail) "\u{201d}" },
                 "store_connected" => match store_name(&event.detail) {
-                    Some((id, name)) => html! { "Store " a href=(format!("/stores/{id}")) { (name) } " connected" },
+                    Some((id, name)) => html! { "Store " a href=(crate::base::url(format!("/stores/{id}"))) { (name) } " connected" },
                     None => html! { "A store connected" },
                 },
                 "store_changed_to" => match store_name(&event.detail) {
-                    Some((id, name)) => html! { "Store " a href=(format!("/stores/{id}")) { (name) } " changed to this wallet" },
+                    Some((id, name)) => html! { "Store " a href=(crate::base::url(format!("/stores/{id}"))) { (name) } " changed to this wallet" },
                     None => html! { "A store changed to this wallet" },
                 },
                 "retired" => html! { "Retired: its keys were deleted from key storage" },
                 "restored" => html! { "Brought back with its keys" },
                 "store_changed_away" => match store_name(&event.detail) {
-                    Some((id, name)) => html! { "Store " a href=(format!("/stores/{id}")) { (name) } " changed to another wallet" },
+                    Some((id, name)) => html! { "Store " a href=(crate::base::url(format!("/stores/{id}"))) { (name) } " changed to another wallet" },
                     None => html! { "A store changed to another wallet" },
                 },
                 other => html! { (other) },
@@ -680,7 +679,7 @@ async fn render_detail(
             .into_iter()
             .filter(|o| o.amount_received_piconero > 0 && on_this_wallet(o.created_at))
         {
-            let link = format!("/stores/{}/orders/{}", store.id, order.order_id);
+            let link = crate::base::url(format!("/stores/{}/orders/{}", store.id, order.order_id));
             history.push((
                 order.updated_at,
                 WalletEvent {
@@ -804,7 +803,7 @@ pub async fn rename(
         .write(move |db| db.rename_wallet(&user_id, &wallet_id, &new_name, crate::now_unix()))
         .await
     {
-        Ok(_) => redirect_303(&format!("/account/wallets/{}?renamed=1", wallet.id)),
+        Ok(_) => crate::base::see_other(&format!("/account/wallets/{}?renamed=1", wallet.id)),
         Err(e) if e.is_unique_violation() => {
             let refused = RenameOutcome::Refused {
                 name: form.name,
@@ -920,7 +919,7 @@ pub async fn retire_form(
         return StatusCode::NOT_FOUND.into_response();
     };
     if wallet.retired_at.is_some() {
-        return redirect_303(&format!("/account/wallets/{}", wallet.id));
+        return crate::base::see_other(&format!("/account/wallets/{}", wallet.id));
     }
     render_retire(&state, &user, wallet, None).await
 }
@@ -953,7 +952,7 @@ pub async fn restore_form_page(
         return StatusCode::NOT_FOUND.into_response();
     };
     if wallet.retired_at.is_none() {
-        return redirect_303(&format!("/account/wallets/{}", wallet.id));
+        return crate::base::see_other(&format!("/account/wallets/{}", wallet.id));
     }
     render_restore(&state, &user, wallet, None).await
 }
@@ -978,7 +977,7 @@ pub async fn retire(
         return StatusCode::NOT_FOUND.into_response();
     };
     if wallet.retired_at.is_some() {
-        return redirect_303(&format!("/account/wallets/{}", wallet.id));
+        return crate::base::see_other(&format!("/account/wallets/{}", wallet.id));
     }
     if form.confirm.trim() != wallet.name {
         let message = format!("Type \u{201c}{}\u{201d} exactly to retire it.", wallet.name);
@@ -1016,7 +1015,7 @@ pub async fn retire(
         tracing::error!(error = %e, wallet = %wallet.id, "the engine retired a wallet but it couldn't be recorded");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    redirect_303(&format!("/account/wallets/{}", wallet.id))
+    crate::base::see_other(&format!("/account/wallets/{}", wallet.id))
 }
 
 #[derive(Deserialize)]
@@ -1043,7 +1042,7 @@ pub async fn restore(
         return StatusCode::NOT_FOUND.into_response();
     };
     if wallet.retired_at.is_none() {
-        return redirect_303(&format!("/account/wallets/{}", wallet.id));
+        return crate::base::see_other(&format!("/account/wallets/{}", wallet.id));
     }
     let backend = form
         .key_custody_backend
@@ -1087,7 +1086,7 @@ pub async fn restore(
         tracing::error!(error = %e, wallet = %wallet.id, "the engine brought a wallet back but it couldn't be recorded");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    redirect_303(&format!("/account/wallets/{}?restored=1", wallet.id))
+    crate::base::see_other(&format!("/account/wallets/{}?restored=1", wallet.id))
 }
 
 #[cfg(test)]

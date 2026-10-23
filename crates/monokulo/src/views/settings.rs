@@ -35,14 +35,15 @@ pub enum Save<'a> {
 }
 
 /// The page's settings form, a real `<form method="post" id="settings-form">`
-/// posting to `action`. `label` names what has unsaved changes when leaving
+/// posting to `action` (a path on this site, given as its URL:
+/// `crate::base::url`). `label` names what has unsaved changes when leaving
 /// is asked about ("Abuse protection has unsaved changes"). One per page.
 pub fn form(action: &str, save: Save, label: &str, body: Markup) -> Markup {
     let target = match save {
         Save::Fixi { target } => Some(target.to_string()),
         Save::Reload => None,
     };
-    ui::SettingsForm::new(action, label, body)
+    ui::SettingsForm::new(crate::base::url(action), label, body)
         .maybe_fixi_target(target)
         .render()
 }
@@ -282,11 +283,12 @@ impl<'a> Field<'a> {
 }
 
 /// The page's one save bar, along the bottom of the window: `message`,
-/// then Discard changes (a link to `discard_href`, the page as saved) and
+/// then Discard changes (a link to `discard_href`, the path of the page as
+/// saved) and
 /// Save. Red after a save that refused something (`failed`); `focus` gives
 /// its message focus after a save fixi swapped in.
 pub fn save_bar(failed: bool, focus: bool, message: Markup, discard_href: &str) -> Markup {
-    ui::SaveBar::new(message, discard_href)
+    ui::SaveBar::new(message, crate::base::url(discard_href))
         .failed(failed)
         .focus(focus)
         .render()

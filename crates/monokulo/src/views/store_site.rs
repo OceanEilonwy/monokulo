@@ -65,7 +65,7 @@ pub struct SiteView {
 
 impl SiteView {
     fn settings(&self) -> String {
-        format!("/stores/{}/settings", self.store_id)
+        crate::base::url(format!("/stores/{}/settings", self.store_id))
     }
 
     pub fn website_path(&self) -> String {

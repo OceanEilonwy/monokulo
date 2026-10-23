@@ -59,17 +59,14 @@ async fn get(instance: Instance) -> api::Result<Cached<Body>> {
 
 /// Where the API's entry is for a handshake's caller, on the network its
 /// request came on: the path, with this Monokulo's path prefix
-/// (`crate::api::runtime::path_prefix`), and the absolute URL on the onion
+/// (`crate::base::for_request`), and the absolute URL on the onion
 /// address while it has one.
 pub(crate) fn entry(
     state: &crate::http::AppState,
     extensions: &axum::http::Extensions,
 ) -> (String, Option<String>) {
     let path = Path {};
-    let api = format!(
-        "{}{path}",
-        crate::api::runtime::path_prefix(state, extensions)
-    );
+    let api = format!("{}{path}", crate::base::for_request(state, extensions));
     let onion =
         OnionLink::new(state.onion_uri().as_deref(), path).map(|link| link.href().to_owned());
     (api, onion)

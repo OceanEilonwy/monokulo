@@ -181,7 +181,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
         @if let Some(from) = &data.from_plugin {
             p { "The " (from.plugin) " plugin on " strong { (from.site) } " asked to connect to your account. Name the store, then choose where its money goes." }
         }
-        form method="post" action="/setup" class="store-form" novalidate {
+        form method="post" action=(crate::base::url("/setup")) class="store-form" novalidate {
             @for (name, value) in &data.carried {
                 input type="hidden" name=(name) value=(value);
             }
@@ -231,7 +231,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                     .attr("inputmode", "url"))
                 @match &data.site_error {
                     Some(SiteError::Invalid(why)) => (ui::FieldNote::new(html! { "✕ " (why) }).tone(ui::NoteTone::Problem).id("store-site-error")),
-                    Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(format!("/stores/{id}")) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
+                    Some(SiteError::Yours { id, name, site }) => (ui::FieldNote::new(html! { "✕ Your store " a href=(crate::base::url(format!("/stores/{id}"))) { (name) } " already uses " (site) ". Open it, or use a different site." }).tone(ui::NoteTone::Problem).id("store-site-error")),
                     Some(SiteError::Someone { site }) => (ui::FieldNote::new(html! { "✕ " (site) " is already connected to Monokulo here. If it's yours, ask the person who connected it." }).tone(ui::NoteTone::Problem).id("store-site-error")),
                     None => {}
                 }
@@ -240,7 +240,7 @@ pub fn store_page(chrome: &PageChrome, data: &StoreStepViewModel) -> Markup {
                 "Checkouts on any page of the site work. Subdomains (pay.shop.example) work too, once you verify the domain in the store's settings."
             ))
             div class="step-foot" {
-                (ui::LinkButton::new("Cancel", "/"))
+                (ui::LinkButton::new("Cancel", crate::base::url("/")))
                 span class="spacer" {}
                 (ui::Button::new("Next").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
             }
@@ -287,7 +287,7 @@ pub struct PluginReturn {
 }
 
 fn settings_link(id: &str) -> String {
-    format!("/stores/{id}/settings")
+    crate::base::url(format!("/stores/{id}/settings"))
 }
 
 /// What the store is set up with, as facts: whether it takes payments yet
@@ -311,7 +311,7 @@ fn summary(data: &DoneViewModel) -> Markup {
         .chain([
             fact(
                 "Wallet",
-                html! { a href="/account?tab=wallets" { (data.wallet_name) } " " (super::network_badge(&data.wallet_network)) },
+                html! { a href=(crate::base::url("/account?tab=wallets")) { (data.wallet_name) } " " (super::network_badge(&data.wallet_network)) },
             ),
             fact("Prices in", html! { (data.base_currency) }),
         ])
@@ -333,7 +333,7 @@ fn summary(data: &DoneViewModel) -> Markup {
 /// it there.
 pub fn plugin_return_form(store_id: &str, plugin: &PluginReturn, label: &str) -> Markup {
     html! {
-        form method="post" action=(format!("/plugins/connect/{}", plugin.plugin.slug())) class="inline-form" {
+        form method="post" action=(crate::base::url(format!("/plugins/connect/{}", plugin.plugin.slug()))) class="inline-form" {
             input type="hidden" name="connection_id" value=(store_id);
             input type="hidden" name="site_url" value=(plugin.site_url);
             input type="hidden" name="return_url" value=(plugin.return_url);
@@ -419,14 +419,14 @@ pub fn done_page(chrome: &PageChrome, data: &DoneViewModel) -> Markup {
                     strong { "Open the till (POS)" }
                     (ui::Hint::new("On the phone or tablet you take payments with. Customers scan a QR code.").inline(true))
                 }
-                (ui::LinkButton::new("Open the till", format!("/stores/{id}/pos")).maybe_variant(primary(till_primary)))
+                (ui::LinkButton::new("Open the till", crate::base::url(format!("/stores/{id}/pos"))).maybe_variant(primary(till_primary)))
             }
         }
         @if has_site { (public_key_help(&data.public_key)) }
         div class="step-foot" {
             (ui::LinkButton::new("Store settings", settings_link(id)))
             span class="spacer" {}
-            a href=(format!("/stores/{id}")) { "Go to " (data.name) "'s page" }
+            a href=(crate::base::url(format!("/stores/{id}"))) { "Go to " (data.name) "'s page" }
         }
     };
     super::Page::new(format!("{} is set up - Monokulo", data.name), header)

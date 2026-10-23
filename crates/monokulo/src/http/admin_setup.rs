@@ -27,7 +27,6 @@ use serde::Deserialize;
 use crate::views;
 use crate::views::admin::SetupViewModel;
 
-use super::auth::redirect_302;
 use super::login;
 use super::signup::{self, CreateAccountError};
 use super::AppState;
@@ -73,7 +72,7 @@ async fn setup_complete(state: &AppState) -> bool {
 /// URL deserves.
 pub async fn setup_form(State(state): State<AppState>) -> Response {
     if setup_complete(&state).await {
-        return redirect_302("/");
+        return crate::base::redirect("/");
     }
     render_setup_form(&state, None, "").await
 }
@@ -89,7 +88,7 @@ pub async fn setup_submit(
     Form(form): Form<SetupForm>,
 ) -> Response {
     if setup_complete(&state).await {
-        return redirect_302("/");
+        return crate::base::redirect("/");
     }
 
     if form.password != form.confirm_password {
@@ -116,13 +115,17 @@ pub async fn setup_submit(
                 Ok((_user, raw_token)) => {
                     let cookie = super::session_cookie(on.secure, raw_token.expose().to_string());
                     let jar = CookieJar::new().add(cookie);
-                    (jar, redirect_302("/admin/settings?tab=nodes&welcome=true")).into_response()
+                    (
+                        jar,
+                        crate::base::redirect("/admin/settings?tab=nodes&welcome=true"),
+                    )
+                        .into_response()
                 }
                 // The account was just created with this exact password, so
                 // this is unreachable in practice - falling back to a plain
                 // login redirect rather than `.expect()` is simply the
                 // cheapest safe response to a case that should never occur.
-                Err(_) => redirect_302("/login"),
+                Err(_) => crate::base::redirect("/login"),
             }
         }
         Err(CreateAccountError::DuplicateEmail) => {
@@ -134,7 +137,7 @@ pub async fn setup_submit(
             .await
         }
         // Another submission completed setup first: nothing more to do here.
-        Err(CreateAccountError::AlreadySetUp) => redirect_302("/"),
+        Err(CreateAccountError::AlreadySetUp) => crate::base::redirect("/"),
         Err(CreateAccountError::InvalidEmail) => {
             render_setup_form(&state, Some("That is not an email address."), &form.email).await
         }

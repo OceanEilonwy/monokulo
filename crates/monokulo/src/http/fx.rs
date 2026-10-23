@@ -82,7 +82,7 @@ pub fn respond(fx: FxRequest, redirect_to: &str, fragment: impl FnOnce() -> Mark
     if fx.0 {
         Html(fragment().into_string()).into_response()
     } else {
-        crate::http::auth::redirect_302(redirect_to)
+        crate::base::redirect(redirect_to)
     }
 }
 

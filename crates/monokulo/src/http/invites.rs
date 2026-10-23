@@ -26,7 +26,6 @@ use crate::now_unix;
 use crate::views;
 use crate::views::admin::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
 
-use super::auth::redirect_302;
 use super::fx::FxRequest;
 use super::{AppState, AuthedAdmin};
 
@@ -416,7 +415,7 @@ pub async fn delete_invite_request(
         )
         .await;
     }
-    redirect_302(&format!("/admin/invites?page={page}&deleted={id}"))
+    crate::base::redirect(&format!("/admin/invites?page={page}&deleted={id}"))
 }
 
 /// `POST /admin/invites/delete-all` - clears every currently
@@ -451,7 +450,7 @@ pub async fn delete_all_invite_requests(
         )
         .await;
     }
-    redirect_302(&format!("/admin/invites?cleared={cleared}"))
+    crate::base::redirect(&format!("/admin/invites?cleared={cleared}"))
 }
 
 fn cleared_message(n: usize) -> String {

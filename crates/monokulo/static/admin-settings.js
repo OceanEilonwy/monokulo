@@ -87,7 +87,8 @@
     if (card.classList.contains("is-failed") || !listsAtLoad[card.id]) {
       event.preventDefault();
       var tab = document.getElementById("settings-panel");
-      location.href = "/admin/settings?tab=" + (tab ? tab.getAttribute("data-tab") : "nodes");
+      var base = document.querySelector("meta[name=\"monokulo-base\"]");
+      location.href = (base ? base.content : "") + "/admin/settings?tab=" + (tab ? tab.getAttribute("data-tab") : "nodes");
       return;
     }
     card.querySelector("[data-node-rows]").replaceWith(listsAtLoad[card.id].cloneNode(true));

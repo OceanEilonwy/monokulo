@@ -8,7 +8,6 @@ use crate::db::UserRow;
 use crate::views;
 use crate::views::home::{HomeOrderRow, HomeStoreRow, HomeViewModel};
 
-use super::auth::redirect_302;
 use super::orders::health_of_tenant_lookup;
 use super::{resolve_authed_user, AppState};
 
@@ -33,9 +32,9 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
         .await
         .unwrap_or(true);
     if setup_complete {
-        redirect_302("/login")
+        crate::base::redirect("/login")
     } else {
-        redirect_302("/admin/setup")
+        crate::base::redirect("/admin/setup")
     }
 }
 

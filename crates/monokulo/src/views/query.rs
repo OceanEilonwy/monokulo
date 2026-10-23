@@ -158,8 +158,8 @@ pub fn page(chrome: &PageChrome, vm: &QueryViewModel) -> Markup {
         .actions(html! {
             // With JavaScript, picking a database swaps the tables and the
             // editor; without, Go opens it.
-            form class="engine-network" method="get" action=(PAGE)
-                fx-action={ (PAGE) "/schema" } fx-target="#query-workspace" fx-swap="outerHTML"
+            form class="engine-network" method="get" action=(crate::base::url(PAGE))
+                fx-action=(crate::base::url(format!("{PAGE}/schema"))) fx-target="#query-workspace" fx-swap="outerHTML"
                 fx-submit-on-change {
                 label for="query-db" class="visually-hidden" { "Database" }
                 (Select::new("db", [QueryDb::Monokulo, QueryDb::Engine].map(|db| {
@@ -175,9 +175,9 @@ pub fn page(chrome: &PageChrome, vm: &QueryViewModel) -> Markup {
                 (Button::new("Go").kind(ButtonType::Submit).attr("data-only", "no-script"))
             }
             @if !vm.sql.trim().is_empty() {
-                (LinkButton::new("Export CSV", format!("{PAGE}/export?{}", serde_urlencoded::to_string([("db", vm.db.id()), ("sql", vm.sql.as_str()), ("format", "csv")]).unwrap_or_default()))
+                (LinkButton::new("Export CSV", crate::base::url(format!("{PAGE}/export?{}", serde_urlencoded::to_string([("db", vm.db.id()), ("sql", vm.sql.as_str()), ("format", "csv")]).unwrap_or_default())))
                     .size(ControlSize::Compact))
-                (IconLink::new("Run again", href(vm.db, &vm.sql), icon(icons::REFRESH)))
+                (IconLink::new("Run again", crate::base::url(href(vm.db, &vm.sql)), icon(icons::REFRESH)))
             }
         });
     let body = html! {
@@ -267,7 +267,7 @@ fn table_browser(vm: &QueryViewModel) -> Markup {
                 html! { (table.name) (Tag::new(rows).tone(TagTone::Muted)) },
                 html! {
                     (Facts::new(columns))
-                    a class="query-table-rows" href=(href(vm.db, &sql)) { "Show its rows" }
+                    a class="query-table-rows" href=(crate::base::url(href(vm.db, &sql))) { "Show its rows" }
                 },
             )
             .look(DisclosureLook::Compact)
@@ -293,8 +293,8 @@ fn table_browser(vm: &QueryViewModel) -> Markup {
 
 fn editor(vm: &QueryViewModel) -> Markup {
     html! {
-        form class="box query-editor" method="get" action=(PAGE)
-            fx-action=(PAGE) fx-target="#query-results" fx-swap="outerHTML" fx-push-url fx-replace {
+        form class="box query-editor" method="get" action=(crate::base::url(PAGE))
+            fx-action=(crate::base::url(PAGE)) fx-target="#query-results" fx-swap="outerHTML" fx-push-url fx-replace {
             input type="hidden" name="db" value=(vm.db.id());
             label class="query-label" for="query-sql" { "SQL" }
             (TextArea::new("sql")
@@ -308,7 +308,7 @@ fn editor(vm: &QueryViewModel) -> Markup {
                 Slot::from(Disclosure::new("Examples", html! {
                     ul class="query-examples" {
                         @for (label, sql) in vm.db.examples() {
-                            li { a href=(href(vm.db, sql)) { (label) } }
+                            li { a href=(crate::base::url(href(vm.db, sql))) { (label) } }
                         }
                     }
                 })),
@@ -347,7 +347,7 @@ fn empty(vm: &QueryViewModel) -> Markup {
             p { strong { "Pick a table on the left, or write a SELECT." } }
             (Hint::new("Nothing here can change data. Results stop at 1,000 rows and 5 seconds. Every query is written to the Logs page."))
             (FormActions::new(Slot::many(vm.db.examples().map(|(label, sql)| {
-                Slot::from(LinkButton::new(label, href(vm.db, sql)).size(ControlSize::Compact))
+                Slot::from(LinkButton::new(label, crate::base::url(href(vm.db, sql))).size(ControlSize::Compact))
             }))))
         }
     }
@@ -457,7 +457,7 @@ fn data_cell(
         return DataCell::new("hidden").kind(DataKind::Hidden);
     }
     let expand = || {
-        let url = format!(
+        let url = crate::base::url(format!(
             "{PAGE}/value?{}",
             serde_urlencoded::to_string([
                 ("db", vm.db.id()),
@@ -466,7 +466,7 @@ fn data_cell(
                 ("col", &col.to_string()),
             ])
             .unwrap_or_default()
-        );
+        ));
         Slot::from(
             IconLink::new(
                 format!("Expand {column} of row {}", row + 1),
@@ -563,7 +563,10 @@ pub fn value_dialog(content: DialogContent) -> Markup {
 
 /// [`value`] as a page, for a browser without JavaScript.
 pub fn value_page(chrome: &PageChrome, back: &str, content: DialogContent) -> Markup {
-    let (header, body) = content.page(vec![ui::Crumb::new(back, "Query")], DialogSize::Wide);
+    let (header, body) = content.page(
+        vec![ui::Crumb::new(crate::base::url(back), "Query")],
+        DialogSize::Wide,
+    );
     super::Page::new("Value - Query - Monokulo", header)
         .wide()
         .render(chrome, body)

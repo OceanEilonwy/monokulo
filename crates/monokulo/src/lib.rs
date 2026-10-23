@@ -12,6 +12,7 @@ pub mod admin_nodes;
 pub mod api;
 pub mod apps;
 pub mod assets;
+pub mod base;
 pub mod cli;
 pub mod confirmation_thresholds;
 pub mod crypto;

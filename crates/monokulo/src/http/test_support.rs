@@ -304,7 +304,7 @@ pub async fn set_up_store_on_wallet(
 }
 
 /// The store a `/setup` response made: the id in its `/setup/done/{id}`
-/// location.
+/// location (under the path Monokulo is served at, if any).
 pub fn store_made(response: &axum::response::Response) -> String {
     assert_eq!(
         response.status(),
@@ -313,7 +313,8 @@ pub fn store_made(response: &axum::response::Response) -> String {
     );
     let location = response.headers()["location"].to_str().unwrap();
     location
-        .strip_prefix("/setup/done/")
+        .split_once("/setup/done/")
+        .map(|(_, id)| id)
         .unwrap_or_else(|| panic!("not the Done page: {location}"))
         .split('?')
         .next()

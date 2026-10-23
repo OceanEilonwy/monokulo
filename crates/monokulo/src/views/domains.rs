@@ -56,8 +56,10 @@ pub struct StoreRef<'a> {
 }
 
 impl StoreRef<'_> {
+    /// The URL of the store's settings (`crate::base::url`), which the
+    /// other links extend.
     fn settings(&self) -> String {
-        format!("/stores/{}/settings", self.id)
+        crate::base::url(format!("/stores/{}/settings", self.id))
     }
 
     /// The settings tab the Verified domains card is on.
@@ -72,7 +74,10 @@ impl StoreRef<'_> {
     fn crumbs(&self) -> Vec<ui::Crumb> {
         super::crumbs(&[
             (&format!("/stores/{}", self.id), self.name),
-            (&self.connections(), "Settings"),
+            (
+                &format!("/stores/{}/settings?tab=connections", self.id),
+                "Settings",
+            ),
         ])
     }
 }

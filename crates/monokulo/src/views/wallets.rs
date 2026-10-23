@@ -41,18 +41,18 @@ impl Flow<'_> {
         format!("{base}?{}", query.finish())
     }
 
-    fn keys_action(&self) -> &'static str {
-        match self {
+    fn keys_action(&self) -> String {
+        crate::base::url(match self {
             Flow::Setup(_) => "/setup/wallet/keys",
             Flow::Account => "/account/wallets/import",
-        }
+        })
     }
 
-    fn new_action(&self) -> &'static str {
-        match self {
+    fn new_action(&self) -> String {
+        crate::base::url(match self {
             Flow::Setup(_) => "/setup/wallet/new",
             Flow::Account => "/account/wallets/new",
-        }
+        })
     }
 
     fn hidden(&self) -> Markup {
@@ -224,7 +224,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
             (ui::Alert::new(error.as_str(), ui::Tone::Error))
         }
         @if let (Flow::Setup(_), false) = (flow, data.wallets.is_empty()) {
-            form method="post" action="/setup/wallet/existing" class="already" {
+            form method="post" action=(crate::base::url("/setup/wallet/existing")) class="already" {
                 (flow.hidden())
                 div class="setting-field" {
                     div class="setting-label-row" { label class="setting-label" for="existing-wallet" { "Use a wallet you already added" } }
@@ -259,7 +259,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                     .attr("maxlength", crate::wallets::MAX_NAME_LEN.to_string())
                     .autocomplete("off").described_by("wallet-name-check")
                     .invalid(data.name_problem.is_some())
-                    .attr("fx-action", "/account/wallets/name-check").attr("fx-target", "#wallet-name-check")
+                    .attr("fx-action", crate::base::url("/account/wallets/name-check")).attr("fx-target", "#wallet-name-check")
                     .attr("fx-swap", "outerHTML"))
                 (name_check(&data.name, data.name_problem.as_deref()))
             }
@@ -332,8 +332,8 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
         }
         div class="step-foot" {
             @match flow {
-                Flow::Setup(setup) => { (ui::LinkButton::new("Back", format!("/setup?{}", setup.query()))) }
-                Flow::Account => { (ui::LinkButton::new("Back", "/account?tab=wallets")) }
+                Flow::Setup(setup) => { (ui::LinkButton::new("Back", crate::base::url(format!("/setup?{}", setup.query())))) }
+                Flow::Account => { (ui::LinkButton::new("Back", crate::base::url("/account?tab=wallets"))) }
             }
         }
         // The script fetches its module from where the page says.
@@ -395,7 +395,7 @@ pub fn import_page(chrome: &PageChrome, flow: Flow<'_>, data: &ImportViewModel) 
                 (super::key_entry::snp_section(entry, (!data.custody_choices.is_empty()).then_some("key_custody_backend")))
             }
             div class="step-foot" {
-                (ui::LinkButton::new("Back", back.as_str()))
+                (ui::LinkButton::new("Back", crate::base::url(&back)))
                 span class="spacer" {}
                 (ui::Button::new(flow.add_label()).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit))
             }
@@ -460,7 +460,7 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
             (ui::Alert::new(html! {
                 "Creating a wallet needs JavaScript: its recovery phrase is made inside your browser so it never "
                 "reaches our server. Turn JavaScript on for this site and reload, or go "
-                a href=(back) { "back and bring your own wallet" } "."
+                a href=(crate::base::url(&back)) { "back and bring your own wallet" } "."
             }, ui::Tone::Error).block(true))
         }
         @if let Some(error) = &data.error {
@@ -498,7 +498,7 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
                         .collect::<Vec<_>>(),
                 ))
                 div class="step-foot" {
-                    (ui::LinkButton::new("Back", back.as_str()))
+                    (ui::LinkButton::new("Back", crate::base::url(&back)))
                     (ui::Button::new("Skip backup…").attr("data-go", "skip"))
                     span class="spacer" {}
                     (ui::Button::new("Next: check two words").variant(ui::ButtonVariant::Primary).disabled(true).attr("data-go", "check"))
@@ -556,7 +556,7 @@ pub fn create_page(chrome: &PageChrome, flow: Flow<'_>, data: &CreateViewModel) 
             section data-screen="failed" hidden {
                 h2 { "This browser can't make a wallet" }
                 (ui::Alert::new("", ui::Tone::Error).attr("data-failed-reason", ""))
-                p { a href=(back) { "Bring your own wallet" } " instead." }
+                p { a href=(crate::base::url(&back)) { "Bring your own wallet" } " instead." }
             }
             form method="post" action=(flow.new_action()) data-register hidden {
                 (flow.hidden())
@@ -735,7 +735,7 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
                     html! { strong { "Retired wallets (" (retired.len()) ")" } (ui::Hint::new(" · keys deleted, kept for their history").inline(true)) },
                     ui::Table::new(ui::Slot::many(retired.iter().map(|w| {
                         ui::Row::new(ui::Slot::many([
-                            ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } }).into(),
+                            ui::Cell::new(html! { a href=(crate::base::url(format!("/account/wallets/{}", w.id))) { (w.name) } }).into(),
                             ui::Cell::new(w.retired.as_str()).into(),
                             ui::Cell::new(html! { span class="keys-deleted" { (key_gone_icon(16)) " Deleted" } }).into(),
                         ]))
@@ -748,7 +748,7 @@ pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> 
                 @if !wallets.is_empty() {
                     (ui::Hint::new("Open a wallet to rename it, see its history or retire it."))
                 }
-                (ui::LinkButton::new("+ add a wallet", "/account/wallets/add").variant(ui::ButtonVariant::Primary))
+                (ui::LinkButton::new("+ add a wallet", crate::base::url("/account/wallets/add")).variant(ui::ButtonVariant::Primary))
             }
     }
 }
@@ -768,7 +768,7 @@ fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
         });
         ui::Row::new(ui::Slot::many(
             network.into_iter().chain([
-                ui::Cell::new(html! { a href=(format!("/account/wallets/{}", w.id)) { (w.name) } })
+                ui::Cell::new(html! { a href=(crate::base::url(format!("/account/wallets/{}", w.id))) { (w.name) } })
                     .part(ui::CellPart::Title)
                     .into(),
                 ui::Cell::new(w.kind).part(ui::CellPart::When).into(),
@@ -986,7 +986,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                     strong { "Restore this wallet" }
                     (ui::Hint::new("Enter its keys again and Monokulo watches it for payments."))
                 }
-                (ui::LinkButton::new("Restore wallet…", format!("{}/restore", wallet_path(w))).attr("data-opens-dialog", "restore-dialog"))
+                (ui::LinkButton::new("Restore wallet…", crate::base::url(format!("{}/restore", wallet_path(w)))).attr("data-opens-dialog", "restore-dialog"))
             }
             (ui::Dialog::new("restore-dialog", "restore-title", restore_content(w, restore, None).in_dialog()))
         } @else {
@@ -995,7 +995,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
                     strong { "Retire this wallet" }
                     (ui::Hint::new("Takes it out of every list and deletes its keys from Monokulo. The money stays in your wallet app."))
                 }
-                (ui::LinkButton::new("Retire wallet…", format!("{}/retire", wallet_path(w)))
+                (ui::LinkButton::new("Retire wallet…", crate::base::url(format!("{}/retire", wallet_path(w))))
                     .variant(ui::ButtonVariant::Danger)
                     .attr("data-opens-dialog", "retire-dialog"))
             }
@@ -1149,7 +1149,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
                         @for store in stores {
                             li {
                                 span class="sr-name" {
-                                    a href=(format!("/stores/{}", store.id)) { (store.name) }
+                                    a href=(crate::base::url(format!("/stores/{}", store.id))) { (store.name) }
                                     @if let Some(site) = &store.site { span class="sr-host" { (site) } }
                                 }
                                 a class="sr-act" href=(change_wallet_link(&store.id)) { "change the wallet" }
@@ -1163,7 +1163,7 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
                         @for store in past {
                             li {
                                 span class="sr-name" {
-                                    a href=(format!("/stores/{}", store.id)) { (store.name) }
+                                    a href=(crate::base::url(format!("/stores/{}", store.id))) { (store.name) }
                                     @if let Some(site) = &store.site { span class="sr-host" { (site) } }
                                 }
                                 @if let Some(until) = &store.until { span class="sr-host" { "until " (until) } }
@@ -1178,7 +1178,9 @@ fn stores_card(stores: &[WalletStore], past: &[WalletStore]) -> Markup {
 
 /// A store's Wallet section, where its wallet is changed.
 fn change_wallet_link(store_id: &str) -> String {
-    format!("/stores/{store_id}/settings?tab=wallet#card-wallet")
+    crate::base::url(format!(
+        "/stores/{store_id}/settings?tab=wallet#card-wallet"
+    ))
 }
 
 /// The retire dialog (D1, the checklist), and the same on the page
@@ -1192,7 +1194,7 @@ fn retire_content(
     stores: &[WalletStore],
     error: Option<&str>,
 ) -> DialogContent {
-    let action = format!("{}/retire", wallet_path(w));
+    let action = crate::base::url(format!("{}/retire", wallet_path(w)));
     let title = html! { "Retire \u{201c}" (w.name) "\u{201d}?" };
     let checks = match state {
         RetireState::Checked {
@@ -1293,7 +1295,7 @@ fn check(ok: bool, what: &str, fix: Markup) -> ui::Check {
 /// A dialog's Cancel or Close: back to the wallet's page, or with
 /// JavaScript, closing the dialog.
 fn close_link(label: &str, w: &crate::db::WalletRow) -> ui::LinkButton {
-    ui::LinkButton::new(label, wallet_path(w)).attr("data-closes-dialog", "")
+    ui::LinkButton::new(label, crate::base::url(wallet_path(w))).attr("data-closes-dialog", "")
 }
 
 /// Restoring a retired wallet: its keys entered again, in the dialog and
@@ -1307,7 +1309,7 @@ fn restore_content(
     let body = html! {
         p { "Paste its keys again and Monokulo watches it as before. It must be the same wallet: the address has to match." }
         @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
-        form method="post" action=(format!("{}/restore", wallet_path(w))) {
+        form method="post" action=(crate::base::url(format!("{}/restore", wallet_path(w)))) {
             (super::key_entry::key_fields(
                 "",
                 "",

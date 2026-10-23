@@ -16,6 +16,8 @@
  *
  * Never recorded: a note's text, addresses, keys. */
 
+import { siteBase } from '@monokulo/ui/site';
+
 export type Level = 'info' | 'warn' | 'error';
 export type Detail = Record<string, string | number | boolean | null | undefined>;
 type Event = { seq: number; t: number; level: Level; kind: string; order_id?: string; detail?: Detail };
@@ -185,9 +187,13 @@ export function watchPage(timeline: Timeline) {
 /** An API path with its ids replaced, so requests group by route:
  * `/stores/c1/pos/orders/order_8f42/cancel` → `/pos/orders/{id}/cancel`,
  * `/checkout/order_8f42/refund-address` → `/checkout/{order_id}/refund-address`,
- * `/api/v1/orders/order_8f42` → `/api/v1/orders/{order_id}`. */
+ * `/api/v1/orders/order_8f42` → `/api/v1/orders/{order_id}`; without the
+ * base path Monokulo is served under (`siteBase`), so a route has one name
+ * however Monokulo is deployed. */
 export function routeOf(url: string): string {
-  const path = url.split('?')[0];
+  const base = siteBase();
+  const full = url.split('?')[0];
+  const path = base && full.startsWith(`${base}/`) ? full.slice(base.length) : full;
   const pos = path.replace(/^\/stores\/[^/]+\/pos/, '/pos');
   if (pos.startsWith('/checkout/')) return pos.replace(/^\/checkout\/[^/]+/, '/checkout/{order_id}');
   if (pos.startsWith('/api/v1/orders/')) return pos.replace(/^\/api\/v1\/orders\/[^/]+/, '/api/v1/orders/{order_id}');

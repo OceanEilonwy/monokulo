@@ -263,7 +263,7 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
                 span class="mk-status-text" data-tone=[tone(class)] { (label) }
             }
             @if engine_page {
-                (LinkButton::new(html! { (PreEscaped(ui::assets::icons::EYE)) "Watch it live" }, format!("/status/engine?network={}", network.network)).attr("data-watch-live", ""))
+                (LinkButton::new(html! { (PreEscaped(ui::assets::icons::EYE)) "Watch it live" }, crate::base::url(format!("/status/engine?network={}", network.network))).attr("data-watch-live", ""))
             }
         }
 
@@ -407,7 +407,7 @@ fn proof_section(network: &str, name: &str, proof: &ProofView) -> Markup {
             @if proof.state == ProofState::Held {
                 div class="proof-held" {
                     p { (proof.summary) }
-                    form method="post" action=(format!("/admin/proof/{network}/reanchor")) {
+                    form method="post" action=(crate::base::url(format!("/admin/proof/{network}/reanchor"))) {
                         (Hint::new(concat!(
                             "A new anchor is taken on the nodes' word, 720 blocks below their tips. ",
                             "Check that the nodes are your own or ones you trust before taking one."
@@ -554,7 +554,7 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
     let body = html! {
         (live_fragment(data))
         // Streams the part above while the page is open, with JavaScript.
-        span hidden fx-action="/status/events" fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
+        span hidden fx-action=(crate::base::url("/status/events")) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
     };
     super::Page::new("Status - Monokulo", header).render(chrome, body)
 }

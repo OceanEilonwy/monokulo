@@ -385,7 +385,7 @@ pub async fn add_domain(
         .await;
     let error = match created {
         Ok(true) => {
-            return super::auth::redirect_303(&format!(
+            return crate::base::see_other(&format!(
                 "/stores/{id}/settings/domains/{domain_id}/record"
             ))
         }
@@ -540,7 +540,7 @@ pub async fn check_domain(
         .await
         .into_response();
     }
-    super::auth::redirect_303(&format!("/stores/{id}/settings/domains/{}/check", view.id))
+    crate::base::see_other(&format!("/stores/{id}/settings/domains/{}/check", view.id))
 }
 
 /// `POST /stores/{id}/settings/domains/{domain_id}/delete`.

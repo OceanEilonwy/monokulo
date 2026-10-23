@@ -128,7 +128,7 @@ pub(crate) const SITE: static_assets::Baked = static_assets::bake!("src/views/si
 pub fn crumbs(links: &[(&str, &str)]) -> Vec<ui::Crumb> {
     links
         .iter()
-        .map(|(href, label)| ui::Crumb::new(*href, *label))
+        .map(|(href, label)| ui::Crumb::new(crate::base::url(href), *label))
         .collect()
 }
 
@@ -419,6 +419,10 @@ fn page_shell(
                 meta charset="utf-8";
                 meta name="viewport" content=(viewport);
                 title { (title) }
+                // Where this Monokulo's paths start (`crate::base`), for
+                // the few URLs a script makes itself: `/monokulo` behind a
+                // proxy serving it there, empty at the root and over Tor.
+                meta name="monokulo-base" content=(crate::base::path());
                 link rel="icon" type="image/svg+xml" href=(assets::url("favicon.svg"));
                 // The typeface, then the colours, then the components:
                 // the stylesheets at their versioned URLs (crate::assets),
@@ -681,7 +685,7 @@ pub fn logs_link(chrome: &PageChrome, field: &str, value: &str, text: &str) -> M
     );
     html! {
         @if chrome.is_admin {
-            a class="logs-link" href=(href) { (text) }
+            a class="logs-link" href=(crate::base::url(href)) { (text) }
         }
     }
 }
@@ -696,7 +700,7 @@ pub fn reload_button(href: &str) -> Markup {
             path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 17.9 17" {}
         }
     };
-    html! { (ui::IconLink::new("Refresh page", href, icon).attr("data-reload", "")) }
+    html! { (ui::IconLink::new("Refresh page", crate::base::url(href), icon).attr("data-reload", "")) }
 }
 
 /// The engine's health as the status indicator shows it: green, yellow or
@@ -738,7 +742,10 @@ pub fn status_indicator(health: Option<Health>) -> Markup {
         Some(Health::Problem) => ui::HealthState::Error,
         None => ui::HealthState::Unknown,
     };
-    ui::StatusDot::new(health).render()
+    ui::StatusDot::new(health)
+        .href(crate::base::url("/status"))
+        .poll(crate::base::url("/status/summary"))
+        .render()
 }
 
 /// The site nav (`ui::SiteNav`): the brand and, once signed in, Home
@@ -754,19 +761,19 @@ pub fn status_indicator(health: Option<Health>) -> Markup {
 fn nav(chrome: &PageChrome, width: ui::PageWidth) -> Markup {
     let links = html! {
         @if chrome.logged_in {
-            a href="/" aria-current=[(chrome.current_path == "/").then_some("page")] { "Home" }
+            a href=(crate::base::url("/")) aria-current=[(chrome.current_path == "/").then_some("page")] { "Home" }
         }
         @if chrome.is_admin {
-            a href="/admin/settings" { "Admin" }
-            a href="/admin/invites" { "Invites" }
-            a href="/admin/logs" { "Logs" }
+            a href=(crate::base::url("/admin/settings")) { "Admin" }
+            a href=(crate::base::url("/admin/invites")) { "Invites" }
+            a href=(crate::base::url("/admin/logs")) { "Logs" }
             @if chrome.query_enabled {
-                a href=(query::PAGE) { "Query" }
+                a href=(crate::base::url(query::PAGE)) { "Query" }
             }
         }
         @if !chrome.logged_in {
-            a href="/login" { "Log in" }
-            a href="/signup" { "Sign up" }
+            a href=(crate::base::url("/login")) { "Log in" }
+            a href=(crate::base::url("/signup")) { "Sign up" }
         }
         @if chrome.logged_in {
             (account_menu(chrome))
@@ -774,6 +781,7 @@ fn nav(chrome: &PageChrome, width: ui::PageWidth) -> Markup {
     };
     let brand = html! { (logo_mark(24, "site-nav-logo")) "Monokulo" };
     ui::SiteNav::new(brand, links)
+        .home(crate::base::url("/"))
         .status(status_indicator(chrome.health))
         .width(width)
         .render()
@@ -805,13 +813,13 @@ pub fn account_menu(chrome: &PageChrome) -> Markup {
     };
     let items = html! {
         div class="acct-who" { strong { (chrome.email) } small { (role) } }
-        (ui::MenuItem::new("Account").href("/account"))
-        (ui::MenuItem::new("Wallets").href("/account?tab=wallets").note(chrome.wallet_count.to_string()))
+        (ui::MenuItem::new("Account").href(crate::base::url("/account")))
+        (ui::MenuItem::new("Wallets").href(crate::base::url("/account?tab=wallets")).note(chrome.wallet_count.to_string()))
         hr;
         (ui::MenuItem::new("Theme").note(theme_toggle(chrome)))
-        (ui::MenuItem::new(html! { "Times in " (zone) }).href("/account#card-time").note("change").title(zone_title))
+        (ui::MenuItem::new(html! { "Times in " (zone) }).href(crate::base::url("/account#card-time")).note("change").title(zone_title))
         hr;
-        (ui::MenuItem::new("Log out").post_to("/logout"))
+        (ui::MenuItem::new("Log out").post_to(crate::base::url("/logout")))
     };
     ui::Menu::new("Account menu", account_icon(), items)
         .title(chrome.email.clone())
@@ -826,7 +834,12 @@ pub fn theme_toggle(chrome: &PageChrome) -> Markup {
         Theme::Light => ui::ThemeChoice::Light,
         Theme::Dark => ui::ThemeChoice::Dark,
     };
-    ui::ThemeToggle::new(theme, "/theme", chrome.current_path.clone()).render()
+    ui::ThemeToggle::new(
+        theme,
+        crate::base::url("/theme"),
+        chrome.current_path.clone(),
+    )
+    .render()
 }
 
 #[cfg(test)]
@@ -986,7 +999,7 @@ mod tests {
         let status = at(r#"<a href="/status" class="nav-status-link""#);
         let hamburger = at(r#"<label for="nav-toggle""#);
         let links = at(r#"<div class="site-nav-links">"#);
-        let home = at(r#"<a href="/" aria-current="page">Home</a>"#);
+        let home = at(r#"<a href=(crate::base::url("/")) aria-current="page">Home</a>"#);
         let admin = at(r#"href="/admin/settings">Admin<"#);
         let invites = at(r#"href="/admin/invites">Invites<"#);
         let logs = at(r#"href="/admin/logs">Logs<"#);
@@ -1018,7 +1031,7 @@ mod tests {
         chrome.current_path = "/".into();
         let html = nav(&chrome, ui::PageWidth::Normal).into_string();
         assert!(
-            html.contains(r#"<a href="/" aria-current="page">Home</a>"#),
+            html.contains(r#"<a href=(crate::base::url("/")) aria-current="page">Home</a>"#),
             "{html}"
         );
         let html = nav(&PageChrome::from_user(None, "/"), ui::PageWidth::Normal).into_string();

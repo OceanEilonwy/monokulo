@@ -399,7 +399,8 @@ fn query_param(request: &Request, name: &str) -> Option<String> {
         .map(|(_, value)| value.into_owned())
 }
 
-/// The request's path and query, minus any challenge parameters.
+/// The URL of the request's path and query (`crate::base::url`), minus any
+/// challenge parameters.
 fn url_without_challenge_params(request: &Request) -> String {
     let path = request.uri().path();
     let kept: Vec<(String, String)> = request
@@ -413,12 +414,12 @@ fn url_without_challenge_params(request: &Request) -> String {
         })
         .unwrap_or_default();
     if kept.is_empty() {
-        return path.to_string();
+        return crate::base::url(path);
     }
     let query: String = url::form_urlencoded::Serializer::new(String::new())
         .extend_pairs(kept)
         .finish();
-    format!("{path}?{query}")
+    crate::base::url(format!("{path}?{query}"))
 }
 
 fn with_param(url: &str, name: &str, value: &str) -> String {

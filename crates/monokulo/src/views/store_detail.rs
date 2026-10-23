@@ -51,8 +51,9 @@ pub struct FailingDomainWarning {
 /// The one-line reminder left once the "any website" warning is
 /// dismissed; also what fixi swaps in for the warning on Dismiss.
 pub fn compact_embed_warning(connection_id: &str) -> Markup {
-    let settings =
-        format!("/stores/{connection_id}/settings?tab=connections#card-verified-domains");
+    let settings = crate::base::url(format!(
+        "/stores/{connection_id}/settings?tab=connections#card-verified-domains"
+    ));
     html! {
         (ui::Alert::new(html! { a href=(settings) { "Verify your domains" } }, ui::Tone::Warning)
             .title("Any website can show this store's checkout.")
@@ -75,9 +76,12 @@ pub struct StoreDetailViewModel {
 }
 
 fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
-    let settings =
-        format!("/stores/{connection_id}/settings?tab=connections#card-verified-domains");
-    let dismiss = format!("/stores/{connection_id}/settings/embed-restriction/dismiss-warning");
+    let settings = crate::base::url(format!(
+        "/stores/{connection_id}/settings?tab=connections#card-verified-domains"
+    ));
+    let dismiss = crate::base::url(format!(
+        "/stores/{connection_id}/settings/embed-restriction/dismiss-warning"
+    ));
     html! {
         @if warnings.shown_nowhere {
             (ui::Alert::new(html! {
@@ -201,7 +205,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         a class="store-site" href=(site.link()) title=(site) { (site) }
                     }
                 }
-                (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::SETTINGS)) "Settings" }, format!("/stores/{}/settings", store.connection_id))
+                (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::SETTINGS)) "Settings" }, crate::base::url(format!("/stores/{}/settings", store.connection_id)))
                     .attr("data-store-link", "settings"))
                 (ui::LinkButton::new(html! { (PreEscaped(ui::assets::icons::EXTERNAL)) "Help" }, super::DOCS_URL)
                     .attr("target", "_blank")
@@ -214,7 +218,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
             (ui::Table::new(ui::Slot::many([
                 fact_row("Wallet", html! {
                     @match &store.wallet {
-                        Some((id, name)) => a href=(format!("/account/wallets/{id}")) { (name) },
+                        Some((id, name)) => a href=(crate::base::url(format!("/account/wallets/{id}"))) { (name) },
                         None => span class="muted" { "-" },
                     }
                 }),
@@ -231,12 +235,12 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
             // The POS needs JavaScript: without it, its tile says so.
             div class="widget-links" {
                 (ui::LaunchTile::new("POS Terminal", "Full-screen keypad for in-person sales", pos_icon())
-                    .href(format!("/stores/{}/pos", store.connection_id))
+                    .href(crate::base::url(format!("/stores/{}/pos", store.connection_id)))
                     .attr("data-only", "script"))
                 (ui::LaunchTile::new("POS Terminal", "Requires JavaScript", pos_icon())
                     .attr("data-only", "no-script"))
                 (ui::LaunchTile::new("Create an order", "For one-off custom payments", new_order_icon())
-                    .href(format!("/stores/{}/orders/new", store.connection_id)))
+                    .href(crate::base::url(format!("/stores/{}/orders/new", store.connection_id))))
             }
 
             h2 { "Recent orders" }
@@ -246,7 +250,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 (orders_table(store.connection_id.as_str(), &store.recent_orders, &chrome.clock))
             }
             p {
-                a href=(format!("/stores/{}/orders", store.connection_id)) { "all orders →" }
+                a href=(crate::base::url(format!("/stores/{}/orders", store.connection_id))) { "all orders →" }
             }
 
             (lookup_payment_card(

@@ -1362,7 +1362,7 @@ pub async fn pos_session_for_order(
             .and_then(|row| attr_str(row, "pos.session"))
             .filter(|s| super::pos_logs::is_session_id(s))
         {
-            return axum::response::Redirect::to(&format!("{LOGS}/pos/{session}")).into_response();
+            return crate::base::see_other(format!("{LOGS}/pos/{session}")).into_response();
         }
     }
     let chrome = super::page_chrome(
@@ -1539,7 +1539,7 @@ pub async fn save_search(
         return if fx.0 {
             super::fx::invalid(saved_fragment(&state, &admin, &query_string, Some(error)).await)
         } else {
-            super::auth::redirect_302(&back)
+            crate::base::redirect(&back)
         };
     }
     let (admin_id, name, saved_query) = (admin.id.clone(), name.to_string(), query_string.clone());
@@ -1621,7 +1621,7 @@ async fn saved_response(
     if fx.0 {
         Html(fragment.await.into_string()).into_response()
     } else {
-        super::auth::redirect_302(back)
+        crate::base::redirect(back)
     }
 }
 

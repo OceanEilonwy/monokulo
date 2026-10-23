@@ -25,24 +25,6 @@ pub const DOCS: &str = "https://docs.monokulo.com";
 /// The largest request body the API reads: a plugin's 20 log entries fit.
 pub const MAX_BODY_BYTES: usize = 32 * 1024;
 
-/// Where this Monokulo's paths start for a request, on the network it came
-/// on: the path of its address there, without a trailing `/`. `/monokulo`
-/// when `public_uri` is `https://host/monokulo` (a reverse proxy serves it
-/// under that prefix and strips it before passing a request on); empty at
-/// the root of its host, on the onion address (tor reaches monokulo
-/// directly), and while no address is set. Every link the API gives
-/// (`_links`, a form's `target`, `Location`) and the handshakes' `api`
-/// start with it, so a client resolving them against the host it called
-/// reaches the same Monokulo.
-pub fn path_prefix(state: &AppState, extensions: &axum::http::Extensions) -> String {
-    let network = state.network_of(crate::network::NetworkKind::of(extensions));
-    network
-        .public_uri()
-        .and_then(|uri| url::Url::parse(&uri).ok())
-        .map(|uri| uri.path().trim_end_matches('/').to_owned())
-        .unwrap_or_default()
-}
-
 /// Every handler's route, from the catalog.
 pub fn router() -> axum::Router<AppState> {
     catalog::handlers()
