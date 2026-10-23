@@ -1,15 +1,17 @@
 /target
 
-# SQLite database + WAL/SHM sidecar files created by running moneropay-core
-# locally (Store::open_file("moneropay.db") in main.rs) - runtime state, not
-# source. e2e/ has its own copy of this pattern for the same reason.
-moneropay.db
-moneropay.db-shm
-moneropay.db-wal
+# The databases monokulo and the engine make in the working directory when
+# there is no data directory to use, and their WAL/SHM sidecars.
+monokulo.db
+monokulo.db-shm
+monokulo.db-wal
+engine.db
+engine.db-shm
+engine.db-wal
 
-# scripts/dev-run.sh's own working state (PID files, logs, both real
-# processes' SQLite databases, a locally-generated dev
-# CONTROL_PLANE_ENCRYPTION_KEY) - see that script's own header comment.
+# scripts/dev-run.sh's own working state (PID file, log, the databases and
+# a locally generated dev MONOKULO_ENCRYPTION_KEY) - see that script's own
+# header comment.
 /.dev-run/
 
 # cli-wallet wallet files: the lock taken around every change (and the
@@ -21,7 +23,6 @@ moneropay.db-wal
 # scripts/build-openwrt.sh: the binaries it drops into the package, the
 # packages and repository.
 /openwrt/monokulo/files/monokulo
-/openwrt/monokulo/files/monokulo-engine
 /dist/
 
 # JavaScript workspace outputs
