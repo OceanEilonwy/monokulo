@@ -105,8 +105,8 @@ pub enum ExchangeRateLookupError {
 /// The real per-order dispatcher `AppState.exchange_rate` holds - built once
 /// at boot (`build`) from the parsed `ExchangeRateConfig`, then shared
 /// read-only across every request. `piconero_per_unit_for` is the single
-/// entry point every caller (`http::pay::create_order`,
-/// `http::orders::create_order`) uses.
+/// entry point every caller (`api::v1::orders::create`,
+/// `http::orders::create_order`, `http::pos::create_order`) uses.
 #[derive(Debug)]
 pub struct ExchangeRateProviders {
     xmr: XmrIdentityProvider,
@@ -201,8 +201,7 @@ impl ExchangeRateProviders {
     /// XMR-denominated orders can ever be priced. What most of this
     /// workspace's test-only `AppState`s use, since most tests don't
     /// actually exercise a fiat quote at all (real order-creation flow
-    /// tests just use `currency = "XMR"`, per
-    /// `docs/fx_refactor.md`'s follow-up).
+    /// tests just use `currency = "XMR"`).
     pub fn xmr_only() -> Self {
         ExchangeRateProviders::with(FiatProviders {
             coingecko: None,

@@ -11,8 +11,8 @@ edition = "2021"
 # normal build), never in production.
 test-support = ["shared/test-support"]
 default = ["embedded-engine", "tor"]
-# The engine's own router as a transport for `EngineClient`
-# (docs/engine_as_library.md): the engine runs inside monokulo's process.
+# The engine's own router as a transport for `EngineClient`: the engine
+# runs inside monokulo's process.
 # Without it the client only reaches an engine over HTTP.
 embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
 # The embedded engine's `snp` key custody backend (the engine's `snp`
@@ -49,8 +49,7 @@ regex = "1"
 hex = "0.4.3"
 maud = { version = "0.27.0", features = ["axum"] }
 monero = "0.22.0"
-# `http::checkout`'s QR code rendering (`docs/fx_refactor.md` Phase 2.1) -
-# same version/feature set the scanner's own (soon-removed) equivalent uses.
+# The checkout's QR code (`crate::qr`), drawn as SVG.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }

@@ -1,5 +1,5 @@
-//! `GET`/`POST /login` and `/signup` -
-//! `http::dashboard::render_login`/`render_signup`.
+//! The log-in and sign-up pages (`/login`, `/signup`), for
+//! `http::auth::render_login`/`render_signup`.
 //!
 //! Both pages always render with `chrome.logged_in == false` regardless of
 //! any real session (see each struct's own doc comment below) - the nav's
@@ -47,7 +47,7 @@ pub struct SignupViewModel {
 pub struct LoginViewModel {
     pub error: Option<String>,
     /// When present, rendered as a hidden form field so a successful login
-    /// can redirect back to it (see `dashboard::login_submit`) instead of
+    /// can redirect back to it (see `auth::login_submit`) instead of
     /// the default inline confirmation - the raw, caller-supplied query
     /// value, not yet validated as a safe redirect target here (that
     /// happens in `login_submit`, right before it's ever used as a

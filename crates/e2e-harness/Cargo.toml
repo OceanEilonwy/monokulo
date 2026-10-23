@@ -5,8 +5,7 @@ edition = "2021"
 publish = false
 description = "Real-stagenet end-to-end tests and the POS browser suite's backend: a real engine and a real monokulo driven together"
 
-# Moved here from the engine crate (docs/engine_as_library.md, phase 2):
-# these drive the engine and monokulo together, so they need both, and
+# Moved here from the engine crate: these drive the engine and monokulo together, so they need both, and
 # monokulo now depends on the engine (its `embedded-engine` feature). Kept
 # in the engine they would make a dependency cycle.
 #

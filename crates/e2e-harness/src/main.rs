@@ -73,7 +73,7 @@ use engine::store::Store;
 
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
-use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
+use monokulo::http::{build_router as build_monokulo_router, AppState as MonokuloAppState};
 
 // Deliberately duplicated from `tests/support/mod.rs::e2e_fixture` rather
 // than imported - a `[[bin]]` target has no access to `tests/`-local modules
@@ -298,7 +298,7 @@ async fn main() {
     // ---- real, network-bound monokulo, pointed at the engine above - Playwright's
     // browser needs a real socket to navigate to, unlike `e2e_dashboard_stagenet.rs`'s
     // own in-process-only `oneshot` driving ----
-    let cp_state = ControlPlaneAppState {
+    let cp_state = MonokuloAppState {
         db: monokulo::db::Database::inline(Db::open_in_memory().unwrap().into_shared()),
         encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
@@ -316,7 +316,7 @@ async fn main() {
         // Public signup: `signup.mode` defaults to invite-only, which would
         // refuse the plain `/signup` below (a re-rendered `200`
         // form, not the `302` it asserts on).
-        settings: ControlPlaneAppState::test_settings(None),
+        settings: MonokuloAppState::test_settings(None),
         engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
         webhooks: Arc::default(),
         apps: Default::default(),

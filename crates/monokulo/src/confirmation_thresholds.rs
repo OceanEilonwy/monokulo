@@ -1,5 +1,5 @@
 //! Resolve an order's effective `confirmations_required` from a store's
-//! amount-tiered "Confirmation Thresholds" (WBS). The bracket-selection
+//! amount-tiered "Confirmation Thresholds". The bracket-selection
 //! functions are pure; `resolve_for_order` performs the rate, engine and
 //! database lookups needed by each order-creation route.
 //!
@@ -201,9 +201,10 @@ pub struct Resolution {
 /// conversion when it differs from the order's own currency, plus
 /// `EngineClient::get_tenant` for the store's current default/fallback
 /// confirmation count) that the pure functions above deliberately don't do
-/// themselves, then calls them. Shared by both order-creation surfaces
-/// (`http::pay::create_order`, `http::orders::create_order`) so they can
-/// never drift apart on what "resolve the threshold" means.
+/// themselves, then calls them. Shared by every order-creation surface
+/// (`api::v1::orders::create`, `http::orders::create_order`,
+/// `http::pos::create_order`) so they can never drift apart on what
+/// "resolve the threshold" means.
 ///
 /// A base-currency rate-lookup failure fails order creation outright with a
 /// clear error - the same "a currency you can't actually get a price for

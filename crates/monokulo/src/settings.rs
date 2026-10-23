@@ -42,7 +42,7 @@ choice_value! {
 }
 
 choice_value! {
-    /// Where the engine runs (docs/engine_as_library.md).
+    /// Where the engine runs.
     pub enum EngineMode { Embedded = "embedded", Remote = "remote" }
 }
 

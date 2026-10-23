@@ -1,4 +1,4 @@
-//! The engine page's handlers (`docs/engine_visualizer.md`), admins only:
+//! The engine page's handlers, admins only:
 //! it shows node addresses and every store's progress. The page is an app
 //! (`apps/engine`) that needs JavaScript; these send it data, and it draws
 //! and words everything.
@@ -12,7 +12,7 @@
 //!   while the engine doesn't answer. Beside them, a `machine` event at
 //!   once and then every [`MACHINE_EVERY`] at most: the figures behind the
 //!   "Machine and links" strip and the Scanning panel, from monokulo's
-//!   cached `/status` (decision D38 in docs/engine_visualizer_decisions.md).
+//!   cached `/status`.
 //! - `GET /status/engine/at?network=&ms=`: the frame at a moment (the
 //!   timeline's scrubbing).
 //! - `GET /status/engine/replay?network=&from=&to=`: the frames between two
@@ -112,7 +112,7 @@ pub(crate) struct Machine<'a> {
     scaling: Option<&'a NetworkScaling>,
 }
 
-/// Both processes' CPU and memory (docs/engine_scaling.md section 6).
+/// Both processes' CPU and memory.
 #[derive(Debug, Serialize)]
 struct Resources {
     /// `None` when the engine didn't report its own (or didn't answer).

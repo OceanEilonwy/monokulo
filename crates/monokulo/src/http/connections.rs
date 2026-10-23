@@ -1,10 +1,10 @@
-//! Making a store (WBS 1.2.2): a real engine tenant on one of the
+//! Making a store: a real engine tenant on one of the
 //! merchant's wallets, and a `store_connections` row pointing at it. Store
 //! setup (`http::setup`) calls [`create_connection_for_user`].
 //!
 //! The engine's `secret_token` (`sk_...`) is never shown to the merchant;
 //! monokulo keeps it for its own server-to-server use, encrypted at rest
-//! (WBS 1.2.3) via [`crate::crypto::encrypt`] under
+//! via [`crate::crypto::encrypt`] under
 //! `AppState::encryption_key`, with its hash beside it for the API to find
 //! the store by (`http::store_key`). `Db` itself never sees a real key or
 //! does any crypto: encryption happens here, so `Db` stays a dumb
@@ -128,7 +128,7 @@ pub(super) async fn create_connection_for_user(
         }
     }
 
-    // The wallet the store takes payments into (docs/wallets.md).
+    // The wallet the store takes payments into.
     let (user_id, wallet_id) = (user.id.clone(), req.wallet_id.clone());
     let wallet = state
         .db

@@ -29,7 +29,7 @@ pub struct NodeRow {
     /// "Use TLS".
     pub ssl: bool,
     /// "Announcements (ZMQ)", as typed: the node's `--zmq-pub`, or empty
-    /// for none (docs/monero_zmq.md).
+    /// for none.
     pub zmq_pub: String,
     /// "Accept a self-signed certificate".
     pub self_signed: bool,

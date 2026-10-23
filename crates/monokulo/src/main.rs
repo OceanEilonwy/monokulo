@@ -5,8 +5,8 @@
 //! admin page saves to, or its command-line option (`monokulo::cli`), which
 //! wins; runtime switches from the database; secrets from the environment.
 //!
-//! The engine runs inside monokulo unless `engine.mode` is remote
-//! (docs/engine_as_library.md): on a runtime of its own, its threads named
+//! The engine runs inside monokulo unless `engine.mode` is remote:
+//! on a runtime of its own, its threads named
 //! `engine-…`, with its settings in this options file's `[engine.*]`
 //! tables, reached through its router in-process with a token made for
 //! this run.
@@ -131,7 +131,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         Err(e) => stop(format!("{}: {e}", settings::CRYPTO_ENCRYPTION_KEY.env_var)),
     };
     let db_path = monokulo::cli::database_path(&early);
-    // CPU and memory every 10 s, for the admin page (docs/engine_scaling.md 6):
+    // CPU and memory every 10 s, for the admin page:
     // the process's, the engine's included when it runs inside.
     shared::resources::start_sampling();
     // How many readers to open applies on restart.
@@ -226,7 +226,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         tracing::error!(error = %e, "could not record stores' secret key hashes");
     }
     // Stores' webhooks: the engine's order events read into deliveries,
-    // and the deliveries sent (docs/DESIGN.md §11).
+    // and the deliveries sent.
     let webhooks = Arc::new(monokulo::webhooks::Webhooks::default());
     // Connected apps' event streams hear of their orders from the same log.
     let apps = Arc::new(monokulo::apps::AppEvents::default());

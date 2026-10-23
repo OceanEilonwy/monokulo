@@ -1,8 +1,8 @@
 //! Builds the browser code the binary embeds into `OUT_DIR`; the built files
 //! are not kept in git:
 //!
-//! - the POS terminal app (`apps/pos`, Solid 2 + Vite), which `http::pay`
-//!   embeds;
+//! - the POS terminal app (`apps/pos`, Solid 2 + Vite), which
+//!   `crate::assets` embeds;
 //! - the server-rendered pages' scripts (`apps/engine`, the same
 //!   toolchain): the shared components' islands (`crates/ui/web/islands.ts`)
 //!   and the engine page's live view, in chunks, with a list of the chunks

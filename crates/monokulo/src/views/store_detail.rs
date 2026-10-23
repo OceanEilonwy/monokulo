@@ -17,8 +17,7 @@ pub struct StoreDetailData {
     pub health_label: String,
     pub created_at: i64,
     pub recent_orders: Vec<OrderRowViewModel>,
-    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - re-populates the
-    /// "look up a payment" card's own input after a submission, empty for a
+    /// Re-populates the "look up a payment" card's own input after a submission, empty for a
     /// plain page view.
     pub lookup_txid_value: String,
     /// The lookup's own plain-text result, `None` until a lookup has actually

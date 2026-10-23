@@ -1,4 +1,4 @@
-//! The engine page's data (`docs/engine_visualizer.md`): what the engine's
+//! The engine page's data: what the engine's
 //! scanner is doing, live, for admins. The page itself is an app
 //! (`apps/engine`) that draws and words what this sends.
 //!

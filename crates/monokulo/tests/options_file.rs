@@ -1,7 +1,7 @@
 //! The monokulo binary and its options file, run as an operator runs it:
 //! where the file and the databases go when nothing names them, `--init`,
 //! the start refused for a file it can't use, and the engine's mode (inside
-//! monokulo by default, docs/engine_as_library.md). The settings themselves
+//! monokulo by default). The settings themselves
 //! are tested in `live-settings` and on the admin page; this is the wiring
 //! in `main.rs` that only a real process shows.
 

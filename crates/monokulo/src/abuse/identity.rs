@@ -1,5 +1,5 @@
 //! Who a request is from, for rate limiting, the open-stream cap and
-//! challenges (`docs/workpacks/engine-boundary/README.md` step 9a).
+//! challenges.
 //!
 //! Keying everything on the connecting address breaks in two common setups:
 //! behind a reverse proxy every visitor arrives from the proxy, and on an

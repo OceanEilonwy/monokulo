@@ -1,4 +1,4 @@
-//! A merchant's named wallets (docs/wallets.md): the friendly names a wallet
+//! A merchant's named wallets: the friendly names a wallet
 //! gets when its owner doesn't give one, and the wallet apps a new wallet's
 //! recovery phrase can be saved in.
 

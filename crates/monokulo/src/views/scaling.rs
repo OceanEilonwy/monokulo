@@ -1,5 +1,5 @@
-//! How the engine is performing and scaling, as people read it
-//! (docs/engine_scaling.md section 6): the figures' formatting, and the
+//! How the engine is performing and scaling, as people read it:
+//! the figures' formatting, and the
 //! status page's sentences about a slow block and header-first reading.
 //! The engine page's "Machine and links" strip and Scanning panel are its
 //! app's (`apps/engine/src/machine.ts`).
@@ -88,7 +88,7 @@ pub fn network_name(network: &str) -> String {
 }
 
 /// One sentence about a slow block: what is slow, at what rate, how much
-/// longer it needs and what would help (docs/engine_scaling.md section 5).
+/// longer it needs and what would help.
 /// The node only when `show_node` (an operator is looking).
 pub fn slow_block_message(network: &str, slow: &SlowBlock, show_node: bool) -> String {
     let size = slow
@@ -138,7 +138,7 @@ fn headers_first_why(on: &shared::scaling::HeadersFirst) -> String {
 }
 
 /// The status page's sentence while a network's blocks are read
-/// header-first (docs/engine_scaling.md section 4).
+/// header-first.
 pub fn headers_first_sentence(on: &shared::scaling::HeadersFirst) -> String {
     format!("Reading block headers first {}.", headers_first_why(on))
 }

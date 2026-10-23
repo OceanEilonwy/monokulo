@@ -1,5 +1,5 @@
-//! The client the control plane uses to call the engine's admin API, by
-//! either of two transports (docs/engine_as_library.md, phase 2):
+//! The client monokulo uses to call the engine's admin API, by either of
+//! two transports:
 //!
 //! - **remote**: over HTTP to a separately running engine
 //!   (`monokulo-engine`), with `reqwest`, through `shared::http_cache`;
@@ -13,10 +13,10 @@
 //! two can't drift apart: the contract tests run every method over both.
 //!
 //! This is a different role from `monokulo::http`: that module is the
-//! control plane's *own* router, serving requests from browsers/plugins.
+//! monokulo's *own* router, serving requests from browsers/plugins.
 //!
 //! [`CreateTenantRequest`]/[`CreateTenantResponse`]/[`TenantView`] are the
-//! control plane's own view of the wire contract the engine's
+//! monokulo's own view of the wire contract the engine's
 //! `src/http/admin.rs` (`CreateTenantRequest`/`CreateTenantResponse`,
 //! `TenantView`) actually serves — matched field-for-field, not shared as
 //! Rust types: the engine's HTTP API is the contract in both transports.
@@ -102,7 +102,7 @@ enum Transport {
     },
     /// The engine's own router, in this process; its handlers run on the
     /// engine's own runtime when given one, so its work stays on the
-    /// engine's threads (docs/engine_as_library.md §5).
+    /// engine's threads.
     #[cfg(feature = "embedded-engine")]
     Embedded {
         router: axum::Router,
@@ -588,7 +588,7 @@ impl EngineClient {
     }
 
     /// `DELETE /api/v1/admin/proof/{network}/anchor` — has the engine take
-    /// a new proof-of-work anchor on `network` (docs/proof_of_work.md).
+    /// a new proof-of-work anchor on `network`.
     pub async fn take_new_anchor(
         &self,
         network: monero::Network,
@@ -778,7 +778,7 @@ impl EngineClient {
     }
 
     /// `GET /api/v1/admin/tenant/orders` — lists `sk`'s tenant's
-    /// orders (WBS 1.3.3), with no paging or filtering.
+    /// orders, with no paging or filtering.
     pub async fn list_orders(&self, sk: &RawToken) -> Result<Vec<OrderView>, EngineClientError> {
         self.send(Call::get("/api/v1/admin/tenant/orders").store(sk))
             .await?
@@ -834,7 +834,7 @@ impl EngineClient {
     }
 
     /// `GET /api/v1/admin/tenant/orders/{order_id}` — fetches one
-    /// order's full detail (WBS 1.3.3). The engine returns its own `404` for
+    /// order's full detail. The engine returns its own `404` for
     /// an unknown `order_id` or one belonging to a different tenant —
     /// surfaced here as `EngineClientError::EngineError { status: 404, .. }`,
     /// same as every other non-success status.
@@ -849,8 +849,8 @@ impl EngineClient {
             .parsed()
     }
 
-    /// `POST /api/v1/admin/tenant/payments/lookup` -
-    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B. A malformed `txid`
+    /// `POST /api/v1/admin/tenant/payments/lookup` - finds a payment by its
+    /// transaction id. A malformed `txid`
     /// gets the engine's own `400`, surfaced as
     /// `EngineClientError::EngineError { status: 400, .. }`: the engine's
     /// check is the one source of truth for what a valid txid looks like.
@@ -910,7 +910,7 @@ impl EngineClient {
     /// `POST /api/v1/admin/tenant/orders` creates an order for
     /// the authenticated tenant, including its resolved confirmation count.
     ///
-    /// XMR-only (`docs/fx_refactor.md` Phase 3): the engine has no concept
+    /// XMR-only: the engine has no concept
     /// of fiat at all any more, so `xmr_amount_piconero` here is the exact
     /// amount already computed from monokulo's own exchange rate -
     /// this is the only rate computation left in the whole system.
@@ -970,14 +970,14 @@ impl EngineClient {
     /// `GET /status` — the engine's own live node/scanner report
     /// (`src/http/status_page.rs` at the repo root). No store secret: it
     /// reports on the whole instance, not any one tenant. This is data only;
-    /// the control plane's own `GET /status`
+    /// monokulo's own `GET /status`
     /// (`monokulo/src/http/status_page.rs`) is what renders it.
     pub async fn get_status(&self) -> Result<EngineStatusResponse, EngineClientError> {
         self.send(Call::get("/status")).await?.parsed()
     }
 }
 
-/// The engine page's feed (`docs/engine_visualizer.md`).
+/// The engine page's feed.
 impl EngineClient {
     /// `GET /api/v1/admin/engine/activity/stream` — `network`'s activity
     /// record as never-ending server-sent events, each an `activity` whose
@@ -1229,7 +1229,7 @@ pub struct WalletChangeAnswer {
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
-/// root) field-for-field. No fiat fields (`docs/fx_refactor.md` Phase 3) -
+/// root) field-for-field. No fiat fields -
 /// any fiat display comes from monokulo's own local
 /// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
 #[derive(Debug, Clone, Deserialize)]
@@ -1250,8 +1250,8 @@ pub struct OrderView {
     pub created_at: i64,
     pub expires_at: i64,
     pub updated_at: i64,
-    /// `docs/order_rescan_wbs.md` Phase 5.3 - mirrors the engine's own
-    /// `OrderView` field-for-field.
+    /// The block range scanned for this order so far; mirrors the engine's
+    /// own `OrderView` field-for-field.
     pub first_scanned_height: Option<i64>,
     pub last_scanned_height: Option<i64>,
     pub currently_scanning: bool,
@@ -1381,7 +1381,7 @@ pub struct NodeStatus {
     #[serde(default)]
     pub network: Option<String>,
     /// What the engine has measured of the node's link
-    /// (docs/engine_scaling.md section 1).
+    /// (its latency and throughput).
     #[serde(default)]
     pub link: Option<shared::scaling::LinkSnapshot>,
 }
@@ -1405,15 +1405,14 @@ pub struct NetworkStatus {
     pub network: String,
     pub nodes: Vec<NodeStatus>,
     pub scanner: ScannerStatusView,
-    /// How the block scan is going and what limits it
-    /// (docs/engine_scaling.md section 6).
+    /// How the block scan is going and what limits it.
     #[serde(default)]
     pub scaling: Option<shared::scaling::NetworkScaling>,
-    /// The nodes' ZMQ announcements (docs/monero_zmq.md); absent while no
+    /// The nodes' ZMQ announcements; absent while no
     /// node of this network has a `zmq_pub`.
     #[serde(default)]
     pub announcements: Option<shared::announcements::Announcements>,
-    /// Proof-of-work checking (docs/proof_of_work.md); absent while it is
+    /// Proof-of-work checking; absent while it is
     /// off on this network.
     #[serde(default)]
     pub proof: Option<shared::proof::ProofStatus>,
@@ -1745,8 +1744,7 @@ mod tests {
         // deserialization) against a real engine over a genuine HTTP round
         // trip - the underlying business logic (a real match, idempotency,
         // validation) is already exhaustively covered at the engine's own
-        // `http/tests.rs` level (`docs/txid_lookup_and_scan_chunking_wbs.md`
-        // Part B.2); this only needs to prove the two sides agree on the
+        // `http/tests.rs` level; this only needs to prove the two sides agree on the
         // shape. `with_admin_lookup_daemon` wires an inert `NoopDaemonClient`
         // into the engine's live-scanner daemon map, which
         // `admin::lookup_payment` reads unconditionally.
@@ -1875,8 +1873,8 @@ mod tests {
         );
     }
 
-    /// The other half of adopting this transport as a blanket default (WBS
-    /// 3.1's own explicit safety requirement): an ordinary engine call whose
+    /// The other half of adopting this transport as a blanket default (its
+    /// own safety requirement): an ordinary engine call whose
     /// response carries no `Cache-Control` at all - `get_order_detail`, exactly
     /// like every engine endpoint before this feature - must never be served
     /// from cache, proven the same way: a real call-count assertion, not just
@@ -1952,7 +1950,7 @@ mod tests {
     }
 }
 
-/// The contract (docs/engine_as_library.md, phase 2): every method of the
+/// The contract: every method of the
 /// client, against a real engine, over each transport, gives the same
 /// outcome. A difference between calling the engine's router in-process
 /// and calling it over HTTP fails here.

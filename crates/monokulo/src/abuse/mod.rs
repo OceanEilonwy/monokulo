@@ -1,5 +1,4 @@
-//! Abuse protection that works for Tor and clearnet visitors alike
-//! (`docs/workpacks/engine-boundary/README.md` step 9, `docs/ABUSE_PROTECTION.md`).
+//! Abuse protection that works for Tor and clearnet visitors alike.
 //!
 //! - [`identity`]: who a request is from (Tor circuit, clearnet address
 //!   behind trusted proxies, signed-in user, shop's secret key).
@@ -50,7 +49,7 @@ pub struct AbuseConfig {
     pub stream_cap: usize,
     /// Leading zero bits the proof-of-work needs.
     pub challenge_bits: u32,
-    /// Challenge every anonymous visitor on pages and the JSON API.
+    /// Challenge every anonymous visitor on pages and the machine API.
     pub under_attack: bool,
 }
 

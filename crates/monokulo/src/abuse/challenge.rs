@@ -88,7 +88,7 @@ impl Default for Challenges {
     }
 }
 
-/// A challenge as the JSON API and the interstitial page present it.
+/// A challenge as the machine API and the interstitial page present it.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct IssuedChallenge {
     pub challenge: String,
