@@ -321,7 +321,7 @@ settings! {
         key: "public_uri",
         default: String::new(),
         check: |v: &String| check_public_uri(v),
-        description: "This instance's web address, e.g. https://www.monokulo.com. Connect codes for apps and the plugin connect flow use it, and payment links shared from the dashboard; visitors on Tor get the onion address instead (onion_uri). Plugins and apps can't connect until it is set.",
+        description: "This instance's web address, e.g. https://www.monokulo.com. Connect codes for apps and the plugin connect flow use it, and payment links shared from the dashboard; visitors on Tor get the onion address instead (onion_uri). Plugins and apps can't connect until it is set. Behind a reverse proxy that serves this instance under a path (and strips it), include the path, e.g. https://example.com/monokulo: the API's links start with it.",
         example: "https://pay.example.com",
     },
     ABUSE_TRUSTED_PROXIES: String {
@@ -542,22 +542,23 @@ impl Section for LoggingConfig {
 
 /// Checks a `public_uri` value: this instance's web address, the one
 /// plugins and web visitors use (an onion address is `onion_uri`). It must be an
-/// absolute `http`/`https` URL with a host and nothing after it but an
-/// optional `/` - no path, query, fragment or login - since callers append
-/// paths like `/checkout/{order_id}` to it. Returns it without the trailing
-/// `/`. The empty string is not valid here; an empty setting just means
-/// "not set" ([`MonokuloSettings::public_uri`]).
+/// absolute `http`/`https` URL with a host, and may have a path: the prefix
+/// a reverse proxy serves this instance under (`https://shop.example/monokulo`,
+/// the proxy stripping it before passing a request on), which the API's
+/// links start with (`api::runtime::path_prefix`). No query, fragment or
+/// login, since callers append paths like `/checkout/{order_id}` to it.
+/// Returns it without the trailing `/`. The empty string is not valid here;
+/// an empty setting just means "not set" ([`MonokuloSettings::public_uri`]).
 pub fn validate_public_uri(value: &str) -> Result<String, String> {
     let value = value.trim();
     let problem =
-        "Enter this instance's web address, like https://pay.example.com, with no path after it.";
+        "Enter this instance's web address, like https://pay.example.com, or https://example.com/monokulo when a proxy serves it under a path.";
     let parsed = url::Url::parse(value).map_err(|_| problem.to_string())?;
     if parsed.host_str().is_some_and(crate::onion::is_onion_host) {
         return Err("That's an onion address: put it in onion_uri (with tor.mode = external), and set this to the web address or leave it empty.".to_string());
     }
     let ok = matches!(parsed.scheme(), "http" | "https")
         && parsed.host_str().is_some_and(|host| !host.is_empty())
-        && parsed.path() == "/"
         && parsed.query().is_none()
         && parsed.fragment().is_none()
         && parsed.username().is_empty()
@@ -1570,7 +1571,7 @@ impl MonokuloSettings {
 }
 
 /// The two secrets monokulo can't start without, for tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn test_secrets() -> live_settings::Env {
     live_settings::Env::fixed([
         (CRYPTO_ENCRYPTION_KEY.env_var.to_string(), "07".repeat(32)),
@@ -1587,7 +1588,7 @@ mod tests {
     use crate::db::Db;
 
     #[test]
-    fn a_public_uri_must_be_an_http_base_url_with_nothing_after_it() {
+    fn a_public_uri_is_an_http_base_url_maybe_with_a_path() {
         for (input, expected) in [
             ("https://pay.example.com", "https://pay.example.com"),
             ("https://pay.example.com/", "https://pay.example.com"),
@@ -1595,6 +1596,16 @@ mod tests {
                 "  http://pay.example.com:8081/ ",
                 "http://pay.example.com:8081",
             ),
+            // Served by a reverse proxy under a path.
+            (
+                "https://shop.example/monokulo",
+                "https://shop.example/monokulo",
+            ),
+            (
+                "https://shop.example/monokulo/",
+                "https://shop.example/monokulo",
+            ),
+            ("https://shop.example/a/b", "https://shop.example/a/b"),
         ] {
             assert_eq!(
                 validate_public_uri(input).as_deref(),
@@ -1606,7 +1617,6 @@ mod tests {
             "",
             "pay.example.com",
             "ftp://pay.example.com",
-            "https://pay.example.com/monokulo",
             "https://pay.example.com/?a=b",
             "https://pay.example.com/#top",
             "https://user:pass@pay.example.com",

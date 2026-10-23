@@ -1,9 +1,9 @@
 use shared::order_status::OrderStatus;
 
 use super::{order_events, orders};
-use crate::api::checkout;
 use crate::api::{self, prelude::*};
-use crate::db::OrderCurrencyMetadataRow;
+use crate::api::{checkout, dashboard_order};
+use crate::db::{ConnectionId, OrderCurrencyMetadataRow};
 use crate::engine_client::{EngineClientError, OrderView};
 
 api::resource!(
@@ -18,10 +18,11 @@ api::resource!(
 /// to `paid` (or `partial`, `overpaid`, `expired`); `is_final` says it
 /// won't change again. Follow `mk:order-events` to hear each change as it
 /// happens, and send the payer to `mk:checkout`, or, when they're on Tor,
-/// to `mk:onion-checkout`.
+/// to `mk:onion-checkout`. The store's secret key also gets
+/// `mk:dashboard-order`, the order's page for the merchant.
 #[api::body]
 struct Body {
-    /// The order's id: `order_` and a UUID.
+    /// The order's id: `order_` and 32 hex digits.
     order_id: OrderId,
     /// Where the payment is.
     status: OrderStatus,
@@ -56,6 +57,7 @@ struct Body {
     collection: Link<orders::Path>,
     events: Link<order_events::Path>,
     checkout: Link<checkout::Path>,
+    dashboard: Link<dashboard_order::Path>,
     /// The order's checkout page on this Monokulo's onion address.
     ///
     /// An absolute URL, `http://….onion/checkout/{order_id}`, present while
@@ -72,9 +74,11 @@ struct Body {
     onion_checkout: Option<OnionLink<checkout::Path>>,
 }
 
-/// `order` as the engine reports it, priced by `metadata`, with its onion
-/// checkout on `onion` (`AppState::onion_uri`) when there is one.
+/// `order`, of the store `store`, as the engine reports it, priced by
+/// `metadata`, with its onion checkout on `onion` (`AppState::onion_uri`)
+/// when there is one.
 pub(crate) fn of(
+    store: &ConnectionId,
     order: &OrderView,
     metadata: Option<&OrderCurrencyMetadataRow>,
     confirmations_required: u64,
@@ -103,6 +107,10 @@ pub(crate) fn of(
             order_id: order_id.clone(),
         }),
         checkout: Link::new(checkout::Path {
+            order_id: order_id.clone(),
+        }),
+        dashboard: Link::new(dashboard_order::Path {
+            id: store.clone(),
             order_id: order_id.clone(),
         }),
         onion_checkout: OnionLink::new(onion, checkout::Path { order_id }),
@@ -146,6 +154,7 @@ pub(crate) async fn load(
         .ok()
         .flatten();
     Ok(Some(of(
+        &orders.store.id,
         &detail.order,
         metadata.as_ref(),
         confirmations_required,

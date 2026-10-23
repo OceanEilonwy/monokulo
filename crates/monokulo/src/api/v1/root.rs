@@ -37,11 +37,46 @@ struct Body {
     disconnect: Form<app::delete>,
 }
 
+/// How long a client may keep the entry before reading it again.
+pub const MAX_AGE: u32 = 3600;
+
 /// Read the entry. Open without a key, so a client can check it found a
-/// Monokulo API; with one, it shows what that key may do.
+/// Monokulo API; with one, it shows what that key may do, and a key this
+/// Monokulo doesn't know is refused (`401`), like everywhere in the API.
+///
+/// A client keeps it for an hour (`Cache-Control: private, max-age=3600`,
+/// `Vary: Authorization`), and after that asks again with its `ETag` in
+/// `If-None-Match`, which answers `304 Not Modified` while it's the same.
+/// It reads it again sooner when a link or form from it is refused with
+/// `401`, `404` or `405`.
 #[get(anyone)]
-async fn get(instance: Instance) -> api::Result<Body> {
-    Ok(Body {
+async fn get(instance: Instance) -> api::Result<Cached<Body>> {
+    Ok(Cached {
+        body: body(&instance),
+        max_age: MAX_AGE,
+    })
+}
+
+/// Where the API's entry is for a handshake's caller, on the network its
+/// request came on: the path, with this Monokulo's path prefix
+/// (`crate::api::runtime::path_prefix`), and the absolute URL on the onion
+/// address while it has one.
+pub(crate) fn entry(
+    state: &crate::http::AppState,
+    extensions: &axum::http::Extensions,
+) -> (String, Option<String>) {
+    let path = Path {};
+    let api = format!(
+        "{}{path}",
+        crate::api::runtime::path_prefix(state, extensions)
+    );
+    let onion =
+        OnionLink::new(state.onion_uri().as_deref(), path).map(|link| link.href().to_owned());
+    (api, onion)
+}
+
+fn body(instance: &Instance) -> Body {
+    Body {
         onion_api: OnionLink::new(instance.0.onion_uri().as_deref(), Path {}),
         store: Link::new(store::Path {}),
         orders: Link::new(orders::Path {}),
@@ -55,5 +90,5 @@ async fn get(instance: Instance) -> api::Result<Body> {
         create_order: Form::new(),
         send_logs: Form::new(),
         disconnect: Form::new(),
-    })
+    }
 }

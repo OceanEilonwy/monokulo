@@ -2,8 +2,9 @@
 
 `<script src="https://www.monokulo.com/static/monokulo-client.js"></script>` adds
 one global, `window.Monokulo`, with two functions. No build step, no
-dependencies. Monokulo's address is taken from the script's own URL unless
-you pass `endpoint`.
+dependencies. Monokulo's address is taken from the script's own URL, less
+its `/static/monokulo-client.js` (so a Monokulo served under a path keeps
+it), unless you pass `endpoint`.
 
 ## `Monokulo.createOrder(params) → Promise<Order>`
 

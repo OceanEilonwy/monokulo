@@ -1,10 +1,10 @@
 //! The plugin connect flow: "OAuth-style one-click install" for any shop
-//! plugin, written once for all of them. `platform` is a path parameter
+//! plugin, written once for all of them. `slug` is a path parameter
 //! naming the plugin, a slug of its own choosing (`crate::plugins`): monokulo
 //! keeps no list of plugins, and the store itself has no platform. The
 //! plugin may add `name=` to say what to call it ("PrestaShop").
 //!
-//! 1. `GET /plugins/connect/{platform}?site_url=...&return_url=...&nonce=...[&name=...]`
+//! 1. `GET /plugins/connect/{slug}?site_url=...&return_url=...&nonce=...[&name=...]`
 //!    - the plugin sends the merchant's browser here.
 //! 2. No session yet: redirect to `/login?next=<this same URL>`
 //!    (`next` is checked to be a path on this site before it's followed,
@@ -17,19 +17,18 @@
 //!    - no store has it: store setup (`/setup`, `http::setup`), with the
 //!      plugin's request carried through, ending on a Done page whose
 //!      button goes back to the plugin.
-//! 4. `POST /plugins/connect/{platform}` (behind [`AuthedUser`]): a store of the
+//! 4. `POST /plugins/connect/{slug}` (behind [`AuthedUser`]): a store of the
 //!    merchant's whose site is the shop's; mints a single-use connect token
 //!    and redirects to `return_url` with `token`/`nonce` appended (via the
 //!    `url` crate, so `return_url`'s own query string is kept).
-//! 5. `POST /plugins/connect/{platform}/finish` - deliberately *not* behind
+//! 5. `POST /plugins/connect/{slug}/finish` ([`FINISH`]), not behind
 //!    [`AuthedUser`]: the plugin calls this server-to-server, with no
 //!    monokulo session at all. Redeems the token exactly once (see
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
-//!    returns `{public_key, secret_token, api}` (`api` is the API's entry,
-//!    `/api/v1`, a path on this instance, never the engine's), `onion_api`
-//!    (the same entry on the onion address) while the instance has one, plus
-//!    a `webhook_signing_secret` when the request carried a `webhook_url` -
-//!    see [`finish`]'s own doc comment for the registration/failure policy.
+//!    returns [`FinishResponse`]: the store's keys, the API's entry (`api`,
+//!    a path on this instance, never the engine's), `onion_api` while the
+//!    instance has an onion address, and a `webhook_signing_secret` when the
+//!    request carried a `webhook_url`. See [`finish`] for its problems.
 
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -396,62 +395,88 @@ async fn mint_token_and_redirect(
     Some(redirect_302(redirect_url.as_str()))
 }
 
-#[derive(Deserialize)]
+/// What a plugin sends to finish connecting.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[schemars(rename = "PluginConnectFinish")]
 pub struct FinishRequest {
+    /// The connect code the plugin's `return_url` was given as `token`.
     pub token: String,
-    /// The plugin's own webhook receiver URL (WBS 1.4.4) — it can only be known once
-    /// the plugin holds real credentials, hence this arriving here rather than at
-    /// the earlier confirm step. `Option` for backward compatibility: a caller that
-    /// omits it (or an older plugin build) simply gets no webhook registered, and
-    /// `FinishResponse::webhook_signing_secret` is absent from the response, exactly
-    /// as it always has been for every caller before this field existed.
+    /// The plugin's own webhook receiver, an http(s) URL: Monokulo posts
+    /// each change to the store's orders there, signed with
+    /// `webhook_signing_secret`. Without it no webhook is added.
     #[serde(default)]
     pub webhook_url: Option<String>,
-    /// What the plugin calls itself ("PrestaShop"), kept on the store's
-    /// integration for the dashboard. Optional: without it the dashboard
-    /// shows the plugin's slug (`crate::plugins::display_name`).
+    /// What the plugin calls itself ("PrestaShop"), up to 40 characters,
+    /// shown on the dashboard. Without it the dashboard shows the slug, or
+    /// the name this plugin gave last time it connected to the store.
     #[serde(default)]
     pub name: Option<String>,
 }
 
-#[derive(Serialize)]
+/// The store's keys and where its API is: a plugin's connection.
+#[derive(Serialize, schemars::JsonSchema)]
+#[schemars(rename = "PluginConnection")]
 pub struct FinishResponse {
     /// The store's public key, for the shop's pages that embed the checkout
-    /// with `monokulo-client.js`.
+    /// with the JS library (`monokulo-client.js`).
     pub public_key: String,
     /// The store's secret key: `Authorization: Bearer sk_…` on the API,
     /// from the shop's server only.
     pub secret_token: String,
-    /// The API's entry, `/api/v1` (`crate::api`): a path, which the plugin
-    /// resolves against the address it called this at. Every other URL
-    /// (making orders, an order's checkout page) is a link from there, so
-    /// the plugin builds none itself. Never the engine's address - the
-    /// engine is private.
+    /// The API's entry: a path (`/api/v1`, with this Monokulo's path prefix
+    /// when it has one), to resolve against the address `/finish` was
+    /// called at. Every other URL (making orders, an order's checkout
+    /// page) is a link from there, so the plugin builds none itself.
     pub api: String,
-    /// The API's entry on this instance's onion address
+    /// The API's entry on this Monokulo's onion address
     /// (`http://….onion/api/v1`), while it has one; absent otherwise. A
     /// plugin keeps it so it can reach Monokulo over Tor; every order
     /// carries its own onion checkout (`mk:onion-checkout`) either way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub onion_api: Option<String>,
-    /// Present only when `webhook_url` was supplied and registration
-    /// succeeded.
+    /// The secret the webhooks to `webhook_url` are signed with; present
+    /// only when the request sent a `webhook_url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub webhook_signing_secret: Option<String>,
 }
 
-/// `POST /plugins/connect/{platform}/finish` (WBS 1.4.1 step 5, extended by 1.4.4) -
-/// deliberately *not* behind [`AuthedUser`]: this is a server-to-server call
-/// from the plugin, which has no monokulo session at all (it's the
-/// browser, not the plugin's backend, that ever holds one). Redeems the
-/// connect token exactly once (see [`crate::db::Db::consume_connect_token`])
-/// and returns the real credentials - plus, when `webhook_url` was supplied,
-/// registers a webhook for the store and returns its `signing_secret`.
+/// The plugin handshake's route: [`finish`].
+pub const FINISH: &str = "/plugins/connect/{slug}/finish";
+
+#[linkme::distributed_slice(crate::api::runtime::catalog::HANDSHAKES)]
+static FINISH_HANDSHAKE: crate::api::runtime::catalog::Handshake =
+    crate::api::runtime::catalog::Handshake {
+        method: "POST",
+        template: FINISH,
+        operation: "plugin-connect.finish",
+        doc: "Finish connecting a shop plugin: the store's keys, for its connect code.\n\nThe plugin calls it from its server once the merchant's browser came back to its `return_url` with `token` and `nonce`, within 10 minutes. Each code works once. `slug` is the plugin's own name, as in the connect URL. Monokulo-Client: `<slug>/<version>` records the plugin's version. See the docs' Shop plugins page.",
+        request: |g| g.subschema_for::<FinishRequest>().to_value(),
+        response: |g| g.subschema_for::<FinishResponse>().to_value(),
+        problems: &[
+            Problem::InvalidRequest,
+            Problem::InvalidConnectCode,
+            Problem::NotFound,
+            Problem::TooLarge,
+            Problem::UnsupportedMediaType,
+            Problem::RateLimited,
+            Problem::ChallengeRequired,
+            Problem::Internal,
+            Problem::NoPublicAddress,
+        ],
+    };
+
+/// `POST /plugins/connect/{slug}/finish`, not behind [`AuthedUser`]: a
+/// server-to-server call from the plugin, which has no monokulo session at
+/// all (the merchant's browser holds that). Redeems the connect token
+/// exactly once (see [`crate::db::Db::consume_connect_token`]) and returns
+/// the store's keys and, when `webhook_url` was sent, registers a webhook
+/// for the store and returns its signing secret.
 ///
 /// Every error is a problem (`application/problem+json`,
-/// `crate::api::runtime::problem`), each with its page in the docs:
+/// `crate::api::runtime::problem`), each with its page in the docs, and
+/// each listed in [`FINISH_HANDSHAKE`] for the OpenAPI document:
 ///
-/// - `not-found` (404): `platform` isn't a plugin's slug;
+/// - `not-found` (404): `slug` isn't a plugin's slug;
 /// - `invalid-request` (400) / `unsupported-media-type` (415) /
 ///   `too-large` (413): the body isn't the JSON this takes, or
 ///   `webhook_url` isn't an http(s) URL - checked before the token is
@@ -463,7 +488,8 @@ pub struct FinishResponse {
 ///   expired, all alike (nothing to enumerate);
 /// - `internal` (500): something failed here after the token was spent;
 ///   the plugin starts connecting again;
-/// - `rate-limited` (429), from `http::abuse`, before any of this.
+/// - `rate-limited` or `challenge-required` (429), from `http::abuse`,
+///   before any of this.
 ///
 /// Once it succeeds, the store has an active integration
 /// (`store_integrations`): the plugin's slug and name, the store's site,
@@ -472,13 +498,14 @@ pub struct FinishResponse {
 /// locked; connecting again adds a new row.
 pub async fn finish(
     State(state): State<AppState>,
-    Path(platform): Path<String>,
+    Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
+    extensions: axum::http::Extensions,
     JsonBody(req): JsonBody<FinishRequest>,
 ) -> Result<Json<FinishResponse>, ProblemDetails> {
-    let Some(slug) = PluginSlug::parse(&platform) else {
+    let Some(slug) = PluginSlug::parse(&slug) else {
         return Err(Problem::NotFound.detail(format!(
-            "{platform} isn't a plugin's slug: a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens."
+            "{slug} isn't a plugin's slug: a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens."
         )));
     };
     if let Err(why) = public_uri_for_plugins(&state).await {
@@ -602,12 +629,12 @@ pub async fn finish(
         tracing::error!(store.id = %row.id, error = %e, "a plugin connected but it couldn't be recorded");
     }
 
-    let api = crate::api::v1::root::Path {}.to_string();
+    let (api, onion_api) = crate::api::v1::root::entry(&state, &extensions);
     Ok(Json(FinishResponse {
         public_key: row.tenant_public_key,
         secret_token: secret_token.expose().to_string(),
-        onion_api: state.onion_uri().map(|onion| format!("{onion}{api}")),
         api,
+        onion_api,
         webhook_signing_secret,
     }))
 }

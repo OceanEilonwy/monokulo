@@ -77,7 +77,7 @@ async fn list(orders: Orders, page: Page) -> api::Result<Body> {
                 let required = metadata
                     .and_then(|m| m.confirmations_required_applied)
                     .unwrap_or(fallback);
-                order::of(view, metadata, required, onion.as_deref())
+                order::of(&store.id, view, metadata, required, onion.as_deref())
             })
             .collect(),
         next: full.then(|| {
@@ -378,6 +378,7 @@ async fn create(
             show_merchant_order_id,
         };
         order::of(
+            &row.id,
             &view,
             Some(&metadata),
             resolution.confirmations_required,

@@ -5,11 +5,12 @@ repository.workspace = true
 edition = "2021"
 
 [features]
-# `http::AppState::for_tests` and `db::Db::seed_test_admin`, for other
+# `http::AppState::for_tests`, `db::Db::seed_test_admin`, `http::test_support`
+# and the API reference's recording (`api::runtime::recording`), for other
 # crates' tests and this crate's own integration tests and examples.
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
-test-support = ["shared/test-support"]
+test-support = ["shared/test-support", "embedded-engine", "dep:jsonschema"]
 default = ["embedded-engine", "tor"]
 # The engine's own router as a transport for `EngineClient`: the engine
 # runs inside monokulo's process.
@@ -86,6 +87,9 @@ clap = "4.6.7"
 key-custody = { path = "../key-custody", default-features = false }
 # Every shortened identifier's text (`views::short_id`).
 short-id = { path = "../short-id" }
+# Checks each recorded answer against the OpenAPI document
+# (`api::runtime::recording`), with `test-support` only.
+jsonschema = { version = "0.33.0", default-features = false, optional = true }
 # Every file the pages link, baked in and named by its content (`assets`).
 static-assets = { path = "../static-assets" }
 
@@ -116,7 +120,7 @@ serde_json = "1.0.151"
 brotli = "7.0.0"
 flate2 = "1.1.10"
 # Every `/api/v1` response the tests see is checked against the OpenAPI
-# document (`http::api::openapi`).
+# document (`api::runtime::openapi`).
 jsonschema = { version = "0.33.0", default-features = false }
 # Turns on `test-support` for this crate's own integration tests and examples.
 monokulo = { path = ".", features = ["test-support"] }

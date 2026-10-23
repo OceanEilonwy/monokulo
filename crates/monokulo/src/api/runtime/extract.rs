@@ -26,6 +26,9 @@ pub struct OperationDoc<'a> {
     pub body: Option<Value>,
     /// Its answer: status, media type and schema (none for no body).
     pub answers: Vec<(StatusCode, &'static str, Option<Value>)>,
+    /// For a stream, each kind of event it sends: its name, what it means
+    /// and its data's schema (`super::hal::EventStream`).
+    pub events: Vec<(&'static str, &'static str, Value)>,
 }
 
 impl<'a> OperationDoc<'a> {
@@ -36,6 +39,7 @@ impl<'a> OperationDoc<'a> {
             query: None,
             body: None,
             answers: Vec::new(),
+            events: Vec::new(),
         }
     }
 

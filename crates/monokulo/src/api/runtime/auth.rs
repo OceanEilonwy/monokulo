@@ -5,7 +5,8 @@
 //!
 //! The key a request carries is found once, by `http::abuse` from its
 //! `Authorization: Bearer` header (`http::store_key`); while the handler
-//! runs and its response is written it is [`current`].
+//! runs and its response is written it is [`current`], and where its links
+//! start is [`base`].
 
 use std::marker::PhantomData;
 
@@ -15,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 
 use super::problem::{Problem, ProblemDetails};
 use crate::http::store_key::{ApiCaller, Credential};
+use crate::http::AppState;
 
 /// The kind of credential a request carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,29 +96,54 @@ pub trait WhoMarker {
     const WHO: Who;
 }
 
+/// What a response is written for: who asked, and where its links start.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Context {
+    /// The request's key; `None` for none.
+    pub key: Option<Key>,
+    /// The path every link starts with (`super::path_prefix`): `/monokulo`
+    /// for a Monokulo served at `https://host/monokulo`, empty at the root
+    /// of its host.
+    pub base: String,
+    /// The request's `If-None-Match`, for an answer that can be cached
+    /// (`super::hal::Cached`).
+    pub if_none_match: Option<String>,
+}
+
 /// The request's key, once its handler's `who` admitted it. The first
 /// thing a handler extracts, so a caller who may not is refused before
 /// anything else is read: `401` with no key, `403` with one that may not.
 pub struct Authorized<W> {
-    pub key: Option<Key>,
+    pub context: Context,
     who: PhantomData<W>,
 }
 
-impl<W: WhoMarker, S: Send + Sync> FromRequestParts<S> for Authorized<W> {
+impl<W: WhoMarker> FromRequestParts<AppState> for Authorized<W> {
     type Rejection = ProblemDetails;
 
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, ProblemDetails> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, ProblemDetails> {
         let key = parts
             .extensions
             .get::<ApiCaller>()
             .map(|caller| caller.credential.key());
-        if W::WHO.admits(key) {
-            return Ok(Authorized {
-                key,
-                who: PhantomData,
-            });
+        if !W::WHO.admits(key) {
+            return Err(refusal(W::WHO, key));
         }
-        Err(refusal(W::WHO, key))
+        Ok(Authorized {
+            context: Context {
+                key,
+                base: super::path_prefix(state, &parts.extensions),
+                if_none_match: parts
+                    .headers
+                    .get(axum::http::header::IF_NONE_MATCH)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_owned),
+            },
+            who: PhantomData,
+        })
     }
 }
 
@@ -136,30 +163,44 @@ pub fn refusal(who: Who, key: Option<Key>) -> ProblemDetails {
 }
 
 tokio::task_local! {
-    /// The key of the request being answered (see [`current`]).
-    static CALLER: Option<Key>;
+    /// The request being answered (see [`current`]).
+    static CALLER: Context;
 }
 
 /// The key of the request being answered: links and forms are offered
 /// only when it may follow them. `None` outside a request, or for a
 /// request with no key.
 pub fn current() -> Option<Key> {
-    CALLER.try_with(|key| *key).ok().flatten()
+    CALLER.try_with(|context| context.key).ok().flatten()
 }
 
-/// `f`, run as if answering a request with `key`: for writing a body
-/// outside its handler, such as an event on a stream.
-pub fn as_caller<T>(key: Option<Key>, f: impl FnOnce() -> T) -> T {
-    CALLER.sync_scope(key, f)
+/// Where the links of the request being answered start (see
+/// [`Context::base`]); empty outside a request.
+pub fn base() -> String {
+    CALLER
+        .try_with(|context| context.base.clone())
+        .unwrap_or_default()
 }
 
-/// Runs a handler and writes its answer, as the request's key.
+/// The request being answered, for writing part of its answer later (an
+/// event on its stream) with [`as_caller`]; the default outside one.
+pub fn context() -> Context {
+    CALLER.try_with(Context::clone).unwrap_or_default()
+}
+
+/// `f`, run as if answering the request `context` describes: for writing
+/// a body outside its handler, such as an event on a stream.
+pub fn as_caller<T>(context: Context, f: impl FnOnce() -> T) -> T {
+    CALLER.sync_scope(context, f)
+}
+
+/// Runs a handler and writes its answer, for its request.
 pub async fn respond<W, T: super::hal::Respond>(
     authorized: Authorized<W>,
     handler: impl std::future::Future<Output = Result<T, ProblemDetails>>,
 ) -> Response {
     CALLER
-        .scope(authorized.key, async move {
+        .scope(authorized.context, async move {
             match handler.await {
                 Ok(answer) => answer.respond(),
                 Err(problem) => problem.into_response(),
