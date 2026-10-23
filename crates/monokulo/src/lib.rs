@@ -1,10 +1,9 @@
-//! `monokulo`: accounts, store connections, connect flow, dashboard
-//! backend for Monokulo. See `docs/WOOCOMMERCE_WBS.md` Track A.
+//! `monokulo`: accounts, stores, the connect flows, the merchant's pages,
+//! the checkout and the machine API (`/api/v1`), in front of the engine.
 //!
 //! Structured the same way as the engine (`engine`): this crate is a
 //! real library — everything is exposed as `pub mod` here — with
-//! `src/main.rs` a thin binary wrapper around it. Later WBS tasks
-//! (login/session, tenant provisioning, the dashboard) build on
+//! `src/main.rs` a thin binary wrapper around it, wiring up
 //! `http::AppState`/`http::build_router` the same way the engine's own
 //! `main.rs` wires up `engine::http::{AppState, build_router}`.
 

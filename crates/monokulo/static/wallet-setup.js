@@ -1,4 +1,4 @@
-// The wallet pages' script (docs/wallets.md).
+// The wallet pages' script.
 //
 // On the choice screen it turns on "Create a new wallet", which the server
 // draws unavailable so a browser without JavaScript is told why.

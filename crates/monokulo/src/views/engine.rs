@@ -1,4 +1,4 @@
-//! The engine page's shell (`docs/engine_visualizer.md`): the header with
+//! The engine page's shell: the header with
 //! the network picker, and where the page's app goes. The app
 //! (`apps/engine`) draws the whole live view, the help's legend included,
 //! from what `http::engine_page` sends it; it needs JavaScript, and without

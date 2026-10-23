@@ -71,7 +71,7 @@ use engine::store::Store;
 
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
-use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
+use monokulo::http::{build_router as build_monokulo_router, AppState as MonokuloAppState};
 
 /// Same check `e2e_stagenet.rs` opens with, and for the same reason: fail
 /// with a clear, actionable message before spending anything, rather than
@@ -217,11 +217,10 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // ---- boot a real monokulo instance in-process (no bind needed - its
     // own router is driven via oneshot below), pointed at the real engine above ----
     let cp_db = Db::open_in_memory().unwrap().into_shared();
-    let cp_state = ControlPlaneAppState {
+    let cp_state = MonokuloAppState {
         db: monokulo::db::Database::inline(cp_db),
         encryption_key: monokulo::crypto::AtRestKey::new([7u8; 32]),
-        // `docs/fx_refactor.md` Phase 5: order creation now goes through
-        // monokulo's own `POST /api/v1/orders`, the real path a production
+        // Order creation goes through monokulo's own `POST /api/v1/orders`, the real path a production
         // storefront takes. The order below is priced directly in `"XMR"` -
         // needs no exchange rate provider configured at all - at a genuinely
         // tiny 335_000_000-piconero (0.000335 XMR) amount, matching
@@ -244,7 +243,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // Public signup: `signup.mode` defaults to invite-only, which would
         // refuse the plain `/signup` below (a re-rendered `200`
         // form, not the `302` it asserts on).
-        settings: ControlPlaneAppState::test_settings(None),
+        settings: MonokuloAppState::test_settings(None),
         engine: monokulo::http::Engine::new(EngineClient::embedded_for_tests(engine_router)),
     };
     let cp_router = build_monokulo_router(cp_state);
@@ -376,8 +375,8 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // ---- 3. create a real order through monokulo's own
     // `POST /api/v1/orders` with the store's public key (this is what a
     // real storefront - or the WooCommerce plugin, with its secret key -
-    // actually calls in production; the engine's own
-    // API is XMR-only and developer-facing now, `docs/fx_refactor.md` Phase 5) ----
+    // actually calls in production; the engine's own API is XMR-only and
+    // private) ----
     let order_response = cp_router
         .clone()
         .oneshot(

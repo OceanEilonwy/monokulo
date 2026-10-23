@@ -119,8 +119,7 @@ pub struct StoreSettingsData {
 }
 
 /// "Wallet": the wallet a store takes payments into, the others it could
-/// change to, and the ones it used before (docs/wallets.md, "Changing a
-/// store's wallet").
+/// change to, and the ones it used before.
 #[derive(Default)]
 pub struct StoreWalletView {
     /// `None` for a store made before wallets, not yet matched to one.

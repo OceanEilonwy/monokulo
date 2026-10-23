@@ -140,8 +140,8 @@ pub fn known_health(engine: &Engine) -> Option<views::Health> {
 
 /// Green, yellow or red: busy if the engine turned the request away with
 /// 429 (`busy`), else a problem if [`is_healthy`] says so, else slow if any
-/// network has a block that has taken over two minutes
-/// (docs/engine_scaling.md section 5), else fine.
+/// network has a block that has taken over two minutes,
+/// else fine.
 fn health_of(result: &Result<EngineStatusResponse, String>, busy: bool) -> views::Health {
     if busy && result.is_err() {
         return views::Health::Busy;
@@ -162,8 +162,8 @@ fn health_of(result: &Result<EngineStatusResponse, String>, busy: bool) -> views
     }
 }
 
-/// The networks with a slow block, as one sentence each
-/// (docs/engine_scaling.md section 5). The node and its rate only for an
+/// The networks with a slow block, as one sentence each.
+/// The node and its rate only for an
 /// operator: anyone else isn't shown node addresses.
 pub fn slow_block_messages(status: &EngineStatusResponse, show_node: bool) -> Vec<String> {
     status
@@ -732,8 +732,8 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
     }
 }
 
-/// A network's proof-of-work checking as shown to an admin
-/// (docs/proof_of_work.md): the recent window while following, and the
+/// A network's proof-of-work checking as shown to an admin:
+/// the recent window while following, and the
 /// facts behind it. Each node's verdict goes on its own row
 /// ([`build_network_view`]).
 fn proof_view(proof: shared::proof::ProofStatus, now: i64) -> views::status::ProofView {
@@ -813,8 +813,8 @@ fn proof_view(proof: shared::proof::ProofStatus, now: i64) -> views::status::Pro
 
 /// `POST /admin/proof/{network}/reanchor` - the "Take a new
 /// anchor" button: the engine forgets the network's anchor and proven
-/// chain and takes a new anchor from its nodes next round
-/// (docs/proof_of_work.md). For after a reorg deeper than the anchor.
+/// chain and takes a new anchor from its nodes next round.
+/// For after a reorg deeper than the anchor.
 pub async fn take_new_anchor(
     State(state): State<AppState>,
     _admin: super::AuthedAdmin,
@@ -846,7 +846,7 @@ pub async fn take_new_anchor(
     }
 }
 
-/// A network's announcements as shown to an admin (docs/monero_zmq.md).
+/// A network's announcements as shown to an admin.
 fn announcements_view(
     announcements: shared::announcements::Announcements,
     now: i64,
@@ -982,9 +982,9 @@ mod tests {
     }
 
     /// A block over two minutes turns the indicator yellow, not red: the
-    /// engine works, it is just slow (docs/engine_scaling.md section 5).
+    /// engine works, it is just slow.
     /// While the engine reads block headers first, the status page says so,
-    /// with why and for how long (docs/engine_scaling.md section 4).
+    /// with why and for how long.
     #[test]
     fn the_status_page_says_when_block_headers_are_read_first() {
         let mut status = status_with_slow(None);
@@ -1466,7 +1466,7 @@ mod tests {
             );
         }
 
-        /// A node's ZMQ announcements (docs/monero_zmq.md) are shown to an
+        /// A node's ZMQ announcements are shown to an
         /// admin, with each publisher's state, and to nobody else: the
         /// publisher addresses and errors can name internal hosts.
         #[tokio::test]
@@ -1532,7 +1532,7 @@ mod tests {
             );
         }
 
-        /// Proof-of-work checking (docs/proof_of_work.md) is shown to an
+        /// Proof-of-work checking is shown to an
         /// admin, each node with what it was found to serve, and to nobody
         /// else; a held network offers a new anchor, a following one
         /// doesn't.

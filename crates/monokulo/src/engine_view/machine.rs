@@ -1,5 +1,5 @@
 //! The engine page's state machine: an engine event in, the next state and
-//! what to animate out (`docs/engine_visualizer.md`).
+//! what to animate out.
 //!
 //! [`step`] is the page's only logic. It does no I/O, reads no clock (an
 //! event's own time is the only time it knows) and knows nothing of how the

@@ -52,7 +52,7 @@ pub static ASSETS: &[Asset] = &[
     asset!("checkout.js", JS),
     asset!("jsQR.js", JS),
     asset!("challenge.js", JS),
-    // The engine page (`docs/engine_visualizer.md`; `apps/engine`, built
+    // The engine page (`apps/engine`, built
     // by `build.rs` with the islands, sharing their copy of Solid).
     asset!(built "engine-view.js", "/web/engine-view.js", JS),
     asset!(built "engine-view.css", "/web/engine-view.css", CSS),
@@ -93,8 +93,8 @@ pub static ASSETS: &[Asset] = &[
     asset!("wallet-logos/feather.png", PNG),
     asset!("wallet-logos/gui.png", PNG),
     // -- Linked by others --------------------------------------------------
-    // The thin embed library a merchant's static site `<script src>`s
-    // (`docs/fx_refactor.md` decision 3): its URL is theirs to keep.
+    // The thin embed library a merchant's static site `<script src>`s:
+    // its URL is theirs to keep.
     asset!(public "monokulo-client.js", JS),
 ];
 

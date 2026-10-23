@@ -1,6 +1,6 @@
 //! Shop plugins, as they describe themselves (migration 0042). monokulo
 //! keeps no list of plugins: any plugin that speaks the plugin API
-//! (`docs/plugins.md` on the Pages site) connects through
+//! (docs.monokulo.com/plugins/) connects through
 //! `/plugins/connect/{plugin}` under a slug of its own choosing, and may give a
 //! name to show for it. The shop's host, which the connect flow checks, is
 //! what identifies a plugin to the merchant; the name is only a label.
@@ -15,8 +15,8 @@ use std::fmt;
 /// The longest name a plugin may give itself, in characters.
 pub const MAX_NAME_LEN: usize = 40;
 
-/// Where monokulo's own orders and reports come from (`http::pay`'s
-/// `order_source`, the logs route): no plugin may take one of these as its
+/// Where monokulo's own orders and reports come from (`http::pay::order_source`,
+/// the logs route): no plugin may take one of these as its
 /// slug, or its orders would read as the till's or the website's.
 const RESERVED_SLUGS: [&str; 5] = ["api", "dashboard", "plugin", "pos", "website"];
 

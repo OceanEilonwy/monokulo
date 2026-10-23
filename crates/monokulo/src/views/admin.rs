@@ -1934,7 +1934,7 @@ fn network_card(
         .data("data-tenant-count", network.tenant_count)
         .data("data-saved-count", network.saved_count)
         // How the network's scan and its node in use are doing is on the
-        // engine page (docs/engine_scaling.md section 6).
+        // engine page.
         .link(html! {
             a class="engine-link" href=(format!("/status/engine?network={n}")) { "See it on the engine page" }
         })
@@ -3133,7 +3133,7 @@ mod tests {
     /// The Monero nodes tab keeps the node settings and each node's
     /// one-line status; how the engine performs (its machine, the link to
     /// the node in use, the scan) is on the engine page, which each
-    /// network's card links to (docs/engine_scaling.md section 6).
+    /// network's card links to.
     #[test]
     fn the_nodes_tab_keeps_each_nodes_status_and_links_to_the_engine_page() {
         let mut data = full_view(SettingsTab::Nodes);

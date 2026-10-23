@@ -1,10 +1,5 @@
-//! At-rest encryption for the engine's `sk_...` secret token (WBS 1.2.3).
-//!
-//! `store_connections.tenant_secret_token_encrypted` used to hold the
-//! engine's raw `sk_...` value in plaintext (see WBS 1.2.2's own doc
-//! comments on that column and on `Db::create_store_connection` — both
-//! explicitly flagged this as temporary). This module is the real
-//! encryption those doc comments pointed at.
+//! At-rest encryption for the engine's `sk_...` secret token, kept in
+//! `store_connections.tenant_secret_token_encrypted`.
 //!
 //! AES-256-GCM (via the `aes-gcm` crate — RustCrypto, the same ecosystem
 //! family as `hmac`/`sha2` already used elsewhere in this workspace) rather

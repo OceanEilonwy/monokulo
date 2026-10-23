@@ -25,7 +25,7 @@
 //! | | Allowed | Challenge (past soft, no pass) | Blocked (past hard) |
 //! |---|---|---|---|
 //! | Page (GET) | continue | interstitial (`views::challenge`) | `429` page + `Retry-After` |
-//! | JSON API | continue | `429` problem + `challenge` + `Monokulo-Challenge` | `429` problem + `retry_after` + `Retry-After` |
+//! | Machine API | continue | `429` problem + `challenge` + `Monokulo-Challenge` | `429` problem + `retry_after` + `Retry-After` |
 //! | Stream (SSE) | continue | `429` (can't solve anything) | `429` + `Retry-After` |
 //! | Other (form posts, plugin calls) | continue | continue | `429` + `Retry-After` |
 //! | Logs (browser, POS and plugin reports) | continue | - | `429` + `Retry-After`, report dropped |
@@ -45,7 +45,7 @@
 //!
 //! A solved challenge comes back as `?monokulo_proof=<challenge>.<nonce>` on
 //! a page (from `static/challenge.js`), `?monokulo_wait=<token>` (the
-//! no-JavaScript wait), or the `Monokulo-Proof` header on the JSON API. It
+//! no-JavaScript wait), or the `Monokulo-Proof` header on the machine API. It
 //! grants the client a pass; a page is then redirected to itself without the
 //! parameter.
 
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     /// The public routes' classes come from the API's catalog: its
-    /// resources are the JSON API, its two event streams streams, and the
+    /// resources are the machine API and its two event streams, and the
     /// payer's pages and their stream are classed by their templates.
     #[test]
     fn public_routes_are_classed_from_the_api_catalog_and_the_checkout_paths() {

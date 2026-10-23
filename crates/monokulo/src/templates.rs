@@ -18,7 +18,7 @@ fn no_value() -> maud::Markup {
     maud::html! { span class="muted" { "-" } }
 }
 
-/// `docs/order_rescan_wbs.md` Phase 5.4 - the order-detail page's "Scan range"
+/// The order-detail page's "Scan range"
 /// row, computed once here rather than branched on in the template.
 /// `first_scanned_height` gates everything: `None` means nothing has ever
 /// examined this order (predates the feature, or hasn't had its first tick yet),

@@ -6,29 +6,28 @@
 //!
 //! Deliberately behind [`AuthedUser`] and connection-ownership-checked
 //! ([`load_owned_connection`]) exactly like every other `/stores/{id}/*`
-//! route (`http::orders`'s own module doc comment) - unlike `http::pay`'s
-//! public, unauthenticated storefront endpoint, a POS terminal is operated
+//! route (`http::orders`'s own module doc comment) - unlike the machine
+//! API's order creation (`POST /api/v1/orders`), a POS terminal is operated
 //! by the merchant themselves, logged in, standing at the register.
 //!
 //! Order creation reuses the exact same pricing/threshold-resolution path
-//! `http::orders::create_order`/`http::pay::create_order` already use
+//! `http::orders::create_order` and `api::v1::orders::create` already use
 //! (`crate::confirmation_thresholds::resolve_for_order`) - a POS sale is not
 //! a different kind of order, just a different UI for creating one, always
 //! denominated in this store's own `base_currency` rather than a
-//! caller-chosen one (there's no currency picker on a terminal screen, see
-//! this task's own spec point 2).
+//! caller-chosen one (there's no currency picker on a terminal screen).
 //!
 //! Unlike the public checkout page (`http::checkout`, which must stay
 //! usable with JavaScript disabled), this screen is a merchant-operated dashboard tool in the same
 //! bucket as the rest of the signed-in pages, which already use JS as
-//! progressive enhancement elsewhere (`order_detail.html.hbs`'s share
+//! progressive enhancement elsewhere (the order page's share
 //! button/local-time script). A live Square-Terminal-style keypad, stacked
 //! backgrounded payments have no meaningful no-JS fallback, so this screen leans on
 //! JS for its real interaction loop rather than a meta-refresh. Payment
 //! status arrives over one Server-Sent Events stream per terminal
 //! ([`order_events`]); [`order_status`] remains for one-off reads.
 //!
-//! **Error surfacing** (spec point 12): [`derive_payment_error`] flags
+//! **Error surfacing**: [`derive_payment_error`] flags
 //! exactly the cases where the merchant, not just the customer's wallet,
 //! needs to step in - a double-spend, an amount that doesn't match what was
 //! asked for (under- or over-paid), or the order expiring before it ever
@@ -109,7 +108,7 @@ pub struct PosCreateOrderRequest {
     pub amount: String,
     /// The terminal's own optional quick note (typically a customer's
     /// name) - stored as this order's real `merchant_order_id`, the same
-    /// field `http::orders`'s dashboard form and `http::pay`'s public API
+    /// field `http::orders`'s dashboard form and the machine API
     /// already write, so it shows up wherever any other order's
     /// `merchant_order_id` does (the order detail page, `OrderView`).
     /// Trimmed and treated as absent if empty, same convention
@@ -133,9 +132,9 @@ pub struct PosCreateOrderResponse {
 }
 
 /// `POST /stores/{id}/pos/orders` - creates a real order,
-/// always priced in this store's own `base_currency` (spec point 2 - a POS
-/// terminal has no currency picker). Mirrors
-/// `http::orders::create_order`/`http::pay::create_order` field for field;
+/// always priced in this store's own `base_currency` (a POS terminal has no
+/// currency picker). Mirrors
+/// `http::orders::create_order`/`api::v1::orders::create` field for field;
 /// see either's own doc comment for why the pricing/threshold-resolution
 /// steps look the way they do.
 pub async fn create_order(
@@ -1496,7 +1495,7 @@ mod tests {
         assert!(body.get("qr_code_svg").is_none());
         let order_id = body["order_id"].as_str().unwrap().to_string();
 
-        // Spec point 5: an order created through the POS screen is a real
+        // An order created through the POS screen is a real
         // order, visible on the normal orders list like any other.
         let orders_list = router
             .oneshot(
@@ -1531,11 +1530,11 @@ mod tests {
 
     #[tokio::test]
     async fn creating_a_pos_order_with_a_note_records_it_as_the_real_merchant_order_id() {
-        // Spec points 5-6: the terminal's own quick note (typically a
+        // The terminal's own quick note (typically a
         // customer's name) is the same `merchant_order_id` every other
         // order-creation surface in this crate already writes - proven here
         // by checking it shows up on the real order detail page, the same
-        // place `http::pay`'s own equivalent test checks.
+        // place the machine API's own equivalent test checks.
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
@@ -2628,8 +2627,8 @@ mod tests {
         // This test instance's `exchange_rate` is XMR-only
         // (`test_exchange_rate_provider`) - a store whose `base_currency` is
         // a fiat currency simply can't be priced on it, the same
-        // "unsupported currency" outcome `http::pay::create_order`'s own
-        // tests already exercise for the public endpoint. Proves the POS
+        // "unsupported currency" outcome the machine API's own
+        // tests already exercise for `POST /api/v1/orders`. Proves the POS
         // endpoint surfaces that as a clear `400`, not a `500`.
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());

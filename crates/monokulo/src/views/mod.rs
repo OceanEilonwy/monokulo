@@ -1,11 +1,7 @@
-//! Composable, compile-time-checked HTML rendering (Maud), replacing the
-//! old `handlebars`-based `TemplateEngine`/`.hbs` files.
+//! Composable, compile-time-checked HTML rendering (Maud).
 //!
-//! The thing that made adding a per-user theme awkward under the old setup
-//! was structural, not cosmetic: every one of the ~20 old templates carried
-//! its own literal `<html>`/`<head>`/`{{> nav}}` - there was no single place
-//! that owned the page shell. [`Page`] and [`nav`] below are that place
-//! now: every page in this module builds its header and content and hands
+//! [`Page`] and [`nav`] own the page shell: every page in this module
+//! builds its header and content and hands
 //! them to [`Page`], which owns `<!doctype html>` through `</html>`, the shared
 //! `<head>` (the colours in `theme.css`, the components in `site.css`), and
 //! the nav bar
@@ -168,7 +164,7 @@ pub struct PageChrome {
     /// The current request's own path (+ query string, where relevant) -
     /// carried as the theme-toggle form's hidden `next` field so toggling
     /// theme redirects back to the page it was toggled from, not a fixed
-    /// default. Checked into a `SafePath` (`crate::http::dashboard`) before
+    /// default. Checked into a `SafePath` (`crate::http::auth`) before
     /// ever being used as a redirect target, same as the login
     /// flow's own `next` - never trusted at face value just because it
     /// came from this struct.
@@ -704,7 +700,7 @@ pub fn reload_button(href: &str) -> Markup {
 }
 
 /// The engine's health as the status indicator shows it: green, yellow or
-/// red (docs/engine_scaling.md section 5).
+/// red.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
     /// Everything answers and scans.

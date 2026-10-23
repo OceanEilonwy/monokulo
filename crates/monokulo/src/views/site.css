@@ -34,7 +34,7 @@ summary { cursor: pointer; list-style: none; }
 summary::-webkit-details-marker { display: none; }
 summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 2px; }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
-/* A block taking us over two minutes: slow, not broken (docs/engine_scaling.md section 5). */
+/* A block taking us over two minutes: slow, not broken. */
 .notice[data-slow-block] { background: var(--tint-warning); border-color: var(--warning); }
 h1 { font-size: var(--text-xl); border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 h2 { font-size: var(--text-lg); border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
@@ -106,7 +106,7 @@ table[data-table="nodes"] td.card-meta { font-size: inherit; color: inherit; }
 .card-head .engine-link { font-size: var(--text-sm); }
 .dns-record { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--space-sm); margin: var(--space-sm) 0 0; }
 /* The one-time "just deleted" row an admin table shows right after a real
-   delete (`admin_invites.html.hbs`) - struck through and faded so it reads
+   delete (the admin's invites table) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */
 tr[data-deleted] td { opacity: 0.45; text-decoration: line-through; }
 .nowrap { white-space: nowrap; }
@@ -145,8 +145,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus-ring)
 /* A hand-written button (ui::Button is .mk-btn, with no margins).
    `margin-right`: two buttons written as separate Maud
    markup expressions (a Save beside a Discard, say) render
-   with no whitespace text node between them - unlike a hand-written .hbs
-   template's literal newline/indentation, Maud never inserts one - so an
+   with no whitespace text node between them - Maud never inserts one - so an
    explicit horizontal gap is the only thing keeping adjacent buttons from
    touching. */
 button {
@@ -353,7 +352,7 @@ input[aria-invalid="true"] { border-color: var(--error); }
   .todo li > :last-child { justify-self: start; }
 }
 
-/* Wallets (docs/wallets.md): radio cards and a wallet's page. */
+/* Wallets: radio cards and a wallet's page. */
 /* The theme as three radio cards, each with a small picture of a page in
    it (`views::account::theme_choice`). The pictures keep their own look
    whatever theme the page is in, so they're drawn from the two roles that

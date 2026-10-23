@@ -393,9 +393,7 @@ mod tests {
 
     #[test]
     fn never_shows_a_meta_refresh() {
-        // `docs/txid_lookup_and_scan_chunking_wbs.md` Part C.8 - the home page's
-        // only meta-refresh was the rescan syncing banner's; with that feature
-        // gone, this page never auto-refreshes at all.
+        // The home page never auto-refreshes.
         let html = page(&chrome(), &empty_data()).into_string();
         assert!(!html.contains(r#"<meta http-equiv="refresh""#));
     }

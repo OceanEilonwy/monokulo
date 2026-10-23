@@ -718,7 +718,7 @@ mod tests {
             order: Some(test_order_detail_data(None)),
         };
         let html = detail_page(&chrome(), &data).into_string();
-        // The real point of this follow-up: no dash, no row at all - a
+        // The point: no dash, no row at all - a
         // permanently-visible "Double-spend detected at" label reads as a
         // warning even when it says nothing happened.
         assert!(

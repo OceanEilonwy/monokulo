@@ -53,13 +53,12 @@ pub struct StatusNetworkView {
     pub network: String,
     pub nodes: Vec<StatusNodeView>,
     pub scanner: StatusScannerView,
-    /// While block headers are read first, why and for how long
-    /// (docs/engine_scaling.md section 4).
+    /// While block headers are read first, why and for how long.
     pub headers_first: Option<String>,
-    /// The nodes' ZMQ announcements (docs/monero_zmq.md): set only for an
+    /// The nodes' ZMQ announcements: set only for an
     /// admin, and only when a node of this network has a publisher.
     pub announcements: Option<AnnouncementsView>,
-    /// Proof-of-work checking (docs/proof_of_work.md): set only for an
+    /// Proof-of-work checking: set only for an
     /// admin, and only while checking is on for this network.
     pub proof: Option<ProofView>,
 }
@@ -174,14 +173,13 @@ pub struct StatusPageViewModel {
     pub networks: Vec<StatusNetworkView>,
     pub poll_interval_secs: u64,
     pub generated_at_display: String,
-    /// A sentence per network with a slow block (docs/engine_scaling.md
-    /// section 5).
+    /// A sentence per network with a slow block.
     pub slow_blocks: Vec<String>,
     /// Monokulo's SEV-SNP key entry policy and the engine's disagree, or
     /// monokulo requires a backend the engine doesn't have
     /// (`http::status_page::snp_policy_alert`).
     pub snp_alert: Option<String>,
-    /// Link each network to its engine page (`docs/engine_visualizer.md`):
+    /// Link each network to its engine page:
     /// only for an admin, who alone may open it.
     pub engine_page: bool,
 }
@@ -683,8 +681,7 @@ mod tests {
         );
     }
 
-    /// A slow block shows as a notice above everything else
-    /// (docs/engine_scaling.md section 5).
+    /// A slow block shows as a notice above everything else.
     #[test]
     fn a_slow_block_is_announced_at_the_top() {
         let data = StatusPageViewModel {

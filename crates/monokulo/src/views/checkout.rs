@@ -126,7 +126,7 @@ fn refund_path(order_id: &crate::db::OrderId) -> String {
     .to_string()
 }
 
-/// Checkout styling, adapted from the old `checkout.html.hbs` style block.
+/// The checkout's own styling, on top of the shared theme.
 const CHECKOUT_STYLE: &str = r#"
 html { background: var(--paper-raised); }
 body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(--paper-raised); }

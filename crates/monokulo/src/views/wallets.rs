@@ -1,4 +1,4 @@
-//! A merchant's wallets (docs/wallets.md): choosing how to add one, bringing
+//! A merchant's wallets: choosing how to add one, bringing
 //! one's own, making a new one in the browser (backing up its recovery
 //! phrase and checking the backup), the list, and a wallet's page.
 //!

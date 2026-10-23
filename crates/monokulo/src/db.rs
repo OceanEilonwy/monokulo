@@ -576,7 +576,7 @@ pub struct UserRow {
     pub created_at: i64,
     /// `true` only for the one instance-admin account the first-run setup
     /// wizard creates (`http::setup`) - `false` for every ordinary merchant
-    /// user `POST /signup` creates. Gates the nav's own "admin"
+    /// user the sign-up form creates. Gates the nav's own "admin"
     /// link and `/admin/*` - see `AuthedUser`'s own doc comment.
     pub is_admin: bool,
     /// This user's stored light/dark preference (`users.theme`, migration
@@ -597,7 +597,7 @@ pub struct UserRow {
 /// pre-migration row's backfilled value) means "no explicit choice - follow
 /// the browser's own `prefers-color-scheme`"; `Light`/`Dark` mean the user
 /// explicitly overrode it via the nav's theme-toggle form, which always wins
-/// over the OS preference either way (`_styles.html.hbs`'s
+/// over the OS preference either way (`crates/ui/web/tokens.css`'s
 /// `:root[data-theme="dark"]` block).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Theme {
@@ -638,7 +638,7 @@ impl Theme {
 }
 
 /// A row from `sessions`. `token_hash` is the SHA-256 hash of the raw
-/// bearer token (see the `sessions` migration's own comment on why) - it
+/// session cookie token (see the `sessions` migration's own comment on why) - it
 /// is never the raw token a client actually presents.
 pub struct SessionRow {
     pub token_hash: shared::auth::TokenHash,
@@ -646,11 +646,6 @@ pub struct SessionRow {
     pub created_at: i64,
 }
 
-/// A row from `store_connections`. `tenant_secret_token_encrypted` holds the
-/// engine's `sk_...` secret token encrypted at rest (WBS 1.2.3, via
-/// `crate::crypto::encrypt`) - `Db` itself is crypto-unaware and just stores
-/// whatever string it's given; see `http/connections.rs` for where the real
-/// encrypt/decrypt calls happen.
 /// One `store_domains` row - see migration `0019_store_domains.sql` and
 /// `crate::embed_domains`.
 #[derive(Debug, Clone)]
@@ -746,6 +741,11 @@ pub struct NewStoreIntegration<'a> {
     pub at: i64,
 }
 
+/// A row from `store_connections`. `tenant_secret_token_encrypted` holds the
+/// engine's `sk_...` secret token encrypted at rest (via
+/// `crate::crypto::encrypt`) - `Db` itself is crypto-unaware and just stores
+/// whatever string it's given; see `http/connections.rs` for where the real
+/// encrypt/decrypt calls happen.
 pub struct StoreConnectionRow {
     pub id: ConnectionId,
     pub user_id: UserId,
@@ -891,12 +891,10 @@ pub enum ChangeStoreWallet {
     Unchanged,
 }
 
-/// A row from `order_currency_metadata` (`docs/fx_refactor.md` Phase 1.2) -
-/// what a customer was quoted for one order (in fiat, or in XMR itself),
+/// A row from `order_currency_metadata` - what a customer was quoted for one order (in fiat, or in XMR itself),
 /// recorded at creation time. The engine has no concept of this at all;
 /// this is monokulo's own, sole copy of it - see the migration's own
-/// comment on why (and the accepted durability trade-off that implies,
-/// `docs/fx_refactor.md` decision 4).
+/// comment on why (and the accepted durability trade-off that implies).
 pub struct OrderCurrencyMetadataRow {
     pub connection_id: ConnectionId,
     pub order_id: OrderId,
@@ -1332,13 +1330,13 @@ impl Db {
     }
 
     /// Inserts a new `store_connections` row linking `user_id` to a tenant
-    /// already provisioned on a real engine instance (WBS 1.2.2), taking
+    /// already provisioned on a real engine instance, taking
     /// payments into `wallet_id` (migration 0031), with its name. A `site`
     /// another store already has is a unique violation
     /// (`DbError::is_unique_violation`).
     ///
     /// `tenant_secret_token_encrypted` is stored exactly as given, with no
-    /// crypto awareness at this layer (WBS 1.2.3) - the caller
+    /// crypto awareness at this layer - the caller
     /// (`http/connections.rs`) is responsible for passing an already
     /// `crate::crypto::encrypt`-ed value, never the engine's raw `sk_...`
     /// secret token. `fx_providers` starts as `["coingecko"]`: harmless on
@@ -2012,8 +2010,8 @@ impl Db {
         Ok(rows)
     }
 
-    /// Direct row lookup by id - used by tests to confirm what actually
-    /// landed in `store_connections` after `POST /connections` (e.g. that
+    /// Direct row lookup by id: the API's store resource, and tests
+    /// confirming what actually landed in `store_connections` (e.g. that
     /// `tenant_secret_token_encrypted` really holds a real `sk_...` value).
     pub fn get_store_connection_by_id(
         &self,
@@ -2073,11 +2071,9 @@ impl Db {
         Ok(rows)
     }
 
-    /// Records what a customer was quoted for one order
-    /// (`docs/fx_refactor.md` Phase 1.2) - called once, at order-creation
-    /// time, by the same handler that computes the XMR amount from this
-    /// exact rate (`http::orders`'s new order-creation endpoint, Phase
-    /// 1.4). `piconero_per_unit` is stored as `i64` (SQLite has no native
+    /// Records what a customer was quoted for one order - called once, at
+    /// order-creation time, by the same code that computes the XMR amount
+    /// from this exact rate. `piconero_per_unit` is stored as `i64` (SQLite has no native
     /// unsigned integer type) - safe: a real fiat-per-XMR rate is many
     /// orders of magnitude below `i64::MAX`, this only guards against a
     /// `u64` value SQLite genuinely cannot represent, not a plausible real
@@ -2201,7 +2197,7 @@ impl Db {
         Ok(rows)
     }
 
-    /// Inserts a new single-use connect token (WBS 1.4.1) - `token_hash` is
+    /// Inserts a new single-use connect token - `token_hash` is
     /// already hashed by the caller (`shared::auth::hash_secret_token`),
     /// never the raw token; see `http/connect.rs::confirm_submit`.
     pub fn create_connect_token(
@@ -2224,7 +2220,7 @@ impl Db {
         Ok(())
     }
 
-    /// Atomically checks and consumes a connect token (WBS 1.4.1): the
+    /// Atomically checks and consumes a connect token: the
     /// single `UPDATE ... WHERE token_hash = ? AND consumed_at_utc IS NULL AND
     /// created_at_utc >= ?` statement, checked by its affected-row count (same
     /// "did this actually change something" pattern [`Self::delete_session`]'s
@@ -2268,10 +2264,9 @@ impl Db {
     }
 
     /// Direct row lookup by the tenant's public key rather than the
-    /// connection's own id - for callers (currently just
-    /// `http/dashboard.rs`'s WBS 1.3.2 tests) that only have the `pk_...`
-    /// value a confirmation page showed, not the `store_connections.id` a
-    /// browser form flow never hands back to the caller. The engine mints a
+    /// connection's own id - for callers that only have the `pk_...` key
+    /// (an embed's bearer key, an engine event naming its tenant), not the
+    /// `store_connections.id`. The engine mints a
     /// fresh, effectively-unique public key per tenant, so this is expected
     /// to resolve to at most one row in practice, same as `get_by_id`.
     pub fn get_store_connection_by_public_key(

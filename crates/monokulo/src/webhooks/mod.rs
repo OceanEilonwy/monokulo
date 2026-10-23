@@ -1,4 +1,4 @@
-//! Stores' webhooks (`docs/DESIGN.md` §11): monokulo holds them, reads the
+//! Stores' webhooks: monokulo holds them, reads the
 //! engine's order-event log ([`subscriber`]), makes each event's body
 //! ([`body`]) and delivers it, signed, with retries ([`delivery`]). The
 //! engine only keeps the log.

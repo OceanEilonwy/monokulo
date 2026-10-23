@@ -1,7 +1,7 @@
-//! Adding a merchant's wallet (docs/wallets.md): registering its keys with
+//! Adding a merchant's wallet: registering its keys with
 //! the engine once, naming it, and refusing a wallet the account already
-//! has. Shared by the "Bring your own wallet" form, the "Create a new
-//! wallet" page, and store creation from keys (`POST /connections`).
+//! has. Shared by the "Bring your own wallet" form and the "Create a new
+//! wallet" page.
 
 use crate::db::{EngineWalletId, NewWalletRow, UserRow, WalletId, WalletOrigin, WalletRow};
 use crate::engine_client::{CreateWalletRequest, EngineClientError};
