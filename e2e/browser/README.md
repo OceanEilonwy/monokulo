@@ -7,7 +7,7 @@ checkout, and POS. The configurations select separate environments and workloads
 | --- | --- | --- |
 | `surface.config.js` | Client challenge protocol | Local mocked server |
 | `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and the account page; the `real-binaries.config.js` specs as a second project; and the POS specs again in Firefox and WebKit | Local rendered-UI fixture with coverage reporting |
-| `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, and POS timeline | Real binaries and a local fake node |
+| `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, POS timeline, and Monokulo served under a path behind a prefix-stripping proxy | Real binaries and a local fake node |
 | `playwright.config.js` | POS payments and confirmations | Public stagenet and funded test wallet |
 
 Install dependencies and the browsers from this directory:

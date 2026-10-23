@@ -321,7 +321,7 @@ settings! {
         key: "public_uri",
         default: String::new(),
         check: |v: &String| check_public_uri(v),
-        description: "This instance's web address, e.g. https://www.monokulo.com. Connect codes for apps and the plugin connect flow use it, and payment links shared from the dashboard; visitors on Tor get the onion address instead (onion_uri). Plugins and apps can't connect until it is set. Behind a reverse proxy that serves this instance under a path (and strips it), include the path, e.g. https://example.com/monokulo: the API's links start with it.",
+        description: "This instance's web address, e.g. https://www.monokulo.com. Connect codes for apps and the plugin connect flow use it, and payment links shared from the dashboard; visitors on Tor get the onion address instead (onion_uri). Plugins and apps can't connect until it is set. Behind a reverse proxy that serves this instance under a path (and strips it), include the path, e.g. https://example.com/monokulo: every URL the pages and the API give starts with it.",
         example: "https://pay.example.com",
     },
     ABUSE_TRUSTED_PROXIES: String {

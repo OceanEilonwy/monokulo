@@ -12,6 +12,7 @@
 const { spawn, execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -86,7 +87,56 @@ function buildBinaries() {
 }
 
 /** Starts the three processes; resolves to `{ fixture, stop }`. */
-async function startStack() {
+/**
+ * A reverse proxy serving `target` (`http://127.0.0.1:port`) under `prefix`
+ * (`/monokulo`) on `port`, as an operator's nginx would: it strips the
+ * prefix before passing a request on, streams both ways (server-sent events
+ * included) and keeps the Host the browser sent. A request outside the
+ * prefix never reaches Monokulo: it's answered 404 and kept in `misses`,
+ * so a URL Monokulo gave without its base path shows up.
+ */
+function startPrefixProxy(port, prefix, target) {
+  const misses = [];
+  const upstream = new URL(target);
+  const server = http.createServer((request, response) => {
+    const url = request.url || '/';
+    if (url !== prefix && !url.startsWith(prefix + '/') && !url.startsWith(prefix + '?')) {
+      misses.push(`${request.method} ${url}`);
+      response.writeHead(404, { 'content-type': 'text/plain' });
+      response.end('Not under ' + prefix);
+      return;
+    }
+    const rest = url.slice(prefix.length);
+    const forwarded = http.request({
+      host: upstream.hostname,
+      port: upstream.port,
+      method: request.method,
+      path: rest.startsWith('/') ? rest : '/' + rest,
+      headers: request.headers,
+    }, (answer) => {
+      response.writeHead(answer.statusCode || 502, answer.headers);
+      answer.pipe(response);
+    });
+    forwarded.on('error', () => { response.destroy(); });
+    request.pipe(forwarded);
+  });
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve({
+      misses,
+      close: () => new Promise((done) => { server.closeAllConnections(); server.close(() => done()); }),
+    }));
+  });
+}
+
+/**
+ * Starts a stack. `options.prefix` (`/monokulo`) serves monokulo behind a
+ * reverse proxy under that path (startPrefixProxy), with `public_uri` the
+ * proxy's address: the fixture's `monokulo_url` is then the proxy's, path
+ * and all, `direct_url` monokulo's own, and `proxy_misses` every request
+ * the proxy turned away.
+ */
+async function startStack(options = {}) {
 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mokulo-e2e-'));
   const log = (name) => fs.openSync(path.join(dir, `${name}.log`), 'a');
@@ -129,8 +179,11 @@ async function startStack() {
   await waitFor(`${engineUrl}/status`, 'the engine', engine);
 
   const monokuloPort = await freePort();
+  const proxyPort = options.prefix ? await freePort() : null;
+  const publicUri = options.prefix ? `http://127.0.0.1:${proxyPort}${options.prefix}` : null;
   const monokuloOptions = path.join(dir, 'monokulo.toml');
   fs.writeFileSync(monokuloOptions, [
+    ...(publicUri ? [`public_uri = "${publicUri}"`] : []),
     '[server]',
     `bind = "127.0.0.1:${monokuloPort}"`,
     // The engine is a process of its own here (engine-crash-recovery kills it), so
@@ -155,7 +208,11 @@ async function startStack() {
   const monokuloUrl = `http://127.0.0.1:${monokuloPort}`;
   await waitFor(`${monokuloUrl}/`, 'monokulo', monokulo);
 
-  var fixture = { monokulo_url: monokuloUrl, engine_url: engineUrl, fake_monerod: fakeAddress, logs: dir };
+  var proxy = options.prefix ? await startPrefixProxy(proxyPort, options.prefix, monokuloUrl) : null;
+  var fixture = {
+    monokulo_url: publicUri || monokuloUrl, direct_url: monokuloUrl, engine_url: engineUrl, fake_monerod: fakeAddress, logs: dir,
+    proxy_misses: proxy ? proxy.misses : [],
+  };
   } catch (e) {
     for (const child of children) child.kill('SIGKILL');
     if (!process.env.KEEP_E2E_LOGS) fs.rmSync(dir, { recursive: true, force: true });
@@ -164,6 +221,7 @@ async function startStack() {
   if (process.env.KEEP_E2E_LOGS) console.log(`[real-binaries] monokulo ${fixture.monokulo_url}, engine ${fixture.engine_url}, fake monerod ${fixture.fake_monerod}, logs in ${dir}`);
 
   async function stop() {
+    if (proxy) await proxy.close();
     await Promise.all(children.reverse().map((child) => new Promise((resolve) => {
       if (child.exitCode !== null || child.signalCode !== null) return resolve();
       const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 5000);
