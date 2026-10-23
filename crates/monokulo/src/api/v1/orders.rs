@@ -226,7 +226,14 @@ async fn create(
         {
             return Err(Problem::IdempotencyConflict.detail(message))
         }
-        Err(_) => return Err(internal()),
+        Err(e) if e.is_unavailable() => {
+            tracing::warn!(store.id = %row.id, error = %e, "the engine couldn't make the order");
+            return Err(crate::http::ApiError::EngineUnavailable.into());
+        }
+        Err(e) => {
+            tracing::error!(store.id = %row.id, error = %e, "the engine's answer to making an order wasn't understood");
+            return Err(internal());
+        }
     };
 
     // The order's local record: its price, where it came from, and how its

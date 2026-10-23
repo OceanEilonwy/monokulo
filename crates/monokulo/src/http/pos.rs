@@ -176,7 +176,7 @@ pub async fn create_order(
                 };
                 let detail = match state.engine.client.get_order_detail(&sk, &existing).await {
                     Ok(detail) => detail,
-                    Err(_) => return ApiError::Internal.into_response(),
+                    Err(error) => return engine_failure(&error),
                 };
                 let (store_id, order_id) = (row.id.clone(), existing.clone());
                 let metadata_result = state
@@ -388,6 +388,7 @@ pub async fn create_order(
         {
             ApiError::BadRequest(message).into_response()
         }
+        Err(error) if error.is_unavailable() => ApiError::EngineUnavailable.into_response(),
         Err(_) => ApiError::Internal.into_response(),
     }
 }

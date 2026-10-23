@@ -101,6 +101,8 @@ pub(super) fn payment_qr_svg(
 
 enum LoadError {
     NotFound,
+    /// The engine is busy or can't be reached: worth retrying (`503`).
+    EngineUnavailable,
     Internal,
 }
 
@@ -164,6 +166,7 @@ async fn load_order_with(
         {
             Err(LoadError::NotFound)
         }
+        Err(e) if e.is_unavailable() => Err(LoadError::EngineUnavailable),
         Err(_) => Err(LoadError::Internal),
     }
 }
@@ -279,6 +282,7 @@ pub async fn checkout_page(
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
+        Err(LoadError::EngineUnavailable) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if must_open_from_shop(&state, &row, &order_id, &headers).await {
@@ -601,6 +605,12 @@ pub async fn set_refund_address(
                 .into_response()
         }
         Err(LoadError::NotFound) => return not_found_response(),
+        Err(LoadError::EngineUnavailable) if wants_json => {
+            return ApiError::EngineUnavailable.into_response()
+        }
+        Err(LoadError::EngineUnavailable) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         Err(LoadError::Internal) if wants_json => return internal().into_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -740,6 +750,7 @@ pub async fn checkout_events(
     let (row, sk, _) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),
+        Err(LoadError::EngineUnavailable) => return ApiError::EngineUnavailable.into_response(),
         Err(LoadError::Internal) => return ApiError::Internal.into_response(),
     };
     // The client `http::abuse` identified; absent only when a test drives
@@ -799,7 +810,7 @@ pub async fn checkout_events(
                                 terminal: true,
                             })
                         }
-                        Err(LoadError::Internal) => return None,
+                        Err(LoadError::EngineUnavailable | LoadError::Internal) => return None,
                     };
                 let view = build_checkout_view(&state, &row, &sk, detail, None, &options).await;
                 let status = CheckoutStatusResponse {
@@ -895,6 +906,7 @@ pub async fn checkout_share_page(
             true
         }
         Err(LoadError::NotFound) => false,
+        Err(LoadError::EngineUnavailable) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let status = if found {
