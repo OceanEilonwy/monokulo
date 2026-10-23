@@ -31,3 +31,6 @@ apps/*/dist/
 /test-results/
 /playwright-report/
 crates/ui/test-results/
+
+# Editor swap files (Kate).
+*.kate-swp
