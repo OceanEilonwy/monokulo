@@ -657,7 +657,9 @@ pub fn build_router(state: AppState) -> Router {
     let api = api.layer(middleware::from_fn(
         crate::api::runtime::examples::record_layer,
     ));
-    // The payer's pages, keyed by the order alone.
+    // The payer's pages, keyed by the order alone, and the machine API:
+    // the surfaces a shop, an app or a customer's browser reaches, under
+    // the embed policy, the per-client budget and the embed CORS rules.
     let pay_router = Router::new()
         .route(
             crate::api::checkout::Path::TEMPLATE,
@@ -696,7 +698,7 @@ pub fn build_router(state: AppState) -> Router {
             },
         ));
 
-    // Every other route (the dashboard, login, sign-up, the landing and
+    // Every other route (the merchant's pages, login, sign-up, the landing and
     // status pages) is counted too - see `http::abuse::site_middleware`.
     // Static files are added below, outside it, and never counted. A
     // state-changing request to any of them that a browser says came from
