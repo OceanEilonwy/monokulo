@@ -81,12 +81,7 @@ const BUILD_ARGS = [
   '-p', 'engine-test-support', '--bin', 'fake-monerod',
 ];
 
-// E2E_PREBUILT=1 says the binaries are built already (CI builds them in a
-// step of their own, with these BUILD_ARGS): nothing is built here.
-const PREBUILT = process.env.E2E_PREBUILT === '1';
-
 function buildBinaries() {
-  if (PREBUILT) return;
   console.log('[real-binaries] building monokulo-engine, monokulo, the coverage fixture and fake-monerod...');
   execFileSync('cargo', BUILD_ARGS, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
@@ -258,4 +253,4 @@ async function startFakeNode(nettype) {
   return { address, stop };
 }
 
-module.exports = { BUILD_ARGS, PREBUILT, buildBinaries, startStack, startFakeNode };
+module.exports = { BUILD_ARGS, buildBinaries, startStack, startFakeNode };
