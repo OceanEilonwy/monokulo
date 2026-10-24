@@ -407,59 +407,41 @@ pub async fn login_submit(
 mod tests {
     use super::{is_safe_redirect_path, SafePath};
 
-    /// A redirect target from a request exists only once checked.
+    /// A redirect target from a request exists only once checked: a path
+    /// on this site, never anything a browser could take elsewhere. These
+    /// are what keep `login_submit` from following an attacker's `next`
+    /// after a real login.
     #[test]
     fn a_safe_path_is_made_only_from_a_path_on_this_site() {
         assert_eq!(
             SafePath::parse("/account/wallets").map(|p| p.as_str().to_string()),
             Some("/account/wallets".to_string())
         );
-        assert!(SafePath::parse("//evil.example.com").is_none());
-        assert!(SafePath::parse("https://evil.example.com").is_none());
-    }
-
-    // The load-bearing open-redirect proof: every one of these
-    // must be *rejected* - if any were accepted, `login_submit` would follow
-    // an attacker-controlled `next` value after a real, successful login.
-    #[test]
-    fn a_protocol_relative_next_is_rejected() {
-        assert!(!is_safe_redirect_path("//evil.example.com"));
-        assert!(!is_safe_redirect_path("//evil.example.com/path"));
-    }
-
-    #[test]
-    fn an_absolute_url_next_is_rejected() {
-        assert!(!is_safe_redirect_path("https://evil.example.com"));
-        assert!(!is_safe_redirect_path("http://evil.example.com/account"));
-    }
-
-    #[test]
-    fn a_backslash_smuggled_next_is_rejected() {
-        // Some browsers normalize a leading backslash to a forward slash
-        // while parsing a URL, so this can behave identically to
-        // `//evil.example.com` even though it doesn't start with two
-        // literal `/` characters.
-        assert!(!is_safe_redirect_path("/\\evil.example.com"));
-    }
-
-    #[test]
-    fn a_next_with_no_leading_slash_is_rejected() {
-        assert!(!is_safe_redirect_path("evil.example.com"));
-        assert!(!is_safe_redirect_path("account/wallets"));
-    }
-
-    #[test]
-    fn a_javascript_scheme_next_is_rejected() {
-        assert!(!is_safe_redirect_path("/javascript:alert(1)"));
-    }
-
-    #[test]
-    fn a_genuine_relative_path_is_accepted() {
-        assert!(is_safe_redirect_path("/plugins/connect/woocommerce"));
-        assert!(is_safe_redirect_path(
-            "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"
-        ));
-        assert!(is_safe_redirect_path("/account/wallets"));
+        for accepted in [
+            "/plugins/connect/woocommerce",
+            "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc",
+            "/account/wallets",
+        ] {
+            assert!(is_safe_redirect_path(accepted), "{accepted}");
+        }
+        for refused in [
+            // Protocol-relative.
+            "//evil.example.com",
+            "//evil.example.com/path",
+            // Absolute.
+            "https://evil.example.com",
+            "http://evil.example.com/account",
+            // Some browsers read a leading backslash as a slash, which
+            // makes this `//evil.example.com`.
+            "/\\evil.example.com",
+            "/javascript:alert(1)",
+            // No leading slash.
+            "evil.example.com",
+            "account/wallets",
+        ] {
+            assert!(!is_safe_redirect_path(refused), "{refused}");
+            assert!(SafePath::parse(refused).is_none(), "{refused}");
+        }
     }
 
     /// A merchant picks Light, Dark or System from any page's theme toggle

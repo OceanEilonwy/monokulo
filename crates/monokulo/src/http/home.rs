@@ -188,21 +188,19 @@ fn format_piconero_as_xmr(piconero: u128) -> String {
 mod tests {
     use super::format_piconero_as_xmr;
 
+    /// Whole amounts have no decimal point, fractions lose their trailing
+    /// zeros, and a single piconero keeps its last digit.
     #[test]
-    fn formats_a_whole_xmr_amount_with_no_trailing_decimal() {
-        assert_eq!(format_piconero_as_xmr(1_000_000_000_000), "1");
-        assert_eq!(format_piconero_as_xmr(0), "0");
-    }
-
-    #[test]
-    fn formats_a_fractional_amount_trimming_trailing_zeros() {
-        assert_eq!(format_piconero_as_xmr(1_500_000_000_000), "1.5");
-        assert_eq!(format_piconero_as_xmr(335_000_000), "0.000335");
-    }
-
-    #[test]
-    fn formats_sub_piconero_precision_without_losing_the_last_digit() {
-        assert_eq!(format_piconero_as_xmr(1), "0.000000000001");
+    fn formats_piconero_as_xmr_with_no_trailing_zeros() {
+        for (piconero, xmr) in [
+            (1_000_000_000_000, "1"),
+            (0, "0"),
+            (1_500_000_000_000, "1.5"),
+            (335_000_000, "0.000335"),
+            (1, "0.000000000001"),
+        ] {
+            assert_eq!(format_piconero_as_xmr(piconero), xmr);
+        }
     }
 
     mod http_tests {
