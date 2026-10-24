@@ -358,15 +358,35 @@ fn run(
     )?
     .map(Exit::of);
     let text = String::from_utf8_lossy(&fs::read(log)?).into_owned();
+    Ok(judge(
+        command,
+        log,
+        exit_code,
+        &text,
+        expected_failure,
+        required,
+    ))
+}
+
+/// What a test command's exit and output show: a healthy pass, the intended
+/// assertion failing, or neither.
+fn judge(
+    command: &[String],
+    log: &Path,
+    exit_code: Option<Exit>,
+    text: &str,
+    expected_failure: Option<&str>,
+    required: &[&str],
+) -> Verdict {
     // A compiler or linker failure cannot produce this one-test result.
     // Require the named test's assertion failure rather than treating any
     // nonzero exit as a kill.
-    let ran = RAN_ONE.is_match(&text);
+    let ran = RAN_ONE.is_match(text);
     let assertion = text.contains("assertion") || text.contains("Test failed:");
     // The marker must be in an assertion panic, not a successful print
     // earlier in the run. Proptest keeps the assertion message in the panic.
     let intended = expected_failure.is_none_or(|expected| {
-        PANIC.split(&text).skip(1).any(|block| {
+        PANIC.split(text).skip(1).any(|block| {
             let head = block
                 .split("note:")
                 .next()
@@ -378,7 +398,7 @@ fn run(
                 && (block.contains("assertion") || block.contains("Test failed:"))
         })
     });
-    let (hits, hit_errors) = boundary_hits(&text);
+    let (hits, hit_errors) = boundary_hits(text);
     let missing: Vec<String> = required
         .iter()
         .filter(|n| hits.get(**n).copied().unwrap_or(0) == 0)
@@ -396,7 +416,7 @@ fn run(
         && intended
         && !text.contains("Elapsed(())")
         && !text.contains("never reached");
-    Ok(Verdict {
+    Verdict {
         command: command.to_vec(),
         exit_code,
         ran_one_test: ran,
@@ -408,7 +428,7 @@ fn run(
         boundary_hit_errors: hit_errors,
         missing_boundary_hits: missing,
         log: log.display().to_string(),
-    })
+    }
 }
 
 /// The test harness's code for a test that failed.
@@ -862,66 +882,27 @@ mod tests {
     use super::*;
     use crate::support::Scratch;
 
-    /// Runs a one-file Cargo crate's tests through `run`, as a mutant's would be.
-    fn exercise(source: &str, timeout: u64, expected: Option<&str>, required: &[&str]) -> Value {
-        let scratch = Scratch::new("mutation-runner-outcome");
-        let root = scratch.path();
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(root.join("Cargo.toml"), "[package]\nname=\"outcome_fixture\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n").unwrap();
-        fs::write(root.join("src/lib.rs"), source).unwrap();
-        let env: BTreeMap<String, String> = [
-            ("CARGO_TERM_COLOR", "never".to_string()),
-            ("CARGO_TARGET_DIR", root.join("build").display().to_string()),
-            (
-                "RUNNER_TEST_PID_PATH",
-                root.join("child.pid").display().to_string(),
-            ),
-        ]
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v))
-        .collect();
-        let command: Vec<String> = ["cargo", "test", "--offline", "--lib", "--", "--nocapture"]
-            .map(String::from)
-            .to_vec();
-        let context = Context {
-            cwd: root,
-            env: &env,
-            removed: &[],
-            timeout,
-        };
-        let verdict = run(
-            &command,
-            &context,
-            &root.join("result.log"),
-            expected,
-            required,
+    /// A one-test run's output as `cargo test -- --nocapture` writes it, the
+    /// test printing `printed` and then passing.
+    fn passing(printed: &str) -> String {
+        format!(
+            "   Compiling outcome_fixture v0.0.0\n    Finished `test` profile target(s) in 0.1s\n     Running unittests src/lib.rs\n\n\
+             running 1 test\n{printed}test outcome ... ok\n\n\
+             test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
         )
-        .unwrap();
-        let mut result = serde_json::to_value(verdict).unwrap();
-        #[cfg(unix)]
-        if let Ok(pid) = fs::read_to_string(root.join("child.pid")) {
-            let pid: i32 = pid.trim().parse().unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(2);
-            let alive = loop {
-                let status = Command::new("ps")
-                    .args(["-o", "stat=", "-p", &pid.to_string()])
-                    .output()
-                    .unwrap();
-                let status = String::from_utf8_lossy(&status.stdout).trim().to_string();
-                let alive = !status.is_empty() && !status.starts_with('Z');
-                if !alive || std::time::Instant::now() >= deadline {
-                    break alive;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            };
-            if alive {
-                // SAFETY: a stray fixture process this test started.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
-            result["child_still_running"] = alive.into();
-            result["fixture_pid"] = pid.into();
-        }
-        result
+    }
+
+    /// The same run with the test printing `printed` and then panicking with
+    /// `message`.
+    fn failing(printed: &str, message: &str) -> String {
+        format!(
+            "   Compiling outcome_fixture v0.0.0\n    Finished `test` profile target(s) in 0.1s\n     Running unittests src/lib.rs\n\n\
+             running 1 test\n{printed}\nthread 'outcome' (4242) panicked at src/lib.rs:1:21:\n{message}\n\
+             note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\ntest outcome ... FAILED\n\n\
+             failures:\n\nfailures:\n    outcome\n\n\
+             test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\
+             error: test failed, to rerun pass `--lib`\n"
+        )
     }
 
     #[test]
@@ -962,86 +943,216 @@ mod tests {
         }
     }
 
+    /// Only a passing run of exactly one test that reported every required
+    /// boundary is a baseline, and only the one test failing on the
+    /// intended assertion is a detection. Anything else (a compiler error,
+    /// no test, another panic, a hang) is neither.
     #[test]
-    fn a_healthy_assertion_is_a_baseline() {
-        let r = exercise("#[test] fn healthy(){assert_eq!(1,1);}", 60, None, &[]);
-        assert!(r["passed"] == true && r["detected"] == false, "{r}");
-    }
-
-    #[test]
-    fn an_assertion_failure_detects_a_defect() {
-        let r = exercise("#[test] fn defect(){assert_eq!(1,2);}", 60, None, &[]);
-        assert!(r["detected"] == true && r["passed"] == false, "{r}");
-    }
-
-    #[test]
-    fn the_intended_assertion_detects_the_named_defect() {
-        let r = exercise(
-            r#"#[test] fn defect(){assert_eq!(1,2,"BOUNDARY: money");}"#,
-            60,
-            Some("BOUNDARY: money"),
+    fn only_a_healthy_pass_is_a_baseline_and_only_the_intended_assertion_a_detection() {
+        let compile_error = "   Compiling outcome_fixture v0.0.0\n\
+            error[E0425]: cannot find function `unresolved_function` in this scope\n\
+            error: could not compile `outcome_fixture` (lib test) due to 1 previous error\n";
+        let no_test = "     Running unittests src/lib.rs\n\nrunning 0 tests\n\n\
+            test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let money = Some("BOUNDARY: money");
+        let failed = Some(TEST_FAILED);
+        let ok = Some(Exit::SUCCESS);
+        // (case, exit, output, expected failure, required hits, passed, detected)
+        type Case<'a> = (
+            &'a str,
+            Option<Exit>,
+            String,
+            Option<&'a str>,
+            &'a [&'a str],
+            bool,
+            bool,
+        );
+        let cases: &[Case] = &[
+            (
+                "a healthy assertion",
+                ok,
+                passing(""),
+                None,
+                &[],
+                true,
+                false,
+            ),
+            (
+                "an assertion failure",
+                failed,
+                failing("", "assertion `left == right` failed\n  left: 1\n right: 2"),
+                None,
+                &[],
+                false,
+                true,
+            ),
+            (
+                "the intended assertion",
+                failed,
+                failing(
+                    "",
+                    "assertion `left == right` failed: BOUNDARY: money\n  left: 1\n right: 2",
+                ),
+                money,
+                &[],
+                false,
+                true,
+            ),
+            (
+                "a custom assertion message",
+                failed,
+                failing("", "assertion failed: BOUNDARY: fifo"),
+                Some("BOUNDARY: fifo"),
+                &[],
+                false,
+                true,
+            ),
+            (
+                "the wrong assertion",
+                failed,
+                failing(
+                    "",
+                    "assertion `left == right` failed: BOUNDARY: unrelated\n  left: 1\n right: 2",
+                ),
+                money,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "a printed marker before an unrelated assertion",
+                failed,
+                failing(
+                    "BOUNDARY: money\n",
+                    "assertion `left == right` failed\n  left: 1\n right: 2",
+                ),
+                money,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "required boundaries observed",
+                ok,
+                passing("ENGINE_BOUNDARY_HITS {\"money\":2}\n"),
+                None,
+                &["money"],
+                true,
+                false,
+            ),
+            (
+                "a required boundary missing",
+                ok,
+                passing(""),
+                None,
+                &["money"],
+                false,
+                false,
+            ),
+            (
+                "a malformed boundary report",
+                ok,
+                passing("ENGINE_BOUNDARY_HITS []\n"),
+                None,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "a compiler failure",
+                failed,
+                compile_error.to_string(),
+                None,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "zero tests",
+                ok,
+                no_test.to_string(),
+                None,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "an unrelated runtime panic",
+                failed,
+                failing("", "worker disconnected"),
+                None,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "a rendezvous never reached",
+                failed,
+                failing("", "assertion failed: never reached publication"),
+                None,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "a virtual deadline",
+                failed,
+                failing("", "assertion failed: Elapsed(())"),
+                None,
+                &[],
+                false,
+                false,
+            ),
+            (
+                "a hang the watchdog stopped",
+                None,
+                "running 1 test\n".to_string(),
+                None,
+                &[],
+                false,
+                false,
+            ),
+        ];
+        for (case, exit, text, expected, required, passed, detected) in cases {
+            let v = judge(&[], Path::new("log"), *exit, text, *expected, required);
+            assert_eq!(
+                (v.passed, v.detected),
+                (*passed, *detected),
+                "{case}: {}",
+                serde_json::to_value(&v).unwrap()
+            );
+        }
+        let v = judge(
             &[],
-        );
-        assert!(
-            r["detected"] == true && r["expected_assertion_seen"] == true,
-            "{r}"
-        );
-    }
-
-    #[test]
-    fn a_custom_assertion_message_detects_only_the_intended_boundary() {
-        let r = exercise(
-            r#"#[test] fn defect(){assert!(false,"assertion failed: BOUNDARY: fifo");}"#,
-            60,
-            Some("BOUNDARY: fifo"),
-            &[],
-        );
-        assert_eq!(r["detected"], true, "{r}");
-    }
-
-    #[test]
-    fn the_wrong_assertion_is_invalid() {
-        let r = exercise(
-            r#"#[test] fn wrong(){assert_eq!(1,2,"BOUNDARY: unrelated");}"#,
-            60,
-            Some("BOUNDARY: money"),
-            &[],
-        );
-        assert!(
-            r["detected"] == false && r["expected_assertion_seen"] == false,
-            "{r}"
-        );
-    }
-
-    #[test]
-    fn a_printed_marker_does_not_turn_an_unrelated_assertion_into_detection() {
-        let r = exercise(
-            r#"#[test] fn wrong(){println!("BOUNDARY: money");assert_eq!(1,2);}"#,
-            60,
-            Some("BOUNDARY: money"),
-            &[],
-        );
-        assert_eq!(r["detected"], false, "{r}");
-    }
-
-    #[test]
-    fn required_boundary_counts_must_be_observed() {
-        let r = exercise(
-            r#"#[test] fn healthy(){println!("ENGINE_BOUNDARY_HITS {{\"money\":2}}");assert_eq!(1,1);}"#,
-            60,
+            Path::new("log"),
+            ok,
+            &passing("ENGINE_BOUNDARY_HITS {\"money\":2}\n"),
             None,
             &["money"],
         );
-        assert_eq!(r["passed"], true, "{r}");
-        assert_eq!(r["boundary_hits"], json!({"money": 2}));
-        let missing = exercise(
-            "#[test] fn healthy2(){assert_eq!(1,1);}",
-            60,
+        assert_eq!(v.boundary_hits, BTreeMap::from([("money".to_string(), 2)]));
+        let v = judge(&[], Path::new("log"), ok, &passing(""), None, &["money"]);
+        assert_eq!(v.missing_boundary_hits, ["money"]);
+        let v = judge(
+            &[],
+            Path::new("log"),
+            ok,
+            &passing("ENGINE_BOUNDARY_HITS []\n"),
             None,
-            &["money"],
+            &[],
         );
-        assert_eq!(missing["passed"], false);
-        assert_eq!(missing["missing_boundary_hits"], json!(["money"]));
+        assert!(!v.boundary_hit_errors.is_empty());
+        let v = judge(&[], Path::new("log"), failed, compile_error, None, &[]);
+        assert!(!v.ran_one_test);
+        let v = judge(
+            &[],
+            Path::new("log"),
+            failed,
+            &failing("", "assertion failed: BOUNDARY: unrelated"),
+            money,
+            &[],
+        );
+        assert!(!v.expected_assertion_seen);
     }
 
     #[test]
@@ -1067,81 +1178,94 @@ mod tests {
         }
     }
 
+    /// One real run, end to end: a Cargo crate whose one test fails on the
+    /// named boundary, so the table above stays true to what this nightly's
+    /// Cargo and test harness print.
     #[test]
-    fn a_malformed_boundary_report_invalidates_an_otherwise_healthy_test() {
-        let r = exercise(
-            r#"#[test] fn healthy3(){println!("ENGINE_BOUNDARY_HITS []");assert_eq!(1,1);}"#,
-            60,
-            None,
+    fn the_intended_assertion_detects_the_named_defect() {
+        let scratch = Scratch::new("mutation-runner-outcome");
+        let root = scratch.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[package]\nname=\"outcome_fixture\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n").unwrap();
+        fs::write(
+            root.join("src/lib.rs"),
+            r#"#[test] fn defect(){assert_eq!(1,2,"BOUNDARY: money");}"#,
+        )
+        .unwrap();
+        let env: BTreeMap<String, String> = [
+            ("CARGO_TERM_COLOR", "never".to_string()),
+            ("CARGO_TARGET_DIR", root.join("build").display().to_string()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+        let command: Vec<String> = ["cargo", "test", "--offline", "--lib", "--", "--nocapture"]
+            .map(String::from)
+            .to_vec();
+        let context = Context {
+            cwd: root,
+            env: &env,
+            removed: &[],
+            timeout: 60,
+        };
+        let v = run(
+            &command,
+            &context,
+            &root.join("result.log"),
+            Some("BOUNDARY: money"),
             &[],
+        )
+        .unwrap();
+        assert!(
+            v.detected && v.expected_assertion_seen && !v.passed,
+            "{}",
+            serde_json::to_value(&v).unwrap()
         );
-        assert_eq!(r["passed"], false, "{r}");
-        assert_ne!(r["boundary_hit_errors"].as_array().unwrap().len(), 0);
     }
 
-    #[test]
-    fn a_compiler_failure_cannot_count_as_detection() {
-        let r = exercise("#[test] fn broken(){unresolved_function();}", 60, None, &[]);
-        assert_eq!(r["exit_code"], 101, "{r}");
-        assert!(r["ran_one_test"] == false && r["detected"] == false);
-    }
-
-    #[test]
-    fn zero_tests_cannot_be_a_healthy_baseline() {
-        let r = exercise(
-            "// A misspelled test filter could select no tests.\n",
-            60,
-            None,
-            &[],
-        );
-        assert_eq!(r["exit_code"], 0, "{r}");
-        assert!(r["passed"] == false && r["detected"] == false);
-    }
-
-    #[test]
-    fn an_unrelated_runtime_panic_is_invalid() {
-        let r = exercise(
-            r#"#[test] fn infrastructure(){panic!("worker disconnected");}"#,
-            60,
-            None,
-            &[],
-        );
-        assert!(r["ran_one_test"] == true && r["detected"] == false, "{r}");
-    }
-
+    /// A command still running at its deadline is stopped with every process
+    /// it started, and counts as neither a pass nor a detection.
+    #[cfg(unix)]
     #[test]
     fn a_hanging_program_is_invalid_and_reaped() {
-        let r = exercise(
-            r#"#[test] fn hung(){std::fs::write(std::env::var("RUNNER_TEST_PID_PATH").unwrap(), std::process::id().to_string()).unwrap(); std::thread::sleep(std::time::Duration::from_secs(60));}"#,
-            20,
-            None,
-            &[],
+        let scratch = Scratch::new("mutation-runner-hang");
+        let root = scratch.path();
+        let pid_path = root.join("child.pid");
+        let env = BTreeMap::from([("PID_PATH".to_string(), pid_path.display().to_string())]);
+        // A child of its own, as Cargo starts the test binary.
+        let command: Vec<String> = ["sh", "-c", r#"sleep 60 & echo $! > "$PID_PATH"; wait"#]
+            .map(String::from)
+            .to_vec();
+        let context = Context {
+            cwd: root,
+            env: &env,
+            removed: &[],
+            timeout: 2,
+        };
+        let v = run(&command, &context, &root.join("result.log"), None, &[]).unwrap();
+        assert!(
+            v.exit_code.is_none() && !v.passed && !v.detected,
+            "{}",
+            serde_json::to_value(&v).unwrap()
         );
-        assert!(r["exit_code"].is_null() && r["detected"] == false, "{r}");
-        assert_eq!(
-            r["ran_one_test"], true,
-            "the timeout must come in the test, not the compiler: {r}"
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            r["child_still_running"], false,
-            "Cargo's test child survived the group timeout: {r}"
-        );
-    }
-
-    #[test]
-    fn rendezvous_and_virtual_deadline_failures_are_invalid() {
-        for message in [
-            "assertion failed: never reached publication",
-            "assertion failed: Elapsed(())",
-        ] {
-            let r = exercise(
-                &format!("#[test] fn infrastructure(){{panic!({message:?});}}"),
-                60,
-                None,
-                &[],
-            );
-            assert_eq!(r["detected"], false, "{message}: {r}");
+        let pid = fs::read_to_string(&pid_path).unwrap().trim().to_string();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let alive = loop {
+            let status = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid])
+                .output()
+                .unwrap();
+            let status = String::from_utf8_lossy(&status.stdout).trim().to_string();
+            let alive = !status.is_empty() && !status.starts_with('Z');
+            if !alive || std::time::Instant::now() >= deadline {
+                break alive;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        if alive {
+            // SAFETY: a stray process this test started.
+            unsafe { libc::kill(pid.parse().unwrap(), libc::SIGKILL) };
         }
+        assert!(!alive, "the command's child survived the group timeout");
     }
 }
