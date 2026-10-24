@@ -10,6 +10,7 @@ const { captureCoverageStage } = require('../coverage-screenshot');
 const { startFakeNode } = require('../real-stack');
 const {
   useRealStack, signInAsAdmin, openSettingsTab, saveNodes, nodeAddressBoxes, connectStore, fakeNodeAddress, SETTINGS_TABS, expectSaved, openNodes, pressSave,
+  saveEngineSettings,
   answerNodeQuestion,
 } = require('./backend-helpers');
 
@@ -161,4 +162,67 @@ test('every tab, for the gallery @gallery', async ({ page }) => {
   await expect(page).toHaveURL(/\?tab=files$/);
   await expect(page.locator('#settings-panel').getByRole('button', { name: 'Reload options file' })).toHaveCount(2);
   await captureCoverageStage(page, 'admin-settings-files', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
+});
+
+// The CoinMarketCap API key: the one secret the page sets. Asked for in the
+// CoinMarketCap part of the exchange rates card, checked at CoinMarketCap
+// (here a stand-in on this machine), then shown only as set: never back in
+// the page. Typing one is an unsaved change like any other; Remove takes
+// it away.
+test('the CoinMarketCap API key is entered, shown only as set, and removed', async ({ page }) => {
+  const http = require('node:http');
+  const KEY = 'b54bcf4d-1bca-4e8e-9a24-22ff2c3d462c';
+  const seen = [];
+  const standIn = http.createServer((request, response) => {
+    seen.push([request.url, request.headers['x-cmc_pro_api_key'] || null]);
+    const ok = request.url === '/v1/key/info' && request.headers['x-cmc_pro_api_key'] === KEY;
+    response.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' });
+    response.end(ok
+      ? '{"data":{"plan":{}},"status":{"error_code":0}}'
+      : '{"status":{"error_code":1001,"error_message":"This API Key is invalid."}}');
+  });
+  await new Promise((resolve) => standIn.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${standIn.address().port}/public-api`;
+  try {
+    await signInAsAdmin(page);
+    await saveEngineSettings(page, { 'exchange_rate.coinmarketcap_base_url': base });
+    await expectSaved(page);
+
+    await openSettingsTab(page, 'payments');
+    const card = page.getByRole('region', { name: 'Exchange rates' });
+    const box = card.locator('input[type=password][name="exchange_rate.coinmarketcap_api_key"]');
+    const field = card.locator('.setting-field').filter({ has: page.locator('input[name="exchange_rate.coinmarketcap_api_key"]') });
+    await expect(box).toBeVisible();
+    await expect(box).toHaveValue('');
+    await expect(field).toContainText('No key is set.');
+    await expect(field.getByRole('checkbox', { name: 'Remove the key' })).toHaveCount(0);
+
+    // A wrong key is an unsaved change, refused with CoinMarketCap's
+    // reason, and not kept.
+    await box.fill('00000000-0000-0000-0000-000000000000');
+    await expect(field).toHaveClass(/is-changed/);
+    await pressSave(page);
+    await expect(page.locator('#settings-toasts .toast-error')).toBeVisible();
+    await expect(field).toContainText('CoinMarketCap refused this key (HTTP 401: This API Key is invalid.)');
+
+    await openSettingsTab(page, 'payments');
+    await box.fill(KEY);
+    await pressSave(page);
+    await expectSaved(page);
+    expect(seen.at(-1)).toEqual(['/v1/key/info', KEY]);
+    await openSettingsTab(page, 'payments');
+    await expect(field).toContainText('A key is set.');
+    await expect(box).toHaveValue('');
+    expect(await page.content()).not.toContain(KEY);
+
+    await field.getByRole('checkbox', { name: 'Remove the key' }).check();
+    await expect(field).toHaveClass(/is-changed/);
+    await pressSave(page);
+    await expectSaved(page);
+    await openSettingsTab(page, 'payments');
+    await expect(field).toContainText('No key is set.');
+  } finally {
+    await saveEngineSettings(page, { 'exchange_rate.coinmarketcap_base_url': 'https://pro-api.coinmarketcap.com/public-api' });
+    standIn.close();
+  }
 });
