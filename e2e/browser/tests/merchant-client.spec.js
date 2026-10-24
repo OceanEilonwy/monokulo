@@ -73,23 +73,6 @@ test('merchant site is told when an unpaid order expires', async ({ page, reques
   await expect.poll(() => page.evaluate(() => window.events)).toEqual([['expired', 'expired']]);
 });
 
-test('merchant site gets the server\'s reason when an order cannot be created', async ({ page }) => {
-  await openShop(page);
-  const errors = await page.evaluate(async publicKey => {
-    const reason = promise => promise.then(() => 'created', error => error.message);
-    return {
-      // A fiat currency this store has no exchange rate provider for.
-      unsupported: await reason(window.Monokulo.createOrder({ publicKey, amount: '10', currency: 'EUR' })),
-      noKey: await reason(window.Monokulo.createOrder({ amount: '10', currency: 'XMR' })),
-      noAmount: await reason(window.Monokulo.createOrder({ publicKey, currency: 'XMR' })),
-    };
-  }, fixture.public_key);
-  expect(errors.unsupported).not.toBe('created');
-  expect(errors.unsupported).not.toMatch(/^HTTP \d+$/);
-  expect(errors.noKey).toContain('publicKey is required');
-  expect(errors.noAmount).toContain('amount and currency are required');
-});
-
 test('merchant single-page app re-rendering the payment widget keeps one live checkout', async ({ page, request }) => {
   await openShop(page);
   const { first, second } = await page.evaluate(async publicKey => {
@@ -213,4 +196,20 @@ test('a merchant wiring up the library wrongly gets an error saying what to fix'
   expect(problems.noOrder).toBe('Monokulo.mount: could not resolve orderId or the Monokulo address - pass an order object from createOrder(), or {monokulo} (the Monokulo address) in options for an orderId from a previous visit');
   expect(problems.lastVisit).toBe('mounted');
   await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/checkout/order_from_last_visit`);
+
+  // An order that can't be created says why: the server's reason, or what
+  // the call left out.
+  const errors = await page.evaluate(async publicKey => {
+    const reason = promise => promise.then(() => 'created', error => error.message);
+    return {
+      // A fiat currency this store has no exchange rate provider for.
+      unsupported: await reason(window.Monokulo.createOrder({ publicKey, amount: '10', currency: 'EUR' })),
+      noKey: await reason(window.Monokulo.createOrder({ amount: '10', currency: 'XMR' })),
+      noAmount: await reason(window.Monokulo.createOrder({ publicKey, currency: 'XMR' })),
+    };
+  }, fixture.public_key);
+  expect(errors.unsupported).not.toBe('created');
+  expect(errors.unsupported).not.toMatch(/^HTTP \d+$/);
+  expect(errors.noKey).toContain('publicKey is required');
+  expect(errors.noAmount).toContain('amount and currency are required');
 });
