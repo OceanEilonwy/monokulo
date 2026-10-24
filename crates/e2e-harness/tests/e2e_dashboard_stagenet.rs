@@ -72,6 +72,14 @@ use engine::store::Store;
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as MonokuloAppState};
+/// This test's first subaddress index on the shared stagenet merchant
+/// wallet. Every live test that pays an order starts at its own (`cargo
+/// xtask live` checks they differ), so a payment an earlier test made, still
+/// waiting in the pool for stagenet's next block, can never land on this
+/// test's order: each test's engine is new, and would otherwise hand out
+/// index 1 every time. Kept under 33: the CI merchant wallet watches indices
+/// 0-32, so the run's sweep finds every payment.
+const FIRST_MINOR_INDEX: u32 = 5;
 
 /// Same check `e2e_stagenet.rs` opens with, and for the same reason: fail
 /// with a clear, actionable message before spending anything, rather than
@@ -371,6 +379,17 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         1,
         "the real connect flow should have registered exactly one tenant"
     );
+
+    // This test's own subaddresses on the shared merchant wallet, from
+    // FIRST_MINOR_INDEX (see its doc comment).
+    {
+        let store = store.lock();
+        for tenant in store.list_active_tenants().unwrap() {
+            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+                store.allocate_minor_index(&tenant.id).unwrap();
+            }
+        }
+    }
 
     // ---- 3. create a real order through monokulo's own
     // `POST /api/v1/orders` with the store's public key (this is what a
