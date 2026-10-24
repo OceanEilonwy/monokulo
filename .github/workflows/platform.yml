@@ -92,15 +92,42 @@ jobs:
       # Everything the tests need compiled, apart from the run, so the build
       # and the tests have times of their own in the log. A coverage run
       # builds instrumented tests in `cargo xtask coverage rust` instead.
+      # The doctests name the same packages as the tests, so Cargo resolves
+      # the same features and finds the libraries they link built here; and
+      # xtask, for Summarize. On Windows the tests are archived for the rust
+      # tests partition jobs, which run a third of them each.
       - name: Build the tests
         if: ${{ !inputs.coverage }}
         shell: bash
         run: |
-          cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp \
-            ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+          if test '${{ runner.os }}' = Windows; then
+            cargo nextest archive --workspace --locked --features monokulo/snp --exclude xtask \
+              --archive-file target/rust-tests.tar.zst
+          else
+            cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp \
+              ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+          fi
+          cargo build -p xtask --locked
           if test -n "${RUSTC_WRAPPER:-}"; then sccache --show-stats; fi
+      # With the xtask that summarizes them: Windows takes nearly five
+      # minutes to build it.
+      - name: Upload the tests for the partition jobs
+        if: runner.os == 'Windows' && !inputs.coverage
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-tests-windows-${{ github.sha }}
+          path: |
+            target/rust-tests.tar.zst
+            target/debug/xtask.exe
+          if-no-files-found: error
+          # Already compressed, and only the partition jobs read it.
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
       - name: Run the tests
         id: tests
+        # Windows runs them in the rust tests partition jobs.
+        if: runner.os != 'Windows'
         continue-on-error: true
         shell: bash
         env:
@@ -117,14 +144,17 @@ jobs:
       - name: Run the doctests
         id: doctests
         continue-on-error: true
-        # nextest does not run doctests.
-        run: cargo test --workspace --locked --exclude xtask --doc --features monokulo/snp
+        # nextest does not run doctests. The packages the Build step named
+        # (xtask has none), so this step only runs them.
+        run: cargo test --workspace --locked --doc --features monokulo/snp ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
       - name: Summarize
         if: always()
         shell: bash
         run: |
-          cargo xtask test-summary 'Rust tests (${{ runner.os }})' \
-            rust=${{ inputs.coverage && 'target/coverage/rust/junit.xml' || 'target/nextest/ci/junit.xml' }} >> "$GITHUB_STEP_SUMMARY"
+          if test '${{ runner.os }}' != Windows; then
+            cargo xtask test-summary 'Rust tests (${{ runner.os }})' \
+              rust=${{ inputs.coverage && 'target/coverage/rust/junit.xml' || 'target/nextest/ci/junit.xml' }} >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "Doctests: ${{ steps.doctests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload Rust coverage
         if: always() && inputs.coverage
@@ -139,12 +169,76 @@ jobs:
       - name: Fail on test failure
         if: always()
         shell: bash
-        run: test '${{ steps.tests.outcome }}' = success && test '${{ steps.doctests.outcome }}' = success
+        run: |
+          test '${{ steps.tests.outcome }}' = success || test '${{ runner.os }}' = Windows
+          test '${{ steps.doctests.outcome }}' = success
       - name: Preserve property test regressions
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: proptest-regressions-${{ runner.os }}${{ inputs.coverage && '-coverage' || '' }}-${{ github.sha }}
+          path: crates/*/proptest-regressions/
+          if-no-files-found: ignore
+
+  # Windows runs the tests about three times slower than Linux, over ten
+  # minutes in one step: the rust tests job builds and archives them once,
+  # and each of these runs a third of every test binary's tests from it.
+  rust-partitions:
+    name: rust tests partition
+    needs: rust
+    # After a failed doctest too; without an archive the download fails.
+    if: ${{ !cancelled() && inputs.platform == 'windows' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      # As in the rust tests job.
+      - name: Keep temporary files on drive D
+        shell: pwsh
+        run: |
+          "TMP=${{ runner.temp }}" >> $env:GITHUB_ENV
+          "TEMP=${{ runner.temp }}" >> $env:GITHUB_ENV
+      # The toolchain the tests were built with; nothing is compiled here.
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: 'false'
+          pos-app: 'false'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - uses: actions/download-artifact@v8
+        with:
+          name: rust-tests-windows-${{ github.sha }}
+          path: target-ci
+      # Extracted into this checkout's target folder, the path the tests
+      # were built in, so the paths compiled into them (CARGO_BIN_EXE_*,
+      # CARGO_MANIFEST_DIR) hold.
+      - name: Run the tests
+        id: tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo nextest run --archive-file target-ci/rust-tests.tar.zst --workspace-remap . --extract-to . \
+            --profile ci --partition count:${{ matrix.part }}/3
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          target-ci/debug/xtask.exe test-summary 'Rust tests (Windows, part ${{ matrix.part }} of 3)' \
+            rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail on test failure
+        if: always()
+        shell: bash
+        run: test '${{ steps.tests.outcome }}' = success
+      - name: Preserve property test regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: proptest-regressions-Windows-part${{ matrix.part }}-${{ github.sha }}
           path: crates/*/proptest-regressions/
           if-no-files-found: ignore
 
@@ -165,31 +259,37 @@ jobs:
             package-lock.json
       - name: Install the browser tests' dependencies
         run: npm ci --prefix e2e/browser --no-audit --no-fund
-      # Chromium runs every browser test; Firefox and WebKit run the POS's
-      # (coverage-browser.config.js). The key names the browsers, so a
-      # cache saved with fewer isn't restored. Their system libraries aren't
-      # cached: they are installed either way.
+      # Chromium runs every browser test (coverage-browser.config.js). The
+      # key names the browser, so a cache saved with others isn't restored.
+      # Its system libraries aren't cached: they are installed either way.
       - name: Cache Playwright's browsers
         id: browsers
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-firefox-webkit-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
-      - name: Install Chromium, Firefox and WebKit
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
+      - name: Install Chromium
         working-directory: e2e/browser
         run: |
           if test '${{ steps.browsers.outputs.cache-hit }}' = true; then
-            npx playwright install-deps chromium firefox webkit
+            npx playwright install-deps chromium
           else
-            npx playwright install --with-deps chromium firefox webkit
+            npx playwright install --with-deps chromium
           fi
+      # Every binary the tests run, with the one command the run's global
+      # setup and the fixture specs repeat (real-stack.js BUILD_ARGS), so
+      # theirs find nothing to do and the test step times only the tests;
+      # and xtask, which runs the coverage collector and Summarize.
+      - name: Build the binaries
+        run: |
+          node -e "require('./e2e/browser/real-stack').buildBinaries()"
+          cargo build -p xtask --locked
       - name: Run tests
         id: tests
         continue-on-error: true
         # The fixture tests and the real-binaries tests, as one Playwright
-        # run (coverage-browser.config.js). Its global setup builds every
-        # binary they need; the collector adds instrumentation and the
-        # screenshot gallery.
+        # run (coverage-browser.config.js); the collector adds
+        # instrumentation and the screenshot gallery.
         run: |
           if ${{ inputs.coverage }}; then
             cargo xtask coverage browser
@@ -280,6 +380,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
+      # What `cargo xtask engine scale` runs, built as it builds it, so the
+      # step after it times only the scenarios.
+      - name: Build the scale tests
+        run: |
+          cargo build -p xtask --locked
+          cargo nextest run --no-run -p engine --lib --locked --profile ci
       - name: Run the scale scenarios
         run: cargo xtask engine scale
       - name: Preserve replay settings, failures and reports
@@ -296,7 +402,7 @@ jobs:
     # skipped). With coverage, also the one artifact and index from the
     # collectors, checked as `cargo xtask coverage all` checks a local run.
     name: summary
-    needs: [rust, browser, stress, scale]
+    needs: [rust, rust-partitions, browser, stress, scale]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
