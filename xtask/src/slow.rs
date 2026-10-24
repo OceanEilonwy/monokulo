@@ -25,6 +25,34 @@ pub(crate) const SLOW: &[(&str, &str)] = &[
     ("engine › pow::", RANDOMX),
     ("engine › work::tests::every_sql_failure_", SQL_SWEEP),
     (
+        "engine › work::tests::boundaries::every_recorded_ringct_variant_runs_complete_money_histories",
+        "every recorded RingCT variant's whole money history, a sixth of them a test",
+    ),
+    (
+        "engine › work::tests::boundaries::combined_portfolio_interactions_have_fixed_positive_controls",
+        "a whole portfolio's money histories, each control run to the end",
+    ),
+    (
+        "engine › work::tests::boundaries::concurrency::",
+        "every schedule of concurrent callers, admission and shutdown",
+    ),
+    (
+        "engine › work::mempool::boundaries::scale::",
+        "a scale scenario: floods of new transactions",
+    ),
+    (
+        "engine › store::boundaries::",
+        "upgrades a real database through each fault, and kills the process mid-migration",
+    ),
+    (
+        "monokulo › api::runtime::reference::tests::the_reference_is_",
+        "records every API exchange against a real engine to write the reference",
+    ),
+    (
+        "monokulo › http::prefix_tests::",
+        "walks every page, fragment and stream a signed-in admin can reach",
+    ),
+    (
         "engine › work::tests::scale::tenant_groups_recover_without_cross_credit",
         "recovers thousands of tenants group by group",
     ),
