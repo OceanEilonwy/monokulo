@@ -7,55 +7,6 @@ use crate::store::{Db, Store, TenantId};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn batch_reservations_and_cache_histories(data in prop::collection::vec(any::<u8>(), 0..4097)) {
-        crate::exploration::mempool(&data);
-    }
-
-    #[test]
-    fn reservation_histories_match_independent_ownership(
-        events in prop::collection::vec((0u8..5,0usize..8,0usize..4,0usize..4,0u32..4),1..256),
-    ) {
-        let state = MempoolState::default();
-        let mut owners: Vec<Option<(ScanClaims<'_>,String,TenantId,u64)>> = std::iter::repeat_with(|| None).take(8).collect();
-        let mut busy = BTreeMap::new();
-        let mut done = BTreeMap::new();
-        for (action,owner,tx,tenant,window) in events {
-            let txid = format!("tx-{tx}");
-            let id = TenantId::new(format!("tenant-{tenant}"));
-            let key = (txid.clone(),id.clone());
-            match action {
-                0 => {
-                    if let Some((guard,t,id,_)) = owners[owner].take() { drop(guard); busy.remove(&(t,id)); }
-                    let window = ScanIndices::new([window]);
-                    let generation = window.generation();
-                    let tuple = (id.clone(),WalletHandle::generate(),window);
-                    let expected = !busy.contains_key(&key) && done.get(&key)!=Some(&generation);
-                    let (guard,claimed) = state.claim(&txid,&[&tuple]);
-                    prop_assert_eq!(claimed.len(),usize::from(expected));
-                    if expected { busy.insert(key,owner); owners[owner] = Some((guard,txid,id,generation)); }
-                }
-                1 | 2 => {
-                    if let Some((mut guard,t,id,generation)) = owners[owner].take() {
-                        if action==2 { guard.complete(&id,generation); done.insert((t.clone(),id.clone()),generation); }
-                        drop(guard); busy.remove(&(t,id));
-                    }
-                }
-                3 => { state.forget(); done.clear(); }
-                _ => {
-                    state.retain_pool(&HashSet::from([txid.clone()]));
-                    done.retain(|(t,_),_| t==&txid);
-                }
-            }
-            prop_assert_eq!(state.inner.lock().in_flight.len(),busy.len());
-        }
-        drop(owners);
-        prop_assert!(state.inner.lock().in_flight.is_empty());
-    }
-}
-
 async fn competing_scans(boundary: u8) {
     let path = TempFile::new();
     let store = Store::create_file(&path.0).unwrap();
@@ -313,76 +264,6 @@ fn simultaneous_threads_cannot_both_reserve_the_same_scan() {
     }
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn overlapping_thread_batches_have_exactly_one_owner_per_key(
-        callers in prop::collection::vec((0u8..4, 1u8..=255, any::<u32>()), 2..9),
-    ) {
-        let state = MempoolState::default();
-        let handles: [WalletHandle; 8] = std::array::from_fn(|_| WalletHandle::generate());
-        let barrier = std::sync::Barrier::new(callers.len() + 1);
-        let expected: std::collections::BTreeSet<_> = callers.iter().flat_map(|(tx,mask,_)| (0..8u8).filter(move |i| mask & (1 << i) != 0).map(move |i| (format!("tx-{tx}"), TenantId::new(format!("tenant-{i}"))))).collect();
-        std::thread::scope(|scope| {
-            let jobs: Vec<_> = callers.iter().map(|&(tx,mask,window)| {
-                let state = &state;
-                let barrier = &barrier;
-                scope.spawn(move || {
-                    let windows: Vec<_> = (0..8u8).filter(|i| mask & (1 << i) != 0).map(|i| (TenantId::new(format!("tenant-{i}")),handles[usize::from(i)],ScanIndices::new([window]))).collect();
-                    let txid = format!("tx-{tx}");
-                    barrier.wait();
-                    let (guard,claimed) = state.claim(&txid,&windows.iter().collect::<Vec<_>>());
-                    let keys: Vec<_> = claimed.iter().map(|w| (txid.clone(),w.0.clone())).collect();
-                    barrier.wait(); // every caller has acquired or lost
-                    barrier.wait(); // main inspected while all guards are alive
-                    drop(guard);
-                    keys
-                })
-            }).collect();
-            barrier.wait();
-            barrier.wait();
-            let actual: std::collections::BTreeSet<_> = state.inner.lock().in_flight.iter().cloned().collect();
-            // Release threads before asserting so even a regression cannot
-            // strand scoped threads behind a barrier during panic unwinding.
-            barrier.wait();
-            assert_eq!(actual,expected);
-            let admitted: Vec<_> = jobs.into_iter().flat_map(|j| j.join().unwrap()).collect();
-            assert_eq!(admitted.len(),expected.len());
-            assert_eq!(admitted.into_iter().collect::<std::collections::BTreeSet<_>>(),expected);
-        });
-        prop_assert!(state.inner.lock().in_flight.is_empty());
-    }
-
-    #[test]
-    fn cache_accounting_obeys_full_width_budgets(
-        count in 0usize..17,
-        budget in any::<usize>(),
-        events in prop::collection::vec((any::<bool>(),0u8..16,any::<usize>()),1..128),
-    ) {
-        let tx = Arc::new(Transaction::default());
-        let mut actual = Bodies::default();
-        let mut expected = BTreeMap::<String,usize>::new();
-        for (insert,id,size) in events {
-            let key = format!("tx-{id}");
-            if insert {
-                let total: u128 = expected.values().map(|&n| n as u128).sum();
-                if !expected.contains_key(&key) && expected.len()<count && total + size as u128 <= budget as u128 {
-                    expected.insert(key.clone(),size);
-                }
-                actual.remember(&key,&tx,size,count,budget);
-            } else {
-                actual.retain(|txid| txid != &key);
-                expected.remove(&key);
-            }
-            let entries: BTreeMap<_,_> = actual.by_txid.iter().map(|(id,(_,size))| (id.clone(),*size)).collect();
-            prop_assert_eq!(&entries,&expected);
-            prop_assert_eq!(actual.bytes as u128,expected.values().map(|&n| n as u128).sum::<u128>());
-            prop_assert!(actual.bytes<=budget);
-            prop_assert!(actual.by_txid.len()<=count);
-        }
-    }
-}
-
 #[test]
 fn reviewed_fuzz_histories_remain_valid_regressions() {
     for data in [
@@ -492,16 +373,6 @@ async fn entry_point_contention(fast_first: bool, cancel: bool, competitors: usi
             .collect::<Vec<_>>(),
         identities
     );
-}
-
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn real_fast_and_round_callers_share_reservations(
-        fast_first in any::<bool>(), cancel in any::<bool>(), competitors in 1usize..9,
-    ) {
-        runtime().block_on(entry_point_contention(fast_first, cancel, competitors));
-    }
 }
 
 async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
@@ -644,16 +515,6 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     );
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn mixed_tenant_success_failure_and_empty_matches_retry_independently(
-        failure in 0u8..5, reverse in any::<bool>(), repeats in 1usize..9,
-    ) {
-        runtime().block_on(mixed_tenant_batch(failure,reverse,repeats));
-    }
-}
-
 #[test]
 fn every_mixed_batch_failure_boundary_runs_in_both_orders() {
     runtime().block_on(async {
@@ -776,5 +637,147 @@ fn reservation_decision_grid_checks_completed_busy_and_changed_windows() {
             state.inner.lock().in_flight.is_empty(),
             "assertion failed: BOUNDARY: reservation-decision-grid"
         );
+    }
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn batch_reservations_and_cache_histories(data in prop::collection::vec(any::<u8>(), 0..4097)) {
+            crate::exploration::mempool(&data);
+        }
+
+        #[test]
+        fn reservation_histories_match_independent_ownership(
+            events in prop::collection::vec((0u8..5,0usize..8,0usize..4,0usize..4,0u32..4),1..256),
+        ) {
+            let state = MempoolState::default();
+            let mut owners: Vec<Option<(ScanClaims<'_>,String,TenantId,u64)>> = std::iter::repeat_with(|| None).take(8).collect();
+            let mut busy = BTreeMap::new();
+            let mut done = BTreeMap::new();
+            for (action,owner,tx,tenant,window) in events {
+                let txid = format!("tx-{tx}");
+                let id = TenantId::new(format!("tenant-{tenant}"));
+                let key = (txid.clone(),id.clone());
+                match action {
+                    0 => {
+                        if let Some((guard,t,id,_)) = owners[owner].take() { drop(guard); busy.remove(&(t,id)); }
+                        let window = ScanIndices::new([window]);
+                        let generation = window.generation();
+                        let tuple = (id.clone(),WalletHandle::generate(),window);
+                        let expected = !busy.contains_key(&key) && done.get(&key)!=Some(&generation);
+                        let (guard,claimed) = state.claim(&txid,&[&tuple]);
+                        prop_assert_eq!(claimed.len(),usize::from(expected));
+                        if expected { busy.insert(key,owner); owners[owner] = Some((guard,txid,id,generation)); }
+                    }
+                    1 | 2 => {
+                        if let Some((mut guard,t,id,generation)) = owners[owner].take() {
+                            if action==2 { guard.complete(&id,generation); done.insert((t.clone(),id.clone()),generation); }
+                            drop(guard); busy.remove(&(t,id));
+                        }
+                    }
+                    3 => { state.forget(); done.clear(); }
+                    _ => {
+                        state.retain_pool(&HashSet::from([txid.clone()]));
+                        done.retain(|(t,_),_| t==&txid);
+                    }
+                }
+                prop_assert_eq!(state.inner.lock().in_flight.len(),busy.len());
+            }
+            drop(owners);
+            prop_assert!(state.inner.lock().in_flight.is_empty());
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn overlapping_thread_batches_have_exactly_one_owner_per_key(
+            callers in prop::collection::vec((0u8..4, 1u8..=255, any::<u32>()), 2..9),
+        ) {
+            let state = MempoolState::default();
+            let handles: [WalletHandle; 8] = std::array::from_fn(|_| WalletHandle::generate());
+            let barrier = std::sync::Barrier::new(callers.len() + 1);
+            let expected: std::collections::BTreeSet<_> = callers.iter().flat_map(|(tx,mask,_)| (0..8u8).filter(move |i| mask & (1 << i) != 0).map(move |i| (format!("tx-{tx}"), TenantId::new(format!("tenant-{i}"))))).collect();
+            std::thread::scope(|scope| {
+                let jobs: Vec<_> = callers.iter().map(|&(tx,mask,window)| {
+                    let state = &state;
+                    let barrier = &barrier;
+                    scope.spawn(move || {
+                        let windows: Vec<_> = (0..8u8).filter(|i| mask & (1 << i) != 0).map(|i| (TenantId::new(format!("tenant-{i}")),handles[usize::from(i)],ScanIndices::new([window]))).collect();
+                        let txid = format!("tx-{tx}");
+                        barrier.wait();
+                        let (guard,claimed) = state.claim(&txid,&windows.iter().collect::<Vec<_>>());
+                        let keys: Vec<_> = claimed.iter().map(|w| (txid.clone(),w.0.clone())).collect();
+                        barrier.wait(); // every caller has acquired or lost
+                        barrier.wait(); // main inspected while all guards are alive
+                        drop(guard);
+                        keys
+                    })
+                }).collect();
+                barrier.wait();
+                barrier.wait();
+                let actual: std::collections::BTreeSet<_> = state.inner.lock().in_flight.iter().cloned().collect();
+                // Release threads before asserting so even a regression cannot
+                // strand scoped threads behind a barrier during panic unwinding.
+                barrier.wait();
+                assert_eq!(actual,expected);
+                let admitted: Vec<_> = jobs.into_iter().flat_map(|j| j.join().unwrap()).collect();
+                assert_eq!(admitted.len(),expected.len());
+                assert_eq!(admitted.into_iter().collect::<std::collections::BTreeSet<_>>(),expected);
+            });
+            prop_assert!(state.inner.lock().in_flight.is_empty());
+        }
+
+        #[test]
+        fn cache_accounting_obeys_full_width_budgets(
+            count in 0usize..17,
+            budget in any::<usize>(),
+            events in prop::collection::vec((any::<bool>(),0u8..16,any::<usize>()),1..128),
+        ) {
+            let tx = Arc::new(Transaction::default());
+            let mut actual = Bodies::default();
+            let mut expected = BTreeMap::<String,usize>::new();
+            for (insert,id,size) in events {
+                let key = format!("tx-{id}");
+                if insert {
+                    let total: u128 = expected.values().map(|&n| n as u128).sum();
+                    if !expected.contains_key(&key) && expected.len()<count && total + size as u128 <= budget as u128 {
+                        expected.insert(key.clone(),size);
+                    }
+                    actual.remember(&key,&tx,size,count,budget);
+                } else {
+                    actual.retain(|txid| txid != &key);
+                    expected.remove(&key);
+                }
+                let entries: BTreeMap<_,_> = actual.by_txid.iter().map(|(id,(_,size))| (id.clone(),*size)).collect();
+                prop_assert_eq!(&entries,&expected);
+                prop_assert_eq!(actual.bytes as u128,expected.values().map(|&n| n as u128).sum::<u128>());
+                prop_assert!(actual.bytes<=budget);
+                prop_assert!(actual.by_txid.len()<=count);
+            }
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn real_fast_and_round_callers_share_reservations(
+            fast_first in any::<bool>(), cancel in any::<bool>(), competitors in 1usize..9,
+        ) {
+            runtime().block_on(entry_point_contention(fast_first, cancel, competitors));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn mixed_tenant_success_failure_and_empty_matches_retry_independently(
+            failure in 0u8..5, reverse in any::<bool>(), repeats in 1usize..9,
+        ) {
+            runtime().block_on(mixed_tenant_batch(failure,reverse,repeats));
+        }
     }
 }

@@ -3,7 +3,7 @@
 //! off, and reorg detection stays cheap.
 
 #[path = "properties.rs"]
-mod properties;
+mod boundaries;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

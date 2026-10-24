@@ -189,13 +189,6 @@ async fn large_pool(count: usize) {
     );
     println!("ENGINE_SCALE_RESULT pool_transactions={count} successful_unique_scans={count}");
 }
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn parallel_pool_backlogs_recover_and_release_cache(count in 2usize..129) {
-        runtime().block_on(large_pool(count));
-    }
-}
 #[test]
 #[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn eight_thousand_pool_transactions_recover_and_release_cache() {
@@ -267,29 +260,6 @@ fn production_body_caps_reject_overflow_and_reuse_freed_space() {
     assert_eq!(bytes.bytes, fits * large_size);
     bytes.retain(|_| false);
     assert_eq!(bytes.bytes, 0);
-}
-
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn arrivals_cannot_increase_existing_work_wait(
-        initial in 1usize..258, batch in 1usize..65, arrivals in 1usize..33,
-    ) {
-        let state=MempoolState::default();
-        let mut pool:Vec<_>=(0..initial).map(|i|format!("old-{i:08}")).collect();
-        let protected=pool.last().unwrap().clone();
-        select(&state,pool.clone());
-        let mut served=false;
-        for round in 0..initial.div_ceil(batch) {
-            pool.extend((0..arrivals).map(|i|format!("new-{round:08}-{i:08}")));
-            let selected=select(&state,pool.clone());
-            let completed:HashSet<&str>=selected.iter().take(batch).map(String::as_str).collect();
-            served |= completed.contains(protected.as_str());
-            state.rotation.lock().served(&completed);
-            if served {break;}
-        }
-        prop_assert!(served,"new arrivals displaced already admitted work");
-    }
 }
 
 async fn transaction_tenant_matrix(count: usize, transactions: usize) {
@@ -393,13 +363,6 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
         count * transactions
     );
 }
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn each_transaction_visits_each_tenant_independently(count in 2usize..66,transactions in 2usize..7) {
-        runtime().block_on(transaction_tenant_matrix(count,transactions));
-    }
-}
 #[test]
 #[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn tenant_and_transaction_rotations_cannot_phase_lock() {
@@ -421,4 +384,47 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/work/mempool_scale_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn parallel_pool_backlogs_recover_and_release_cache(count in 2usize..129) {
+            runtime().block_on(large_pool(count));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn arrivals_cannot_increase_existing_work_wait(
+            initial in 1usize..258, batch in 1usize..65, arrivals in 1usize..33,
+        ) {
+            let state=MempoolState::default();
+            let mut pool:Vec<_>=(0..initial).map(|i|format!("old-{i:08}")).collect();
+            let protected=pool.last().unwrap().clone();
+            select(&state,pool.clone());
+            let mut served=false;
+            for round in 0..initial.div_ceil(batch) {
+                pool.extend((0..arrivals).map(|i|format!("new-{round:08}-{i:08}")));
+                let selected=select(&state,pool.clone());
+                let completed:HashSet<&str>=selected.iter().take(batch).map(String::as_str).collect();
+                served |= completed.contains(protected.as_str());
+                state.rotation.lock().served(&completed);
+                if served {break;}
+            }
+            prop_assert!(served,"new arrivals displaced already admitted work");
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn each_transaction_visits_each_tenant_independently(count in 2usize..66,transactions in 2usize..7) {
+            runtime().block_on(transaction_tenant_matrix(count,transactions));
+        }
+    }
 }

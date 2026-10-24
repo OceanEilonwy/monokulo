@@ -234,28 +234,6 @@ async fn denied(
     );
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn permission_matrix_rejects_credentials_without_data_or_writes(route in 0usize..24,engine_kind in 0u8..5,credential in 0u8..8,noise in "[ -~]{0,128}",worker in any::<bool>()) {
-        runtime().block_on(async {
-            let mut w=World::new(3,worker).await;
-            w.rotate(0).await;
-            w.disable(2).await;
-            let catalog=routes(&w.principals[0]);
-            let route=&catalog[route];
-            let engine=match engine_kind {0=>None,1=>Some("wrong-engine"),2=>Some(w.principals[0].secret.as_str()),3=>Some(w.principals[0].public.as_str()),_=>Some(TEST_ENGINE_TOKEN)};
-            // Global routes need only the engine capability. Supply an invalid
-            // engine there rather than inventing a tenant requirement.
-            let engine=if !route.tenant && engine==Some(TEST_ENGINE_TOKEN) {Some("wrong-engine")} else {engine};
-            let auth=w.invalid_auth(credential,&noise);
-            denied(&w,route,engine,auth.as_deref(),&serde_json::json!({"tenant_id":w.principals[1].id,"xmr_amount_piconero":1,"refund_address":"forbidden"})).await;
-            let good=w.send("GET","/api/v1/admin/tenant",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[0].secret)),&serde_json::json!({})).await;
-            assert_eq!(good.status(),StatusCode::OK,"rejections damaged valid authentication");
-        });
-    }
-}
-
 #[test]
 fn every_route_runs_the_engine_and_tenant_rejection_matrix() {
     runtime().block_on(async {
@@ -414,57 +392,6 @@ async fn ownership_history(count: usize, worker: bool, events: Vec<(u8, usize, u
         }
     }
 }
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn tenant_ownership_and_revocation_histories(count in 2usize..5,worker in any::<bool>(),events in prop::collection::vec((0u8..5,0usize..4,0usize..4,any::<bool>(),0u8..4),1..33)) {
-        runtime().block_on(ownership_history(count,worker,events));
-    }
-    #[test]
-    fn cross_tenant_refund_writes_are_atomic(actor in 0usize..4,count in 2usize..5,worker in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(count,worker).await;
-            let actor=actor%count;let target=(actor+1)%count;
-            let before=w.snapshot();
-            let uri=format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[target].order);
-            let response=w.send("POST",&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[actor].secret)),&serde_json::json!({"refund_address":"forbidden","tenant_id":w.principals[target].id})).await;
-            assert_eq!(response.status(),StatusCode::NOT_FOUND);assert_eq!(w.snapshot(),before);
-            let response=w.send("POST",&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[target].secret)),&serde_json::json!({"refund_address":"owner"})).await;
-            assert_eq!(response.status(),StatusCode::OK,"owner must retain legitimate access");
-        });
-    }
-    #[test]
-    fn body_identity_cannot_steer_own_tenant_operations(count in 2usize..5,actor in 0usize..4,amount in 1u64..10000,worker in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(count,worker).await;
-            let actor=actor%count;let target=(actor+1)%count;
-            let response=w.send("POST","/api/v1/admin/tenant/orders",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[actor].secret)),&serde_json::json!({"xmr_amount_piconero":amount,"tenant_id":w.principals[target].id,"public_key":w.principals[target].public})).await;
-            assert_eq!(response.status(),StatusCode::OK);
-            let id=OrderId::new(body_json(response).await["order_id"].as_str().unwrap());
-            let store=w.store.lock();
-            assert!(store.get_order(&w.principals[actor].id,&id).unwrap().is_some());
-            assert!(store.get_order(&w.principals[target].id,&id).unwrap().is_none());
-            for (i,p) in w.principals.iter().enumerate() {assert_eq!(store.list_orders(&p.id,None,1000,None).unwrap().len(),1+usize::from(i==actor));}
-        });
-    }
-    #[test]
-    fn concurrent_rejections_leave_no_writes_or_stream_slot_leaks(callers in 2usize..33,events in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(2,true).await;
-            let before=w.snapshot();
-            let jobs=(0..callers).map(async |i| {
-                if events {w.send("GET","/api/v1/admin/tenant/events",Some(TEST_ENGINE_TOKEN),Some("Bearer invalid"),&serde_json::json!({})).await}
-                else {w.send("POST",&format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[0].order),Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[1].secret)),&serde_json::json!({"refund_address":format!("forbidden-{i}")})).await}
-            });
-            for response in futures_util::future::join_all(jobs).await {assert_eq!(response.status(),if events {StatusCode::UNAUTHORIZED} else {StatusCode::NOT_FOUND});}
-            assert_eq!(w.snapshot(),before);
-            for _ in 0..2 {
-                let response=w.send("GET","/api/v1/admin/tenant/events",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[0].secret)),&serde_json::json!({})).await;
-                assert_eq!(response.status(),StatusCode::OK);drop(response);
-            }
-        });
-    }
-}
 
 #[test]
 fn named_revocation_and_cross_tenant_history_replays() {
@@ -484,132 +411,6 @@ fn named_revocation_and_cross_tenant_history_replays() {
     ));
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn repeated_headers_bind_only_the_first_presented_capability(actor in 0usize..4,count in 2usize..5,engine_first_valid in any::<bool>(),bearer_first_valid in any::<bool>(),worker in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(count,worker).await;
-            let actor=actor%count;
-            let other=(actor+1)%count;
-            let first_engine=if engine_first_valid {TEST_ENGINE_TOKEN} else {"invalid-engine"};
-            let second_engine=if engine_first_valid {"invalid-engine"} else {TEST_ENGINE_TOKEN};
-            let first_auth=if bearer_first_valid {format!("Bearer {}",w.principals[actor].secret)} else {"Basic invalid".into()};
-            let before=w.snapshot();
-            let mut request=json_request("GET","/api/v1/admin/tenant/orders",None,&serde_json::json!({}));
-            request.headers_mut().append(shared::auth::ENGINE_TOKEN_HEADER,first_engine.parse().unwrap());
-            request.headers_mut().append(shared::auth::ENGINE_TOKEN_HEADER,second_engine.parse().unwrap());
-            request.headers_mut().append("authorization",first_auth.parse().unwrap());
-            request.headers_mut().append("authorization",format!("Bearer {}",w.principals[other].secret).parse().unwrap());
-            let response=tokio::time::timeout(std::time::Duration::from_secs(5),w.router.clone().oneshot(request)).await.unwrap().unwrap();
-            if engine_first_valid && bearer_first_valid {
-                assert_eq!(response.status(),StatusCode::OK);
-                let body=body_json(response).await;
-                assert_eq!(body.as_array().unwrap().len(),1);
-                assert_eq!(body[0]["order_id"],w.principals[actor].order);
-            } else {assert_eq!(response.status(),StatusCode::UNAUTHORIZED);}
-            assert_eq!(w.snapshot(),before);
-        });
-    }
-    #[test]
-    fn bearer_syntax_cannot_expand_tenant_authority(kind in 0u8..8,worker in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(2,worker).await;
-            let secret=&w.principals[0].secret;
-            let malformed=match kind {
-                0=>format!("bearer {secret}"),
-                1=>format!("BEARER {secret}"),
-                2=>format!("Bearer  {secret}"),
-                3=>format!("Bearer\t{secret}"),
-                4=>format!("Bearer {secret} "),
-                5=>format!("Bearer {secret}, Bearer {}",w.principals[1].secret),
-                6=>format!("Bearer{secret}"),
-                _=>"Bearer ".into(),
-            };
-            denied(&w,&routes(&w.principals[0])[5],Some(TEST_ENGINE_TOKEN),Some(&malformed),&serde_json::json!({})).await;
-        });
-    }
-    #[test]
-    fn lists_and_live_events_expose_only_the_authenticated_tenant(count in 2usize..5,actor in 0usize..4,foreign_writes in 1usize..13,worker in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(count,worker).await;
-            let actor=actor%count;
-            let other=(actor+1)%count;
-            let auth=format!("Bearer {}",w.principals[actor].secret);
-            {
-                let response=w.send("GET","/api/v1/admin/tenant/orders",Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({"tenant_id":w.principals[other].id})).await;
-                assert_eq!(response.status(),StatusCode::OK);
-                let body=body_json(response).await;
-                assert_eq!(body.as_array().unwrap().len(),1);
-                assert_eq!(body[0]["order_id"],w.principals[actor].order.as_str());
-            }
-            for (uri,expected) in [
-                (format!("/api/v1/admin/tenant/orders?ids={},{}",w.principals[other].order,w.principals[actor].order),Some(w.principals[actor].order.as_str())),
-                (format!("/api/v1/admin/tenant/orders?search={}",w.principals[other].order),None),
-            ] {
-                let response=w.send("GET",&uri,Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({})).await;
-                assert_eq!(response.status(),StatusCode::OK);
-                let body=body_json(response).await;
-                assert_eq!(body.as_array().unwrap().len(),usize::from(expected.is_some()));
-                if let Some(expected)=expected {assert_eq!(body[0]["order_id"],expected);}
-            }
-            let response=w.send("GET","/api/v1/admin/tenant/events",Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({})).await;
-            assert_eq!(response.status(),StatusCode::OK);
-            let mut body=response.into_body();let mut buffer=String::new();
-            assert_eq!(next_sse_event(&mut body,&mut buffer).await.0,"ready");
-            for i in 0..foreign_writes {
-                let response=w.send("POST",&format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[other].order),Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[other].secret)),&serde_json::json!({"refund_address":format!("foreign-{i}")})).await;
-                assert_eq!(response.status(),StatusCode::OK);
-            }
-            let response=w.send("POST",&format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[actor].order),Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({"refund_address":"owner-barrier"})).await;
-            assert_eq!(response.status(),StatusCode::OK);
-            let (event,data)=next_sse_event(&mut body,&mut buffer).await;
-            assert_eq!(event,"order");
-            assert_eq!(serde_json::from_str::<serde_json::Value>(&data).unwrap()["order_id"],w.principals[actor].order);
-            // A positive owner event after the foreign writes makes a missing
-            // or broken stream fail instead of passing a silence-only check.
-        });
-    }
-}
-
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn payment_lookup_cannot_read_or_credit_another_tenants_outputs(count in 2usize..5,foreign in 1usize..4,repeats in 1usize..5,worker in any::<bool>()) {
-        use monero::cryptonote::hash::Hashable as _;
-        runtime().block_on(async {
-            let (node_state,daemon)=test_app_state_with_real_daemon().await;
-            let w=World::with_network(count,worker,Some(node_state)).await;
-            let foreign=1+(foreign-1)%(count-1);
-            let tx=fixture_tx_for_lookup_tests();
-            let txid=hex::encode(tx.hash().to_bytes());
-            daemon.set_mempool(vec![tx]);
-            let owner=&w.principals[0];
-            let foreign=&w.principals[foreign];
-            for owner_has_looked_up in [false,true] {
-                if owner_has_looked_up {
-                    let response=w.send("POST","/api/v1/admin/tenant/payments/lookup",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",owner.secret)),&serde_json::json!({"txid":txid})).await;
-                    assert_eq!(response.status(),StatusCode::OK);
-                    let body=body_json(response).await;
-                    assert_eq!(body["outcome"],"matched");
-                    assert_eq!(body["order_ids"],serde_json::json!([owner.order]));
-                    assert_eq!(w.store.lock().get_all_payments(&OrderId::new(&owner.order)).unwrap().len(),1);
-                }
-                let before=w.snapshot();
-                for _ in 0..repeats {
-                    let response=w.send("POST","/api/v1/admin/tenant/payments/lookup",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",foreign.secret)),&serde_json::json!({"txid":txid,"tenant_id":owner.id,"order_id":owner.order,"public_key":owner.public})).await;
-                    assert_eq!(response.status(),StatusCode::OK);
-                    let body=body_json(response).await;
-                    assert_eq!(body["outcome"],"no_matching_order");
-                    assert!(!body.to_string().contains(&owner.order));
-                    assert_eq!(w.snapshot(),before,"foreign lookup mutated payment state");
-                    assert!(w.store.lock().get_all_payments(&OrderId::new(&foreign.order)).unwrap().is_empty());
-                }
-            }
-        });
-    }
-}
-
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {
     crate::property_support::persist(
         config,
@@ -618,4 +419,207 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/http/authorization_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn permission_matrix_rejects_credentials_without_data_or_writes(route in 0usize..24,engine_kind in 0u8..5,credential in 0u8..8,noise in "[ -~]{0,128}",worker in any::<bool>()) {
+            runtime().block_on(async {
+                let mut w=World::new(3,worker).await;
+                w.rotate(0).await;
+                w.disable(2).await;
+                let catalog=routes(&w.principals[0]);
+                let route=&catalog[route];
+                let engine=match engine_kind {0=>None,1=>Some("wrong-engine"),2=>Some(w.principals[0].secret.as_str()),3=>Some(w.principals[0].public.as_str()),_=>Some(TEST_ENGINE_TOKEN)};
+                // Global routes need only the engine capability. Supply an invalid
+                // engine there rather than inventing a tenant requirement.
+                let engine=if !route.tenant && engine==Some(TEST_ENGINE_TOKEN) {Some("wrong-engine")} else {engine};
+                let auth=w.invalid_auth(credential,&noise);
+                denied(&w,route,engine,auth.as_deref(),&serde_json::json!({"tenant_id":w.principals[1].id,"xmr_amount_piconero":1,"refund_address":"forbidden"})).await;
+                let good=w.send("GET","/api/v1/admin/tenant",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[0].secret)),&serde_json::json!({})).await;
+                assert_eq!(good.status(),StatusCode::OK,"rejections damaged valid authentication");
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn tenant_ownership_and_revocation_histories(count in 2usize..5,worker in any::<bool>(),events in prop::collection::vec((0u8..5,0usize..4,0usize..4,any::<bool>(),0u8..4),1..33)) {
+            runtime().block_on(ownership_history(count,worker,events));
+        }
+        #[test]
+        fn cross_tenant_refund_writes_are_atomic(actor in 0usize..4,count in 2usize..5,worker in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(count,worker).await;
+                let actor=actor%count;let target=(actor+1)%count;
+                let before=w.snapshot();
+                let uri=format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[target].order);
+                let response=w.send("POST",&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[actor].secret)),&serde_json::json!({"refund_address":"forbidden","tenant_id":w.principals[target].id})).await;
+                assert_eq!(response.status(),StatusCode::NOT_FOUND);assert_eq!(w.snapshot(),before);
+                let response=w.send("POST",&uri,Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[target].secret)),&serde_json::json!({"refund_address":"owner"})).await;
+                assert_eq!(response.status(),StatusCode::OK,"owner must retain legitimate access");
+            });
+        }
+        #[test]
+        fn body_identity_cannot_steer_own_tenant_operations(count in 2usize..5,actor in 0usize..4,amount in 1u64..10000,worker in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(count,worker).await;
+                let actor=actor%count;let target=(actor+1)%count;
+                let response=w.send("POST","/api/v1/admin/tenant/orders",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[actor].secret)),&serde_json::json!({"xmr_amount_piconero":amount,"tenant_id":w.principals[target].id,"public_key":w.principals[target].public})).await;
+                assert_eq!(response.status(),StatusCode::OK);
+                let id=OrderId::new(body_json(response).await["order_id"].as_str().unwrap());
+                let store=w.store.lock();
+                assert!(store.get_order(&w.principals[actor].id,&id).unwrap().is_some());
+                assert!(store.get_order(&w.principals[target].id,&id).unwrap().is_none());
+                for (i,p) in w.principals.iter().enumerate() {assert_eq!(store.list_orders(&p.id,None,1000,None).unwrap().len(),1+usize::from(i==actor));}
+            });
+        }
+        #[test]
+        fn concurrent_rejections_leave_no_writes_or_stream_slot_leaks(callers in 2usize..33,events in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(2,true).await;
+                let before=w.snapshot();
+                let jobs=(0..callers).map(async |i| {
+                    if events {w.send("GET","/api/v1/admin/tenant/events",Some(TEST_ENGINE_TOKEN),Some("Bearer invalid"),&serde_json::json!({})).await}
+                    else {w.send("POST",&format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[0].order),Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[1].secret)),&serde_json::json!({"refund_address":format!("forbidden-{i}")})).await}
+                });
+                for response in futures_util::future::join_all(jobs).await {assert_eq!(response.status(),if events {StatusCode::UNAUTHORIZED} else {StatusCode::NOT_FOUND});}
+                assert_eq!(w.snapshot(),before);
+                for _ in 0..2 {
+                    let response=w.send("GET","/api/v1/admin/tenant/events",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[0].secret)),&serde_json::json!({})).await;
+                    assert_eq!(response.status(),StatusCode::OK);drop(response);
+                }
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn repeated_headers_bind_only_the_first_presented_capability(actor in 0usize..4,count in 2usize..5,engine_first_valid in any::<bool>(),bearer_first_valid in any::<bool>(),worker in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(count,worker).await;
+                let actor=actor%count;
+                let other=(actor+1)%count;
+                let first_engine=if engine_first_valid {TEST_ENGINE_TOKEN} else {"invalid-engine"};
+                let second_engine=if engine_first_valid {"invalid-engine"} else {TEST_ENGINE_TOKEN};
+                let first_auth=if bearer_first_valid {format!("Bearer {}",w.principals[actor].secret)} else {"Basic invalid".into()};
+                let before=w.snapshot();
+                let mut request=json_request("GET","/api/v1/admin/tenant/orders",None,&serde_json::json!({}));
+                request.headers_mut().append(shared::auth::ENGINE_TOKEN_HEADER,first_engine.parse().unwrap());
+                request.headers_mut().append(shared::auth::ENGINE_TOKEN_HEADER,second_engine.parse().unwrap());
+                request.headers_mut().append("authorization",first_auth.parse().unwrap());
+                request.headers_mut().append("authorization",format!("Bearer {}",w.principals[other].secret).parse().unwrap());
+                let response=tokio::time::timeout(std::time::Duration::from_secs(5),w.router.clone().oneshot(request)).await.unwrap().unwrap();
+                if engine_first_valid && bearer_first_valid {
+                    assert_eq!(response.status(),StatusCode::OK);
+                    let body=body_json(response).await;
+                    assert_eq!(body.as_array().unwrap().len(),1);
+                    assert_eq!(body[0]["order_id"],w.principals[actor].order);
+                } else {assert_eq!(response.status(),StatusCode::UNAUTHORIZED);}
+                assert_eq!(w.snapshot(),before);
+            });
+        }
+        #[test]
+        fn bearer_syntax_cannot_expand_tenant_authority(kind in 0u8..8,worker in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(2,worker).await;
+                let secret=&w.principals[0].secret;
+                let malformed=match kind {
+                    0=>format!("bearer {secret}"),
+                    1=>format!("BEARER {secret}"),
+                    2=>format!("Bearer  {secret}"),
+                    3=>format!("Bearer\t{secret}"),
+                    4=>format!("Bearer {secret} "),
+                    5=>format!("Bearer {secret}, Bearer {}",w.principals[1].secret),
+                    6=>format!("Bearer{secret}"),
+                    _=>"Bearer ".into(),
+                };
+                denied(&w,&routes(&w.principals[0])[5],Some(TEST_ENGINE_TOKEN),Some(&malformed),&serde_json::json!({})).await;
+            });
+        }
+        #[test]
+        fn lists_and_live_events_expose_only_the_authenticated_tenant(count in 2usize..5,actor in 0usize..4,foreign_writes in 1usize..13,worker in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(count,worker).await;
+                let actor=actor%count;
+                let other=(actor+1)%count;
+                let auth=format!("Bearer {}",w.principals[actor].secret);
+                {
+                    let response=w.send("GET","/api/v1/admin/tenant/orders",Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({"tenant_id":w.principals[other].id})).await;
+                    assert_eq!(response.status(),StatusCode::OK);
+                    let body=body_json(response).await;
+                    assert_eq!(body.as_array().unwrap().len(),1);
+                    assert_eq!(body[0]["order_id"],w.principals[actor].order.as_str());
+                }
+                for (uri,expected) in [
+                    (format!("/api/v1/admin/tenant/orders?ids={},{}",w.principals[other].order,w.principals[actor].order),Some(w.principals[actor].order.as_str())),
+                    (format!("/api/v1/admin/tenant/orders?search={}",w.principals[other].order),None),
+                ] {
+                    let response=w.send("GET",&uri,Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({})).await;
+                    assert_eq!(response.status(),StatusCode::OK);
+                    let body=body_json(response).await;
+                    assert_eq!(body.as_array().unwrap().len(),usize::from(expected.is_some()));
+                    if let Some(expected)=expected {assert_eq!(body[0]["order_id"],expected);}
+                }
+                let response=w.send("GET","/api/v1/admin/tenant/events",Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({})).await;
+                assert_eq!(response.status(),StatusCode::OK);
+                let mut body=response.into_body();let mut buffer=String::new();
+                assert_eq!(next_sse_event(&mut body,&mut buffer).await.0,"ready");
+                for i in 0..foreign_writes {
+                    let response=w.send("POST",&format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[other].order),Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",w.principals[other].secret)),&serde_json::json!({"refund_address":format!("foreign-{i}")})).await;
+                    assert_eq!(response.status(),StatusCode::OK);
+                }
+                let response=w.send("POST",&format!("/api/v1/admin/tenant/orders/{}/refund-address",w.principals[actor].order),Some(TEST_ENGINE_TOKEN),Some(&auth),&serde_json::json!({"refund_address":"owner-barrier"})).await;
+                assert_eq!(response.status(),StatusCode::OK);
+                let (event,data)=next_sse_event(&mut body,&mut buffer).await;
+                assert_eq!(event,"order");
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&data).unwrap()["order_id"],w.principals[actor].order);
+                // A positive owner event after the foreign writes makes a missing
+                // or broken stream fail instead of passing a silence-only check.
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn payment_lookup_cannot_read_or_credit_another_tenants_outputs(count in 2usize..5,foreign in 1usize..4,repeats in 1usize..5,worker in any::<bool>()) {
+            use monero::cryptonote::hash::Hashable as _;
+            runtime().block_on(async {
+                let (node_state,daemon)=test_app_state_with_real_daemon().await;
+                let w=World::with_network(count,worker,Some(node_state)).await;
+                let foreign=1+(foreign-1)%(count-1);
+                let tx=fixture_tx_for_lookup_tests();
+                let txid=hex::encode(tx.hash().to_bytes());
+                daemon.set_mempool(vec![tx]);
+                let owner=&w.principals[0];
+                let foreign=&w.principals[foreign];
+                for owner_has_looked_up in [false,true] {
+                    if owner_has_looked_up {
+                        let response=w.send("POST","/api/v1/admin/tenant/payments/lookup",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",owner.secret)),&serde_json::json!({"txid":txid})).await;
+                        assert_eq!(response.status(),StatusCode::OK);
+                        let body=body_json(response).await;
+                        assert_eq!(body["outcome"],"matched");
+                        assert_eq!(body["order_ids"],serde_json::json!([owner.order]));
+                        assert_eq!(w.store.lock().get_all_payments(&OrderId::new(&owner.order)).unwrap().len(),1);
+                    }
+                    let before=w.snapshot();
+                    for _ in 0..repeats {
+                        let response=w.send("POST","/api/v1/admin/tenant/payments/lookup",Some(TEST_ENGINE_TOKEN),Some(&format!("Bearer {}",foreign.secret)),&serde_json::json!({"txid":txid,"tenant_id":owner.id,"order_id":owner.order,"public_key":owner.public})).await;
+                        assert_eq!(response.status(),StatusCode::OK);
+                        let body=body_json(response).await;
+                        assert_eq!(body["outcome"],"no_matching_order");
+                        assert!(!body.to_string().contains(&owner.order));
+                        assert_eq!(w.snapshot(),before,"foreign lookup mutated payment state");
+                        assert!(w.store.lock().get_all_payments(&OrderId::new(&foreign.order)).unwrap().is_empty());
+                    }
+                }
+            });
+        }
+    }
 }

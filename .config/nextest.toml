@@ -85,9 +85,9 @@ slow-timeout = { period = "300s", terminate-after = 12 }
 # in name order), so a run does not end waiting on a 20-30s property that
 # started last. Only the order changes; every test still runs.
 [[profile.default.overrides]]
-filter = 'test(/^work::tests::properties::money::(nodes|expansions)::/) | test(/^proof::tests::properties::/) | test(/every_recorded_ringct_variant/) | test(/^work::tests::every_sql_failure_while_a_payment_confirms/) | test(/^work::mempool::properties::scale::/)'
+filter = 'test(/^work::tests::boundaries::money::(nodes|expansions)::properties::/) | test(/^proof::tests::boundaries::properties::/) | test(/every_recorded_ringct_variant/) | test(/^work::tests::every_sql_failure_while_a_payment_confirms/) | test(/^work::mempool::boundaries::scale::/)'
 priority = 100
 
 [[profile.default.overrides]]
-filter = 'test(/properties/) | test(/every_sql_failure/) | test(/scale/)'
+filter = 'test(/properties/) | test(/boundaries/) | test(/every_sql_failure/) | test(/scale/)'
 priority = 50
