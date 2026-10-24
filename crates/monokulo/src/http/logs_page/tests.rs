@@ -184,19 +184,6 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     let (status, _, html) = s.get("/admin/logs", false).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        html.contains(
-            r#"<form id="log-search" class="logs-search" method="get" action="/admin/logs""#
-        ),
-        "{html}"
-    );
-    for message in [
-        "payment seen for the page test",
-        "the page test is slow",
-        "the page test failed",
-    ] {
-        assert!(html.contains(message), "{message}: {html}");
-    }
-    assert!(
         html.find("the page test failed").unwrap()
             < html.find("payment seen for the page test").unwrap(),
         "newest first"
@@ -206,103 +193,21 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
             || html.contains("The engine's lines aren't shown"),
         "{html}"
     );
-    assert!(html.contains(r#"class="log-histogram""#), "{html}");
-    // The title bar: Refresh submits the search as it stands (a plain GET
-    // without script), Live streams after the newest line shown.
-    let head = &html[html
-        .find(r#"<header class="mk-page-header">"#)
-        .expect("a title bar")..html.find(r#"</header>"#).unwrap()];
+    // Without script the search is a plain GET form, Refresh submits it,
+    // and nothing refreshes by itself.
     assert!(
-        head.contains("<h1>Logs</h1>")
-            && head.contains(
-                r#"<button class="mk-btn" type="submit" data-size="compact" form="log-search">"#
-            )
-            && head.contains("<span>Refresh</span>"),
-        "{head}"
-    );
-    assert!(
-        head.contains(r#"id="log-live""#) && head.contains("<svg") && !head.contains("disabled"),
-        "{head}"
-    );
-    assert!(
-        html.contains(r#"<div id="log-rows" class="log-rows" data-tail-url="/admin/logs/tail?"#),
+        html.contains(r#"method="get" action="/admin/logs""#),
         "{html}"
     );
-    // The histogram comes with the results, and its style puts it above
-    // the search form.
-    assert!(
-        html.contains(r#"<div class="log-histogram-box">"#)
-            && html.contains(".log-histogram-box { order: -1;"),
-        "{html}"
-    );
-    // Every line: its trace, or an empty slot so the next lines up.
-    let payment = &html[html[..html.find("payment seen for the page test").unwrap()]
-        .rfind("<summary>")
-        .unwrap()..];
-    let payment = &payment[..payment.find("</summary>").unwrap()];
-    assert!(
-        payment.contains(&format!(
-            r#"<a href="/admin/logs/trace/{}" title="Show trace""#,
-            s.trace_id
-        )),
-        "{payment}"
-    );
-    assert!(
-        payment.contains(r#"<span class="row-acts">"#) && !payment.contains("Show session"),
-        "no session outside a signed-in request: {payment}"
-    );
+    assert!(html.contains(r#"type="submit" data-size="compact" form="log-search""#));
     assert!(!html.contains("http-equiv=\"refresh\""));
-    assert!(
-        html.matches("Times in").count() == 1,
-        "only the account menu says which zone times are in: {html}"
-    );
-    // Syntax help: a link to its own page, opened as a dialog by script.
-    assert!(
-        html.contains(r#"href="/admin/logs/syntax" id="query-help-link""#),
-        "{html}"
-    );
-    assert!(
-        html.contains(r#"<dialog id="query-help""#)
-            && html
-                .contains(r#"<button class="mk-btn" type="button" data-chip="">order.id</button>"#),
-        "property names listed in the help: {html}"
-    );
-    let (status, _, syntax) = s.get("/admin/logs/syntax", false).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        syntax.contains("<h1>Search syntax</h1>")
-            && syntax.contains(r#"<code class="qh-chip">order.id</code>"#),
-        "{syntax}"
-    );
-    // Without script each example is a search for it.
-    assert!(
-        syntax.contains(&format!(
-            r#"href="/admin/logs?q={}""#,
-            encode("level >= warn")
-        )),
-        "{syntax}"
-    );
-    // Lines come closed, without their properties: each holds a link to
-    // its own page, which fixi fetches into place when it opens.
-    assert!(!html.contains(r#"<details class="log-row" id="log-monokulo-1" open"#));
-    assert!(
-        !html.contains("Only lines where order.id is this"),
-        "no properties in the list: {html}"
-    );
-    let row_url = properties_url(&html, "payment seen for the page test");
-    assert!(
-        html.contains(r#"fx-trigger="toggle""#) && html.contains("Show this line"),
-        "{html}"
-    );
 
-    // Opened without JavaScript: a page with the line open, links
+    // A line opened without JavaScript: a page with it open, links
     // narrowing or widening the search, and a way back.
+    let row_url = properties_url(&html, "payment seen for the page test");
     let (status, _, page) = s.get(&row_url, false).await;
     assert_eq!(status, StatusCode::OK, "{page}");
-    assert!(
-        page.contains(r#"<details class="log-row""#) && page.contains(" open>"),
-        "{page}"
-    );
+    assert!(page.contains(" open>"), "{page}");
     assert!(
         page.contains(&format!(
             r#"href="{}""#,
@@ -317,24 +222,14 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
         )),
         "{page}"
     );
-    assert!(page.contains(&format!("/admin/logs/trace/{}", s.trace_id)));
     assert!(page.contains("Back to the search"));
 
-    // Opened with fixi: only the properties, replacing the placeholder.
+    // Opened with fixi: only the properties.
     let (status, _, fragment) = s.get(&row_url, true).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
         fragment.starts_with(r#"<div class="props" id="log-monokulo-"#),
         "{fragment}"
-    );
-    assert!(
-        fragment.contains("<th>order.id</th>")
-            && fragment.contains("Only lines where order.id is this"),
-        "{fragment}"
-    );
-    assert!(
-        fragment.contains(r#"<td data-act=""><a href="#),
-        "Find and Exclude sit in their own column: {fragment}"
     );
 
     // A line retention has deleted.

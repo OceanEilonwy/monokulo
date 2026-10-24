@@ -469,27 +469,28 @@ async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_g
         html.contains("Invalid email or password"),
         "expected a generic login error, got: {html}"
     );
-}
 
-#[tokio::test]
-async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wrong_password() {
-    let router = test_router();
-    let response = router
-        .oneshot(form_request(
-            "/login",
-            &[
-                ("email", "nobody-has-this-account@example.com"),
-                ("password", "whatever"),
-            ],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-    assert!(
-        html.contains("Invalid email or password"),
-        "expected the same generic login error, got: {html}"
-    );
+    // An unknown email at dashboard login gets the same generic error as a
+    // wrong password.
+    {
+        let router = test_router();
+        let response = router
+            .oneshot(form_request(
+                "/login",
+                &[
+                    ("email", "nobody-has-this-account@example.com"),
+                    ("password", "whatever"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("Invalid email or password"),
+            "expected the same generic login error, got: {html}"
+        );
+    }
 }
 
 // -- Setting up a store (`/setup`) -----------------------------------------
