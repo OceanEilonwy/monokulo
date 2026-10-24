@@ -124,11 +124,25 @@ Scope: every Rust crate except the engine. Tests run with
 - live-settings: 1038 deleted. cli-wallet: 985 deleted (the prompt highlighter loses its only
   test; a dev tool, research 14). −2.
 
+### 9. F6 mock-woocommerce (research 12)
+- 1078 (order creation and its checkout link), 1079 (working credentials, the engine knowing the
+  key, the webhook registered at the receiver) and 1076 (the CLI flow registers no webhook) fold
+  into 1080, the full checkout. 1075 folds into 1081: after the real delivery, the receiver refuses
+  a wrongly signed and an unsigned request and records nothing, so a mock that took anything would
+  fail. 1073 and 1074 (the mock's own receiver) deleted; 1072 was already gone upstream.
+- 9 → 3 tests (each spawned an engine and monokulo). Wall 1.44 s → 1.92 s: the three left run
+  longer each, the serial time falls.
+
 ## Decisions
 - 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
   pages keep what was typed through three different view models (`shown`, a field's
   `value`/`saved_value`, the posted `sent` list), and 1826 alone pins "partly saved" against
   "nothing saved". One test across the three would need their private fixtures made crate-wide.
+
+- Q7: `shared::dns::Resolver::with_addresses` is already `#[cfg(test)]` upstream (7befca7a7),
+  which is stricter than `test-support`, and nothing outside `shared`'s own tests calls it. Left
+  as it is; widening it to `any(test, feature = "test-support")` would only make it reachable from
+  more builds.
 
 ## Deviations from the plan
 

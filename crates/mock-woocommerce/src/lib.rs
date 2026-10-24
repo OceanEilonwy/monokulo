@@ -1195,148 +1195,8 @@ mod tests {
             .collect()
     }
 
-    #[tokio::test]
-    async fn run_connect_flow_against_a_real_engine_and_monokulo_yields_genuine_working_credentials(
-    ) {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(&engine).await;
-        let monokulo_base_url = format!("http://{}", monokulo.addr);
-
-        let credentials = run_connect_flow(&monokulo_base_url).await.expect(
-            "the connect flow should succeed end to end against a real engine and monokulo",
-        );
-
-        assert!(
-            credentials.public_key.starts_with("pk_"),
-            "expected a real pk_ value, got: {}",
-            credentials.public_key
-        );
-        assert!(
-            credentials.secret_token.starts_with("sk_"),
-            "expected a real sk_ value, got: {}",
-            credentials.secret_token
-        );
-        assert_eq!(
-            credentials.api, "/api/v1",
-            "plugins get the API's path on the address they connected at, never the engine's"
-        );
-        assert_eq!(credentials.monokulo_url, monokulo_base_url);
-        assert_eq!(credentials.api_url(), format!("{monokulo_base_url}/api/v1"));
-
-        // Strong proof, not just "starts with sk_": the returned
-        // secret_token is genuinely this tenant's working credential against
-        // the real spawned engine - same pattern used throughout this
-        // workspace's other connect-flow/connection tests.
-        let engine_client =
-            monokulo::engine_client::EngineClient::embedded_for_tests(engine.router());
-        let tenant_view = engine_client
-            .get_tenant(&shared::auth::RawToken::presented(&credentials.secret_token))
-            .await
-            .expect(
-            "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
-        );
-        assert_eq!(tenant_view.public_key, credentials.public_key);
-
-        // The flow registers a real webhook at this driver's own receiver -
-        // not just a plausibly-shaped secret in the response.
-        assert!(!credentials.webhook_signing_secret.is_empty());
-        let webhooks = monokulo.webhooks(&credentials.public_key);
-        assert_eq!(webhooks.len(), 1);
-        assert_eq!(
-            webhooks[0].url,
-            format!(
-                "http://{}/monokulo/webhook",
-                credentials.webhook_receiver.addr
-            )
-        );
-        assert!(
-            credentials.webhook_receiver.events().is_empty(),
-            "no event has been delivered yet"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_flow_without_a_webhook_registers_none() {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(&engine).await;
-        let monokulo_base_url = format!("http://{}", monokulo.addr);
-
-        let credentials = run_connect_flow_without_webhook(&monokulo_base_url)
-            .await
-            .unwrap();
-        let webhooks = monokulo.webhooks(&credentials.public_key);
-        assert!(
-            webhooks.is_empty(),
-            "the CLI exits after printing, so nothing could receive deliveries"
-        );
-    }
-
     /// XMR needs no exchange rate provider at all.
     const TEST_CURRENCY: &str = "XMR";
-
-    /// Runs the full connect flow to get real, working credentials against
-    /// a real engine, then calls
-    /// [`create_order`] against that same engine with those credentials -
-    /// proving order creation is genuinely wired to the real public API, not
-    /// just plausibly shaped. The final assertion fetches the returned
-    /// `checkout_url` directly with a plain `reqwest::get` (standing in for
-    /// the customer's browser being redirected there) and confirms it's a
-    /// real, working checkout page, not just a well-formed string. Priced in
-    /// `"XMR"` - needs no exchange rate provider configured at all
-    /// (`spawn_test_monokulo`'s `xmr_only()`), unlike a fiat currency.
-    #[tokio::test]
-    async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let monokulo = spawn_test_monokulo(&engine).await;
-        let monokulo_base_url = format!("http://{}", monokulo.addr);
-
-        let credentials = run_connect_flow(&monokulo_base_url).await.expect(
-            "the connect flow should succeed end to end against a real engine and monokulo",
-        );
-        assert_eq!(
-            credentials.api, "/api/v1",
-            "plugins get the API's path on the address they connected at, never the engine's"
-        );
-
-        let order = create_order(
-            &credentials.api_url(),
-            &credentials.secret_token,
-            "10.00",
-            TEST_CURRENCY,
-        )
-        .await
-        .expect("order creation should succeed against a real monokulo with a configured rate");
-
-        assert!(!order.order_id.is_empty(), "expected a non-empty order_id");
-        assert_eq!(
-            order.checkout_url,
-            format!("{monokulo_base_url}/checkout/{}", order.order_id),
-            "checkout_url is the order's mk:checkout link, resolved against where the plugin called"
-        );
-        assert_eq!(
-            order.order_url,
-            format!("{monokulo_base_url}/api/v1/orders/{}", order.order_id)
-        );
-
-        // Strong proof, not just a plausibly-shaped URL: actually fetch it,
-        // the same way a customer's browser would be redirected there next,
-        // and confirm it's a genuine, working checkout page.
-        let checkout_response = reqwest::get(&order.checkout_url)
-            .await
-            .expect("fetching the checkout_url should succeed");
-        assert_eq!(checkout_response.status(), reqwest::StatusCode::OK);
-        let body = checkout_response
-            .text()
-            .await
-            .expect("checkout page response should have a body");
-        assert!(
-            body.contains("<html"),
-            "expected the checkout page to be real HTML, got: {body}"
-        );
-    }
 
     /// The load-bearing nonce-mismatch proof: a raw HTTP call bypassing
     /// the flow's own logic entirely - simulating a substituted or
@@ -1486,126 +1346,6 @@ mod tests {
         );
     }
 
-    // --- The webhook receiver ---------------------------------------------------
-
-    /// Directly sets a spawned [`WebhookReceiver`]'s `signing_secret` - same-module
-    /// access to the private `state` field, standing in for what
-    /// `callback_handler` does once `/finish` returns a real one.
-    fn set_receiver_signing_secret(receiver: &WebhookReceiver, secret: &str) {
-        receiver.state.lock().signing_secret = Some(secret.to_string());
-    }
-
-    #[tokio::test]
-    async fn webhook_receiver_records_a_validly_signed_delivery_and_dedupes_a_retried_event_id() {
-        let receiver = spawn_webhook_receiver().await.unwrap();
-        let secret = "whsec_receiver_test";
-        set_receiver_signing_secret(&receiver, secret);
-
-        let payload = serde_json::json!({
-            "event": "order.expired",
-            "event_id": "evt_dedupe_test",
-            "created_at": 1_700_000_000,
-            "order_id": "pay_dedupe_test",
-            "status": "expired",
-        });
-        let body = payload.to_string();
-        let signature =
-            shared::webhook_sign::sign_payload(secret, shared::time::now_unix(), body.as_bytes());
-
-        let client = reqwest::Client::new();
-        let url = format!("http://{}/monokulo/webhook", receiver.addr);
-
-        // A real delivery, then its retry (delivery is at least once) - the
-        // exact same body and signature both times.
-        for _ in 0..2 {
-            let response = client
-                .post(&url)
-                .header("X-Monokulo-Signature", &signature)
-                .body(body.clone())
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), reqwest::StatusCode::OK);
-        }
-
-        let events = receiver.events();
-        assert_eq!(
-            events.len(),
-            1,
-            "the retried event_id must not be recorded twice"
-        );
-        assert_eq!(events[0].event, "order.expired");
-        assert_eq!(events[0].event_id, "evt_dedupe_test");
-        assert_eq!(
-            events[0].payload["order_id"],
-            serde_json::json!("pay_dedupe_test")
-        );
-    }
-
-    #[tokio::test]
-    async fn webhook_receiver_rejects_an_invalid_signature_and_records_nothing() {
-        let receiver = spawn_webhook_receiver().await.unwrap();
-        set_receiver_signing_secret(&receiver, "whsec_receiver_test");
-
-        let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_should_never_be_recorded" }).to_string();
-        let client = reqwest::Client::new();
-        let url = format!("http://{}/monokulo/webhook", receiver.addr);
-
-        // Wrong secret entirely - genuinely invalid, not just a near miss.
-        let wrong_signature = shared::webhook_sign::sign_payload(
-            "not-the-real-secret",
-            shared::time::now_unix(),
-            body.as_bytes(),
-        );
-        let rejected = client
-            .post(&url)
-            .header("X-Monokulo-Signature", &wrong_signature)
-            .body(body.clone())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
-
-        // No signature header at all.
-        let missing_header = client.post(&url).body(body.clone()).send().await.unwrap();
-        assert_eq!(missing_header.status(), reqwest::StatusCode::UNAUTHORIZED);
-
-        assert!(
-            receiver.events().is_empty(),
-            "an unverified request must never be recorded"
-        );
-    }
-
-    #[tokio::test]
-    async fn webhook_receiver_rejects_everything_before_its_signing_secret_is_known() {
-        // No `set_receiver_signing_secret` call - mirrors the real window between
-        // this receiver being spawned (so its URL exists to hand to `/finish`) and
-        // `/finish` actually returning a `signing_secret` for `callback_handler` to
-        // set. There is nothing correct to verify against in that window, so
-        // everything must be rejected, not merely unverified-and-accepted.
-        let receiver = spawn_webhook_receiver().await.unwrap();
-        let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_too_early" })
-            .to_string();
-        // Signed with a secret this receiver could not possibly know yet - the
-        // point is that even a "plausible" signature is rejected before the real
-        // secret exists to check it against.
-        let signature = shared::webhook_sign::sign_payload(
-            "whsec_guessed_early",
-            shared::time::now_unix(),
-            body.as_bytes(),
-        );
-
-        let response = reqwest::Client::new()
-            .post(format!("http://{}/monokulo/webhook", receiver.addr))
-            .header("X-Monokulo-Signature", &signature)
-            .body(body)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
-        assert!(receiver.events().is_empty());
-    }
-
     // --- A genuine, forced end-to-end delivery ---------------------------------
 
     /// The centerpiece test: forces a *real* webhook delivery - a live outbound HTTP
@@ -1705,14 +1445,43 @@ mod tests {
             &event.signature,
             shared::time::now_unix()
         ));
+
+        // And the receiver itself refuses what isn't signed with that
+        // secret, recording nothing: a receiver that took anything would
+        // make "delivered and verified" mean nothing.
+        let recorded = credentials.webhook_receiver.events().len();
+        let url = format!(
+            "http://{}/monokulo/webhook",
+            credentials.webhook_receiver.addr
+        );
+        let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_should_never_be_recorded" }).to_string();
+        let client = reqwest::Client::new();
+        let wrong_signature = shared::webhook_sign::sign_payload(
+            "not-the-real-secret",
+            shared::time::now_unix(),
+            body.as_bytes(),
+        );
+        let rejected = client
+            .post(&url)
+            .header("X-Monokulo-Signature", &wrong_signature)
+            .body(body.clone())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
+        let missing_header = client.post(&url).body(body).send().await.unwrap();
+        assert_eq!(missing_header.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(credentials.webhook_receiver.events().len(), recorded);
     }
 
     /// The whole WooCommerce checkout, end to end, with no stagenet: the
-    /// plugin connects (and gets monokulo's address, not the engine's),
-    /// creates an order on monokulo with the store's secret key, the
-    /// customer's browser opens monokulo's checkout page, the order is paid
-    /// on the test engine, and the plugin receives the signed `order.paid`
-    /// webhook from monokulo. Also checks a wrong key is refused.
+    /// plugin connects (and gets monokulo's address, not the engine's, and
+    /// a key that really is the store's on the engine), registers its
+    /// webhook, creates an order on monokulo with the store's secret key,
+    /// the customer's browser opens monokulo's checkout page, the order is
+    /// paid on the test engine, and the plugin receives the signed
+    /// `order.paid` webhook from monokulo. Also checks a wrong key is
+    /// refused, and that the flow without a webhook registers none.
     #[tokio::test]
     async fn a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid() {
         let engine = engine_test_support::TestEngineConfig::new()
@@ -1725,7 +1494,47 @@ mod tests {
         let credentials = run_connect_flow(&monokulo_base_url)
             .await
             .expect("the connect flow should succeed");
-        assert_eq!(credentials.api, "/api/v1");
+        assert!(
+            credentials.public_key.starts_with("pk_"),
+            "{}",
+            credentials.public_key
+        );
+        assert!(
+            credentials.secret_token.starts_with("sk_"),
+            "{}",
+            credentials.secret_token
+        );
+        assert_eq!(
+            credentials.api, "/api/v1",
+            "plugins get the API's path on the address they connected at, never the engine's"
+        );
+        assert_eq!(credentials.monokulo_url, monokulo_base_url);
+        assert_eq!(credentials.api_url(), format!("{monokulo_base_url}/api/v1"));
+        // The secret token is the store's working credential on the engine.
+        let engine_client =
+            monokulo::engine_client::EngineClient::embedded_for_tests(engine.router());
+        let tenant_view = engine_client
+            .get_tenant(&shared::auth::RawToken::presented(
+                &credentials.secret_token,
+            ))
+            .await
+            .expect("the returned secret_token is the store's own");
+        assert_eq!(tenant_view.public_key, credentials.public_key);
+        // The flow registers a real webhook at this driver's own receiver.
+        assert!(!credentials.webhook_signing_secret.is_empty());
+        let webhooks = monokulo.webhooks(&credentials.public_key);
+        assert_eq!(webhooks.len(), 1);
+        assert_eq!(
+            webhooks[0].url,
+            format!(
+                "http://{}/monokulo/webhook",
+                credentials.webhook_receiver.addr
+            )
+        );
+        assert!(
+            credentials.webhook_receiver.events().is_empty(),
+            "no event has been delivered yet"
+        );
 
         // The plugin's order creation, with the key, against the API it was given.
         let order = create_order(
@@ -1739,7 +1548,12 @@ mod tests {
         assert_eq!(order.xmr_amount_piconero, 500_000_000_000);
         assert_eq!(
             order.checkout_url,
-            format!("{monokulo_base_url}/checkout/{}", order.order_id)
+            format!("{monokulo_base_url}/checkout/{}", order.order_id),
+            "checkout_url is the order's mk:checkout link, resolved against where the plugin called"
+        );
+        assert_eq!(
+            order.order_url,
+            format!("{monokulo_base_url}/api/v1/orders/{}", order.order_id)
         );
 
         // A wrong key is refused, not silently treated as a browser request.
@@ -1800,5 +1614,12 @@ mod tests {
             .await
             .expect("reading the order with the public key failed");
         assert_eq!(status["status"], "paid");
+
+        // Run as the CLI, which exits after printing, the flow registers no
+        // webhook: nothing could receive deliveries.
+        let credentials = run_connect_flow_without_webhook(&monokulo_base_url)
+            .await
+            .unwrap();
+        assert!(monokulo.webhooks(&credentials.public_key).is_empty());
     }
 }
