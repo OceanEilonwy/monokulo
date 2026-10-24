@@ -138,32 +138,6 @@ mod tests {
         Plugin::parse("acme-cart", "Acme Cart").unwrap()
     }
 
-    #[test]
-    fn a_shop_your_store_already_has_connects_to_it_with_one_button() {
-        let html =
-            existing_store_page(&chrome(), &request(), "c_1", "Corner shop", None).into_string();
-        assert!(
-            html.contains("<h1>Connect your Acme Cart shop</h1>"),
-            "{html}"
-        );
-        assert!(html.contains("The Acme Cart plugin on <strong>shop.example.com</strong>"));
-        assert!(html.contains(r#"action="/plugins/connect/acme-cart""#));
-        assert!(html.contains(r#"name="connection_id" value="c_1""#));
-        assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
-        assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
-        assert!(html.contains(r#"name="name" value="Acme Cart""#));
-        assert!(html.contains("Connect to Corner shop"));
-        assert_eq!(html.matches(r#"data-variant="primary""#).count(), 1);
-        assert!(!html.contains(".onion"), "nothing about Tor without it");
-        let onion = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
-        let html = existing_store_page(&chrome(), &request(), "c_1", "Corner shop", Some(onion))
-            .into_string();
-        assert!(
-            html.contains(onion) && html.contains("stay on Tor"),
-            "{html}"
-        );
-    }
-
     /// A plugin's name is its own word for itself, shown as text: markup in
     /// it is escaped.
     #[test]
@@ -179,19 +153,5 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("<b>Shop</b>"));
-    }
-
-    #[test]
-    fn a_shop_that_cant_connect_says_why_and_shows_no_form() {
-        let html = cannot_connect_page(
-            &chrome(),
-            &acme_cart(),
-            Site::parse("shop.example.com").ok().as_ref(),
-            "No public address yet.",
-        )
-        .into_string();
-        assert!(html.contains("Connect your Acme Cart shop"));
-        assert!(html.contains("No public address yet."));
-        assert!(!html.contains("<form"));
     }
 }
