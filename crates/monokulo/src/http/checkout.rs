@@ -1775,18 +1775,22 @@ mod tests {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/checkout/nonexistent")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let html = body_text(response).await;
-        assert!(html.to_lowercase().contains("not found"), "got: {html}");
+        // The checkout and the payment link that frames it.
+        for uri in ["/checkout/nonexistent", "/checkout/nonexistent/share"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+            let html = body_text(response).await;
+            assert!(html.to_lowercase().contains("not found"), "{uri}: {html}");
+        }
     }
 }
