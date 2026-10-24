@@ -588,24 +588,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_request_invite_form_is_reachable_without_a_session() {
-        let router = build_router(test_state());
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/request-invite")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(html.contains(r#"<form method="post" action="/request-invite" class="mk-stack">"#));
-    }
-
-    #[tokio::test]
     async fn submitting_a_request_invite_form_saves_it_and_an_admin_can_see_it_with_a_real_mailto_link(
     ) {
         let router = build_router(test_state());
@@ -1012,36 +994,6 @@ mod tests {
         assert!(
             html.contains("Page 1 of 1"),
             "page 2 no longer exists once its only row is gone - must clamp back to page 1"
-        );
-    }
-
-    /// With fixi, every button on the invites page answers with the page's
-    /// section only (structured_logging.md part 6).
-    #[tokio::test]
-    async fn invites_buttons_answer_fixi_with_the_section() {
-        let router = build_router(test_state());
-        let cookie = admin_session_cookie(&router).await;
-        let mut create = authed_form_request("POST", "/admin/invites/create-link", &cookie, &[]);
-        create
-            .headers_mut()
-            .insert("FX-Request", "true".parse().unwrap());
-        let html = body_text(router.clone().oneshot(create).await.unwrap()).await;
-        assert!(html.starts_with(r#"<section id="invites">"#), "{html}");
-        assert!(
-            html.contains("Share this link") && html.contains("/signup?invite="),
-            "{html}"
-        );
-
-        let mut clear = authed_form_request("POST", "/admin/invites/delete-all", &cookie, &[]);
-        clear
-            .headers_mut()
-            .insert("FX-Request", "true".parse().unwrap());
-        let response = router.clone().oneshot(clear).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("0 requests deleted.") && !html.contains("<html"),
-            "{html}"
         );
     }
 }

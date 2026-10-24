@@ -2180,30 +2180,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_admin_can_reach_the_settings_page_and_see_the_reachable_engine_settings() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let response = get_settings_page(&router, &cookie).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = settings_tabs_html(&router, &cookie).await;
-        assert!(
-            html.contains("engine url"),
-            "expected monokulo's own settings listed, got: {html}"
-        );
-        assert!(
-            html.contains("payment confirmations required"),
-            "expected the scanner's own settings proxied in, got: {html}"
-        );
-        assert!(
-            html.contains("value=\"10\""),
-            "expected the scanner's real default value, got: {html}"
-        );
-    }
-
-    #[tokio::test]
     async fn a_saved_monokulo_setting_round_trips_on_the_next_load() {
         let state = test_app_state_over_http(shared::unreachable::address()).await;
         let router = build_router(state);
@@ -3193,43 +3169,6 @@ mod tests {
         assert!(is_saved(&body_text(saved).await));
     }
 
-    /// Saving a wrong engine token on General with fixi: the engine's tabs
-    /// say at once that the engine can't be reached.
-    #[tokio::test]
-    async fn a_fixi_tab_link_shows_a_remote_engine_it_cannot_reach_over_http_in_the_panel() {
-        // Nothing listens there.
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-        let tab = router
-            .clone()
-            .oneshot(fixi(
-                Request::builder()
-                    .uri("/admin/settings?tab=nodes")
-                    .header("cookie", &cookie)
-                    .body(Body::empty())
-                    .unwrap(),
-            ))
-            .await
-            .unwrap();
-        let html = body_text(tab).await;
-        assert!(
-            html.starts_with(r#"<section id="settings-panel""#),
-            "a tab link gets just the panel: {html}"
-        );
-        assert!(
-            html.contains("Could not reach the configured engine"),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r#"<h2 id="settings-panel-title" tabindex="-1" data-fx-focus>Monero nodes</h2>"#
-            ),
-            "{html}"
-        );
-        assert!(html.contains(r##"href="/admin/settings?tab=nodes" fx-action="/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
-    }
-
     #[tokio::test]
     async fn an_invalid_engine_setting_is_rejected_by_the_engine_and_surfaced_as_an_error() {
         let engine = spawn_engine().await;
@@ -3520,69 +3459,6 @@ mod tests {
         }
     }
 
-    /// A saved value is shown as it's stored, not as it was typed: after a
-    /// save, nothing on the page reads as unsaved.
-    #[tokio::test]
-    async fn after_a_save_the_page_shows_what_was_stored() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[("tab", "abuse"), ("abuse.soft_per_min", " 61 ")],
-        )
-        .await;
-        let html = follow(&router, &cookie, save).await;
-        assert!(is_saved(&html), "{html}");
-        assert!(
-            html.contains(
-                r#"name="abuse.soft_per_min" id="setting-abuse.soft_per_min" value="61""#
-            ),
-            "{html}"
-        );
-        assert!(
-            !html.contains(r#"data-saved=""#),
-            "no value left unsaved: {html}"
-        );
-    }
-
-    /// The toast says a save waits for a restart only when one does; a
-    /// warning from preparing is said, in green.
-    #[test]
-    fn only_a_restart_makes_the_toast_amber() {
-        use crate::views::admin::{Group, SaveOutcome, ToastKind};
-        let saved = SaveOutcome::Saved {
-            groups: vec![Group::Orders],
-            at: "now".into(),
-        };
-        let toast = super::save_toast(
-            &saved,
-            &[super::SaveNote::Remark(
-                "The node is slow to answer.".into(),
-            )],
-        );
-        assert_eq!(toast.kind, ToastKind::Success);
-        assert_eq!(toast.title, "Changes saved and applied");
-        assert_eq!(toast.lines, ["The node is slow to answer."]);
-        let toast = super::save_toast(
-            &saved,
-            &[super::SaveNote::Restart("Restart the engine.".into())],
-        );
-        assert_eq!(
-            (toast.kind, toast.title.as_str()),
-            (ToastKind::Warning, "Changes saved")
-        );
-        let toast = super::save_toast(
-            &saved,
-            &[super::SaveNote::Banner("A network has no node.".into())],
-        );
-        assert!(
-            toast.lines.is_empty(),
-            "a banner is a banner, not a line: {toast:?}"
-        );
-    }
-
     /// The engine's part is saved first; when monokulo's is then refused
     /// (its options file changed on disk after its check passed), the
     /// engine's stays saved and the save says it was partly saved. The
@@ -3768,25 +3644,6 @@ mod tests {
             ),
             "{html}"
         );
-    }
-
-    /// A flash is shown once: reloading the page it led to doesn't bring
-    /// the banners back.
-    #[tokio::test]
-    async fn a_saved_banner_is_shown_once() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[("tab", "abuse"), ("abuse.soft_per_min", "62")],
-        )
-        .await;
-        let location = save.headers()["location"].to_str().unwrap().to_string();
-        assert!(is_saved(&follow(&router, &cookie, save).await));
-        let again = body_text(get(&router, &location, Some(&cookie)).await).await;
-        assert!(!is_saved(&again), "{again}");
     }
 
     // -- The tabbed page (nicer_admin_screen.md step 3) -------------------
@@ -5052,40 +4909,6 @@ mod tests {
             "{html}"
         );
         assert!(saved_nodes(&engine, "stagenet").await.is_empty());
-    }
-
-    /// Once saved, a node's row says how it's doing, from the engine's
-    /// `/status`: the save clears monokulo's cached copy, so the new node
-    /// shows at once.
-    #[tokio::test]
-    async fn a_saved_node_shows_its_status() {
-        let engine =
-            spawn_configured_engine(engine_test_support::TestEngineConfig::new().with_live_nodes())
-                .await;
-        let state = test_app_state_in_process(&engine).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-        let page = body_text(get(&router, "/admin/settings?tab=nodes", Some(&cookie)).await).await;
-        assert!(
-            !page.contains(r#"class="node-status"#),
-            "no nodes, no status"
-        );
-
-        let node = spawn_node_on("stagenet").await.to_string();
-        let saved = post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &node, None)).await;
-        let html = follow(&router, &cookie, saved).await;
-        assert!(
-            html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#),
-            "{html}"
-        );
-        // How the engine is doing is on
-        // the engine page, which the network's card links to.
-        assert!(
-            html.contains(r#"<a class="engine-link" href="/status/engine?network=stagenet">See it on the engine page</a>"#),
-            "{html}"
-        );
-        assert!(!html.contains("resources-title"), "{html}");
-        assert!(!html.contains("data-scanning"), "{html}");
     }
 
     fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {

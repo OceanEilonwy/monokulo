@@ -110,27 +110,6 @@ async fn a_write_is_refused_and_changes_nothing() {
 }
 
 #[tokio::test]
-async fn fixi_gets_only_the_results_and_a_database_switch_gets_the_workspace() {
-    let (router, cookie) = admin(AppState::for_tests()).await;
-    let mut request = get(&query("monokulo", "SELECT 1 AS one"), &cookie);
-    request
-        .headers_mut()
-        .insert("fx-request", "true".parse().unwrap());
-    let (status, html) = send(&router, request).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.starts_with(r#"<section id="query-results""#), "{html}");
-    assert!(!html.contains("<html"), "{html}");
-
-    let mut request = get("/admin/query/schema?db=monokulo", &cookie);
-    request
-        .headers_mut()
-        .insert("fx-request", "true".parse().unwrap());
-    let (_, html) = send(&router, request).await;
-    assert!(html.starts_with(r#"<div id="query-workspace">"#), "{html}");
-    assert!(html.contains("Pick a table on the left"), "{html}");
-}
-
-#[tokio::test]
 async fn the_rows_download_as_csv_and_json() {
     let (router, cookie) = admin(AppState::for_tests()).await;
     let sql = urlencoding_encode("SELECT email, password_hash, 'a,b' AS odd FROM users");

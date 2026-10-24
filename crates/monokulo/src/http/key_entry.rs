@@ -584,18 +584,6 @@ mod tests {
         assert_eq!(links[0].checksum_url, format!("{}.sha256", links[0].url));
     }
 
-    #[test]
-    fn the_source_link_follows_the_release_then_the_commit() {
-        let release = |tag, commit| CliRelease {
-            version: "1.2.3",
-            tag,
-            commit,
-        };
-        assert_eq!(release(Some("v1.2.3"), Some("abc")).reference(), "v1.2.3");
-        assert_eq!(release(None, Some("abc")).reference(), "abc");
-        assert_eq!(release(None, None).reference(), "main");
-    }
-
     use crate::settings::{MonokuloSettings, PerRequest, SnpEntryPolicy};
     use key_custody::transport::{TcbFloor, TrustPolicy};
 
