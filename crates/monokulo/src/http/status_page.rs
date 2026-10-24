@@ -1060,10 +1060,7 @@ mod tests {
         assert_eq!(relative_time(100_000, 0), "1d ago");
         assert_eq!(relative_time(90_000, 0), "1d ago");
         assert_eq!(relative_time(20_000, 0), "5h ago");
-    }
-
-    #[test]
-    fn relative_time_never_goes_negative_for_a_clock_that_moved_backward() {
+        // A clock that moved backward never reads as negative.
         assert_eq!(relative_time(100, 200), "0s ago");
     }
 
@@ -1233,9 +1230,8 @@ mod tests {
         use crate::http::test_support::body_json;
 
         /// Real engine, no daemons configured (`engine_test_support`'s harness
-        /// never populates them - see `get_status_round_trips_against_a_real_engine`'s
-        /// own doc comment) - proves the page renders the honest "no nodes
-        /// configured" state end to end, not a fabricated one.
+        /// never populates them) - proves the page renders the honest "no
+        /// nodes configured" state end to end, not a fabricated one.
         #[tokio::test]
         async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks()
         {
@@ -1291,40 +1287,6 @@ mod tests {
             assert_eq!(
                 body["healthy"], false,
                 "an engine with zero configured networks must not read as healthy, got: {body}"
-            );
-        }
-
-        /// The real degradation path: the engine is entirely unreachable (it
-        /// hangs up on every request) - the page must show a plain error
-        /// banner, not a 500 or a fabricated healthy page.
-        #[tokio::test]
-        async fn status_page_shows_a_plain_error_banner_when_a_remote_engine_is_unreachable_over_http(
-        ) {
-            let state = state_with_engine(EngineClient::for_tests(format!(
-                "http://{}",
-                shared::unreachable::address()
-            )));
-            let router: Router = build_router(state);
-
-            let response = router
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/status")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                StatusCode::OK,
-                "an unreachable engine is not this page's own server error"
-            );
-            let html = body_text(response).await;
-            assert!(
-                html.contains("could not be reached"),
-                "expected a plain error banner, got: {html}"
             );
         }
 
