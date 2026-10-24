@@ -38,6 +38,17 @@ Scope: every Rust crate except the engine. Tests run with
 - 1910 rewritten as a source guard, `views::tests::only_the_checkout_and_the_connection_check_refresh_themselves`:
   only `views/checkout.rs` and `views/challenge.rs` write a meta refresh outside their tests.
 
+### 2. F7 dead code
+- `test_whoami` and its `#[cfg(test)]` route are gone. The session tests use `GET /account`:
+  1700 is now `a_session_cookie_reaches_a_protected_page_as_the_right_user_and_a_bearer_does_not`
+  (the page names the user); 1709 and 1712 are one table, `a_protected_page_refuses_no_session_and_an_unknown_one`;
+  1715 folds into 1725 as `logging_in_sets_an_httponly_samesite_session_cookie_that_signs_the_user_in`,
+  keeping the `HttpOnly` and `SameSite=Lax` asserts; the logout test and the account tests'
+  `signed_in` helper ask `/account` too. −2 tests.
+- `XmrIdentityProvider::supported_currencies` removed with its test 2125. −1 test.
+- `telemetry::trace::current_trace_id` was already removed upstream (7befca7a7), and 2314 already
+  asserts through `trace::traceparent`. Nothing to do.
+
 ## Decisions
 
 ## Deviations from the plan
