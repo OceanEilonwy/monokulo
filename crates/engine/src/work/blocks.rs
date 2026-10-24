@@ -2298,7 +2298,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../tests/verification/work/blocks/properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod properties;
+mod boundaries;
 
 #[cfg(test)]
 #[path = "../../tests/verification/work/blocks/scale.rs"]

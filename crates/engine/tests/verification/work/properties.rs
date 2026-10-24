@@ -464,196 +464,6 @@ fn a_shorter_branch_reopens_a_settled_payment_below_the_fork() {
     });
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-
-    #[test]
-    fn scanner_histories_converge_after_reorgs_failures_and_restarts(
-        initial_depth in 1u8..13,
-        events in proptest::collection::vec(event(), 0..25),
-        final_destination in destination(),
-        final_offset in any::<u8>(),
-    ) {
-        runtime().block_on(async {
-            let mut harness = Harness::new().await;
-            harness.pool(true);
-            harness.check().await;
-            harness.mine(initial_depth, true);
-            harness.check().await;
-            for event in &events {
-                harness.apply(event).await;
-            }
-            // Every history includes a fork and a real connection restart,
-            // even if shrinking deletes the whole optional event vector.
-            harness.reorg(8, final_destination, final_offset);
-            harness.tick().await;
-            harness.restart();
-            harness.check().await;
-        });
-    }
-
-    #[test]
-    fn an_interrupted_block_replaced_by_a_fork_never_leaks_staged_payments(
-        extra_txs in 2u8..9,
-        stop_after in any::<u8>(),
-        replacement_pays in any::<bool>(),
-        restart_before_fork in any::<bool>(),
-    ) {
-        runtime().block_on(async {
-            let mut harness = Harness::new().await;
-            let mut txs = vec![fixture_tx()];
-            txs.extend((0..extra_txs).map(|i| unrelated_tx(100 + i)));
-            let height = harness.daemon.push_block("unfinished", txs);
-            harness.model.blocks.push(("unfinished".to_owned(), true));
-            let rounds = 1 + stop_after % extra_txs;
-            for _ in 0..rounds {
-                harness.tick().await.into_result().unwrap();
-                assert!(
-                    harness.snapshot().payments.is_empty(),
-                    "staged payment became visible"
-                );
-            }
-            let checkpoint = harness
-                .snapshot()
-                .checkpoint
-                .expect("scan didn't checkpoint");
-            assert_eq!(checkpoint.height, height);
-            assert!(checkpoint.next_tx > 0);
-            if restart_before_fork {
-                harness.restart();
-            }
-            harness.reorg(
-                1,
-                if replacement_pays {
-                    Destination::Block
-                } else {
-                    Destination::Gone
-                },
-                0,
-            );
-            harness.restart();
-            harness.recovered();
-            for _ in 0..8 {
-                harness.tick().await.into_result().unwrap();
-            }
-            let snapshot = harness.snapshot();
-            assert_eq!(snapshot.cursor, Some(height));
-            assert!(
-                snapshot.checkpoint.is_none(),
-                "stale checkpoint survived the fork"
-            );
-            assert_eq!(snapshot.payments.len(), usize::from(replacement_pays));
-            if replacement_pays {
-                assert_eq!(snapshot.payments[0].txid, tx_id_hex(&fixture_tx()));
-                assert_eq!(snapshot.payments[0].height, Some(height as i64));
-                assert_eq!(snapshot.status, OrderStatus::Confirming);
-            } else {
-                assert_eq!(snapshot.status, OrderStatus::Pending);
-            }
-        });
-    }
-
-    #[test]
-    fn reorg_jobs_survive_outages_and_restore_payments_when_evidence_changes(
-        mined_depth in 1u8..13,
-        destination in destination(),
-        spent_elsewhere in any::<bool>(),
-        offline_rounds in 1u8..5,
-        custody_rounds in 1u8..5,
-    ) {
-        runtime().block_on(async {
-            let mut harness = Harness::new().await;
-            harness.pool(true);
-            harness.check().await;
-            harness.mine(mined_depth, true);
-            harness.check().await;
-            // Fork below the payment, regardless of generated confirmation depth.
-            harness.reorg(mined_depth, destination, 0);
-            harness.evidence(spent_elsewhere);
-            harness.tick().await.into_result().unwrap();
-            assert!(
-                harness.snapshot().reorg.is_some(),
-                "no durable reorg to restart"
-            );
-            harness.restart();
-            harness.apply(&Event::NodeOnline(false)).await;
-            for _ in 0..offline_rounds {
-                assert!(
-                    harness.tick().await.error.is_some(),
-                    "offline node didn't fail"
-                );
-            }
-            harness.apply(&Event::NodeOnline(true)).await;
-            harness.apply(&Event::CustodyOnline(false)).await;
-            for _ in 0..custody_rounds {
-                harness.tick().await;
-            }
-            harness.restart();
-            harness.check().await;
-            // The original transaction returns after any accusation. Re-scan
-            // and revalidation must restore it, without creating another row.
-            harness.mine(1, true);
-            harness.restart();
-            harness.check().await;
-            assert_eq!(harness.snapshot().payments.len(), 1);
-            assert!(harness.snapshot().payments[0].voided_at.is_none());
-        });
-    }
-
-    #[test]
-    fn replacement_chains_of_different_lengths_recompute_payment_depth(
-        initial_depth in 1u8..13,
-        fork_depth in 1u8..13,
-        replacement_length in 1u8..13,
-        destination in destination(),
-        offset in any::<u8>(),
-    ) {
-        runtime().block_on(async {
-            let mut harness = Harness::new().await;
-            harness.pool(true);
-            harness.check().await;
-            harness.mine(initial_depth, true);
-            harness.check().await;
-            harness.replace_branch(
-                usize::from(fork_depth),
-                usize::from(replacement_length),
-                destination,
-                offset,
-            );
-            harness.tick().await.into_result().unwrap();
-            harness.restart();
-            harness.check().await;
-        });
-    }
-
-    #[test]
-    fn failing_tenants_do_not_starve_healthy_tenants_and_catch_up_after_restart(
-        tenant_count in 2usize..6,
-        failing_index in any::<usize>(),
-        blocks in 1u8..13,
-        group_page in 1usize..4,
-        restart_at in any::<usize>(),
-    ) {
-        runtime().block_on(async {
-            tenant_failure_history(
-                tenant_count,
-                Some(failing_index),
-                blocks,
-                group_page,
-                restart_at,
-            )
-            .await;
-        });
-    }
-}
-
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn coverage_guided_histories_recover_with_real_scanner(data in proptest::collection::vec(any::<u8>(),0..129)) {
-        crate::work::history::explore(&data);
-    }
-}
 #[test]
 fn reviewed_engine_history_seeds_replay() {
     for data in [
@@ -838,41 +648,68 @@ fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
     }
 }
 
+// Every recorded RingCT variant, split by worker and foreign outputs so
+// the six parts run side by side; each covers whole and pruned histories
+// and prints its own boundary hits.
 #[test]
-fn every_recorded_ringct_variant_runs_complete_money_histories() {
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_0() {
+    recorded_ringct_histories(0, 0);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_1() {
+    recorded_ringct_histories(0, 1);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_2() {
+    recorded_ringct_histories(0, 2);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_foreign_0() {
+    recorded_ringct_histories(1, 0);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_foreign_1() {
+    recorded_ringct_histories(1, 1);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_foreign_2() {
+    recorded_ringct_histories(1, 2);
+}
+
+fn recorded_ringct_histories(worker: u8, foreign: u8) {
     use crate::work::portfolio::scenario::reviewed::recorded;
     let mut hits = std::collections::BTreeMap::<String, u64>::new();
-    for worker in 0..=1 {
-        for pruned in [false, true] {
-            for foreign in 0..3 {
-                for goal in 0..3 {
-                    let reached = crate::work::portfolio::explore(
-                        &recorded(worker, pruned, foreign, goal).encode(),
-                    );
-                    for boundary in [
-                        "fixture:recorded-and-synthetic",
-                        "custody-handle-replaced",
-                        "unanimous-spent-void-checked",
-                        "disputed-spent-retains-funds",
-                        "void-restored-to-canonical-block",
-                        "connection-reopened-final-ledger",
-                    ] {
-                        assert!(
-                            reached.get(boundary).copied().unwrap_or_default() > 0,
-                            "BOUNDARY: recorded-history; {boundary} worker={worker} pruned={pruned} foreign={foreign} goal={goal}"
-                        );
-                    }
-                    for boundary in [
-                        "recorded-ringct-history",
-                        if pruned {
-                            "recorded-pruned-history"
-                        } else {
-                            "recorded-whole-history"
-                        },
-                    ] {
-                        *hits.entry(boundary.into()).or_default() += 1;
-                    }
-                }
+    for pruned in [false, true] {
+        for goal in 0..3 {
+            let reached =
+                crate::work::portfolio::explore(&recorded(worker, pruned, foreign, goal).encode());
+            for boundary in [
+                "fixture:recorded-and-synthetic",
+                "custody-handle-replaced",
+                "unanimous-spent-void-checked",
+                "disputed-spent-retains-funds",
+                "void-restored-to-canonical-block",
+                "connection-reopened-final-ledger",
+            ] {
+                assert!(
+                    reached.get(boundary).copied().unwrap_or_default() > 0,
+                    "BOUNDARY: recorded-history; {boundary} worker={worker} pruned={pruned} foreign={foreign} goal={goal}"
+                );
+            }
+            for boundary in [
+                "recorded-ringct-history",
+                if pruned {
+                    "recorded-pruned-history"
+                } else {
+                    "recorded-whole-history"
+                },
+            ] {
+                *hits.entry(boundary.into()).or_default() += 1;
             }
         }
     }
@@ -892,15 +729,6 @@ fn persisted_config(config: Config) -> Config {
     )
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn portfolio_histories_match_independent_ledger(scenario in crate::work::portfolio::scenario::strategy()) {
-        let bytes = scenario.encode();
-        prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), scenario);
-        crate::work::portfolio::explore(&bytes);
-    }
-}
 #[test]
 fn portfolio_composes_arrival_extension_reorg_proof_expiry_and_faults() {
     use crate::work::portfolio::scenario::{Command::*, Scenario, SETUP_BYTES};
@@ -1090,5 +918,210 @@ fn portfolio_reports_selected_applied_and_skipped_commands_separately() {
             expected,
             "semantic counter {name}"
         );
+    }
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+
+        #[test]
+        fn scanner_histories_converge_after_reorgs_failures_and_restarts(
+            initial_depth in 1u8..13,
+            events in proptest::collection::vec(event(), 0..25),
+            final_destination in destination(),
+            final_offset in any::<u8>(),
+        ) {
+            runtime().block_on(async {
+                let mut harness = Harness::new().await;
+                harness.pool(true);
+                harness.check().await;
+                harness.mine(initial_depth, true);
+                harness.check().await;
+                for event in &events {
+                    harness.apply(event).await;
+                }
+                // Every history includes a fork and a real connection restart,
+                // even if shrinking deletes the whole optional event vector.
+                harness.reorg(8, final_destination, final_offset);
+                harness.tick().await;
+                harness.restart();
+                harness.check().await;
+            });
+        }
+
+        #[test]
+        fn an_interrupted_block_replaced_by_a_fork_never_leaks_staged_payments(
+            extra_txs in 2u8..9,
+            stop_after in any::<u8>(),
+            replacement_pays in any::<bool>(),
+            restart_before_fork in any::<bool>(),
+        ) {
+            runtime().block_on(async {
+                let mut harness = Harness::new().await;
+                let mut txs = vec![fixture_tx()];
+                txs.extend((0..extra_txs).map(|i| unrelated_tx(100 + i)));
+                let height = harness.daemon.push_block("unfinished", txs);
+                harness.model.blocks.push(("unfinished".to_owned(), true));
+                let rounds = 1 + stop_after % extra_txs;
+                for _ in 0..rounds {
+                    harness.tick().await.into_result().unwrap();
+                    assert!(
+                        harness.snapshot().payments.is_empty(),
+                        "staged payment became visible"
+                    );
+                }
+                let checkpoint = harness
+                    .snapshot()
+                    .checkpoint
+                    .expect("scan didn't checkpoint");
+                assert_eq!(checkpoint.height, height);
+                assert!(checkpoint.next_tx > 0);
+                if restart_before_fork {
+                    harness.restart();
+                }
+                harness.reorg(
+                    1,
+                    if replacement_pays {
+                        Destination::Block
+                    } else {
+                        Destination::Gone
+                    },
+                    0,
+                );
+                harness.restart();
+                harness.recovered();
+                for _ in 0..8 {
+                    harness.tick().await.into_result().unwrap();
+                }
+                let snapshot = harness.snapshot();
+                assert_eq!(snapshot.cursor, Some(height));
+                assert!(
+                    snapshot.checkpoint.is_none(),
+                    "stale checkpoint survived the fork"
+                );
+                assert_eq!(snapshot.payments.len(), usize::from(replacement_pays));
+                if replacement_pays {
+                    assert_eq!(snapshot.payments[0].txid, tx_id_hex(&fixture_tx()));
+                    assert_eq!(snapshot.payments[0].height, Some(height as i64));
+                    assert_eq!(snapshot.status, OrderStatus::Confirming);
+                } else {
+                    assert_eq!(snapshot.status, OrderStatus::Pending);
+                }
+            });
+        }
+
+        #[test]
+        fn reorg_jobs_survive_outages_and_restore_payments_when_evidence_changes(
+            mined_depth in 1u8..13,
+            destination in destination(),
+            spent_elsewhere in any::<bool>(),
+            offline_rounds in 1u8..5,
+            custody_rounds in 1u8..5,
+        ) {
+            runtime().block_on(async {
+                let mut harness = Harness::new().await;
+                harness.pool(true);
+                harness.check().await;
+                harness.mine(mined_depth, true);
+                harness.check().await;
+                // Fork below the payment, regardless of generated confirmation depth.
+                harness.reorg(mined_depth, destination, 0);
+                harness.evidence(spent_elsewhere);
+                harness.tick().await.into_result().unwrap();
+                assert!(
+                    harness.snapshot().reorg.is_some(),
+                    "no durable reorg to restart"
+                );
+                harness.restart();
+                harness.apply(&Event::NodeOnline(false)).await;
+                for _ in 0..offline_rounds {
+                    assert!(
+                        harness.tick().await.error.is_some(),
+                        "offline node didn't fail"
+                    );
+                }
+                harness.apply(&Event::NodeOnline(true)).await;
+                harness.apply(&Event::CustodyOnline(false)).await;
+                for _ in 0..custody_rounds {
+                    harness.tick().await;
+                }
+                harness.restart();
+                harness.check().await;
+                // The original transaction returns after any accusation. Re-scan
+                // and revalidation must restore it, without creating another row.
+                harness.mine(1, true);
+                harness.restart();
+                harness.check().await;
+                assert_eq!(harness.snapshot().payments.len(), 1);
+                assert!(harness.snapshot().payments[0].voided_at.is_none());
+            });
+        }
+
+        #[test]
+        fn replacement_chains_of_different_lengths_recompute_payment_depth(
+            initial_depth in 1u8..13,
+            fork_depth in 1u8..13,
+            replacement_length in 1u8..13,
+            destination in destination(),
+            offset in any::<u8>(),
+        ) {
+            runtime().block_on(async {
+                let mut harness = Harness::new().await;
+                harness.pool(true);
+                harness.check().await;
+                harness.mine(initial_depth, true);
+                harness.check().await;
+                harness.replace_branch(
+                    usize::from(fork_depth),
+                    usize::from(replacement_length),
+                    destination,
+                    offset,
+                );
+                harness.tick().await.into_result().unwrap();
+                harness.restart();
+                harness.check().await;
+            });
+        }
+
+        #[test]
+        fn failing_tenants_do_not_starve_healthy_tenants_and_catch_up_after_restart(
+            tenant_count in 2usize..6,
+            failing_index in any::<usize>(),
+            blocks in 1u8..13,
+            group_page in 1usize..4,
+            restart_at in any::<usize>(),
+        ) {
+            runtime().block_on(async {
+                tenant_failure_history(
+                    tenant_count,
+                    Some(failing_index),
+                    blocks,
+                    group_page,
+                    restart_at,
+                )
+                .await;
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn coverage_guided_histories_recover_with_real_scanner(data in proptest::collection::vec(any::<u8>(),0..129)) {
+            crate::work::history::explore(&data);
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn portfolio_histories_match_independent_ledger(scenario in crate::work::portfolio::scenario::strategy()) {
+            let bytes = scenario.encode();
+            prop_assert_eq!(crate::work::portfolio::scenario::Scenario::decode(&bytes), scenario);
+            crate::work::portfolio::explore(&bytes);
+        }
     }
 }

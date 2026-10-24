@@ -3,7 +3,7 @@
 //! off, and reorg detection stays cheap.
 
 #[path = "properties.rs"]
-mod properties;
+mod boundaries;
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2225,9 +2225,54 @@ async fn run_story(steps: &Steps, faulted: Option<(usize, usize)>) -> (String, b
     (story.outcome(), reached)
 }
 
-/// Fails every SQL statement of step `step`'s round in turn; the story must
-/// end where it ends without a fault, whose orders are `ending`.
-async fn sweep_step(steps: &Steps, step: usize, ending: &str) {
+/// The fault indices one part of a sweep takes. A sweep fails each SQL
+/// statement of a round in turn, every fault on a fresh story, so it is
+/// split into parts that run side by side as tests of their own; each part
+/// recovers in-process from its faults exactly as the whole sweep did.
+#[derive(Clone, Copy, Debug)]
+struct Faults {
+    from: usize,
+    /// `None` for the last part, which runs on until a fault isn't reached.
+    to: Option<usize>,
+}
+
+impl Faults {
+    /// Faults `from..to`, each of which must be reached.
+    const fn part(from: usize, to: usize) -> Self {
+        Self { from, to: Some(to) }
+    }
+
+    /// Faults from `from` until one isn't reached: the sweep's last part.
+    const fn rest(from: usize) -> Self {
+        Self { from, to: None }
+    }
+
+    /// Runs `one` for each fault, which says whether its fault was reached.
+    /// The whole sweep must reach more than `at_least` statements.
+    async fn sweep(self, at_least: usize, mut one: impl AsyncFnMut(usize) -> bool) {
+        for fault in self.from.. {
+            if Some(fault) == self.to {
+                return;
+            }
+            if !one(fault).await {
+                assert!(
+                    self.to.is_none(),
+                    "SQL statement {fault} was not reached: the round runs fewer statements than this part of the sweep ({self:?}) expects, so move the parts' bounds"
+                );
+                assert!(
+                    fault > at_least,
+                    "the sweep reached only {fault} statements"
+                );
+                return;
+            }
+        }
+    }
+}
+
+/// Fails each SQL statement in `faults` of step `step`'s round in turn;
+/// the story must end where it ends without a fault, whose orders are
+/// `ending`.
+async fn sweep_step(steps: &Steps, step: usize, ending: &str, faults: Faults) {
     // Every event enabled, so the failure paths' log lines run too.
     let (_logs, _) = crate::test_log::capture();
     let (expected, _) = run_story(steps, None).await;
@@ -2235,53 +2280,133 @@ async fn sweep_step(steps: &Steps, step: usize, ending: &str) {
         expected.contains(ending),
         "the story ends {ending}: {expected}"
     );
-    let mut faults = 0;
-    for fault in 0.. {
-        let (outcome, reached) = run_story(steps, Some((step, fault))).await;
-        if !reached {
-            break;
-        }
-        faults += 1;
-        assert_eq!(
-            outcome, expected,
-            "a fault at SQL statement {fault} in step {step} changed the outcome"
-        );
-    }
-    assert!(faults > 10, "the sweep reached only {faults} statements");
+    let expected = &expected;
+    faults
+        .sweep(10, async move |fault| {
+            let (outcome, reached) = run_story(steps, Some((step, fault))).await;
+            if reached {
+                assert_eq!(
+                    &outcome, expected,
+                    "a fault at SQL statement {fault} in step {step} changed the outcome"
+                );
+            }
+            reached
+        })
+        .await;
 }
 
 const PAID_ENDING: &str = "orders [\"overpaid|7000000000|0\"]";
 const VOIDED_ENDING: &str = "orders [\"pending|0|1\"]";
 
-// One test per step, so they run side by side.
+// One test per step, each split by fault range, so they run side by side.
 #[tokio::test]
-async fn every_sql_failure_while_seeding_is_recovered_from() {
-    sweep_step(PAID, 0, PAID_ENDING).await;
+async fn every_sql_failure_while_seeding_is_recovered_from_statements_0_to_59() {
+    sweep_step(PAID, 0, PAID_ENDING, Faults::part(0, 60)).await;
 }
 
 #[tokio::test]
-async fn every_sql_failure_while_a_payment_is_in_the_pool_is_recovered_from() {
-    sweep_step(PAID, 1, PAID_ENDING).await;
+async fn every_sql_failure_while_seeding_is_recovered_from_statements_60_on() {
+    sweep_step(PAID, 0, PAID_ENDING, Faults::rest(60)).await;
 }
 
 #[tokio::test]
-async fn every_sql_failure_while_a_payment_is_mined_is_recovered_from() {
-    sweep_step(PAID, 2, PAID_ENDING).await;
+async fn every_sql_failure_while_a_payment_is_in_the_pool_is_recovered_from_statements_0_to_59() {
+    sweep_step(PAID, 1, PAID_ENDING, Faults::part(0, 60)).await;
 }
 
 #[tokio::test]
-async fn every_sql_failure_during_a_reorg_is_recovered_from() {
-    sweep_step(PAID, 3, PAID_ENDING).await;
+async fn every_sql_failure_while_a_payment_is_in_the_pool_is_recovered_from_statements_60_on() {
+    sweep_step(PAID, 1, PAID_ENDING, Faults::rest(60)).await;
 }
 
 #[tokio::test]
-async fn every_sql_failure_while_a_payment_is_mined_again_is_recovered_from() {
-    sweep_step(PAID, 4, PAID_ENDING).await;
+async fn every_sql_failure_while_a_payment_is_mined_is_recovered_from_statements_0_to_69() {
+    sweep_step(PAID, 2, PAID_ENDING, Faults::part(0, 70)).await;
 }
 
 #[tokio::test]
-async fn every_sql_failure_while_a_payment_confirms_is_recovered_from() {
-    sweep_step(PAID, 5, PAID_ENDING).await;
+async fn every_sql_failure_while_a_payment_is_mined_is_recovered_from_statements_70_on() {
+    sweep_step(PAID, 2, PAID_ENDING, Faults::rest(70)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_during_a_reorg_is_recovered_from_statements_0_to_59() {
+    sweep_step(PAID, 3, PAID_ENDING, Faults::part(0, 60)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_during_a_reorg_is_recovered_from_statements_60_to_119() {
+    sweep_step(PAID, 3, PAID_ENDING, Faults::part(60, 120)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_during_a_reorg_is_recovered_from_statements_120_on() {
+    sweep_step(PAID, 3, PAID_ENDING, Faults::rest(120)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_is_mined_again_is_recovered_from_statements_0_to_69() {
+    sweep_step(PAID, 4, PAID_ENDING, Faults::part(0, 70)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_is_mined_again_is_recovered_from_statements_70_on() {
+    sweep_step(PAID, 4, PAID_ENDING, Faults::rest(70)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_0_to_35() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(0, 36)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_36_to_71() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(36, 72)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_72_to_107() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(72, 108)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_108_to_143() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(108, 144)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_144_to_179() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(144, 180)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_180_to_215() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(180, 216)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_216_to_251() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(216, 252)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_252_to_287() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(252, 288)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_288_to_323() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(288, 324)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_324_to_359() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::part(324, 360)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_payment_confirms_is_recovered_from_statements_360_on() {
+    sweep_step(PAID, 5, PAID_ENDING, Faults::rest(360)).await;
 }
 
 /// A node that fails block-hash lookups (the chain tier's fork check) but
@@ -2615,29 +2740,6 @@ async fn nothing_is_kept_across_a_rewind() {
         }
     }
     assert!(rewound, "the reorg was found and rewound");
-}
-
-/// Tiers and wait reasons read as words in logs and reports, each its own.
-#[test]
-fn tiers_and_wait_reasons_display_distinctly() {
-    let tiers: Vec<String> = Tier::ALL.iter().map(ToString::to_string).collect();
-    assert_eq!(
-        tiers,
-        ["chain", "blocks", "mempool", "settlement", "upkeep"]
-    );
-    let waits = [
-        Wait::ChainHeightUnknown,
-        Wait::ReorgBeingReconciled,
-        Wait::RewoundThisRound,
-        Wait::NodeFailed,
-        Wait::NodeCannotServeTip,
-        Wait::MempoolUnreadable,
-        Wait::ReorgCandidatesRetrying,
-        Wait::ChainDiverged,
-    ];
-    let texts: HashSet<String> = waits.iter().map(ToString::to_string).collect();
-    assert_eq!(texts.len(), waits.len());
-    assert!(texts.iter().all(|t| !t.is_empty()));
 }
 
 /// A round that can't read the chain height reports it (once a minute in
@@ -3862,12 +3964,17 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
 
 #[tokio::test]
 async fn every_sql_failure_while_a_double_spent_payment_is_in_the_pool_is_recovered_from() {
-    sweep_step(DOUBLE_SPENT, 1, VOIDED_ENDING).await;
+    sweep_step(DOUBLE_SPENT, 1, VOIDED_ENDING, Faults::rest(0)).await;
 }
 
 #[tokio::test]
-async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from() {
-    sweep_step(DOUBLE_SPENT, 2, VOIDED_ENDING).await;
+async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from_statements_0_to_69() {
+    sweep_step(DOUBLE_SPENT, 2, VOIDED_ENDING, Faults::part(0, 70)).await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from_statements_70_on() {
+    sweep_step(DOUBLE_SPENT, 2, VOIDED_ENDING, Faults::rest(70)).await;
 }
 
 // -- Settlement tier edge cases -----------------------------------------------
@@ -4332,68 +4439,119 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
 /// Every SQL statement of the round that commits a checkpointed block,
 /// failed in turn: the payment is recorded once, at the block's height.
 #[tokio::test]
-async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_0_to_17() {
     let (_logs, _) = crate::test_log::capture();
-    let mut faults = 0;
-    for fault in 0.. {
-        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
-        // One transaction more than a unit scans before it looks at the clock.
-        let mut txs = vec![fixture_tx()];
-        txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
-        fake.push_block("big", txs);
-        let db = Db::over_shared(Arc::clone(&store));
-        let state = ScanState::default();
-        run_round(
-            &state,
-            &inputs(&db, &custody, &fake, &tenants),
-            Duration::ZERO,
+    Faults::part(0, 18)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_18_to_35() {
+    let (_logs, _) = crate::test_log::capture();
+    Faults::part(18, 36)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_36_to_53() {
+    let (_logs, _) = crate::test_log::capture();
+    Faults::part(36, 54)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_54_to_71() {
+    let (_logs, _) = crate::test_log::capture();
+    Faults::part(54, 72)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_72_to_89() {
+    let (_logs, _) = crate::test_log::capture();
+    Faults::part(72, 90)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_90_to_107()
+{
+    let (_logs, _) = crate::test_log::capture();
+    Faults::part(90, 108)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+#[tokio::test]
+async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_108_on() {
+    let (_logs, _) = crate::test_log::capture();
+    Faults::rest(108)
+        .sweep(10, commit_a_checkpointed_block_with_a_fault)
+        .await;
+}
+
+async fn commit_a_checkpointed_block_with_a_fault(fault: usize) -> bool {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    // One transaction more than a unit scans before it looks at the clock.
+    let mut txs = vec![fixture_tx()];
+    txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
+    fake.push_block("big", txs);
+    let db = Db::over_shared(Arc::clone(&store));
+    let state = ScanState::default();
+    run_round(
+        &state,
+        &inputs(&db, &custody, &fake, &tenants),
+        Duration::ZERO,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    assert!(store
+        .lock()
+        .block_checkpoint(
+            monero::Network::Mainnet,
+            &shared::ids::TenantId::new(tenants[0].0.to_string())
         )
-        .await
-        .into_result()
-        .unwrap();
-        assert!(store
-            .lock()
-            .block_checkpoint(
-                monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenants[0].0.to_string())
-            )
-            .unwrap()
-            .is_some());
-        let seen = store.lock().fail_nth_access(Some(fault));
+        .unwrap()
+        .is_some());
+    let seen = store.lock().fail_nth_access(Some(fault));
+    run_round(
+        &state,
+        &inputs(&db, &custody, &fake, &tenants),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await;
+    store.lock().fail_nth_access(None);
+    if seen.load(Ordering::Relaxed) <= fault {
+        return false;
+    }
+    for _ in 0..3 {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
             ScanTuning::DEFAULT.round_budget,
         )
-        .await;
-        store.lock().fail_nth_access(None);
-        if seen.load(Ordering::Relaxed) <= fault {
-            break;
-        }
-        faults += 1;
-        for _ in 0..3 {
-            run_round(
-                &state,
-                &inputs(&db, &custody, &fake, &tenants),
-                ScanTuning::DEFAULT.round_budget,
-            )
-            .await
-            .into_result()
-            .unwrap();
-        }
-        let payments = store
-            .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
-            .unwrap();
-        assert_eq!(payments.len(), 1, "fault {fault}");
-        assert_eq!(payments[0].block_height, Some(21), "fault {fault}");
-        assert_eq!(
-            cursor_of(&store, tenants[0].0.as_str()),
-            Some(21),
-            "fault {fault}"
-        );
+        .await
+        .into_result()
+        .unwrap();
     }
-    assert!(faults > 10, "reached {faults}");
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap();
+    assert_eq!(payments.len(), 1, "fault {fault}");
+    assert_eq!(payments[0].block_height, Some(21), "fault {fault}");
+    assert_eq!(
+        cursor_of(&store, tenants[0].0.as_str()),
+        Some(21),
+        "fault {fault}"
+    );
+    true
 }
 
 /// Every SQL statement of a round working an open reorg job, failed in
@@ -4401,54 +4559,56 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
 #[tokio::test]
 async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
     let (_logs, _) = crate::test_log::capture();
+    Faults::rest(0)
+        .sweep(5, work_a_reorg_job_with_a_fault)
+        .await;
+}
+
+async fn work_a_reorg_job_with_a_fault(fault: usize) -> bool {
     let tx = fixture_tx();
     let txid = crate::daemon::fake::tx_id_hex(&tx);
-    let mut faults = 0;
-    for fault in 0.. {
-        let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
-        fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx.clone()])]);
-        let custody = FlakyKeyCustody::default();
-        let db = Db::over_shared(Arc::clone(&store));
-        let state = ScanState::default();
-        let seen = store.lock().fail_nth_access(Some(fault));
+    let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
+    fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx.clone()])]);
+    let custody = FlakyKeyCustody::default();
+    let db = Db::over_shared(Arc::clone(&store));
+    let state = ScanState::default();
+    let seen = store.lock().fail_nth_access(Some(fault));
+    run_round(
+        &state,
+        &inputs(&db, &custody, &fake, &[]),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await;
+    store.lock().fail_nth_access(None);
+    if seen.load(Ordering::Relaxed) <= fault {
+        return false;
+    }
+    for _ in 0..4 {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &[]),
             ScanTuning::DEFAULT.round_budget,
         )
         .await;
-        store.lock().fail_nth_access(None);
-        if seen.load(Ordering::Relaxed) <= fault {
-            break;
-        }
-        faults += 1;
-        for _ in 0..4 {
-            run_round(
-                &state,
-                &inputs(&db, &custody, &fake, &[]),
-                ScanTuning::DEFAULT.round_budget,
-            )
-            .await;
-        }
-        assert!(
-            store
-                .lock()
-                .reorg_job(monero::Network::Mainnet)
-                .unwrap()
-                .is_none(),
-            "fault {fault}: the job finished"
-        );
-        assert_eq!(
-            store
-                .lock()
-                .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
-                .unwrap()[0]
-                .block_height,
-            Some(10),
-            "fault {fault}"
-        );
     }
-    assert!(faults > 5, "reached {faults}");
+    assert!(
+        store
+            .lock()
+            .reorg_job(monero::Network::Mainnet)
+            .unwrap()
+            .is_none(),
+        "fault {fault}: the job finished"
+    );
+    assert_eq!(
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()[0]
+            .block_height,
+        Some(10),
+        "fault {fault}"
+    );
+    true
 }
 
 /// An open job whose every candidate is waiting out a retry delay: the

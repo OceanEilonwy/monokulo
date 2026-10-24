@@ -898,7 +898,7 @@ mod tests {
 #[cfg(test)]
 #[path = "../../tests/verification/work/mempool/properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod properties;
+mod boundaries;
 
 #[cfg(test)]
 #[path = "../../tests/verification/work/mempool/lock_profile.rs"]

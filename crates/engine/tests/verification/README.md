@@ -30,6 +30,14 @@ These roles are organizational: a model must remain independent of the productio
 algorithm even when property and fuzz drivers share that model. No suite is copied
 into a second fuzz-only implementation.
 
+The generated cases (`proptest!`) sit in modules named `properties`; a file
+that also holds fixed-input tests is a `boundaries` module with its generated
+cases in a nested `properties`. The local `cargo nextest run` leaves
+`::properties::` and `::scale::` tests out (`.config/nextest.toml`'s
+`default-filter`); `--profile ci` runs them. A bug a property finds gets a
+named fixed-input test outside `properties`, not only a seed, so the local
+run catches it too.
+
 `#[cfg(test)]` includes generated tests only in test builds. Shared fuzz oracles
 and fixtures use `#[cfg(any(test, feature = "fuzzing"))]`; ordinary engine builds
 exclude them. The cargo-fuzz drivers, reviewed seed inputs and disposable corpus
@@ -47,7 +55,7 @@ the option to disable persistence retain their existing behavior.
 Run the same commands as before, from the repository root:
 
 ```sh
-cargo nextest run -p engine --lib --locked -E 'test(::properties::)'
+cargo nextest run -p engine --lib --locked --profile ci -E 'test(::properties::)'
 cargo xtask engine scale default
 cargo xtask engine scale zmq
 cargo xtask engine fuzz history

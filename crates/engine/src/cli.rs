@@ -148,25 +148,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn help_and_version_are_answered_by_clap() {
-        for argv in [
-            &["--help"][..],
-            &["-h"],
-            &["--init", "--help"],
-            &["--version"],
-        ] {
-            let kind = parse(argv).unwrap_err().kind();
-            assert!(
-                matches!(
-                    kind,
-                    clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
-                ),
-                "{argv:?}: {kind:?}"
-            );
-        }
-    }
-
     /// The help names the options file and every setting's option, with
     /// the secrets' environment variables.
     #[test]

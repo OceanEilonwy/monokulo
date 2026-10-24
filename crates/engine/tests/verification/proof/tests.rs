@@ -1,6 +1,13 @@
 //! Proof-of-work checking against fake nodes serving real blocks
 //! (`pow::test_chain`): mined for real at a small difficulty, so a block
 //! with a wrong proof is as easy to make as a right one.
+//!
+//! What the follower does with the hashes (anchoring, reorgs, timeouts,
+//! forks) is tested with the stand-in hash function ([`Pow::StandIn`]),
+//! which costs microseconds a block. `RandomX` itself is hashed in
+//! `pow::hasher`'s reference vector, `pow::tests`' real mainnet blocks,
+//! [`an_honest_chain_is_anchored_and_followed_across_a_key_change_hashed_with_randomx`]
+//! and the `real_verifier_and_scanner` properties.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -17,12 +24,34 @@ const NET: monero::Network = monero::Network::Mainnet;
 pub(crate) const TEST_NOW: i64 = 1_800_000_000;
 const TOP: u64 = 977 * 2048 + 60;
 
-/// One `RandomX` thread for building every test's chains.
-fn builder() -> Hasher {
-    static HASHER: OnceLock<Hasher> = OnceLock::new();
-    HASHER
-        .get_or_init(|| Hasher::start("test chains").unwrap())
+/// What a test's chains are mined and checked with.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Pow {
+    /// [`crate::pow::hasher::Function::StandIn`]: for tests of the
+    /// follower's logic.
+    StandIn,
+    /// Real `RandomX`, two 256 MiB caches (the chains cross a key change)
+    /// and about 16 ms a hash.
+    RandomX,
+}
+
+impl Pow {
+    /// One thread per function for building every test's chains, which
+    /// the followers share.
+    fn hasher(self) -> Hasher {
+        static STAND_IN: OnceLock<Hasher> = OnceLock::new();
+        static RANDOMX: OnceLock<Hasher> = OnceLock::new();
+        match self {
+            Self::StandIn => STAND_IN.get_or_init(|| Hasher::stand_in("test chains").unwrap()),
+            Self::RandomX => RANDOMX.get_or_init(|| Hasher::start("test chains").unwrap()),
+        }
         .clone()
+    }
+}
+
+/// The stand-in thread for building test chains.
+fn builder() -> Hasher {
+    Pow::StandIn.hasher()
 }
 
 /// Production's tuning, but anchoring 10 blocks deep and on windows that
@@ -43,25 +72,40 @@ pub(crate) fn tuning() -> ProofTuning {
 
 /// A test chain's window, then 12 mined blocks: an anchor is taken at
 /// TOP + 2. Its last block an hour ago, so a hundred more fit before now.
-/// Mined once per process (12 real `RandomX` proofs); each caller gets its
-/// own copy to extend.
+/// Mined with the stand-in; [`base_chain_with`] for `RandomX`.
 pub(crate) fn base_chain() -> TestChain {
-    static CHAIN: OnceLock<TestChain> = OnceLock::new();
-    CHAIN
+    base_chain_with(Pow::StandIn)
+}
+
+/// [`base_chain`] mined with `pow`, once per process (12 proofs); each
+/// caller gets its own copy to extend.
+pub(crate) fn base_chain_with(pow: Pow) -> TestChain {
+    static STAND_IN: OnceLock<TestChain> = OnceLock::new();
+    static RANDOMX: OnceLock<TestChain> = OnceLock::new();
+    let chain = match pow {
+        Pow::StandIn => &STAND_IN,
+        Pow::RandomX => &RANDOMX,
+    };
+    chain
         .get_or_init(|| {
-            let mut chain = TestChain::anchored_at(builder(), TOP, TEST_NOW as u64 - 3600);
+            let mut chain = TestChain::anchored_at(pow.hasher(), TOP, TEST_NOW as u64 - 3600);
             chain.mine_empty(12);
             chain
         })
         .clone()
 }
 
-/// A follower with `tuning`, hashing on the thread that built the test
-/// chains ([`Follower::with_hasher`]).
+/// A follower with `tuning`, hashing with the stand-in on the thread that
+/// built the test chains ([`Follower::with_hasher`]).
 pub(crate) fn follower(network: monero::Network, tuning: ProofTuning) -> Follower {
+    follower_with(Pow::StandIn, network, tuning)
+}
+
+/// [`follower`] hashing with `pow`.
+pub(crate) fn follower_with(pow: Pow, network: monero::Network, tuning: ProofTuning) -> Follower {
     Follower::new(network, tuning)
         .unwrap()
-        .with_hasher(builder())
+        .with_hasher(pow.hasher())
 }
 
 struct World {
@@ -79,6 +123,10 @@ impl World {
     }
 
     fn with_tuning(n: usize, chain: &TestChain, tuning: ProofTuning) -> Self {
+        Self::hashed_with(Pow::StandIn, n, chain, tuning)
+    }
+
+    fn hashed_with(pow: Pow, n: usize, chain: &TestChain, tuning: ProofTuning) -> Self {
         let store = Store::open_in_memory().unwrap().into_shared();
         let nodes: Vec<Arc<FakeDaemonClient>> = std::iter::repeat_with(|| {
             let node = Arc::new(FakeDaemonClient::new());
@@ -102,7 +150,7 @@ impl World {
             store,
             nodes,
             client,
-            follower: follower(NET, tuning),
+            follower: follower_with(pow, NET, tuning),
         }
     }
 
@@ -129,8 +177,19 @@ impl World {
 
 #[tokio::test]
 async fn an_honest_chain_is_anchored_and_followed_across_a_key_change() {
-    let mut chain = base_chain();
-    let mut world = World::new(1, &chain);
+    an_honest_chain_is_anchored_and_followed(Pow::StandIn).await;
+}
+
+/// The one follower test on real `RandomX`: the hashes it checks are
+/// monerod's, across a key change, so two caches are built.
+#[tokio::test]
+async fn an_honest_chain_is_anchored_and_followed_across_a_key_change_hashed_with_randomx() {
+    an_honest_chain_is_anchored_and_followed(Pow::RandomX).await;
+}
+
+async fn an_honest_chain_is_anchored_and_followed(pow: Pow) {
+    let mut chain = base_chain_with(pow);
+    let mut world = World::hashed_with(pow, 1, &chain, tuning());
     world.round().await;
     let anchor = world
         .store
@@ -1069,4 +1128,4 @@ mod settlement {
 }
 
 #[path = "node_properties.rs"]
-mod properties;
+mod boundaries;

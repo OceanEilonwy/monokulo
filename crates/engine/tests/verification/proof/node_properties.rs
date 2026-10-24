@@ -43,28 +43,6 @@ fn replace_nodes(world: &mut World, chain: &TestChain) -> Vec<Arc<AdversarialNod
     nodes
 }
 
-// The slowest proof property, split by whether the follower restarts
-// between phases, so its two halves run side by side; together they run as
-// many cases as the one property did.
-proptest! {
-    #![proptest_config(persisted_config(half_config()))]
-    #[test]
-    fn verifier_histories_never_prove_forged_branches_and_recover_from_total_outage(
-        count in 2usize..6,
-        phases in proptest::collection::vec(proptest::array::uniform5(0u8..4), 1..7),
-    ) {
-        runtime().block_on(verifier_history(count, phases, false));
-    }
-
-    #[test]
-    fn verifier_histories_with_restarts_never_prove_forged_branches_and_recover_from_total_outage(
-        count in 2usize..6,
-        phases in proptest::collection::vec(proptest::array::uniform5(0u8..4), 1..7),
-    ) {
-        runtime().block_on(verifier_history(count, phases, true));
-    }
-}
-
 fn half_config() -> proptest::test_runner::Config {
     let mut c = config();
     c.cases = (c.cases / 2).max(1);
@@ -141,45 +119,6 @@ async fn verifier_history(count: usize, phases: Vec<[u8; 5]>, restart: bool) {
     assert!((0..count).all(|i| !world.client.is_excluded(i)));
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn anchoring_requires_a_configured_majority_even_when_only_one_node_answers(
-        count in 2usize..6, responsive in any::<usize>(), hanging in any::<bool>(),
-    ) {
-        runtime().block_on(async {
-            let chain = base_chain();
-            let mut rules = tuning(); rules.call_timeout = Duration::from_millis(30);
-            let mut world = World::with_tuning(count, &chain, rules.clone());
-            let nodes = replace_nodes(&mut world,&chain);
-            let responsive = responsive % count;
-            for (i,node) in nodes.iter().enumerate() {
-                if i != responsive { *node.behavior.lock() = Behavior {
-                    failures: if hanging { 0 } else { Rpc::ALL_MASK }, hangs: if hanging { Rpc::ALL_MASK } else { 0 }, ..Behavior::default()
-                }; }
-            }
-            world.round().await;
-            assert!(world.store.lock().proven_tip(NET).unwrap().is_none());
-            assert!(world.store.lock().proof_ceiling(NET).unwrap().is_some_and(|ceiling| ceiling == 0));
-            for node in &nodes { *node.behavior.lock() = Behavior::default(); }
-            world.follower = follower(NET, rules);
-            world.round().await;
-            assert_eq!(world.proven_tip(),chain.tip().proven());
-        });
-    }
-}
-
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn verifier_rpc_timeouts_during_anchor_reads_and_samples_use_healthy_peers(
-        count in 3usize..6, operation in prop_oneof![Just(Rpc::Hash), Just(Rpc::Difficulty), Just(Rpc::Blob)],
-        hanging in any::<bool>(), restart in any::<bool>(),
-    ) {
-        runtime().block_on(anchor_rpc_history(count, operation, hanging, restart));
-    }
-}
-
 async fn anchor_rpc_history(count: usize, operation: Rpc, hanging: bool, restart: bool) {
     let chain = base_chain();
     let mut rules = tuning();
@@ -223,28 +162,6 @@ fn a_member_failing_to_send_sampled_blocks_does_not_block_a_healthy_anchor_major
     });
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn malformed_or_wrong_block_samples_cannot_block_a_healthy_anchor_majority(
-        count in 3usize..6, liar in any::<usize>(), wrong_id in any::<bool>(), restart in any::<bool>(),
-    ) {
-        runtime().block_on(async {
-            let chain = base_chain();
-            let rules = tuning();
-            let mut world = World::with_tuning(count,&chain,rules.clone());
-            let nodes = replace_nodes(&mut world,&chain);
-            let liar = liar % count;
-            nodes[liar].behavior.lock().blob = Some(if wrong_id { chain.tip().blob.clone() } else { vec![0] });
-            if restart { world.follower = follower(NET, rules); }
-            world.round().await;
-            assert_eq!(world.proven_tip(),chain.tip().proven());
-            assert!(nodes[liar].counts(Rpc::Blob).completed > 0,"malformed sample was never requested");
-            assert!(nodes.iter().enumerate().any(|(i,n)| i != liar && n.counts(Rpc::Blob).completed > 0));
-        });
-    }
-}
-
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {
     crate::property_support::persist(
         config,
@@ -253,4 +170,120 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/proof/node_properties.txt"
         ),
     )
+}
+
+/// Fixed-input cases of the verifier history properties below: three nodes
+/// that serve the honest chain, fail, hang, or serve a forged branch, a
+/// phase at a time (one each, a forged majority, a lone honest node), then
+/// all down and all hanging: nothing forged is ever proven, and every node
+/// is back on the chain afterwards, with and without restarts between the
+/// phases.
+#[test]
+fn a_forged_majority_and_total_outages_never_prove_a_forged_branch() {
+    let phases = vec![
+        [0, 1, 3, 0, 0],
+        [3, 3, 0, 2, 0],
+        [2, 1, 3, 0, 0],
+        [3, 0, 1, 0, 0],
+    ];
+    for restart in [false, true] {
+        runtime().block_on(verifier_history(3, phases.clone(), restart));
+    }
+}
+
+/// The saved counterexample of the timeout property (three nodes, a block
+/// blob read failing, no restart), and the other anchor reads timing out.
+#[test]
+fn anchor_reads_failing_or_timing_out_use_the_healthy_peers() {
+    runtime().block_on(async {
+        anchor_rpc_history(3, Rpc::Blob, false, false).await;
+        anchor_rpc_history(4, Rpc::Hash, true, false).await;
+        anchor_rpc_history(3, Rpc::Difficulty, true, true).await;
+    });
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    // The slowest proof property, split by whether the follower restarts
+    // between phases, so its two halves run side by side; together they run as
+    // many cases as the one property did.
+    proptest! {
+        #![proptest_config(persisted_config(half_config()))]
+        #[test]
+        fn verifier_histories_never_prove_forged_branches_and_recover_from_total_outage(
+            count in 2usize..6,
+            phases in proptest::collection::vec(proptest::array::uniform5(0u8..4), 1..7),
+        ) {
+            runtime().block_on(verifier_history(count, phases, false));
+        }
+
+        #[test]
+        fn verifier_histories_with_restarts_never_prove_forged_branches_and_recover_from_total_outage(
+            count in 2usize..6,
+            phases in proptest::collection::vec(proptest::array::uniform5(0u8..4), 1..7),
+        ) {
+            runtime().block_on(verifier_history(count, phases, true));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn anchoring_requires_a_configured_majority_even_when_only_one_node_answers(
+            count in 2usize..6, responsive in any::<usize>(), hanging in any::<bool>(),
+        ) {
+            runtime().block_on(async {
+                let chain = base_chain();
+                let mut rules = tuning(); rules.call_timeout = Duration::from_millis(30);
+                let mut world = World::with_tuning(count, &chain, rules.clone());
+                let nodes = replace_nodes(&mut world,&chain);
+                let responsive = responsive % count;
+                for (i,node) in nodes.iter().enumerate() {
+                    if i != responsive { *node.behavior.lock() = Behavior {
+                        failures: if hanging { 0 } else { Rpc::ALL_MASK }, hangs: if hanging { Rpc::ALL_MASK } else { 0 }, ..Behavior::default()
+                    }; }
+                }
+                world.round().await;
+                assert!(world.store.lock().proven_tip(NET).unwrap().is_none());
+                assert!(world.store.lock().proof_ceiling(NET).unwrap().is_some_and(|ceiling| ceiling == 0));
+                for node in &nodes { *node.behavior.lock() = Behavior::default(); }
+                world.follower = follower(NET, rules);
+                world.round().await;
+                assert_eq!(world.proven_tip(),chain.tip().proven());
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn verifier_rpc_timeouts_during_anchor_reads_and_samples_use_healthy_peers(
+            count in 3usize..6, operation in prop_oneof![Just(Rpc::Hash), Just(Rpc::Difficulty), Just(Rpc::Blob)],
+            hanging in any::<bool>(), restart in any::<bool>(),
+        ) {
+            runtime().block_on(anchor_rpc_history(count, operation, hanging, restart));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn malformed_or_wrong_block_samples_cannot_block_a_healthy_anchor_majority(
+            count in 3usize..6, liar in any::<usize>(), wrong_id in any::<bool>(), restart in any::<bool>(),
+        ) {
+            runtime().block_on(async {
+                let chain = base_chain();
+                let rules = tuning();
+                let mut world = World::with_tuning(count,&chain,rules.clone());
+                let nodes = replace_nodes(&mut world,&chain);
+                let liar = liar % count;
+                nodes[liar].behavior.lock().blob = Some(if wrong_id { chain.tip().blob.clone() } else { vec![0] });
+                if restart { world.follower = follower(NET, rules); }
+                world.round().await;
+                assert_eq!(world.proven_tip(),chain.tip().proven());
+                assert!(nodes[liar].counts(Rpc::Blob).completed > 0,"malformed sample was never requested");
+                assert!(nodes.iter().enumerate().any(|(i,n)| i != liar && n.counts(Rpc::Blob).completed > 0));
+            });
+        }
+    }
 }

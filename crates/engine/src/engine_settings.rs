@@ -1378,6 +1378,39 @@ mod tests {
             None,
             "empty means not configured"
         );
+        // A saved node round-trips, fallbacks and publisher included.
+        let node = MoneroNodeSetting {
+            host: "primary.example".to_owned(),
+            port: 18081,
+            ssl: false,
+            accept_self_signed_certs: true,
+            fallbacks: vec![MoneroNodeSetting {
+                host: "backup.example".to_owned(),
+                port: 18081,
+                ssl: true,
+                accept_self_signed_certs: false,
+                fallbacks: vec![],
+                zmq_pub: None,
+            }],
+            zmq_pub: Some("tcp://127.0.0.1:18083".to_owned()),
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert_eq!(
+            serde_json::from_str::<MoneroNodeSetting>(&json).unwrap(),
+            node
+        );
+        let minimal: MoneroNodeSetting = serde_json::from_str(r#"{"host":"n","port":1}"#).unwrap();
+        assert!(
+            !minimal.ssl
+                && minimal.accept_self_signed_certs
+                && minimal.fallbacks.is_empty()
+                && minimal.zmq_pub.is_none(),
+            "the documented defaults"
+        );
+        assert!(
+            !serde_json::to_string(&minimal).unwrap().contains("zmq_pub"),
+            "a node without a publisher saves as it did before"
+        );
     }
 
     #[test]
