@@ -11,10 +11,11 @@ pub(crate) const RUST_LIMIT_S: f64 = 5.0;
 /// How long a browser test may take, in seconds.
 pub(crate) const BROWSER_LIMIT_S: f64 = 15.0;
 
-const RANDOMX: &str = "hashes real blocks with RandomX, about 16 ms a hash; F9 gives the logic tests a stand-in hasher";
+const RANDOMX: &str =
+    "the real-RandomX tests hash blocks, about 16 ms a hash; the rest run on a stand-in hasher";
 const SQL_SWEEP: &str =
-    "fails each SQL statement of a payment's life in turn; F8 splits the sweep by fault range";
-const REAL_CLOCK: &str = "waits on a real clock; T-g gives the wait an explicit tuning";
+    "fails each SQL statement of a payment's life in turn, a range of them a test";
+const REAL_CLOCK: &str = "waits on a real clock";
 const REAL_STACK: &str = "one flow against the real engine and monokulo, its steps in order";
 const MERCHANT_FLOW: &str = "a whole merchant flow, with several saves and reloads on one page";
 
@@ -28,10 +29,6 @@ pub(crate) const SLOW: &[(&str, &str)] = &[
         "recovers thousands of tenants group by group",
     ),
     (
-        "engine › loops::tests::a_store_whose_backend_was_replaced_is_registered_again_within_seconds",
-        REAL_CLOCK,
-    ),
-    (
         "engine › scanner::tests::random_outages_and_reorgs_never_lose_or_duplicate_a_payment",
         "many rounds of random outages and reorgs",
     ),
@@ -40,16 +37,8 @@ pub(crate) const SLOW: &[(&str, &str)] = &[
         "spends a real time budget",
     ),
     (
-        "monokulo › http::engine_page::tests::the_machine_event_comes_at_once_then_at_most_every_few_seconds",
-        REAL_CLOCK,
-    ),
-    (
         "monokulo › settings::tests::the_onion_listener_starts_moves_and_stops_when_saved",
         "starts, moves and stops real listeners",
-    ),
-    (
-        "monokulo › http::status_page::tests::http_tests::monokulos_own_calls_to_an_embedded_engine_keep_the_status_dot_green",
-        "runs an embedded engine",
     ),
     (
         "mock-woocommerce › tests::a_genuinely_forced_order_expired_webhook_is_delivered_and_verified",
@@ -69,50 +58,23 @@ pub(crate) const SLOW: &[(&str, &str)] = &[
         MERCHANT_FLOW,
     ),
     (
-        "checkout.spec.js › real checkout payment problems as the customer sees them (UI stages)",
-        MERCHANT_FLOW,
-    ),
-    (
         "connection-challenge.spec.js › real challenge offers a ten second no-JavaScript continuation",
         "the one real ten-second wait of the no-JavaScript challenge",
-    ),
-    (
-        "connection-challenge.spec.js › real challenge continues inside a cross-site checkout frame with and without JavaScript",
-        REAL_CLOCK,
     ),
     (
         "domains.spec.js › a domain is added on its own pages, and its check answers in place",
         MERCHANT_FLOW,
     ),
-    (
-        "live-view-hidden-tab.spec.js › a tab hidden while the reorg plays lists its last mark when shown again",
-        REAL_CLOCK,
-    ),
     ("live-view.spec.js › the engine page follows the engine live", REAL_CLOCK),
-    ("live-view.spec.js › the machine strip and the Scanning panel follow the engine live", REAL_CLOCK),
-    ("pos-terminal.spec.js › payment countdown keeps ticking down", REAL_CLOCK),
     ("pos-terminal.spec.js › real POS backgrounds, reloads, reopens, cancels, and searches an order", MERCHANT_FLOW),
     (
         "pos-terminal.spec.js › customer pays while the order is on screen and the merchant starts the next sale",
         MERCHANT_FLOW,
     ),
-    ("refund-camera.spec.js › real checkout scans a refund QR with the camera", MERCHANT_FLOW),
-    ("status-network-card.spec.js › the card follows the engine live", REAL_CLOCK),
     ("store-settings.spec.js › a save says so on the card and in a toast", MERCHANT_FLOW),
-    ("store-settings.spec.js › a change marks its card and shows the save bar", MERCHANT_FLOW),
     ("store-site.spec.js › a connected plugin locks the website", MERCHANT_FLOW),
-    ("store-site.spec.js › disconnecting waits while an order from the shop can be paid", MERCHANT_FLOW),
     ("store-webhooks.spec.js › each webhook says how it is doing", MERCHANT_FLOW),
-    ("store-webhooks.spec.js › a delivery's details open as a dialog", MERCHANT_FLOW),
-    ("store-webhooks.spec.js › a webhook with many deliveries pages through them", MERCHANT_FLOW),
-    ("wallet-details.spec.js › the Details card renames the wallet", MERCHANT_FLOW),
-    ("wallet-details.spec.js › without JavaScript the wallet is renamed with the save bar", MERCHANT_FLOW),
-    ("wallet-page.spec.js › the retire dialog is blocked while a store takes payments", MERCHANT_FLOW),
-    ("wallet-page.spec.js › where it lives says how each wallet was backed up", MERCHANT_FLOW),
     ("wallet-page.spec.js › a wallet nothing uses is retired by typing its name", MERCHANT_FLOW),
-    ("wallets-networks.spec.js › with only test wallets the fold starts open", MERCHANT_FLOW),
-    ("wallets-networks.spec.js › mainnet wallets are the list and the test networks are folded", MERCHANT_FLOW),
-    ("admin-query.spec.js › ", REAL_STACK),
     ("admin-settings-and-nodes.spec.js › ", REAL_STACK),
     ("engine-crash-recovery.spec.js › ", REAL_STACK),
     ("log-search-and-tracing.spec.js › ", REAL_STACK),
