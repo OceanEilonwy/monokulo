@@ -36,6 +36,29 @@ Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.tom
   real-`RandomX` honest chain at 2.1 s. Before: 24 proof tests at 10-21 s
   each under load (207 s serial in the audit).
 
+### F8: engine fixed costs
+- The `every_sql_failure_*` sweeps are split by fault index, not
+  snapshotted: `work::tests::Faults` (`part(from, to)`, each fault in it
+  must be reached; `rest(from)`, the last part, runs on until one isn't and
+  checks the whole sweep still reaches its minimum). Every part replays the
+  story from scratch for each fault, as before, so the in-process recovery
+  is what is tested. 8 sweeps became 27 tests (from 12 tests to 35):
+  confirms 421 statements in 11 parts of 36, checkpointed block 141 in 7 of
+  18, reorg 178 in 3, the others in 2. A bound set too high fails with
+  "statement N was not reached ... move the parts' bounds".
+- Left whole (each under 3 s alone): `scanner::…reconcile_now…` (2.8 s),
+  `…void_recheck…` (0.7 s), `…double_spent_payment_is_in_the_pool…` (2.1 s),
+  `…working_a_reorg_job…` (1.6 s; its loop body moved into a fault function
+  like the checkpointed one, so it could be split later).
+- Measured alone, one at a time: the slowest sweep was 24.6 s (confirms);
+  together the 35 parts finish in 13.0 s wall on a machine at load 112.
+- `loops::…registered_again_within_seconds` runs on a paused clock with the
+  production `REGISTRATION_RETRY_AFTER_LOSS`, and now asserts the wait was
+  at least that and under `REGISTRATION_RETRY` (5.1 s → 0.04 s). Its
+  real-time sibling is the new
+  `a_store_is_registered_on_the_scanner_loop_s_first_round`, which shares
+  the setup (`a_registered_store`).
+
 ## Decisions
 
 ## Deviations from the plan
