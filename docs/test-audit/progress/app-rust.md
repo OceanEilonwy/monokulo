@@ -49,6 +49,11 @@ Scope: every Rust crate except the engine. Tests run with
 - `telemetry::trace::current_trace_id` was already removed upstream (7befca7a7), and 2314 already
   asserts through `trace::traceparent`. Nothing to do.
 
+### 3. F1 views (presentational deletes)
+- 125 `views::` tests deleted as the DB lists them (the 126th, 1910, became the source guard in
+  slice 1), with the helpers only they used. `views::pos`, `views::home`, `views::connected_apps`
+  and `views::domains` have no tests left, so their test modules went. −125 tests.
+
 ## Decisions
 
 ## Deviations from the plan

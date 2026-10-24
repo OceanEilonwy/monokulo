@@ -1123,35 +1123,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_view_uses_the_same_payment_markup_and_stage() {
-        let mut data = test_checkout_view_model(true);
-        data.is_compact = true;
-        data.query_suffix = "?view=compact".to_string();
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("pay-wrap checkout-compact"));
-        // Paid: the stage says so over the faded code, as in the full view.
-        assert!(
-            html.contains("<strong>Paid.</strong>")
-                && html.contains(r#"<div class="qr-wrap is-spent">"#),
-            "{html}"
-        );
-        assert!(!html.contains(r#"id="payment-state""#) && !html.contains(r#"class="receipt"#));
-        // Paid: the address is struck through, with nothing to copy it with.
-        assert!(
-            html.contains(r#"<div class="mk-grouped" data-void="" data-island="GroupedValue""#),
-            "{html}"
-        );
-        assert!(!html.contains("Check your wallet shows"), "{html}");
-        assert!(
-            !html.contains("mk-countdown"),
-            "no time left on a paid order: {html}"
-        );
-        assert!(html.contains("class=\"address-block\""));
-        assert!(html.contains("id=\"refund_address\""));
-        assert!(html.contains("refund-address?view=compact"));
-    }
-
-    #[test]
     fn partial_payment_shows_remaining_amount_and_deadline() {
         let mut data = test_checkout_view_model(false);
         data.status = shared::order_status::OrderStatus::Partial;
@@ -1329,20 +1300,6 @@ mod tests {
     }
 
     #[test]
-    fn checkout_page_keeps_the_refund_field_editable_after_saving() {
-        let mut data = test_checkout_view_model(false);
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"id="refund_address""#));
-
-        data.refund_address = Some("86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string());
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"id="refund_address""#));
-        assert!(html.contains("refund-field is-saved"));
-        assert!(html.contains("Refund address saved"));
-        assert!(!html.contains("id=\"refund-address\""));
-    }
-
-    #[test]
     fn checkout_page_shows_the_double_spend_stage_only_when_one_was_detected() {
         let mut data = test_checkout_view_model(false);
         assert!(!checkout_page(&chrome(), &data)
@@ -1377,65 +1334,5 @@ mod tests {
             html.contains(">15 Nov 2023, 06:13</time>") && !html.contains("data-local"),
             "{html}"
         );
-    }
-
-    #[test]
-    fn checkout_page_lists_payments_when_present() {
-        let mut data = test_checkout_view_model(false);
-        data.payments = vec![
-            CheckoutPaymentViewModel {
-                txid: format!("3f9a1c{}e21b07", "9".repeat(52)),
-                amount_xmr: "0.25".to_string(),
-                confirmations: 3,
-                is_zero_conf: false,
-            },
-            CheckoutPaymentViewModel {
-                txid: "short-txid".to_string(),
-                amount_xmr: "0.25".to_string(),
-                confirmations: 0,
-                is_zero_conf: true,
-            },
-        ];
-        let html = checkout_page(&chrome(), &data).into_string();
-        // Each txid as `views::short_id` shows it, the whole in reach.
-        assert!(html.contains(&format!(
-            r#"<td><span class="short-value" title="3f9a1c{0}e21b07"><span class="short-value-text" aria-hidden="true">3f9a1c…e21b07</span><span class="short-value-full">3f9a1c{0}e21b07</span></span></td>"#,
-            "9".repeat(52)
-        )), "{html}");
-        assert!(html.contains("<td>short-txid</td>"), "{html}");
-        assert!(!html.contains("..."), "{html}");
-        assert!(html.contains("mempool"));
-    }
-
-    #[test]
-    fn not_found_page_renders_with_no_nav() {
-        let html = not_found_page(&chrome()).into_string();
-        assert!(html.to_lowercase().contains("not found"));
-        assert!(!html.contains(r#"<nav class="site-nav""#));
-    }
-
-    #[test]
-    fn share_page_wraps_the_iframe_with_the_site_nav_when_found() {
-        let data = CheckoutShareViewModel {
-            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
-            found: true,
-        };
-        let html = share_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<nav class="site-nav""#));
-        assert!(html.contains("Monokulo"));
-        assert!(html.contains(r#"src="/checkout/pay_abc123""#));
-        assert!(!html.contains("Order not found"));
-    }
-
-    #[test]
-    fn share_page_shows_a_not_found_state_with_the_site_nav_when_not_found() {
-        let data = CheckoutShareViewModel {
-            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
-            found: false,
-        };
-        let html = share_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<nav class="site-nav""#));
-        assert!(html.to_lowercase().contains("not found"));
-        assert!(!html.contains("<iframe"));
     }
 }

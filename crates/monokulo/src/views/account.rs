@@ -475,72 +475,6 @@ mod tests {
         );
     }
 
-    /// The profile's cards, as the admin page's: each a settings card in
-    /// one settings form with one save bar.
-    #[test]
-    fn the_profile_tab_has_email_appearance_language_and_time_and_password_cards_and_one_save_bar()
-    {
-        let html = account_page(&chrome(), &view(AccountTab::Profile, None)).into_string();
-        let at = |needle: &str| {
-            html.find(needle)
-                .unwrap_or_else(|| panic!("{needle} in {html}"))
-        };
-        let form = at(r#"<form method="post" action="/account/profile" id="settings-form""#);
-        let email = at(r#"name="email" role="region""#);
-        let appearance = at(r#"name="appearance" role="region""#);
-        let time = at(r#"<section id="card-time""#);
-        let password = at(r#"<section id="card-password""#);
-        let bar = at(r#"<div id="save-bar" class="save-bar""#);
-        assert!(
-            form < email
-                && email < appearance
-                && appearance < time
-                && time < password
-                && password < bar,
-            "{html}"
-        );
-        assert_eq!(
-            html.matches("btn-primary").count() + html.matches(r#"data-variant="primary""#).count(),
-            2,
-            "Save, and the dialog's Change email: {html}"
-        );
-        assert!(html.contains(r#"<input class="mk-input" type="email" name="email" id="email" value="ann@example.org" autocomplete="email" required data-email-input="">"#), "{html}");
-        assert!(
-            html.contains(r#"<input type="radio" name="theme" value="dark" checked>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<option value="Australia/Perth" selected>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains("Automatic - this browser: Europe/London"),
-            "{html}"
-        );
-        assert!(html.contains(r#"<select class="mk-input" name="language" id="language" disabled data-mk="2"><option value="en" selected>English</option></select>"#), "{html}");
-        assert!(
-            html.contains("more languages come with translation"),
-            "{html}"
-        );
-        assert!(html.contains(r#"<dialog id="email-confirm""#), "{html}");
-        // The email question runs as it's reached; the settings
-        // components, deferred, after it.
-        assert!(
-            html.contains(&format!(
-                r#"<script src="{}"></script>"#,
-                crate::assets::url("account.js")
-            )),
-            "{html}"
-        );
-        assert!(
-            html.contains(&format!(
-                r#"<script type="module" src="{}"></script>"#,
-                crate::assets::url("ui-islands.js")
-            )),
-            "{html}"
-        );
-    }
-
     #[test]
     fn a_refused_save_marks_its_card_and_keeps_what_was_sent_against_what_is_saved() {
         let mut data = view(
@@ -581,82 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn a_save_says_what_it_saved() {
-        let html = account_page(
-            &chrome(),
-            &view(
-                AccountTab::Profile,
-                Some(Outcome::Saved(vec![Card::Email, Card::Time])),
-            ),
-        )
-        .into_string();
-        assert!(html.contains("<strong>Profile saved</strong><span class=\"toast-line\">You log in with ann@example.org from now on.</span>"), "{html}");
-        assert_eq!(
-            html.matches(r#"data-card-saved data-mk="4">Saved<"#)
-                .count(),
-            2,
-            "{html}"
-        );
-
-        let html = account_page(
-            &chrome(),
-            &view(
-                AccountTab::Profile,
-                Some(Outcome::Saved(vec![Card::Password])),
-            ),
-        )
-        .into_string();
-        assert!(html.contains("<strong>Password changed</strong><span class=\"toast-line\">Every other session was logged out.</span>"), "{html}");
-
-        let html = account_page(
-            &chrome(),
-            &view(
-                AccountTab::Profile,
-                Some(Outcome::Saved(vec![Card::Time, Card::Password])),
-            ),
-        )
-        .into_string();
-        assert!(html.contains("<strong>Profile saved</strong><span class=\"toast-line\">Every other session was logged out.</span>"), "{html}");
-
-        let html = account_page(
-            &chrome(),
-            &view(AccountTab::Profile, Some(Outcome::Unchanged)),
-        )
-        .into_string();
-        assert!(html.contains("<strong>Nothing to save</strong>"), "{html}");
-    }
-
-    #[test]
-    fn the_profile_tab_asks_for_the_current_password_and_the_new_one_twice() {
-        let html = account_page(&chrome(), &view(AccountTab::Profile, None)).into_string();
-        assert!(
-            html.contains(
-                r#"name="current_password" id="current-password" autocomplete="current-password">"#
-            ),
-            "{html}"
-        );
-        assert!(
-            html.contains(&format!(
-                r#"name="new_password" id="new-password" autocomplete="new-password" minlength="{}">"#,
-                crate::http::MIN_PASSWORD_LEN
-            )),
-            "{html}"
-        );
-        assert!(
-            html.contains(&format!(
-                r#"name="confirm_password" id="confirm-password" autocomplete="new-password" minlength="{}">"#,
-                crate::http::MIN_PASSWORD_LEN
-            )),
-            "{html}"
-        );
-        assert!(
-            html.contains("Changing it logs you out everywhere else."),
-            "{html}"
-        );
-        assert!(!html.contains("session list"), "{html}");
-    }
-
-    #[test]
     fn without_javascript_an_email_change_asks_on_a_page_of_its_own() {
         let submitted = Profile {
             email: "new@example.org".to_string(),
@@ -685,25 +543,6 @@ mod tests {
         );
         assert!(
             html.contains(r#"<p class="error" role="alert">That isn't the same email.</p>"#),
-            "{html}"
-        );
-    }
-
-    #[test]
-    fn the_theme_choice_previews_each_theme_and_marks_the_chosen_one() {
-        let html = theme_choice(
-            Theme::System,
-            None,
-            "You can change it any time from the account menu.",
-        )
-        .into_string();
-        assert!(html.contains(r#"<input type="radio" name="theme" value="system" checked><span class="mini-page system" aria-hidden="true"><span class="bar"></span></span>System</label>"#), "{html}");
-        assert!(
-            html.contains(r#"value="light"><span class="mini-page light""#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"value="dark"><span class="mini-page dark""#),
             "{html}"
         );
     }
