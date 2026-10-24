@@ -1232,6 +1232,13 @@ async fn main() {
         engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
+    // The status page's stream looks again once the cached engine status
+    // runs out: at the setting's floor (engine.status_cache_ms), a second,
+    // so a test sees a new story within one, not ten.
+    monokulo::http::status_page::set_status_cache_ttl(
+        &state.engine,
+        std::time::Duration::from_secs(1),
+    );
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))
