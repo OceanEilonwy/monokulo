@@ -255,7 +255,8 @@ fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
 }
 
 /// `POST /__coverage/engine/story`: plays a story into the fixture
-/// engine's mainnet record, one event every 120 ms: a new block with a
+/// engine's mainnet record, one event every 30 ms (the stream sends them
+/// in frames of 200 ms, StreamTuning::coalesce): a new block with a
 /// payment, a pool payment settling, the store catching up and joining
 /// the frontier, then a reorganisation from detection to rewind.
 async fn engine_story(State(control): State<Controls>) -> StatusCode {
@@ -354,7 +355,7 @@ async fn engine_story(State(control): State<Controls>) -> StatusCode {
     tokio::spawn(async move {
         for event in story {
             activity.record(event);
-            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
     });
     StatusCode::NO_CONTENT
