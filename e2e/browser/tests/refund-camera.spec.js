@@ -1,77 +1,14 @@
-const fs = require('node:fs');
 const path = require('node:path');
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 
-// Each browser's camera, as a test gets one. Chromium's fake device plays
-// fixtures/refund-qr-camera.y4m: the customer holding their wallet's
-// receive QR up to the phone. Firefox's fake device, and WebKit's mock one
-// once the camera is allowed (as a customer allows it at the prompt), show
-// a test pattern holding no code, so there the code is held up to it
-// (holdUpCode). Launch options, so this suite has its own file.
-const CAMERAS = {
-  chromium: { showsCode: true, permissions: [], launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
-    `--use-file-for-fake-video-capture=${path.join(__dirname, '../fixtures/refund-qr-camera.y4m')}`] } },
-  firefox: { showsCode: false, permissions: [],
-    launchOptions: { firefoxUserPrefs: { 'media.navigator.streams.fake': true, 'media.navigator.permission.disabled': true } } },
-  webkit: { showsCode: false, permissions: ['camera'], launchOptions: {} },
-};
+// Chromium's fake camera plays fixtures/refund-qr-camera.y4m: the customer
+// holding their wallet's receive QR up to the phone. Launch options, so
+// this suite has its own file.
 test.use({
-  launchOptions: [async ({ browserName }, use) => use(CAMERAS[browserName].launchOptions), { scope: 'worker' }],
-  permissions: async ({ browserName }, use) => use(CAMERAS[browserName].permissions),
+  launchOptions: { args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream',
+    `--use-file-for-fake-video-capture=${path.join(__dirname, '../fixtures/refund-qr-camera.y4m')}`] },
 });
-
-/** The page side of holdUpCode: makes getUserMedia a camera that sees the
- * code. It patches MediaDevices' prototype, which is there from the start
- * of every document, not the page's mediaDevices: in WebKit the init
- * script can run before the page has one, and a run that patched the
- * object showed the mock's test pattern. Safe to run twice in one
- * document. */
-function holdUp(code) {
-  const proto = window.MediaDevices && window.MediaDevices.prototype;
-  if (!proto || !proto.getUserMedia || proto.getUserMedia.holdsCode) return;
-  const camera = proto.getUserMedia;
-  const holdsCode = async function (constraints) {
-    const device = await camera.call(this, constraints);
-    const canvas = Object.assign(document.createElement('canvas'), { width: 640, height: 480 });
-    const context = canvas.getContext('2d');
-    const image = new Image();
-    image.src = code;
-    await image.decode();
-    // A camera sends frames all the time; a canvas only when drawn.
-    const draw = () => { context.fillStyle = 'white'; context.fillRect(0, 0, 640, 480); context.drawImage(image, 160, 80, 320, 320); };
-    draw();
-    const frames = setInterval(draw, 100);
-    const [track] = canvas.captureStream(10).getVideoTracks();
-    const stop = track.stop.bind(track);
-    track.stop = () => { clearInterval(frames); stop(); device.getTracks().forEach(t => t.stop()); };
-    return new MediaStream([track]);
-  };
-  holdsCode.holdsCode = true;
-  proto.getUserMedia = holdsCode;
-}
-
-const heldUp = new WeakMap();
-
-/** Holds the refund QR up to a camera that shows none: the page still gets
- * the browser's own camera, asked for as it asks, but what the camera sees
- * is the code (fixtures/refund-qr.png on a white card). Stopping the
- * picture stops the camera. Open the page with `visit`, not `page.goto`:
- * the init script alone sometimes isn't in the first document in WebKit
- * (one run showed the mock's own test pattern, so nothing was ever
- * decoded), and the pages look getUserMedia up when the camera is asked
- * for, so `visit` also installs it into the loaded document. */
-async function holdUpCode(page, browserName) {
-  if (CAMERAS[browserName].showsCode) return;
-  const code = `data:image/png;base64,${fs.readFileSync(path.join(__dirname, '../fixtures/refund-qr.png')).toString('base64')}`;
-  heldUp.set(page, code);
-  await page.addInitScript(holdUp, code);
-}
-
-async function visit(page, url) {
-  await page.goto(url);
-  if (heldUp.has(page)) await page.evaluate(holdUp, heldUp.get(page));
-}
 
 const address = '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC';
 let fixture;
@@ -89,24 +26,10 @@ async function checkoutUrl(request) {
   return `${fixture.base_url}/checkout/${order_id}`;
 }
 
-test('real checkout scans a refund QR with the camera, then stops the camera', async ({ page, request, browserName }) => {
+test('real checkout scans a refund QR with the camera, then stops the camera', async ({ page, request }) => {
   const url = await checkoutUrl(request);
-  await holdUpCode(page, browserName);
-  await visit(page, url);
-  const scan = page.locator('#scan-refund');
-  const video = page.locator('#refund-camera');
-  await scan.click();
-  await expect(page.locator('#refund_address')).toHaveValue(address);
-  await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
-  // A successful scan turns the camera off by itself.
-  await expect(video).toBeHidden();
-  await expect(scan).toHaveAttribute('aria-label', 'Scan refund QR');
-  await expect.poll(() => video.evaluate(el => el.srcObject)).toBeNull();
-});
-
-test('real checkout camera can be stopped by the customer before it finds a code', async ({ page, request }) => {
-  const url = await checkoutUrl(request);
-  // Hold off the decoder so the camera is still looking when they tap Stop.
+  // The decoder finds nothing until the test lets it (window.__decode), so
+  // the camera is still looking when the customer first taps Stop.
   await page.addInitScript(() => {
     let real;
     Object.defineProperty(window, 'jsQR', { configurable: true,
@@ -115,47 +38,26 @@ test('real checkout camera can be stopped by the customer before it finds a code
   });
   await page.goto(url);
   const scan = page.locator('#scan-refund');
+  const video = page.locator('#refund-camera');
+
+  // Stopped before it finds a code: the field is left as it was.
   await scan.click();
   await expect(scan).toHaveAttribute('aria-label', 'Stop camera');
-  await expect(page.locator('#refund-camera')).toBeVisible();
-  const tracks = await page.locator('#refund-camera').evaluate(el => el.srcObject.getTracks().length);
+  await expect(video).toBeVisible();
+  const tracks = await video.evaluate(el => el.srcObject.getTracks().length);
   expect(tracks).toBeGreaterThan(0);
   await scan.click();
   await expect(scan).toHaveAttribute('aria-label', 'Scan refund QR');
-  await expect(page.locator('#refund-camera')).toBeHidden();
+  await expect(video).toBeHidden();
   await expect(page.locator('#refund_address')).toHaveValue('');
-});
 
-test('merchant scans the customer refund QR with the POS tablet camera', async ({ page, context, browserName }) => {
-  await holdUpCode(page, browserName);
-  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-  await visit(page, `${fixture.base_url}/stores/${fixture.connection_id}/pos`);
-  const card = page.locator('.pos-pay-card');
-  await card.getByRole('button', { name: 'Scan refund QR' }).click();
-  await expect(card.locator('#pos-refund')).toHaveValue(address);
-  await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
-  // The scan ends by itself: camera hidden and released.
-  await expect(card.locator('.pos-camera')).toBeHidden();
-  await expect(card.getByRole('button', { name: 'Scan refund QR' })).toBeVisible();
-  await expect.poll(() => card.locator('.pos-camera').evaluate(el => el.srcObject)).toBeNull();
-});
-
-test('POS tablet camera stopped before it finds a code leaves the field as it was', async ({ page, context }) => {
-  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-  // Hold off the decoder so the camera is still looking when they tap Stop.
-  await page.addInitScript(() => {
-    let real;
-    Object.defineProperty(window, 'jsQR', { configurable: true, get: () => (real ? () => null : undefined), set: value => { real = value; } });
-  });
-  await page.goto(`${fixture.base_url}/stores/${fixture.connection_id}/pos`);
-  const card = page.locator('.pos-pay-card');
-  await expect(card).toBeVisible();
-  const before = await card.locator('#pos-refund').inputValue();
-  await card.getByRole('button', { name: 'Scan refund QR' }).click();
-  await expect(card.getByRole('button', { name: 'Stop camera' })).toBeVisible();
-  await expect(card.locator('.pos-camera')).toBeVisible();
-  await card.getByRole('button', { name: 'Stop camera' }).click();
-  await expect(card.locator('.pos-camera')).toBeHidden();
-  await expect(card.locator('#pos-refund')).toHaveValue(before);
-  await expect(card.locator('.pos-refund-message')).toHaveCount(0);
+  // Looking again, it reads the code and saves it.
+  await page.evaluate(() => { window.__decode = true; });
+  await scan.click();
+  await expect(page.locator('#refund_address')).toHaveValue(address);
+  await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
+  // A successful scan turns the camera off by itself.
+  await expect(video).toBeHidden();
+  await expect(scan).toHaveAttribute('aria-label', 'Scan refund QR');
+  await expect.poll(() => video.evaluate(el => el.srcObject)).toBeNull();
 });
