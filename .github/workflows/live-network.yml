@@ -89,14 +89,14 @@ jobs:
           tor --list-modules
       - name: Install the browser tests' dependencies
         run: npm ci --prefix e2e/browser --no-audit --no-fund
-      # The browser tests' cache (platform.yml), which holds Chromium among
-      # its browsers; restore only.
+      # The browser tests' cache (platform.yml), which holds Chromium;
+      # restore only.
       - name: Restore Playwright's browsers
         id: chromium
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-chromium-firefox-webkit-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
       - name: Install Chromium
         working-directory: e2e/browser
         run: |
