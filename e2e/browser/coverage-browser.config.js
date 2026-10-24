@@ -35,6 +35,8 @@ module.exports = defineConfig({
   globalSetup: realBinaries.globalSetup,
   workers: realBinaries.workers,
   retries: 0,
+  // Tests that only feed the screenshot gallery run in the coverage run only.
+  grepInvert: process.env.COVERAGE_SCREENSHOTS === '1' ? undefined : /@gallery/,
   projects: [
     { name: 'real-binaries', ...realBinariesProject(realBinaries.testMatch) },
     {
