@@ -32,6 +32,10 @@ jobs:
         # The code an engine built without zmq or snp has in their place
         # (refusing settings that need them), which no test build compiles.
         run: cargo clippy -p engine --all-targets --locked --no-default-features -- -D warnings
+      - name: Fuzz workspace's lock file is current
+        # fuzz/ is its own workspace, so the clippy run above never sees
+        # its Cargo.lock; the nightly fuzz job builds it with --locked.
+        run: cargo metadata --format-version 1 --locked --manifest-path fuzz/Cargo.toml > /dev/null
       - name: Check test-support only adds code
         # A feature that only tests turn on may add helpers, never change
         # what shipped code does: test builds (the browser suites' real
