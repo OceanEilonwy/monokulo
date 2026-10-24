@@ -829,8 +829,15 @@ mod tests {
         )));
     }
 
-    #[tokio::test]
-    async fn a_store_whose_backend_was_replaced_is_registered_again_within_seconds() {
+    /// A scanner loop over one store whose keys are in a plain backend, once
+    /// its first round has registered them: the router, the handles, the
+    /// store and the loop.
+    async fn a_registered_store() -> (
+        Arc<CustodyRouter>,
+        Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+        crate::store::TenantId,
+        tokio::task::JoinHandle<()>,
+    ) {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = Arc::new(CustodyRouter::new(
             HashMap::from([("plain".to_owned(), plain)]),
@@ -878,7 +885,26 @@ mod tests {
             wallet_handles.read().contains_key(&tenant.id)
         })
         .await;
-        let first = wallet_handles.read()[&tenant.id];
+        (router, wallet_handles, tenant.id, scan_loop)
+    }
+
+    /// On the real clock: the loop's first round registers the store's keys.
+    #[tokio::test]
+    async fn a_store_is_registered_on_the_scanner_loop_s_first_round() {
+        let (router, wallet_handles, tenant, scan_loop) = a_registered_store().await;
+        assert!(router.handle_is_live(wallet_handles.read()[&tenant]));
+        scan_loop.abort();
+    }
+
+    /// On a paused clock, with the production intervals: a store whose
+    /// handle was lost is registered again after
+    /// [`REGISTRATION_RETRY_AFTER_LOSS`], well before the normal
+    /// [`REGISTRATION_RETRY`].
+    #[tokio::test(start_paused = true)]
+    async fn a_store_whose_backend_was_replaced_is_registered_again_within_seconds() {
+        let started = tokio::time::Instant::now();
+        let (router, wallet_handles, tenant, scan_loop) = a_registered_store().await;
+        let first = wallet_handles.read()[&tenant];
 
         // The backend is replaced by a new instance: the old handle is gone.
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
@@ -889,10 +915,15 @@ mod tests {
         eventually("the store to be registered in the new instance", || {
             wallet_handles
                 .read()
-                .get(&tenant.id)
+                .get(&tenant)
                 .is_some_and(|h| *h != first && router.handle_is_live(*h))
         })
         .await;
+        let waited = started.elapsed();
+        assert!(
+            waited >= REGISTRATION_RETRY_AFTER_LOSS && waited < REGISTRATION_RETRY,
+            "registered again after {waited:?}"
+        );
         scan_loop.abort();
     }
 }
