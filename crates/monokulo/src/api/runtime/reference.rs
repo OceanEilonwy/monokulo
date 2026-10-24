@@ -51,6 +51,7 @@ pub fn catalog(examples: &[Exchange]) -> Value {
                         "doc": handler.doc,
                         "form": handler.form,
                         "template": template,
+                        "problems": handler.problems().iter().map(|p| p.slug()).collect::<Vec<_>>(),
                     })
                 })
                 .collect();

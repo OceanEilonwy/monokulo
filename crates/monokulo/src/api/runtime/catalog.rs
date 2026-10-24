@@ -82,6 +82,43 @@ pub struct HandlerInfo {
     pub describe: fn(&mut OperationDoc<'_>),
 }
 
+impl HandlerInfo {
+    /// Every problem it may answer with, by status then slug: the
+    /// middleware's in front of it (`http::abuse`, `http::embed_domains`),
+    /// a key it doesn't take (`super::auth::Authorized`), its parameters'
+    /// and its own (`problems = [...]` in its attribute). The OpenAPI
+    /// document lists exactly these; under test an answer with any other
+    /// fails (`super::openapi::check_response`), and the recording must
+    /// show each one (`super::recording`).
+    pub fn problems(&self) -> Vec<super::problem::Problem> {
+        use super::auth::Key;
+        use super::problem::Problem;
+        let method = axum::http::Method::from_bytes(self.method.as_bytes())
+            .expect("a handler's method is one");
+        let mut problems = crate::http::abuse::api_route_problems(&method, self.template);
+        problems.extend(crate::http::embed_domains::api_route_problems(
+            &method,
+            self.template,
+        ));
+        if !self.who.admits(None) {
+            problems.push(Problem::Unauthorized);
+        }
+        if [Key::Pk, Key::Sk, Key::Ak]
+            .into_iter()
+            .any(|key| !self.who.admits(Some(key)))
+        {
+            problems.push(Problem::Forbidden);
+        }
+        let mut generator = schemars::SchemaGenerator::default();
+        let mut operation = OperationDoc::new(&mut generator);
+        (self.describe)(&mut operation);
+        problems.extend(operation.problems);
+        problems.sort_by_key(|p| (p.status().as_u16(), p.slug()));
+        problems.dedup();
+        problems
+    }
+}
+
 /// A resource's body (`#[api::body]`).
 pub struct BodyInfo {
     pub name: &'static str,

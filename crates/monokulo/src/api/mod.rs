@@ -43,7 +43,12 @@
 //!   handler with a `form` is a HAL-FORMS template on its resource, and a
 //!   type (`Form<orders::create>`) another body can offer. It answers a
 //!   body, `Created`, `NoContent`, `Cached` (a body its caller may keep) or
-//!   an `EventStream` of the events its type lists.
+//!   an `EventStream` of the events its type lists. `problems = [...]`
+//!   names each `Problem` its own body may answer with (`InvalidAmount`,
+//!   `EngineUnavailable`); its parameters add theirs (an `Input` its
+//!   body's, `Orders` `internal`) and the middleware its own
+//!   (`HandlerInfo::problems`). The OpenAPI document lists exactly those
+//!   for it, and under test any other problem it answers fails.
 //! - `#[api::body]` is the resource's body: `Link<T>` fields become
 //!   `_links` (`mk:<T's rel>`), `Form<H>` fields and the resource's own
 //!   forms `_templates`, each only when the caller's key may use it, and
@@ -105,7 +110,7 @@ pub mod __private {
         described, encode_segment, hal_parts, link_key, link_title, object_links, object_schema,
         schema_name, Body, FormTarget, LinksBuilder, Resource, Respond, TemplatesBuilder,
     };
-    pub use super::runtime::problem::{not_found, ProblemDetails};
+    pub use super::runtime::problem::{not_found, Problem, ProblemDetails};
     pub use super::runtime::scalars::ScalarRules;
     pub use crate::http::AppState;
     pub use {axum, linkme, schemars, serde, serde_json};

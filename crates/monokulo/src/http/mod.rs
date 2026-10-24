@@ -658,13 +658,8 @@ pub fn build_router(state: AppState) -> Router {
         );
 
     // The machine API (`crate::api`): every resource's routes, from the
-    // catalog its macros fill. Under test each answer is also checked
-    // against the OpenAPI document (`api::runtime::examples`).
+    // catalog its macros fill.
     let api = crate::api::runtime::router();
-    #[cfg(test)]
-    let api = api.layer(middleware::from_fn(
-        crate::api::runtime::examples::check_layer,
-    ));
     // The payer's pages, keyed by the order alone, and the machine API:
     // the surfaces a shop, an app or a customer's browser reaches, under
     // the embed policy, the per-client budget and the embed CORS rules.
@@ -754,7 +749,7 @@ pub fn build_router(state: AppState) -> Router {
     // Outermost, so every line from the middleware above (abuse, embed
     // policy) carries the request's span (structured_logging.md 2.1), with
     // the store it concerns recorded first.
-    router
+    let router = router
         .layer(middleware::from_fn_with_state(
             state.clone(),
             network_headers,
@@ -774,8 +769,15 @@ pub fn build_router(state: AppState) -> Router {
                 one_of_each_list_header(response.headers_mut());
                 response
             },
-        ))
-        .with_state(state)
+        ));
+    // Under test, every answer of a route in the OpenAPI document (the
+    // API, the handshakes) is checked against it as the client gets it,
+    // the middleware's problems too (`api::runtime::examples`).
+    #[cfg(test)]
+    let router = router.layer(middleware::from_fn(
+        crate::api::runtime::examples::check_layer,
+    ));
+    router.with_state(state)
 }
 
 /// The headers whose values are lists, which some layers append to

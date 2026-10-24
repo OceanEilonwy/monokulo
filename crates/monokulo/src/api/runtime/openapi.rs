@@ -1,8 +1,10 @@
 //! The API's OpenAPI 3.1 document, built from the catalog: each handler's
 //! method, path, who may call it, its doc comment and the schemas of what
 //! it takes and gives (the same ones its forms show); the pages the API
-//! links (`text/html`); each stream's events; and the plugin and app
-//! handshakes beside the API, with every problem they answer. Its examples
+//! links (`text/html`); each stream's events; the plugin and app
+//! handshakes beside the API; and for each route and handshake every
+//! problem it may answer, by status, with its headers (`problem_responses`).
+//! Its examples
 //! are real exchanges recorded against a real engine (`super::examples`),
 //! in the copy the docs build publishes and `cargo xtask api openapi`
 //! writes (`super::reference`). An instance serves it at
@@ -79,18 +81,47 @@ fn stream_text(events: &Value) -> Option<String> {
 fn content_entry(media: &str, schema: Option<Value>, recorded: &[&Exchange]) -> Value {
     let mut entry = json!({"schema": schema.unwrap_or_else(|| json!({"type": "string"}))});
     let with_body: Vec<&&Exchange> = recorded.iter().filter(|e| e.response.is_some()).collect();
-    if media == EVENT_STREAM {
-        if let Some(text) = with_body
-            .iter()
-            .find_map(|e| stream_text(e.response.as_ref()?))
-        {
-            entry["example"] = Value::String(text);
-        }
-        return entry;
-    }
     let mut seen = std::collections::BTreeMap::new();
     for exchange in &with_body {
         seen.entry(example_name(exchange)).or_insert(*exchange);
+    }
+    // An answer the onion address doesn't change is shown once.
+    let same: Vec<String> = seen
+        .iter()
+        .filter(|(name, exchange)| {
+            name.strip_suffix("-with-onion")
+                .and_then(|plain| seen.get(plain))
+                .is_some_and(|plain| plain.response == exchange.response)
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+    for name in same {
+        seen.remove(&name);
+    }
+    if media == EVENT_STREAM {
+        // A stream's events, as they're sent: one example while every
+        // key's are the same, otherwise one per key and network.
+        let texts: std::collections::BTreeMap<String, (&Exchange, String)> = seen
+            .into_iter()
+            .filter_map(|(name, e)| Some((name, (*e, stream_text(e.response.as_ref()?)?))))
+            .collect();
+        let distinct: std::collections::BTreeSet<&String> =
+            texts.values().map(|(_, text)| text).collect();
+        if distinct.len() == 1 {
+            entry["example"] = Value::String((*distinct.first().expect("one")).clone());
+        } else if !texts.is_empty() {
+            let examples: Map<String, Value> = texts
+                .into_iter()
+                .map(|(name, (exchange, text))| {
+                    (
+                        name,
+                        json!({"summary": example_summary(exchange), "value": text}),
+                    )
+                })
+                .collect();
+            entry["examples"] = Value::Object(examples);
+        }
+        return entry;
     }
     match seen.len() {
         0 => {}
@@ -182,6 +213,79 @@ fn page_operation(resource: &catalog::ResourceInfo) -> Value {
     entry
 }
 
+/// The answers of an operation that may answer with `problems`: one per
+/// status, naming each problem it may be, with a schema whose `type` is
+/// one of theirs, the headers they carry and an example of each from those
+/// `recorded`. No `default`: a problem not listed is one the document
+/// doesn't promise, which fails under test (`check_response`).
+fn problem_responses(
+    problems: &[Problem],
+    schema: &Value,
+    recorded: &[&Exchange],
+) -> Map<String, Value> {
+    let examples = problem_examples(recorded);
+    let mut responses = Map::new();
+    let statuses: std::collections::BTreeSet<StatusCode> =
+        problems.iter().map(|p| p.status()).collect();
+    for status in statuses {
+        let mut here: Vec<Problem> = problems
+            .iter()
+            .copied()
+            .filter(|p| p.status() == status)
+            .collect();
+        here.sort_by_key(|p| p.slug());
+        here.dedup();
+        let slugs: Vec<String> = here
+            .iter()
+            .map(|p| format!("[`{}`]({})", p.slug(), p.type_uri()))
+            .collect();
+        let types: Vec<String> = here.iter().map(|p| p.type_uri()).collect();
+        let mut content = json!({"schema": {"allOf": [
+            schema,
+            {"properties": {"type": {"enum": types}, "status": {"const": status.as_u16()}}},
+        ]}});
+        let shown: Map<String, Value> = here
+            .iter()
+            .filter_map(|p| {
+                examples
+                    .get(p.slug())
+                    .map(|e| (p.slug().to_owned(), e.clone()))
+            })
+            .collect();
+        if !shown.is_empty() {
+            content["examples"] = Value::Object(shown);
+        }
+        let mut headers = Map::new();
+        for problem in &here {
+            for (name, doc, always) in problem.headers() {
+                let alone = here.len() == 1;
+                let description = if alone {
+                    (*doc).to_owned()
+                } else {
+                    format!("With `{}`: {doc}", problem.slug())
+                };
+                headers.insert(
+                    (*name).to_owned(),
+                    json!({
+                        "description": description,
+                        "required": *always && alone,
+                        "schema": {"type": "string"},
+                    }),
+                );
+            }
+        }
+        let mut response = json!({
+            "description": format!("A problem: {}.", slugs.join(", ")),
+            "content": {PROBLEM_JSON: content},
+        });
+        if !headers.is_empty() {
+            response["headers"] = Value::Object(headers);
+        }
+        responses.insert(status.as_u16().to_string(), response);
+    }
+    responses
+}
+
 /// The operation of a handshake: what it takes, what it gives, and each
 /// problem it answers, by status, with those `recorded`.
 fn handshake_operation(
@@ -202,40 +306,7 @@ fn handshake_operation(
         "200".into(),
         json!({"description": "OK", "content": {"application/json": content_entry("application/json", Some(response), &ok)}}),
     );
-    let mut problems: Vec<Problem> = handshake.problems.to_vec();
-    problems.sort_by_key(|p| p.status().as_u16());
-    let examples = problem_examples(recorded);
-    for status in problems
-        .iter()
-        .map(|p| p.status())
-        .collect::<std::collections::BTreeSet<_>>()
-    {
-        let slugs: Vec<String> = problems
-            .iter()
-            .filter(|p| p.status() == status)
-            .map(|p| format!("[`{}`]({})", p.slug(), p.type_uri()))
-            .collect();
-        let mut content = json!({"schema": problem});
-        let here: Map<String, Value> = problems
-            .iter()
-            .filter(|p| p.status() == status)
-            .filter_map(|p| {
-                examples
-                    .get(p.slug())
-                    .map(|e| (p.slug().to_owned(), e.clone()))
-            })
-            .collect();
-        if !here.is_empty() {
-            content["examples"] = Value::Object(here);
-        }
-        responses.insert(
-            status.as_u16().to_string(),
-            json!({
-                "description": format!("A problem: {}.", slugs.join(", ")),
-                "content": {PROBLEM_JSON: content},
-            }),
-        );
-    }
+    responses.extend(problem_responses(handshake.problems, problem, recorded));
     let mut request_content = json!({"schema": request});
     if let Some(example) = ok.iter().find_map(|e| e.request.clone()) {
         request_content["example"] = example;
@@ -391,15 +462,7 @@ pub fn build(examples: &[Exchange]) -> Value {
                 "schema": {"type": "string"},
             }));
         }
-        let mut problem_content = json!({"schema": problem});
-        let problems = problem_examples(&recorded);
-        if !problems.is_empty() {
-            problem_content["examples"] = Value::Object(problems);
-        }
-        responses.insert(
-            "default".into(),
-            json!({"description": "A problem (RFC 9457): its `type` is its page in the docs.", "content": {PROBLEM_JSON: problem_content}}),
-        );
+        responses.extend(problem_responses(&handler.problems(), &problem, &recorded));
         let keys = handler.who.keys();
         let security = if handler.who.admits(None) {
             json!([{}, {"bearer": []}])
@@ -496,25 +559,27 @@ pub fn check_response(
     method: &str,
     route: &str,
     status: StatusCode,
-    content_type: &str,
+    headers: &axum::http::HeaderMap,
     body: &Value,
 ) {
     let document = document();
     let verb = method.to_ascii_lowercase();
     let operation = &document["paths"][route][&verb];
-    if operation.is_null() {
+    // A page for people the API links to is listed for its HTML only: what
+    // it answers a script (the dashboard's own) isn't the API's.
+    if operation.is_null() || operation["tags"][0] == "pages" {
         return;
     }
-    let code = status.as_u16().to_string();
-    let listed = if operation["responses"][&code].is_null() {
-        assert!(
-            !status.is_success(),
-            "{method} {route} answered {status}, which the document doesn't list"
-        );
-        "default".to_owned()
-    } else {
-        code
-    };
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let named = body.get("type").and_then(Value::as_str).unwrap_or_default();
+    let listed = status.as_u16().to_string();
+    assert!(
+        !operation["responses"][&listed].is_null(),
+        "{method} {route} answered {status} {named}, which the document doesn't list for it"
+    );
     let media = content_type
         .split(';')
         .next()
@@ -526,11 +591,28 @@ pub fn check_response(
         "{method} {route} answered {status} with {content_type:?}, which the document doesn't list for it"
     );
     if !status.is_success() {
-        let named = body.get("type").and_then(Value::as_str).unwrap_or_default();
+        let problem = Problem::ALL.iter().find(|p| p.type_uri() == named);
+        let Some(problem) = problem else {
+            panic!("{method} {route}: problem type {named:?} isn't a documented one");
+        };
+        // The problem is one the document lists for the route, at this
+        // status, with the headers it always carries.
+        let types = &operation["responses"][&listed]["content"][&media]["schema"]["allOf"][1]
+            ["properties"]["type"]["enum"];
         assert!(
-            Problem::ALL.iter().any(|p| p.type_uri() == named),
-            "{method} {route}: problem type {named:?} isn't a documented one"
+            types
+                .as_array()
+                .is_some_and(|types| types.iter().any(|t| t == named)),
+            "{method} {route} answered {status} {}, which the document doesn't list for it (it lists {types})",
+            problem.slug()
         );
+        for (name, _, always) in problem.headers() {
+            assert!(
+                !always || headers.contains_key(*name),
+                "{method} {route} answered {} without its {name} header",
+                problem.slug()
+            );
+        }
     }
     let pointer = format!(
         "#/paths/{}/{verb}/responses/{listed}/content/{}/schema",

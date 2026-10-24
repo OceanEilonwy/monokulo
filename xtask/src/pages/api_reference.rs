@@ -379,6 +379,15 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
         @for method in list(resource, "methods") {
             h3 id=(text(method, "name")) { code { (text(method, "method")) } " · " (who(method)) }
             (markdown_html(text(method, "doc")))
+            @let problems = list(method, "problems");
+            @if !problems.is_empty() {
+                p {
+                    "Problems it may answer: "
+                    @for slug in problems.iter().filter_map(Value::as_str) {
+                        a href=(format!("{up}problems/{slug}/")) { code { (slug) } } " "
+                    }
+                }
+            }
             @if let Some(form) = method["form"].as_str() {
                 p { "Offered as the form " code { (form) } " in " code { "_templates" } ", to a key that may use it." }
                 @if let Some(fields) = method["template"]["properties"].as_array().filter(|f| !f.is_empty()) {
@@ -561,6 +570,7 @@ mod tests {
                     "methods": [{
                         "method": "POST", "name": "create", "keys": ["sk", "pk"],
                         "anyone": false, "doc": "Makes an order.", "form": "create",
+                        "problems": ["invalid-amount"],
                         "template": {"properties": [{"name": "amount", "required": true, "prompt": "How much."}]}
                     }],
                     "body": null,
@@ -671,6 +681,12 @@ mod tests {
         let onion = fs::read_to_string(site.join("rels/onion-order/index.html")).unwrap();
         assert!(onion.contains("For a client on Tor."), "{onion}");
         assert!(onion.contains(r#"href="../../rels/order/""#), "{onion}");
+        // A method lists the problems it may answer.
+        let orders = fs::read_to_string(site.join("rels/orders/index.html")).unwrap();
+        assert!(
+            orders.contains(r#"href="../../problems/invalid-amount/""#),
+            "{orders}"
+        );
         let order = fs::read_to_string(site.join("rels/order/index.html")).unwrap();
         assert!(order.contains("Wallet"), "{order}");
         assert!(order.contains("Real exchanges"), "{order}");

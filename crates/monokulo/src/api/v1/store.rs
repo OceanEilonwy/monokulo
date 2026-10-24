@@ -34,7 +34,7 @@ struct Wallet {
 }
 
 /// Read the store and its wallet, as they are now.
-#[get(server)]
+#[get(server, problems = [Unauthorized, Internal])]
 async fn get(store: Store, instance: Instance) -> api::Result<Body> {
     let (id, state) = (store.id.clone(), instance.0);
     let found = state
