@@ -498,42 +498,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    /// The page is the app's shell: the header with the network picker, a
-    /// Reload button the app shows when its stream breaks off, where the
-    /// app goes and its script, and, without JavaScript, a line saying the
-    /// page needs it. Nothing of the live view is drawn by the server.
-    #[tokio::test]
-    async fn the_page_is_the_app_s_shell() {
-        let (_engine, router, cookie) = site().await;
-        let response = get(&router, "/status/engine", Some(&cookie)).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        for expected in [
-            r#"<div class="engine-app" id="engine-app" data-network="stagenet""#,
-            "The engine page needs JavaScript",
-            &crate::assets::url("engine-view.js"),
-            &crate::assets::url("engine-view.css"),
-            "Refresh page",
-            // The switcher: the network scanned is a link, the others say why not.
-            "<option value=\"stagenet\" selected>",
-            "Mainnet - no node configured",
-        ] {
-            assert!(html.contains(expected), "no {expected:?} in the page");
-        }
-        for live_view in ["3,412,881", "Frontier, 41 stores", "Round 7", "id=\"tl\""] {
-            assert!(
-                !html.contains(live_view),
-                "{live_view} is the app's to draw"
-            );
-        }
-        let unknown = get(&router, "/status/engine?network=mainnet", Some(&cookie)).await;
-        assert_eq!(
-            unknown.status(),
-            StatusCode::NOT_FOUND,
-            "the engine scans no mainnet"
-        );
-    }
-
     /// A past round: the frame it ended on, with the tuning it is drawn to;
     /// 404 once it has left the history.
     #[tokio::test]
@@ -675,32 +639,6 @@ mod tests {
         )
         .await;
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
-    }
-
-    /// The shell's header: the back link above the title, whose row holds
-    /// the help's place (the app fills it), the network picker and Reload.
-    /// Without JavaScript the picker's Go submits it.
-    #[tokio::test]
-    async fn the_shell_s_header_holds_the_picker_and_reload() {
-        let (_engine, router, cookie) = site().await;
-        let html = body_text(get(&router, "/status/engine", Some(&cookie)).await).await;
-        let at = |needle: &str| {
-            html.find(needle)
-                .unwrap_or_else(|| panic!("no {needle:?} in the page"))
-        };
-        let order = [
-            r#"<header class="mk-page-header"><nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status" title="Status">Status</a></nav><div class="mk-page-title"><h1>Engine</h1><span id="engine-help-slot"></span>"#,
-            r#"<div class="mk-page-actions"><form class="engine-network" method="get" action="/status/engine">"#,
-            r#"<button class="mk-btn" type="submit" data-only="no-script">Go</button></form><a class="mk-btn icon-only" href="/status/engine?network=stagenet" aria-label="Refresh page" title="Refresh page" data-reload"#,
-            r#"id="engine-app""#,
-        ];
-        let places: Vec<usize> = order.iter().map(|needle| at(needle)).collect();
-        assert!(
-            places.windows(2).all(|pair| pair[0] < pair[1]),
-            "out of order: {places:?}"
-        );
-        assert!(html.contains(r#"<label for="engine-network" class="visually-hidden">Network</label><div class="mk-select" data-compact data-mk="1" data-island="Select""#));
-        assert!(html.contains(r#"<select class="mk-input" data-size="compact" name="network" id="engine-network" data-mk="2">"#));
     }
 
     /// A `/status` with stagenet's two nodes, the one in use at `active`,

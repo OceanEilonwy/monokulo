@@ -294,36 +294,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn dashboard_with_no_stores_shows_the_empty_state_cta() {
-            let (state, _engine) = test_state_with_real_engine().await;
-            let router = build_router(state);
-            let session_token = signed_up_and_logged_in_session_token(
-                &router,
-                "empty-dashboard@example.com",
-                "correct horse battery staple",
-            )
-            .await;
-
-            let response = router
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri("/")
-                        .header("cookie", format!("session={session_token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            let html = body_text(response).await;
-            assert!(
-                html.contains(r#"href="/setup""#),
-                "expected the add-a-store CTA, got: {html}"
-            );
-        }
-
-        #[tokio::test]
         async fn dashboard_with_a_connected_store_and_a_real_order_shows_the_real_total_received() {
             let (state, engine) = test_state_with_real_engine().await;
             let router = build_router(state.clone());

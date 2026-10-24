@@ -54,6 +54,20 @@ Scope: every Rust crate except the engine. Tests run with
   slice 1), with the helpers only they used. `views::pos`, `views::home`, `views::connected_apps`
   and `views::domains` have no tests left, so their test modules went. −125 tests.
 
+### 4. F1 http (presentational deletes and rewrites)
+- 33 `http::` tests deleted. 1511 kept (the key tool's download and checksum URLs).
+- 1573 rewritten as `an_order_without_a_recorded_price_shows_a_dash_never_a_made_up_amount`:
+  the Amount row holds a dash and no digit, no meta refresh, and the absolute payment link.
+- 1575 rewritten as `the_orders_list_shows_an_order_and_a_fixi_search_gets_only_its_results`:
+  keeps the fixi fragment half (`<div id="orders-results">`, no `<html>`, filtered).
+- 1600 (now in `api/runtime/tests/orders.rs`) rewritten as
+  `the_embed_library_never_calls_the_engine_and_never_talks_to_its_checkout`: only the negative
+  asserts (no engine routes, no `postMessage`, checkout.js never touches `window.parent`/`top`) and
+  the scripts' content type.
+- 1686 and 1692 are in `http/status_page.rs`, which chunk B owns: not deleted here (see Needs).
+- `orders::tests::get_page` is now used only by the snp tests, so it is behind `feature = "snp"`.
+- −33 tests.
+
 ## Decisions
 
 ## Deviations from the plan
@@ -62,5 +76,11 @@ Scope: every Rust crate except the engine. Tests run with
 None in scope: the baseline run above passed everywhere.
 
 ## Needs from other chunks
+- Chunk B (`http/status_page.rs`): F1 deletes 1686
+  `http::status_page::tests::http_tests::status_page_lists_a_configured_networks_node_and_a_scanner_not_yet_run`
+  and 1692 `..._shows_a_plain_error_banner_when_a_remote_engine_is_unreachable_over_http`, and the F2
+  merge 1668 `relative_time_never_goes_negative_for_a_clock_that_moved_backward` into 1669
+  `relative_time_picks_the_right_bucket`. Also the doc comment at `status_page.rs:1218` names
+  `get_status_round_trips_against_a_real_engine`, which G3 deletes here (1263).
 
 ## After
