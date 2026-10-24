@@ -133,6 +133,18 @@ Scope: every Rust crate except the engine. Tests run with
 - 9 → 3 tests (each spawned an engine and monokulo). Wall 1.44 s → 1.92 s: the three left run
   longer each, the serial time falls.
 
+### 10. F6 monokulo: the engine page throttle and cheaper keepers (2064, research 35)
+- 2064: the engine page's `machine` interval is now `machine_every` in the relay's `Timing`
+  (`const DEFAULT` = `MACHINE_EVERY`, 5 s; `validate()` refuses zero, and `timing_is_validated`
+  has the row). The handler reads `state.engine.activity.timing().machine_every`; the test builds
+  its relay with `Relay::with_timing(.., Timing { machine_every: 400 ms, ..DEFAULT })`. No
+  `cfg(test)` value. 5.27 s → 0.74 s.
+- 1399 random invariants: the same 4 seeds, 5,000 steps each instead of 20,000 (a test setting,
+  not a production value). 1.33 s → 0.25 s.
+- 1365 relay reads: its own linger 300 ms → 100 ms. 0.68 s → 0.47 s.
+- Looked at and left: 2065 (the onion listener test has no fixed wait; its time is the listener's
+  own stop), 2063 (its one 200 ms sleep is the "nothing more comes" check), 1362, 1360, 2235.
+
 ## Decisions
 - 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
   pages keep what was typed through three different view models (`shown`, a field's
@@ -143,6 +155,10 @@ Scope: every Rust crate except the engine. Tests run with
   which is stricter than `test-support`, and nothing outside `shared`'s own tests calls it. Left
   as it is; widening it to `any(test, feature = "test-support")` would only make it reachable from
   more builds.
+
+- The monokulo run's wall time (about 22 s) is set by `http::prefix_tests::every_url_a_page_gives_carries_the_path_monokulo_is_served_under`
+  (19 s) and `over_tor_no_url_carries_the_web_address_s_path` (13 s), added upstream after the
+  audit (b231f2c24), so not in the DB. Not touched (outside this chunk's list); worth a look.
 
 ## Deviations from the plan
 
