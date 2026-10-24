@@ -2229,6 +2229,9 @@ mod tests {
         );
     }
 
+    /// Another merchant's store is a bare 404 on every route (not a 403,
+    /// which would confirm the id exists, and never the owner's data),
+    /// the same as a store that doesn't exist.
     #[tokio::test]
     async fn a_different_user_hitting_the_first_users_connection_gets_404_not_their_data() {
         let (state, engine) = test_state_with_real_engine().await;
@@ -2249,21 +2252,38 @@ mod tests {
             "a different password entirely",
         )
         .await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/orders"))
-                    .header("cookie", format!("session={other_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        // Not 403 (which would confirm the id exists) and not 200 with the
-        // owner's data - a bare 404, indistinguishable from a nonexistent id.
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let get = |uri: String| {
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header("cookie", format!("session={other_token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        for (row, request) in [
+            ("orders", get(format!("/stores/{connection_id}/orders"))),
+            ("store", get(format!("/stores/{connection_id}"))),
+            ("unknown store", get("/stores/nonexistent".to_string())),
+            (
+                "new order",
+                form_post_request(
+                    &format!("/stores/{connection_id}/orders/new"),
+                    &other_token,
+                    &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
+                ),
+            ),
+            (
+                "confirmations",
+                form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &other_token,
+                    &[("confirmations_required", "3")],
+                ),
+            ),
+        ] {
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{row}");
+        }
     }
 
     #[tokio::test]
@@ -2295,50 +2315,6 @@ mod tests {
                 response.status(),
                 StatusCode::UNAUTHORIZED,
                 "expected 401 for {uri} with no session"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn store_detail_for_an_unowned_or_unknown_connection_returns_404() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let owner_token = signed_up_and_logged_in_session_token(
-            &router,
-            "store-detail-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
-
-        let other_token = signed_up_and_logged_in_session_token(
-            &router,
-            "store-detail-intruder@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        for uri in [
-            format!("/stores/{connection_id}"),
-            "/stores/nonexistent".to_string(),
-        ] {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri(uri.clone())
-                        .header("cookie", format!("session={other_token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                StatusCode::NOT_FOUND,
-                "expected 404 for {uri}"
             );
         }
     }
@@ -3033,75 +3009,43 @@ mod tests {
             html.contains("<form"),
             "the create-order form must still be present, got: {html}"
         );
-    }
 
-    /// The other half of the same two-stage split - `USD` is a real, known
-    /// currency; this test's own `test_state_with_real_engine` just has no
-    /// rate provider enabled at all. Must surface as a distinct
-    /// "unsupported", not "unknown", currency error.
-    #[tokio::test]
-    async fn creating_an_order_with_a_known_but_provider_unsupported_currency_gets_a_distinct_error(
-    ) {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
+        // The other half of the same two-stage split - `USD` is a real, known
+        // currency; this test's own `test_state_with_real_engine` just has no
+        // rate provider enabled at all. Must surface as a distinct
+        // "unsupported", not "unknown", currency error.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "order-create-unsupported-currency@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "order-create-unsupported-currency@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
 
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/orders/new"),
-                &session_token,
-                &[("amount", "10.00"), ("currency", "USD")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "a validation error re-renders the page, it doesn't redirect"
-        );
-        let html = body_text(response).await;
-        assert!(
-            html.contains("unsupported currency"),
-            "expected a clear unsupported-currency error surfaced, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_different_user_cannot_create_an_order_on_someone_elses_connection() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let owner_token = signed_up_and_logged_in_session_token(
-            &router,
-            "order-create-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
-
-        let intruder_token = signed_up_and_logged_in_session_token(
-            &router,
-            "order-create-intruder@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/orders/new"),
-                &intruder_token,
-                &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            let response = router
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/orders/new"),
+                    &session_token,
+                    &[("amount", "10.00"), ("currency", "USD")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "a validation error re-renders the page, it doesn't redirect"
+            );
+            let html = body_text(response).await;
+            assert!(
+                html.contains("unsupported currency"),
+                "expected a clear unsupported-currency error surfaced, got: {html}"
+            );
+        }
     }
 
     /// A real engine offering two key custody backends, with monokulo's
@@ -3496,47 +3440,6 @@ mod tests {
         assert!(
             html.contains(r#"value="3""#),
             "expected the real, updated confirmation threshold shown, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn updating_the_confirmation_threshold_to_zero_is_accepted() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "confirmations-zero@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[("confirmations_required", "0")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let settings = router
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(settings.status(), StatusCode::OK);
-        let html = body_text(settings).await;
-        assert!(
-            html.contains(r#"name="zero_conf_enabled" value="true" id="zero-conf" checked"#),
-            "expected native 0-conf to be enabled: {html}"
         );
     }
 
@@ -4096,39 +3999,40 @@ mod tests {
             ),
             "the store's base currency must still be the original default, got: {html}"
         );
-    }
 
-    #[tokio::test]
-    async fn a_known_currency_with_no_enabled_rate_provider_is_still_accepted_as_a_base_currency_change(
-    ) {
-        // A base currency doesn't need a rate provider, proved here for the
-        // *change* path rather than creation -
-        // `test_state_with_real_engine`'s own `ExchangeRateProviders::xmr_only()`
-        // has no provider enabled at all.
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
+        // A known currency with no enabled rate provider is still accepted as a
+        // base currency change.
+        {
+            // A base currency doesn't need a rate provider, proved here for the
+            // *change* path rather than creation -
+            // `test_state_with_real_engine`'s own `ExchangeRateProviders::xmr_only()`
+            // has no provider enabled at all.
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "base-currency-decoupled@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "base-currency-decoupled@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
 
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[("base_currency", "GBP")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::SEE_OTHER,
-            "a known currency must be selectable regardless of provider support"
-        );
+            let response = router
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[("base_currency", "GBP")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SEE_OTHER,
+                "a known currency must be selectable regardless of provider support"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4302,83 +4206,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn equivalent_decimal_thresholds_are_rejected_by_both_forms() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "threshold-decimal-alias@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _) = create_connection(&router, &state, &session_token).await;
-        let direct_path = format!("/stores/{connection_id}/settings");
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &direct_path,
-                &session_token,
-                &[
-                    ("new_unit_amount", "50"),
-                    ("new_confirmations_required", "20"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &direct_path,
-                &session_token,
-                &[
-                    ("new_unit_amount", "50.0"),
-                    ("new_confirmations_required", "0"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(body_text(response).await.contains("already exists"));
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &direct_path,
-                &session_token,
-                &[
-                    ("new_unit_amount", "5e1"),
-                    ("new_confirmations_required", "0"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[
-                    ("new_unit_amount", "50.00"),
-                    ("new_confirmations_required", "0"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert!(body_text(response).await.contains("already exists"));
-        let rows = state
-            .db
-            .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
-                connection_id.to_string(),
-            ))
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].unit_amount, "50");
-        assert_eq!(rows[0].confirmations_required, 20);
-    }
-
-    #[tokio::test]
     async fn a_sixth_custom_threshold_is_rejected_until_one_is_deleted_in_the_same_save() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
@@ -4475,56 +4302,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_duplicate_unit_amount_is_rejected() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "threshold-duplicate@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[
-                    ("new_unit_amount", "50.00"),
-                    ("new_confirmations_required", "20"),
-                ],
-            ))
-            .await
-            .unwrap();
-
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[
-                    ("new_unit_amount", "50.00"),
-                    ("new_confirmations_required", "5"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "a duplicate amount re-renders the page, it doesn't redirect"
-        );
-        let html = body_text(response).await;
-        assert!(
-            html.contains("already exists"),
-            "expected a clear rejection message, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_negative_or_out_of_range_new_threshold_is_rejected() {
+    async fn the_confirmation_settings_refuse_what_they_cannot_hold() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
@@ -4575,6 +4353,206 @@ mod tests {
                 .unwrap(),
             0
         );
+
+        // A duplicate unit amount is rejected.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "threshold-duplicate@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
+
+            router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[
+                        ("new_unit_amount", "50.00"),
+                        ("new_confirmations_required", "20"),
+                    ],
+                ))
+                .await
+                .unwrap();
+
+            let response = router
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[
+                        ("new_unit_amount", "50.00"),
+                        ("new_confirmations_required", "5"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "a duplicate amount re-renders the page, it doesn't redirect"
+            );
+            let html = body_text(response).await;
+            assert!(
+                html.contains("already exists"),
+                "expected a clear rejection message, got: {html}"
+            );
+        }
+
+        // Equivalent decimal thresholds are rejected by both forms.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "threshold-decimal-alias@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _) = create_connection(&router, &state, &session_token).await;
+            let direct_path = format!("/stores/{connection_id}/settings");
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &direct_path,
+                    &session_token,
+                    &[
+                        ("new_unit_amount", "50"),
+                        ("new_confirmations_required", "20"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &direct_path,
+                    &session_token,
+                    &[
+                        ("new_unit_amount", "50.0"),
+                        ("new_confirmations_required", "0"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(body_text(response).await.contains("already exists"));
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &direct_path,
+                    &session_token,
+                    &[
+                        ("new_unit_amount", "5e1"),
+                        ("new_confirmations_required", "0"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let response = router
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[
+                        ("new_unit_amount", "50.00"),
+                        ("new_confirmations_required", "0"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            assert!(body_text(response).await.contains("already exists"));
+            let rows = state
+                .db
+                .lock()
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string(),
+                ))
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].unit_amount, "50");
+            assert_eq!(rows[0].confirmations_required, 20);
+        }
+
+        // Updating the confirmation threshold to zero is accepted.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "confirmations-zero@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
+
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[("confirmations_required", "0")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            let settings = router
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/stores/{connection_id}/settings?tab=payments"))
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(settings.status(), StatusCode::OK);
+            let html = body_text(settings).await;
+            assert!(
+                html.contains(r#"name="zero_conf_enabled" value="true" id="zero-conf" checked"#),
+                "expected native 0-conf to be enabled: {html}"
+            );
+        }
+
+        // Updating the confirmation threshold with non numeric input shows a
+        // clear error.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "confirmations-non-numeric@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
+
+            let response = router
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[("confirmations_required", "not-a-number")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+            let html = body_text(response).await;
+            assert!(
+                html.contains("Enter a whole number of confirmations."),
+                "expected a clear validation error, got: {html}"
+            );
+        }
     }
 
     /// Proves the whole resolution chain end to end, against the real
@@ -4857,66 +4835,6 @@ mod tests {
             1,
             "only the tier is removable, not the default: {html}"
         );
-    }
-
-    #[tokio::test]
-    async fn updating_the_confirmation_threshold_with_non_numeric_input_shows_a_clear_error() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "confirmations-non-numeric@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[("confirmations_required", "not-a-number")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("Enter a whole number of confirmations."),
-            "expected a clear validation error, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_different_user_cannot_update_confirmations_on_someone_elses_connection() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let owner_token = signed_up_and_logged_in_session_token(
-            &router,
-            "confirmations-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &owner_token).await;
-
-        let intruder_token = signed_up_and_logged_in_session_token(
-            &router,
-            "confirmations-intruder@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &intruder_token,
-                &[("confirmations_required", "3")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     /// The store's Orders page is the full history: every order with its
@@ -5205,44 +5123,6 @@ mod tests {
         assert!(second.contains(r#"rel="prev""#) && !second.contains(r#"rel="next""#));
     }
 
-    #[tokio::test]
-    async fn lookup_payment_reshows_the_orders_page_with_a_not_found_message() {
-        let (state, _engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "lookup-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let txid = "a".repeat(64);
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/orders/lookup"),
-                &session_token,
-                &[("txid", &txid)],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::OK,
-            "a lookup re-renders the orders page, it doesn't redirect"
-        );
-        let html = body_text(response).await;
-        assert!(
-            html.contains("No transaction with that ID was found"),
-            "expected the not-found message, got: {html}"
-        );
-        assert!(
-            html.contains(&txid),
-            "the submitted txid must repopulate the form's own input"
-        );
-    }
-
     /// A customer says they paid and sends the txid; the scanner has not
     /// matched it (their wallet paid while the node was behind, say). The
     /// merchant pastes it into the store page's lookup, which finds the order
@@ -5417,6 +5297,45 @@ mod tests {
             html.starts_with(r#"<div class="card" id="payment-lookup">"#) && html.contains(&txid),
             "got: {html}"
         );
+
+        // Lookup payment reshows the orders page with a not found message.
+        {
+            let (state, _engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;
+            let router = build_router(state.clone());
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "lookup-owner@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
+
+            let txid = "a".repeat(64);
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/orders/lookup"),
+                    &session_token,
+                    &[("txid", &txid)],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "a lookup re-renders the orders page, it doesn't redirect"
+            );
+            let html = body_text(response).await;
+            assert!(
+                html.contains("No transaction with that ID was found"),
+                "expected the not-found message, got: {html}"
+            );
+            assert!(
+                html.contains(&txid),
+                "the submitted txid must repopulate the form's own input"
+            );
+        }
     }
 
     // -- "Scan range" row ------------

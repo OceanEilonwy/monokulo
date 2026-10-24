@@ -82,6 +82,24 @@ Scope: every Rust crate except the engine. Tests run with
   1968 is `the_store_page_never_shows_the_engine_endpoint`.
 - −19 tests.
 
+### 6. F2/F3 http (tables and trims)
+- True tables, one setup: the open-redirect guard (6 into 1463, every input a row, each also
+  refused by `SafePath::parse`); piconero formatting (2 into 1487); `derive_payment_error`
+  (5 into 1601); POS ownership and auth as `every_pos_route_is_the_owners_alone` (1648, 1649, 1652,
+  1664, 1688 into 1658: one row per route, another merchant's page, new order and order status
+  each a row); the orders cross-user 404s (1540, 1541, 1583 into 1545: one row per route).
+- Steps of the host test, each keeping its own setup (they write state the others would see):
+  thresholds 1537/1566/1591/1595 into 1536 (renamed `the_confirmation_settings_refuse_what_they_cannot_hold`),
+  1542 into 1546, 1565 into 1568, 1563 into 1585, API order creation 1611/1616/1619 into 1614,
+  POS 1645 into 1634 and 1643 into 1644, login 1705 into 1717, webhooks 1774/1776 into 1762
+  (renamed `creating_a_webhook_refuses_a_bad_url_or_header_and_registers_nothing`), 1793 into 1778,
+  `parse_extra_headers` 1737/1740/1744 into 1736.
+- Trims (research 38): 1528 keeps newest-first lines, the engine-lines note, the GET search form
+  and its Refresh submit, no meta refresh, the line page with its narrow/widen links, the fixi
+  fragment and the retention 404; 1749 keeps newest-first attempts, the signature header, a
+  header's name without its value, no secret, and the send-again form.
+- −40 tests.
+
 ## Decisions
 - 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
   pages keep what was typed through three different view models (`shown`, a field's
