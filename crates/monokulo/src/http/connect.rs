@@ -1623,6 +1623,74 @@ mod tests {
             .is_none());
     }
 
+    /// With the engine out of reach, disconnecting can't tell whether an
+    /// order from the shop can still be paid, so it refuses and changes
+    /// nothing: the webhook stays, the key stays and the plugin stays
+    /// connected.
+    #[tokio::test]
+    async fn disconnecting_refuses_and_changes_nothing_while_the_engine_is_unreachable() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "no-engine@example.com").await;
+        let back = connect_through_setup(
+            &router,
+            &cookie,
+            "https://shop.example.com",
+            "https://shop.example.com/settings",
+            "nonce-no-engine",
+            &[],
+        )
+        .await;
+        let token = parse_query_params(&location(&back))["token"].clone();
+        let pk = finish_as_plugin(&router, &token, "0.4.0").await["public_key"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let before = state
+            .db
+            .lock()
+            .get_store_connection_by_public_key(&pk)
+            .unwrap()
+            .unwrap();
+        let id = before.id.clone();
+        let integration = state.db.lock().list_integrations(&id).unwrap()[0]
+            .id
+            .clone();
+
+        let unreachable = build_router(AppState {
+            engine: crate::http::Engine::new(EngineClient::for_tests(format!(
+                "http://{}",
+                shared::unreachable::address()
+            ))),
+            ..state.clone()
+        });
+        let refused = unreachable
+            .oneshot(form_request(
+                &format!("/stores/{id}/settings/plugins/{integration}/disconnect"),
+                Some(&cookie),
+                &[("confirm", before.name.as_str())],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body_text(refused)
+            .await
+            .contains("Monokulo can't check the shop's orders right now. Nothing changed"));
+        let rows = state.db.lock().list_integrations(&id).unwrap();
+        assert!(rows[0].disconnected_at.is_none());
+        assert_eq!(state.db.lock().list_webhooks(&id).unwrap().len(), 1);
+        let after = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.tenant_secret_token_encrypted,
+            before.tenant_secret_token_encrypted
+        );
+    }
+
     /// A `webhook_url` the engine rejects fails the whole `/finish` call
     /// (see `finish`).
     #[tokio::test]
