@@ -30,7 +30,7 @@ async function recordEvents(page) {
 }
 const events = (page, name) => page.evaluate((name) => window.__mk.filter((e) => e.name === name).map((e) => e.detail), name);
 
-test('a change marks its card and shows the save bar, and Discard puts it back', async ({ page, context }) => {
+test('a save says so on the card and in a toast; a refused one keeps what was typed', async ({ page, context }) => {
   await login(context);
   await recordEvents(page);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -68,24 +68,19 @@ test('a change marks its card and shows the save bar, and Discard puts it back',
   await expect(bar).toBeHidden();
   await expect(page.locator('#card-diagnostics input[role="switch"]')).not.toBeChecked();
   expect((await events(page, 'mk-dirty')).at(-1)).toEqual({ count: 0, groups: [] });
-  expect(errors).toEqual([]);
-});
 
-test('a save says so on the card and in a toast; a refused one keeps what was typed', async ({ page, context }) => {
-  await login(context);
-  await recordEvents(page);
+  // The payments tab: a save refused, then one saved.
   await page.goto(tab('payments'));
-  const bar = page.locator('#save-bar');
-  const card = page.locator('#card-confirmation-thresholds');
-  const field = () => page.locator('#card-confirmation-thresholds input[name="confirmations_required"]');
-  const saved = await field().inputValue();
+  const thresholds = page.locator('#card-confirmation-thresholds');
+  const confirmations = () => page.locator('#card-confirmation-thresholds input[name="confirmations_required"]');
+  const threshold = await confirmations().inputValue();
 
   // Refused: nothing saved, the card says why, what was typed stays.
-  await field().fill('721');
+  await confirmations().fill('721');
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(card).toHaveClass(/is-failed/);
-  await expect(card.locator('.card-body > p.error')).toContainText('from 0 to 720');
-  await expect(field()).toHaveValue('721');
+  await expect(thresholds).toHaveClass(/is-failed/);
+  await expect(thresholds.locator('.card-body > p.error')).toContainText('from 0 to 720');
+  await expect(confirmations()).toHaveValue('721');
   await expect(bar).toBeVisible();
   await expect(bar).toHaveClass(/is-failed/);
   await expect(bar).toContainText('Nothing saved.');
@@ -94,26 +89,27 @@ test('a save says so on the card and in a toast; a refused one keeps what was ty
   await captureCoverageStage(page, 'store-settings-failed', test.info());
 
   // Discard puts back what's saved, and the refusal goes with it.
-  await card.getByRole('button', { name: 'Discard' }).click();
-  await expect(field()).toHaveValue(saved);
-  await expect(card).not.toHaveClass(/is-failed/);
+  await thresholds.getByRole('button', { name: 'Discard' }).click();
+  await expect(confirmations()).toHaveValue(threshold);
+  await expect(thresholds).not.toHaveClass(/is-failed/);
   await expect(bar).toBeHidden();
 
   // Saved: the card says so, and a toast.
-  await field().fill('4');
+  await confirmations().fill('4');
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page).toHaveURL(/\?saved=confirmation-thresholds$/);
   await expect(page.locator('#settings-toasts .toast-success')).toContainText('Settings saved');
-  await expect(card.locator('[data-card-saved]')).toHaveText('Saved');
-  await expect(field()).toHaveValue('4');
+  await expect(thresholds.locator('[data-card-saved]')).toHaveText('Saved');
+  await expect(confirmations()).toHaveValue('4');
   await expect(bar).toBeHidden();
   expect(await events(page, 'mk-saved')).toEqual([{ groups: ['confirmation-thresholds'] }]);
   await captureCoverageStage(page, 'store-settings-saved', test.info());
 
   // Back as it was.
-  await field().fill(saved);
+  await confirmations().fill(threshold);
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page).toHaveURL(/\?saved=confirmation-thresholds$/);
+  expect(errors).toEqual([]);
 });
 
 test('without JavaScript the save bar is always there and saves, refused or not', async ({ browser }) => {
