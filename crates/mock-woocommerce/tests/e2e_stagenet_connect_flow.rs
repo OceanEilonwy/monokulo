@@ -75,6 +75,14 @@ use support::{node_fixture, require_daemon_reachable, retry};
 /// rate to multiply through.
 const TEST_ORDER_AMOUNT: &str = "0.000335";
 const TEST_CURRENCY: &str = "XMR";
+/// This test's first subaddress index on the shared stagenet merchant
+/// wallet. Every live test that pays an order starts at its own (`cargo
+/// xtask live` checks they differ), so a payment an earlier test made, still
+/// waiting in the pool for stagenet's next block, can never land on this
+/// test's order: each test's engine is new, and would otherwise hand out
+/// index 1 every time. Kept under 33: the CI merchant wallet watches indices
+/// 0-32, so the run's sweep finds every payment.
+const FIRST_MINOR_INDEX: u32 = 9;
 
 /// A running, real (network-bound) monokulo instance for this test, with its
 /// webhook pipeline running - as `src/lib.rs`'s unit tests make one (that
@@ -252,6 +260,17 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         credentials.public_key,
         credentials.api_url()
     );
+
+    // This test's own subaddresses on the shared merchant wallet, from
+    // FIRST_MINOR_INDEX (see its doc comment).
+    {
+        let store = engine.store().lock();
+        for tenant in store.list_active_tenants().unwrap() {
+            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+                store.allocate_minor_index(&tenant.id).unwrap();
+            }
+        }
+    }
 
     // Created the way the plugin does it: on monokulo, with the store's key.
     let order = create_order(

@@ -58,6 +58,14 @@ use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::store::{NewTenant, Store};
+/// This test's first subaddress index on the shared stagenet merchant
+/// wallet. Every live test that pays an order starts at its own (`cargo
+/// xtask live` checks they differ), so a payment an earlier test made, still
+/// waiting in the pool for stagenet's next block, can never land on this
+/// test's order: each test's engine is new, and would otherwise hand out
+/// index 1 every time. Kept under 33: the CI merchant wallet watches indices
+/// 0-32, so the run's sweep finds every payment.
+const FIRST_MINOR_INDEX: u32 = 1;
 
 /// Confirms the configured stagenet node is actually reachable before doing
 /// anything else with it - a misconfigured host/port, or a node that's temporarily
@@ -167,6 +175,17 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
         )
         .expect("failed to create tenant");
     let sk = created.secret_token.clone();
+
+    // This test's own subaddresses on the shared merchant wallet, from
+    // FIRST_MINOR_INDEX (see its doc comment).
+    {
+        let store = store.lock();
+        for tenant in store.list_active_tenants().unwrap() {
+            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+                store.allocate_minor_index(&tenant.id).unwrap();
+            }
+        }
+    }
     let handle = key_custody
         .unseal_and_register(&created.tenant.sealed_key_material)
         .await

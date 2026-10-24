@@ -1281,6 +1281,52 @@ mod tests {
         );
     }
 
+    /// Every file that pays a stagenet order starts its subaddresses at its
+    /// own `FIRST_MINOR_INDEX`, so no test's order can be paid by another's
+    /// payment still in the pool (each test's engine is new and would hand
+    /// out index 1), and below 33, the CI merchant wallet's last watched one.
+    #[test]
+    fn every_paying_live_test_has_its_own_subaddresses() {
+        let first = Regex::new(r"const FIRST_MINOR_INDEX: u32 = (\d+);").unwrap();
+        let mut found = Vec::new();
+        let mut stack = vec![root().join("crates")];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    if !path.ends_with("cli-wallet") && !path.ends_with("target") {
+                        stack.push(path);
+                    }
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = fs::read_to_string(&path).unwrap();
+                    if text.contains("cli_wallet::send_payment(") {
+                        let index: u32 = first.captures(&text).unwrap_or_else(|| {
+                            panic!(
+                                "{} pays an order but has no FIRST_MINOR_INDEX",
+                                path.display()
+                            )
+                        })[1]
+                            .parse()
+                            .unwrap();
+                        found.push((index, path));
+                    }
+                }
+            }
+        }
+        assert!(found.len() >= 5, "{found:?}");
+        found.sort();
+        for pair in found.windows(2) {
+            assert_ne!(
+                pair[0].0, pair[1].0,
+                "{pair:?} share their first subaddress"
+            );
+        }
+        assert!(
+            found.iter().all(|(index, _)| (1..=32).contains(index)),
+            "{found:?}"
+        );
+    }
+
     #[test]
     fn a_passing_case_that_says_it_was_inconclusive_is_listed_with_its_reason() {
         let scratch = crate::support::Scratch::new("live-inconclusive");
