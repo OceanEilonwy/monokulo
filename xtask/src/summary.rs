@@ -313,6 +313,13 @@ pub(crate) fn test_summary(title: &str, suites: &[&str]) -> String {
 /// xtask/src/slow.rs doesn't list, and whether there were none.
 pub(crate) fn test_summary_failing_slow(title: &str, suites: &[&str]) -> (String, bool) {
     let (text, slow) = report(&root(), title, suites, true);
+    // The summary goes to the job's summary page; each slow test is also an
+    // error on the run, so the log and the pull request name it.
+    for test in &slow {
+        eprintln!(
+            "::error title=Slow test::{test}: make it faster or list it in xtask/src/slow.rs"
+        );
+    }
     (text, slow.is_empty())
 }
 
