@@ -38,7 +38,8 @@ pub enum Source {
 /// The sources a setting accepts: the options file and the command line,
 /// unless it says otherwise. A setting is stored in at most one place (the
 /// options file or the database), and only a secret comes from the
-/// environment, alone.
+/// environment: alone, or with the database for one the admin page may
+/// set (its store keeps it encrypted).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Sources {
     pub toml: bool,
@@ -494,9 +495,16 @@ pub(crate) mod private {
                 return Err("a setting needs at least one source".to_string());
             }
             let secret = T::kind() == SettingKind::Secret;
-            if secret && sources != Sources::of(&[Source::Env]) {
+            // A secret never comes from the process list or an options file,
+            // which others can read. One the admin page may set as well is
+            // kept in the database, which its store must encrypt
+            // (`SettingsStore`), and its variable still wins and locks it.
+            if secret
+                && sources != Sources::of(&[Source::Env])
+                && sources != Sources::of(&[Source::Database, Source::Env])
+            {
                 return Err(
-                    "a secret comes from its environment variable alone: the process list and an options file can be read by others"
+                    "a secret comes from its environment variable, or from it and the database (encrypted by the store): the process list and an options file can be read by others"
                         .to_string(),
                 );
             }

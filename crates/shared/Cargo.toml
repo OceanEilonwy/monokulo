@@ -52,6 +52,7 @@ thiserror = "2.0.20"
 # `log::throttled!` emits `tracing` events (structured_logging.md 1.2).
 telemetry = { path = "../telemetry" }
 tracing = "0.1.44"
+zeroize = "1.9.0"
 # `supervise::supervise`'s own real use of `tokio::spawn`/`tokio::time::sleep`
 # (not test-only - both the scanner's and monokulo's real background
 # loops call this in production).

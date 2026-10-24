@@ -18,6 +18,10 @@ impl StoreError {
 
 /// Where stored values live: each process's own `settings` table.
 ///
+/// A secret declared `sources: [Database, Env]` reaches the store in the
+/// clear: the store must keep it encrypted at rest, and hand it back
+/// decrypted from [`SettingsStore::read_all`].
+///
 /// Async so an implementation over a database does its I/O off the async
 /// worker threads (on its database threads, or `spawn_blocking`): a save
 /// that waits behind a long write must not stall a worker.

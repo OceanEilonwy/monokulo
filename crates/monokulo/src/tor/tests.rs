@@ -50,7 +50,7 @@ fn each_rendezvous_circuit_is_its_own_visitor_as_with_an_external_tor() {
 async fn problem_loading(options: &str) -> Option<String> {
     let state = AppState::for_tests();
     crate::settings::MonokuloSettings::load(
-        state.db.clone(),
+        crate::settings::DbSettings::new(state.db.clone(), crate::http::TEST_ENCRYPTION_KEY),
         state.engine.client.clone(),
         state.exchange_rate.clone(),
         state.abuse.clone(),

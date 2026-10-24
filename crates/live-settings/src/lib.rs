@@ -27,7 +27,8 @@
 //! switch: a [`LayeredStore`] keeps each key in its place. Any invalid
 //! value stops [`Registry::build`] with every problem named, so a process
 //! never starts on a value it would have to guess about. A secret is read
-//! from the environment alone, before any store exists if need be
+//! from the environment (or, declared `[Database, Env]`, from a database
+//! store that encrypts it), before any store exists if need be
 //! ([`Setting::require`]). [`cli`] turns the declared settings into
 //! command-line options, with help, plus `--options` and `--init`.
 //!
@@ -112,7 +113,10 @@ pub use async_trait::async_trait;
 ///
 /// `sources` says where the value may come from: the options file and the
 /// command line unless it says otherwise (`[Toml, Cli]`). A secret comes
-/// from its environment variable alone (`sources: [Env]`, with `env`), and a
+/// from its environment variable alone (`sources: [Env]`, with `env`), or,
+/// for the rare one the admin page may set too, from the database as well
+/// (`sources: [Database, Env]`: the store must encrypt it at rest, and the
+/// variable wins and locks it), and a
 /// runtime switch kept by the admin page from the database alone
 /// (`sources: [Database]`). `required: true` makes a setting with no usable
 /// default: unset, the process can't start ([`Setting::require`]).

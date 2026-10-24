@@ -54,6 +54,9 @@ pub const COLUMNS: Classification = Classification {
         ("dashboard_order_requests", "connection_id", Visible),
         ("dashboard_order_requests", "request_key", Visible),
         ("dashboard_order_requests", "order_id", Visible),
+        ("encrypted_settings", "key", Visible),
+        // A secret setting (the CoinMarketCap API key), encrypted
+        ("encrypted_settings", "value_encrypted", Secret),
         ("invite_links", "id", Visible),
         // An invite link's token, hashed
         ("invite_links", "token_hash", Secret),
