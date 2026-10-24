@@ -200,3 +200,43 @@ That is about 17 days in total. Step 1 alone (1.5 days) meets the hard limit. Lo
 - **Q5. Tier 2.** Should it go ahead (131 tests), and is one no-JS e2e test per enhancement mechanism enough, rather than one per page?
 - **Q6. Clock waits.** Are explicit, validated tunings acceptable for the challenge's 10 s wait and the engine poll intervals (T-g)?
 - **Q7. `shared::dns::Resolver::with_addresses`.** It is a seam only tests use: keep it, or put it behind `test-support`?
+
+**Your answers (2026-10-24):** Q2: a test step. Q3: Firefox leaves CI and WebKit is the only second browser; Chromium stays the main e2e browser because WebKit doesn't launch locally. Q4: captures only in the coverage run, and 3 shapes (desktop, tablet-landscape, mobile-portrait) × light/dark. Q5: tier 2 goes ahead. Q7: behind `test-support`. Guard rails R1–R4: agreed. Proof of work: P4 (F9). Q1 and Q6 were questions back, answered in section 6.
+
+## 6. Answers to Q1 and Q6
+
+### Q1. Why the property tests are slow, and lighter local runs
+
+Proptest itself isn't the cost. Each generated case is a whole engine story: a fresh on-disk SQLite store, scan rounds run until they converge, and, for the proof family, real RandomX.
+- Of the 645 s, 576 s comes from 142 generated tests. Most of them run 64 cases (`tests/verification/support/properties.rs:12-17`); the proof family runs 16, or 8 for halves (`proof/node_properties.rs:12-24`, `work/nodes/properties.rs:883-894`).
+- The other 68 s is 70 fixed-input loop tests that only live in `::properties::` modules, such as `every_recorded_ringct_variant` at 22.1 s. Case counts don't touch these.
+- Per case: `real_verifier_and_scanner` about 4 s (it mines blocks, converges three times, restarts the follower). `reorg_collection` about 660 ms (up to 513 outputs at `txs_per_scan: 1`). `repeated_recovery_process_deaths` about 230 ms (it spawns a child process to crash it). `actual_mempool_loop` about 160 ms, mostly real sleeps.
+- Local runs and PR CI use the same counts today. Only the 6-hourly `engine-properties.yml` goes deeper: 512 cases, a fresh seed each run, and counterexamples come back as regression-file PRs.
+- 17 regression files (26 seeds) replay on every run. One seed already stopped reproducing after a strategy change and was replaced by a fixed-input test, so seeds alone are fragile.
+
+**Proposal (replaces T-i's "out of the local default"):**
+- **L1. Light local counts; CI sets today's counts explicitly.** The source default becomes 8 cases (4 for halves, 2 for proof). The `platform.yml` rust job sets `PROPTEST_CASES=64` and `ENGINE_PROOF_CASES=16`, which reproduces today's CI exactly, because `ENGINE_PROOF_CASES` takes precedence. Estimated: properties 645 s → about 215 s serial locally, the longest property 38.8 s → about 17–22 s, and with F9 the proof family drops further. Case counts are test settings, not production values, so the no-`cfg(test)` rule holds. One trap: the 16/8 proof defaults only apply while `PROPTEST_CASES` is unset, so CI must set both variables.
+- **L2. A fixed-input sibling for every family that lacks one**, pinning the bug each property once found, so the light local run still catches it deterministically. Families without one today: `real_verifier*`, `verifier_histories*`, `rpc_timeouts`, `settlement_wraparound`, `repeated_multi_order`, `stored_amount_boundaries`, 14 of 16 `money::` properties and 14 of 17 `nodes::`. From then on, every scheduled-run failure lands as a named fixed-input test, not only a seed.
+- **L3.** `every_recorded_ringct_variant` (22.1 s, fixed input) then sets the local floor. Split it by variant range, the same way as the SQL sweeps.
+- Not proposed: in-memory SQLite (the restart and crash tests need a file), or raising `txs_per_scan` (it would stop exercising the paging boundaries).
+
+With L1 + L2 the properties can stay in the local default and the run stays under a minute, because the floor falls to about 20 s. Measure it before dropping T-i for good. Unset seeds are random, so light local runs still explore new cases over time.
+
+### Q6. The clock waits, in detail
+
+**What the challenge's 10 s wait is for.** When an anonymous visitor goes over the soft rate limit, pages show "Checking your connection". A browser with JavaScript solves a small proof-of-work puzzle. Without JavaScript (for example Tor Browser on Safest), the page instead gives a signed token that only works 10 s after it was issued: waiting is the proof (`crates/monokulo/src/abuse/challenge.rs:16-19, 43`). That makes the wait a throttle, and it stays a fixed constant.
+
+One mechanism doesn't fit all 8 tests. Three fixes apply:
+
+| Test | Waits for | Cause | Fix |
+|---|---|---|---|
+| 2592 POS countdown (28.7 s) | countdown at 39–40 min | already on `page.clock`, but `runFor` fires about 1,200 timer callbacks (15 s tick, 5 s timeline flush with real HTTP) | `page.clock.fastForward()`, which fires each due timer at most once |
+| 2657 nodes down (21 s) | Nodes-tab marker off/on/off | monokulo caches engine status for `CACHE_TTL = 10 s`, a hard-coded const (`http/status_page.rs:52`) | new registry setting, e.g. `engine.status_cache_ms`, default 10 000, `range()` floor of 1 s (the cache shields the engine from bursts); e2e writes it to monokulo.toml (`e2e/browser/real-stack.js:133`) |
+| 2683 node settings (14.3 s) | 4 reload loops | same cache | same setting |
+| 2615 status card (14.9 s) | card goes 3 → 14 behind | the stream sleeps `CACHE_TTL` between looks (`status_page.rs:518`) | same setting, passed in code (in-process fixture) |
+| 2526 live view (20 s) | fixture story, about 80 events at 120 ms | pacing inside `examples/coverage_fixture.rs:342`, test code | shorten the fixture pacing; no production value |
+| 2524 hidden tab, bug #126 (12.1 s) | same story | same | shorten the catch-up only; keep at least the 200 ms coalescing gap (`StreamTuning.coalesce`) around "Rewound", or the test stops reproducing the bug |
+| 2507 challenge (10.8 s) | no-JS meta refresh `10;url=` | the 10 s wait | **keep**: the one real 10 s test |
+| 2508 challenge in frame (11.1 s) | same | same | click the "continue" link instead of waiting |
+
+So only one new production setting is needed (the status cache), and it follows the registry rule: TOML or CLI, validated, and an invalid value stops the process. The engine's own poll interval is already a setting (`payment.mempool_poll_interval_ms`) and isn't the cause. Risk: e2e no longer runs the 10 s cache default, so a unit test pins the default value. Estimated saving matches T-g (e2e 47 → about 30 s), less about 11 s because 2507 stays.
