@@ -155,10 +155,26 @@ are only ever rate limited (`rate-limited`, with `Retry-After`).
 A `503` is worth retrying: `rates-unavailable` (no exchange rate for the
 order's currency right now: the rate providers are down or rate limiting
 Monokulo, and it has no recent enough rate of its own), `engine-unavailable`
-(the payment engine is busy). Either may carry `retry_after` and
-`Retry-After`; Monokulo keeps pricing from its last rate for a while
-when a provider fails, so `rates-unavailable` means there's genuinely no
-usable rate.
+(the payment engine is busy), `store-unavailable` (the store's settings
+can't be read for a moment). `rates-unavailable` carries `retry_after` and
+`Retry-After` when a provider said how long to wait; Monokulo keeps pricing
+from its last rate for a while when a provider fails, so
+`rates-unavailable` means there's genuinely no usable rate.
+
+A currency Monokulo can't price is final, not worth retrying: making an
+order (`POST /api/v1/orders`) in it is `400`
+[`invalid-amount`](../problems/invalid-amount/), whose `detail` says which.
+A code that isn't a currency Monokulo knows (`NOPE`) is refused before any
+rate provider is asked (`unknown currency`); a real currency none of the
+store's rate providers quotes is refused once they've said so
+(`unsupported currency`); and so is any order of a store whose own base
+currency none of them quotes, since its confirmations are decided in that
+currency. `rates-unavailable` is only ever for a currency the store's
+providers do quote but can't right now. An order in XMR needs no rate.
+
+Every route lists, in the [reference](reference/) and the [OpenAPI
+document](v1/openapi.json), each problem it may answer, by status, with an
+example of each.
 
 ## Event streams
 
@@ -191,11 +207,13 @@ events), with a recorded stream as its example.
 
 Every Monokulo serves its [OpenAPI 3.1 document](v1/openapi.json) at
 `/api/v1/openapi.json` (the entry's `service-desc`). It has every route,
-who may call it, what it takes and answers; the pages the API links
+who may call it, what it takes and answers, every problem it may answer
+(with its status and headers); the pages the API links
 (`text/html`); the plugin and app handshakes with every problem they
 answer; and each stream's events. The copy on this site also has examples,
 real exchanges recorded against a test engine: the entry and the store as
-each key sees them, orders, streams, problems.
+each key sees them, with and without an onion address, orders, streams,
+and every problem of every route.
 
 To generate a client at a pinned Monokulo commit, write the same document
 from its source:
