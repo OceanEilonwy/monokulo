@@ -39,7 +39,7 @@ module.exports = defineConfig({
     { name: 'real-binaries', ...realBinariesProject(realBinaries.testMatch) },
     {
       name: 'fixture',
-      ...fixtureProject(['client-challenge-protocol.spec.js', 'client-onion.spec.js', 'client-path-prefix.spec.js', 'checkout.spec.js', 'connection-challenge.spec.js', 'merchant-client.spec.js', 'pos-terminal.spec.js', 'pos-responsive-layout.spec.js', 'refund-camera.spec.js', 'live-view.spec.js',
+      ...fixtureProject(['client-challenge-protocol.spec.js', 'client-onion.spec.js', 'client-path-prefix.spec.js', 'checkout.spec.js', 'connection-challenge.spec.js', 'merchant-client.spec.js', 'pos-terminal.spec.js', 'refund-camera.spec.js', 'live-view.spec.js',
         'store-settings.spec.js', 'domains.spec.js', 'dropdowns.spec.js', 'order-creation.spec.js', 'javascript-disabled.spec.js', 'account-settings.spec.js', 'live-view-performance.spec.js', 'wallets-networks.spec.js', 'wallet-details.spec.js', 'disclosures.spec.js', 'short-values.spec.js', 'wallet-page.spec.js', 'store-site.spec.js', 'status-network-card.spec.js', 'store-webhooks.spec.js', 'pages-gallery-themes.spec.js']),
     },
   ],

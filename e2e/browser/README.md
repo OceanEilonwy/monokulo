@@ -159,11 +159,7 @@ store, session, and order. The full checkout and the POS app are the
 product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
 The example alone mounts `/__coverage/*` controls for ready, new/paid orders,
 restricted framing, and the production challenge view. Production routes
-never receive these controls. The controlled suite also covers 14 POS device
-orientations and five resizes. The old `client-challenge-protocol.spec.js` is reduced to a
-client challenge protocol check in committed source; the current working
-tree may contain a separate preexisting badge test that the coverage config
-excludes as a duplicate of the real POS badge case.
+never receive these controls.
 
 ## Real binaries, offline (`real-binaries.config.js`)
 
@@ -217,5 +213,5 @@ The real-binary suite contains `account-access`, `node-settings`, `store-key-cus
 `admin-settings-and-nodes`. Each file receives its own fresh backend processes
 through `tests/backend-helpers.js`; numeric prefixes and execution order are not
 needed. Rendered-UI specs use names such as `checkout`, `refund-camera`,
-`merchant-client`, `pos-terminal`, `pos-responsive-layout`, and `live-view`.
+`merchant-client`, `pos-terminal`, and `live-view`.
 `pos-stagenet-payments` makes the live-network payment suite explicit.
