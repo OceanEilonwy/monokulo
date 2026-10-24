@@ -264,11 +264,20 @@ impl Walk {
 }
 
 /// What a stream sends in its first moments: its first events, fragments
-/// rendered after the handler returned.
+/// rendered after the handler returned. It stops once the stream has been
+/// quiet for a moment after them, or after a second and a half.
 async fn read_stream(mut body: Body) -> String {
     let mut text = String::new();
     let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
-    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, body.frame()).await {
+    loop {
+        let until = if text.is_empty() {
+            deadline
+        } else {
+            deadline.min(tokio::time::Instant::now() + Duration::from_millis(300))
+        };
+        let Ok(Some(Ok(frame))) = tokio::time::timeout_at(until, body.frame()).await else {
+            break;
+        };
         if let Ok(data) = frame.into_data() {
             text.push_str(&String::from_utf8_lossy(&data));
         }
