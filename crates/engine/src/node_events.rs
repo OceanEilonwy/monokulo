@@ -540,7 +540,7 @@ pub(crate) fn announcement(frame: &[u8]) -> Option<Announcement> {
 
 #[cfg(test)]
 #[path = "../tests/verification/notifications/properties.rs"]
-mod properties;
+mod boundaries;
 
 #[cfg(test)]
 #[cfg(feature = "zmq")]

@@ -4,34 +4,6 @@ use crate::property_support::{config, runtime};
 use proptest::prelude::*;
 use std::sync::Arc;
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn notification_histories_match_pending_permits(data in prop::collection::vec(any::<u8>(),0..385)) {
-        crate::exploration::notifications(&data);
-    }
-    #[test]
-    fn arbitrary_topics_match_exact_prefixes(data in prop::collection::vec(any::<u8>(),0..4097)) {
-        let expected = data.iter().position(|&b|b==b':').and_then(|at| match &data[..at] { b"json-minimal-txpool_add"=>Some(Announcement::Pool),b"json-minimal-chain_main"=>Some(Announcement::Chain),_=>None });
-        prop_assert_eq!(announcement(&data),expected);
-    }
-    #[test]
-    fn stale_generation_announcements_do_not_wake_replacements(burst in 1usize..257) {
-        runtime().block_on(async {
-            tokio::time::pause();
-            let old = Arc::new(NodeWakes::default());
-            let new = Arc::new(NodeWakes::default());
-            for _ in 0..burst { old.pool_changed(); old.chain_changed(); }
-            assert!(!new.pool_or(Duration::from_millis(50)).await);
-            assert!(!new.chain_or(Duration::from_millis(50)).await);
-            assert!(!new.proof_or(Duration::from_millis(50)).await);
-            new.chain_changed();
-            assert!(new.chain_or(Duration::from_millis(50)).await);
-            assert!(new.proof_or(Duration::from_millis(50)).await);
-        });
-    }
-}
-
 #[test]
 fn reviewed_notification_histories_replay() {
     for data in [
@@ -152,13 +124,6 @@ async fn poll_recovery(mode: u8, burst: usize) {
     assert_eq!(node.counts(Rpc::Pool).attempted, calls);
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn actual_mempool_loop_detects_payments_despite_missing_wrong_or_burst_notifications(mode in 0u8..4,burst in 1usize..65) {
-        runtime().block_on(poll_recovery(mode,burst));
-    }
-}
 #[test]
 fn all_polling_recovery_modes_run() {
     runtime().block_on(async {
@@ -331,13 +296,6 @@ mod zmq {
         subscriber.0.abort();
         let _ = (&mut subscriber.0).await;
     }
-    proptest! {
-        #![proptest_config(persisted_config(config()))]
-        #[test]
-        fn real_subscriber_recovers_and_tracks_generated_publisher_configuration(actions in prop::collection::vec((0u8..3,any::<bool>(),1u8..9),1..8)) {
-            runtime().block_on(history(actions));
-        }
-    }
     #[test]
     fn publisher_switch_disable_reenable_and_duplicate_endpoints() {
         runtime().block_on(history(vec![
@@ -346,6 +304,20 @@ mod zmq {
             (0, false, 4),
             (1, false, 4),
         ]));
+    }
+
+    /// The generated cases (`proptest!`): left out of the local
+    /// default run, run by CI and the scheduled property job.
+    mod properties {
+        use super::*;
+
+        proptest! {
+            #![proptest_config(persisted_config(config()))]
+            #[test]
+            fn real_subscriber_recovers_and_tracks_generated_publisher_configuration(actions in prop::collection::vec((0u8..3,any::<bool>(),1u8..9),1..8)) {
+                runtime().block_on(history(actions));
+            }
+        }
     }
 }
 
@@ -357,4 +329,45 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/notification_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn notification_histories_match_pending_permits(data in prop::collection::vec(any::<u8>(),0..385)) {
+            crate::exploration::notifications(&data);
+        }
+        #[test]
+        fn arbitrary_topics_match_exact_prefixes(data in prop::collection::vec(any::<u8>(),0..4097)) {
+            let expected = data.iter().position(|&b|b==b':').and_then(|at| match &data[..at] { b"json-minimal-txpool_add"=>Some(Announcement::Pool),b"json-minimal-chain_main"=>Some(Announcement::Chain),_=>None });
+            prop_assert_eq!(announcement(&data),expected);
+        }
+        #[test]
+        fn stale_generation_announcements_do_not_wake_replacements(burst in 1usize..257) {
+            runtime().block_on(async {
+                tokio::time::pause();
+                let old = Arc::new(NodeWakes::default());
+                let new = Arc::new(NodeWakes::default());
+                for _ in 0..burst { old.pool_changed(); old.chain_changed(); }
+                assert!(!new.pool_or(Duration::from_millis(50)).await);
+                assert!(!new.chain_or(Duration::from_millis(50)).await);
+                assert!(!new.proof_or(Duration::from_millis(50)).await);
+                new.chain_changed();
+                assert!(new.chain_or(Duration::from_millis(50)).await);
+                assert!(new.proof_or(Duration::from_millis(50)).await);
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn actual_mempool_loop_detects_payments_despite_missing_wrong_or_burst_notifications(mode in 0u8..4,burst in 1usize..65) {
+            runtime().block_on(poll_recovery(mode,burst));
+        }
+    }
 }

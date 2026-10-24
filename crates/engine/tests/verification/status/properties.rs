@@ -70,117 +70,6 @@ fn settled(status: OrderStatus) -> bool {
     matches!(status, OrderStatus::Paid | OrderStatus::Overpaid)
 }
 
-proptest! {
-    #![proptest_config(persisted_config(proptest::test_runner::Config::default()))]
-    #[test]
-    fn fuzz_histories_match_status_specification(data in proptest::collection::vec(any::<u8>(),0..4097)) { super::exploration::explore(&data); }
-    #[test]
-    fn agrees_with_aggregate_specification((payments, inputs) in scenario()) {
-        prop_assert_eq!(derive_status(&payments, inputs), reference_status(&payments, inputs));
-    }
-
-    #[test]
-    fn payment_order_does_not_change_status(
-        (payments, inputs) in scenario(),
-        ranks in proptest::collection::vec(any::<u64>(), 32),
-    ) {
-        let expected = derive_status(&payments, inputs);
-        let mut reordered: Vec<_> = payments.into_iter().zip(ranks).collect();
-        reordered.sort_by_key(|(_, rank)| *rank);
-        let reordered: Vec<_> = reordered.into_iter().map(|(payment, _)| payment).collect();
-        prop_assert_eq!(derive_status(&reordered, inputs), expected);
-    }
-
-    #[test]
-    fn increasing_mined_confirmations_preserves_settlement(
-        (payments, inputs) in scenario(),
-        increase in any::<u64>(),
-    ) {
-        let before = derive_status(&payments, inputs);
-        let deeper: Vec<_> = payments.into_iter().map(|mut p| {
-            if !p.is_zero_conf {
-                p.confirmations = p.confirmations.saturating_add(increase);
-            }
-            p
-        }).collect();
-        if settled(before) {
-            prop_assert_eq!(derive_status(&deeper, inputs), before);
-        }
-        // Even when initially unsettled, enough eligible funds must settle.
-        prop_assert_eq!(derive_status(&deeper, inputs), reference_status(&deeper, inputs));
-    }
-
-    #[test]
-    fn adding_payments_cannot_undo_settlement(
-        (mut payments, inputs) in scenario(),
-        extra in payments(),
-    ) {
-        // Construct a settled order without rejecting random unfunded cases.
-        payments.push(PaymentView {
-            amount_piconero: inputs.xmr_amount_piconero,
-            confirmations: inputs.confirmations_required,
-            is_zero_conf: false,
-        });
-        prop_assert!(settled(derive_status(&payments, inputs)));
-        payments.extend(extra);
-        prop_assert!(settled(derive_status(&payments, inputs)));
-    }
-
-    #[test]
-    fn funded_orders_are_independent_of_the_clock(
-        (mut payments, inputs) in scenario(),
-        later in any::<i64>(),
-    ) {
-        payments.push(PaymentView {
-            amount_piconero: inputs.xmr_amount_piconero,
-            confirmations: 0,
-            is_zero_conf: true,
-        });
-        let before = derive_status(&payments, inputs);
-        prop_assert_eq!(derive_status(&payments, StatusInputs { now: later, ..inputs }), before);
-    }
-
-    #[test]
-    fn splitting_a_payment_with_the_same_evidence_preserves_status(
-        (mut payments, inputs) in scenario(),
-        p in payment(),
-        split in any::<u64>(),
-    ) {
-        payments.push(p);
-        let before = derive_status(&payments, inputs);
-        payments.pop();
-        let first = split.min(p.amount_piconero);
-        payments.push(PaymentView { amount_piconero: first, ..p });
-        payments.push(PaymentView { amount_piconero: p.amount_piconero - first, ..p });
-        prop_assert_eq!(derive_status(&payments, inputs), before);
-    }
-
-    #[test]
-    fn expiry_is_strictly_after_the_deadline(
-        expected in 1u64..=u64::MAX,
-        expires_at in i64::MIN..i64::MAX,
-        confirmations_required in depth(),
-    ) {
-        let inputs = StatusInputs {
-            xmr_amount_piconero: expected,
-            confirmations_required,
-            now: expires_at,
-            expires_at,
-        };
-        let payments = [PaymentView {
-            amount_piconero: expected - 1,
-            confirmations: u64::MAX,
-            is_zero_conf: false,
-        }];
-        let at_deadline = if expected == 1 { OrderStatus::Pending } else { OrderStatus::Partial };
-        prop_assert_eq!(derive_status(&payments, inputs), at_deadline);
-        prop_assert_eq!(
-            derive_status(&payments, StatusInputs { now: expires_at + 1, ..inputs }),
-            OrderStatus::Expired,
-        );
-    }
-}
-
 #[test]
 fn reviewed_status_fuzz_seeds_replay() {
     for data in [
@@ -229,6 +118,123 @@ fn status_decision_boundaries_match_independent_grid() {
                     }
                 }
             }
+        }
+    }
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(proptest::test_runner::Config::default()))]
+        #[test]
+        fn fuzz_histories_match_status_specification(data in proptest::collection::vec(any::<u8>(),0..4097)) { super::super::exploration::explore(&data); }
+        #[test]
+        fn agrees_with_aggregate_specification((payments, inputs) in scenario()) {
+            prop_assert_eq!(derive_status(&payments, inputs), reference_status(&payments, inputs));
+        }
+
+        #[test]
+        fn payment_order_does_not_change_status(
+            (payments, inputs) in scenario(),
+            ranks in proptest::collection::vec(any::<u64>(), 32),
+        ) {
+            let expected = derive_status(&payments, inputs);
+            let mut reordered: Vec<_> = payments.into_iter().zip(ranks).collect();
+            reordered.sort_by_key(|(_, rank)| *rank);
+            let reordered: Vec<_> = reordered.into_iter().map(|(payment, _)| payment).collect();
+            prop_assert_eq!(derive_status(&reordered, inputs), expected);
+        }
+
+        #[test]
+        fn increasing_mined_confirmations_preserves_settlement(
+            (payments, inputs) in scenario(),
+            increase in any::<u64>(),
+        ) {
+            let before = derive_status(&payments, inputs);
+            let deeper: Vec<_> = payments.into_iter().map(|mut p| {
+                if !p.is_zero_conf {
+                    p.confirmations = p.confirmations.saturating_add(increase);
+                }
+                p
+            }).collect();
+            if settled(before) {
+                prop_assert_eq!(derive_status(&deeper, inputs), before);
+            }
+            // Even when initially unsettled, enough eligible funds must settle.
+            prop_assert_eq!(derive_status(&deeper, inputs), reference_status(&deeper, inputs));
+        }
+
+        #[test]
+        fn adding_payments_cannot_undo_settlement(
+            (mut payments, inputs) in scenario(),
+            extra in payments(),
+        ) {
+            // Construct a settled order without rejecting random unfunded cases.
+            payments.push(PaymentView {
+                amount_piconero: inputs.xmr_amount_piconero,
+                confirmations: inputs.confirmations_required,
+                is_zero_conf: false,
+            });
+            prop_assert!(settled(derive_status(&payments, inputs)));
+            payments.extend(extra);
+            prop_assert!(settled(derive_status(&payments, inputs)));
+        }
+
+        #[test]
+        fn funded_orders_are_independent_of_the_clock(
+            (mut payments, inputs) in scenario(),
+            later in any::<i64>(),
+        ) {
+            payments.push(PaymentView {
+                amount_piconero: inputs.xmr_amount_piconero,
+                confirmations: 0,
+                is_zero_conf: true,
+            });
+            let before = derive_status(&payments, inputs);
+            prop_assert_eq!(derive_status(&payments, StatusInputs { now: later, ..inputs }), before);
+        }
+
+        #[test]
+        fn splitting_a_payment_with_the_same_evidence_preserves_status(
+            (mut payments, inputs) in scenario(),
+            p in payment(),
+            split in any::<u64>(),
+        ) {
+            payments.push(p);
+            let before = derive_status(&payments, inputs);
+            payments.pop();
+            let first = split.min(p.amount_piconero);
+            payments.push(PaymentView { amount_piconero: first, ..p });
+            payments.push(PaymentView { amount_piconero: p.amount_piconero - first, ..p });
+            prop_assert_eq!(derive_status(&payments, inputs), before);
+        }
+
+        #[test]
+        fn expiry_is_strictly_after_the_deadline(
+            expected in 1u64..=u64::MAX,
+            expires_at in i64::MIN..i64::MAX,
+            confirmations_required in depth(),
+        ) {
+            let inputs = StatusInputs {
+                xmr_amount_piconero: expected,
+                confirmations_required,
+                now: expires_at,
+                expires_at,
+            };
+            let payments = [PaymentView {
+                amount_piconero: expected - 1,
+                confirmations: u64::MAX,
+                is_zero_conf: false,
+            }];
+            let at_deadline = if expected == 1 { OrderStatus::Pending } else { OrderStatus::Partial };
+            prop_assert_eq!(derive_status(&payments, inputs), at_deadline);
+            prop_assert_eq!(
+                derive_status(&payments, StatusInputs { now: expires_at + 1, ..inputs }),
+                OrderStatus::Expired,
+            );
         }
     }
 }
