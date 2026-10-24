@@ -62,14 +62,6 @@ impl XmrIdentityProvider {
     pub fn piconero_per_unit(&self) -> u64 {
         PICONERO_PER_XMR
     }
-
-    /// `async` (and takes `&self`) purely so its call shape matches
-    /// `CoingeckoRateProvider::supported_currencies_cached` at the call
-    /// site - monokulo's dispatcher can `.await` either uniformly.
-    /// Always exactly `["XMR"]`.
-    pub async fn supported_currencies(&self) -> Vec<String> {
-        vec!["XMR".to_string()]
-    }
 }
 
 /// Errors from [`CoingeckoRateProvider`]'s live HTTP calls. Kept separate from
@@ -838,16 +830,6 @@ mod tests {
         assert_eq!(
             compute_xmr_amount("0.00", 6_700_000_000),
             Err(AmountError::NotPositive)
-        );
-    }
-
-    #[tokio::test]
-    async fn xmr_identity_provider_always_returns_the_fixed_unit_conversion() {
-        let provider = XmrIdentityProvider;
-        assert_eq!(provider.piconero_per_unit(), 1_000_000_000_000);
-        assert_eq!(
-            provider.supported_currencies().await,
-            vec!["XMR".to_string()]
         );
     }
 

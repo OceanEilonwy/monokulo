@@ -112,7 +112,7 @@ impl Merchant {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/_test/whoami")
+                    .uri("/account")
                     .header("cookie", format!("session={session}"))
                     .body(Body::empty())
                     .unwrap(),
