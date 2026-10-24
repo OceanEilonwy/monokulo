@@ -45,6 +45,10 @@ max-threads = 1
 [[profile.live.overrides]]
 filter = 'test(/(^|::)live_stagenet_/)'
 test-group = 'stagenet'
+# A test that waits for a block waits on stagenet's few miners: gaps of
+# twenty minutes and more happen (2026-10-23 had one of 22). An hour,
+# above the threshold test's own 45-minute wait for its block.
+slow-timeout = { period = "300s", terminate-after = 12 }
 
 # The live_node tests (daemon_rpc) all ask one node, which drops connections
 # past its per-address limit (monerod's rpc-max-connections-per-public-ip);
