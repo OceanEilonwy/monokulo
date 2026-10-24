@@ -12,8 +12,9 @@ test.afterEach(async () => { await stopCoverageFixture(fixture?.process); });
 
 function posUrl() { return `${fixture.base_url}/stores/${fixture.connection_id}/pos`; }
 
-/** Rings up `reference` and backgrounds it, so the background orders
- * sidebar (the POS's only way to its order list) stays on screen. */
+/** Rings up `reference` and backgrounds it, as a till does before its next
+ * sale, so the background orders sidebar (the POS's only way to its order
+ * list) stays on screen. */
 async function keepOneInBackground(request, reference = 'Kept open') {
   const headers = { cookie: `session=${fixture.session}` };
   const created = await request.post(`${posUrl()}/orders`, { headers, data: { amount: '0.001', merchant_order_id: reference, request_key: reference.replace(/\W+/g, '-') } });
@@ -28,9 +29,12 @@ async function openOrderList(page) {
 
 test('real POS backgrounds, reloads, reopens, cancels, and searches an order', async ({ page, request }) => {
   test.setTimeout(90_000);
-  // A busy store: an order kept open in the background, and 44 tables.
+  // A busy store: an order kept open in the background, and 44 tables
+  // rung up and backgrounded in turn. The POS opens on the one order still
+  // in the foreground, the fixture's; with others there too it would open
+  // whichever is newest.
   await keepOneInBackground(request);
-  await ringUp(request, 44, 'Table');
+  for (let i = 1; i <= 44; i++) await keepOneInBackground(request, `Table ${i}`);
   const writes = [];
   page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
   // The counter's tablet, on its side: the POS uses the whole screen, the
@@ -38,6 +42,7 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   // orders sit beside the payment, its actions on screen.
   await page.setViewportSize({ width: 1180, height: 820 });
   await page.goto(posUrl());
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
   const box = selector => page.locator(selector).first().evaluate(el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, bottom: r.bottom }; });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.documentElement.scrollHeight <= innerHeight + 1), 'no outer scroll').toBe(true);
@@ -58,6 +63,8 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await expect(fixtureCard).toBeVisible();
   await captureCoverageStage(page, 'pos-background-stack', test.info());
   await page.reload();
+  // Nothing is left in the foreground: the POS opens on its keypad.
+  await expect(page.locator('.pos-keypad')).toBeVisible();
   await expect(fixtureCard).toBeVisible();
   await fixtureCard.click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
@@ -418,14 +425,6 @@ test('payment lands just before the merchant confirms a cancel: the server refus
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
   await expect(page.locator('.pos-stack-card')).toContainText('Fixture o');
 });
-
-async function ringUp(request, count, prefix) {
-  for (let i = 1; i <= count; i++) {
-    const created = await request.post(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` },
-      data: { amount: `0.00${i}`, merchant_order_id: `${prefix} ${i}`, request_key: `${prefix}-${i}` } });
-    expect(created.ok()).toBeTruthy();
-  }
-}
 
 test('merchant records the customer refund address from a QR image, with clear failures', async ({ page, context }) => {
   const fixtures = require('node:path').join(__dirname, '../fixtures');
