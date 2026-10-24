@@ -478,6 +478,45 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     );
 }
 
+/// A webhook's deliveries, all of them: a page of its own without
+/// JavaScript, and just the list when fixi asks for it.
+#[tokio::test]
+async fn a_webhooks_deliveries_are_a_page_and_a_fragment() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let (router, session, store, webhook, [delivered, retrying, gave_up]) =
+        store_with_deliveries(&state, "all@example.com").await;
+    let uri = format!("/stores/{store}/settings/webhooks/{webhook}/deliveries");
+    let response = get(&router, &uri, &session).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = body_text(response).await;
+    assert!(page.contains("<html"), "a whole page: {page}");
+    for id in [delivered, retrying, gave_up] {
+        assert!(
+            page.contains(&format!("{uri}/{id}")),
+            "delivery {id}: {page}"
+        );
+    }
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&uri)
+                .header("cookie", format!("session={session}"))
+                .header("fx-request", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let fragment = body_text(response).await;
+    assert!(!fragment.contains("<html"), "just the list: {fragment}");
+    assert!(
+        fragment.contains(&format!("{uri}/{delivered}")),
+        "{fragment}"
+    );
+}
+
 /// Deleting a webhook is asked first: a page without JavaScript, a dialog
 /// with it; the POST removes it and its deliveries.
 #[tokio::test]
