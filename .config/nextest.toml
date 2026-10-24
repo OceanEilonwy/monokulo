@@ -65,8 +65,9 @@ test-group = 'live-node'
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
 
-# Proof-of-work tests hash real blocks with RandomX, each process holding up
-# to two 256 MiB light-mode caches (pow::hasher::MAX_KEYS) on a thread that
+# The tests that hash with real RandomX (the follower's other tests use the
+# stand-in, pow::hasher::Function::StandIn), each process holding up to two
+# 256 MiB light-mode caches (pow::hasher::MAX_KEYS) on a thread that
 # competes with their real 30ms RPC timeouts. Sixteen at a time keeps that to
 # about 8 GiB; a 4-thread CI runner never reaches the cap.
 [test-groups.proof-workers]
@@ -76,7 +77,7 @@ max-threads = 16
 # the selected profile's own. Each setting comes from the first override that
 # matches the test and sets it.
 [[profile.default.overrides]]
-filter = 'test(/^proof::/) | test(real_verifier_and_scanner)'
+filter = 'test(=pow::hasher::tests::hashes_randomx_s_reference_vector) | test(=pow::tests::real_blocks_prove_across_a_key_change_and_any_change_fails) | test(/_hashed_with_randomx$/) | test(/::real_verifier_and_scanner_/)'
 test-group = 'proof-workers'
 slow-timeout = { period = "300s", terminate-after = 12 }
 

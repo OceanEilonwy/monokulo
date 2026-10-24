@@ -26,6 +26,23 @@ const IDLE_KEY: Duration = Duration::from_secs(60);
 /// anchor's window) can't make it hold more.
 pub const MAX_KEYS: usize = 2;
 
+/// The hash function a [`Hasher`] computes.
+///
+/// Production has `RandomX` alone. With `test-support`, tests of what is done with the hashes (the
+/// follower's anchoring, reorgs, timeouts and forks) can hash with a cheap
+/// stand-in instead, chosen explicitly ([`Hasher::stand_in`]), so mining a
+/// test chain costs microseconds a block rather than 16 ms a hash and a
+/// 256 MiB cache a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Function {
+    RandomX,
+    /// Keccak-256 of the key followed by the input: keyed like `RandomX`,
+    /// so a block hashed with the wrong key still fails, but no cache and
+    /// no VM.
+    #[cfg(any(test, feature = "test-support"))]
+    StandIn,
+}
+
 /// What a hashing request failed with: `RandomX` couldn't be set up (out of
 /// memory, say), or the thread is gone.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -94,19 +111,41 @@ struct Request {
 pub struct Hasher {
     requests: std::sync::mpsc::Sender<Request>,
     stats: Arc<HasherStats>,
+    function: Function,
 }
 
 impl Hasher {
-    /// Starts the thread. Nothing is allocated until the first request.
+    /// Starts a `RandomX` thread. Nothing is allocated until the first
+    /// request.
     pub fn start(name: &str) -> Result<Self, HashError> {
+        Self::start_with(name, Function::RandomX)
+    }
+
+    /// Starts a thread hashing with the [`Function::StandIn`] function.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stand_in(name: &str) -> Result<Self, HashError> {
+        Self::start_with(name, Function::StandIn)
+    }
+
+    /// Starts a thread hashing with `function`.
+    pub fn start_with(name: &str, function: Function) -> Result<Self, HashError> {
         let (requests, incoming) = std::sync::mpsc::channel::<Request>();
         let stats = Arc::new(HasherStats::default());
         let thread_stats = Arc::clone(&stats);
         std::thread::Builder::new()
             .name(name.to_owned())
-            .spawn(move || serve(&incoming, &thread_stats))
+            .spawn(move || serve(&incoming, &thread_stats, function))
             .map_err(|e| HashError(format!("can't start the hashing thread: {e}")))?;
-        Ok(Self { requests, stats })
+        Ok(Self {
+            requests,
+            stats,
+            function,
+        })
+    }
+
+    /// The function this thread hashes with.
+    pub fn function(&self) -> Function {
+        self.function
     }
 
     pub fn stats(&self) -> HasherSnapshot {
@@ -147,14 +186,38 @@ impl Hasher {
     }
 }
 
-/// One key's VM (which holds its cache), and when it was last used.
+/// What hashes under one key: a `RandomX` VM (which holds its cache), or
+/// the stand-in, which needs only the key.
+enum Vm {
+    RandomX(RandomXVM),
+    #[cfg(any(test, feature = "test-support"))]
+    StandIn(Vec<u8>),
+}
+
+impl Vm {
+    fn calculate_hash(&self, input: &[u8]) -> Result<Vec<u8>, HashError> {
+        match self {
+            Self::RandomX(vm) => vm
+                .calculate_hash(input)
+                .map_err(|e| HashError(e.to_string())),
+            #[cfg(any(test, feature = "test-support"))]
+            Self::StandIn(key) => {
+                let mut keyed = key.clone();
+                keyed.extend_from_slice(input);
+                Ok(monero::cryptonote::hash::keccak_256(&keyed).to_vec())
+            }
+        }
+    }
+}
+
+/// One key's VM, and when it was last used.
 struct KeyedVm {
     key: Vec<u8>,
-    vm: RandomXVM,
+    vm: Vm,
     used: Instant,
 }
 
-fn serve(incoming: &std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
+fn serve(incoming: &std::sync::mpsc::Receiver<Request>, stats: &HasherStats, function: Function) {
     let mut keys: Vec<KeyedVm> = Vec::new();
     // Once the JIT has failed to set up, it isn't tried again.
     let mut jit_works = true;
@@ -173,7 +236,7 @@ fn serve(incoming: &std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
                     .map_or(0, |(i, _)| i);
                 keys.remove(oldest);
             }
-            build(&key, &mut jit_works, stats).map(|vm| {
+            build(&key, function, &mut jit_works, stats).map(|vm| {
                 keys.push(KeyedVm { key, vm, used: now });
                 keys.len() - 1
             })
@@ -185,10 +248,7 @@ fn serve(incoming: &std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
             let mut out = Vec::with_capacity(inputs.len());
             for input in &inputs {
                 let started = Instant::now();
-                let hash = held
-                    .vm
-                    .calculate_hash(input)
-                    .map_err(|e| HashError(e.to_string()))?;
+                let hash = held.vm.calculate_hash(input)?;
                 stats
                     .hash_nanos
                     .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -205,10 +265,26 @@ fn serve(incoming: &std::sync::mpsc::Receiver<Request>, stats: &HasherStats) {
     }
 }
 
-/// A light-mode VM for `key`: with the JIT if it can be set up here, else
-/// interpreted.
-fn build(key: &[u8], jit_works: &mut bool, stats: &HasherStats) -> Result<RandomXVM, HashError> {
+/// What hashes under `key` with `function`: for `RandomX`, a light-mode VM,
+/// with the JIT if it can be set up here, else interpreted.
+fn build(
+    key: &[u8],
+    function: Function,
+    jit_works: &mut bool,
+    stats: &HasherStats,
+) -> Result<Vm, HashError> {
     let started = Instant::now();
+    match function {
+        Function::RandomX => {}
+        #[cfg(any(test, feature = "test-support"))]
+        Function::StandIn => {
+            stats
+                .key_build_nanos
+                .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            stats.keys_built.fetch_add(1, Ordering::Relaxed);
+            return Ok(Vm::StandIn(key.to_vec()));
+        }
+    }
     let recommended = RandomXFlag::get_recommended_flags();
     let attempts: Vec<RandomXFlag> = if *jit_works && recommended.contains(RandomXFlag::FLAG_JIT) {
         vec![
@@ -237,7 +313,7 @@ fn build(key: &[u8], jit_works: &mut bool, stats: &HasherStats) -> Result<Random
                     .key_build_nanos
                     .fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 stats.keys_built.fetch_add(1, Ordering::Relaxed);
-                return Ok(vm);
+                return Ok(Vm::RandomX(vm));
             }
             Err(e) => last = Some(e.to_string()),
         }
@@ -267,10 +343,34 @@ mod tests {
         assert_eq!((stats.hashes, stats.keys_built, stats.keys_held), (1, 1, 1));
     }
 
-    /// However many keys are named, at most two caches are held.
+    /// The stand-in is keyed: the same input under another key hashes
+    /// differently, as under `RandomX`, and it is never taken for it.
+    #[test]
+    fn the_stand_in_is_keyed_and_is_not_randomx() {
+        let hasher = Hasher::stand_in("test stand-in").unwrap();
+        assert_eq!(hasher.function(), Function::StandIn);
+        let input = vec![b"This is a test".to_vec()];
+        let one = hasher
+            .hash_blocking(b"test key 000", input.clone())
+            .unwrap();
+        let other = hasher.hash_blocking(b"test key 001", input).unwrap();
+        assert_ne!(one, other);
+        assert_ne!(
+            hex::encode(one[0]),
+            "639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f"
+        );
+        assert_eq!(
+            Hasher::start("test randomx").unwrap().function(),
+            Function::RandomX
+        );
+    }
+
+    /// However many keys are named, at most two caches are held. The keys
+    /// are kept the same way whatever the function, so the stand-in's
+    /// (which builds nothing) shows it without four 256 MiB caches.
     #[test]
     fn at_most_two_keys_are_held() {
-        let hasher = Hasher::start("test randomx keys").unwrap();
+        let hasher = Hasher::stand_in("test keys").unwrap();
         for key in [b"key one", b"key two", b"key thr", b"key one"] {
             hasher.hash_blocking(key, vec![b"x".to_vec()]).unwrap();
             assert!(hasher.stats().keys_held <= MAX_KEYS as u64);

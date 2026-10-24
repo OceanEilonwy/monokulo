@@ -5,7 +5,8 @@
 //! meets, so nothing is mined for them: the window an anchor takes. With
 //! 735 of them a minute apart, the blocks after need difficulty 2, and
 //! those are mined for real, so a block with a wrong proof is as easy to
-//! make as a right one.
+//! make as a right one. A chain is mined with its [`Hasher`]'s function:
+//! `RandomX`, or the stand-in for tests of what is done with the proofs.
 
 use monero::consensus::encode::{serialize, VarInt};
 use monero::cryptonote::hash::Hashable as _;
@@ -221,7 +222,8 @@ impl TestChain {
         let key = self.key(height);
         let mut block = block_blob(height, timestamp, tip.id, &txs);
         // A nonce at a time: at these difficulties the first or second
-        // usually does, and every hash costs about 16 ms.
+        // usually does, and every `RandomX` hash costs about 16 ms (the
+        // stand-in's, microseconds).
         for nonce in 0u32.. {
             block.header.nonce = nonce;
             let hash = self
