@@ -421,6 +421,12 @@ fn every_local_link_of_every_page_resolves() {
         live.contains("got: [&lt;script&gt;]") && !live.contains("<script>]"),
         "{live}"
     );
+    // A pass that could not tell is counted as such, with why.
+    assert!(
+        live.contains("1 inconclusive")
+            && live.contains("keyless API still rate-limited this address (HTTP 429)"),
+        "{live}"
+    );
     for name in &pages {
         let page = f.page(name);
         let mut links = html_links(&page);
