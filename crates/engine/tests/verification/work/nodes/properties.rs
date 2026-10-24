@@ -964,7 +964,7 @@ proptest! {
         count in 3usize..6, amount in 1u64..1000, required in 1u64..4,
         restart in any::<bool>(), fault in 0usize..50,
     ) {
-        reconcile_across_forks_and_restarts(count, amount, required, restart, fault, false);
+        reconcile_across_forks_and_restarts(crate::proof::tests::Pow::RandomX, count, amount, required, restart, fault, false);
     }
 
     #[test]
@@ -972,7 +972,7 @@ proptest! {
         count in 3usize..6, amount in 1u64..1000, required in 1u64..4,
         restart in any::<bool>(), fault in 0usize..50,
     ) {
-        reconcile_across_forks_and_restarts(count, amount, required, restart, fault, true);
+        reconcile_across_forks_and_restarts(crate::proof::tests::Pow::RandomX, count, amount, required, restart, fault, true);
     }
 }
 
@@ -983,6 +983,7 @@ fn half_integration_config() -> proptest::test_runner::Config {
 }
 
 fn reconcile_across_forks_and_restarts(
+    pow: crate::proof::tests::Pow,
     count: usize,
     amount: u64,
     required: u64,
@@ -1002,10 +1003,10 @@ fn reconcile_across_forks_and_restarts(
         let mut w = World::new(count, amount, required).await;
         tokio::time::resume();
         w.h.now = crate::proof::tests::TEST_NOW;
-        let base = crate::proof::tests::base_chain();
+        let base = crate::proof::tests::base_chain_with(pow);
         let mut chain = base.clone();
         let rules = crate::proof::tests::tuning();
-        let mut follower = crate::proof::tests::follower(NETWORK, rules.clone());
+        let mut follower = crate::proof::tests::follower_with(pow, NETWORK, rules.clone());
         {
             let s = w.h.store().lock();
             s.forget_scanned_blocks_at_or_above(NETWORK, 0).unwrap();
@@ -1074,7 +1075,7 @@ fn reconcile_across_forks_and_restarts(
         integration_round(&mut w, &mut follower, Some(fault)).await;
         if restart {
             w.h.restart();
-            follower = crate::proof::tests::follower(NETWORK, rules.clone());
+            follower = crate::proof::tests::follower_with(pow, NETWORK, rules.clone());
         }
         integration_converge(
             &mut w,
@@ -1104,7 +1105,7 @@ fn reconcile_across_forks_and_restarts(
         replacement.mine_empty((required - 1) as usize + count);
         let mut paced = rules.clone();
         paced.blocks_per_round = 1;
-        follower = crate::proof::tests::follower(NETWORK, paced);
+        follower = crate::proof::tests::follower_with(pow, NETWORK, paced);
         for node in &w.nodes {
             replacement.install(&node.fake, base.tip().height + 1);
             node.fake.set_mempool(vec![]);
