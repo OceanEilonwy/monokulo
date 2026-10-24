@@ -195,13 +195,16 @@ assets and add to the browser coverage.
 
 `captureCoverageStage(page, stage, testInfo, { group, shapes })`
 (`coverage-screenshot.js`) captures a stage when `COVERAGE_SCREENSHOTS=1`:
-every size (`desktop`, `tablet-portrait`, `tablet-landscape`,
-`mobile-portrait`, `mobile-landscape`, and the 320px `small-portrait`)
-unless `shapes` names fewer, filed under `group` (a page or feature; guessed
-from the spec's file name when left out). The POS session timeline is
-captured on desktop only. Each shot is saved to the gallery's `images/` as a
-lossless WebP, and the test gets only a text attachment naming the file, so
-the Playwright report doesn't keep a second copy.
+every size (`desktop`, `tablet-landscape` and `mobile-portrait`, each light
+and dark) unless `shapes` names fewer, filed under `group` (a page or
+feature; guessed from the spec's file name when left out). The POS session
+timeline is captured on desktop only. Each shot is saved to the gallery's
+`images/` as a lossless WebP, and the test gets only a text attachment naming
+the file, so the Playwright report doesn't keep a second copy.
+
+A test that only feeds the gallery has `@gallery` in its title: both
+configurations leave it out (`grepInvert`) unless `COVERAGE_SCREENSHOTS=1`,
+so it runs in the coverage run only.
 
 ## Spec naming
 
