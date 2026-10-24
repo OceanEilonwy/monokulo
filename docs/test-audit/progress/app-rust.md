@@ -175,6 +175,13 @@ Scope: every Rust crate except the engine. Tests run with
   audit (b231f2c24), so not in the DB. Not touched (outside this chunk's list); worth a look.
 
 ## Deviations from the plan
+- 1815 and 1826 not folded into 1966 (see Decisions): −2 fewer than planned.
+- 1817 trimmed rather than deleted (G3), keeping the 1853 check F2 folded into it.
+- 1464 became HTTP rows in 1361 rather than a copy of the pure-function test, which can't be
+  reached from `http::account`.
+- Rows already gone upstream, nothing to do: 1072, 1205, 2118, 2124, 2132, and
+  `telemetry::trace::current_trace_id` (F7).
+- Rows in chunk B's `http/status_page.rs` left for chunk B: 1668, 1686, 1692 (and 2045, theirs).
 
 ## Tests already failing on main
 None in scope: the baseline run above passed everywhere.
@@ -190,4 +197,24 @@ None in scope: the baseline run above passed everywhere.
   `relative_time_picks_the_right_bucket`. Also the doc comment at `status_page.rs:1218` names
   `get_status_round_trips_against_a_real_engine`, which G3 deletes here (1263).
 
-## After
+## After (branch head, local, 32 cores)
+
+| Crate | Tests before → after | nextest wall before → after |
+|---|---|---|
+| monokulo | 1018 → 749 (−269) | 21.98 s → 21.37 s |
+| monokulo `--features snp` | | 754 tests, 21.46 s, all pass |
+| shared | 176 → 161 (−15) | 0.63 s → 0.59 s |
+| short-id | 9 → 2 | 0.20 s → 0.004 s |
+| ui | 13 → 9 | 0.01 s → 0.005 s |
+| telemetry | 42 → 41 | 0.05 s → 0.06 s |
+| live-settings | 65 → 64 | 0.02 s → 0.03 s |
+| cli-wallet | 64 → 63 | 0.14 s → 0.12 s |
+| mock-woocommerce | 9 → 3 | 1.44 s → 1.62 s |
+| **total** | **1396 → 1092 (−304)** | |
+
+- monokulo's summed test time (serial) 177.3 s → 144.6 s. Its wall time barely moves because the
+  two `http::prefix_tests` (19 s and 13 s, see Decisions) set it.
+- Timings were taken with the other three agents building; the load average moved between about
+  20 and 170 during the session, so treat small differences as noise.
+- `cargo clippy -p <crate> --all-targets --all-features -- -D warnings` is clean for every crate
+  changed, and `cargo fmt` leaves them unchanged.
