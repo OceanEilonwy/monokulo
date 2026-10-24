@@ -211,6 +211,9 @@ pub struct Follower {
     network: monero::Network,
     tuning: ProofTuning,
     hasher: Option<Hasher>,
+    /// What a hasher this follower starts hashes with: `RandomX`, unless a
+    /// test injected another ([`Self::with_hasher`]).
+    function: pow::hasher::Function,
     /// Nodes caught or found off the proven chain, by label: excluded until
     /// their tip is on the proven chain again (a caught one, not before
     /// [`ProofTuning::caught_for`]).
@@ -243,6 +246,7 @@ impl Follower {
             network,
             tuning,
             hasher: None,
+            function: pow::hasher::Function::RandomX,
             off_chain: HashMap::new(),
             settled: HashMap::new(),
             status: None,
@@ -254,11 +258,13 @@ impl Follower {
     }
 
     /// This follower hashing on `hasher`, as though it had started that
-    /// thread itself (until checking is turned off): tests' followers share
-    /// the thread that built their chains, whose `RandomX` keys are then
-    /// built already, rather than each building them again.
+    /// thread itself, and with its function after checking is turned off
+    /// and on again: tests' followers share the thread that built their
+    /// chains, whose keys are then built already, and the follower's logic
+    /// tests hash with the stand-in ([`pow::hasher::Hasher::stand_in`]).
     #[cfg(test)]
     pub(crate) fn with_hasher(mut self, hasher: Hasher) -> Self {
+        self.function = hasher.function();
         self.hasher = Some(hasher);
         self
     }
@@ -366,7 +372,7 @@ impl Follower {
                 "engine-randomx-{}",
                 shared::network::network_str(self.network)
             );
-            let hasher = Hasher::start(&name)?;
+            let hasher = Hasher::start_with(&name, self.function)?;
             self.hasher = Some(hasher.clone());
             hasher
         };
