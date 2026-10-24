@@ -32,6 +32,8 @@ module.exports = defineConfig({
   fullyParallel: false,
   workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : Math.min(8, Math.max(4, Math.floor(os.cpus().length / 2))),
   retries: 0,
+  // Tests that only feed the screenshot gallery run in the coverage run only.
+  grepInvert: process.env.COVERAGE_SCREENSHOTS === '1' ? undefined : /@gallery/,
   reporter: [['list']],
   globalSetup: require.resolve('./real-binaries-setup.js'),
   use: { trace: 'retain-on-failure', screenshot: 'only-on-failure' },

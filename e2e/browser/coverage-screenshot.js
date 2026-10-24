@@ -1,9 +1,7 @@
 // A UI stage for the coverage gallery. A whole page is captured in the
-// shapes it is used in - a phone upright and on its side, a small phone
-// (320px, iPhone SE size) upright, a tablet (iPad Air size) upright and on
-// its side, a desktop - then put back to the size the
-// test had; anything smaller (a frame, one element) is captured once as it
-// is.
+// shapes it is used in - a phone upright, a tablet (iPad Air size, the
+// counter's) on its side, a desktop - then put back to the size the test
+// had; anything smaller (a frame, one element) is captured once as it is.
 //
 // Each size is captured in the light and the dark theme: the page's own
 // `data-theme` (and every frame's, so a framed checkout matches its page) is
@@ -13,10 +11,6 @@
 // under (`logs`, `pos-timeline`, ...); without it the gallery guesses from
 // the spec's file name (checkout, pos, challenge). `options.shapes` limits
 // the sizes: the POS timeline, read at a desk, is captured on desktop only. `options.themes` limits the themes the same way.
-// `options.asIs` captures the page once at the size the test gave it (as
-// `as-is`), for a stage whose point is that size, such as the POS on an
-// iPhone SE on its side. Without it a size the test set is lost: the stage
-// is resized to the shapes above like any other.
 //
 // Each shot goes straight into the gallery's `images/` as a lossless WebP
 // (about half a PNG's size), and the test gets a text attachment naming it,
@@ -35,9 +29,6 @@ const images = gallery && path.join(gallery, 'images');
 
 const SHAPES = {
   'mobile-portrait': { width: 390, height: 844 },
-  'mobile-landscape': { width: 844, height: 390 },
-  'small-portrait': { width: 320, height: 568 },
-  'tablet-portrait': { width: 820, height: 1180 },
   'tablet-landscape': { width: 1180, height: 820 },
   desktop: { width: 1280, height: 800 },
 };
@@ -114,8 +105,8 @@ async function capture(target, stage, testInfo, options) {
   if (!NAME.test(stage)) throw new Error(`invalid coverage stage: ${stage}`);
   const group = options.group || '';
   if (group && !GROUP.test(group)) throw new Error(`invalid coverage group: ${group}`);
-  const shapes = options.asIs ? ['as-is'] : options.shapes || Object.keys(SHAPES);
-  for (const shape of shapes) if (!SHAPES[shape] && shape !== 'as-is') throw new Error(`unknown screenshot shape: ${shape}`);
+  const shapes = options.shapes || Object.keys(SHAPES);
+  for (const shape of shapes) if (!SHAPES[shape]) throw new Error(`unknown screenshot shape: ${shape}`);
   const themes = options.themes || THEMES;
   for (const theme of themes) if (!THEMES.includes(theme)) throw new Error(`unknown screenshot theme: ${theme}`);
   // `coverage-stage:<group>/<stage>@<shape>`, plus `+dark` for the dark
@@ -130,7 +121,7 @@ async function capture(target, stage, testInfo, options) {
   const original = target.viewportSize();
   const colorScheme = await target.evaluate(() => (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   for (const shape of shapes) {
-    if (SHAPES[shape]) await target.setViewportSize(SHAPES[shape]);
+    await target.setViewportSize(SHAPES[shape]);
     for (const theme of themes) {
       await showTheme(target, theme);
       // Force layout at the new size and theme (no timers: some tests fake

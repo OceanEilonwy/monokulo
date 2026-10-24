@@ -7,9 +7,8 @@
 // the manifest already there and rewrites the page from all of them.
 //
 // The page files stages under the page or feature they show, and toggles
-// at the top pick the size shown (Desktop, Tablet or Mobile, and Portrait or
-// Landscape within Tablet and Mobile) and the theme (Light or Dark). It is
-// radio buttons and CSS
+// at the top pick the size shown (Desktop, Tablet on its side, or Mobile
+// upright) and the theme (Light or Dark). It is radio buttons and CSS
 // (`:has`), so it works opened straight from disk with no script.
 //
 // Options (the reporter tuple's second item): `required`, the groups this
@@ -40,15 +39,15 @@ const GROUPS = [
   ['logs', 'Logs'],
   ['admin-settings', 'Admin settings'],
 ];
-const SHAPES = ['desktop', 'tablet-portrait', 'tablet-landscape', 'mobile-portrait', 'mobile-landscape', 'small-portrait'];
+// Each device's one shape (coverage-screenshot.js).
+const DEVICES = { desktop: 'desktop', tablet: 'tablet-landscape', mobile: 'mobile-portrait' };
+const SHAPES = Object.values(DEVICES);
 const SHAPE_LABELS = {
-  desktop: 'Desktop', 'tablet-portrait': 'Tablet, portrait', 'tablet-landscape': 'Tablet, landscape',
-  'mobile-portrait': 'Mobile, portrait', 'mobile-landscape': 'Mobile, landscape', 'small-portrait': 'Small phone (320px), portrait',
-  'as-is': 'at the size the test set',
+  desktop: 'Desktop', 'tablet-landscape': 'Tablet, landscape', 'mobile-portrait': 'Mobile, portrait',
 };
 const THEMES = ['light', 'dark'];
 // Captures made before shapes had device names.
-const OLD_SHAPES = { portrait: 'mobile-portrait', landscape: 'mobile-landscape' };
+const OLD_SHAPES = { portrait: 'mobile-portrait' };
 
 /** `<group>/<stage>@<shape>[+<theme>]` (coverage-screenshot.js), or the
  * older `<stage>-<shape>`. Without a theme a capture is light. */
@@ -92,7 +91,6 @@ h1 { margin: 0 0 .25rem; }
 .toolbar label span { display: inline-block; padding: .3rem .8rem; border: 1px solid var(--line); border-radius: 999px; }
 .toolbar input:checked + span { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .toolbar input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
-body:has(#device-desktop:checked) .orientation { display: none; }
 .jump { display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin: .75rem 0 0; padding: 0; list-style: none; font-size: .9rem; }
 section { margin-top: 2rem; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 1rem; }
@@ -108,15 +106,12 @@ small { color: var(--muted); }
 /** The rules showing each card's image for the chosen size and theme, or
  * saying the stage wasn't captured that way. */
 function shapeRules() {
-  return SHAPES.flatMap(shape => THEMES.map(theme => {
-    const [device, orientation] = shape.split('-');
-    const chosen = (orientation ? `body:has(#device-${device}:checked):has(#orientation-${orientation}:checked)` : `body:has(#device-${device}:checked)`)
-      + `:has(#theme-${theme}:checked)`;
+  return Object.entries(DEVICES).flatMap(([device, shape]) => THEMES.map(theme => {
+    const chosen = `body:has(#device-${device}:checked):has(#theme-${theme}:checked)`;
     const figure = `figure[data-shape="${shape}"][data-theme="${theme}"]`;
     return `${chosen} .card ${figure} { display: block; }\n`
       + `${chosen} .card.sized:not(:has(${figure})) .missing { display: grid; }`;
-  })).concat(THEMES.map(theme => // At the test's own size, whichever size is chosen.
-    `body:has(#theme-${theme}:checked) .card figure[data-shape="as-is"][data-theme="${theme}"] { display: block; }`)).join('\n');
+  })).join('\n');
 }
 
 function page(entries) {
@@ -130,10 +125,6 @@ function page(entries) {
     + '<label><input type="radio" name="device" id="device-desktop" checked><span>Desktop</span></label>'
     + '<label><input type="radio" name="device" id="device-tablet"><span>Tablet</span></label>'
     + '<label><input type="radio" name="device" id="device-mobile"><span>Mobile</span></label>'
-    + '<label><input type="radio" name="device" id="device-small"><span>Small phone</span></label>'
-    + '</fieldset><fieldset class="orientation"><legend>Orientation</legend>'
-    + '<label><input type="radio" name="orientation" id="orientation-portrait" checked><span>Portrait</span></label>'
-    + '<label><input type="radio" name="orientation" id="orientation-landscape"><span>Landscape</span></label>'
     + '</fieldset><fieldset><legend>Theme</legend>'
     + '<label><input type="radio" name="theme" id="theme-light" checked><span>Light</span></label>'
     + '<label><input type="radio" name="theme" id="theme-dark"><span>Dark</span></label>'
