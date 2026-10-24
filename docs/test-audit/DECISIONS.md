@@ -17,3 +17,14 @@
 15. **WebKit keeps a wider smoke than Firefox** until the counter-tablet browser is known (plan 2's risk view, and the Monokular iOS app runs on WebKit).
 16. **Windows uses nextest partitioning rather than dropping properties**, because partitioning changes no test.
 17. **Timing numbers come from plan 3's uninstrumented measurements.** The DB's instrumented durations overstate the e2e tests up to 12x, because the screenshot capture is counted in them.
+
+## The user's answers (2026-10-24 morning)
+
+18. **Q2, segment:** a test step. Job wall time including the build is not bound by the 5-minute limit.
+19. **Q3, browsers:** "only run on WebKit". Read as: Firefox leaves CI entirely, and WebKit is the only second browser, keeping the wider smoke (POS new/background/resume, camera, counter pay, checkout pays, one fit loop). Chromium stays the main e2e browser, because WebKit doesn't launch on the development machine (CachyOS) and the local run needs one browser. If "only WebKit" was meant to replace Chromium in CI too, that is a CI-config change on top; it is not assumed here.
+20. **Q4, gallery:** captures run only in the coverage run (T-k, `@gallery` tag gated on `COVERAGE_SCREENSHOTS=1`). Shapes go from 6 to 3: `desktop`, `tablet-landscape` (the counter tablet) and `mobile-portrait`, each in light and dark, so 6 captures per stage instead of 12. Dropped: `tablet-portrait`, `mobile-landscape` and the 320px `small-portrait`. The `SHAPES` list in `e2e/browser/coverage-gallery-reporter.js` and the sizes in `coverage-screenshot.js` change together.
+21. **Q5, tier 2:** approved (131 tests, G1-G4), with one no-JS e2e per enhancement mechanism rather than per page.
+22. **Q7:** `shared::dns::Resolver::with_addresses` moves behind the `test-support` feature.
+23. **Guard rails R1-R4:** approved.
+24. **Q1 and Q6:** the user asked questions back (why the property tests are slow and whether lighter tests can catch the same bugs; what the clock-wait tunings mean in detail). Answered in `docs/test-audit-plan.md`, section 6.
+25. **Proof of work in tests: option P4 (the user agreed).** Logic tests get a stand-in hasher through `Follower::with_hasher`, behind `test-support`. About 8 tests keep real RandomX, and those run only in PR CI and the scheduled run, except the reference-vector unit. This replaces F8's committed proof chain. It is plan item F9.
