@@ -152,58 +152,6 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
     }
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn accepted_block_effects_recheck_durable_prerequisites(change in 0u8..6, cancelled in any::<bool>(), staged in any::<bool>()) {
-        runtime().block_on(late_commit(change, cancelled, staged));
-    }
-
-    #[test]
-    fn cache_histories_preserve_accounting_and_protected_blocks(events in prop::collection::vec((0u8..5, 0u64..32, 0usize..1_000_000), 1..256)) {
-        let mut cache = BlockCache { blocks: BTreeMap::new(), bytes: 0 };
-        let mut model = BTreeMap::<u64,(usize,bool)>::new();
-        for (action,height,bytes) in events {
-            match action {
-                0 => {
-                    cache.insert(ChainBlock { height, hash: height.to_string(), prev_hash: height.saturating_sub(1).to_string(), timestamp: 1000, txs: vec![], txids: vec![], wire_bytes: bytes as u64 }, bytes);
-                    model.insert(height,(bytes,false));
-                }
-                1 => { cache.mark_scanned(height); if let Some(v) = model.get_mut(&height) { v.1=true; } }
-                2 => {
-                    let expected = model.remove(&height).map_or(0, |(n,scanned)| if scanned { 0 } else { n as u64 });
-                    prop_assert_eq!(cache.remove(height), expected);
-                }
-                3 => {
-                    let protected = cache.get(height);
-                    let before_unscanned: u64 = model.values().filter(|v| !v.1).map(|v| v.0 as u64).sum();
-                    // Independent eviction oracle: repeatedly choose the
-                    // farthest eligible scanned block, then an unscanned one.
-                    while model.values().map(|v| v.0).sum::<usize>() > bytes {
-                        let Some((&victim,_)) = model.iter().filter(|(&h,_)| h!=height).max_by_key(|(&h,&(_,scanned))| (scanned,h.abs_diff(height),std::cmp::Reverse(h))) else { break };
-                        model.remove(&victim);
-                    }
-                    let discarded = cache.trim(Some(height), bytes);
-                    prop_assert_eq!(cache.get(height).is_some(), protected.is_some());
-                    let after_unscanned: u64 = model.values().filter(|v| !v.1).map(|v| v.0 as u64).sum();
-                    prop_assert_eq!(discarded, before_unscanned-after_unscanned);
-                    prop_assert!(cache.bytes <= bytes || cache.blocks.len()==1);
-                }
-                _ => {
-                    let expected: u64 = model.values().filter(|v| !v.1).map(|v| v.0 as u64).sum();
-                    prop_assert_eq!(cache.clear(), expected); model.clear();
-                }
-            }
-            prop_assert_eq!(cache.bytes, model.values().map(|v| v.0).sum::<usize>());
-            prop_assert_eq!(cache.blocks.len(), model.len());
-            for (&h,&(n,scanned)) in &model {
-                prop_assert_eq!(cache.blocks[&h].bytes, n);
-                prop_assert_eq!(cache.blocks[&h].scanned, scanned);
-            }
-        }
-    }
-}
-
 #[test]
 fn every_late_commit_boundary_is_exercised_with_and_without_staging() {
     runtime().block_on(async {
@@ -225,4 +173,62 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/work/block_effect_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn accepted_block_effects_recheck_durable_prerequisites(change in 0u8..6, cancelled in any::<bool>(), staged in any::<bool>()) {
+            runtime().block_on(late_commit(change, cancelled, staged));
+        }
+
+        #[test]
+        fn cache_histories_preserve_accounting_and_protected_blocks(events in prop::collection::vec((0u8..5, 0u64..32, 0usize..1_000_000), 1..256)) {
+            let mut cache = BlockCache { blocks: BTreeMap::new(), bytes: 0 };
+            let mut model = BTreeMap::<u64,(usize,bool)>::new();
+            for (action,height,bytes) in events {
+                match action {
+                    0 => {
+                        cache.insert(ChainBlock { height, hash: height.to_string(), prev_hash: height.saturating_sub(1).to_string(), timestamp: 1000, txs: vec![], txids: vec![], wire_bytes: bytes as u64 }, bytes);
+                        model.insert(height,(bytes,false));
+                    }
+                    1 => { cache.mark_scanned(height); if let Some(v) = model.get_mut(&height) { v.1=true; } }
+                    2 => {
+                        let expected = model.remove(&height).map_or(0, |(n,scanned)| if scanned { 0 } else { n as u64 });
+                        prop_assert_eq!(cache.remove(height), expected);
+                    }
+                    3 => {
+                        let protected = cache.get(height);
+                        let before_unscanned: u64 = model.values().filter(|v| !v.1).map(|v| v.0 as u64).sum();
+                        // Independent eviction oracle: repeatedly choose the
+                        // farthest eligible scanned block, then an unscanned one.
+                        while model.values().map(|v| v.0).sum::<usize>() > bytes {
+                            let Some((&victim,_)) = model.iter().filter(|(&h,_)| h!=height).max_by_key(|(&h,&(_,scanned))| (scanned,h.abs_diff(height),std::cmp::Reverse(h))) else { break };
+                            model.remove(&victim);
+                        }
+                        let discarded = cache.trim(Some(height), bytes);
+                        prop_assert_eq!(cache.get(height).is_some(), protected.is_some());
+                        let after_unscanned: u64 = model.values().filter(|v| !v.1).map(|v| v.0 as u64).sum();
+                        prop_assert_eq!(discarded, before_unscanned-after_unscanned);
+                        prop_assert!(cache.bytes <= bytes || cache.blocks.len()==1);
+                    }
+                    _ => {
+                        let expected: u64 = model.values().filter(|v| !v.1).map(|v| v.0 as u64).sum();
+                        prop_assert_eq!(cache.clear(), expected); model.clear();
+                    }
+                }
+                prop_assert_eq!(cache.bytes, model.values().map(|v| v.0).sum::<usize>());
+                prop_assert_eq!(cache.blocks.len(), model.len());
+                for (&h,&(n,scanned)) in &model {
+                    prop_assert_eq!(cache.blocks[&h].bytes, n);
+                    prop_assert_eq!(cache.blocks[&h].scanned, scanned);
+                }
+            }
+        }
+    }
 }

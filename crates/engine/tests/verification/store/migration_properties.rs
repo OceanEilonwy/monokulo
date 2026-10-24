@@ -375,14 +375,6 @@ fn upgrade_from(
     accesses.load(Ordering::SeqCst)
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn upgrades_preserve_money_queues_and_interrupted_work(version in 1usize..=MIGRATIONS.len(), amount in 1i64..=i64::MAX, payload in any::<String>(), fault in 0usize..400) {
-        upgrade(version,amount,&payload,Some(fault));
-    }
-}
-
 #[test]
 fn every_historic_schema_upgrades_with_existing_money_and_work() {
     for version in 1..=MIGRATIONS.len() {
@@ -434,7 +426,7 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
         std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "store::properties::migration_crash_child",
+                "store::boundaries::migration_crash_child",
                 "--nocapture",
             ])
             .env("MONOKULO_MIGRATION_CHILD_PATH", &path.0)
@@ -475,14 +467,6 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
     );
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn historic_upgrades_recover_from_process_death(version in 1usize..MIGRATIONS.len(), amount in 1i64..=i64::MAX, payload in any::<String>(), after in any::<bool>()) {
-        crate::property_support::runtime().block_on(crash_upgrade(version,amount,&payload,if after {"migration.after_commit"} else {"migration.before_commit"}));
-    }
-}
-
 #[test]
 fn migration_process_death_before_and_after_commit_preserves_money_and_schema() {
     crate::property_support::runtime().block_on(async {
@@ -502,4 +486,25 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/store/migration_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn upgrades_preserve_money_queues_and_interrupted_work(version in 1usize..=MIGRATIONS.len(), amount in 1i64..=i64::MAX, payload in any::<String>(), fault in 0usize..400) {
+            upgrade(version,amount,&payload,Some(fault));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn historic_upgrades_recover_from_process_death(version in 1usize..MIGRATIONS.len(), amount in 1i64..=i64::MAX, payload in any::<String>(), after in any::<bool>()) {
+            crate::property_support::runtime().block_on(crash_upgrade(version,amount,&payload,if after {"migration.after_commit"} else {"migration.before_commit"}));
+        }
+    }
 }

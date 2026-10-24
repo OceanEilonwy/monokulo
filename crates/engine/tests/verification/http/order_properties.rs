@@ -167,144 +167,6 @@ async fn create(
     .await
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn order_histories_preserve_tenant_scoped_idempotency_and_addresses(
-        count in 2usize..5, base in 1u64..1_000_000_000_000,
-        events in proptest::collection::vec((0usize..4,0u8..8,0u8..8),1..25),
-    ) {
-        runtime().block_on(async {
-            let mut w = World::new(count,false).await;
-            let mut model = BTreeMap::<(usize,u8),serde_json::Value>::new();
-            for (tenant,key,kind) in events {
-                let tenant = tenant % count;
-                let payload = body(Some(format!("key-{key}")),base+u64::from(key),key,Some(u64::from(key)));
-                if kind == 4 { w.restart(); }
-                if kind == 5 {
-                    let handle = w.state.custody.wallet_handles.read().get(&w.ids[tenant]).copied();
-                    if let Some(handle) = handle { w.custody.inner.remove_wallet(handle).await.unwrap(); }
-                }
-                if kind == 6 {
-                    w.custody.mode.store(1,Ordering::Relaxed);
-                    let before=w.snapshot(); let (status,_)=create(&w,tenant,payload.clone()).await;
-                    assert!(status.is_server_error()); assert_eq!(w.snapshot(),before);
-                    w.custody.mode.store(0,Ordering::Relaxed);
-                }
-                let before=w.snapshot();
-                if kind == 2 {
-                    let mut invalid=payload.clone(); invalid["xmr_amount_piconero"]=0.into();
-                    assert_eq!(create(&w,tenant,invalid).await.0,StatusCode::BAD_REQUEST);
-                    assert_eq!(w.snapshot(),before);
-                }
-                if kind == 3 && model.contains_key(&(tenant,key)) {
-                    let mut conflict=payload.clone(); conflict["merchant_order_id"]="different purchase".into();
-                    assert_eq!(create(&w,tenant,conflict).await.0,StatusCode::CONFLICT);
-                    assert_eq!(w.snapshot(),before);
-                }
-                let (status,first)=create(&w,tenant,payload.clone()).await; assert_eq!(status,StatusCode::OK,"{first}");
-                assert_eq!(first["xmr_amount_piconero"].as_u64(),Some(base+u64::from(key)));
-                {
-                    let id=crate::store::OrderId::from(first["order_id"].as_str().unwrap());
-                    let s=w.store.lock();let o=s.get_order(&w.ids[tenant],&id).unwrap().unwrap();
-                    assert_eq!(o.xmr_amount_piconero,base+u64::from(key));
-                    assert_eq!(o.merchant_order_id,Some(format!("purchase-{key}")));
-                    assert_eq!(o.confirmations_required_override,Some(u64::from(key)));
-                    assert_eq!(first["address"].as_str(),Some(o.address.as_str()));
-                    assert_eq!(first["expires_at"].as_i64(),Some(o.expires_at));
-                }
-                if let Some(expected)=model.get(&(tenant,key)) { assert_eq!(&first,expected); } else { model.insert((tenant,key),first.clone()); }
-                // A lost HTTP response is retried just like any other request.
-                let mut retry=payload; retry["description"]="changed non-identity metadata".into();
-                let (status,again)=create(&w,tenant,retry).await; assert_eq!(status,StatusCode::OK); assert_eq!(first,again);
-                w.invariants();
-                assert_eq!(w.snapshot().iter().map(|(_,r)|r.len()).sum::<usize>(),model.len());
-            }
-        });
-    }
-    #[test]
-    fn request_validation_is_atomic_at_integer_and_key_boundaries(
-        amount in prop_oneof![Just(0),Just(super::super::orders::MAX_ORDER_PICONERO),Just(super::super::orders::MAX_ORDER_PICONERO+1),any::<u64>()],
-        key in prop_oneof!["[!-~]{1,128}",Just(String::new()),Just("x".repeat(129)),Just("contains space".to_owned()),Just("\u{e9}".to_owned()),Just("a\nb".to_owned())],
-        confirmations in prop_oneof![Just(None),any::<u64>().prop_map(Some),Just(Some(0)),Just(Some(super::super::admin::MAX_CONFIRMATIONS_REQUIRED))],
-    ) {
-        runtime().block_on(async {
-            let w=World::new(1,false).await; let before=w.snapshot();
-            let valid=amount>0 && amount<=super::super::orders::MAX_ORDER_PICONERO && !key.is_empty() && key.len()<=128 && key.bytes().all(|b|b.is_ascii_graphic()) && confirmations.is_none_or(|c|c<=super::super::admin::MAX_CONFIRMATIONS_REQUIRED);
-            let (status,_)=create(&w,0,body(Some(key),amount,0,confirmations)).await;
-            assert_eq!(status,if valid {StatusCode::OK} else {StatusCode::BAD_REQUEST});
-            if !valid {assert_eq!(w.snapshot(),before);} w.invariants();
-        });
-    }
-    #[test]
-    fn concurrent_creation_and_retries_use_the_production_database_worker(
-        count in 2usize..33, tenants in 1usize..4, distinct in any::<bool>(), amount in 1u64..10000,
-    ) {
-        runtime().block_on(async {
-            let w=World::new(tenants,true).await;
-            let jobs=(0..count).map(|i| {
-                let router=w.router.clone();let token=w.tenants[i%tenants].secret_token.clone();
-                let key=if distinct {i} else {i%tenants};
-                let payload=body(Some(format!("race-{key}")),amount,0,None);
-                async move {
-                    for _ in 0..count+2 {
-                        let (status,reply)=request(router.clone(),token.clone(),payload.clone()).await;
-                        if status==StatusCode::OK {return reply;}
-                        assert!(status.is_server_error());tokio::task::yield_now().await;
-                    }
-                    panic!("valid order never recovered from contention");
-                }
-            });
-            let replies=futures_util::future::join_all(jobs).await;
-            let expected=if distinct {count} else {tenants.min(count)};
-            assert_eq!(replies.iter().map(|r|r["order_id"].as_str().unwrap()).collect::<HashSet<_>>().len(),expected);
-            w.invariants(); assert_eq!(w.snapshot().iter().map(|(_,r)|r.len()).sum::<usize>(),expected);
-        });
-    }
-    #[test]
-    fn sql_failures_and_lost_results_never_burn_addresses(
-        amount in 1u64..10000, at in 0usize..100, restart in any::<bool>(),
-    ) {
-        runtime().block_on(async {
-            let mut w=World::new(1,false).await;
-            let payload=body(Some("faulted".to_owned()),amount,0,None);
-            let trace=w.store.lock().fail_nth_access(Some(at));
-            let (status,_)=create(&w,0,payload.clone()).await;
-            w.store.lock().fail_nth_access(None); trace.assert_outcome(at);
-            assert!(status==StatusCode::OK || status.is_server_error()); w.invariants();
-            if restart {w.restart();}
-            let (status,first)=create(&w,0,payload.clone()).await; assert_eq!(status,StatusCode::OK);
-            assert_eq!(create(&w,0,payload).await.1,first); w.invariants(); assert_eq!(w.snapshot()[0].1.len(),1);
-        });
-    }
-    #[test]
-    fn cancelling_during_derivation_preserves_the_address_for_retry(amount in 1u64..10000,restart in any::<bool>()) {
-        runtime().block_on(async {
-            let mut w=World::new(1,false).await; let before=w.snapshot();
-            w.custody.mode.store(2,Ordering::Relaxed);
-            let payload=body(Some("cancelled".to_owned()),amount,0,None);
-            let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),payload.clone()));
-            tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap(); task.abort(); assert!(task.await.unwrap_err().is_cancelled());
-            assert_eq!(w.snapshot(),before); assert!(w.custody.attempted.load(Ordering::Relaxed)>0);
-            w.custody.mode.store(0,Ordering::Relaxed); if restart {w.restart();}
-            assert_eq!(create(&w,0,payload).await.0,StatusCode::OK); w.invariants();
-        });
-    }
-    #[test]
-    fn exhaustion_and_mismatched_claims_cannot_corrupt_allocation(offset in 0u32..4,mismatch in any::<bool>()) {
-        runtime().block_on(async {
-            let w=World::new(1,false).await; let next=u32::MAX-offset;
-            w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=?1",[i64::from(next)]).unwrap();
-            let new=crate::store::NewOrder { tenant_id:w.ids[0].clone(),minor_index:if mismatch {next.saturating_sub(1)} else {next},address:"derived".to_owned(),xmr_amount_piconero:1,idempotency_key:Some("boundary".to_owned()),merchant_order_id:None,description:None,confirmations_required_override:None,created_at:1,expires_at:2 };
-            let result=w.store.lock().create_order_claiming_minor_index(next,&new);
-            if mismatch || next==u32::MAX {
-                assert!(result.is_err()); assert_eq!(w.store.lock().peek_next_minor_index(&w.ids[0]).unwrap(),next);
-                assert!(w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap().is_empty());
-            } else { assert!(result.unwrap().is_some());assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,next+1); }
-        });
-    }
-}
-
 #[test]
 fn every_sql_denial_during_order_creation_is_atomic_and_retryable() {
     runtime().block_on(async {
@@ -349,39 +211,6 @@ fn order_creation_crash_child() {
         panic!("order crash boundary was not reached");
     });
 }
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn process_death_at_order_commit_preserves_atomic_allocation(amount in 1u64..10000,after in any::<bool>()) {
-        runtime().block_on(async {
-            let mut w=World::new(1,false).await;
-            let point=if after {"orders.after_commit"} else {"orders.before_commit"};
-            let mut child=crate::property_support::CrashChild(Some(std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact","http::tests::properties::order_creation_crash_child","--nocapture"])
-                .env("MONOKULO_ORDER_CRASH_PATH",&w.path.0).env("MONOKULO_ORDER_CRASH_TOKEN",&w.tenants[0].secret_token)
-                .env("MONOKULO_ORDER_CRASH_AMOUNT",amount.to_string()).env("MONOKULO_PROPERTY_CRASH_PATH",&w.path.0)
-                .env("MONOKULO_PROPERTY_CRASH_POINT",point).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap()));
-            child.rendezvous(&w.path.0,point).await;assert!(!child.finish().status.success());w.restart();
-            assert_eq!(w.snapshot()[0].1.len(),usize::from(after));w.invariants();
-            assert_eq!(w.store.lock().conn_for_test().query_row("PRAGMA integrity_check",[],|r|r.get::<_,String>(0)).unwrap(),"ok");
-            let payload=body(Some("crash".to_owned()),amount,0,None);
-            let (status,first)=create(&w,0,payload.clone()).await;assert_eq!(status,StatusCode::OK);
-            assert_eq!(create(&w,0,payload).await.1,first);w.invariants();assert_eq!(w.snapshot()[0].1.len(),1);
-        });
-    }
-    #[test]
-    fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000) {
-        runtime().block_on(async {
-            let w=World::new(1,false).await;w.custody.mode.store(2,Ordering::Relaxed);
-            let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),body(Some("disabled".to_owned()),amount,0,None)));
-            tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap();w.store.lock().disable_tenant(&w.ids[0],1).unwrap();
-            w.custody.mode.store(0,Ordering::Relaxed);w.custody.release.notify_one();
-            assert!(!task.await.unwrap().0.is_success());
-            assert!(w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap().is_empty());
-            assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,1);
-        });
-    }
-}
 
 #[test]
 fn exhausted_counter_still_allows_idempotent_replays_and_never_wraps() {
@@ -417,30 +246,6 @@ fn exhausted_counter_still_allows_idempotent_replays_and_never_wraps() {
     });
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn requests_without_keys_create_distinct_purchases(count in 2usize..17,amount in 1u64..10000) {
-        runtime().block_on(async {
-            let w=World::new(1,false).await;let mut ids=HashSet::new();
-            for _ in 0..count {
-                let (status,reply)=create(&w,0,body(None,amount,0,None)).await;
-                assert_eq!(status,StatusCode::OK);assert!(ids.insert(reply["order_id"].as_str().unwrap().to_owned()));w.invariants();
-            }
-            assert_eq!(w.snapshot()[0].1.len(),count);
-        });
-    }
-    #[test]
-    fn every_purchase_identity_field_rejects_conflicting_replays(amount in 1u64..10000,field in 0u8..3,confirmations in 0u64..20) {
-        runtime().block_on(async {
-            let w=World::new(1,false).await;let mut payload=body(Some("identity".to_owned()),amount,0,Some(confirmations));
-            assert_eq!(create(&w,0,payload.clone()).await.0,StatusCode::OK);let before=w.snapshot();
-            match field {0=>payload["xmr_amount_piconero"]=(amount+1).into(),1=>payload["merchant_order_id"]="other".into(),_=>payload["confirmations_required"]=(confirmations+1).into()}
-            assert_eq!(create(&w,0,payload).await.0,StatusCode::CONFLICT);assert_eq!(w.snapshot(),before);w.invariants();
-        });
-    }
-}
-
 #[path = "authorization_properties.rs"]
 mod authorization;
 
@@ -452,4 +257,204 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/http/order_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn order_histories_preserve_tenant_scoped_idempotency_and_addresses(
+            count in 2usize..5, base in 1u64..1_000_000_000_000,
+            events in proptest::collection::vec((0usize..4,0u8..8,0u8..8),1..25),
+        ) {
+            runtime().block_on(async {
+                let mut w = World::new(count,false).await;
+                let mut model = BTreeMap::<(usize,u8),serde_json::Value>::new();
+                for (tenant,key,kind) in events {
+                    let tenant = tenant % count;
+                    let payload = body(Some(format!("key-{key}")),base+u64::from(key),key,Some(u64::from(key)));
+                    if kind == 4 { w.restart(); }
+                    if kind == 5 {
+                        let handle = w.state.custody.wallet_handles.read().get(&w.ids[tenant]).copied();
+                        if let Some(handle) = handle { w.custody.inner.remove_wallet(handle).await.unwrap(); }
+                    }
+                    if kind == 6 {
+                        w.custody.mode.store(1,Ordering::Relaxed);
+                        let before=w.snapshot(); let (status,_)=create(&w,tenant,payload.clone()).await;
+                        assert!(status.is_server_error()); assert_eq!(w.snapshot(),before);
+                        w.custody.mode.store(0,Ordering::Relaxed);
+                    }
+                    let before=w.snapshot();
+                    if kind == 2 {
+                        let mut invalid=payload.clone(); invalid["xmr_amount_piconero"]=0.into();
+                        assert_eq!(create(&w,tenant,invalid).await.0,StatusCode::BAD_REQUEST);
+                        assert_eq!(w.snapshot(),before);
+                    }
+                    if kind == 3 && model.contains_key(&(tenant,key)) {
+                        let mut conflict=payload.clone(); conflict["merchant_order_id"]="different purchase".into();
+                        assert_eq!(create(&w,tenant,conflict).await.0,StatusCode::CONFLICT);
+                        assert_eq!(w.snapshot(),before);
+                    }
+                    let (status,first)=create(&w,tenant,payload.clone()).await; assert_eq!(status,StatusCode::OK,"{first}");
+                    assert_eq!(first["xmr_amount_piconero"].as_u64(),Some(base+u64::from(key)));
+                    {
+                        let id=crate::store::OrderId::from(first["order_id"].as_str().unwrap());
+                        let s=w.store.lock();let o=s.get_order(&w.ids[tenant],&id).unwrap().unwrap();
+                        assert_eq!(o.xmr_amount_piconero,base+u64::from(key));
+                        assert_eq!(o.merchant_order_id,Some(format!("purchase-{key}")));
+                        assert_eq!(o.confirmations_required_override,Some(u64::from(key)));
+                        assert_eq!(first["address"].as_str(),Some(o.address.as_str()));
+                        assert_eq!(first["expires_at"].as_i64(),Some(o.expires_at));
+                    }
+                    if let Some(expected)=model.get(&(tenant,key)) { assert_eq!(&first,expected); } else { model.insert((tenant,key),first.clone()); }
+                    // A lost HTTP response is retried just like any other request.
+                    let mut retry=payload; retry["description"]="changed non-identity metadata".into();
+                    let (status,again)=create(&w,tenant,retry).await; assert_eq!(status,StatusCode::OK); assert_eq!(first,again);
+                    w.invariants();
+                    assert_eq!(w.snapshot().iter().map(|(_,r)|r.len()).sum::<usize>(),model.len());
+                }
+            });
+        }
+        #[test]
+        fn request_validation_is_atomic_at_integer_and_key_boundaries(
+            amount in prop_oneof![Just(0),Just(super::super::super::orders::MAX_ORDER_PICONERO),Just(super::super::super::orders::MAX_ORDER_PICONERO+1),any::<u64>()],
+            key in prop_oneof!["[!-~]{1,128}",Just(String::new()),Just("x".repeat(129)),Just("contains space".to_owned()),Just("\u{e9}".to_owned()),Just("a\nb".to_owned())],
+            confirmations in prop_oneof![Just(None),any::<u64>().prop_map(Some),Just(Some(0)),Just(Some(super::super::super::admin::MAX_CONFIRMATIONS_REQUIRED))],
+        ) {
+            runtime().block_on(async {
+                let w=World::new(1,false).await; let before=w.snapshot();
+                let valid=amount>0 && amount<=super::super::super::orders::MAX_ORDER_PICONERO && !key.is_empty() && key.len()<=128 && key.bytes().all(|b|b.is_ascii_graphic()) && confirmations.is_none_or(|c|c<=super::super::super::admin::MAX_CONFIRMATIONS_REQUIRED);
+                let (status,_)=create(&w,0,body(Some(key),amount,0,confirmations)).await;
+                assert_eq!(status,if valid {StatusCode::OK} else {StatusCode::BAD_REQUEST});
+                if !valid {assert_eq!(w.snapshot(),before);} w.invariants();
+            });
+        }
+        #[test]
+        fn concurrent_creation_and_retries_use_the_production_database_worker(
+            count in 2usize..33, tenants in 1usize..4, distinct in any::<bool>(), amount in 1u64..10000,
+        ) {
+            runtime().block_on(async {
+                let w=World::new(tenants,true).await;
+                let jobs=(0..count).map(|i| {
+                    let router=w.router.clone();let token=w.tenants[i%tenants].secret_token.clone();
+                    let key=if distinct {i} else {i%tenants};
+                    let payload=body(Some(format!("race-{key}")),amount,0,None);
+                    async move {
+                        for _ in 0..count+2 {
+                            let (status,reply)=request(router.clone(),token.clone(),payload.clone()).await;
+                            if status==StatusCode::OK {return reply;}
+                            assert!(status.is_server_error());tokio::task::yield_now().await;
+                        }
+                        panic!("valid order never recovered from contention");
+                    }
+                });
+                let replies=futures_util::future::join_all(jobs).await;
+                let expected=if distinct {count} else {tenants.min(count)};
+                assert_eq!(replies.iter().map(|r|r["order_id"].as_str().unwrap()).collect::<HashSet<_>>().len(),expected);
+                w.invariants(); assert_eq!(w.snapshot().iter().map(|(_,r)|r.len()).sum::<usize>(),expected);
+            });
+        }
+        #[test]
+        fn sql_failures_and_lost_results_never_burn_addresses(
+            amount in 1u64..10000, at in 0usize..100, restart in any::<bool>(),
+        ) {
+            runtime().block_on(async {
+                let mut w=World::new(1,false).await;
+                let payload=body(Some("faulted".to_owned()),amount,0,None);
+                let trace=w.store.lock().fail_nth_access(Some(at));
+                let (status,_)=create(&w,0,payload.clone()).await;
+                w.store.lock().fail_nth_access(None); trace.assert_outcome(at);
+                assert!(status==StatusCode::OK || status.is_server_error()); w.invariants();
+                if restart {w.restart();}
+                let (status,first)=create(&w,0,payload.clone()).await; assert_eq!(status,StatusCode::OK);
+                assert_eq!(create(&w,0,payload).await.1,first); w.invariants(); assert_eq!(w.snapshot()[0].1.len(),1);
+            });
+        }
+        #[test]
+        fn cancelling_during_derivation_preserves_the_address_for_retry(amount in 1u64..10000,restart in any::<bool>()) {
+            runtime().block_on(async {
+                let mut w=World::new(1,false).await; let before=w.snapshot();
+                w.custody.mode.store(2,Ordering::Relaxed);
+                let payload=body(Some("cancelled".to_owned()),amount,0,None);
+                let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),payload.clone()));
+                tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap(); task.abort(); assert!(task.await.unwrap_err().is_cancelled());
+                assert_eq!(w.snapshot(),before); assert!(w.custody.attempted.load(Ordering::Relaxed)>0);
+                w.custody.mode.store(0,Ordering::Relaxed); if restart {w.restart();}
+                assert_eq!(create(&w,0,payload).await.0,StatusCode::OK); w.invariants();
+            });
+        }
+        #[test]
+        fn exhaustion_and_mismatched_claims_cannot_corrupt_allocation(offset in 0u32..4,mismatch in any::<bool>()) {
+            runtime().block_on(async {
+                let w=World::new(1,false).await; let next=u32::MAX-offset;
+                w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=?1",[i64::from(next)]).unwrap();
+                let new=crate::store::NewOrder { tenant_id:w.ids[0].clone(),minor_index:if mismatch {next.saturating_sub(1)} else {next},address:"derived".to_owned(),xmr_amount_piconero:1,idempotency_key:Some("boundary".to_owned()),merchant_order_id:None,description:None,confirmations_required_override:None,created_at:1,expires_at:2 };
+                let result=w.store.lock().create_order_claiming_minor_index(next,&new);
+                if mismatch || next==u32::MAX {
+                    assert!(result.is_err()); assert_eq!(w.store.lock().peek_next_minor_index(&w.ids[0]).unwrap(),next);
+                    assert!(w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap().is_empty());
+                } else { assert!(result.unwrap().is_some());assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,next+1); }
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn process_death_at_order_commit_preserves_atomic_allocation(amount in 1u64..10000,after in any::<bool>()) {
+            runtime().block_on(async {
+                let mut w=World::new(1,false).await;
+                let point=if after {"orders.after_commit"} else {"orders.before_commit"};
+                let mut child=crate::property_support::CrashChild(Some(std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact","http::tests::boundaries::order_creation_crash_child","--nocapture"])
+                    .env("MONOKULO_ORDER_CRASH_PATH",&w.path.0).env("MONOKULO_ORDER_CRASH_TOKEN",&w.tenants[0].secret_token)
+                    .env("MONOKULO_ORDER_CRASH_AMOUNT",amount.to_string()).env("MONOKULO_PROPERTY_CRASH_PATH",&w.path.0)
+                    .env("MONOKULO_PROPERTY_CRASH_POINT",point).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap()));
+                child.rendezvous(&w.path.0,point).await;assert!(!child.finish().status.success());w.restart();
+                assert_eq!(w.snapshot()[0].1.len(),usize::from(after));w.invariants();
+                assert_eq!(w.store.lock().conn_for_test().query_row("PRAGMA integrity_check",[],|r|r.get::<_,String>(0)).unwrap(),"ok");
+                let payload=body(Some("crash".to_owned()),amount,0,None);
+                let (status,first)=create(&w,0,payload.clone()).await;assert_eq!(status,StatusCode::OK);
+                assert_eq!(create(&w,0,payload).await.1,first);w.invariants();assert_eq!(w.snapshot()[0].1.len(),1);
+            });
+        }
+        #[test]
+        fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000) {
+            runtime().block_on(async {
+                let w=World::new(1,false).await;w.custody.mode.store(2,Ordering::Relaxed);
+                let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),body(Some("disabled".to_owned()),amount,0,None)));
+                tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap();w.store.lock().disable_tenant(&w.ids[0],1).unwrap();
+                w.custody.mode.store(0,Ordering::Relaxed);w.custody.release.notify_one();
+                assert!(!task.await.unwrap().0.is_success());
+                assert!(w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap().is_empty());
+                assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,1);
+            });
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn requests_without_keys_create_distinct_purchases(count in 2usize..17,amount in 1u64..10000) {
+            runtime().block_on(async {
+                let w=World::new(1,false).await;let mut ids=HashSet::new();
+                for _ in 0..count {
+                    let (status,reply)=create(&w,0,body(None,amount,0,None)).await;
+                    assert_eq!(status,StatusCode::OK);assert!(ids.insert(reply["order_id"].as_str().unwrap().to_owned()));w.invariants();
+                }
+                assert_eq!(w.snapshot()[0].1.len(),count);
+            });
+        }
+        #[test]
+        fn every_purchase_identity_field_rejects_conflicting_replays(amount in 1u64..10000,field in 0u8..3,confirmations in 0u64..20) {
+            runtime().block_on(async {
+                let w=World::new(1,false).await;let mut payload=body(Some("identity".to_owned()),amount,0,Some(confirmations));
+                assert_eq!(create(&w,0,payload.clone()).await.0,StatusCode::OK);let before=w.snapshot();
+                match field {0=>payload["xmr_amount_piconero"]=(amount+1).into(),1=>payload["merchant_order_id"]="other".into(),_=>payload["confirmations_required"]=(confirmations+1).into()}
+                assert_eq!(create(&w,0,payload).await.0,StatusCode::CONFLICT);assert_eq!(w.snapshot(),before);w.invariants();
+            });
+        }
+    }
 }

@@ -166,7 +166,7 @@ pub fn inputs(data: &[u8]) {
 #[cfg(test)]
 #[path = "../inputs/properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod properties;
+mod boundaries;
 
 /// Exercise production dispatch with bounded arrivals, closures and service.
 ///

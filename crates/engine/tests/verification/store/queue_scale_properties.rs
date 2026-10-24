@@ -76,13 +76,6 @@ async fn waves(count: usize) {
     );
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn repeated_saturation_retains_fifo_fairness_and_cancellation(wave_count in 1usize..9) {
-        runtime().block_on(waves(wave_count));
-    }
-}
 #[test]
 #[ignore = "large deterministic scale package; `cargo xtask engine scale` runs it"]
 fn twelve_thousand_accepted_jobs_survive_sustained_saturation() {
@@ -97,4 +90,18 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/store/queue_scale_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn repeated_saturation_retains_fifo_fairness_and_cancellation(wave_count in 1usize..9) {
+            runtime().block_on(waves(wave_count));
+        }
+    }
 }

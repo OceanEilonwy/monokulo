@@ -100,7 +100,7 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
 
 #[cfg(test)]
 #[path = "../tests/verification/status/properties.rs"]
-mod properties;
+mod boundaries;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
