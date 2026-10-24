@@ -2228,6 +2228,7 @@ mod tests {
             ("webhooks.keep_given_up_days", M, Payments, "webhooks"),
             ("engine.mode", M, General, "engine"),
             ("engine.url", M, General, "engine"),
+            ("engine.status_cache_ms", M, General, "engine"),
             ("engine.token", M, General, "engine"),
             ("http_cache.max_mb", M, Server, "server-monokulo"),
             ("database.read_connections", M, Server, "server-monokulo"),

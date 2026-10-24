@@ -268,6 +268,11 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             )
         });
     }
+    let engine = monokulo::http::Engine::new(engine_client);
+    monokulo::http::status_page::set_status_cache_ttl(
+        &engine,
+        monokulo_settings.server.load().status_cache,
+    );
     let app_state = AppState {
         db,
         encryption_key,
@@ -279,7 +284,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         webhooks,
         apps,
         tor: tor.clone(),
-        engine: monokulo::http::Engine::new(engine_client),
+        engine,
     };
     let router = build_router(app_state);
     // The onion listener (`monokulo::abuse::proxy_protocol`): same router,
