@@ -1204,73 +1204,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unanimous_spent_in_blockchain_across_every_node_is_affirmed() {
-        let client = FallbackDaemonClient::new(vec![
-            ki_node(
-                "a",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
-            ),
-            ki_node(
-                "b",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
-            ),
-        ]);
-        let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_owned()])
-            .await
-            .unwrap();
-        assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain]);
-    }
-
-    #[tokio::test]
-    async fn disagreement_between_nodes_refuses_to_affirm_a_double_spend() {
-        // Exactly the scenario a single lying/wrong node used to cause a wrongful,
-        // permanent void for: one node claims spent, another (equally reachable and
-        // equally configured) says otherwise. Corroboration must not just trust
-        // whichever one happens to be asked.
-        let client = FallbackDaemonClient::new(vec![
-            ki_node(
-                "a",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain]),
-            ),
-            ki_node(
-                "b",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
-            ),
-        ]);
-        let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_owned()])
-            .await
-            .unwrap();
-        assert_eq!(
-            result,
-            vec![KeyImageStatus::Disputed],
-            "a disagreement must remain inconclusive"
-        );
-    }
-
-    #[tokio::test]
-    async fn pool_and_unspent_disagreement_is_also_inconclusive() {
-        let client = FallbackDaemonClient::new(vec![
-            ki_node(
-                "a",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
-            ),
-            ki_node(
-                "b",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInPool]),
-            ),
-        ]);
-        assert_eq!(
-            client
-                .is_key_image_spent_corroborated(&["ki1".to_owned()])
-                .await
-                .unwrap(),
-            vec![KeyImageStatus::Disputed]
-        );
-    }
-
-    #[tokio::test]
     async fn a_single_configured_node_is_trusted_as_is_with_nothing_to_corroborate_against() {
         let client = FallbackDaemonClient::new(vec![ki_node(
             "only",
@@ -1320,23 +1253,43 @@ mod tests {
         assert!(matches!(err, DaemonError::Request(_)));
     }
 
+    /// Two equally configured, reachable nodes asked about one key image:
+    /// agreement is reported as is, and any disagreement stays disputed.
     #[tokio::test]
-    async fn unanimous_agreement_on_unspent_is_reported_as_is() {
-        let client = FallbackDaemonClient::new(vec![
-            ki_node(
-                "a",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
+    async fn two_nodes_answers_on_a_key_image_are_corroborated() {
+        use KeyImageStatus::{Disputed, SpentInBlockchain, SpentInPool, Unspent};
+        for (a, b, expected, why) in [
+            (Unspent, Unspent, Unspent, "unanimous unspent"),
+            (
+                SpentInBlockchain,
+                SpentInBlockchain,
+                SpentInBlockchain,
+                "unanimous spent is affirmed",
             ),
-            ki_node(
-                "b",
-                KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent]),
+            // The scenario a single lying or wrong node used to turn into a
+            // wrongful, permanent void: corroboration must not trust
+            // whichever node happens to be asked.
+            (
+                SpentInBlockchain,
+                Unspent,
+                Disputed,
+                "a disagreement over a double spend stays inconclusive",
             ),
-        ]);
-        let result = client
-            .is_key_image_spent_corroborated(&["ki1".to_owned()])
-            .await
-            .unwrap();
-        assert_eq!(result, vec![KeyImageStatus::Unspent]);
+            (Unspent, SpentInPool, Disputed, "pool and unspent disagree"),
+        ] {
+            let client = FallbackDaemonClient::new(vec![
+                ki_node("a", KeyImageDaemonClient::answering(vec![a])),
+                ki_node("b", KeyImageDaemonClient::answering(vec![b])),
+            ]);
+            assert_eq!(
+                client
+                    .is_key_image_spent_corroborated(&["ki1".to_owned()])
+                    .await
+                    .unwrap(),
+                vec![expected],
+                "{why}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -625,6 +625,13 @@ mod tests {
             !is_stale(1000, 1000, 0),
             "a poll_interval of 0 must still get the 15s floor, not read as instantly stale"
         );
+        // The bug the floor fixed: the dev config's 2s interval against a
+        // real, observed 7-8s tick cadence on live remote nodes read as
+        // stale under the old 3x-with-no-floor threshold.
+        assert!(
+            !is_stale(1008, 1000, 2),
+            "8s since the last tick at a 2s configured interval must not be stale"
+        );
     }
 
     /// A node for `probe_node`: `get_info` says (or doesn't) its height and
@@ -715,18 +722,5 @@ mod tests {
         assert_eq!((height, network), (None, None));
         assert!(error.unwrap().contains("connection refused"));
         assert_eq!(asked(&down), 1);
-    }
-
-    /// The real bug this whole formula change fixes, reproduced directly:
-    /// this repo's own dev config (`poll_interval_secs = 2`) with a real,
-    /// observed ~7-8s tick cadence against live remote nodes must never
-    /// read as stale under the new threshold, even though it did under the
-    /// old 3x-with-no-floor one.
-    #[test]
-    fn a_real_observed_slow_tick_cadence_against_the_dev_config_no_longer_reads_as_stale() {
-        assert!(
-            !is_stale(1008, 1000, 2),
-            "8s since the last tick at a 2s configured interval must not be stale"
-        );
     }
 }
