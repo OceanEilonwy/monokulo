@@ -6,22 +6,19 @@ checkout, and POS. The configurations select separate environments and workloads
 | Configuration | Coverage | Environment |
 | --- | --- | --- |
 | `surface.config.js` | Client challenge protocol | Local mocked server |
-| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and the account page; the `real-binaries.config.js` specs as a second project; and the POS specs again in Firefox and WebKit | Local rendered-UI fixture with coverage reporting |
+| `coverage-browser.config.js` | Checkout, challenge, camera, client, POS, layout, live view, store setup and settings, dropdowns, order resubmission, JavaScript-disabled pages and the account page; and the `real-binaries.config.js` specs as another project | Local rendered-UI fixture with coverage reporting |
 | `real-binaries.config.js` | Admin setup and settings, store keys, logs, themes, crash recovery, sections, POS timeline, and Monokulo served under a path behind a prefix-stripping proxy | Real binaries and a local fake node |
 | `playwright.config.js` | POS payments and confirmations | Public stagenet and funded test wallet |
 
-Install dependencies and the browsers from this directory:
+Install dependencies and the browser from this directory:
 
 ```sh
 npm ci
-npx playwright install chromium firefox webkit
+npx playwright install chromium
 ```
 
-Chromium runs every test in `coverage-browser.config.js`; Firefox and WebKit run
-the POS's (`fixture-firefox`, `real-binaries-webkit` and so on). WebKit needs
-system libraries of its own (`npx playwright install-deps webkit`, as root, on
-Debian or Ubuntu). Off CI, a browser that can't start leaves its projects out of
-the run, saying why; on CI (`CI` set) it fails the run.
+Every test runs in Chromium only. Nothing tests Firefox, or Safari and the
+WebKit engine of iPads, iPhones and the Monokular app.
 
 Run a selected suite with `npx playwright test -c <configuration>`. For example,
 `npx playwright test -c coverage-browser.config.js` runs every offline browser
@@ -162,11 +159,7 @@ store, session, and order. The full checkout and the POS app are the
 product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
 The example alone mounts `/__coverage/*` controls for ready, new/paid orders,
 restricted framing, and the production challenge view. Production routes
-never receive these controls. The controlled suite also covers 14 POS device
-orientations and five resizes. The old `client-challenge-protocol.spec.js` is reduced to a
-client challenge protocol check in committed source; the current working
-tree may contain a separate preexisting badge test that the coverage config
-excludes as a duplicate of the real POS badge case.
+never receive these controls.
 
 ## Real binaries, offline (`real-binaries.config.js`)
 
@@ -202,23 +195,26 @@ assets and add to the browser coverage.
 
 `captureCoverageStage(page, stage, testInfo, { group, shapes })`
 (`coverage-screenshot.js`) captures a stage when `COVERAGE_SCREENSHOTS=1`:
-every size (`desktop`, `tablet-portrait`, `tablet-landscape`,
-`mobile-portrait`, `mobile-landscape`, and the 320px `small-portrait`)
-unless `shapes` names fewer, filed under `group` (a page or feature; guessed
-from the spec's file name when left out). The POS session timeline is
-captured on desktop only. Each shot is saved to the gallery's `images/` as a
-lossless WebP, and the test gets only a text attachment naming the file, so
-the Playwright report doesn't keep a second copy.
+every size (`desktop`, `tablet-landscape` and `mobile-portrait`, each light
+and dark) unless `shapes` names fewer, filed under `group` (a page or
+feature; guessed from the spec's file name when left out). The POS session
+timeline is captured on desktop only. Each shot is saved to the gallery's
+`images/` as a lossless WebP, and the test gets only a text attachment naming
+the file, so the Playwright report doesn't keep a second copy.
+
+A test that only feeds the gallery has `@gallery` in its title: both
+configurations leave it out (`grepInvert`) unless `COVERAGE_SCREENSHOTS=1`,
+so it runs in the coverage run only.
 
 ## Spec naming
 
 Spec names describe the behavior they verify, rather than an implementation stage
 or whether coverage is collected. Configuration files select the environment.
-The real-binary suite contains `node-settings`, `store-key-custody`,
-`admin-settings-layout`, `engine-crash-recovery`, `log-search-and-tracing`,
+The real-binary suite contains `account-access`, `node-settings`, `store-key-custody`,
+`engine-crash-recovery`, `log-search-and-tracing`,
 `settings-section-updates`, `pos-session-diagnostics`, `site-themes`, and
 `admin-settings-and-nodes`. Each file receives its own fresh backend processes
 through `tests/backend-helpers.js`; numeric prefixes and execution order are not
 needed. Rendered-UI specs use names such as `checkout`, `refund-camera`,
-`merchant-client`, `pos-terminal`, `pos-responsive-layout`, and `live-view`.
+`merchant-client`, `pos-terminal`, and `live-view`.
 `pos-stagenet-payments` makes the live-network payment suite explicit.

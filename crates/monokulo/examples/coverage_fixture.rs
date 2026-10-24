@@ -240,7 +240,8 @@ fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
 }
 
 /// `POST /__coverage/engine/story`: plays a story into the fixture
-/// engine's mainnet record, one event every 120 ms: a new block with a
+/// engine's mainnet record, one event every 30 ms (the stream sends them
+/// in frames of 200 ms, StreamTuning::coalesce): a new block with a
 /// payment, a pool payment settling, the store catching up and joining
 /// the frontier, then a reorganisation from detection to rewind.
 async fn engine_story(State(control): State<Controls>) -> StatusCode {
@@ -339,7 +340,7 @@ async fn engine_story(State(control): State<Controls>) -> StatusCode {
     tokio::spawn(async move {
         for event in story {
             activity.record(event);
-            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         }
     });
     StatusCode::NO_CONTENT
@@ -570,8 +571,7 @@ async fn connect_plugin(
 
 /// The fixture store's webhooks as the design shows them
 /// (store-webhooks.spec.js): one delivering, one retrying, one that gave
-/// up, each with a few deliveries made minutes ago. `?empty` removes them
-/// all instead.
+/// up, each with a few deliveries made minutes ago.
 async fn seed_webhooks(
     State(control): State<Controls>,
     Query(query): Query<std::collections::HashMap<String, String>>,
@@ -588,9 +588,6 @@ async fn seed_webhooks(
             .lock()
             .delete_webhook(&store, &webhook.id)
             .map_err(failed)?;
-    }
-    if query.contains_key("empty") {
-        return Ok(Json(serde_json::json!({ "webhooks": [] })));
     }
     let now = monokulo::now_unix();
     // `?many=N`: one webhook with N deliveries, all delivered, a minute
@@ -843,10 +840,6 @@ async fn plugin_order(
     Ok(Json(serde_json::json!({ "order_id": order.order_id })))
 }
 
-/// The session of a second merchant, whose wallets are all on test
-/// networks (`seed_wallets`).
-const TESTER_SESSION: &str = "coverage-tester-session-token";
-
 /// `POST /__coverage/status/{story}`: the status page's mainnet as the
 /// network card's screenshots show it (status-network-card.spec.js): three
 /// nodes, one caught serving a bad block and left out, and proof-of-work
@@ -970,9 +963,8 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
 /// (wallets-networks.spec.js, wallet-page.spec.js): the merchant gets
 /// mainnet, stagenet and testnet wallets and a retired one, its store
 /// taking payments into the first, each backed up or brought in from an
-/// app another way; a second merchant only test-network ones. "Savings"
-/// has keys in the engine and nothing on it, so it can be retired and
-/// restored. Answers the second merchant's session and Savings' keys.
+/// app another way. "Savings" has keys in the engine and nothing on it,
+/// so it can be retired and restored. Answers Savings' keys.
 async fn seed_wallets(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -994,18 +986,7 @@ async fn seed_wallets(
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
     let db = control.db.lock();
-    let (merchant, tester) = (
-        UserId::new("coverage-merchant"),
-        UserId::new("coverage-tester"),
-    );
-    db.create_user(&tester, "tester@example.test", "unused", false, 0)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    db.create_session(
-        &shared::auth::RawToken::presented(TESTER_SESSION).hash(),
-        &tester,
-        monokulo::now_unix(),
-    )
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let merchant = UserId::new("coverage-merchant");
     let feather = "5B8s3obCY2ETeQB3GNAGPK2zRGen5UeW1WzegSizVsmf6z5NvM2GLoN6zzk1vHyzGAAfA8pGhuYAeCFZjHAp59jRVQkunGS";
     let pos = "56heRv2ANffW1Py2kBkJDy8xnWqZsSrgjLygwjua2xc8Wbksead1NK1ehaYpjQhymGK4S8NPL9eLuJ16CuEJDag8Hq3RbPV";
     let lab = "9wviCeWe2D8XS82k2ovp5EUYLzBt9pYNW2LXUFsZiv8S3Mt21FZ5qQaAroko1enzw3eGr9qC7X1D7Geoo2RrAotYPwq9Gm8";
@@ -1021,15 +1002,12 @@ async fn seed_wallets(
         Option<&'a str>,
         Option<&'a str>,
     );
-    let wallets: [Seeded; 8] = [
+    let wallets: [Seeded; 5] = [
         (&merchant, "w_savings", "Savings", "mainnet", savings.primary_address.clone(), WalletOrigin::Created, Some("paper"), None),
         (&merchant, "w_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created, Some("skipped"), None),
         (&merchant, "w_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported, None, Some("feather")),
         (&merchant, "w_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported, None, None),
         (&merchant, "w_old", "Old till", "mainnet", "47Vmj6BXSRPax69cVdqVP5APVLkcxxjjXdcP9fJWZdNc5mEpn3fXQY1CFmJDvyUXzj2Fy9XafvUgMbW91ZoqwqmQ6RjbVtp".to_owned(), WalletOrigin::Created, Some("stack"), None),
-        (&tester, "w_t_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created, Some("cake"), None),
-        (&tester, "w_t_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported, None, Some("feather")),
-        (&tester, "w_t_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported, None, None),
     ];
     for (user, id, name, network, address, origin, backup, app) in &wallets {
         let engine_id = match *id {
@@ -1053,7 +1031,6 @@ async fn seed_wallets(
     db.retire_wallet(&merchant, &WalletId::new("w_old"), 2)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({
-        "tester_session": TESTER_SESSION,
         "savings_keys": {
             "view_key_hex": savings_keys.view_key_hex.to_string(),
             "spend_pubkey_hex": savings_keys.spend_pubkey_hex,
@@ -1232,6 +1209,13 @@ async fn main() {
         engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
+    // The status page's stream looks again once the cached engine status
+    // runs out: at the setting's floor (engine.status_cache_ms), a second,
+    // so a test sees a new story within one, not ten.
+    monokulo::http::status_page::set_status_cache_ttl(
+        &state.engine,
+        std::time::Duration::from_secs(1),
+    );
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))

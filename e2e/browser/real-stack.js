@@ -191,6 +191,10 @@ async function startStack(options = {}) {
     '[engine]',
     'mode = "remote"',
     `url = "${engineUrl}"`,
+    // The engine's status is trusted for its floor, a second, not ten: a
+    // spec that changes a node sees the status follow within one. The
+    // default is pinned by a unit test in settings.rs.
+    'status_cache_ms = 1000',
     '[database]',
     `path = ${JSON.stringify(path.join(dir, 'monokulo.db'))}`,
     '',
