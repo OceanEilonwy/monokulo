@@ -426,22 +426,14 @@ mod tests {
         );
     }
 
-    /// CoinMarketCap's answer to a plain request for the live test's quote:
-    /// its status, `Retry-After` and body. Asked only after the provider was
-    /// refused, to log the limit's own words and honour its wait.
-    async fn plain_answer(url: &str) -> (u16, Option<std::time::Duration>, String) {
+    /// CoinMarketCap's own words for a refusal: a plain request for the
+    /// live test's quote, its status and body.
+    async fn plain_answer(url: &str) -> (u16, String) {
         match reqwest::get(url).await {
-            Err(e) => (0, None, e.to_string()),
+            Err(e) => (0, e.to_string()),
             Ok(response) => {
                 let status = response.status().as_u16();
-                let retry_after = response
-                    .headers()
-                    .get(reqwest::header::RETRY_AFTER)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.trim().parse::<u64>().ok())
-                    .map(std::time::Duration::from_secs);
-                let body = response.text().await.unwrap_or_default();
-                (status, retry_after, body)
+                (status, response.text().await.unwrap_or_default())
             }
         }
     }
@@ -471,18 +463,21 @@ mod tests {
                 }
                 Err(error) => error,
             };
-            let limited = matches!(
-                &error,
-                ExchangeRateError::Request(e)
-                    if e.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
-            );
-            assert!(limited, "real call failed: {error:?}");
-            let (status, retry_after, body) = plain_answer(&url).await;
-            println!("attempt {attempt}: rate-limited; a plain request got HTTP {status}, Retry-After {retry_after:?}: {body}");
+            // The provider reads a 429 as `Unavailable`, with its
+            // `Retry-After` (crate::exchange_rate::checked).
+            let ExchangeRateError::Unavailable {
+                status: 429,
+                retry_after,
+            } = error
+            else {
+                panic!("real call failed: {error:?}");
+            };
+            println!("attempt {attempt}: HTTP 429, Retry-After {retry_after:?}");
             // A wait longer than a test should take ends the tries early.
             if attempt == TRIES || retry_after.is_some_and(|wait| wait > MAX_WAIT) {
                 // Only CoinMarketCap's own documented limit, in its own
                 // shape, is inconclusive; anything else fails the test.
+                let (status, body) = plain_answer(&url).await;
                 let message = serde_json::from_str::<serde_json::Value>(&body)
                     .ok()
                     .and_then(|b| {
@@ -504,7 +499,7 @@ mod tests {
                         );
                         return;
                     }
-                    _ => panic!("real call failed: {error:?}; then HTTP {status}: {body}"),
+                    _ => panic!("rate-limited {attempt} times, then HTTP {status}: {body}"),
                 }
             }
             tokio::time::sleep(retry_after.map_or(backoff, |wait| wait.max(backoff))).await;
