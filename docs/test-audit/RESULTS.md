@@ -6,8 +6,8 @@ This is what the audit's plan (`docs/test-audit-plan.md`) delivered, measured on
 
 | Target | Before | After |
 |---|---|---|
-| **North star:** the whole local suite in under a minute, excluding compilation (`cargo xtask test`, 32 cores) | about 110 s | **57.0 s**: Rust 28.1 s, e2e (Chromium) 28.8 s, components 15.9 s, node 0.7 s |
-| **Hard limit:** no CI test step over 5 minutes | 764 s (release browser), 626 s (Windows Rust) | **194 s** at most (CI run 40105517984) |
+| **North star:** the whole local suite in under a minute, excluding compilation (`cargo xtask test`, 32 cores) | about 110 s | **43.8 s**: Rust 14.2 s, e2e (Chromium) 29.6 s, components 15.9 s, node 0.8 s |
+| **Hard limit:** no CI test step over 5 minutes | 764 s (release browser), 626 s (Windows Rust) | **219 s** at most (coverage Rust, CI run 40109531936); 197 s outside coverage (run 40109529339) |
 
 The CI test steps, before and after:
 
@@ -28,7 +28,7 @@ Build steps are outside the limit, as the owner decided (Q2). Each test step now
 
 | | At the audit (f7fb5c9be) | After |
 |---|---|---|
-| Rust tests, ci profile (the CI suite) | about 2,470 | 2,183 (27 skipped) |
+| Rust tests, ci profile (the CI suite) | about 2,470 | 2,195 (27 skipped) |
 | Rust tests, the local default | the same | the ci profile without generated properties, `::scale::` tests and real RandomX |
 | e2e | 285 (Chromium and Firefox) | 83, Chromium only (one of them runs only in the coverage run) |
 | Component specs | 30 | 13 |
