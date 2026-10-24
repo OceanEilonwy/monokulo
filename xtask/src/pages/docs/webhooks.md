@@ -78,7 +78,8 @@ plus the headers you added. The body:
 | `store` | The store: `{ "id", "name" }`. |
 | `_links` | The order, as the API links it, on Monokulo's web address: [`mk:order`](../rels/order/) (the order in the API: read it with the store's secret key), [`mk:dashboard-order`](../rels/dashboard-order/) (its page for the merchant: link your admin's order view here) and [`mk:checkout`](../rels/checkout/) (the payer's page), plus [`mk:onion-checkout`](../rels/onion-checkout/) while Monokulo has an onion address. Absolute URLs, since a webhook has no request to resolve a path against; on every event, `order.cancelled` included. Take them from the latest webhook rather than keeping them from when the order was made. |
 
-A field with no value is left out, never sent as `null`.
+A field with no value is left out, never sent as `null`, as in the
+[API](../api/)'s bodies.
 
 `order.cancelled` means the merchant cancelled the order before anything
 was paid to it (today only the POS cancels, and only its own orders). It
