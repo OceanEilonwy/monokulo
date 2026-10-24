@@ -13,6 +13,10 @@ retries = 0
 failure-output = "immediate-final"
 status-level = "fail"
 final-status-level = "slow"
+# Every test, including what the default profile's default-filter leaves
+# out: profiles inherit the default profile's settings, that filter too,
+# unless they set their own.
+default-filter = "all()"
 
 [profile.ci.junit]
 path = "junit.xml"
@@ -29,6 +33,7 @@ retries = 0
 failure-output = "immediate-final"
 status-level = "pass"
 final-status-level = "slow"
+default-filter = "all()"
 
 [profile.live.junit]
 path = "junit.xml"
@@ -64,6 +69,20 @@ test-group = 'live-node'
 # Process-level watchdogs also catch blocking loops that Tokio cannot cancel.
 [profile.default]
 slow-timeout = { period = "120s", terminate-after = 10 }
+# The local run (no --profile) leaves out what CI and the scheduled jobs
+# run: the generated property cases (each case a whole engine story), the
+# scale tests, and the tests hashing with real RandomX but for its
+# reference vector. The fixed-input tests pinning what the properties found
+# sit outside `::properties::` modules, so they run here. `--profile ci`
+# runs everything.
+default-filter = '''
+not (
+    test(/::properties::/)
+    | test(/::scale::/)
+    | test(=pow::tests::real_blocks_prove_across_a_key_change_and_any_change_fails)
+    | test(/_hashed_with_randomx$/)
+)
+'''
 
 # The tests that hash with real RandomX (the follower's other tests use the
 # stand-in, pow::hasher::Function::StandIn), each process holding up to two
@@ -85,7 +104,7 @@ slow-timeout = { period = "300s", terminate-after = 12 }
 # in name order), so a run does not end waiting on a 20-30s property that
 # started last. Only the order changes; every test still runs.
 [[profile.default.overrides]]
-filter = 'test(/^work::tests::boundaries::money::(nodes|expansions)::properties::/) | test(/^proof::tests::boundaries::properties::/) | test(/every_recorded_ringct_variant/) | test(/^work::tests::every_sql_failure_while_a_payment_confirms/) | test(/^work::mempool::boundaries::scale::/)'
+filter = 'test(/^work::tests::boundaries::money::(nodes|expansions)::properties::/) | test(/^proof::tests::boundaries::properties::/) | test(/every_recorded_ringct_variant/) | test(/every_proof_config_shutdown/) | test(/^work::mempool::boundaries::scale::/)'
 priority = 100
 
 [[profile.default.overrides]]
