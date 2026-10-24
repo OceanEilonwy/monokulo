@@ -804,6 +804,39 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
     let data_names: Vec<String> = data_idents.iter().map(|i| i.to_string()).collect();
     let data_types: Vec<&Type> = data.iter().map(|(_, t, ..)| t).collect();
     let data_docs: Vec<&String> = data.iter().map(|(_, _, d, _)| d).collect();
+    // A field with no value is left out, never sent as `null`: an
+    // `Option<T>` field is written only when it has one, and its schema is
+    // `T`'s, not required.
+    let serialize_data: Vec<Tokens> = data_idents
+        .iter()
+        .zip(&data_names)
+        .zip(&data_types)
+        .map(|((ident, name), ty)| {
+            if generic_of(ty, "Option").is_some() {
+                quote! {
+                    if let ::core::option::Option::Some(value) = &self.#ident {
+                        map.serialize_entry(#name, value)?;
+                    }
+                }
+            } else {
+                quote!(map.serialize_entry(#name, &self.#ident)?;)
+            }
+        })
+        .collect();
+    let schema_data: Vec<Tokens> = data_names
+        .iter()
+        .zip(&data_types)
+        .zip(&data_docs)
+        .map(|((name, ty), doc)| match generic_of(ty, "Option") {
+            Some(inner) => quote! {
+                properties.insert(#name.into(), #p::described(generator.subschema_for::<#inner>(), #doc));
+            },
+            None => quote! {
+                properties.insert(#name.into(), #p::described(generator.subschema_for::<#ty>(), #doc));
+                required.push(#name);
+            },
+        })
+        .collect();
     let link_adds = links.iter().map(|(ident, target, optional)| {
         let rel = ident.to_string().replace('_', "-");
         let registered = REGISTERED_RELS.contains(&rel.as_str());
@@ -933,7 +966,7 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
             fn serialize<S: #p::serde::Serializer>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error> {
                 use #p::serde::ser::SerializeMap as _;
                 let mut map = serializer.serialize_map(::core::option::Option::None)?;
-                #(map.serialize_entry(#data_names, &self.#data_idents)?;)*
+                #(#serialize_data)*
                 #serialize_links
                 map.end()
             }
@@ -947,10 +980,7 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
             fn json_schema(generator: &mut #p::schemars::SchemaGenerator) -> #p::schemars::Schema {
                 let mut properties = #p::serde_json::Map::new();
                 let mut required: ::std::vec::Vec<&str> = ::std::vec::Vec::new();
-                #(
-                    properties.insert(#data_names.into(), #p::described(generator.subschema_for::<#data_types>(), #data_docs));
-                    required.push(#data_names);
-                )*
+                #(#schema_data)*
                 #schema_links
                 #p::object_schema(#doc, properties, required)
             }

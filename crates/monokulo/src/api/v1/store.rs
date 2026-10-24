@@ -13,7 +13,7 @@ struct Body {
     name: String,
     /// The currency the store's confirmation rules are counted in (`EUR`).
     base_currency: String,
-    /// The wallet the store's payments go to; `null` for a store without
+    /// The wallet the store's payments go to; left out for a store without
     /// one.
     wallet: Option<Wallet>,
     orders: Link<orders::Path>,

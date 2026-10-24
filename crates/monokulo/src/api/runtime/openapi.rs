@@ -507,7 +507,7 @@ pub fn build(examples: &[Exchange]) -> Value {
         insert(&mut paths, handshake.template, handshake.method, entry);
     }
     let schemas = generator.take_definitions(true);
-    json!({
+    let mut document = json!({
         "openapi": "3.1.0",
         "info": {
             "title": "Monokulo API",
@@ -525,7 +525,53 @@ pub fn build(examples: &[Exchange]) -> Value {
                 "session": {"type": "apiKey", "in": "cookie", "name": "session", "description": "The merchant, signed in to the dashboard."},
             },
         },
-    })
+    });
+    without_null(&mut document);
+    document
+}
+
+/// `schema` (and every schema in it, but examples) without `null`: no
+/// field Monokulo sends is ever `null`, one with no value is left out, and
+/// a field a client may leave out is one it leaves out rather than sends as
+/// `null`. So an `Option<T>` field's schema is `T`'s, not required.
+/// (schemars writes every `Option` as `T` or `null`.)
+pub fn without_null(schema: &mut Value) {
+    match schema {
+        Value::Object(map) => {
+            if map.get("default") == Some(&Value::Null) {
+                map.remove("default");
+            }
+            if let Some(Value::Array(types)) = map.get_mut("type") {
+                types.retain(|t| t != "null");
+                if types.len() == 1 {
+                    let only = types.remove(0);
+                    map.insert("type".into(), only);
+                }
+            }
+            for key in ["anyOf", "oneOf"] {
+                let Some(Value::Array(options)) = map.get_mut(key) else {
+                    continue;
+                };
+                options.retain(|o| o != &json!({"type": "null"}));
+                if options.len() == 1 {
+                    let Some(Value::Object(only)) = options.pop() else {
+                        continue;
+                    };
+                    map.remove(key);
+                    for (name, value) in only {
+                        map.entry(name).or_insert(value);
+                    }
+                }
+            }
+            for (key, value) in map.iter_mut() {
+                if key != "example" && key != "examples" {
+                    without_null(value);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_null),
+        _ => {}
+    }
 }
 
 /// The document as served: the schemas, without examples.

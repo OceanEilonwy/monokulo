@@ -1437,6 +1437,24 @@ impl Reference {
         let examples = examples_fit_their_schemas(document);
         assert!(examples > 20, "only {examples} examples in the document");
         every_answer_has_an_example(document);
+        // No field is ever `null`, in a schema or in anything recorded:
+        // one with no value is left out.
+        let nulls = nulls_in(document, "#");
+        assert!(nulls.is_empty(), "the document has null at {nulls:#?}");
+        assert!(
+            !openapi::to_text(document).contains("`null`"),
+            "a description still says a field may be `null`"
+        );
+        for exchange in &self.examples {
+            let what = format!("{} {}", exchange.method, exchange.path);
+            for body in [&exchange.request, &exchange.response]
+                .into_iter()
+                .flatten()
+            {
+                let nulls = nulls_in(body, &what);
+                assert!(nulls.is_empty(), "an exchange has null at {nulls:#?}");
+            }
+        }
         // Every page the API links, and both handshakes, are in it.
         for resource in catalog::resources() {
             assert!(
@@ -1533,6 +1551,36 @@ impl Reference {
             );
         }
     }
+}
+
+/// Where `value` has `null` (as a value, or as a schema's `type`), each
+/// as a path under `at`.
+pub fn nulls_in(value: &Value, at: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    match value {
+        Value::Null => found.push(at.to_owned()),
+        Value::String(s)
+            if s == "null"
+                && (at.ends_with("/type")
+                    || at
+                        .rsplit_once('/')
+                        .is_some_and(|(up, _)| up.ends_with("/type"))) =>
+        {
+            found.push(at.to_owned())
+        }
+        Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                found.extend(nulls_in(item, &format!("{at}/{i}")));
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map {
+                found.extend(nulls_in(item, &format!("{at}/{key}")));
+            }
+        }
+        _ => {}
+    }
+    found
 }
 
 /// Records the exchanges against `engine` and writes the reference to

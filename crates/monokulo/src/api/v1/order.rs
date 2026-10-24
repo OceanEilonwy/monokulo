@@ -36,7 +36,7 @@ struct Body {
     xmr_amount_piconero: u64,
     /// What has arrived so far, in piconero.
     amount_received_piconero: u64,
-    /// The price the order was made with, in `currency`; `null` for an
+    /// The price the order was made with, in `currency`; left out for an
     /// order Monokulo has no record of.
     amount: Option<String>,
     /// The currency of `amount`.
@@ -56,7 +56,7 @@ struct Body {
     /// When it expires unpaid, in Unix seconds. A cancelled order's is
     /// when it was cancelled.
     expires_at: i64,
-    /// When the merchant cancelled it, in Unix seconds; `null` unless they
+    /// When the merchant cancelled it, in Unix seconds; left out unless they
     /// did. A payment sent anyway is still recorded: in
     /// `amount_received_piconero` while the order stays `cancelled`, and,
     /// paid in full, the order is paid like any other and keeps this time.

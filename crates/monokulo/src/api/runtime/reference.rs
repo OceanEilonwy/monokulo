@@ -129,7 +129,7 @@ pub fn catalog(examples: &[Exchange]) -> Value {
             })
         })
         .collect();
-    json!({
+    let mut reference = json!({
         "resources": resources,
         "rels": rels,
         "handshakes": handshakes,
@@ -141,7 +141,10 @@ pub fn catalog(examples: &[Exchange]) -> Value {
             "title": problem.title(),
             "doc": problem.doc(),
         })).collect::<Vec<_>>(),
-    })
+    });
+    // Its schemas as the OpenAPI document has them: no `null`.
+    super::openapi::without_null(&mut reference);
+    reference
 }
 
 /// `value` as written: pretty, with a final newline.

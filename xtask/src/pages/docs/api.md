@@ -65,6 +65,11 @@ each field's rules.
 
 - A link or form the key may not use is left out, so a client finds out
   what its key does by reading the entry.
+- A field with no value is left out, never sent as `null` (an order not
+  cancelled has no `cancelled_at`), the same in every body and every
+  [webhook](../webhooks/). In the OpenAPI document such a field isn't
+  required, and no schema allows `null`; in a request, leave out a field
+  you have no value for.
 - Links are paths on Monokulo's own host. Resolve them against the URL you
   called: a client that came in over the onion address stays on it.
 - Onion links are the exception: see [Tor](#tor).

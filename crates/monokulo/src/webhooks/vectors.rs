@@ -238,6 +238,10 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
         let body: Value = serde_json::from_str(delivery["body"].as_str().unwrap()).unwrap();
         assert_eq!(body["event"], delivery["headers"]["X-Monokulo-Event"]);
         assert_eq!(body["event_id"], delivery["headers"]["X-Monokulo-Event-Id"]);
+        // A field with no value is left out, never sent as `null`, as in
+        // the API's bodies.
+        let nulls = crate::api::runtime::recording::nulls_in(&body, "body");
+        assert!(nulls.is_empty(), "{nulls:?}: {delivery}");
     }
     for refusal in vectors["refuse"].as_array().unwrap() {
         assert!(!verifies(refusal), "{refusal}");
