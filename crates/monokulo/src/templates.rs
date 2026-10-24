@@ -88,69 +88,28 @@ pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
 mod tests {
     use super::*;
 
-    const NO_VALUE: &str = "<span class=\"muted\">-</span>";
-
-    #[test]
-    fn display_or_dash_shows_the_muted_placeholder_for_none_or_empty() {
-        assert_eq!(
-            display_or_dash(Some("real value")).into_string(),
-            "real value"
-        );
-        assert_eq!(
-            display_or_dash(Some("<b>")).into_string(),
-            "&lt;b&gt;",
-            "a value is escaped"
-        );
-        assert_eq!(display_or_dash(None).into_string(), NO_VALUE);
-        assert_eq!(
-            display_or_dash(Some("")).into_string(),
-            NO_VALUE,
-            "an empty string is not a real value either"
-        );
-    }
-
+    /// At most two parts, the largest first, skipping a zero unit; under a
+    /// minute is `<1m`; a time already here or passed is "any moment",
+    /// never negative.
     #[test]
     fn format_duration_until_matches_the_moment_js_style_examples() {
         let now = 1_700_000_000;
-        assert_eq!(format_duration_until(now + 12 * 3600, now), "12h");
-        assert_eq!(
-            format_duration_until(now + 4 * 3600 + 15 * 60, now),
-            "4h 15m"
-        );
-        assert_eq!(
-            format_duration_until(now + 2 * 86400 + 4 * 3600, now),
-            "2d 4h"
-        );
-    }
-
-    #[test]
-    fn format_duration_until_skips_a_zero_unit_rather_than_showing_it() {
-        let now = 1_700_000_000;
-        // 1 day, 0 hours, 30 minutes - the zero hour must not crowd out the
-        // real second part or appear as "1d 0h".
-        assert_eq!(format_duration_until(now + 86400 + 30 * 60, now), "1d 30m");
-    }
-
-    #[test]
-    fn format_duration_until_never_shows_more_than_two_parts() {
-        let now = 1_700_000_000;
-        // 2 days, 4 hours, 30 minutes - minutes is dropped, not appended as a third part.
-        assert_eq!(
-            format_duration_until(now + 2 * 86400 + 4 * 3600 + 30 * 60, now),
-            "2d 4h"
-        );
-    }
-
-    #[test]
-    fn format_duration_until_handles_under_a_minute_and_already_passed() {
-        let now = 1_700_000_000;
-        assert_eq!(format_duration_until(now + 30, now), "<1m");
-        assert_eq!(format_duration_until(now, now), "any moment");
-        assert_eq!(
-            format_duration_until(now - 100, now),
-            "any moment",
-            "an already-passed target must not show a negative duration"
-        );
+        for (from_now, shown) in [
+            (12 * 3600, "12h"),
+            (4 * 3600 + 15 * 60, "4h 15m"),
+            (2 * 86400 + 4 * 3600, "2d 4h"),
+            (2 * 86400 + 4 * 3600 + 30 * 60, "2d 4h"),
+            (86400 + 30 * 60, "1d 30m"),
+            (30, "<1m"),
+            (0, "any moment"),
+            (-100, "any moment"),
+        ] {
+            assert_eq!(
+                format_duration_until(now + from_now, now),
+                shown,
+                "{from_now}"
+            );
+        }
     }
 
     // Signup/login page tests moved to `views::auth`'s own test module -

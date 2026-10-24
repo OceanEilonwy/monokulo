@@ -216,39 +216,25 @@ mod tests {
         );
     }
 
+    /// A value that isn't what `encrypt` wrote is an error, never a panic
+    /// or a wrong plaintext: tampered, not hex, or too short.
     #[test]
-    fn decrypting_a_tampered_ciphertext_returns_an_error_not_a_panic_or_wrong_plaintext() {
-        let plaintext = "sk_do_not_trust_a_tampered_value";
-        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
-
+    fn decrypting_a_tampered_or_malformed_value_returns_an_error_not_a_panic_or_wrong_plaintext() {
+        let encoded = encrypt(
+            &TEST_KEY,
+            Binding::StoreSecret("c1"),
+            "sk_do_not_trust_a_tampered_value",
+        );
         let mut bytes = hex::decode(&encoded).unwrap();
         // Flip a byte well past the nonce, inside the ciphertext/tag.
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF;
         let tampered = hex::encode(bytes);
-
         let result = decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &tampered);
         assert!(
             matches!(result, Err(CryptoError::AuthenticationFailed)),
             "expected an auth failure, got: {result:?}"
         );
-    }
-
-    #[test]
-    fn decrypting_a_truncated_string_returns_an_error_not_a_panic() {
-        let plaintext = "sk_truncate_me";
-        let encoded = encrypt(&TEST_KEY, Binding::StoreSecret("c1"), plaintext);
-        // Cut it down to fewer bytes than even the nonce alone.
-        let truncated = &encoded[..NONCE_LEN]; // hex chars, well short of a full nonce's worth of bytes
-        let result = decrypt(&TEST_KEY, Binding::StoreSecret("c1"), truncated);
-        assert!(
-            matches!(result, Err(CryptoError::Truncated)),
-            "expected Truncated, got: {result:?}"
-        );
-    }
-
-    #[test]
-    fn decrypting_a_non_hex_string_returns_an_error_not_a_panic() {
         let result = decrypt(
             &TEST_KEY,
             Binding::StoreSecret("c1"),
@@ -257,6 +243,12 @@ mod tests {
         assert!(
             matches!(result, Err(CryptoError::InvalidEncoding)),
             "expected InvalidEncoding, got: {result:?}"
+        );
+        // Fewer hex characters than the nonce alone has bytes.
+        let result = decrypt(&TEST_KEY, Binding::StoreSecret("c1"), &encoded[..NONCE_LEN]);
+        assert!(
+            matches!(result, Err(CryptoError::Truncated)),
+            "expected Truncated, got: {result:?}"
         );
     }
 

@@ -3357,58 +3357,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_user_then_reading_it_back_round_trips() {
-        let db = Db::open_in_memory().unwrap();
-        db.create_user(
-            &shared::ids::UserId::new("id-1"),
-            "a@example.com",
-            "hash",
-            false,
-            1000,
-        )
-        .unwrap();
-
-        let row = db.get_user_by_email("a@example.com").unwrap().unwrap();
-        assert_eq!(row.id, shared::ids::UserId::new("id-1"));
-        assert_eq!(row.email, "a@example.com");
-        assert_eq!(row.password_hash, "hash");
-        assert_eq!(row.created_at, 1000);
-        assert!(
-            !row.is_admin,
-            "an ordinary signup must never be an admin by default"
-        );
-    }
-
-    #[test]
-    fn creating_a_user_with_is_admin_true_persists_and_round_trips_the_flag() {
-        let db = Db::open_in_memory().unwrap();
-        db.create_user(
-            &shared::ids::UserId::new("admin-1"),
-            "admin@example.com",
-            "hash",
-            true,
-            1000,
-        )
-        .unwrap();
-
-        let by_email = db.get_user_by_email("admin@example.com").unwrap().unwrap();
-        assert!(by_email.is_admin);
-        let by_id = db
-            .get_user_by_id(&shared::ids::UserId::new("admin-1"))
-            .unwrap()
-            .unwrap();
-        assert!(by_id.is_admin);
-    }
-
-    #[test]
-    fn a_setting_that_was_never_saved_reads_as_none() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(db.get_setting("rate_limit_per_ip_per_min").unwrap(), None);
-        assert_eq!(db.list_settings().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
+    fn a_setting_reads_as_none_until_saved_overwrites_and_deletes() {
         let db = Db::open_in_memory().unwrap();
         db.set_setting("rate_limit_per_ip_per_min", "10").unwrap();
         assert_eq!(
@@ -3432,14 +3381,21 @@ mod tests {
             all.get("rate_limit_per_ip_per_min").map(String::as_str),
             Some("25")
         );
-    }
 
-    #[test]
-    fn deleting_a_setting_removes_its_row_entirely() {
-        let db = Db::open_in_memory().unwrap();
-        db.set_setting("k", "v").unwrap();
-        db.delete_setting("k").unwrap();
-        assert_eq!(db.get_setting("k").unwrap(), None);
+        // A setting that was never saved reads as none.
+        {
+            let db = Db::open_in_memory().unwrap();
+            assert_eq!(db.get_setting("rate_limit_per_ip_per_min").unwrap(), None);
+            assert_eq!(db.list_settings().unwrap().len(), 0);
+        }
+
+        // Deleting a setting removes its row entirely.
+        {
+            let db = Db::open_in_memory().unwrap();
+            db.set_setting("k", "v").unwrap();
+            db.delete_setting("k").unwrap();
+            assert_eq!(db.get_setting("k").unwrap(), None);
+        }
     }
 
     #[test]
@@ -3481,12 +3437,51 @@ mod tests {
     }
 
     #[test]
-    fn looking_up_an_unknown_email_returns_none_rather_than_an_error() {
+    fn looking_up_anything_unknown_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
         assert!(db
             .get_user_by_email("nobody@example.com")
             .unwrap()
             .is_none());
+
+        // Looking up an unknown public key returns none rather than an error.
+        {
+            let db = Db::open_in_memory().unwrap();
+            assert!(db
+                .get_store_connection_by_public_key("pk_nonexistent")
+                .unwrap()
+                .is_none());
+        }
+
+        // Looking up an unknown session token returns none rather than an
+        // error.
+        {
+            let db = Db::open_in_memory().unwrap();
+            assert!(db.find_session(&th("nonexistent"), 1000).unwrap().is_none());
+        }
+
+        // Looking up an unknown store connection id returns none rather than an
+        // error.
+        {
+            let db = Db::open_in_memory().unwrap();
+            assert!(db
+                .get_store_connection_by_id(&shared::ids::ConnectionId::new("nonexistent"))
+                .unwrap()
+                .is_none());
+        }
+
+        // Looking up fiat metadata for an unknown order id returns none.
+        {
+            let db = Db::open_in_memory().unwrap();
+            let connection_id = seed_connection_for_connect_token_tests(&db);
+            assert!(db
+                .get_order_currency_metadata(
+                    &shared::ids::ConnectionId::new(connection_id.to_string()),
+                    &shared::ids::OrderId::new("nonexistent")
+                )
+                .unwrap()
+                .is_none());
+        }
     }
 
     #[test]
@@ -3517,12 +3512,6 @@ mod tests {
     }
 
     #[test]
-    fn looking_up_an_unknown_session_token_returns_none_rather_than_an_error() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(db.find_session(&th("nonexistent"), 1000).unwrap().is_none());
-    }
-
-    #[test]
     fn deleting_a_session_removes_it_and_reports_whether_a_row_was_actually_deleted() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
@@ -3549,7 +3538,7 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_store_connection_then_reading_it_back_round_trips() {
+    fn each_kind_of_row_reads_back_as_it_was_written() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
             &shared::ids::UserId::new("user-1"),
@@ -3588,6 +3577,150 @@ mod tests {
             vec!["coingecko"],
             "every new store defaults to coingecko"
         );
+
+        // Creating a store connection then reading it back by public key round
+        // trips.
+        {
+            let db = Db::open_in_memory().unwrap();
+            db.create_user(
+                &shared::ids::UserId::new("user-2"),
+                "b@example.com",
+                "hash",
+                false,
+                1000,
+            )
+            .unwrap();
+            crate::db::test_rows::store_on_wallet(
+                &db,
+                &shared::ids::ConnectionId::new("conn-2"),
+                &shared::ids::UserId::new("user-2"),
+                "https://shop.example.com",
+                "pk_xyz",
+                "sk_xyz",
+                3000,
+                "XMR",
+            )
+            .unwrap();
+
+            let row = db
+                .get_store_connection_by_public_key("pk_xyz")
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.id, shared::ids::ConnectionId::new("conn-2"));
+            assert_eq!(row.user_id, shared::ids::UserId::new("user-2"));
+        }
+
+        // Creating a user then reading it back round trips.
+        {
+            let db = Db::open_in_memory().unwrap();
+            db.create_user(
+                &shared::ids::UserId::new("id-1"),
+                "a@example.com",
+                "hash",
+                false,
+                1000,
+            )
+            .unwrap();
+
+            let row = db.get_user_by_email("a@example.com").unwrap().unwrap();
+            assert_eq!(row.id, shared::ids::UserId::new("id-1"));
+            assert_eq!(row.email, "a@example.com");
+            assert_eq!(row.password_hash, "hash");
+            assert_eq!(row.created_at, 1000);
+            assert!(
+                !row.is_admin,
+                "an ordinary signup must never be an admin by default"
+            );
+        }
+
+        // Creating a user with is admin true persists and round trips the flag.
+        {
+            let db = Db::open_in_memory().unwrap();
+            db.create_user(
+                &shared::ids::UserId::new("admin-1"),
+                "admin@example.com",
+                "hash",
+                true,
+                1000,
+            )
+            .unwrap();
+
+            let by_email = db.get_user_by_email("admin@example.com").unwrap().unwrap();
+            assert!(by_email.is_admin);
+            let by_id = db
+                .get_user_by_id(&shared::ids::UserId::new("admin-1"))
+                .unwrap()
+                .unwrap();
+            assert!(by_id.is_admin);
+        }
+
+        // Creating order fiat metadata then reading it back round trips.
+        {
+            let db = Db::open_in_memory().unwrap();
+            let connection_id = seed_connection_for_connect_token_tests(&db);
+            db.create_order_currency_metadata(
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &shared::ids::OrderId::new("pay_1"),
+                "USD",
+                "25.00",
+                shared::xmr_amount::Piconero(6_700_000_000),
+                "fixed",
+                1000,
+                "XMR",
+                None,
+                10,
+                false,
+                None,
+                true,
+            )
+            .unwrap();
+
+            let row = db
+                .get_order_currency_metadata(
+                    &shared::ids::ConnectionId::new(connection_id.to_string()),
+                    &shared::ids::OrderId::new("pay_1"),
+                )
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                row.connection_id,
+                shared::ids::ConnectionId::new(connection_id)
+            );
+            assert_eq!(row.order_id, shared::ids::OrderId::new("pay_1"));
+            assert_eq!(row.currency, "USD");
+            assert_eq!(row.amount, "25.00");
+            assert_eq!(
+                row.piconero_per_unit,
+                shared::xmr_amount::Piconero(6_700_000_000)
+            );
+            assert_eq!(row.provider, "fixed");
+            assert_eq!(row.created_at, 1000);
+            assert_eq!(row.store_base_currency, Some("XMR".to_string()));
+            assert_eq!(row.base_currency_piconero_per_unit, None);
+            assert_eq!(row.confirmations_required_applied, Some(10));
+        }
+
+        // A created confirmation threshold round trips.
+        {
+            let db = Db::open_in_memory().unwrap();
+            let connection_id = seed_connection_for_connect_token_tests(&db);
+            db.replace_confirmation_thresholds(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
+                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &[],
+                Some(("thresh-1", "50.00", 20, 1000)),
+            )
+            .unwrap();
+
+            let rows = db
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string(),
+                ))
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].unit_amount, "50.00");
+            assert_eq!(rows[0].confirmations_required, 20);
+        }
     }
 
     #[test]
@@ -4025,15 +4158,6 @@ mod tests {
     }
 
     #[test]
-    fn looking_up_an_unknown_store_connection_id_returns_none_rather_than_an_error() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("nonexistent"))
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
     fn a_site_belongs_to_one_store_on_the_instance_and_stores_without_one_are_many() {
         let db = Db::open_in_memory().unwrap();
         for user in ["user-1", "user-2"] {
@@ -4140,46 +4264,6 @@ mod tests {
         assert!(!db
             .client_logging_by_order(&OrderId::new("order_missing"))
             .unwrap());
-    }
-
-    #[test]
-    fn creating_a_store_connection_then_reading_it_back_by_public_key_round_trips() {
-        let db = Db::open_in_memory().unwrap();
-        db.create_user(
-            &shared::ids::UserId::new("user-2"),
-            "b@example.com",
-            "hash",
-            false,
-            1000,
-        )
-        .unwrap();
-        crate::db::test_rows::store_on_wallet(
-            &db,
-            &shared::ids::ConnectionId::new("conn-2"),
-            &shared::ids::UserId::new("user-2"),
-            "https://shop.example.com",
-            "pk_xyz",
-            "sk_xyz",
-            3000,
-            "XMR",
-        )
-        .unwrap();
-
-        let row = db
-            .get_store_connection_by_public_key("pk_xyz")
-            .unwrap()
-            .unwrap();
-        assert_eq!(row.id, shared::ids::ConnectionId::new("conn-2"));
-        assert_eq!(row.user_id, shared::ids::UserId::new("user-2"));
-    }
-
-    #[test]
-    fn looking_up_an_unknown_public_key_returns_none_rather_than_an_error() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(db
-            .get_store_connection_by_public_key("pk_nonexistent")
-            .unwrap()
-            .is_none());
     }
 
     fn seed_connection_for_connect_token_tests(db: &Db) -> String {
@@ -4341,65 +4425,6 @@ mod tests {
             true,
         );
         assert!(matches!(stored, Err(DbError::Sqlite(_))), "{stored:?}");
-    }
-
-    #[test]
-    fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
-        let db = Db::open_in_memory().unwrap();
-        let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_1"),
-            "USD",
-            "25.00",
-            shared::xmr_amount::Piconero(6_700_000_000),
-            "fixed",
-            1000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
-        .unwrap();
-
-        let row = db
-            .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new("pay_1"),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            row.connection_id,
-            shared::ids::ConnectionId::new(connection_id)
-        );
-        assert_eq!(row.order_id, shared::ids::OrderId::new("pay_1"));
-        assert_eq!(row.currency, "USD");
-        assert_eq!(row.amount, "25.00");
-        assert_eq!(
-            row.piconero_per_unit,
-            shared::xmr_amount::Piconero(6_700_000_000)
-        );
-        assert_eq!(row.provider, "fixed");
-        assert_eq!(row.created_at, 1000);
-        assert_eq!(row.store_base_currency, Some("XMR".to_string()));
-        assert_eq!(row.base_currency_piconero_per_unit, None);
-        assert_eq!(row.confirmations_required_applied, Some(10));
-    }
-
-    #[test]
-    fn looking_up_fiat_metadata_for_an_unknown_order_id_returns_none() {
-        let db = Db::open_in_memory().unwrap();
-        let connection_id = seed_connection_for_connect_token_tests(&db);
-        assert!(db
-            .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new("nonexistent")
-            )
-            .unwrap()
-            .is_none());
     }
 
     #[test]
@@ -4574,28 +4599,6 @@ mod tests {
             .find(|c| c.canonical_code == "USD")
             .expect("USD must be seeded");
         assert_eq!(usd.description, "United States Dollar");
-    }
-
-    #[test]
-    fn a_created_confirmation_threshold_round_trips() {
-        let db = Db::open_in_memory().unwrap();
-        let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.replace_confirmation_thresholds(
-            crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &[],
-            Some(("thresh-1", "50.00", 20, 1000)),
-        )
-        .unwrap();
-
-        let rows = db
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
-                connection_id.to_string(),
-            ))
-            .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].unit_amount, "50.00");
-        assert_eq!(rows[0].confirmations_required, 20);
     }
 
     #[test]
