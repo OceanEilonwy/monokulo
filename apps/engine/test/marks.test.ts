@@ -2,28 +2,35 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { dueCount, newestRows } from '../src/marks.ts';
+import { markText } from '../src/present.ts';
+import { TIERS } from '../src/wire.ts';
 import type { Mark, Tier } from '../src/wire.ts';
 
 const mark = (seq: number, at_ms: number, tier: Tier): Mark => ({
   seq, at_ms, round: 1, tier, key: false, what: { kind: 'pruned', hashes: seq },
 });
-const marks = [mark(1, 100, 'blocks'), mark(2, 200, 'upkeep'), mark(3, 200, 'blocks'), mark(4, 300, 'chain'), mark(5, 400, 'blocks')];
 
-test('the marks due by a moment: those at it or before', () => {
-  assert.equal(dueCount(marks, 0), 0);
-  assert.equal(dueCount(marks, 100), 1);
-  assert.equal(dueCount(marks, 199), 1);
-  assert.equal(dueCount(marks, 200), 3, 'both at the moment');
-  assert.equal(dueCount(marks, 1_000), 5);
-  assert.equal(dueCount([], 1_000), 0);
-});
-
-test('the rows: the newest due marks of the tiers shown, newest first, at most the limit', () => {
-  const all = new Set<Tier>(['chain', 'blocks', 'mempool', 'settlement', 'upkeep']);
-  assert.deepEqual(newestRows(marks, 4, all, 60).map((m) => m.seq), [4, 3, 2, 1]);
-  assert.deepEqual(newestRows(marks, 5, all, 2).map((m) => m.seq), [5, 4]);
-  assert.deepEqual(newestRows(marks, 5, new Set<Tier>(['upkeep']), 60).map((m) => m.seq), [2]);
-  assert.deepEqual(newestRows(marks, 0, all, 60), []);
+// Issue #126: a hidden tab keeps only its newest frame (engine-view.tsx), so
+// a mark can come in a frame that is never played. The coverage fixture's
+// reorg story ends with "Rewound", then round 4's frames, which carry no
+// marks: shown again, the page plays only the last of those, and the table
+// still lists the reorg's last mark, because it lists the marks the page
+// holds that are due by the playback position, whichever frames played.
+test('a mark in a frame a hidden tab never played is listed once the playback passes it', () => {
+  const rewound: Mark = { seq: 41, at_ms: 1_000, round: 3, tier: 'chain', key: true,
+    what: { kind: 'rewound', fork: 3_412_881, deleted_to: null, ancestor: 3_412_880 } };
+  const frames = [
+    { at_ms: 1_000, marks: [mark(40, 880, 'blocks'), rewound] },
+    { at_ms: 1_120, marks: [] },
+    { at_ms: 1_240, marks: [] },
+  ];
+  // Every frame's marks are held as it arrives; hidden, only the newest
+  // frame is kept to play.
+  const held = frames.flatMap((frame) => frame.marks);
+  const played = frames.slice(-1)[0];
+  const rows = newestRows(held, dueCount(held, played.at_ms), new Set(TIERS), 60);
+  assert.equal(rows[0], rewound);
+  assert.ok(markText(rows[0].what).startsWith('Rewound: block 3,412,881 deleted'), markText(rows[0].what));
 });
 
 test('fifty thousand marks: the due ones are found by halving', () => {
