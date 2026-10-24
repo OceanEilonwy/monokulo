@@ -21,7 +21,7 @@ pub const MAX_PAGE: u32 = 200;
 const DEFAULT_PAGE: u32 = 50;
 
 /// List the store's orders, newest first.
-#[get(server)]
+#[get(server, problems = [EngineUnavailable])]
 async fn list(orders: Orders, page: Page) -> api::Result<Body> {
     let limit = page.limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE);
     let offset = page.offset.unwrap_or(0);
@@ -120,7 +120,18 @@ struct Input {
 /// from anywhere else. A shop plugin names itself in `Monokulo-Client:
 /// <slug>/<version>`. Answers `201 Created` with the order and its
 /// `Location`.
-#[post(any_key, form = "create-order")]
+#[post(
+    any_key,
+    form = "create-order",
+    problems = [
+        InvalidAmount,
+        RatesUnavailable,
+        IdempotencyConflict,
+        InvalidRequest,
+        EngineUnavailable,
+        Internal,
+    ]
+)]
 async fn create(
     caller: Caller,
     orders: Orders,

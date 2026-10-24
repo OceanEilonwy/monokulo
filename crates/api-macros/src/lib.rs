@@ -264,6 +264,13 @@ fn expand_resource(args: ResourceArgs) -> syn::Result<Tokens> {
             }
         }
     };
+    // A path that doesn't parse (an order id that can't be one) is
+    // `not-found`.
+    let path_problems = if args.params.is_empty() {
+        quote!()
+    } else {
+        quote!(operation.problem(#p::Problem::NotFound);)
+    };
     Ok(quote! {
         /// One resource per file: a second `resource!` here defines this
         /// twice.
@@ -332,6 +339,7 @@ fn expand_resource(args: ResourceArgs) -> syn::Result<Tokens> {
         impl #p::ApiParam for Path {
             fn describe(operation: &mut #p::OperationDoc) {
                 operation.path_params(&[#(#param_names),*]);
+                #path_problems
             }
         }
     })
@@ -342,20 +350,34 @@ fn expand_resource(args: ResourceArgs) -> syn::Result<Tokens> {
 struct HandlerArgs {
     who: Vec<Ident>,
     form: Option<LitStr>,
+    /// The problems the handler's own body answers with (`Problem`
+    /// variants), beyond its parameters' and the middleware's.
+    problems: Vec<Ident>,
 }
 
 impl Parse for HandlerArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut who = Vec::new();
         let mut form = None;
+        let mut problems = Vec::new();
         while !input.is_empty() {
             if input.peek(Ident) && input.peek2(Token![=]) {
                 let key: Ident = input.parse()?;
-                if key != "form" {
-                    return Err(Error::new(key.span(), "expected `form = \"name\"`"));
-                }
                 input.parse::<Token![=]>()?;
-                form = Some(input.parse()?);
+                if key == "form" {
+                    form = Some(input.parse()?);
+                } else if key == "problems" {
+                    let list;
+                    syn::bracketed!(list in input);
+                    let names =
+                        syn::punctuated::Punctuated::<Ident, Token![,]>::parse_terminated(&list)?;
+                    problems.extend(names);
+                } else {
+                    return Err(Error::new(
+                        key.span(),
+                        "expected `form = \"name\"` or `problems = [Variant, ...]`",
+                    ));
+                }
             } else {
                 who.push(input.parse::<Ident>()?);
                 while input.peek(Token![|]) {
@@ -367,7 +389,11 @@ impl Parse for HandlerArgs {
                 input.parse::<Token![,]>()?;
             }
         }
-        Ok(HandlerArgs { who, form })
+        Ok(HandlerArgs {
+            who,
+            form,
+            problems,
+        })
     }
 }
 
@@ -500,6 +526,11 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
     let output_span = output.span();
     let respond_check =
         quote_spanned!(output_span=> <#output as #p::Respond>::describe(operation););
+    // Each a `Problem` variant, checked by the compiler where it's named.
+    let problems = args
+        .problems
+        .iter()
+        .map(|problem| quote_spanned!(problem.span()=> operation.problem(#p::Problem::#problem);));
     Ok(quote! {
         #function
 
@@ -535,6 +566,7 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
         fn #describe(operation: &mut #p::OperationDoc) {
             #(<#types as #p::ApiParam>::describe(operation);)*
             #respond_check
+            #(#problems)*
         }
 
         #[#p::linkme::distributed_slice(#p::HANDLERS)]
@@ -555,19 +587,22 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
     })
 }
 
-/// `#[get(who)]`: this resource's `GET`. See `monokulo::api`.
+/// `#[get(who, problems = [Variant, ...])]`: this resource's `GET`. See
+/// `monokulo::api`.
 #[proc_macro_attribute]
 pub fn get(attr: TokenStream, item: TokenStream) -> TokenStream {
     handler("GET", attr, item)
 }
 
-/// `#[post(who, form = "name")]`: this resource's `POST`.
+/// `#[post(who, form = "name", problems = [Variant, ...])]`: this
+/// resource's `POST`.
 #[proc_macro_attribute]
 pub fn post(attr: TokenStream, item: TokenStream) -> TokenStream {
     handler("POST", attr, item)
 }
 
-/// `#[delete(who, form = "name")]`: this resource's `DELETE`.
+/// `#[delete(who, form = "name", problems = [Variant, ...])]`: this
+/// resource's `DELETE`.
 #[proc_macro_attribute]
 pub fn delete(attr: TokenStream, item: TokenStream) -> TokenStream {
     handler("DELETE", attr, item)
@@ -1007,6 +1042,10 @@ fn expand_input(item: ItemStruct) -> syn::Result<Tokens> {
         impl #p::ApiParam for #name {
             fn describe(operation: &mut #p::OperationDoc) {
                 operation.body::<#name>();
+                // `json_body`'s answers to a body it can't read.
+                operation.problem(#p::Problem::InvalidRequest);
+                operation.problem(#p::Problem::UnsupportedMediaType);
+                operation.problem(#p::Problem::TooLarge);
             }
         }
 

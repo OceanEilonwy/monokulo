@@ -115,7 +115,7 @@ pub(super) async fn exchange(request: Request, next: Next) -> (Response, Option<
             &exchange.method,
             &exchange.route,
             parts.status,
-            &content_type,
+            &parts.headers,
             &json,
         );
         exchange.response = Some(json);
@@ -460,6 +460,435 @@ async fn record_handshake_failures(
     assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
+/// A store's three keys.
+struct Keys<'a> {
+    sk: &'a str,
+    pk: &'a str,
+    ak: &'a str,
+}
+
+impl<'a> Keys<'a> {
+    /// Those `handler` takes.
+    fn admitted(&self, handler: &catalog::HandlerInfo) -> Vec<&'a str> {
+        use super::auth::Key;
+        [(Key::Pk, self.pk), (Key::Sk, self.sk), (Key::Ak, self.ak)]
+            .into_iter()
+            .filter(|(key, _)| handler.who.admits(Some(*key)))
+            .map(|(_, token)| token)
+            .collect()
+    }
+
+    /// Those `handler` refuses.
+    fn refused(&self, handler: &catalog::HandlerInfo) -> Vec<&'a str> {
+        use super::auth::Key;
+        [(Key::Pk, self.pk), (Key::Sk, self.sk), (Key::Ak, self.ak)]
+            .into_iter()
+            .filter(|(key, _)| !handler.who.admits(Some(*key)))
+            .map(|(_, token)| token)
+            .collect()
+    }
+
+    /// The key a server would call `handler` with: the secret key, or
+    /// the app's where only an app's is taken.
+    fn server(&self, handler: &catalog::HandlerInfo) -> &'a str {
+        if handler.who.admits(Some(super::auth::Key::Sk)) {
+            self.sk
+        } else {
+            self.ak
+        }
+    }
+}
+
+/// `method uri` on `router` with `key` and `body`: its answer.
+async fn call_api(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+    key: Option<&str>,
+    body: Option<Value>,
+) -> Response {
+    router
+        .clone()
+        .oneshot(api_request(method, uri, key, body))
+        .await
+        .unwrap()
+}
+
+/// The path of the route `template`, for the order `order_id`.
+fn path_of(template: &str, order_id: &str) -> String {
+    template.replace("{order_id}", order_id)
+}
+
+/// What a client sends `handler`: `order` to make an order, a log report
+/// to the logs, nothing elsewhere.
+fn body_for(handler: &catalog::HandlerInfo, order: &Value) -> Option<Value> {
+    match (handler.method, handler.template) {
+        ("POST", t) if t == super::super::v1::orders::Path::TEMPLATE => Some(order.clone()),
+        ("POST", t) if t == super::super::v1::logs::Path::TEMPLATE => Some(
+            json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]}),
+        ),
+        _ => None,
+    }
+}
+
+/// The order's changes, followed with `key` (of kind `kind`) on `router`,
+/// which records into `recorder`: its first event, the order as it is,
+/// kept as the stream's answer.
+async fn record_order_events(
+    router: &axum::Router,
+    recorder: &Recorder,
+    order_id: &str,
+    key: &str,
+    kind: &str,
+) {
+    let uri = format!("/api/v1/orders/{order_id}/events");
+    let stream = call_api(router, "GET", &uri, Some(key), None).await;
+    assert_eq!(stream.status(), StatusCode::OK);
+    let events = read_events(stream, 1).await;
+    recorder.push(Exchange {
+        method: "GET".into(),
+        route: super::super::v1::order_events::Path::TEMPLATE.into(),
+        path: uri,
+        key: Some(kind.into()),
+        onion: recorder.onion,
+        request: None,
+        status: 200,
+        response: Some(events),
+    });
+}
+
+/// A local CoinGecko that rate limits every request, asking for `secs`.
+async fn rate_limited_coingecko(secs: u64) -> String {
+    let app = axum::Router::new().fallback(move || async move {
+        use axum::response::IntoResponse;
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("retry-after", secs.to_string())],
+            r#"{"status":{"error_code":429,"error_message":"You've exceeded the Rate Limit."}}"#,
+        )
+            .into_response()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// `router` on a Monokulo like `state` but with abuse protection `config`.
+fn with_abuse(
+    state: &AppState,
+    config: crate::abuse::AbuseConfig,
+    recorder: &Recorder,
+) -> axum::Router {
+    recorder.around(build_router(AppState {
+        abuse: Arc::new(crate::abuse::AbuseProtection::new(config)),
+        ..state.clone()
+    }))
+}
+
+/// Runs a statement on `state`'s database, to make it fail for a moment.
+fn sql(state: &AppState, statement: &str) {
+    state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute_batch(statement)
+        .unwrap();
+}
+
+/// Every problem each route of the API may answer (`HandlerInfo::problems`)
+/// that the main sequence doesn't meet, each from the state that makes it:
+/// a key it doesn't know or take; a body or query it can't read; too many
+/// requests, a challenge, too many open streams; this Monokulo's own
+/// failures (its database, a store key it can't open), the engine
+/// unreachable, the rate providers rate limiting it; and, making an order,
+/// a key used for another order, a site the store hasn't verified and its
+/// policy unreadable.
+async fn record_route_problems(
+    state: &AppState,
+    router: &axum::Router,
+    order_id: &str,
+    keys: &Keys<'_>,
+    recorder: &Recorder,
+) {
+    use super::problem::Problem;
+    let store_id = state
+        .db
+        .lock()
+        .get_store_connection_by_public_key(keys.pk)
+        .unwrap()
+        .unwrap()
+        .id;
+    let xmr = json!({"amount": "0.25", "currency": "XMR"});
+    let handlers = catalog::handlers();
+
+    // A key this Monokulo doesn't know, and each key a route doesn't take.
+    for handler in &handlers {
+        let uri = path_of(handler.template, order_id);
+        let body = body_for(handler, &xmr);
+        call_api(router, handler.method, &uri, Some("sk_0000"), body.clone()).await;
+        for key in keys.refused(handler) {
+            call_api(router, handler.method, &uri, Some(key), body.clone()).await;
+        }
+    }
+
+    // A body or query a route can't read.
+    let orders = super::super::v1::orders::Path::TEMPLATE;
+    let logs = super::super::v1::logs::Path::TEMPLATE;
+    for uri in [orders, logs] {
+        call_api(router, "POST", uri, Some(keys.sk), Some(json!({}))).await;
+        let unlabelled = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header(header::AUTHORIZATION, format!("Bearer {}", keys.sk))
+                    .body(Body::from("amount=1"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unlabelled.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        let too_large =
+            json!({"amount": "1", "currency": "XMR", "description": "x".repeat(64 * 1024)});
+        let answer = call_api(router, "POST", uri, Some(keys.sk), Some(too_large)).await;
+        assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
+    }
+    let many = json!({"entries": vec![json!({"level": "error", "message": "again"}); super::super::v1::logs::MAX_ENTRIES + 1]});
+    let answer = call_api(router, "POST", logs, Some(keys.sk), Some(many)).await;
+    assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let answer = call_api(
+        router,
+        "GET",
+        "/api/v1/orders?limit=many",
+        Some(keys.sk),
+        None,
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+
+    // The order's idempotency key, sent again for another amount.
+    let other =
+        json!({"amount": "0.30", "currency": "XMR", "idempotency_key": "order-1042-total-025"});
+    let answer = call_api(router, "POST", orders, Some(keys.sk), Some(other)).await;
+    assert_eq!(answer.status(), StatusCode::CONFLICT);
+
+    // A store that takes orders only from its verified websites, asked
+    // with its public key from nowhere; then its policy unreadable.
+    state
+        .db
+        .lock()
+        .set_embed_restricted(&store_id, true)
+        .unwrap();
+    let answer = call_api(router, "POST", orders, Some(keys.pk), Some(xmr.clone())).await;
+    assert_eq!(answer.status(), StatusCode::FORBIDDEN);
+    state
+        .db
+        .lock()
+        .set_embed_restricted(&store_id, false)
+        .unwrap();
+    sql(
+        state,
+        "ALTER TABLE store_domains RENAME TO store_domains_away",
+    );
+    let answer = call_api(router, "POST", orders, Some(keys.pk), Some(xmr.clone())).await;
+    sql(
+        state,
+        "ALTER TABLE store_domains_away RENAME TO store_domains",
+    );
+    assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Too many requests: a server's key past its budget, then a browser
+    // asked to solve a challenge, on every route that asks one.
+    let limited = with_abuse(
+        state,
+        crate::abuse::AbuseConfig {
+            soft_per_min: 1,
+            hard_per_min: 1,
+            per_store_key_per_min: 1,
+            client_logs_per_min: 1,
+            ..Default::default()
+        },
+        recorder,
+    );
+    for (n, handler) in handlers.iter().enumerate() {
+        let uri = path_of(handler.template, order_id);
+        let peer = format!("203.0.113.20:{}", 2000 + n);
+        let mut last = StatusCode::OK;
+        for _ in 0..2 {
+            let request = api_request(
+                handler.method,
+                &uri,
+                Some(keys.server(handler)),
+                body_for(handler, &xmr),
+            );
+            last = limited
+                .clone()
+                .oneshot(from_peer(request, &peer))
+                .await
+                .unwrap()
+                .status();
+        }
+        assert_eq!(last, StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+    let under_attack = with_abuse(
+        state,
+        crate::abuse::AbuseConfig {
+            under_attack: true,
+            ..Default::default()
+        },
+        recorder,
+    );
+    for (n, handler) in handlers.iter().enumerate() {
+        if !handler.problems().contains(&Problem::ChallengeRequired) {
+            continue;
+        }
+        let uri = path_of(handler.template, order_id);
+        let request = api_request(handler.method, &uri, None, body_for(handler, &xmr));
+        let answer = under_attack
+            .clone()
+            .oneshot(from_peer(request, &format!("203.0.113.30:{}", 2000 + n)))
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+
+    // A client with as many streams open on the store as it may.
+    let one_stream = with_abuse(
+        state,
+        crate::abuse::AbuseConfig {
+            stream_cap: 1,
+            ..Default::default()
+        },
+        recorder,
+    );
+    let stream = |uri: String| {
+        from_peer(
+            api_request("GET", &uri, Some(keys.sk), None),
+            "203.0.113.40:1000",
+        )
+    };
+    let open = one_stream
+        .clone()
+        .oneshot(stream("/api/v1/events".into()))
+        .await
+        .unwrap();
+    assert_eq!(open.status(), StatusCode::OK);
+    for uri in [
+        "/api/v1/events".to_owned(),
+        format!("/api/v1/orders/{order_id}/events"),
+    ] {
+        let answer = one_stream
+            .clone()
+            .oneshot(stream(uri.clone()))
+            .await
+            .unwrap();
+        assert_eq!(answer.status(), StatusCode::TOO_MANY_REQUESTS, "{uri}");
+    }
+    drop(open);
+
+    // This Monokulo's own failures: a store key it can't open (its
+    // encryption key isn't the one the store's was sealed with), its
+    // database failing to read a store's wallet or to forget an app.
+    let wrong_key = recorder.around(build_router(AppState {
+        encryption_key: crate::crypto::AtRestKey::new([9; 32]),
+        ..state.clone()
+    }));
+    for handler in &handlers {
+        if !handler.problems().contains(&Problem::Internal) || handler.method == "DELETE" {
+            continue;
+        }
+        if handler.template == super::super::v1::store::Path::TEMPLATE {
+            continue;
+        }
+        // The public key and the app's are checked without opening the
+        // store's secret key.
+        let key = if handler.who.admits(Some(super::auth::Key::Pk)) {
+            keys.pk
+        } else {
+            keys.ak
+        };
+        let answer = call_api(
+            &wrong_key,
+            handler.method,
+            &path_of(handler.template, order_id),
+            Some(key),
+            body_for(handler, &xmr),
+        )
+        .await;
+        assert_eq!(
+            answer.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{} {}",
+            handler.method,
+            handler.template
+        );
+    }
+    sql(state, "ALTER TABLE wallets RENAME TO wallets_away");
+    let answer = call_api(router, "GET", "/api/v1/store", Some(keys.sk), None).await;
+    sql(state, "ALTER TABLE wallets_away RENAME TO wallets");
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    sql(
+        state,
+        "CREATE TRIGGER keep_apps BEFORE DELETE ON app_connections BEGIN SELECT RAISE(FAIL, 'kept'); END",
+    );
+    let answer = call_api(router, "DELETE", "/api/v1/app", Some(keys.ak), None).await;
+    sql(state, "DROP TRIGGER keep_apps");
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    // The engine unreachable: every route that asks it.
+    let down = recorder.around(build_router(AppState {
+        engine: crate::http::Engine::new(crate::engine_client::EngineClient::for_tests(format!(
+            "http://{}",
+            shared::unreachable::address()
+        ))),
+        ..state.clone()
+    }));
+    for handler in &handlers {
+        if !handler.problems().contains(&Problem::EngineUnavailable) {
+            continue;
+        }
+        let answer = call_api(
+            &down,
+            handler.method,
+            &path_of(handler.template, order_id),
+            Some(keys.sk),
+            body_for(handler, &xmr),
+        )
+        .await;
+        assert_eq!(
+            answer.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{} {}",
+            handler.method,
+            handler.template
+        );
+    }
+
+    // The rate providers rate limiting this Monokulo, with no rate kept.
+    let rateless = recorder.around(build_router(AppState {
+        exchange_rate: Arc::new(
+            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+                rate_limited_coingecko(42).await,
+            ),
+        ),
+        ..state.clone()
+    }));
+    let answer = call_api(
+        &rateless,
+        "POST",
+        orders,
+        Some(keys.sk),
+        Some(json!({"amount": "10.00", "currency": "USD"})),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(answer.headers()[header::RETRY_AFTER], "42");
+}
+
 /// A state of its own (its own database), at the recorded address.
 async fn state_on_its_own(engine: axum::Router) -> AppState {
     state(engine, Some(PUBLIC_URI), false).await
@@ -709,8 +1138,16 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         .unwrap();
     call(&router, "POST", "/api/v1/logs".into(), Some(sk), Some(logs)).await;
     call(&router, "GET", "/api/v1/openapi.json".into(), None, None).await;
+    // The rest of each key's answers: the store's sales with its secret
+    // key, its orders with the app's, the order's changes with each key.
+    drop(call(&router, "GET", "/api/v1/events".into(), Some(sk), None).await);
+    call(&router, "GET", "/api/v1/orders".into(), Some(&ak), None).await;
+    for (key, kind) in [(pk, "pk"), (ak.as_str(), "ak")] {
+        record_order_events(&router, &recorder, &order_id, key, kind).await;
+    }
     // The problems the other routes answer: a key that may not, an
-    // unknown key, an order the store doesn't have.
+    // unknown key, an order the store doesn't have; then every other
+    // problem each route may answer.
     call(&router, "DELETE", "/api/v1/app".into(), Some(sk), None).await;
     call(&router, "GET", "/api/v1/events".into(), Some(pk), None).await;
     call(&router, "GET", "/api/v1/orders".into(), Some(pk), None).await;
@@ -730,10 +1167,16 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         None,
     )
     .await;
+    let keys = Keys {
+        sk,
+        pk,
+        ak: ak.as_str(),
+    };
+    record_route_problems(&state, &router, &order_id, &keys, &recorder).await;
 
     // The same Monokulo once its admin has given it an onion address: the
-    // handshakes, the entry with each key, and the order, made again and
-    // read, now with their onion links.
+    // handshakes, every route with each key it takes, and the order, made
+    // again and read, now with their onion links.
     let onion_state = state
         .clone()
         .with_options(&options(Some(PUBLIC_URI), true))
@@ -753,20 +1196,51 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         "POST",
         "/api/v1/orders".into(),
         Some(sk),
-        Some(order_input),
+        Some(order_input.clone()),
     )
     .await;
     assert_eq!(body_json(made).await["order_id"], order_id.as_str());
-    for key in [sk, pk] {
-        call(
-            &onion_router,
-            "GET",
-            format!("/api/v1/orders/{order_id}"),
-            Some(key),
-            None,
-        )
-        .await;
+    let onion_keys = Keys {
+        sk,
+        pk,
+        ak: onion_ak.as_str(),
+    };
+    for handler in catalog::handlers() {
+        // The app disconnects itself last; the document is the same.
+        if handler.method == "DELETE"
+            || handler.template == super::super::v1::openapi::Path::TEMPLATE
+        {
+            continue;
+        }
+        for key in onion_keys.admitted(handler) {
+            let answer = call(
+                &onion_router,
+                handler.method,
+                path_of(handler.template, &order_id),
+                Some(key),
+                body_for(handler, &order_input),
+            )
+            .await;
+            assert!(
+                answer.status().is_success(),
+                "{} {}: {}",
+                handler.method,
+                handler.template,
+                answer.status()
+            );
+        }
     }
+    for (key, kind) in [(sk, "sk"), (pk, "pk"), (onion_ak.as_str(), "ak")] {
+        record_order_events(&onion_router, &onion, &order_id, key, kind).await;
+    }
+    call(
+        &onion_router,
+        "DELETE",
+        "/api/v1/app".into(),
+        Some(&onion_ak),
+        None,
+    )
+    .await;
 
     // Last, the app disconnects itself; its key no longer works.
     call(&router, "DELETE", "/api/v1/app".into(), Some(&ak), None).await;
@@ -923,6 +1397,7 @@ impl Reference {
     pub fn of(examples: Vec<Exchange>) -> Self {
         every_link_names_a_route(&examples);
         every_link_to_an_example_leads_to_one(&examples);
+        every_key_answers_on_both_networks(&examples);
         let openapi = openapi::build(&examples);
         let reference = reference::catalog(&examples);
         let written = Reference {
@@ -1002,10 +1477,14 @@ impl Reference {
                 "{} lists no events",
                 resource.template
             );
+            let mut examples: Vec<&Value> = vec![&stream["example"]];
+            if let Some(named) = stream["examples"].as_object() {
+                examples = named.values().map(|e| &e["value"]).collect();
+            }
             assert!(
-                stream["example"]
-                    .as_str()
-                    .is_some_and(|e| e.starts_with("event: ")),
+                examples
+                    .iter()
+                    .all(|e| e.as_str().is_some_and(|e| e.starts_with("event: "))),
                 "{} has no recorded example",
                 resource.template
             );
@@ -1098,10 +1577,15 @@ pub fn examples_fit_their_schemas(document: &Value) -> usize {
                     );
                     if media_type == "text/event-stream" {
                         // Each event's data fits its event's schema.
-                        let Some(text) = entry["example"].as_str() else {
-                            continue;
-                        };
-                        for block in text.split("\n\n").filter(|b| !b.is_empty()) {
+                        let mut texts: Vec<&str> = entry["example"].as_str().into_iter().collect();
+                        if let Some(named) = entry["examples"].as_object() {
+                            texts.extend(named.values().filter_map(|e| e["value"].as_str()));
+                        }
+                        for block in texts
+                            .into_iter()
+                            .flat_map(|text| text.split("\n\n"))
+                            .filter(|b| !b.is_empty())
+                        {
                             let name = block
                                 .lines()
                                 .find_map(|l| l.strip_prefix("event: "))
@@ -1140,13 +1624,11 @@ pub fn examples_fit_their_schemas(document: &Value) -> usize {
     checked
 }
 
-/// Every link and form target in the recorded answers is a route this
-/// router has, or a page outside the API.
 /// Every answer the document gives an operation (each status, each
-/// media type but a page's HTML) has a recorded example, so no gap in the
-/// recording goes unnoticed: a handshake's success with and without an
-/// onion address and each problem it answers, each route's answers and
-/// the problems met on it.
+/// media type but a page's HTML) has a recorded example, and each problem
+/// it lists has one of its own, so no gap in the recording goes unnoticed:
+/// a handshake's success with and without an onion address and each
+/// problem it answers, each route's answers and each of its problems.
 fn every_answer_has_an_example(document: &Value) {
     let mut missing = Vec::new();
     for (template, operations) in document["paths"].as_object().into_iter().flatten() {
@@ -1167,6 +1649,17 @@ fn every_answer_has_an_example(document: &Value) {
                             .is_some_and(|examples| !examples.is_empty());
                     if !has {
                         missing.push(format!("{method} {template} {status} {media}"));
+                    }
+                    // Each problem listed there, one by one.
+                    let types = &content["schema"]["allOf"][1]["properties"]["type"]["enum"];
+                    for named in types.as_array().into_iter().flatten() {
+                        let slug = named
+                            .as_str()
+                            .and_then(|t| t.rsplit('/').next())
+                            .unwrap_or_default();
+                        if content["examples"][slug].is_null() {
+                            missing.push(format!("{method} {template} {status} {slug}"));
+                        }
                     }
                 }
             }
@@ -1241,6 +1734,54 @@ fn route_of(path: &str) -> Option<&'static str> {
                     .zip(&b)
                     .all(|(t, p)| t == p || (t.starts_with('{') && !p.is_empty()))
         })
+}
+
+/// Every route of the API was answered with success for every key it
+/// takes (`pk`, `sk`, `ak`, or none), both on a Monokulo without an onion
+/// address and on one with: each answer the onion address may change is
+/// recorded both ways (the document shows the onion one where it differs).
+/// The OpenAPI document itself, which no key changes, is the exception.
+fn every_key_answers_on_both_networks(recorded: &[Exchange]) {
+    use super::auth::Key;
+    let mut missing = Vec::new();
+    for handler in catalog::handlers() {
+        let document = catalog::resources()
+            .into_iter()
+            .any(|r| r.template == handler.template && r.kind == Kind::Document);
+        if document {
+            continue;
+        }
+        let keys = [
+            (None, None),
+            (Some(Key::Pk), Some("pk")),
+            (Some(Key::Sk), Some("sk")),
+            (Some(Key::Ak), Some("ak")),
+        ];
+        for (key, name) in keys {
+            if !handler.who.admits(key) {
+                continue;
+            }
+            for onion in [false, true] {
+                let found = recorded.iter().any(|e| {
+                    e.method == handler.method
+                        && e.route == handler.template
+                        && e.key.as_deref() == name
+                        && e.onion == onion
+                        && e.status < 300
+                });
+                if !found {
+                    missing.push(format!(
+                        "{} {} with {}{}",
+                        handler.method,
+                        handler.template,
+                        name.unwrap_or("no key"),
+                        if onion { ", with an onion address" } else { "" }
+                    ));
+                }
+            }
+        }
+    }
+    assert!(missing.is_empty(), "no recorded answer for: {missing:#?}");
 }
 
 fn every_link_names_a_route(recorded: &[Exchange]) {

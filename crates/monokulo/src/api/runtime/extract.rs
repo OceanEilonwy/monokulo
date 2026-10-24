@@ -29,6 +29,11 @@ pub struct OperationDoc<'a> {
     /// For a stream, each kind of event it sends: its name, what it means
     /// and its data's schema (`super::hal::EventStream`).
     pub events: Vec<(&'static str, &'static str, Value)>,
+    /// The problems its parameters and its handler may answer with: each
+    /// extractor's (`ApiParam::describe`) and the handler's own
+    /// (`problems = [...]` in its attribute). The middleware's come on
+    /// top (`super::catalog::HandlerInfo::problems`).
+    pub problems: Vec<Problem>,
 }
 
 impl<'a> OperationDoc<'a> {
@@ -40,6 +45,14 @@ impl<'a> OperationDoc<'a> {
             body: None,
             answers: Vec::new(),
             events: Vec::new(),
+            problems: Vec::new(),
+        }
+    }
+
+    /// It may answer with `problem`.
+    pub fn problem(&mut self, problem: Problem) {
+        if !self.problems.contains(&problem) {
+            self.problems.push(problem);
         }
     }
 
@@ -148,7 +161,11 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
     }
 }
 
-impl ApiParam for Caller {}
+impl ApiParam for Caller {
+    fn describe(operation: &mut OperationDoc<'_>) {
+        operation.problem(Problem::Unauthorized);
+    }
+}
 
 /// The store the request's key names.
 #[derive(Clone)]
@@ -169,7 +186,11 @@ impl<S: Send + Sync> FromRequestParts<S> for Store {
     }
 }
 
-impl ApiParam for Store {}
+impl ApiParam for Store {
+    fn describe(operation: &mut OperationDoc<'_>) {
+        operation.problem(Problem::Unauthorized);
+    }
+}
 
 /// The whole of monokulo's state, for a handler that needs much of it.
 #[derive(Clone)]
@@ -211,7 +232,12 @@ impl FromRequestParts<AppState> for Orders {
     }
 }
 
-impl ApiParam for Orders {}
+impl ApiParam for Orders {
+    fn describe(operation: &mut OperationDoc<'_>) {
+        operation.problem(Problem::Unauthorized);
+        operation.problem(Problem::Internal);
+    }
+}
 
 /// The connected app the request's key belongs to.
 #[derive(Clone)]
@@ -228,7 +254,12 @@ impl<S: Send + Sync> FromRequestParts<S> for ConnectedApp {
     }
 }
 
-impl ApiParam for ConnectedApp {}
+impl ApiParam for ConnectedApp {
+    fn describe(operation: &mut OperationDoc<'_>) {
+        operation.problem(Problem::Unauthorized);
+        operation.problem(Problem::Forbidden);
+    }
+}
 
 /// The store's connected apps.
 #[derive(Clone)]
@@ -270,6 +301,7 @@ impl<S: Send + Sync> FromRequestParts<S> for Page {
 impl ApiParam for Page {
     fn describe(operation: &mut OperationDoc<'_>) {
         operation.query::<Page>();
+        operation.problem(Problem::InvalidRequest);
     }
 }
 
@@ -317,4 +349,9 @@ impl FromRequestParts<AppState> for StreamSlot {
     }
 }
 
-impl ApiParam for StreamSlot {}
+impl ApiParam for StreamSlot {
+    fn describe(operation: &mut OperationDoc<'_>) {
+        operation.problem(Problem::Unauthorized);
+        operation.problem(Problem::TooManyStreams);
+    }
+}

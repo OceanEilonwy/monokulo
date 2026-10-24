@@ -146,6 +146,36 @@ impl Problem {
         format!("{DOCS}/problems/{}", self.slug())
     }
 
+    /// The headers its answer carries beyond `Content-Type`: each one's
+    /// name, what it says, and whether it's always there (`false`: only
+    /// when known). The OpenAPI document lists them, and under test every
+    /// answer is checked to carry those it always has.
+    pub fn headers(self) -> &'static [(&'static str, &'static str, bool)] {
+        match self {
+            Problem::Unauthorized => &[(
+                "WWW-Authenticate",
+                "`Bearer`: send a key in `Authorization: Bearer <key>`.",
+                true,
+            )],
+            Problem::RateLimited => &[(
+                "Retry-After",
+                "Seconds to wait before trying again, as in `retry_after`.",
+                true,
+            )],
+            Problem::RatesUnavailable => &[(
+                "Retry-After",
+                "Seconds to wait before trying again, as in `retry_after`, when a rate provider said.",
+                false,
+            )],
+            Problem::ChallengeRequired => &[(
+                "Monokulo-Challenge",
+                "`<challenge>; difficulty=<bits>`: the challenge in `challenge`, to solve.",
+                true,
+            )],
+            _ => &[],
+        }
+    }
+
     /// This problem, happening now for the reason `detail`.
     pub fn detail(self, detail: impl Into<String>) -> ProblemDetails {
         ProblemDetails {
@@ -166,8 +196,12 @@ pub struct ProblemDetails {
     headers: Vec<(header::HeaderName, HeaderValue)>,
 }
 
-/// The body every error has. Extension members (`retry_after`,
-/// `challenge`) come on top.
+/// The body every error has. Two problems add a member: `retry_after`
+/// (seconds to wait, as in `Retry-After`) on `rate-limited`, and on
+/// `rates-unavailable` when a rate provider said; `challenge` (the proof
+/// of work to solve) on `challenge-required`, which only a browser's API
+/// request (the store's public key, or no key) is ever answered with:
+/// never a server's key, a handshake or a log report.
 #[derive(Serialize, JsonSchema)]
 #[schemars(rename = "Problem")]
 pub struct ProblemBody {

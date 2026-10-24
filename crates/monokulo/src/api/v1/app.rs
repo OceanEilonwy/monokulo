@@ -39,7 +39,7 @@ async fn get(app: ConnectedApp) -> api::Result<Body> {
 ///
 /// Its key stops working at once, and its event stream ends. Its orders
 /// stay, and can still be paid.
-#[delete(app, form = "disconnect")]
+#[delete(app, form = "disconnect", problems = [Internal])]
 async fn delete(app: ConnectedApp, apps: Apps) -> api::Result<NoContent> {
     let (app, state) = (app.0, apps.0);
     let (store_id, app_id) = (app.store_id.clone(), app.id.clone());

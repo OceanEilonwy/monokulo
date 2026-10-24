@@ -171,7 +171,7 @@ pub(crate) async fn load(
 }
 
 /// Read one of the store's orders.
-#[get(any_key)]
+#[get(any_key, problems = [NotFound, EngineUnavailable])]
 async fn get(path: Path, orders: Orders) -> api::Result<Body> {
     load(&orders, &path.order_id, None)
         .await?

@@ -35,7 +35,7 @@ impl Events for OrderEvents {
 }
 
 /// Follow one order's changes as server-sent events.
-#[get(any_key)]
+#[get(any_key, problems = [NotFound, EngineUnavailable])]
 async fn get(
     path: Path,
     orders: Orders,

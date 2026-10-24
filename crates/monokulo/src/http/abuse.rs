@@ -139,6 +139,19 @@ fn api_and_checkout_route_class(method: &Method, route: &str) -> RouteClass {
     }
 }
 
+/// The problems [`api_and_checkout_middleware`] answers a route of the API
+/// with before the route runs, for the OpenAPI document: a key it doesn't
+/// know (`unauthorized`), too many requests (`rate-limited`), and, on a
+/// route that may challenge a browser (the API but its streams and log
+/// reports), `challenge-required`.
+pub(crate) fn api_route_problems(method: &Method, route: &str) -> Vec<Problem> {
+    let mut problems = vec![Problem::Unauthorized, Problem::RateLimited];
+    if api_and_checkout_route_class(method, route) == RouteClass::Api {
+        problems.push(Problem::ChallengeRequired);
+    }
+    problems
+}
+
 /// The route template a request matched, or its path when it matched none.
 fn route_of(request: &Request) -> String {
     request

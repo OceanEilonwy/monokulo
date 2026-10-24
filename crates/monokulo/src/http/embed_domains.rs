@@ -26,6 +26,24 @@ use crate::api::runtime::problem::Problem;
 use crate::db::Database;
 use crate::views::store_settings::StoreSection;
 
+/// Whether a request to `path` makes an order: the one route
+/// [`embed_policy_middleware`] may refuse.
+fn creates_order(method: &Method, path: &str) -> bool {
+    method == Method::POST && path == crate::api::v1::orders::Path::TEMPLATE
+}
+
+/// The problems [`embed_policy_middleware`] answers a route of the API with
+/// before the route runs, for the OpenAPI document: making an order with
+/// the public key, `forbidden` from a site the store hasn't verified and
+/// `store-unavailable` while its policy can't be read.
+pub(crate) fn api_route_problems(method: &Method, route: &str) -> &'static [Problem] {
+    if creates_order(method, route) {
+        &[Problem::Forbidden, Problem::StoreUnavailable]
+    } else {
+        &[]
+    }
+}
+
 /// Enforces a restricted store's embed policy on its public routes (CORS
 /// is `super::embed_cors_layer`'s job). The store is the one
 /// `super::abuse::api_and_checkout_middleware` found ([`RequestStore`]):
@@ -50,8 +68,7 @@ pub async fn embed_policy_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    let creates_order = request.method() == Method::POST
-        && request.uri().path() == crate::api::v1::orders::Path::TEMPLATE;
+    let creates_order = creates_order(request.method(), request.uri().path());
     let has_key = request
         .extensions()
         .get::<ApiCaller>()
