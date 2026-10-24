@@ -32,6 +32,7 @@
 //! side limit is configured.
 
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -43,13 +44,6 @@ use crate::engine_client::{EngineClientError, EngineStatusResponse, NetworkStatu
 use crate::views;
 
 use super::{AppState, Engine};
-
-/// How long a fetched status is trusted before the next request triggers a
-/// fresh one. Short enough that the page (which also has its own 30s meta
-/// refresh) never looks stale to a person watching it; long enough that a
-/// burst of page loads - many browser tabs, many users, the nav dot firing
-/// on every one - costs the engine one real request, not one per view.
-const CACHE_TTL: Duration = Duration::from_secs(10);
 
 pub struct CachedStatus {
     fetched_at: Instant,
@@ -78,6 +72,14 @@ pub struct StatusCacheShared {
     /// wait for that fetch and take its answer, so a burst of page loads
     /// costs the engine (and every node it asks) one request, not one each.
     fetching: tokio::sync::Mutex<()>,
+    /// How long a fetched status is trusted before the next request
+    /// triggers a fresh one (`engine.status_cache_ms`, 10 s by default),
+    /// in milliseconds. Short enough that the page (which also has its own
+    /// 30s meta refresh) never looks stale to a person watching it; long
+    /// enough that a burst of page loads - many browser tabs, many users,
+    /// the nav dot firing on every one - costs the engine one real request,
+    /// not one per view.
+    ttl_ms: AtomicU64,
 }
 
 pub type StatusCache = Arc<StatusCacheShared>;
@@ -86,7 +88,21 @@ pub(crate) fn new_status_cache() -> StatusCache {
     Arc::new(StatusCacheShared {
         state: Mutex::new(StatusCacheState::default()),
         fetching: tokio::sync::Mutex::new(()),
+        ttl_ms: AtomicU64::new(crate::settings::ENGINE_STATUS_CACHE_MS.default_value()),
     })
+}
+
+/// Trusts a fetched status for `ttl` from now on: the
+/// `engine.status_cache_ms` setting, read at start
+/// (`settings::ServerConfig::status_cache`).
+pub fn set_status_cache_ttl(engine: &Engine, ttl: Duration) {
+    let ms = u64::try_from(ttl.as_millis()).unwrap_or(u64::MAX);
+    engine.status_cache.ttl_ms.store(ms, Ordering::Relaxed);
+}
+
+/// How long a fetched status is trusted ([`set_status_cache_ttl`]).
+fn cache_ttl(engine: &Engine) -> Duration {
+    Duration::from_millis(engine.status_cache.ttl_ms.load(Ordering::Relaxed))
 }
 
 /// The status cache.
@@ -104,12 +120,13 @@ const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
 /// indicator's own poll) sees a fresh answer - which keeps it current for
 /// visitors without JavaScript too.
 pub fn known_health(engine: &Engine) -> Option<views::Health> {
+    let ttl = cache_ttl(engine);
     let mut cache = status_cache(engine);
     let age = cache
         .cached
         .as_ref()
         .map(|cached| cached.fetched_at.elapsed());
-    if age.is_none_or(|age| age >= CACHE_TTL) && !cache.refreshing {
+    if age.is_none_or(|age| age >= ttl) && !cache.refreshing {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             cache.refreshing = true;
             let engine = engine.clone();
@@ -459,10 +476,11 @@ async fn get_status_and_busy(engine: &Engine) -> (Result<EngineStatusResponse, S
 
 /// The cached status, and whether it was a 429, if it's still fresh.
 fn fresh_status(engine: &Engine) -> Option<(Result<EngineStatusResponse, String>, bool)> {
+    let ttl = cache_ttl(engine);
     status_cache(engine)
         .cached
         .as_ref()
-        .filter(|cached| cached.fetched_at.elapsed() < CACHE_TTL)
+        .filter(|cached| cached.fetched_at.elapsed() < ttl)
         .map(|cached| (cached.result.clone(), cached.busy))
 }
 
@@ -515,7 +533,7 @@ pub async fn status_events(
             let _permit = &permit;
             async move {
                 if !first {
-                    tokio::time::sleep(CACHE_TTL).await;
+                    tokio::time::sleep(cache_ttl(&state.engine)).await;
                 }
                 let html =
                     views::status::live_fragment(&status_view(&state, admin).await).into_string();
@@ -1690,10 +1708,10 @@ mod tests {
 
         /// Inside monokulo, at the engine's real defaults, monokulo's own
         /// calls never use up a budget the status needs: with the engine
-        /// page following a network, 2,400 more calls without a store's key
-        /// (far past the instance limit a standalone engine has, and the 120
-        /// a minute every call used to share) still leave the status
-        /// answering and the dot green.
+        /// page following a network, one call more without a store's key
+        /// than the instance limit a standalone engine has (which is past
+        /// the 120 a minute every call used to share) still leaves the
+        /// status answering and the dot green.
         #[tokio::test]
         async fn monokulos_own_calls_to_an_embedded_engine_keep_the_status_dot_green() {
             let engine = engine_test_support::TestEngineConfig::new()
@@ -1717,7 +1735,8 @@ mod tests {
                 .unwrap(),
             );
             let _watch = relay.watch("mainnet").await.unwrap();
-            for call in 0..2_400 {
+            let limit = engine::engine_settings::SERVER_INSTANCE_RATE_LIMIT_PER_MIN.default_value();
+            for call in 0..=limit {
                 client
                     .get_status()
                     .await
