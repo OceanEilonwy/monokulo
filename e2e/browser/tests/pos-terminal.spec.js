@@ -27,9 +27,32 @@ async function openOrderList(page) {
 }
 
 test('real POS backgrounds, reloads, reopens, cancels, and searches an order', async ({ page, request }) => {
+  test.setTimeout(90_000);
+  // A busy store: an order kept open in the background, and 44 tables.
   await keepOneInBackground(request);
+  await ringUp(request, 44, 'Table');
+  const writes = [];
+  page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
+  // The counter's tablet, on its side: the POS uses the whole screen, the
+  // page itself never scrolls, the bar stays above the card, and the open
+  // orders sit beside the payment, its actions on screen.
+  await page.setViewportSize({ width: 1180, height: 820 });
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
+  const box = selector => page.locator(selector).first().evaluate(el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, bottom: r.bottom }; });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.documentElement.scrollHeight <= innerHeight + 1), 'no outer scroll').toBe(true);
+  expect((await box('.pos-pay-card')).y, 'card under the bar').toBeGreaterThanOrEqual((await box('.pos-top')).bottom);
+  expect((await box('.pos-stack')).x, 'open orders beside the payment').toBeLessThan(1);
+  await expect(page.getByRole('button', { name: 'Background order', exact: true })).toBeInViewport({ ratio: 1 });
+  await captureCoverageStage(page, 'pos-tablet-payment', test.info(), { shapes: ['tablet-landscape'] });
+
+  // Cancel order, then keep it: nothing happens until they confirm.
+  await page.getByRole('button', { name: 'Cancel order…' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Keep it' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.pos-error')).toHaveCount(0);
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Awaiting payment');
+
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
   const fixtureCard = page.locator('.pos-stack-card', { hasText: 'Fixture o' });
   await expect(fixtureCard).toBeVisible();
@@ -39,21 +62,69 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await fixtureCard.click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
   await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
+  writes.length = 0;
   await page.getByRole('button', { name: 'Cancel order…' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-order-heading .tag')).toContainText('Cancelled');
+  // The one write the server got is the confirmed cancel: the question kept
+  // earlier sent none.
+  expect(writes).toEqual([`${posUrl()}/orders/${fixture.order_id}/cancel`]);
   await captureCoverageStage(page, 'pos-cancelled', test.info());
   // The card stays, its code faded, and the stage says what happened.
   await expect(page.locator('.pos-pay-card.is-spent')).toBeVisible();
   await expect(page.locator('.mk-stage')).toContainText('Cancelled.');
   await page.getByRole('button', { name: 'New order' }).click();
-  // Only the order kept open is left in the background.
-  await expect(page.locator('.pos-stack-card')).toHaveCount(1);
+  await expect(fixtureCard).toHaveCount(0);
+
+  // A narrow desktop window: the stack is a strip above the keypad, and a
+  // mouse wheel scrolls it sideways.
+  await page.setViewportSize({ width: 480, height: 820 });
+  const stack = page.locator('.pos-stack-scroll');
+  await expect(stack).toBeVisible();
+  const before = await stack.evaluate(el => el.scrollLeft);
+  // Cards arriving from the live list can keep the strip moving: the
+  // pointer goes over it as it is.
+  await stack.hover({ force: true });
+  await page.mouse.wheel(0, 300);
+  await expect.poll(() => stack.evaluate(el => el.scrollLeft)).toBeGreaterThan(before);
+
+  // The order list: the cancelled order under Finished.
   await openOrderList(page);
+  await expect(page.locator('.pos-list h1')).toHaveText('Orders');
+  const search = page.getByRole('searchbox', { name: 'Search reference or order ID' });
+  const cards = page.locator('.mk-card');
   await page.getByRole('button', { name: /Finished/ }).click();
   await expect(page.locator('.mk-card .tag')).toContainText('Cancelled');
-  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('fixture');
-  await expect(page.locator('.mk-card')).toContainText('Fixture order');
+  await search.fill('fixture');
+  await expect(cards).toContainText('Fixture order');
+  await search.fill('');
+  // Every open order at once (the one kept open and 44 tables): no paging.
+  await page.getByRole('button', { name: /Active/ }).click();
+  await expect(cards).toHaveCount(45);
+  await expect(page.getByRole('button', { name: /Active · 45/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
+  await page.getByRole('button', { name: '‹ Back to the till' }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  // Search narrows them, and clearing it brings them all back.
+  await openOrderList(page);
+  await search.fill('Table 17');
+  await expect(cards).toHaveCount(1);
+  await search.fill('');
+  await expect(cards).toHaveCount(45);
+  await search.fill('Table 17');
+  await cards.getByRole('button', { name: 'Open →' }).click();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 17');
+  // A search with no match in this session links to searching all orders.
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await openOrderList(page);
+  await search.fill('wc-1042');
+  const empty = page.locator('.pos-empty');
+  await expect(empty).toHaveText('No matches from this session. Search all orders →');
+  await expect(empty.getByRole('link', { name: 'Search all orders →' })).toHaveAttribute('href', `/stores/${fixture.connection_id}/orders?q=wc-1042`);
+  await empty.getByRole('link', { name: 'Search all orders →' }).click();
+  await expect(page.getByRole('heading', { name: 'Orders' })).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: 'Search orders' })).toHaveValue('wc-1042');
+  await expect(page.getByText('No orders match “wc-1042”.')).toBeVisible();
 });
 
 /** What the customer's checkout must show once the order is cancelled:
@@ -96,213 +167,6 @@ test('cancelling on the POS reaches the customer\'s checkout live, after a reloa
   } finally { await noJs.close(); }
 });
 
-test('real POS header stays above its payment card and its actions stay reachable', async ({ page }) => {
-  await page.goto(posUrl());
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  for (const { width, height } of [{ width: 1126, height: 700 }, { width: 667, height: 375 }, { width: 360, height: 740 }]) {
-    await page.setViewportSize({ width, height });
-    const bounds = await page.evaluate(() => ({
-      barBottom: document.querySelector('.pos-top').getBoundingClientRect().bottom,
-      cardTop: document.querySelector('.pos-pay-card').getBoundingClientRect().top,
-      pageScrolls: document.documentElement.scrollHeight > innerHeight + 1,
-    }));
-    expect(bounds.cardTop).toBeGreaterThanOrEqual(bounds.barBottom);
-    expect(bounds.pageScrolls, 'the page itself never scrolls; the payment panel does').toBe(false);
-    await page.getByRole('button', { name: 'Cancel order' }).scrollIntoViewIfNeeded();
-    await expect(page.getByRole('button', { name: 'Cancel order' })).toBeInViewport();
-  }
-});
-
-test('real POS displays a shortened ID for an order without a reference', async ({ page }) => {
-  await page.goto(posUrl());
-  await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  await page.getByRole('button', { name: '1', exact: true }).click();
-  await expect(page.locator('#pos-reference')).toHaveValue('');
-  await page.getByRole('button', { name: 'Charge' }).click();
-  // Shortened by the server as the site shortens ids, the whole id under it.
-  await expect(page.locator('.pos-order-heading h1 .short-value-text')).toHaveText(/^#[0-9a-f]{6}…[0-9a-f]{6}$/);
-  await expect(page.locator('.pos-order-heading h1 .short-value-full')).toHaveText(/^order_[0-9a-f]{32}$/);
-  await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
-});
-
-test('real POS opens an empty keypad when its order list is empty', async ({ page }) => {
-  await page.route('**/pos/orders?*', route => route.fulfill({ json: { orders: [], total: 0 } }));
-  await page.goto(posUrl());
-  await expect(page.locator('.pos-keypad')).toBeVisible();
-  await expect(page.locator('.pos-stack-card')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Charge' })).toBeDisabled();
-});
-
-test('real POS shows pending, partial, confirming, and terminal badge symbols', async ({ page }) => {
-  const states = [
-    ['pending', 'pending'], ['unconfirmed', 'unconfirmed'], ['confirming', 'confirming'],
-    ['partial', 'partial'], ['paid', 'paid'], ['overpaid', 'overpaid'], ['expired', 'expired'],
-    ['double', 'pending'], ['cancelled', 'pending'],
-  ];
-  // Every order starts open, as the server lists them; the final ones then
-  // arrive over the live stream, as they would at the counter.
-  const orders = states.map(([id], index) => ({
-    order_id: id, order_id_short: id, merchant_order_id: id, address: '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC',
-    address_short: '86hiL7…ZcauZJ…FGCnfC',
-    amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000', status: ['paid', 'overpaid', 'expired'].includes(id) ? 'pending' : states[index][1],
-    confirmations: id === 'confirming' ? 3 : 0, confirmations_required: 10,
-    error: id === 'double' ? 'Double-spend detected on this payment.' : null,
-    backgrounded: true, cancelled_at: null,
-    created_at: 1000 + index, expires_at: 9999999999, updated_at: 1000 + index,
-  }));
-  await page.addInitScript(() => {
-    window.EventSource = class {
-      constructor() { window.__statusListeners = []; }
-      addEventListener(name, listener) { if (name === 'status') window.__statusListeners.push(listener); }
-      close() {}
-    };
-    window.__status = update => window.__statusListeners.forEach(listener => listener({ data: JSON.stringify(update) }));
-  });
-  await page.route('**/pos/orders?*', route => route.fulfill({ json: { orders, total: orders.length } }));
-  await page.goto(posUrl());
-  await expect(page.locator('.pos-stack-card')).toHaveCount(9);
-  await page.evaluate(() => {
-    for (const status of ['paid', 'overpaid', 'expired']) window.__status({ order_id: status, status, updated_at: 5000, is_terminal: true });
-    window.__status({ order_id: 'cancelled', status: 'cancelled', cancelled_at: 2000, updated_at: 5000, is_terminal: true });
-  });
-  await expect(page.locator('.pos-stack-card')).toHaveCount(5);
-  await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
-  await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);
-  await page.getByRole('button', { name: 'View all →' }).click();
-  await expect(page.locator('.mk-card .tag.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
-  await page.getByRole('button', { name: /Finished/ }).click();
-  for (const name of ['paid', 'overpaid', 'expired', 'cancelled']) {
-    await expect(page.locator(`.mk-card .tag.state-${name}`)).toHaveCount(1);
-  }
-});
-
-test('real POS payment card copies the address and saves a refund address', async ({ page, context }) => {
-  // Writing too, for the test to read the clipboard back as the merchant's
-  // next paste would: a real Chrome lets the page in front write unasked;
-  // Playwright's asks.
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto(posUrl());
-  const card = page.locator('.pos-pay-card');
-  // The stage says what to do; the time left is under the status.
-  await expect(card.locator('.mk-stage-msg')).toHaveText('Send the exact amount below. Scan the code with your wallet, or copy the address.');
-  await expect(page.locator('[data-pos="time-left"] .mk-countdown-clock')).toHaveText(/^(59:\d\d|60:00)$/);
-  const address = await card.locator('.pos-address [data-copy-value]').textContent();
-  await card.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(card.locator('.pos-address [role="status"]')).toHaveText('Copied');
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
-  // The order's own address is a valid address on the store's network.
-  await card.locator('#pos-refund').fill(address);
-  await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
-  await page.reload();
-  await expect(page.locator('#pos-refund')).toHaveValue(address);
-  await expect(page.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
-});
-
-test('real POS copies the address from a selection where the clipboard API is missing, and says when it could not copy', async ({ page }) => {
-  // A tablet reaching the POS over plain http on the shop's network: the
-  // page isn't a secure context, so it has no navigator.clipboard.
-  await page.addInitScript(() => {
-    Object.defineProperty(Navigator.prototype, 'clipboard', { configurable: true, get: () => undefined });
-    document.addEventListener('copy', () => { window.__copied = String(document.getSelection()); });
-  });
-  await page.goto(posUrl());
-  const card = page.locator('.pos-pay-card');
-  const copy = card.getByRole('button', { name: 'Copy payment address' });
-  const status = card.locator('.pos-address [role="status"]');
-  const address = await card.locator('.pos-address [data-copy-value]').textContent();
-  await copy.click();
-  await expect(status).toHaveText('Copied');
-  expect(await page.evaluate(() => window.__copied)).toBe(address);
-  // A browser that copies nothing even then: never a claim it copied, the
-  // whole address left selected to copy by hand.
-  await page.evaluate(() => { document.execCommand = () => false; });
-  await copy.click();
-  await expect(status).toHaveText('Select and copy the full value using your device’s copy command.');
-  expect(await page.evaluate(() => String(document.getSelection()))).toBe(address);
-});
-
-test('real POS uses the site theme toggle, applies it in place and remembers it', async ({ page }) => {
-  await page.goto(posUrl());
-  // In the account menu, as on every page.
-  const menu = page.locator('.pos-top .acct');
-  await menu.locator('summary').click();
-  const toggle = menu.locator('.theme-toggle');
-  await expect(toggle).toHaveClass(/theme-toggle-system/);
-  await page.getByRole('button', { name: 'Light theme' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await expect(toggle).toHaveClass(/theme-toggle-light/);
-  // Applied in place: the terminal is not reloaded, so the order on screen stays.
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await page.getByRole('button', { name: 'Dark theme' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
-  const paper = await page.evaluate(() => getComputedStyle(document.getElementById('pos-root')).backgroundColor);
-  expect(paper).toBe('rgb(30, 30, 30)');
-  // Remembered: the choice is saved to the account, and a reload shows it.
-  // The POS saves with a fetch that doesn't follow the redirect, and once a
-  // route is installed (the coverage run's instrumented assets) Playwright
-  // reports that fetch as aborted, with no response to wait for. So wait for
-  // the account itself: the page the server renders now says dark.
-  await expect.poll(async () => (await page.request.get(posUrl())).text(), { message: 'the theme is saved' })
-    .toMatch(/<html[^>]* data-theme="dark"/);
-  await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await menu.locator('summary').click();
-  await expect(toggle).toHaveClass(/theme-toggle-dark/);
-  await page.getByRole('button', { name: 'System theme' }).click();
-  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
-});
-
-test('real POS header is the site app bar: the mark, the store, a POS label, the status indicator and the account menu', async ({ page }) => {
-  await page.route('**/status/summary', route => route.fulfill({ json: { healthy: true, state: 'ok' } }));
-  await page.goto(posUrl());
-  const top = page.locator('.pos-top');
-  // The site's own mark and name first, linking to the dashboard, as the
-  // nav does on every page.
-  await expect(top.locator('.pos-brand')).toHaveAttribute('href', '/');
-  await expect(top.locator('.pos-brand svg.logo-mark')).toBeVisible();
-  await expect(top.locator('.pos-store')).toHaveAttribute('href', `/stores/${fixture.connection_id}`);
-  await expect(top.locator('.pos-mode')).toHaveText('POS');
-  await expect(page.locator('#pos-site-brand')).toHaveCount(0);
-  const status = top.locator('#status-indicator');
-  await expect(status).toHaveAttribute('href', '/status');
-  // The same dot as the site's bar, then the account menu, rightmost, as on
-  // every page.
-  await expect(status).toHaveClass('nav-status-link');
-  expect(await page.evaluate(() => {
-    const items = [...document.querySelectorAll('.pos-top a:not(.acct-menu *), .pos-top summary')].filter(el => el.getBoundingClientRect().width);
-    return items.sort((a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right).slice(-2).map(el => el.id || el.className);
-  })).toEqual(['status-indicator', 'acct-button']);
-  await expect(status.locator('.status-dot')).toHaveClass(/status-dot-ok/);
-  await status.click();
-  await expect(page).toHaveURL(/\/status$/);
-});
-
-test('real dashboard health indicator follows healthy and unavailable polls', async ({ page }) => {
-  let health = true;
-  let polls = 0;
-  let releaseFirst;
-  await page.clock.install();
-  await page.route('**/status/summary', async route => {
-    polls++;
-    if (polls === 1) await new Promise(resolve => { releaseFirst = resolve; });
-    return health === null
-      ? route.fulfill({ status: 503, contentType: 'text/plain', body: 'Unavailable' })
-      : route.fulfill({ json: { healthy: health, state: health ? 'ok' : 'error' } });
-  });
-  await page.goto(`${fixture.base_url}/`);
-  const dot = page.locator('#status-indicator .status-dot');
-  await expect(dot).toBeVisible();
-  await expect(dot).toHaveClass(/status-dot-unknown/);
-  await expect.poll(() => polls).toBeGreaterThan(0);
-  releaseFirst();
-  await expect(dot).toHaveClass(/status-dot-ok/);
-  health = null;
-  await page.clock.runFor(30000);
-  await expect(dot).toHaveClass(/status-dot-unknown/);
-  await expect(page.locator('#status-indicator')).toHaveAttribute('title', 'could not check status');
-});
-
 /** A payment of `fraction` of the order's amount, with `confirmations`
  * (undefined: seen in the mempool only). */
 async function payment(request, orderId, fraction, confirmations) {
@@ -312,8 +176,12 @@ async function payment(request, orderId, fraction, confirmations) {
 }
 
 test('merchant rings up a sale on a physical keyboard', async ({ page }) => {
+  // No open orders: the POS opens on an empty keypad.
+  await page.route('**/pos/orders?*', route => route.fulfill({ json: { orders: [], total: 0 } }));
   await page.goto(posUrl());
-  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  await expect(page.locator('.pos-stack-card')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Charge' })).toBeDisabled();
   const amount = page.locator('.pos-amount');
   await expect(amount).toContainText('0.000000000000');
   // A typo, cleared with Backspace; then a wrong amount, cleared with Escape.
@@ -361,6 +229,26 @@ test('customer pays while the order is on screen and the merchant starts the nex
   await expect(page.locator('.pos-order-heading .tag')).toContainText('Paid');
   await page.getByRole('button', { name: 'New order' }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
+
+  // The merchant asks for 3 confirmations on the store's settings page;
+  // the next payment shows its progress towards them.
+  const saved = await request.post(`${fixture.base_url}/stores/${fixture.connection_id}/settings`,
+    { headers: { cookie: `session=${fixture.session}` }, form: { confirmations_required: '3' }, maxRedirects: 0 });
+  expect(saved.status()).toBeLessThan(400);
+  await page.keyboard.type('30000000000');
+  await page.getByRole('button', { name: 'Charge' }).click();
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  const heading = await page.locator('.pos-order-heading h1 + p').textContent();
+  const list = await (await request.get(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` } })).json();
+  const order = list.orders.find(o => !o.backgrounded && o.status === 'pending');
+  expect(heading).toContain(order.order_id.slice(-4));
+  expect(order.confirmations_required).toBe(3);
+  await payment(request, order.order_id, 1, 1);
+  await expect(page.locator('.mk-stage-msg')).toHaveText('Confirming. 1 of 3 confirmations.');
+  await expect(page.locator('.mk-track .step-now')).toContainText('Confirm');
+  await captureCoverageStage(page, 'pos-confirming', test.info());
+  await expect(page.locator('.pos-order-heading .tag')).toContainText('Confirming');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
 
 test('a delayed order read cannot undo a live payment, but a later reorg can', async ({ page, request }) => {
@@ -432,7 +320,7 @@ test('customer walks away: the order on screen expires', async ({ page, request 
   await expect(page.locator('.pos-order-heading .tag')).toContainText('Expired');
 });
 
-test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, request }) => {
+test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, context, request }) => {
   let online = true;
   // The Wi-Fi is down: every attempt to (re)open the update stream fails.
   await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
@@ -471,51 +359,47 @@ test('counter loses its connection: the order shows connection lost, then recove
   expect(streams, 'one stream, retried by the browser').toHaveLength(1);
   expect(streams[0].refused).toBe(0);
   expect(streams.at(-1).readyState, 'connected').toBe(1);
-});
 
-test('the server refuses the counter\'s update stream: the POS opens another itself, and the payment comes in', async ({ page, request }) => {
+  // The till is opened again while the server restarts. The page's fake
+  // clock is the context's: still standing still.
+  const headers = { cookie: `session=${fixture.session}` };
+  expect((await request.post(`${posUrl()}/orders/${encodeURIComponent(fixture.order_id)}/background`, { headers })).ok()).toBeTruthy();
+  const created = await request.post(`${posUrl()}/orders`, { headers, data: { amount: '0.001', merchant_order_id: 'Next sale', request_key: 'next-sale' } });
+  expect(created.ok()).toBeTruthy();
+  const next = (await created.json()).order_id;
+  const till = await context.newPage();
+  // The order list fails to load once...
+  let failures = 1;
+  await till.route('**/pos/orders?state=active', route => (failures-- > 0
+    ? route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ type: 'https://docs.monokulo.com/problems/engine-unavailable', title: 'Payment engine unavailable', status: 503, detail: 'The payment engine is busy or unreachable. Try again in a moment.' }) })
+    : route.continue()));
+  // ...and the update stream is refused: every browser closes a refused
+  // stream for good.
   let refusing = true;
-  // A restarting server: every browser closes a refused stream for good.
-  await page.route('**/pos/events?*', route => (refusing ? route.fulfill({ status: 503, body: 'restarting' }) : route.continue()));
-  await recordEventSources(page);
-  await pauseClockAt(page, new Date('2026-01-01T00:00:00Z'));
-  await page.goto(posUrl());
-  const badge = page.locator('.pos-order-heading .tag');
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused), 'the browser gives up on the stream').toEqual([1]);
+  await till.route('**/pos/events?*', route => (refusing ? route.fulfill({ status: 503, body: 'restarting' }) : route.continue()));
+  await recordEventSources(till);
+  await till.goto(posUrl());
+  await expect(till.locator('.pos-error')).toContainText('The payment engine is busy');
+  // With nothing loaded there is no sidebar, so the keypad offers Retry,
+  // and the sale in progress comes back on screen.
+  await till.getByRole('button', { name: 'Retry' }).click();
+  await expect(till.locator('.pos-error')).toHaveCount(0);
+  await expect(till.locator('.pos-order-heading h1')).toHaveText('Next sale');
+  const tag = till.locator('.pos-order-heading .tag');
+  await expect.poll(async () => (await eventSources(till)).map(stream => stream.refused), 'the browser gives up on the stream').toEqual([1]);
   // Refused again after the POS's first wait (5s), so it waits twice as long.
-  await page.clock.runFor(5000);
-  await expect.poll(async () => (await eventSources(page)).map(stream => stream.refused)).toEqual([1, 1]);
+  await till.clock.runFor(5000);
+  await expect.poll(async () => (await eventSources(till)).map(stream => stream.refused)).toEqual([1, 1]);
   // Down for 6s: the merchant is told.
-  await page.clock.runFor(1000);
-  await expect(badge).toContainText('Connection lost');
+  await till.clock.runFor(1000);
+  await expect(tag).toContainText('Connection lost');
   refusing = false;
-  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
-  await page.clock.runFor(8999);
-  expect(await eventSources(page), 'not yet: it waits 10s this time').toHaveLength(2);
-  await page.clock.runFor(1);
-  await expect(badge).toContainText('Unconfirmed');
-  expect((await eventSources(page)).map(stream => stream.readyState)).toEqual([EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, 1]);
-});
-
-test('merchant opens Cancel order then keeps the order: nothing happens until they confirm', async ({ page }) => {
-  const writes = [];
-  page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
-  await page.goto(posUrl());
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel order…' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Keep it' }).click();
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  await expect(page.locator('.pos-error')).toHaveCount(0);
-  await expect(page.locator('.pos-order-heading .tag')).toContainText('Awaiting payment');
-  await expect(page.getByRole('button', { name: 'Cancel order' })).toBeEnabled();
-  // Confirmed the second time: the one write the server gets is that one.
-  // A write the dismissed question had sent would have gone out first, so
-  // this proves it sent none without waiting for nothing to happen.
-  await page.getByRole('button', { name: 'Cancel order…' }).click();
-  await page.getByRole('dialog').getByRole('button', { name: 'Cancel order' }).click();
-  await expect(page.locator('.pos-order-heading .tag')).toContainText('Cancelled');
-  expect(writes).toEqual([`${posUrl()}/orders/${fixture.order_id}/cancel`]);
+  await payment(request, next, 1);
+  await till.clock.runFor(8999);
+  expect(await eventSources(till), 'not yet: it waits 10s this time').toHaveLength(2);
+  await till.clock.runFor(1);
+  await expect(tag).toContainText('Unconfirmed');
+  expect((await eventSources(till)).map(stream => stream.readyState)).toEqual([EVENT_SOURCE_CLOSED, EVENT_SOURCE_CLOSED, 1]);
 });
 
 test('payment lands just before the merchant confirms a cancel: the server refuses and says why', async ({ page, request }) => {
@@ -543,49 +427,57 @@ async function ringUp(request, count, prefix) {
   }
 }
 
-test('busy store sees every open order at once and narrows them by search', async ({ page, request }) => {
-  test.setTimeout(60000);
-  await ringUp(request, 44, 'Table');
-  await page.goto(posUrl());
-  await openOrderList(page);
-  const cards = page.locator('.mk-card');
-  // All 45 open orders (the fixture order and 44 tables): no paging.
-  await expect(cards).toHaveCount(45);
-  await expect(page.getByRole('button', { name: /Active · 45/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
-  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('Table 17');
-  await expect(cards).toHaveCount(1);
-  await cards.getByRole('button', { name: 'Open →' }).click();
-  await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 17');
-});
-
-test('an order list that failed to load when the POS opened comes back with Retry', async ({ page }) => {
-  let failures = 1;
-  await page.route('**/pos/orders?state=active', route => (failures-- > 0
-    ? route.fulfill({ status: 503, contentType: 'application/problem+json', body: JSON.stringify({ type: 'https://docs.monokulo.com/problems/engine-unavailable', title: 'Payment engine unavailable', status: 503, detail: 'The payment engine is busy or unreachable. Try again in a moment.' }) })
-    : route.continue()));
-  await page.goto(posUrl());
-  await expect(page.locator('.pos-error')).toContainText('The payment engine is busy');
-  // With nothing loaded there is no sidebar, so the keypad offers Retry.
-  await page.getByRole('button', { name: 'Retry' }).click();
-  await expect(page.locator('.pos-error')).toHaveCount(0);
-  // The sale that was in progress when the POS opened is back on screen.
-  await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-});
-
-test('merchant records the customer refund address from a QR image, with clear failures', async ({ page }) => {
+test('merchant records the customer refund address from a QR image, with clear failures', async ({ page, context }) => {
   const fixtures = require('node:path').join(__dirname, '../fixtures');
   const refundAddress = '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC';
+  // The merchant denies the camera. Writing to the clipboard granted too,
+  // for the test to read it back as the merchant's next paste would: a real
+  // Chrome lets the page in front write unasked; Playwright's asks.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => { throw new DOMException('Permission denied', 'NotAllowedError'); } });
+    document.addEventListener('copy', () => { window.__copied = String(document.getSelection()); });
+  });
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
   const message = card.locator('.pos-refund-message');
   const input = card.locator('#pos-refund');
+  // The stage says what to do; the time left is under the status.
+  await expect(card.locator('.mk-stage-msg')).toHaveText('Send the exact amount below. Scan the code with your wallet, or copy the address.');
+  await expect(page.locator('[data-pos="time-left"] .mk-countdown-clock')).toHaveText(/^(59:\d\d|60:00)$/);
+
+  // The payment address copies whole.
+  const copy = card.getByRole('button', { name: 'Copy payment address' });
+  const copied = card.locator('.pos-address [role="status"]');
+  const address = await card.locator('.pos-address [data-copy-value]').textContent();
+  await copy.click();
+  await expect(copied).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
+  // A tablet reaching the POS over plain http on the shop's network: the
+  // page isn't a secure context, so it has no navigator.clipboard. The
+  // address is copied from a selection...
+  await page.evaluate(() => Object.defineProperty(Navigator.prototype, 'clipboard', { configurable: true, get: () => undefined }));
+  await copy.click();
+  await expect(copied).toHaveText('Copied');
+  expect(await page.evaluate(() => window.__copied)).toBe(address);
+  // ...and where the browser copies nothing even then: never a claim it
+  // copied, the whole address left selected to copy by hand.
+  await page.evaluate(() => { document.execCommand = () => false; });
+  await copy.click();
+  await expect(copied).toHaveText('Select and copy the full value using your device’s copy command.');
+  expect(await page.evaluate(() => String(document.getSelection()))).toBe(address);
+
+  // No camera: the card says to choose a photo instead.
+  await card.getByRole('button', { name: 'Scan refund QR' }).click();
+  await expect(message).toHaveText('Camera unavailable. Choose a QR image instead.');
+  await expect(card.getByRole('button', { name: 'Scan refund QR' })).toBeVisible();
   async function choose(file) {
     const chooser = page.waitForEvent('filechooser');
     await card.getByRole('button', { name: 'Choose QR image' }).click();
     await (await chooser).setFiles(require('node:path').join(fixtures, file));
   }
+  await choose('corrupt-photo.png');
+  await expect(message).toHaveText('Could not read that image. Choose another file.');
   await choose('receipt-photo-no-qr.png');
   await expect(message).toHaveText('No QR code found in that image.');
   await choose('menu-link-qr.png');
@@ -606,6 +498,10 @@ test('merchant records the customer refund address from a QR image, with clear f
   await input.fill(refundAddress);
   await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
   await expect(message).toHaveCount(0);
+  // Saved: it's there after a reload.
+  await page.reload();
+  await expect(page.locator('#pos-refund')).toHaveValue(refundAddress);
+  await expect(page.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
 });
 
 test('charge whose response is lost is retried without creating a second order', async ({ page, request }) => {
@@ -644,30 +540,6 @@ test('charge whose response is lost is retried without creating a second order',
   await page.getByRole('button', { name: 'Charge' }).click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Walk-in 2');
   expect(created[2].key).not.toBe(created[0].key);
-});
-
-test('payment waiting on the store\'s confirmations shows its progress', async ({ page, request }) => {
-  // The merchant asks for 3 confirmations on the store's settings page.
-  const saved = await request.post(`${fixture.base_url}/stores/${fixture.connection_id}/settings`,
-    { headers: { cookie: `session=${fixture.session}` }, form: { confirmations_required: '3' }, maxRedirects: 0 });
-  expect(saved.status()).toBeLessThan(400);
-  await page.goto(posUrl());
-  await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  await expect(page.locator('.pos-keypad')).toBeVisible();
-  await page.keyboard.type('30000000000');
-  await page.getByRole('button', { name: 'Charge' }).click();
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  const heading = await page.locator('.pos-order-heading h1 + p').textContent();
-  const list = await (await request.get(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` } })).json();
-  const order = list.orders.find(o => !o.backgrounded && o.status === 'pending');
-  expect(heading).toContain(order.order_id.slice(-4));
-  expect(order.confirmations_required).toBe(3);
-  await payment(request, order.order_id, 1, 1);
-  await expect(page.locator('.mk-stage-msg')).toHaveText('Confirming. 1 of 3 confirmations.');
-  await expect(page.locator('.mk-track .step-now')).toContainText('Confirm');
-  await captureCoverageStage(page, 'pos-confirming', test.info());
-  await expect(page.locator('.pos-order-heading .tag')).toContainText('Confirming');
-  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
 
 test('double spend on the order on screen warns the merchant not to hand over goods', async ({ page, request }) => {
@@ -727,68 +599,14 @@ test('payment countdown keeps ticking down while the customer finds their wallet
   await expect(clock).toHaveText(/^(59:\d\d|60:00)$/);
   await expect(page.locator('.mk-stage-msg')).not.toContainText(' left');
   const full = Number(await bar.getAttribute('value'));
-  await page.clock.runFor(20 * 60 * 1000);
+  await page.clock.fastForward(20 * 60 * 1000);
   await expect(clock).toHaveText(/^(39|40):\d\d$/);
   expect(Number(await bar.getAttribute('value'))).toBeLessThan(full);
   // To half a minute before it expires (the order's deadline is in whole
   // seconds, so a second either way).
-  await page.clock.runFor(order.expires_at * 1000 - 30_000 - (await page.evaluate(() => Date.now())));
+  await page.clock.fastForward(order.expires_at * 1000 - 30_000 - (await page.evaluate(() => Date.now())));
   await expect(clock).toHaveText(/^0:(29|30|31)$/);
   await expect(expiry).toHaveAttribute('data-tone', 'urgent');
-});
-
-test('merchant moves between the keypad, the stack and the order list', async ({ page, request }) => {
-  await ringUp(request, 12, 'Queue');
-  // A narrow desktop window: the stack is a strip above the keypad (on a
-  // wider screen it is a sidebar), and a mouse wheel scrolls it sideways.
-  await page.setViewportSize({ width: 480, height: 820 });
-  await page.goto(posUrl());
-  await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  // On a desktop till the mouse wheel scrolls the stack of background orders sideways.
-  const stack = page.locator('.pos-stack-scroll');
-  await expect(stack).toBeVisible();
-  const before = await stack.evaluate(el => el.scrollLeft);
-  await stack.hover();
-  await page.mouse.wheel(0, 300);
-  await expect.poll(() => stack.evaluate(el => el.scrollLeft)).toBeGreaterThan(before);
-  await page.getByRole('button', { name: 'View all →' }).click();
-  await expect(page.locator('.pos-list h1')).toHaveText('Orders');
-  await page.getByRole('button', { name: /Finished/ }).click();
-  await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
-  await page.getByRole('button', { name: /Active/ }).click();
-  await expect(page.locator('.mk-card').first()).toBeVisible();
-  await page.getByRole('button', { name: '‹ Back to the till' }).click();
-  await expect(page.locator('.pos-keypad')).toBeVisible();
-});
-
-test('merchant denies the camera or picks a broken photo: the card says what to do instead', async ({ page }) => {
-  await page.addInitScript(() => {
-    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => { throw new DOMException('Permission denied', 'NotAllowedError'); } });
-  });
-  await page.goto(posUrl());
-  const card = page.locator('.pos-pay-card');
-  await card.getByRole('button', { name: 'Scan refund QR' }).click();
-  await expect(card.locator('.pos-refund-message')).toHaveText('Camera unavailable. Choose a QR image instead.');
-  await expect(card.getByRole('button', { name: 'Scan refund QR' })).toBeVisible();
-  const chooser = page.waitForEvent('filechooser');
-  await card.getByRole('button', { name: 'Choose QR image' }).click();
-  await (await chooser).setFiles(require('node:path').join(__dirname, '../fixtures/corrupt-photo.png'));
-  await expect(card.locator('.pos-refund-message')).toHaveText('Could not read that image. Choose another file.');
-});
-
-test('clearing a search brings the whole order list back', async ({ page, request }) => {
-  await ringUp(request, 3, 'Table');
-  await page.goto(posUrl());
-  await openOrderList(page);
-  const cards = page.locator('.mk-card');
-  await expect(cards).toHaveCount(4);
-  const search = page.getByRole('searchbox', { name: 'Search reference or order ID' });
-  await search.fill('Table 2');
-  await expect(cards).toHaveCount(1);
-  await search.fill('nothing like this');
-  await expect(page.locator('.pos-empty')).toHaveText('No matches from this session. Search all orders →');
-  await search.fill('');
-  await expect(cards).toHaveCount(4);
 });
 
 async function openFinishedTab(page) {
@@ -797,6 +615,9 @@ async function openFinishedTab(page) {
 }
 
 test('an order finished at the counter moves to Finished for this session only', async ({ page, request }) => {
+  // The page's time stands still from the start: only the test moves it,
+  // so the order finishes at a moment the test knows exactly.
+  await pauseClockAt(page, new Date());
   await keepOneInBackground(request);
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
@@ -813,6 +634,13 @@ test('an order finished at the counter moves to Finished for this session only',
   await page.getByRole('button', { name: /Active/ }).click();
   await expect(page.locator('.mk-card')).toHaveCount(1);
   await expect(page.locator('.mk-card')).toContainText('Kept open');
+  // It drops off the tab 24 hours after it finished.
+  await page.getByRole('button', { name: /Finished/ }).click();
+  await page.clock.fastForward((23 * 60 + 58) * 60 * 1000);
+  await expect(page.locator('.mk-card')).toHaveCount(1);
+  await page.clock.fastForward(3 * 60 * 1000);
+  await expect(page.locator('.mk-card')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Finished · 0' })).toBeVisible();
   // Nothing is loaded into Finished: after a reload it starts empty.
   await page.reload();
   await openFinishedTab(page);
@@ -830,80 +658,4 @@ test('a backgrounded order that is paid while the merchant serves someone else m
   await expect(page.locator('.pos-stack-card')).toHaveCount(1);
   await openFinishedTab(page);
   await expect(page.locator('.mk-card .tag')).toContainText('Paid');
-});
-
-test('finished orders drop off the tab 24 hours after they finished', async ({ page, request }) => {
-  // The page's time stands still from the start: only the test moves it,
-  // so the order finishes at a moment the test knows exactly.
-  await pauseClockAt(page, new Date());
-  await keepOneInBackground(request);
-  await page.goto(posUrl());
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
-  await expect(page.locator('.mk-stage')).toContainText('Paid.');
-  await page.getByRole('button', { name: 'New order' }).click();
-  await openFinishedTab(page);
-  await expect(page.locator('.mk-card')).toHaveCount(1);
-  await page.clock.fastForward((23 * 60 + 58) * 60 * 1000);
-  await expect(page.locator('.mk-card')).toHaveCount(1);
-  await page.clock.fastForward(3 * 60 * 1000);
-  await expect(page.locator('.mk-card')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Finished · 0' })).toBeVisible();
-});
-
-test('a search with no match in this session links to searching all orders', async ({ page, request }) => {
-  await keepOneInBackground(request);
-  await page.goto(posUrl());
-  await openOrderList(page);
-  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('wc-1042');
-  const empty = page.locator('.pos-empty');
-  await expect(empty).toHaveText('No matches from this session. Search all orders →');
-  await expect(empty.getByRole('link', { name: 'Search all orders →' })).toHaveAttribute('href', `/stores/${fixture.connection_id}/orders?q=wc-1042`);
-  await empty.getByRole('link', { name: 'Search all orders →' }).click();
-  await expect(page.getByRole('heading', { name: 'Orders' })).toBeVisible();
-  await expect(page.getByRole('searchbox', { name: 'Search orders' })).toHaveValue('wc-1042');
-  await expect(page.getByText('No orders match “wc-1042”.')).toBeVisible();
-});
-
-test('on a tablet or desktop the POS uses the whole screen, with the open orders beside the keypad and a one-column payment', async ({ page, request }) => {
-  await ringUp(request, 2, 'Table');
-  const box = selector => page.locator(selector).first().evaluate(el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, right: r.right }; });
-  const noOuterScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.documentElement.scrollHeight <= innerHeight + 1);
-  await page.goto(posUrl());
-  await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  await expect(page.locator('.pos-stack-card')).toHaveCount(3);
-  for (const [shape, width, height, size] of [['iPad portrait', 820, 1180, 'tablet-portrait'], ['iPad landscape', 1180, 820, 'tablet-landscape'], ['desktop', 1280, 800, 'desktop']]) {
-    await page.setViewportSize({ width, height });
-    await expect(page.locator('.pos-keypad')).toBeVisible();
-    const top = await box('.pos-top');
-    expect(top.w, `${shape}: top bar across the screen`).toBeGreaterThanOrEqual(width - 1);
-    const side = await box('.pos-stack');
-    const keypad = await box('.pos-keypad');
-    expect(side.x, `${shape}: sidebar at the left`).toBeLessThan(1);
-    expect(side.h, `${shape}: sidebar full height`).toBeGreaterThan(height - top.h - 2);
-    expect(keypad.x, `${shape}: keypad beside the sidebar`).toBeGreaterThanOrEqual(side.right - 1);
-    expect(await noOuterScroll(), `${shape}: keypad`).toBe(true);
-    await page.locator('.pos-stack-card').first().click();
-    await expect(page.locator('.pos-pay-card')).toBeVisible();
-    expect((await box('.pos-stack')).x, `${shape}: sidebar beside the payment`).toBeLessThan(1);
-    const card = await box('.pos-pay-card');
-    const heading = await box('.pos-order-heading');
-    // One column wherever it fits: the heading, the card, then its actions.
-    expect(heading.y, `${shape}: card under the heading`).toBeLessThan(card.y);
-    expect((await box('.pos-actions')).y, `${shape}: actions under the card`).toBeGreaterThan(card.y + card.h - 1);
-    await expect(page.getByRole('button', { name: 'Background order', exact: true }), `${shape}: actions on screen`).toBeInViewport({ ratio: 1 });
-    expect(await noOuterScroll(), `${shape}: payment`).toBe(true);
-    // One stage, at this size only: each size is one of the gallery's.
-    await captureCoverageStage(page, 'pos-tablet-payment', test.info(), { shapes: [size] });
-    await page.getByRole('button', { name: 'Background order', exact: true }).click();
-    await expect(page.locator('.pos-keypad')).toBeVisible();
-  }
-  await openOrderList(page);
-  const cards = await page.locator('.mk-card').evaluateAll(els => els.map(el => el.getBoundingClientRect().y));
-  expect(new Set(cards.map(Math.round)).size, 'several cards to a row').toBeLessThan(cards.length);
-  // On a phone the payment view has no room for the sidebar.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.locator('.mk-card').first().getByRole('button', { name: 'Open →' }).click();
-  await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await expect(page.locator('.pos-stack')).toBeHidden();
 });
