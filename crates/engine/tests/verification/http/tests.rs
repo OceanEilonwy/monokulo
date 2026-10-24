@@ -121,201 +121,49 @@ async fn create_tenant_then_create_order_happy_path() {
     assert_eq!(body["order_id"], order_id);
 }
 
+/// An order's `confirmations_required`: unset leaves the tenant's default,
+/// 0 (native 0-conf, see `status::derive_status`'s own doc comment) and 3 are
+/// kept as the order's own, and over the 720 cap is refused.
 #[tokio::test]
 async fn creating_an_order_with_a_confirmations_required_override_persists_it() {
     let state = AppState::for_tests();
     let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
-
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 3 }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let order_id = body_json(response).await["order_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    let guard = store.lock();
-    let tenant_id = guard
-        .list_active_tenants()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.public_key == tenant.public_key)
-        .unwrap()
-        .id;
-    let order = guard
-        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
-        .unwrap()
-        .unwrap();
-    assert_eq!(order.confirmations_required_override, Some(3));
-}
-
-#[tokio::test]
-async fn creating_an_order_with_no_confirmations_required_override_leaves_it_unset() {
-    let state = AppState::for_tests();
-    let store = Arc::clone(state.db.shared_store_for_test());
-    let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1).await;
-
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let order_id = body_json(response).await["order_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    let guard = store.lock();
-    let tenant_id = guard
-        .list_active_tenants()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.public_key == tenant.public_key)
-        .unwrap()
-        .id;
-    let order = guard
-        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
-        .unwrap()
-        .unwrap();
-    assert_eq!(order.confirmations_required_override, None);
-}
-
-#[tokio::test]
-async fn creating_an_order_with_an_out_of_range_confirmations_required_is_rejected() {
-    // `0` is no longer out of range - native 0-conf, see `status::derive_status`'s
-    // own doc comment - so the only remaining bad value is over the 720 cap.
-    let router = test_router();
-    let tenant = create_tenant(&router, 1).await;
-
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 721u64 }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::BAD_REQUEST,
-        "confirmations_required=721 must be rejected"
-    );
-}
-
-#[tokio::test]
-async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
-    let state = AppState::for_tests();
-    let store = Arc::clone(state.db.shared_store_for_test());
-    let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1).await;
-
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 0u64 }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let order_id = body_json(response).await["order_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-
-    let guard = store.lock();
-    let tenant_id = guard
-        .list_active_tenants()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.public_key == tenant.public_key)
-        .unwrap()
-        .id;
-    let order = guard
-        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
-        .unwrap()
-        .unwrap();
-    assert_eq!(order.confirmations_required_override, Some(0));
-}
-
-/// Regression test: a `spend_pubkey_hex` that's the right length and valid hex
-/// (so `WalletMaterial::from_hex` accepts it) but isn't actually a point on the
-/// curve used to fail all the way through as a bare `500 Internal Server Error`
-/// with no indication the *caller* sent something wrong - a `KeyCustodyError::
-/// InvalidKeyMaterial` from `register_wallet`'s `to_view_pair()` call fell
-/// through `http/mod.rs`'s generic `From<KeyCustodyError> for ApiError` (`Internal`
-/// by design for most callers - see that mapping's own doc comment) uncaught.
-/// `admin::create_tenant` now maps it explicitly via
-/// `key_custody_error_for_new_tenant`, since here it genuinely is the caller's
-/// mistake, exactly like a badly-formed hex string a few lines earlier already
-/// is. Confirmed against a real curve-point check, not a mocked error - see
-/// `daemon_fallback`/`key_custody` for why this codebase treats "trust real
-/// crypto libraries over hand-rolled validation" as a hard rule.
-#[tokio::test]
-async fn create_tenant_rejects_a_syntactically_valid_but_off_curve_spend_pubkey_as_bad_request_not_internal_error(
-) {
-    let router = test_router();
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenants",
-        None,
-        &serde_json::json!({
-            "view_key_hex": valid_view_key_hex(1),
-            // 32 well-formed hex bytes, all 0xff - not a valid Ed25519/Monero
-            // curve point (real, verified: this genuinely fails
-            // `PublicKey::from_slice`, not assumed).
-            "spend_pubkey_hex": "ff".repeat(32),
-        }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::BAD_REQUEST,
-        "an off-curve spend key is the caller's mistake, not a server failure"
-    );
-    let body = body_json(response).await;
-    let message = body["error"].as_str().unwrap();
-    assert!(
-        message.contains("spend public key"),
-        "expected the real validation message, got: {message}"
-    );
-}
-
-/// Same regression, for the view key half of the pair (`PrivateKey::from_slice`
-/// rejects a non-canonical scalar - one that hasn't been reduced mod the curve
-/// order - the same way `PublicKey::from_slice` rejects an off-curve point
-/// above).
-#[tokio::test]
-async fn create_tenant_rejects_a_non_canonical_view_key_scalar_as_bad_request_not_internal_error() {
-    let router = test_router();
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenants",
-        None,
-        &serde_json::json!({
-            // 0xff * 32 as a little-endian scalar is far larger than the curve
-            // order l - a real non-canonical scalar, not merely hypothetical.
-            "view_key_hex": "ff".repeat(32),
-            "spend_pubkey_hex": valid_spend_pubkey_hex(1),
-        }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(response).await;
-    let message = body["error"].as_str().unwrap();
-    assert!(
-        message.contains("view key"),
-        "expected the real validation message, got: {message}"
-    );
+    let tenant_id = tenant_row(&store, &tenant).id;
+    for (confirmations, expected) in [
+        (None, Some(None)),
+        (Some(3u64), Some(Some(3))),
+        (Some(0), Some(Some(0))),
+        (Some(721), None),
+    ] {
+        let mut body = serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 });
+        if let Some(confirmations) = confirmations {
+            body["confirmations_required"] = confirmations.into();
+        }
+        let req = json_request(
+            "POST",
+            "/api/v1/admin/tenant/orders",
+            Some(&tenant.secret_token),
+            &body,
+        );
+        let response = router.clone().oneshot(req).await.unwrap();
+        let Some(expected) = expected else {
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{body}");
+            continue;
+        };
+        assert_eq!(response.status(), StatusCode::OK, "{body}");
+        let order_id = body_json(response).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let order = store
+            .lock()
+            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
+            .unwrap()
+            .unwrap();
+        assert_eq!(order.confirmations_required_override, expected, "{body}");
+    }
 }
 
 #[tokio::test]
@@ -545,36 +393,43 @@ async fn the_engine_serves_no_public_order_routes_and_no_cors() {
     }
 }
 
+/// This engine has no concept of fiat/exchange rates: a caller supplies the
+/// exact `xmr_amount_piconero` an order is worth, so the amount checks are
+/// that it isn't nothing, is a number, and fits: an order above what SQLite's
+/// signed integer holds would be stored negative, so it is refused with the
+/// limit named, and the cap itself is allowed.
 #[tokio::test]
 async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
-    // This engine has no concept of fiat/exchange rates: a caller supplies the exact
-    // `xmr_amount_piconero` an order is worth directly, so the only amount-shaped
-    // validation left here is "an order can't be worth exactly nothing" and "the
-    // field must actually be present and correctly typed."
     let router = test_router();
     let tenant = create_tenant(&router, 9).await;
-
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": 0u64 }),
-    );
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    // A string where the extractor expects a `u64` never reaches the handler
-    // body at all - axum's own `Json<T>` rejection fires first, with its
-    // standard `422 Unprocessable Entity` (not this handler's own `400`s,
-    // which only cover validation the handler itself performs).
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": "not_a_number" }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let cap = crate::http::orders::MAX_ORDER_PICONERO;
+    for (amount, expected) in [
+        (serde_json::json!(0u64), StatusCode::BAD_REQUEST),
+        // A string where the extractor expects a `u64` never reaches the
+        // handler body: axum's own `Json<T>` rejection fires first, with its
+        // `422` (the handler's own `400`s cover only what it checks itself).
+        (
+            serde_json::json!("not_a_number"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (serde_json::json!(u64::MAX), StatusCode::BAD_REQUEST),
+        (serde_json::json!(cap), StatusCode::OK),
+    ] {
+        let req = json_request(
+            "POST",
+            "/api/v1/admin/tenant/orders",
+            Some(&tenant.secret_token),
+            &serde_json::json!({ "xmr_amount_piconero": amount }),
+        );
+        let response = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), expected, "{amount}");
+        if amount == serde_json::json!(u64::MAX) {
+            assert!(body_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains(&cap.to_string()));
+        }
+    }
 }
 
 /// A creation repeating an idempotency key gets the order that key made
@@ -640,37 +495,6 @@ async fn an_idempotency_key_makes_a_retried_order_creation_return_the_first_orde
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad:?}");
     }
-}
-
-/// An order above what SQLite's signed integer holds would be stored
-/// negative; it is refused with the limit named.
-#[tokio::test]
-async fn an_xmr_amount_above_the_cap_is_rejected_with_bad_request() {
-    let router = test_router();
-    let tenant = create_tenant(&router, 9).await;
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": u64::MAX }),
-    );
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert!(body_json(response).await["error"]
-        .as_str()
-        .unwrap()
-        .contains(&crate::http::orders::MAX_ORDER_PICONERO.to_string()));
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/orders",
-        Some(&tenant.secret_token),
-        &serde_json::json!({ "xmr_amount_piconero": crate::http::orders::MAX_ORDER_PICONERO }),
-    );
-    assert_eq!(
-        router.oneshot(req).await.unwrap().status(),
-        StatusCode::OK,
-        "the cap itself is allowed"
-    );
 }
 
 #[tokio::test]
@@ -899,62 +723,6 @@ async fn each_store_key_has_its_own_budget() {
         .await
         .unwrap();
     assert_eq!(again.status(), StatusCode::TOO_MANY_REQUESTS);
-}
-
-#[tokio::test]
-async fn saved_rate_limits_change_the_limiter_without_a_restart() {
-    // Settings loaded the way the engine loads them, driving the limits
-    // the router uses.
-    let store = Store::open_in_memory().unwrap().into_shared();
-    let rate_limits = Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(1)));
-    let settings = crate::engine_settings::EngineSettings::load_with(
-        Arc::clone(&store),
-        None,
-        Arc::clone(&rate_limits),
-        live_settings::Env::fixed(Vec::<(String, String)>::new()),
-    )
-    .await
-    .unwrap();
-    let registry = settings.registry.clone().unwrap();
-    let router = build_router(
-        AppState {
-            rate_limits,
-            settings,
-            ..AppState::for_tests_with_store(store)
-        },
-        1_000_000,
-    );
-    let status = async || {
-        router
-            .clone()
-            .oneshot(limited_request("/status", None))
-            .await
-            .unwrap()
-            .status()
-    };
-
-    registry
-        .save(vec![(
-            "server.instance_rate_limit_per_min".to_owned(),
-            Some("2".to_owned()),
-        )])
-        .await
-        .unwrap();
-    assert_eq!(status().await, StatusCode::OK);
-    assert_eq!(status().await, StatusCode::OK);
-    assert_eq!(status().await, StatusCode::TOO_MANY_REQUESTS);
-
-    // Switched off: let through straight away.
-    registry
-        .save(vec![(
-            "server.instance_rate_limit".to_owned(),
-            Some("false".to_owned()),
-        )])
-        .await
-        .unwrap();
-    for _ in 0..5 {
-        assert_eq!(status().await, StatusCode::OK);
-    }
 }
 
 #[tokio::test]
@@ -1553,8 +1321,48 @@ async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_liv
     assert_eq!(network["max_blocks_behind"], 0, "got: {body}");
 }
 
+/// What `/status` says of the scanner's last tick and of the nodes: a
+/// healthy fresh tick, a failing one with its real error, one so old the
+/// scanner has stopped (which must read differently from failing but
+/// alive), an offline node as an error rather than a silent gap, and no
+/// configured network at all.
 #[tokio::test]
-async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
+async fn status_endpoint_reflects_each_scan_tick_and_node_state() {
+    let now = crate::now_unix();
+    for (tick_at, tenants, result, ok, stale, error) in [
+        (now, 3, Ok(()), true, false, None),
+        (
+            now,
+            1,
+            Err("node returned garbage".to_owned()),
+            false,
+            false,
+            Some("node returned garbage"),
+        ),
+        (1, 2, Ok(()), true, true, None),
+    ] {
+        let state = AppState::for_tests();
+        crate::scanner_status::record_tick(
+            &state.networks.scanner_status,
+            Network::Mainnet,
+            tick_at,
+            tick_at,
+            tenants,
+            &result,
+        );
+        let body = get_status_json(build_router(state, 1_000_000)).await;
+        let scanner = &body["networks"][0]["scanner"];
+        assert!(scanner["ever_ticked"].as_bool().unwrap(), "{body}");
+        assert_eq!(scanner["last_tick_ok"], ok, "{body}");
+        assert_eq!(scanner["is_stale"], stale, "{body}");
+        if ok {
+            assert_eq!(scanner["tenants_scanned"], tenants, "{body}");
+        }
+        if let Some(error) = error {
+            assert_eq!(scanner["last_error"], error, "{body}");
+        }
+    }
+
     let mut state = AppState::for_tests();
     let offline_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
         label: "dead-node:18081".to_owned(),
@@ -1562,8 +1370,7 @@ async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
     }]));
     state.networks.daemons =
         crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, offline_daemon)]));
-    let router = build_router(state, 1_000_000);
-    let body = get_status_json(router).await;
+    let body = get_status_json(build_router(state, 1_000_000)).await;
     let node = &body["networks"][0]["nodes"][0];
     assert_eq!(node["label"], "dead-node:18081");
     assert!(
@@ -1577,87 +1384,10 @@ async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
         error.contains("fake daemon is offline"),
         "expected the real error message surfaced, got: {error}"
     );
-}
 
-#[tokio::test]
-async fn status_endpoint_reflects_a_healthy_recent_scan_tick() {
-    let state = AppState::for_tests();
-    crate::scanner_status::record_tick(
-        &state.networks.scanner_status,
-        Network::Mainnet,
-        crate::now_unix(),
-        crate::now_unix(),
-        3,
-        &Ok::<(), String>(()),
-    );
-    let router = build_router(state, 1_000_000);
-    let body = get_status_json(router).await;
-    let scanner = &body["networks"][0]["scanner"];
-    assert!(scanner["ever_ticked"].as_bool().unwrap());
-    assert!(
-        scanner["last_tick_ok"].as_bool().unwrap(),
-        "expected a healthy fresh successful tick, got: {body}"
-    );
-    assert!(!scanner["is_stale"].as_bool().unwrap());
-    assert_eq!(
-        scanner["tenants_scanned"], 3,
-        "expected the real tenants-scanned count shown, got: {body}"
-    );
-}
-
-#[tokio::test]
-async fn status_endpoint_reflects_a_failing_scan_tick_with_its_real_error() {
-    let state = AppState::for_tests();
-    crate::scanner_status::record_tick(
-        &state.networks.scanner_status,
-        Network::Mainnet,
-        crate::now_unix(),
-        crate::now_unix(),
-        1,
-        &Err::<(), String>("node returned garbage".to_owned()),
-    );
-    let router = build_router(state, 1_000_000);
-    let body = get_status_json(router).await;
-    let scanner = &body["networks"][0]["scanner"];
-    assert!(
-        !scanner["last_tick_ok"].as_bool().unwrap(),
-        "expected the real failing-tick state, got: {body}"
-    );
-    assert_eq!(
-        scanner["last_error"], "node returned garbage",
-        "expected the real error message surfaced, got: {body}"
-    );
-}
-
-#[tokio::test]
-async fn status_endpoint_reflects_a_stale_scanner_that_has_stopped_ticking() {
-    let state = AppState::for_tests();
-    // A tick that "succeeded" a very long time ago - the scanner itself is
-    // the thing that's actually broken here (stopped ticking at all), which
-    // must read differently from a merely-failing-but-alive tick.
-    crate::scanner_status::record_tick(
-        &state.networks.scanner_status,
-        Network::Mainnet,
-        1,
-        1,
-        2,
-        &Ok::<(), String>(()),
-    );
-    let router = build_router(state, 1_000_000);
-    let body = get_status_json(router).await;
-    let scanner = &body["networks"][0]["scanner"];
-    assert!(
-        scanner["is_stale"].as_bool().unwrap(),
-        "expected stale once a tick is far older than the poll interval, got: {body}"
-    );
-}
-
-#[tokio::test]
-async fn status_endpoint_with_no_configured_networks_says_so_plainly() {
     let mut state = AppState::for_tests();
     state.networks.daemons = crate::engine_settings::Daemons::fixed(HashMap::new());
-    let router = build_router(state, 1_000_000);
-    let body = get_status_json(router).await;
+    let body = get_status_json(build_router(state, 1_000_000)).await;
     assert_eq!(body["networks"].as_array().unwrap().len(), 0);
 }
 
@@ -1990,10 +1720,16 @@ fn settings_request(method: &str, body: Option<serde_json::Value>) -> Request<Bo
 }
 
 #[tokio::test]
-async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
+async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
-    let response = router.oneshot(settings_request("GET", None)).await.unwrap();
+
+    // Nothing configured yet: the code's defaults.
+    let response = router
+        .clone()
+        .oneshot(settings_request("GET", None))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(
@@ -2009,12 +1745,6 @@ async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
         serde_json::Value::Null,
         "an unconfigured network reports null, not a fabricated node"
     );
-}
-
-#[tokio::test]
-async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
-    let (state, _daemon) = test_app_state_with_real_daemon().await;
-    let router = build_router(state, 1_000_000);
 
     let post = router
         .clone()
@@ -3403,6 +3133,61 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         me["confirmations_required"], 3,
         "the saved default, not the old hardcoded 10: {me}"
     );
+
+    {
+        // The instance's own limit too, without a restart: settings loaded
+        // the way the engine loads them, driving the limits the router uses.
+        let store = Store::open_in_memory().unwrap().into_shared();
+        let rate_limits = Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(1)));
+        let settings = crate::engine_settings::EngineSettings::load_with(
+            Arc::clone(&store),
+            None,
+            Arc::clone(&rate_limits),
+            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+        )
+        .await
+        .unwrap();
+        let registry = settings.registry.clone().unwrap();
+        let router = build_router(
+            AppState {
+                rate_limits,
+                settings,
+                ..AppState::for_tests_with_store(store)
+            },
+            1_000_000,
+        );
+        let status = async || {
+            router
+                .clone()
+                .oneshot(limited_request("/status", None))
+                .await
+                .unwrap()
+                .status()
+        };
+
+        registry
+            .save(vec![(
+                "server.instance_rate_limit_per_min".to_owned(),
+                Some("2".to_owned()),
+            )])
+            .await
+            .unwrap();
+        assert_eq!(status().await, StatusCode::OK);
+        assert_eq!(status().await, StatusCode::OK);
+        assert_eq!(status().await, StatusCode::TOO_MANY_REQUESTS);
+
+        // Switched off: let through straight away.
+        registry
+            .save(vec![(
+                "server.instance_rate_limit".to_owned(),
+                Some("false".to_owned()),
+            )])
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            assert_eq!(status().await, StatusCode::OK);
+        }
+    }
 }
 
 #[tokio::test]
@@ -4787,19 +4572,64 @@ async fn a_store_on_a_wallet_refuses_keys_too_an_unknown_wallet_and_another_netw
     }
 }
 
+/// Keys that can't make a wallet are the caller's mistake: a `400` saying
+/// which key, and nothing registered. Hex that is malformed, and (the
+/// regression) hex that is well formed but no key: a spend key off the curve
+/// (`PublicKey::from_slice` refuses it) or a non-canonical view scalar, not
+/// reduced mod the curve order (`PrivateKey::from_slice` refuses it). Those
+/// two used to fall through `register_wallet`'s `to_view_pair()` as a
+/// `KeyCustodyError::InvalidKeyMaterial` into `http/mod.rs`'s generic `From`
+/// mapping, a bare `500`; `admin::create_tenant` now maps it explicitly via
+/// `key_custody_error_for_new_tenant`. Checked against real curve-point
+/// checks, not a mocked error - see `daemon_fallback`/`key_custody` for why
+/// this codebase trusts real crypto libraries over hand-rolled validation.
 #[tokio::test]
 async fn adding_a_wallet_with_bad_keys_is_refused_and_registers_nothing() {
     let state = AppState::for_tests();
     let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/wallets",
-        None,
-        &serde_json::json!({ "view_key_hex": "zz", "spend_pubkey_hex": "00" }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    for (uri, keys, names) in [
+        (
+            "/api/v1/admin/wallets",
+            serde_json::json!({ "view_key_hex": "zz", "spend_pubkey_hex": "00" }),
+            None,
+        ),
+        (
+            "/api/v1/admin/tenants",
+            // 32 well-formed hex bytes, all 0xff: not a curve point (real,
+            // verified: this genuinely fails `PublicKey::from_slice`).
+            serde_json::json!({
+                "view_key_hex": valid_view_key_hex(1),
+                "spend_pubkey_hex": "ff".repeat(32),
+            }),
+            Some("spend public key"),
+        ),
+        (
+            "/api/v1/admin/tenants",
+            // 0xff * 32 as a little-endian scalar is far larger than the
+            // curve order l: a real non-canonical scalar.
+            serde_json::json!({
+                "view_key_hex": "ff".repeat(32),
+                "spend_pubkey_hex": valid_spend_pubkey_hex(1),
+            }),
+            Some("view key"),
+        ),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(json_request("POST", uri, None, &keys))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{uri} {keys}");
+        if let Some(names) = names {
+            let body = body_json(response).await;
+            let message = body["error"].as_str().unwrap();
+            assert!(
+                message.contains(names),
+                "expected the real validation message, got: {message}"
+            );
+        }
+    }
     assert_eq!(store.lock().count_tenants().unwrap(), 0);
 }
 

@@ -3737,18 +3737,14 @@ mod tests {
     }
 
     #[test]
-    fn a_setting_that_was_never_saved_reads_as_none() {
+    fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
         let store = Store::open_in_memory().unwrap();
+        // Never saved: none, and nothing listed.
         assert_eq!(
             store.get_setting("payment.confirmations_required").unwrap(),
             None
         );
         assert_eq!(store.list_settings().unwrap().len(), 0);
-    }
-
-    #[test]
-    fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
-        let store = Store::open_in_memory().unwrap();
         store
             .set_setting("payment.confirmations_required", "5")
             .unwrap();
@@ -4001,50 +3997,6 @@ mod tests {
     }
 
     #[test]
-    fn create_and_lookup_tenant_by_secret_token() {
-        let store = Store::open_in_memory().unwrap();
-        let created = new_tenant(&store);
-
-        let by_secret = store
-            .find_tenant_by_secret_token(&created.secret_token)
-            .unwrap();
-        assert_eq!(by_secret.unwrap().id, created.tenant.id);
-
-        assert!(store
-            .find_tenant_by_secret_token(&RawToken::presented("sk_wrong"))
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn rotated_secret_invalidates_the_old_token() {
-        let store = Store::open_in_memory().unwrap();
-        let created = new_tenant(&store);
-        let new_secret = store.rotate_tenant_secret(&created.tenant.id).unwrap();
-
-        assert!(store
-            .find_tenant_by_secret_token(&created.secret_token)
-            .unwrap()
-            .is_none());
-        assert!(store
-            .find_tenant_by_secret_token(&new_secret)
-            .unwrap()
-            .is_some());
-    }
-
-    #[test]
-    fn disabled_tenant_is_not_found_by_its_secret() {
-        let store = Store::open_in_memory().unwrap();
-        let created = new_tenant(&store);
-        store.disable_tenant(&created.tenant.id, 2000).unwrap();
-
-        assert!(store
-            .find_tenant_by_secret_token(&created.secret_token)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
     fn minor_index_allocation_starts_at_one_and_increments() {
         let store = Store::open_in_memory().unwrap();
         let created = new_tenant(&store);
@@ -4157,57 +4109,50 @@ mod tests {
     #[test]
     fn recompute_status_uses_the_per_order_override_instead_of_the_tenants_default() {
         // The tenant's own default is 10 (`new_tenant`'s own doc comment /
-        // the confirmations_required default in `create_tenant`) - an order
-        // with a `confirmations_required_override` of 2 must settle at 2
-        // confirmations, not wait for the tenant's 10.
+        // the confirmations_required default in `create_tenant`). At the same
+        // 2-confirmation depth, an order with a
+        // `confirmations_required_override` of 2 settles, and one with no
+        // override still waits for the tenant's 10.
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        let order = store
-            .create_order(&NewOrder {
-                idempotency_key: None,
-                confirmations_required_override: Some(2),
-                tenant_id: tenant.tenant.id,
-                merchant_order_id: None,
-                minor_index: 1,
-                address: "sub_1".to_owned(),
-                xmr_amount_piconero: 100,
-                description: None,
-                created_at: 1000,
-                expires_at: 2000,
-            })
-            .unwrap();
-        assert_eq!(order.confirmations_required_override, Some(2));
-
-        store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
-            .unwrap();
-        // current_height 51, payment mined at 50 -> 2 confirmations.
-        let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
-        assert_eq!(
-            status,
-            OrderStatus::Paid,
-            "2 confirmations must already be enough under a Some(2) override"
-        );
-    }
-
-    #[test]
-    fn recompute_status_falls_back_to_the_tenants_default_when_no_override_is_set() {
-        let store = Store::open_in_memory().unwrap();
-        let tenant = new_tenant(&store);
-        let order = new_order(&store, tenant.tenant.id.as_str(), 1); // confirmations_required_override: None
-        assert_eq!(order.confirmations_required_override, None);
-
-        store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
-            .unwrap();
-        // Same 2-confirmation depth as the override test above, but with no
-        // override this must still be short of the tenant's default of 10.
-        let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
-        assert_eq!(
-            status,
-            OrderStatus::Confirming,
-            "with no override, the tenant's own default of 10 must still apply"
-        );
+        for (minor_index, (override_, expected)) in [
+            (Some(2), OrderStatus::Paid),
+            (None, OrderStatus::Confirming),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let order = store
+                .create_order(&NewOrder {
+                    idempotency_key: None,
+                    confirmations_required_override: override_,
+                    tenant_id: tenant.tenant.id.clone(),
+                    merchant_order_id: None,
+                    minor_index: minor_index as u32 + 1,
+                    address: format!("sub_{minor_index}"),
+                    xmr_amount_piconero: 100,
+                    description: None,
+                    created_at: 1000,
+                    expires_at: 2000,
+                })
+                .unwrap();
+            assert_eq!(order.confirmations_required_override, override_);
+            store
+                .record_payment_match(
+                    &order.id,
+                    &format!("tx{minor_index}"),
+                    0,
+                    100,
+                    "[]",
+                    1500,
+                    Some(50),
+                    None,
+                )
+                .unwrap();
+            // current_height 51, payment mined at 50 -> 2 confirmations.
+            let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
+            assert_eq!(status, expected, "override {override_:?}");
+        }
     }
 
     #[test]

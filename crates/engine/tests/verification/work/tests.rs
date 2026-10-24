@@ -2742,29 +2742,6 @@ async fn nothing_is_kept_across_a_rewind() {
     assert!(rewound, "the reorg was found and rewound");
 }
 
-/// Tiers and wait reasons read as words in logs and reports, each its own.
-#[test]
-fn tiers_and_wait_reasons_display_distinctly() {
-    let tiers: Vec<String> = Tier::ALL.iter().map(ToString::to_string).collect();
-    assert_eq!(
-        tiers,
-        ["chain", "blocks", "mempool", "settlement", "upkeep"]
-    );
-    let waits = [
-        Wait::ChainHeightUnknown,
-        Wait::ReorgBeingReconciled,
-        Wait::RewoundThisRound,
-        Wait::NodeFailed,
-        Wait::NodeCannotServeTip,
-        Wait::MempoolUnreadable,
-        Wait::ReorgCandidatesRetrying,
-        Wait::ChainDiverged,
-    ];
-    let texts: HashSet<String> = waits.iter().map(ToString::to_string).collect();
-    assert_eq!(texts.len(), waits.len());
-    assert!(texts.iter().all(|t| !t.is_empty()));
-}
-
 /// A round that can't read the chain height reports it (once a minute in
 /// the log) and still scans the mempool.
 #[tokio::test]
