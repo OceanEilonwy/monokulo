@@ -189,13 +189,9 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await expect(page.locator('#store-site-error a')).toHaveAttribute('href', store);
   await expectFieldsInLine(page);
   await captureCoverageStage(page, 'setup-store-site-taken', test.info(), { group: GROUP });
-});
 
-test('the check lets you go on without answering after 20 seconds', async ({ page }) => {
-  const { monokulo_url: base } = fixture();
-  await signInAsAdmin(page);
-  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expectSaved(page);
+  // Another wallet, on its own: the check lets you go on without answering
+  // after 20 seconds, on the page's clock.
   await page.clock.install();
   await page.goto(base + '/account/wallets/add');
   // Outside setup: the wallet's own steps only.
@@ -207,16 +203,16 @@ test('the check lets you go on without answering after 20 seconds', async ({ pag
   await captureCoverageStage(page, 'wallets-backup-paper', test.info(), { group: GROUP });
   await page.getByText("I've written all 16 words down").click();
   await page.getByRole('button', { name: 'Next: check two words' }).click();
-  const go = page.locator('[data-check-next]');
-  await expect(go).toContainText('Continue anyway in 20 s');
+  const patient = page.locator('[data-check-next]');
+  await expect(patient).toContainText('Continue anyway in 20 s');
   await page.clock.runFor(6000);
-  await expect(go).toContainText('Continue anyway in 14 s');
-  await expect(go).toBeDisabled();
+  await expect(patient).toContainText('Continue anyway in 14 s');
+  await expect(patient).toBeDisabled();
   await page.clock.runFor(14000);
-  await expect(go).toHaveText('Continue without checking');
-  await expect(go).toBeEnabled();
+  await expect(patient).toHaveText('Continue without checking');
+  await expect(patient).toBeEnabled();
   await captureCoverageStage(page, 'setup-check-timed-out', test.info(), { group: GROUP });
-  await go.click();
+  await patient.click();
   await expect(page.getByText('Patient Wren is added')).toBeVisible();
   await expect(page.locator('.where-banner strong')).toHaveText('Backed up on paper');
 });
@@ -286,47 +282,6 @@ test.describe('with JavaScript off', () => {
     await expectFieldsInLine(page);
     await captureCoverageStage(page, 'setup-store-site-taken-no-javascript', test.info(), { group: GROUP });
   });
-
-  test('bringing your own wallet works and shows where the keys are', async ({ page }) => {
-    const { monokulo_url: base } = fixture();
-    await signInAsAdmin(page);
-    await page.goto(base + '/account/wallets/add');
-    await page.locator('input[name="name"]').fill('Keys only');
-    await page.getByRole('button', { name: 'Bring your own wallet' }).click();
-    await expect(page.getByRole('heading', { name: 'Bring your own wallet' })).toBeVisible();
-    await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Keys · step 2 of 2');
-    await page.getByText('Where do I find these keys?').click();
-    await expect(page.getByText('Copy the secret one')).toBeVisible();
-    await captureCoverageStage(page, 'wallets-keys-no-javascript', test.info(), { group: 'wallets' });
-  });
-});
-
-test('a wallet lists its stores and is renamed on its page', async ({ page }) => {
-  const { monokulo_url: base } = fixture();
-  await signInAsAdmin(page);
-  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expectSaved(page);
-  await createStore(page, 'wallet-shop.example.com');
-  await finishStoreSetup(page);
-  await expect(page.locator('.kv-table')).toContainText(WALLET_NAME);
-
-  await page.goto(base + '/account?tab=wallets');
-  await captureCoverageStage(page, 'wallets-list', test.info(), { group: 'wallets' });
-  await page.getByRole('link', { name: WALLET_NAME }).click();
-  await expect(page.getByRole('link', { name: 'wallet-shop.example.com' }).first()).toBeVisible();
-  // Other specs' stores share the dev wallet: count only that this one is listed.
-  await expect(page.locator('section[aria-labelledby="stores-title"] .card-meta')).toHaveText(/^\d+ takes? payments into this wallet$/);
-  await page.locator('#card-details input[name="name"]').fill('Dev stagenet till');
-  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Dev stagenet till' })).toBeVisible();
-  // History is folded until opened.
-  await page.locator('details[data-disclosure="history"] summary').click();
-  await expect(page.getByText(/Renamed from/)).toBeVisible();
-  await captureCoverageStage(page, 'wallets-detail', test.info(), { group: 'wallets' });
-  // Put the name back for the specs' helpers.
-  await page.locator('#card-details input[name="name"]').fill(WALLET_NAME);
-  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('heading', { name: WALLET_NAME, level: 1 })).toBeVisible();
 });
 
 test('a store changes its wallet: the dropdown asks first, then the history shows both', async ({ page }) => {

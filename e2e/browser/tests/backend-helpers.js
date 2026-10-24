@@ -177,8 +177,8 @@ async function saveEngineSettings(page, fields) {
   }
 }
 
-// monokulo caches the engine's status for up to 10s, so a page reflects a
-// change within a few reloads.
+// monokulo caches the engine's status for engine.status_cache_ms (a second
+// here: real-stack.js), so a page reflects a change within a reload or two.
 async function reloadUntil(page, url, check) {
   await expect
     .poll(async () => {
