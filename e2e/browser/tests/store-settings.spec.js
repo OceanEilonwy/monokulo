@@ -69,6 +69,14 @@ test('a save says so on the card and in a toast; a refused one keeps what was ty
   await expect(page.locator('#card-diagnostics input[role="switch"]')).not.toBeChecked();
   expect((await events(page, 'mk-dirty')).at(-1)).toEqual({ count: 0, groups: [] });
 
+  // An action on the Connections tab: its card says what it did, once.
+  await page.goto(tab('connections'));
+  const webhooks = page.locator('#card-webhooks');
+  await webhooks.locator('input[name="url"]').fill('https://hooks.example.com/monokulo');
+  await webhooks.getByRole('button', { name: 'Add webhook' }).click();
+  await expect(webhooks.getByRole('heading', { name: 'Webhook created' })).toBeVisible();
+  await expect(page.locator('#settings-toasts')).toContainText('Webhook created');
+
   // The payments tab: a save refused, then one saved.
   await page.goto(tab('payments'));
   const thresholds = page.locator('#card-confirmation-thresholds');
@@ -84,6 +92,7 @@ test('a save says so on the card and in a toast; a refused one keeps what was ty
   await expect(bar).toBeVisible();
   await expect(bar).toHaveClass(/is-failed/);
   await expect(bar).toContainText('Nothing saved.');
+  await expect(page.locator('#card-webhooks [role="alert"]')).toHaveCount(0);
   await expect(page.locator('#settings-toasts .toast-error')).toContainText('from 0 to 720');
   expect(await events(page, 'mk-failed')).toEqual([{ group: 'confirmation-thresholds', message: 'Enter a whole number of confirmations from 0 to 720.' }]);
   await captureCoverageStage(page, 'store-settings-failed', test.info());

@@ -6,7 +6,7 @@
 // banners come back whole, a toast says how it went, and a card a save
 // refused stays red with what was typed.
 const { test, expect } = require('@playwright/test');
-const { createStore, useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, finishStoreSetup, VIEW_KEY, SPEND_PUBKEY, expectSaved } = require('./backend-helpers');
+const { useRealStack, signInAsAdmin, openSettingsTab } = require('./backend-helpers');
 
 useRealStack(test);
 
@@ -82,14 +82,12 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   await expect(page.locator('#settings-toasts .toast-success')).toHaveCount(1);
   await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
   await expect(field).toHaveValue('10');
-});
 
-test('a value either check refuses saves nothing, and every change stays to fix or discard', async ({ page }) => {
-  await signInAsAdmin(page);
+  // A value either check refuses saves nothing, and every change stays to
+  // fix or discard.
   await openSettingsTab(page, 'server');
   await page.locator('input[name="server.cpus"]').fill('abc');
   await page.locator('input[name="http_cache.max_mb"]').fill('20');
-  const bar = page.locator('#save-bar');
   await expect(bar).toContainText('2 unsaved changes in Monokulo and Engine');
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
 
@@ -126,9 +124,9 @@ test('a value either check refuses saves nothing, and every change stays to fix 
   await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('16');
 });
 
-for (const failure of ['http', 'network']) {
-  test(`a ${failure} failure restores Save and allows retry`, async ({ page }) => {
-    await signInAsAdmin(page);
+test('a http or network failure restores Save and allows retry', async ({ page }) => {
+  await signInAsAdmin(page);
+  for (const failure of ['http', 'network']) {
     await openSettingsTab(page, 'payments');
     const value = failure === 'http' ? '11' : '12';
     await page.locator('input[name="webhooks.max_attempts"]').fill(value);
@@ -157,8 +155,8 @@ for (const failure of ['http', 'network']) {
     await page.unroute(saveUrl);
     await save.click();
     await expect(page.locator('#settings-toasts .toast-success')).toContainText('Changes saved and applied');
-  });
-}
+  }
+});
 
 test('leaving a tab with unsaved changes asks first, and Save and go saves then goes', async ({ page }) => {
   await signInAsAdmin(page);
@@ -208,36 +206,4 @@ test('leaving a tab with unsaved changes asks first, and Save and go saves then 
   await expect(page.locator('#settings-panel h2')).toHaveText('Logging');
   await openSettingsTab(page, 'abuse');
   await expect(page.locator('input[name="abuse.stream_cap"]')).toHaveValue('17');
-});
-
-test('a store settings save that is refused shows why on its card, and an action on its own card', async ({ page }) => {
-  const base = fixture().monokulo_url;
-  await signInAsAdmin(page);
-  // A store needs its network to have a node (run on its own, this spec
-  // starts from a fresh instance).
-  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expectSaved(page);
-  await createStore(page, 'sections.example.com');
-  await finishStoreSetup(page);
-  await page.goto(base + '/');
-  const store = await page.locator('[data-store]', { hasText: 'sections.example.com' }).first().locator('a[data-store-link]').getAttribute('href');
-  await page.goto(base + store + '/settings?tab=connections');
-
-  // An action: its card says what it did, once.
-  const webhooks = page.locator('#card-webhooks');
-  await webhooks.locator('input[name="url"]').fill('https://hooks.example.com/monokulo');
-  await webhooks.getByRole('button', { name: 'Add webhook' }).click();
-  await expect(webhooks.getByRole('heading', { name: 'Webhook created' })).toBeVisible();
-  await expect(page.locator('#settings-toasts')).toContainText('Webhook created');
-
-  // A setting the engine is asked about, refused: the card says why, on
-  // its own tab, and the action's card (on Connections) isn't shown it.
-  await page.goto(base + store + '/settings?tab=payments');
-  const card = page.locator('#card-confirmation-thresholds');
-  await card.locator('input[name="confirmations_required"]').fill('abc');
-  await page.locator('#save-bar').getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(card.locator('[role="alert"]')).toContainText('Enter a whole number');
-  await expect(card).toHaveClass(/is-failed/);
-  await expect(page.locator('.mk-tabs[aria-label="Store settings"] a[aria-current="page"]')).toHaveText('Payments');
-  await expect(page.locator('#card-webhooks [role="alert"]')).toHaveCount(0);
 });
