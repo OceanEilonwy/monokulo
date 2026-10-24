@@ -3406,57 +3406,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn updating_the_confirmation_threshold_redirects_and_the_new_value_shows_on_the_store_page(
-    ) {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "confirmations-update@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[("confirmations_required", "3")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::SEE_OTHER,
-            "expected a redirect back to the settings page"
-        );
-        assert_eq!(
-            response.headers().get("location").unwrap(),
-            &format!("/stores/{connection_id}/settings?saved=confirmation-thresholds"),
-        );
-
-        let settings_page = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let html = body_text(settings_page).await;
-        assert!(
-            html.contains(r#"value="3""#),
-            "expected the real, updated confirmation threshold shown, got: {html}"
-        );
-    }
-
-    #[tokio::test]
     async fn choosing_an_fx_provider_the_instance_has_not_enabled_is_a_clear_error_not_silently_accepted(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -3612,135 +3561,189 @@ mod tests {
         assert!(body_text(response)
             .await
             .contains("save it on its own first"));
-    }
 
-    #[tokio::test]
-    async fn updating_the_base_currency_persists_and_shows_on_the_store_page() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
+        // The default form owns the zero-conf checkbox; custom tiers save
+        // separately.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "base-currency-update@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[("base_currency", "EUR")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-
-        let page = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "zero-conf-update@example.com",
+                "correct horse battery staple",
             )
-            .await
-            .unwrap();
-        let html = body_text(page).await;
-        assert!(
-            html.contains(r#"<option value="EUR" selected data-label="Euro""#),
-            "expected EUR marked selected, got: {html}"
-        );
-    }
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
 
-    /// The default form owns the zero-conf checkbox; custom tiers save separately.
-    #[tokio::test]
-    async fn ticking_the_zero_conf_checkbox_persists_and_shows_as_checked_on_the_settings_page() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[
+                        ("confirmations_required", "10"),
+                        ("zero_conf_enabled", "true"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "zero-conf-update@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+            let page = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/stores/{connection_id}/settings?tab=payments"))
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let html = body_text(page).await;
+            assert!(
+                html.contains(r#"name="zero_conf_enabled" value="true" id="zero-conf" checked"#),
+                "expected the 0-conf checkbox to show as checked once enabled, got: {html}"
+            );
 
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[
-                    ("confirmations_required", "10"),
-                    ("zero_conf_enabled", "true"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            // The browser still submits the visible numeric value (0) when the
+            // merchant unchecks the box. That action must restore confirmations.
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[
+                        ("confirmations_required", "0"),
+                        ("switches", "zero_conf_enabled"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            let page = router
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/stores/{connection_id}/settings?tab=payments"))
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let html = body_text(page).await;
+            assert!(
+                html.contains(
+                    r#"name="confirmations_required" id="confirmations-required" value="10""#
+                ),
+                "expected the ordinary default after unchecking: {html}"
+            );
+            assert!(
+                html.contains(
+                    r#"name="zero_conf_enabled" value="true" id="zero-conf" aria-describedby"#
+                ),
+                "expected 0-conf to be disabled: {html}"
+            );
+        }
 
-        let page = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
+        // Updating the base currency persists and shows on the store page.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "base-currency-update@example.com",
+                "correct horse battery staple",
             )
-            .await
-            .unwrap();
-        let html = body_text(page).await;
-        assert!(
-            html.contains(r#"name="zero_conf_enabled" value="true" id="zero-conf" checked"#),
-            "expected the 0-conf checkbox to show as checked once enabled, got: {html}"
-        );
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
 
-        // The browser still submits the visible numeric value (0) when the
-        // merchant unchecks the box. That action must restore confirmations.
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[
-                    ("confirmations_required", "0"),
-                    ("switches", "zero_conf_enabled"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let page = router
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[("base_currency", "EUR")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+            let page = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/stores/{connection_id}/settings"))
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let html = body_text(page).await;
+            assert!(
+                html.contains(r#"<option value="EUR" selected data-label="Euro""#),
+                "expected EUR marked selected, got: {html}"
+            );
+        }
+
+        // Updating the confirmation threshold redirects and the new value shows
+        // on the store page.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "confirmations-update@example.com",
+                "correct horse battery staple",
             )
-            .await
-            .unwrap();
-        let html = body_text(page).await;
-        assert!(
-            html.contains(
-                r#"name="confirmations_required" id="confirmations-required" value="10""#
-            ),
-            "expected the ordinary default after unchecking: {html}"
-        );
-        assert!(
-            html.contains(
-                r#"name="zero_conf_enabled" value="true" id="zero-conf" aria-describedby"#
-            ),
-            "expected 0-conf to be disabled: {html}"
-        );
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
+
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/stores/{connection_id}/settings"),
+                    &session_token,
+                    &[("confirmations_required", "3")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::SEE_OTHER,
+                "expected a redirect back to the settings page"
+            );
+            assert_eq!(
+                response.headers().get("location").unwrap(),
+                &format!("/stores/{connection_id}/settings?saved=confirmation-thresholds"),
+            );
+
+            let settings_page = router
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/stores/{connection_id}/settings?tab=payments"))
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let html = body_text(settings_page).await;
+            assert!(
+                html.contains(r#"value="3""#),
+                "expected the real, updated confirmation threshold shown, got: {html}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -4216,30 +4219,50 @@ mod tests {
             !html.contains("name=\"delete_"),
             "expected no delete checkboxes once every custom threshold is gone, got: {html}"
         );
-    }
 
-    #[tokio::test]
-    async fn a_sixth_custom_threshold_is_rejected_until_one_is_deleted_in_the_same_save() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "threshold-max-five@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-        // The settings page's one form: its "new threshold" fields, and a
-        // delete checkbox per existing row.
-        let save = format!("/stores/{connection_id}/settings");
-        for i in 1..=5 {
+        // A sixth custom threshold is rejected until one is deleted in the same
+        // save.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "threshold-max-five@example.com",
+                "correct horse battery staple",
+            )
+            .await;
+            let (connection_id, _public_key) =
+                create_connection(&router, &state, &session_token).await;
+            // The settings page's one form: its "new threshold" fields, and a
+            // delete checkbox per existing row.
+            let save = format!("/stores/{connection_id}/settings");
+            for i in 1..=5 {
+                let response = router
+                    .clone()
+                    .oneshot(form_post_request(
+                        &save,
+                        &session_token,
+                        &[
+                            ("new_unit_amount", &format!("{i}0.00")),
+                            ("new_confirmations_required", "15"),
+                        ],
+                    ))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::SEE_OTHER,
+                    "expected threshold {i} to be accepted"
+                );
+            }
+
             let response = router
                 .clone()
                 .oneshot(form_post_request(
                     &save,
                     &session_token,
                     &[
-                        ("new_unit_amount", &format!("{i}0.00")),
+                        ("new_unit_amount", "999.00"),
                         ("new_confirmations_required", "15"),
                     ],
                 ))
@@ -4247,71 +4270,53 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 response.status(),
-                StatusCode::SEE_OTHER,
-                "expected threshold {i} to be accepted"
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "a rejected sixth threshold re-renders the page, it doesn't redirect"
+            );
+            let html = body_text(response).await;
+            assert!(
+                html.contains("at most 5 custom thresholds"),
+                "expected a clear rejection message, got: {html}"
+            );
+
+            // Ticking one row's delete box while adding the new one fits.
+            let doomed = state
+                .db
+                .lock()
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string(),
+                ))
+                .unwrap()[0]
+                .clone();
+            let response = router
+                .oneshot(form_post_request(
+                    &save,
+                    &session_token,
+                    &[
+                        (&format!("delete_{}", doomed.id), "on"),
+                        ("new_unit_amount", "999.00"),
+                        ("new_confirmations_required", "15"),
+                    ],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SEE_OTHER);
+            let amounts: Vec<String> = state
+                .db
+                .lock()
+                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                    connection_id.to_string(),
+                ))
+                .unwrap()
+                .into_iter()
+                .map(|t| t.unit_amount)
+                .collect();
+            assert_eq!(amounts.len(), 5);
+            assert!(
+                amounts.contains(&"999".to_string()) && !amounts.contains(&doomed.unit_amount),
+                "{amounts:?}"
             );
         }
-
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &save,
-                &session_token,
-                &[
-                    ("new_unit_amount", "999.00"),
-                    ("new_confirmations_required", "15"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "a rejected sixth threshold re-renders the page, it doesn't redirect"
-        );
-        let html = body_text(response).await;
-        assert!(
-            html.contains("at most 5 custom thresholds"),
-            "expected a clear rejection message, got: {html}"
-        );
-
-        // Ticking one row's delete box while adding the new one fits.
-        let doomed = state
-            .db
-            .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
-                connection_id.to_string(),
-            ))
-            .unwrap()[0]
-            .clone();
-        let response = router
-            .oneshot(form_post_request(
-                &save,
-                &session_token,
-                &[
-                    (&format!("delete_{}", doomed.id), "on"),
-                    ("new_unit_amount", "999.00"),
-                    ("new_confirmations_required", "15"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let amounts: Vec<String> = state
-            .db
-            .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
-                connection_id.to_string(),
-            ))
-            .unwrap()
-            .into_iter()
-            .map(|t| t.unit_amount)
-            .collect();
-        assert_eq!(amounts.len(), 5);
-        assert!(
-            amounts.contains(&"999".to_string()) && !amounts.contains(&doomed.unit_amount),
-            "{amounts:?}"
-        );
     }
 
     #[tokio::test]
@@ -4776,78 +4781,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(metadata.confirmations_required_applied, Some(10));
-    }
-
-    /// The default is the line above the tiers, never a tier of its own:
-    /// it has no remove checkbox, before or after a tier is added, and
-    /// says which orders it covers.
-    #[tokio::test]
-    async fn the_default_threshold_has_no_remove_control_and_is_not_a_tier() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "threshold-default-not-deletable@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-        let page = || async {
-            let response = router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("GET")
-                        .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                        .header("cookie", format!("session={session_token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            body_text(response).await
-        };
-
-        let html = page().await;
-        assert!(
-            html.contains("Default confirmations"),
-            "expected the default threshold's own field, got: {html}"
-        );
-        assert!(
-            html.contains(
-                r#"<p class="tier-default"><strong>Every order</strong>: the default, 10 confirmations "#
-            ),
-            "with no tiers the default covers every order, got: {html}"
-        );
-        assert!(
-            !html.contains("name=\"delete_"),
-            "a fresh store has no custom thresholds, so no remove checkbox should exist yet, got: {html}"
-        );
-
-        let response = router
-            .clone()
-            .oneshot(form_post_request(
-                &format!("/stores/{connection_id}/settings"),
-                &session_token,
-                &[
-                    ("new_unit_amount", "50"),
-                    ("new_confirmations_required", "20"),
-                ],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let html = page().await;
-        assert!(
-            html.contains(r#"<p class="tier-default"><strong>Under 50 "#),
-            "the default covers the orders below the lowest tier, got: {html}"
-        );
-        assert_eq!(
-            html.matches("name=\"delete_").count(),
-            1,
-            "only the tier is removable, not the default: {html}"
-        );
     }
 
     /// The store's Orders page is the full history: every order with its

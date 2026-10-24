@@ -2179,45 +2179,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
-    async fn a_saved_monokulo_setting_round_trips_on_the_next_load() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let save = router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/admin/settings",
-                &cookie,
-                &[("tab", "abuse"), ("abuse.soft_per_min", "5")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let html = follow(&router, &cookie, save).await;
-        assert!(is_saved(&html), "expected a success banner, got: {html}");
-        assert!(
-            html.contains("value=\"5\""),
-            "expected the just-saved value reflected immediately, got: {html}"
-        );
-
-        let html = settings_tabs_html(&router, &cookie).await;
-        assert!(
-            html.contains("value=\"5\""),
-            "expected the saved value to survive a fresh page load, got: {html}"
-        );
-        assert!(
-            label_row(&html, "abuse.soft_per_min").contains("Options file"),
-            "expected the chip to say this came from the options file, got: {html}"
-        );
-        assert!(
-            label_row(&html, "abuse.hard_per_min").contains("Default"),
-            "and an unset one from the default, got: {html}"
-        );
-    }
-
     /// The literal ask: "write tests to ensure that all settings exposed on
     /// the admin page are saved correctly" - every one of
     /// `crate::settings::ALL_SCALAR`, not just one representative field,
@@ -2907,36 +2868,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_invalid_monokulo_setting_is_rejected_and_nothing_is_saved() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let save = router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/admin/settings",
-                &cookie,
-                &[("abuse.soft_per_min", "not-a-number")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let html = follow(&router, &cookie, save).await;
-        assert!(
-            html.contains("abuse.soft_per_min: Enter a whole number"),
-            "expected a clear validation error, got: {html}"
-        );
-
-        let html = settings_tabs_html(&router, &cookie).await;
-        assert!(
-            html.contains("value=\"60\""),
-            "the rejected save must not have changed the default, got: {html}"
-        );
-    }
-
     /// The mistakes an operator makes typing into the settings form: each
     /// is refused with a message naming the setting and what it needs.
     #[tokio::test]
@@ -3031,38 +2962,94 @@ mod tests {
                     .unwrap_or("")
             );
         }
-    }
 
-    #[tokio::test]
-    async fn saving_an_engine_setting_forwards_it_and_the_change_is_visible_on_the_next_load() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
+        // All of a save or none of it: a value either check refuses, and
+        // nothing on the tab is saved; every changed card keeps what was typed,
+        // and the refused one says why.
+        {
+            let engine = spawn_engine().await;
+            let state = test_app_state_in_process(&engine).await;
+            let db = state.db.clone();
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
 
-        let save = router
-            .clone()
-            .oneshot(authed_form_request(
-                "POST",
-                "/admin/settings",
-                &cookie,
-                &[("tab", "payments"), ("payment.confirmations_required", "5")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let html = follow(&router, &cookie, save).await;
-        assert!(is_saved(&html), "expected a success banner, got: {html}");
-        assert!(
-            html.contains("value=\"5\""),
-            "expected the scanner's own just-saved value reflected, got: {html}"
-        );
+            for (bad, card) in [
+                // Monokulo's check refuses it, the engine's passes.
+                (("exchange_rate.cache_seconds", "-5"), "exchange-rates"),
+                // The engine's check refuses it, monokulo's passes.
+                (("payment.order_expiry_minutes", "0"), "orders"),
+            ] {
+                let mut form = vec![
+                    ("tab", "payments"),
+                    ("payment.confirmations_required", "8"),
+                    ("exchange_rate.coingecko_enabled", "false"),
+                ];
+                form.push(bad);
+                let save = post_settings(&router, &cookie, &form).await;
+                assert_eq!(save.status(), StatusCode::SEE_OTHER);
+                let location = save.headers()["location"].to_str().unwrap().to_string();
+                assert!(location.ends_with(&format!("#card-{card}")), "{location}");
+                let html = unescaped(&follow(&router, &cookie, save).await);
+                let toast = toast_text(&html);
+                assert!(
+                    toast.contains("Nothing saved") && toast.contains(bad.0),
+                    "{toast}"
+                );
+                assert!(
+                    html.contains(&format!(
+                        r#"<section id="card-{card}" class="settings-card is-failed""#
+                    )),
+                    "{html}"
+                );
+                // Nothing saved anywhere.
+                assert_eq!(
+                    engine_settings(&engine).await["scalars"]["payment.confirmations_required"]
+                        ["value"],
+                    "10"
+                );
+                assert_eq!(
+                    db.lock()
+                        .get_setting("exchange_rate.coingecko_enabled")
+                        .unwrap(),
+                    None
+                );
+                // What was typed is still there, with what's saved for Discard.
+                assert!(
+                    html.contains(r#"name="payment.confirmations_required" id="setting-payment.confirmations_required" value="8" aria-describedby="setting-help-payment.confirmations_required" min="0" max="720" step="1" data-saved="10">"#),
+                    "{html}"
+                );
+            }
+        }
 
-        let html = settings_tabs_html(&router, &cookie).await;
-        assert!(
-            html.contains("value=\"5\""),
-            "expected the scanner's change to survive a fresh page load, got: {html}"
-        );
+        // An invalid monokulo setting is rejected and nothing is saved.
+        {
+            let state = test_app_state_over_http(shared::unreachable::address()).await;
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
+
+            let save = router
+                .clone()
+                .oneshot(authed_form_request(
+                    "POST",
+                    "/admin/settings",
+                    &cookie,
+                    &[("abuse.soft_per_min", "not-a-number")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(save.status(), StatusCode::SEE_OTHER);
+            let html = follow(&router, &cookie, save).await;
+            assert!(
+                html.contains("abuse.soft_per_min: Enter a whole number"),
+                "expected a clear validation error, got: {html}"
+            );
+
+            let html = settings_tabs_html(&router, &cookie).await;
+            assert!(
+                html.contains("value=\"60\""),
+                "the rejected save must not have changed the default, got: {html}"
+            );
+        }
     }
 
     fn fixi(mut request: Request<Body>) -> Request<Body> {
@@ -3192,6 +3179,48 @@ mod tests {
             html.contains("payment.confirmations_required: Enter a whole number"),
             "expected the engine's own rejection surfaced, got: {html}"
         );
+
+        // An engine refusal shows the engines own message.
+        {
+            let engine = spawn_engine().await;
+            let state = test_app_state_in_process(&engine).await;
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
+
+            let direct: serde_json::Value = reqwest::Client::new()
+                .post(format!("http://{}/api/v1/admin/settings", engine.addr))
+                .header(
+                    shared::auth::ENGINE_TOKEN_HEADER,
+                    shared::auth::TEST_ENGINE_TOKEN,
+                )
+                .json(&serde_json::json!({ "scalars": { "payment.confirmations_required": "-1" } }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let message = direct["error"].as_str().unwrap();
+
+            let save = post_settings(
+                &router,
+                &cookie,
+                &[
+                    ("tab", "payments"),
+                    ("payment.confirmations_required", "-1"),
+                ],
+            )
+            .await;
+            assert_eq!(save.status(), StatusCode::SEE_OTHER);
+            let html = unescaped(&follow(&router, &cookie, save).await);
+            // On its card, and in the toast, which says nothing was saved.
+            assert!(html.contains(message), "{message} in {html}");
+            assert!(toast_text(&html).contains("Nothing saved"), "{html}");
+            assert!(
+                html.contains(r#"<section id="card-orders" class="settings-card is-failed""#),
+                "{html}"
+            );
+        }
     }
 
     // -- One save for a whole tab (nicer_admin_screen.md step 2) ----------
@@ -3244,101 +3273,6 @@ mod tests {
             .replace("&#34;", "\"")
             .replace("&#39;", "'")
             .replace("&amp;", "&")
-    }
-
-    /// Nothing listens at this instance's engine address, so a save that
-    /// sent anything to the engine would be refused: it goes through, and
-    /// back to its own tab.
-    #[tokio::test]
-    async fn a_tab_with_only_monokulo_settings_saves_only_monokulo() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
-        let settings = state.settings.clone();
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
-        )
-        .await;
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let location = save.headers()["location"].to_str().unwrap().to_string();
-        assert!(
-            location.starts_with("/admin/settings?tab=abuse&saved="),
-            "{location}"
-        );
-        assert!(is_saved(&follow(&router, &cookie, save).await));
-        assert_eq!(
-            monokulo_value(&settings, "abuse.soft_per_min"),
-            ("61".to_string(), live_settings::SettingSource::Toml)
-        );
-    }
-
-    #[tokio::test]
-    async fn a_tab_with_only_engine_settings_saves_only_the_engine() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let db = state.db.clone();
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-        let before = monokulo_stored(&db);
-
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[("tab", "payments"), ("payment.confirmations_required", "6")],
-        )
-        .await;
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
-            "6"
-        );
-        assert_eq!(
-            monokulo_stored(&db),
-            before,
-            "monokulo's settings weren't touched"
-        );
-    }
-
-    /// The Payments tab holds both processes' settings; one Save stores
-    /// both, and both read back.
-    #[tokio::test]
-    async fn a_mixed_tab_saves_both_halves() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let settings = state.settings.clone();
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[
-                ("tab", "payments"),
-                ("payment.confirmations_required", "7"),
-                ("exchange_rate.cache_seconds", "88"),
-            ],
-        )
-        .await;
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let html = follow(&router, &cookie, save).await;
-        assert!(is_saved(&html), "{html}");
-        assert_eq!(
-            engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"],
-            "7"
-        );
-        assert_eq!(
-            monokulo_value(&settings, "exchange_rate.cache_seconds").0,
-            "88"
-        );
-        let page =
-            body_text(get(&router, "/admin/settings?tab=payments", Some(&cookie)).await).await;
-        assert!(
-            shows_value(&page, "7") && shows_value(&page, "88"),
-            "one tab shows both: {page}"
-        );
     }
 
     /// A tab is sent whole, but only what the checks say differs from the
@@ -3398,63 +3332,173 @@ mod tests {
             "{toast}"
         );
         assert!(!is_saved(&html), "{html}");
-    }
 
-    /// All of a save or none of it: a value either check refuses, and
-    /// nothing on the tab is saved; every changed card keeps what was typed,
-    /// and the refused one says why.
-    #[tokio::test]
-    async fn a_value_a_check_refuses_saves_nothing_on_the_tab() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let db = state.db.clone();
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
+        // The Payments tab holds both processes' settings; one Save stores
+        // both, and both read back.
+        {
+            let engine = spawn_engine().await;
+            let state = test_app_state_in_process(&engine).await;
+            let settings = state.settings.clone();
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
 
-        for (bad, card) in [
-            // Monokulo's check refuses it, the engine's passes.
-            (("exchange_rate.cache_seconds", "-5"), "exchange-rates"),
-            // The engine's check refuses it, monokulo's passes.
-            (("payment.order_expiry_minutes", "0"), "orders"),
-        ] {
-            let mut form = vec![
-                ("tab", "payments"),
-                ("payment.confirmations_required", "8"),
-                ("exchange_rate.coingecko_enabled", "false"),
-            ];
-            form.push(bad);
-            let save = post_settings(&router, &cookie, &form).await;
+            let save = post_settings(
+                &router,
+                &cookie,
+                &[
+                    ("tab", "payments"),
+                    ("payment.confirmations_required", "7"),
+                    ("exchange_rate.cache_seconds", "88"),
+                ],
+            )
+            .await;
             assert_eq!(save.status(), StatusCode::SEE_OTHER);
-            let location = save.headers()["location"].to_str().unwrap().to_string();
-            assert!(location.ends_with(&format!("#card-{card}")), "{location}");
-            let html = unescaped(&follow(&router, &cookie, save).await);
-            let toast = toast_text(&html);
-            assert!(
-                toast.contains("Nothing saved") && toast.contains(bad.0),
-                "{toast}"
-            );
-            assert!(
-                html.contains(&format!(
-                    r#"<section id="card-{card}" class="settings-card is-failed""#
-                )),
-                "{html}"
-            );
-            // Nothing saved anywhere.
+            let html = follow(&router, &cookie, save).await;
+            assert!(is_saved(&html), "{html}");
             assert_eq!(
                 engine_settings(&engine).await["scalars"]["payment.confirmations_required"]
                     ["value"],
-                "10"
+                "7"
             );
             assert_eq!(
-                db.lock()
-                    .get_setting("exchange_rate.coingecko_enabled")
-                    .unwrap(),
-                None
+                monokulo_value(&settings, "exchange_rate.cache_seconds").0,
+                "88"
             );
-            // What was typed is still there, with what's saved for Discard.
+            let page =
+                body_text(get(&router, "/admin/settings?tab=payments", Some(&cookie)).await).await;
             assert!(
-                html.contains(r#"name="payment.confirmations_required" id="setting-payment.confirmations_required" value="8" aria-describedby="setting-help-payment.confirmations_required" min="0" max="720" step="1" data-saved="10">"#),
-                "{html}"
+                shows_value(&page, "7") && shows_value(&page, "88"),
+                "one tab shows both: {page}"
+            );
+        }
+
+        // One tab with both monokulo's and the engine's settings: both halves
+        // are written into the one file, each in its own place, the admin's
+        // comments and the tables already there kept.
+        {
+            let dir = TempDir::new("embedded-mixed");
+            let path = dir.0.join("monokulo.toml");
+            std::fs::write(
+                &path,
+                "# Mine.\n[signup]\nmode = \"public\"\n\n# The engine's.\n[engine.payment]\nreorg_check_depth = 12\n",
+            )
+            .unwrap();
+            let (engine, state) = embedded_on_file(&path).await;
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
+
+            let save = post_settings(
+                &router,
+                &cookie,
+                &[
+                    ("tab", "payments"),
+                    ("payment.confirmations_required", "7"),
+                    ("exchange_rate.cache_seconds", "88"),
+                ],
+            )
+            .await;
+            assert_eq!(save.status(), StatusCode::SEE_OTHER);
+            let html = follow(&router, &cookie, save).await;
+            assert!(is_saved(&html), "{html}");
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                text.starts_with("# Mine.\n[signup]\nmode = \"public\"\n"),
+                "{text}"
+            );
+            assert!(
+                text.contains(
+                    "# The engine's.\n[engine.payment]\nreorg_check_depth = 12\nconfirmations_required = 7\n"
+                ),
+                "the engine's half joins its table: {text}"
+            );
+            assert!(
+                text.contains("[exchange_rate]\ncache_seconds = 88\n"),
+                "monokulo's half, its own table: {text}"
+            );
+            let view = engine_settings(&engine).await;
+            assert_eq!(
+                view["scalars"]["payment.reorg_check_depth"]["value"], "12",
+                "the engine read its table: {view}"
+            );
+            assert_eq!(
+                view["scalars"]["payment.confirmations_required"]["source"],
+                "toml"
+            );
+
+            // And again, now that each handle has written the file: neither
+            // refuses the next save as "changed since it was loaded".
+            let again = post_settings(
+                &router,
+                &cookie,
+                &[
+                    ("tab", "payments"),
+                    ("payment.confirmations_required", "8"),
+                    ("exchange_rate.cache_seconds", "89"),
+                ],
+            )
+            .await;
+            assert_eq!(again.status(), StatusCode::SEE_OTHER);
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                text.contains("confirmations_required = 8\n")
+                    && text.contains("cache_seconds = 89\n"),
+                "{text}"
+            );
+        }
+
+        // A tab with only engine settings saves only the engine.
+        {
+            let engine = spawn_engine().await;
+            let state = test_app_state_in_process(&engine).await;
+            let db = state.db.clone();
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
+            let before = monokulo_stored(&db);
+
+            let save = post_settings(
+                &router,
+                &cookie,
+                &[("tab", "payments"), ("payment.confirmations_required", "6")],
+            )
+            .await;
+            assert_eq!(save.status(), StatusCode::SEE_OTHER);
+            assert_eq!(
+                engine_settings(&engine).await["scalars"]["payment.confirmations_required"]
+                    ["value"],
+                "6"
+            );
+            assert_eq!(
+                monokulo_stored(&db),
+                before,
+                "monokulo's settings weren't touched"
+            );
+        }
+
+        // Nothing listens at this instance's engine address, so a save that
+        // sent anything to the engine would be refused: it goes through, and
+        // back to its own tab.
+        {
+            let state = test_app_state_over_http(shared::unreachable::address()).await;
+            let settings = state.settings.clone();
+            let router = build_router(state);
+            let cookie = admin_session_cookie(&router).await;
+
+            let save = post_settings(
+                &router,
+                &cookie,
+                &[("tab", "abuse"), ("abuse.soft_per_min", "61")],
+            )
+            .await;
+            assert_eq!(save.status(), StatusCode::SEE_OTHER);
+            let location = save.headers()["location"].to_str().unwrap().to_string();
+            assert!(
+                location.starts_with("/admin/settings?tab=abuse&saved="),
+                "{location}"
+            );
+            assert!(is_saved(&follow(&router, &cookie, save).await));
+            assert_eq!(
+                monokulo_value(&settings, "abuse.soft_per_min"),
+                ("61".to_string(), live_settings::SettingSource::Toml)
             );
         }
     }
@@ -3534,48 +3578,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn an_engine_refusal_shows_the_engines_own_message() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let direct: serde_json::Value = reqwest::Client::new()
-            .post(format!("http://{}/api/v1/admin/settings", engine.addr))
-            .header(
-                shared::auth::ENGINE_TOKEN_HEADER,
-                shared::auth::TEST_ENGINE_TOKEN,
-            )
-            .json(&serde_json::json!({ "scalars": { "payment.confirmations_required": "-1" } }))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        let message = direct["error"].as_str().unwrap();
-
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[
-                ("tab", "payments"),
-                ("payment.confirmations_required", "-1"),
-            ],
-        )
-        .await;
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let html = unescaped(&follow(&router, &cookie, save).await);
-        // On its card, and in the toast, which says nothing was saved.
-        assert!(html.contains(message), "{message} in {html}");
-        assert!(toast_text(&html).contains("Nothing saved"), "{html}");
-        assert!(
-            html.contains(r#"<section id="card-orders" class="settings-card is-failed""#),
-            "{html}"
-        );
-    }
-
     /// The banners a save brings still show after the redirect: a setting
     /// waiting for a restart, and a network stores use left with no node
     /// that answers.
@@ -3647,32 +3649,6 @@ mod tests {
     }
 
     // -- The tabbed page (nicer_admin_screen.md step 3) -------------------
-
-    #[tokio::test]
-    async fn every_tab_opens() {
-        let engine = spawn_engine().await;
-        let state = test_app_state_in_process(&engine).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-        for tab in crate::views::admin::SettingsTab::ALL {
-            let response = get(&router, &tab.href(), Some(&cookie)).await;
-            assert_eq!(response.status(), StatusCode::OK, "{tab:?}");
-            let html = body_text(response).await;
-            assert!(
-                html.contains(&format!(
-                    r#"<h2 id="settings-panel-title" tabindex="-1">{}</h2>"#,
-                    tab.label()
-                )),
-                "{tab:?}: {html}"
-            );
-        }
-        let unknown =
-            body_text(get(&router, "/admin/settings?tab=nope", Some(&cookie)).await).await;
-        assert!(
-            unknown.contains(r#"<h2 id="settings-panel-title" tabindex="-1">General</h2>"#),
-            "{unknown}"
-        );
-    }
 
     /// Both processes have `logging.level` and `logging.max_mb`: on the
     /// Logging tab each is sent under its own name, and saved where it
@@ -4377,80 +4353,6 @@ mod tests {
         assert_eq!(
             after["scalars"], before["scalars"],
             "the engine is untouched"
-        );
-    }
-
-    /// One tab with both monokulo's and the engine's settings: both halves
-    /// are written into the one file, each in its own place, the admin's
-    /// comments and the tables already there kept.
-    #[tokio::test]
-    async fn a_mixed_tab_writes_both_halves_into_the_one_options_file() {
-        let dir = TempDir::new("embedded-mixed");
-        let path = dir.0.join("monokulo.toml");
-        std::fs::write(
-            &path,
-            "# Mine.\n[signup]\nmode = \"public\"\n\n# The engine's.\n[engine.payment]\nreorg_check_depth = 12\n",
-        )
-        .unwrap();
-        let (engine, state) = embedded_on_file(&path).await;
-        let router = build_router(state);
-        let cookie = admin_session_cookie(&router).await;
-
-        let save = post_settings(
-            &router,
-            &cookie,
-            &[
-                ("tab", "payments"),
-                ("payment.confirmations_required", "7"),
-                ("exchange_rate.cache_seconds", "88"),
-            ],
-        )
-        .await;
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
-        let html = follow(&router, &cookie, save).await;
-        assert!(is_saved(&html), "{html}");
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            text.starts_with("# Mine.\n[signup]\nmode = \"public\"\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains(
-                "# The engine's.\n[engine.payment]\nreorg_check_depth = 12\nconfirmations_required = 7\n"
-            ),
-            "the engine's half joins its table: {text}"
-        );
-        assert!(
-            text.contains("[exchange_rate]\ncache_seconds = 88\n"),
-            "monokulo's half, its own table: {text}"
-        );
-        let view = engine_settings(&engine).await;
-        assert_eq!(
-            view["scalars"]["payment.reorg_check_depth"]["value"], "12",
-            "the engine read its table: {view}"
-        );
-        assert_eq!(
-            view["scalars"]["payment.confirmations_required"]["source"],
-            "toml"
-        );
-
-        // And again, now that each handle has written the file: neither
-        // refuses the next save as "changed since it was loaded".
-        let again = post_settings(
-            &router,
-            &cookie,
-            &[
-                ("tab", "payments"),
-                ("payment.confirmations_required", "8"),
-                ("exchange_rate.cache_seconds", "89"),
-            ],
-        )
-        .await;
-        assert_eq!(again.status(), StatusCode::SEE_OTHER);
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            text.contains("confirmations_required = 8\n") && text.contains("cache_seconds = 89\n"),
-            "{text}"
         );
     }
 

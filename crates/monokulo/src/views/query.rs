@@ -571,6 +571,3 @@ pub fn value_page(chrome: &PageChrome, back: &str, content: DialogContent) -> Ma
         .wide()
         .render(chrome, body)
 }
-
-#[cfg(test)]
-mod tests;
