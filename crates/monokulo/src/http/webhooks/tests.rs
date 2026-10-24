@@ -838,6 +838,12 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         html.contains("Webhook created"),
         "expected the one-time signing-secret banner, got: {html}"
     );
+    let secret = html
+        .split("<pre>")
+        .nth(1)
+        .and_then(|rest| rest.split("</pre>").next())
+        .expect("the signing secret is shown once");
+    assert!(secret.starts_with("whsec_"), "{secret}");
 
     // The list itself (a separate GET, simulating a page reload) must
     // show the webhook but never the secret again - it's genuinely
@@ -859,6 +865,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         !list_html.contains("Webhook created"),
         "the signing secret must not reappear on a later page load, got: {list_html}"
     );
+    assert!(!list_html.contains(secret), "{list_html}");
 }
 
 #[tokio::test]
