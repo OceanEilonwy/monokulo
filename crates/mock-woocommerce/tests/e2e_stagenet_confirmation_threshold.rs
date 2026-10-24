@@ -41,7 +41,7 @@
 //!
 //! `#[ignore]`d by default, exactly like every other real-network test in
 //! this workspace - it needs live public stagenet access and real wall-clock
-//! time (a real stagenet block, ~2-25 minutes, to prove point 2 above isn't
+//! time (a real stagenet block, ~2-45 minutes, to prove point 2 above isn't
 //! satisfied by 0-conf alone). Run explicitly, from the repository root:
 //!
 //! ```sh
@@ -78,11 +78,21 @@ const THRESHOLD_UNIT_AMOUNT: &str = "0.0001";
 /// test flakiness could produce a false pass.
 const THRESHOLD_CONFIRMATIONS_REQUIRED: u64 = 1;
 const TENANT_DEFAULT_CONFIRMATIONS_REQUIRED: u64 = 99;
+/// This test's first subaddress index on the shared stagenet merchant
+/// wallet. Every live test that pays an order starts at its own (`cargo
+/// xtask live` checks they differ), so a payment an earlier test made, still
+/// waiting in the pool for stagenet's next block, can never land on this
+/// test's order: each test's engine is new, and would otherwise hand out
+/// index 1 every time. Kept under 33: the CI merchant wallet watches indices
+/// 0-32, so the run's sweep finds every payment.
+const FIRST_MINOR_INDEX: u32 = 13;
+
 /// How long a payment may wait for stagenet's next block. Its target is two
-/// minutes, but with few miners gaps of ten minutes and more are common.
-/// Under the live profile's 30 minutes (.config/nextest.toml), so a slow
-/// stagenet fails with this test's own message rather than a kill.
-const BLOCK_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+/// minutes, but with few miners gaps of ten and twenty minutes happen (one of
+/// 22 on 2026-10-23). Under the hour the live profile gives a stagenet test
+/// (.config/nextest.toml), so a slow stagenet fails with this test's own
+/// message rather than a kill.
+const BLOCK_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 /// How long the order has to read as paid once its transaction is in a
 /// block: a few scan ticks.
 const PAID_AFTER_BLOCK: Duration = Duration::from_secs(120);
@@ -292,6 +302,17 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .expect("the store setup made")
         .tenant_public_key;
     println!("connected: connection_id={connection_id} public_key={public_key}");
+
+    // This test's own subaddresses on the shared merchant wallet, from
+    // FIRST_MINOR_INDEX (see its doc comment).
+    {
+        let store = engine.store().lock();
+        for tenant in store.list_active_tenants().unwrap() {
+            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+                store.allocate_minor_index(&tenant.id).unwrap();
+            }
+        }
+    }
 
     // The real point of this test: one real custom confirmation threshold,
     // added through the store settings form (`http::store_settings::save`)

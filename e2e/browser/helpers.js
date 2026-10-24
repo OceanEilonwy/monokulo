@@ -61,9 +61,9 @@ async function enterAmount(page, digits) {
 }
 
 // How long a payment may wait for stagenet's next block. Its target is two
-// minutes, but with few miners gaps of ten minutes and more are common
-// (the 2026-10-23 run waited eight).
-const STAGENET_BLOCK_TIMEOUT = 25 * 60 * 1000;
+// minutes, but with few miners gaps of ten and twenty minutes happen
+// (2026-10-23 had one of 22).
+const STAGENET_BLOCK_TIMEOUT = 45 * 60 * 1000;
 
 // Waits until the node list e2e-harness's scan loop reads has `txHash` in a
 // block (`fixture.tx_url`, `tx_handler` in crates/e2e-harness/src/main.rs),
