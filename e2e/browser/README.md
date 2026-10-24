@@ -211,7 +211,7 @@ the Playwright report doesn't keep a second copy.
 
 Spec names describe the behavior they verify, rather than an implementation stage
 or whether coverage is collected. Configuration files select the environment.
-The real-binary suite contains `node-settings`, `store-key-custody`,
+The real-binary suite contains `account-access`, `node-settings`, `store-key-custody`,
 `admin-settings-layout`, `engine-crash-recovery`, `log-search-and-tracing`,
 `settings-section-updates`, `pos-session-diagnostics`, `site-themes`, and
 `admin-settings-and-nodes`. Each file receives its own fresh backend processes

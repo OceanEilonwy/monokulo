@@ -9,6 +9,7 @@ const { defineConfig } = require('@playwright/test');
 module.exports = defineConfig({
   testDir: './tests',
   testMatch: [
+    'account-access.spec.js',
     'node-settings.spec.js',
     'store-key-custody.spec.js',
     'admin-settings-layout.spec.js',
