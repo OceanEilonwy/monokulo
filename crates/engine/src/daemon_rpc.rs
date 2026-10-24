@@ -1326,7 +1326,7 @@ struct GetTransactionsResponse {
 /// `#[serde(default)]` needed: serde's derive has a documented special case for
 /// fields of type exactly `Option<T>` - a missing key deserializes to `None`
 /// automatically, independent of `#[serde(default)]`. Pinned, not just asserted,
-/// by `an_in_pool_entry_with_no_block_height_key_at_all_deserializes_as_none` below.
+/// by `response_shapes_a_real_node_sends_parse` below.
 ///
 /// With `prune` requested, `as_hex` is empty and the transaction comes as
 /// `pruned_as_hex` (its prefix and `RingCT` base) with `prunable_hash` (the hash
@@ -2177,37 +2177,6 @@ mod tests {
     }
 
     #[test]
-    fn get_info_says_which_network_a_node_is_on() {
-        let nettype = |value: Value| {
-            serde_json::from_value::<GetInfoResult>(value)
-                .unwrap()
-                .nettype()
-        };
-        assert_eq!(
-            nettype(json!({ "nettype": "stagenet", "height": 5, "status": "OK" })),
-            "stagenet"
-        );
-        assert_eq!(nettype(json!({ "nettype": "Mainnet" })), "mainnet");
-        assert_eq!(
-            nettype(json!({ "mainnet": false, "stagenet": false, "testnet": true })),
-            "testnet"
-        );
-        assert_eq!(nettype(json!({ "nettype": "fakechain" })), "fakechain");
-        assert_eq!(nettype(json!({ "height": 5 })), "unknown");
-        let info = |nettype: &str| DaemonInfo {
-            nettype: nettype.to_owned(),
-            height: None,
-        };
-        assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
-        assert_eq!(
-            info("fakechain").network(),
-            None,
-            "a regtest node is never on the wrong network"
-        );
-        assert_eq!(DaemonInfo::unknown().network(), None);
-    }
-
-    #[test]
     fn only_an_affirmative_miss_locates_a_transaction_as_not_found() {
         // `NotFound` is the one value that leads to a payment being voided and an
         // order stamped with a double-spend, and `/is_key_image_spent` returns no
@@ -2315,74 +2284,83 @@ mod tests {
         assert!(err.to_string().contains("no block_height"), "got {err}");
     }
 
+    /// The response shapes a real node sends, field by field, including the
+    /// ones it leaves out.
     #[test]
-    fn get_height_response_parses_and_the_block_count_to_tip_height_adjustment_holds() {
-        // monerod's `/get_height` reports the chain *length*; the trait contract is
-        // the tip block's own *height*, one less. Pinned here (rather than only in
+    fn response_shapes_a_real_node_sends_parse() {
+        // `/get_height` reports the chain *length*; the trait contract is the
+        // tip block's own *height*, one less. Pinned here (rather than only in
         // the `#[ignore]`d live test) so a future edit to that line has to
-        // deliberately change an assertion.
+        // deliberately change an assertion. A genesis-only chain is height 0,
+        // not an underflow.
         let parsed: GetHeightResponse = serde_json::from_value(json!({
             "height": 3_755_691u64, "hash": "ab", "status": "OK", "untrusted": false
         }))
         .unwrap();
         assert_eq!(parsed.height.saturating_sub(1), 3_755_690);
-        // A single-block chain (genesis only) is height 0, not an underflow.
         assert_eq!(1u64.saturating_sub(1), 0);
         assert_eq!(0u64.saturating_sub(1), 0);
-    }
 
-    #[test]
-    fn optional_fields_a_real_node_may_omit_still_parse() {
         // `missed_tx` is absent when nothing was missed - a hard `Vec` would
         // turn a normal response into a parse error and stall the scanner.
         let txs: GetTransactionsResponse =
             serde_json::from_value(json!({ "status": "OK" })).unwrap();
         assert!(txs.txs.is_none() && txs.missed_tx.is_empty());
 
-        // A pool entry reports no block height at all.
-        let pool: TxEntry = serde_json::from_value(
+        // A pool entry's block height: `null`, or (what monerod really sends,
+        // `COMMAND_RPC_GET_TRANSACTIONS::entry` serializing `block_height`
+        // only `if (!this_ref.in_pool)`) no key at all. Both are `None`, with
+        // no `#[serde(default)]` needed, checked rather than trusted.
+        for entry in [
             json!({ "as_hex": "ab", "in_pool": true, "block_height": null }),
-        )
-        .unwrap();
-        assert!(pool.in_pool && pool.block_height.is_none());
-    }
+            json!({ "as_hex": "ab", "in_pool": true }),
+        ] {
+            let pool: TxEntry = serde_json::from_value(entry.clone()).unwrap();
+            assert!(pool.in_pool && pool.block_height.is_none(), "{entry}");
+        }
 
-    #[test]
-    fn an_in_pool_entry_with_no_block_height_key_at_all_deserializes_as_none() {
-        // Distinct from the `block_height: null` case above, and the one that
-        // actually matters: per `COMMAND_RPC_GET_TRANSACTIONS::entry`'s own
-        // `KV_SERIALIZE_MAP` in monero-project/monero's source, `block_height` sits
-        // inside `if (!this_ref.in_pool) { KV_SERIALIZE(block_height) ... }` - a
-        // transaction still in the mempool never has this *key* in the response at
-        // all, not a key present with a JSON `null`. Verifies serde's documented
-        // behavior for `Option<T>` fields (defaults to `None` when the key is
-        // missing, with no `#[serde(default)]` needed) actually holds here, rather
-        // than trusting that behavior from memory.
-        let entry: TxEntry =
-            serde_json::from_value(json!({ "as_hex": "ab", "in_pool": true })).unwrap();
-        assert!(entry.in_pool);
-        assert!(entry.block_height.is_none());
-    }
-
-    #[test]
-    fn spent_status_accepts_the_real_signed_int_type_and_an_absent_key() {
-        // The real field is `std::vector<int> spent_status` - a signed 32-bit C++
-        // int - not `u8`. A value outside 0-255 (or negative) used to fail
-        // deserialization outright, before `is_key_image_spent`'s own `_ =>
-        // Unspent` catch-all - meant to degrade unrecognized codes safely - ever
-        // got a chance to run. monerod is documented to only ever send 0/1/2 today,
-        // so this specific overflow was never observed live (unlike the two bugs
-        // above, both found from a real error message) - this is a type-fidelity
-        // fix caught by checking the source directly, not a reported failure.
+        // `spent_status` is `std::vector<int>` - a signed 32-bit C++ int -
+        // not `u8`. A value outside 0-255 (or negative) used to fail
+        // deserialization before `is_key_image_spent`'s own `_ => Unspent`
+        // catch-all could degrade it safely. Found by reading the source,
+        // not from a live failure: monerod sends only 0/1/2 today. An absent
+        // key parses as empty, like every other vector field here.
         let resp: IsKeyImageSpentResponse =
             serde_json::from_value(json!({ "spent_status": [0, 1, 2, -1, 300] })).unwrap();
         assert_eq!(resp.spent_status, vec![0, 1, 2, -1, 300]);
-
-        // And, consistent with every other vector field in this file, an absent
-        // key parses as empty rather than a hard error.
         let resp: IsKeyImageSpentResponse =
             serde_json::from_value(json!({ "status": "OK" })).unwrap();
         assert!(resp.spent_status.is_empty());
+
+        // `/get_info` names the node's network one of three ways, or not at
+        // all; a regtest node is never on the wrong network.
+        let nettype = |value: Value| {
+            serde_json::from_value::<GetInfoResult>(value)
+                .unwrap()
+                .nettype()
+        };
+        for (value, expected) in [
+            (
+                json!({ "nettype": "stagenet", "height": 5, "status": "OK" }),
+                "stagenet",
+            ),
+            (json!({ "nettype": "Mainnet" }), "mainnet"),
+            (
+                json!({ "mainnet": false, "stagenet": false, "testnet": true }),
+                "testnet",
+            ),
+            (json!({ "nettype": "fakechain" }), "fakechain"),
+            (json!({ "height": 5 }), "unknown"),
+        ] {
+            assert_eq!(nettype(value.clone()), expected, "{value}");
+        }
+        let info = |nettype: &str| DaemonInfo {
+            nettype: nettype.to_owned(),
+            height: None,
+        };
+        assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
+        assert_eq!(info("fakechain").network(), None);
+        assert_eq!(DaemonInfo::unknown().network(), None);
     }
 }
 
