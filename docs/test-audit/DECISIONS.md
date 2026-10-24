@@ -39,3 +39,17 @@
     - D, engine: the engine crate, engine-test-support and `.config/nextest.toml`.
 
     The shared rules are in `target/test-audit/IMPLEMENT_BRIEF.md`. No PRs, as the owner asked earlier; each branch is pushed. The orchestrator then merges the four into one integration branch (never main), runs the whole suite there, measures both targets and re-measures coverage.
+
+## Integration (2026-10-24 evening)
+
+31. **Branches merged into `test-audit-integration`** (from origin/main `1d39b92c4`), in the order A, B, D, C, then this docs branch. One conflict: main had added "inconclusive" asserts to an xtask pages test that chunk A folded into a table. Those asserts were kept inside the folded test.
+32. **Cross-chunk fixes made during integration:**
+    - `main.rs` applies `engine.status_cache_ms` at start, and the admin placement table has its row (B's requests).
+    - The Windows partition jobs extract with `--extract-overwrite`.
+    - `xtask/src/mutations.rs` points at D's renamed `boundaries` modules, and `RECORDED_TEST` names the split ringct part that prints all three required hits.
+    - `status_page.rs` (C's requests): 1668 is folded into 1669, 1692 is deleted, and a stale doc reference to deleted test 1263 is fixed.
+33. **1686 kept, overturning tier 2.** It is the only test that an anonymous visitor to `/status` sees "node N" and never the node's label or address (labels can name internal hosts). Privacy leaks are critical under the owner's rule.
+34. **Chunk deviations accepted as logged in `docs/test-audit/progress/*.md`:**
+    - D keeps 5 real-RandomX tests rather than about 8.
+    - C keeps 1815 and 1826, and leaves Q7 as is, because `with_addresses` was already `#[cfg(test)]` upstream.
+    - B deleted 2657 (tier 2), because views 1831 pins the marker.
