@@ -241,14 +241,11 @@ mod tests {
         assert!(site.join(".nojekyll").exists());
         let linked = site_assets::assert_links_published(&page, &site.join("assets"));
         assert!(linked.contains(&"styles.css") && linked.contains(&"landing.js"));
-    }
 
-    #[test]
-    fn a_site_without_the_apk_repository_is_an_error() {
-        let scratch = Scratch::new("landing-empty");
-        let site = scratch.join("site");
-        fs::create_dir_all(site.join("openwrt")).unwrap();
-        let error = write(scratch.path(), &site, GITHUB_URL, SITE_URL).unwrap_err();
+        // A site without the apk repository is an error.
+        let empty = scratch.join("empty");
+        fs::create_dir_all(empty.join("openwrt")).unwrap();
+        let error = write(&root, &empty, GITHUB_URL, SITE_URL).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 }

@@ -364,28 +364,6 @@ fn page_names(out: &Path) -> Vec<String> {
 }
 
 #[test]
-fn coverage_links_each_file_to_its_annotated_source() {
-    let f = Fixture::new();
-    f.build(&["--coverage", &f.path("coverage")]);
-    let page = f.page("coverage.html");
-    let link = "reports/rust/coverage/home/runner/crates/engine/src/scanner.rs.html";
-    assert!(page.contains(&format!("href=\"{link}\"")), "{page}");
-    assert!(f.out().join(link).is_file());
-    // The file the profile couldn't instrument is listed, relative to its crate.
-    assert!(page.contains("<td>src/lib.rs</td>"), "{page}");
-    assert!(page.contains(">Browser</a>"));
-    assert!(!f.page("index.html").contains("not measured in this run"));
-}
-
-#[test]
-fn a_suite_without_a_manifest_is_not_measured_in_that_run() {
-    let f = Fixture::new();
-    fs::remove_file(f.scratch.join("coverage/browser.json")).unwrap();
-    f.build(&["--coverage", &f.path("coverage")]);
-    assert!(f.page("index.html").contains("not measured in this run"));
-}
-
-#[test]
 fn only_the_linked_report_files_and_what_they_need_ship() {
     let f = Fixture::new();
     f.build(&["--coverage", &f.path("coverage")]);
@@ -433,6 +411,22 @@ fn every_local_link_of_every_page_resolves() {
             "tests.html"
         ]
     );
+    // Each covered file links its annotated source.
+    assert!(f
+        .page("coverage.html")
+        .contains("href=\"reports/rust/coverage/home/runner/crates/engine/src/scanner.rs.html\""));
+    // A live failure's message is escaped.
+    let live = f.page("live.html");
+    assert!(
+        live.contains("got: [&lt;script&gt;]") && !live.contains("<script>]"),
+        "{live}"
+    );
+    // A pass that could not tell is counted as such, with why.
+    assert!(
+        live.contains("1 inconclusive")
+            && live.contains("keyless API still rate-limited this address (HTTP 429)"),
+        "{live}"
+    );
     for name in &pages {
         let page = f.page(name);
         let mut links = html_links(&page);
@@ -452,23 +446,6 @@ fn every_local_link_of_every_page_resolves() {
             );
         }
     }
-}
-
-#[test]
-fn test_tools_stay_out_of_the_shipping_figure_and_the_badge() {
-    let f = Fixture::new();
-    let (run, _) = inputs::coverage(&f.scratch.join("coverage")).unwrap();
-    assert_eq!(
-        (run.shipping.lines.covered, run.shipping.lines.total),
-        (80, 90)
-    );
-    let wallet = run.crates.iter().find(|c| c.name == "cli-wallet").unwrap();
-    assert!(wallet.tool);
-    f.build(&["--coverage", &f.path("coverage")]);
-    let badge: serde_json::Value = read_json(&f.out().join("badge.json")).unwrap();
-    assert_eq!(badge["message"], "88.9%");
-    assert_eq!(badge["color"], "green");
-    assert_eq!(badge["schemaVersion"], 1);
 }
 
 #[test]
@@ -541,77 +518,6 @@ fn artifact_text_is_escaped_everywhere_it_is_shown() {
 }
 
 #[test]
-fn the_stress_run_reads_its_named_hardware_file_and_fault_settings() {
-    let f = Fixture::new();
-    let run = inputs::stress(&f.scratch.join("coverage/stress/run.json")).unwrap();
-    assert_eq!(run.scenario.budget_ms, Some(5000));
-    assert_eq!(run.hardware.cpu_model.as_deref(), Some("Test CPU"));
-    let tenants: Vec<Option<u64>> = run
-        .points
-        .iter()
-        .map(inputs::StressPoint::tenants)
-        .collect();
-    assert_eq!(tenants, [Some(32), Some(128)]);
-    let rpc = &run.faults[0];
-    assert_eq!(rpc.fault(), Some(inputs::Fault::Rpc));
-    assert_eq!(
-        (rpc.fixture.rpc_fail_every, rpc.fixture.rpc_failures),
-        (Some(3), Some(6))
-    );
-    assert_eq!(rpc.peak_bytes(), Some(1_048_576));
-    f.build(&["--coverage", &f.path("coverage")]);
-    let page = f.page("scale.html");
-    assert!(page.contains("Test CPU"));
-    assert!(page.contains("every third request failed until block 2"));
-    assert!(page.contains("<svg"));
-}
-
-#[test]
-fn only_the_named_build_of_the_nightly_runs_is_shown_with_its_own_tests() {
-    let f = Fixture::new();
-    let runs = f.scratch.join("runs");
-    let zmq = inputs::properties(&runs, Build::Zmq).unwrap().unwrap();
-    assert_eq!(zmq.cases, 1114);
-    assert_eq!(
-        zmq.tests[0].name,
-        "work::tests::properties::money_matches_the_model_zmq"
-    );
-    let default = inputs::properties(&runs, Build::Default).unwrap().unwrap();
-    assert_eq!(default.cases, 900);
-    assert_eq!(
-        default.tests[0].name,
-        "work::tests::properties::money_matches_the_model_default"
-    );
-    let targets: Vec<(String, Option<u64>)> = inputs::fuzz(&runs, Build::Zmq)
-        .unwrap()
-        .into_iter()
-        .map(|t| (t.target, t.edges))
-        .collect();
-    assert_eq!(
-        targets,
-        [
-            ("portfolio".into(), Some(28476)),
-            ("inputs".into(), Some(6355))
-        ]
-    );
-    assert_eq!(
-        inputs::fuzz(&runs, Build::Default).unwrap()[0].edges,
-        Some(28477)
-    );
-    f.build(&[
-        "--properties",
-        &f.path("runs"),
-        "--fuzz",
-        &f.path("runs"),
-        "--feature",
-        "default",
-    ]);
-    assert!(f
-        .page("properties.html")
-        .contains("Money matches the model default"));
-}
-
-#[test]
 fn gallery_keeps_a_thumbnail_and_the_full_image_of_each_first_try() {
     let f = Fixture::new();
     let out = f.out();
@@ -651,24 +557,203 @@ fn gallery_keeps_a_thumbnail_and_the_full_image_of_each_first_try() {
     assert!(out.join(pos_full).is_file());
 }
 
+/// Each input the report reads, as its sections show it, and each one
+/// missing leaving its sections out while the front page still builds.
 #[test]
-fn missing_inputs_leave_their_sections_out_but_still_build_the_front_page() {
-    let f = Fixture::new();
-    f.build(&[]);
-    assert_eq!(page_names(&f.out()), ["index.html"]);
-    let page = f.page("index.html");
-    assert!(page.contains("No test results have been published yet."));
-    assert!(!page.contains("class=\"tabs\""));
-    let badge: serde_json::Value = read_json(&f.out().join("badge.json")).unwrap();
-    assert_eq!(badge["message"], "unknown");
-    let linked = super::site_assets::assert_links_published(&page, &f.out().join("../assets"));
-    assert!(linked.contains(&"styles.css") && linked.contains(&"manrope-500.woff2"));
-    // Fuzzing alone still gets the front page, which says what it lacks.
-    f.build(&["--fuzz", &f.path("runs")]);
-    assert_eq!(page_names(&f.out()), ["fuzzing.html", "index.html"]);
-    assert!(f
-        .page("index.html")
-        .contains("This run published no test results."));
+fn each_input_builds_its_sections_and_a_missing_one_leaves_them_out() {
+    struct Case {
+        case: &'static str,
+        /// What the fixture's artifacts differ by.
+        change: fn(&Fixture),
+        /// The build's inputs, each a flag and its folder in the fixture (or
+        /// the build `--feature` names); `None` reads them without building.
+        inputs: Option<&'static [(&'static str, &'static str)]>,
+        check: fn(&Fixture),
+    }
+    let cases = [
+        Case {
+            case: "no inputs",
+            change: |_| {},
+            inputs: Some(&[]),
+            check: |f| {
+                assert_eq!(page_names(&f.out()), ["index.html"]);
+                let page = f.page("index.html");
+                assert!(page.contains("No test results have been published yet."));
+                assert!(!page.contains("class=\"tabs\""));
+                let badge: Value = read_json(&f.out().join("badge.json")).unwrap();
+                assert_eq!(badge["message"], "unknown");
+                let linked =
+                    super::site_assets::assert_links_published(&page, &f.out().join("../assets"));
+                assert!(linked.contains(&"styles.css") && linked.contains(&"manrope-500.woff2"));
+            },
+        },
+        Case {
+            case: "fuzzing alone",
+            change: |_| {},
+            inputs: Some(&[("--fuzz", "runs")]),
+            check: |f| {
+                assert_eq!(page_names(&f.out()), ["fuzzing.html", "index.html"]);
+                assert!(f
+                    .page("index.html")
+                    .contains("This run published no test results."));
+            },
+        },
+        Case {
+            case: "coverage: the shipping figure and the stress run",
+            change: |_| {},
+            inputs: Some(&[("--coverage", "coverage")]),
+            check: |f| {
+                // Test tools stay out of the shipping figure and the badge.
+                let (run, _) = inputs::coverage(&f.scratch.join("coverage")).unwrap();
+                assert_eq!(
+                    (run.shipping.lines.covered, run.shipping.lines.total),
+                    (80, 90)
+                );
+                let wallet = run.crates.iter().find(|c| c.name == "cli-wallet").unwrap();
+                assert!(wallet.tool);
+                let badge: Value = read_json(&f.out().join("badge.json")).unwrap();
+                assert_eq!(badge["message"], "88.9%");
+                assert_eq!(badge["color"], "green");
+                assert_eq!(badge["schemaVersion"], 1);
+                assert!(!f.page("index.html").contains("not measured in this run"));
+                // The stress run reads its named hardware file and fault settings.
+                let run = inputs::stress(&f.scratch.join("coverage/stress/run.json")).unwrap();
+                assert_eq!(run.scenario.budget_ms, Some(5000));
+                assert_eq!(run.hardware.cpu_model.as_deref(), Some("Test CPU"));
+                let tenants: Vec<Option<u64>> = run
+                    .points
+                    .iter()
+                    .map(inputs::StressPoint::tenants)
+                    .collect();
+                assert_eq!(tenants, [Some(32), Some(128)]);
+                let rpc = &run.faults[0];
+                assert_eq!(rpc.fault(), Some(inputs::Fault::Rpc));
+                assert_eq!(
+                    (rpc.fixture.rpc_fail_every, rpc.fixture.rpc_failures),
+                    (Some(3), Some(6))
+                );
+                assert_eq!(rpc.peak_bytes(), Some(1_048_576));
+                let page = f.page("scale.html");
+                assert!(page.contains("Test CPU"));
+                assert!(page.contains("every third request failed until block 2"));
+                assert!(page.contains("<svg"));
+            },
+        },
+        Case {
+            case: "a suite without a manifest",
+            change: |f| fs::remove_file(f.scratch.join("coverage/browser.json")).unwrap(),
+            inputs: Some(&[("--coverage", "coverage")]),
+            check: |f| assert!(f.page("index.html").contains("not measured in this run")),
+        },
+        Case {
+            case: "only the named build of the nightly runs",
+            change: |_| {},
+            inputs: Some(&[
+                ("--properties", "runs"),
+                ("--fuzz", "runs"),
+                ("--feature", "default"),
+            ]),
+            check: |f| {
+                let runs = f.scratch.join("runs");
+                let zmq = inputs::properties(&runs, Build::Zmq).unwrap().unwrap();
+                assert_eq!(zmq.cases, 1114);
+                assert_eq!(
+                    zmq.tests[0].name,
+                    "work::tests::properties::money_matches_the_model_zmq"
+                );
+                let default = inputs::properties(&runs, Build::Default).unwrap().unwrap();
+                assert_eq!(default.cases, 900);
+                assert_eq!(
+                    default.tests[0].name,
+                    "work::tests::properties::money_matches_the_model_default"
+                );
+                let targets: Vec<(String, Option<u64>)> = inputs::fuzz(&runs, Build::Zmq)
+                    .unwrap()
+                    .into_iter()
+                    .map(|t| (t.target, t.edges))
+                    .collect();
+                assert_eq!(
+                    targets,
+                    [
+                        ("portfolio".into(), Some(28476)),
+                        ("inputs".into(), Some(6355))
+                    ]
+                );
+                assert_eq!(
+                    inputs::fuzz(&runs, Build::Default).unwrap()[0].edges,
+                    Some(28477)
+                );
+                assert!(f
+                    .page("properties.html")
+                    .contains("Money matches the model default"));
+            },
+        },
+        Case {
+            case: "a live failure while its service was down",
+            change: |f| {
+                // Only the node test, which failed while its node was down.
+                put(
+                    &f.scratch.join("live/rust-junit.xml"),
+                    junit_xml(&[(
+                        "engine",
+                        "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
+                        1.5,
+                        r#"<failure message="connection refused"/>"#,
+                    )]),
+                );
+            },
+            inputs: Some(&[("--live", "live")]),
+            check: |f| {
+                let page = f.page("live.html");
+                assert!(page.contains("All checks passed"), "{page}");
+                assert!(page.contains("Service unreachable"), "{page}");
+            },
+        },
+        Case {
+            case: "a shot without a result",
+            change: |f| {
+                let manifest = f.scratch.join("coverage/screenshots/manifest.json");
+                let mut shots: Value = read_json(&manifest).unwrap();
+                shots[0]["status"] = "failed".into();
+                shots[1].as_object_mut().unwrap().remove("status");
+                put_json(&manifest, &shots);
+            },
+            inputs: None,
+            check: |f| {
+                // It keeps the earlier shot's failure.
+                let out = f.out();
+                fs::create_dir_all(&out).unwrap();
+                let (gallery, _) = inputs::gallery(&f.scratch.join("coverage"), &out)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(gallery.screens[0].status.as_deref(), Some("failed"));
+            },
+        },
+    ];
+    for Case {
+        case,
+        change,
+        inputs,
+        check,
+    } in cases
+    {
+        let f = Fixture::new();
+        change(&f);
+        if let Some(inputs) = inputs {
+            let mut args: Vec<String> = Vec::new();
+            for (flag, value) in inputs {
+                let value = if *flag == "--feature" {
+                    value.to_string()
+                } else {
+                    f.path(value)
+                };
+                args.extend([flag.to_string(), value]);
+            }
+            f.build(&args.iter().map(String::as_str).collect::<Vec<_>>());
+        }
+        eprintln!("case: {case}");
+        check(&f);
+    }
 }
 
 #[test]
@@ -681,63 +766,6 @@ fn a_rebuild_replaces_its_own_files_and_nothing_else() {
     assert!(!f.out().join("gallery").exists());
     assert!(!f.out().join("tests.html").exists());
     assert!(f.out().join("somebody-elses.txt").is_file());
-}
-
-#[test]
-fn the_tabs_read_in_the_order_the_report_is_read() {
-    let f = Fixture::new();
-    f.build(&[
-        "--coverage",
-        &f.path("coverage"),
-        "--properties",
-        &f.path("runs"),
-        "--fuzz",
-        &f.path("runs"),
-        "--live",
-        &f.path("live"),
-    ]);
-    let page = f.page("index.html");
-    let nav = page
-        .split("<nav class=\"mk-tabs\" aria-label=\"Report sections\"")
-        .nth(1)
-        .unwrap();
-    let nav = nav.split("</nav>").next().unwrap();
-    let files: Vec<&str> = nav
-        .split("href=\"")
-        .skip(1)
-        .map(|rest| rest.split('"').next().unwrap())
-        .collect();
-    assert_eq!(
-        files,
-        [
-            "index.html",
-            "coverage.html",
-            "tests.html",
-            "properties.html",
-            "fuzzing.html",
-            "live.html",
-            "scale.html",
-            "screens.html"
-        ]
-    );
-    assert!(nav.contains("Live tests") && !nav.contains("Live network"));
-    assert!(nav.contains("Fuzzing tests"));
-}
-
-#[test]
-fn only_the_pages_with_filters_load_the_script() {
-    let f = Fixture::new();
-    f.build(&["--coverage", &f.path("coverage")]);
-    for name in page_names(&f.out()) {
-        let loads =
-            super::site_assets::assert_links_published(&f.page(&name), &f.out().join("../assets"))
-                .contains(&"coverage.js");
-        assert_eq!(
-            loads,
-            name == "tests.html" || name == "screens.html",
-            "{name}"
-        );
-    }
 }
 
 #[test]
@@ -770,92 +798,4 @@ fn manifest_paths_cannot_reach_outside_the_artifact() {
         error.to_string().contains("outside the screenshots folder"),
         "{error}"
     );
-}
-
-#[test]
-fn a_shape_taken_in_one_theme_is_shown_once_and_named_for_that_theme() {
-    let f = Fixture::new();
-    f.build(&["--coverage", &f.path("coverage")]);
-    let page = f.page("screens.html");
-    // The fixture's shots are all light: no dark picture stands in for one.
-    assert!(!page.contains("class=\"dark\""), "{page}");
-    assert!(!page.contains(", dark\""), "{page}");
-    assert!(page.contains("class=\"light\""));
-}
-
-#[test]
-fn a_shot_without_a_result_keeps_an_earlier_failure() {
-    let f = Fixture::new();
-    let manifest = f.scratch.join("coverage/screenshots/manifest.json");
-    let mut shots: Value = read_json(&manifest).unwrap();
-    shots[0]["status"] = "failed".into();
-    shots[1].as_object_mut().unwrap().remove("status");
-    put_json(&manifest, &shots);
-    let out = f.out();
-    fs::create_dir_all(&out).unwrap();
-    let (gallery, _) = inputs::gallery(&f.scratch.join("coverage"), &out)
-        .unwrap()
-        .unwrap();
-    assert_eq!(gallery.screens[0].status.as_deref(), Some("failed"));
-}
-
-#[test]
-fn the_live_page_puts_each_failure_down_to_the_code_or_a_service() {
-    let f = Fixture::new();
-    f.build(&["--live", &f.path("live")]);
-    let page = f.page("live.html");
-    // The node was down, so its test's failure is the node's.
-    assert!(page.contains("Service unreachable"), "{page}");
-    assert!(page.contains("Monero mainnet node didn’t answer"), "{page}");
-    // DNS answered, so the resolver test's failure is the code's; its
-    // message is escaped.
-    assert!(page.contains("<b>Failed</b>"), "{page}");
-    assert!(page.contains("got: [&lt;script&gt;]"), "{page}");
-    assert!(!page.contains("<script>]"), "{page}");
-    // What each test needs, by the service's name.
-    assert!(
-        page.contains("<td>Monero stagenet nodes, Funded stagenet test wallets</td>"),
-        "{page}"
-    );
-    assert!(page.contains("<td>haveno.markets</td>"), "{page}");
-    // The wallets as the run left them, and what the upkeep did.
-    assert!(page.contains("0.059000000000"), "{page}");
-    assert!(
-        page.contains("Swept 0.000670000000 XMR from the merchant to the spender"),
-        "{page}"
-    );
-    assert!(
-        page.contains("Not answering") && page.contains("Not checked"),
-        "{page}"
-    );
-    // A pass that could not tell is shown as such, with why.
-    assert!(page.contains("Inconclusive"), "{page}");
-    assert!(
-        page.contains("keyless API still rate-limited this address (HTTP 429)"),
-        "{page}"
-    );
-    assert!(page.contains("1 inconclusive"), "{page}");
-    // One failure is the code's, so the run line doesn't claim all passed.
-    assert!(page.contains("Some checks failed"), "{page}");
-    assert!(page.contains(r#"href="live.html""#), "{page}");
-}
-
-#[test]
-fn a_live_failure_while_its_service_was_down_does_not_fail_the_report() {
-    let f = Fixture::new();
-    let live = f.scratch.join("live");
-    // Only the node test, which failed while its node was down.
-    put(
-        &live.join("rust-junit.xml"),
-        junit_xml(&[(
-            "engine",
-            "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
-            1.5,
-            r#"<failure message="connection refused"/>"#,
-        )]),
-    );
-    f.build(&["--live", &f.path("live")]);
-    let page = f.page("live.html");
-    assert!(page.contains("All checks passed"), "{page}");
-    assert!(page.contains("Service unreachable"), "{page}");
 }

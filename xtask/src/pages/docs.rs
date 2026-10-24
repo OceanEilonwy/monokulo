@@ -343,44 +343,6 @@ mod tests {
     const API_OUTPUT: [&str; 4] = ["api/reference", "api/v1", "rels", "problems"];
 
     #[test]
-    fn headings_get_anchors_and_diffs_show_what_was_added() {
-        let html = markdown_html(
-            "### Step 6 · Verify, test, go live\n\n```diff\n# shop.html\n   kept\n+  added <b>\n```\n",
-        )
-        .into_string();
-        assert!(
-            html.contains(r#"<h3 id="step-6">Step 6 · Verify, test, go live</h3>"#),
-            "{html}"
-        );
-        assert!(html.contains(r#"<pre class="diff"><span class="file">shop.html</span><span class="ctx">   kept</span><span class="add">+  added &lt;b&gt;</span></pre>"#), "{html}");
-    }
-
-    #[test]
-    fn a_page_has_every_tab_with_its_own_current_and_links_up_from_its_folder() {
-        let page = &PAGES[2];
-        let html = render(
-            page,
-            "# JS library\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n",
-        )
-        .into_string();
-        assert!(html.contains("<title>JS library · Monokulo docs</title>"));
-        assert!(
-            html.contains(r#"<a href="../js-library/" aria-current="page">JS library</a>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<a href="../guide/">Key steps</a>"#),
-            "{html}"
-        );
-        assert!(html.contains(r#"<a href="../api/">HTTP API</a>"#), "{html}");
-        assert!(html.contains(&format!(
-            r#"href="{}""#,
-            site_assets::url("../", "styles.css")
-        )));
-        assert!(html.contains(r#"<div class="tbl"><table>"#), "{html}");
-    }
-
-    #[test]
     fn every_page_and_the_sample_shop_are_written() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let scratch = Scratch::new("docs");

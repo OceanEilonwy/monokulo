@@ -7,7 +7,6 @@ use super::format::{capitalised, sentence};
 use super::inputs::{
     BrowserKind, CoverageRun, FuzzTarget, Gallery, LiveRun, Properties, Stress, Test, TestStatus,
 };
-use crate::support::project_browser;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -241,15 +240,10 @@ fn rust_case(t: &Test) -> Case {
 
 fn browser_case(t: &Test) -> Case {
     let spec = t.class.strip_suffix(".spec.js").unwrap_or(&t.class);
-    let notes: Vec<&str> = (t.kind == Some(BrowserKind::RealBinaries))
-        .then_some("real binaries")
-        .into_iter()
-        .chain(project_browser(&t.project))
-        .collect();
-    let group = if notes.is_empty() {
-        spec.to_string()
+    let group = if t.kind == Some(BrowserKind::RealBinaries) {
+        format!("{spec} (real binaries)")
     } else {
-        format!("{spec} ({})", notes.join(", "))
+        spec.to_string()
     };
     Case {
         suite: Suite::Browser,
@@ -376,21 +370,73 @@ mod tests {
         }
     }
 
-    #[test]
-    fn rust_tests_group_by_module_without_the_tests_module() {
-        let case = rust_case(&test("engine", "scanner::tests::a_reorg_moves_it"));
-        assert_eq!(
-            (case.krate.as_str(), case.group.as_str()),
-            ("engine", "engine::scanner")
-        );
-        assert_eq!(case.label, "A reorg moves it");
-        // An integration test binary names its file in the class instead.
-        let case = rust_case(&test("engine::backup_restore", "restores_both"));
-        assert_eq!(case.group, "engine::backup_restore");
-    }
-
+    /// Where each test is listed: a Rust test by its crate and module
+    /// without the tests module (an integration test binary by its file),
+    /// a browser test by its spec and how it ran, each under the first area
+    /// that claims it.
     #[test]
     fn each_test_lands_in_the_first_area_that_claims_it() {
+        // (class, name, browser kind, crate, group, label)
+        type Row<'a> = (
+            &'a str,
+            &'a str,
+            Option<BrowserKind>,
+            &'a str,
+            &'a str,
+            &'a str,
+        );
+        let rows: &[Row] = &[
+            (
+                "engine",
+                "scanner::tests::a_reorg_moves_it",
+                None,
+                "engine",
+                "engine::scanner",
+                "A reorg moves it",
+            ),
+            (
+                "engine::backup_restore",
+                "restores_both",
+                None,
+                "engine",
+                "engine::backup_restore",
+                "Restores both",
+            ),
+            (
+                "checkout.spec.js",
+                "shows the amount",
+                Some(BrowserKind::RealBinaries),
+                "browser",
+                "checkout (real binaries)",
+                "Shows the amount",
+            ),
+            (
+                "pos-terminal.spec.js",
+                "copies the address",
+                Some(BrowserKind::Fixture),
+                "browser",
+                "pos-terminal",
+                "Copies the address",
+            ),
+        ];
+        for (class, name, kind, krate, group, label) in rows {
+            let mut t = test(class, name);
+            t.kind = *kind;
+            let case = if kind.is_some() {
+                browser_case(&t)
+            } else {
+                rust_case(&t)
+            };
+            assert_eq!(
+                (
+                    case.krate.as_str(),
+                    case.group.as_str(),
+                    case.label.as_str()
+                ),
+                (*krate, *group, *label),
+                "{class} {name}"
+            );
+        }
         let report = Report::new(
             String::new(),
             Sources::default(),
@@ -416,23 +462,5 @@ mod tests {
             .find(|a| a.claims(&wallet, false))
             .unwrap();
         assert_eq!(wallet.area, Area::Other);
-    }
-
-    #[test]
-    fn browser_specs_name_their_suite() {
-        let mut t = test("checkout.spec.js", "shows the amount");
-        t.kind = Some(BrowserKind::RealBinaries);
-        let case = browser_case(&t);
-        assert_eq!(case.group, "checkout (real binaries)");
-        assert_eq!(case.label, "Shows the amount");
-        // The POS's tests run in Firefox and WebKit too, under the same names.
-        t.project = "real-binaries-webkit".into();
-        assert_eq!(browser_case(&t).group, "checkout (real binaries, WebKit)");
-        let mut t = test("pos-terminal.spec.js", "copies the address");
-        t.kind = Some(BrowserKind::Fixture);
-        t.project = "fixture-firefox".into();
-        assert_eq!(browser_case(&t).group, "pos-terminal (Firefox)");
-        t.project = "fixture".into();
-        assert_eq!(browser_case(&t).group, "pos-terminal");
     }
 }
