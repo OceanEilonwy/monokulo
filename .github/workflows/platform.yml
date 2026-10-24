@@ -226,7 +226,7 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          cargo nextest run --archive-file target-ci/rust-tests.tar.zst --workspace-remap . --extract-to . \
+          cargo nextest run --archive-file target-ci/rust-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
             --profile ci --partition count:${{ matrix.part }}/3
       - name: Summarize
         if: always()
