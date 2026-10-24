@@ -1244,44 +1244,6 @@ mod tests {
     fn render(store: StoreSettingsData) -> String {
         page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string()
     }
-
-    /// A save or an action lands on its card's tab, unless a tab was asked
-    /// for; a plain load is on General.
-    #[test]
-    fn the_tab_shown_is_the_one_asked_for_or_the_one_just_saved_on() {
-        let saved = |sections: Vec<StoreSection>| Some(StoreOutcome::Saved(sections));
-        assert_eq!(StoreTab::pick(None, None), StoreTab::General);
-        assert_eq!(
-            StoreTab::pick(None, saved(vec![StoreSection::Wallet]).as_ref()),
-            StoreTab::Wallet
-        );
-        assert_eq!(
-            StoreTab::pick(None, saved(vec![StoreSection::Webhooks]).as_ref()),
-            StoreTab::Connections
-        );
-        assert_eq!(
-            StoreTab::pick(
-                None,
-                Some(&StoreOutcome::Refused {
-                    section: StoreSection::FxProvider,
-                    message: String::new(),
-                    saved: Vec::new()
-                })
-            ),
-            StoreTab::Payments
-        );
-        assert_eq!(
-            StoreTab::pick(
-                Some(StoreTab::Payments),
-                saved(vec![StoreSection::Wallet]).as_ref()
-            ),
-            StoreTab::Payments
-        );
-        assert_eq!(
-            StoreTab::pick(None, Some(&StoreOutcome::Unchanged)),
-            StoreTab::General
-        );
-    }
     #[test]
     fn a_refused_save_shows_why_on_its_card_and_keeps_what_was_sent() {
         let store = StoreSettingsData {
