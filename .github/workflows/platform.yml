@@ -144,9 +144,9 @@ jobs:
       - name: Run the doctests
         id: doctests
         continue-on-error: true
-        # nextest does not run doctests. The packages the Build step named
-        # (xtask has none), so this step only runs them.
-        run: cargo test --workspace --locked --doc --features monokulo/snp ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+        # nextest does not run doctests. xtask has none; naming it made the
+        # step build it again (171 s against 110 on Linux, 721 in coverage).
+        run: cargo test --workspace --locked --exclude xtask --doc --features monokulo/snp
       # On a pull request, a test over its time limit that xtask/src/slow.rs
       # doesn't list fails here (--fail-slow), after the summary says which.
       - name: Summarize
