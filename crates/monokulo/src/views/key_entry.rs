@@ -269,25 +269,26 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("not signed by the official"), "{html}");
-    }
 
-    #[test]
-    fn a_build_that_is_not_a_release_points_at_the_source_and_a_custom_key_is_named() {
-        let html = snp_section(
-            &SnpKeyEntry::Ready(Box::new(ready(Some("cdcd"), vec![]))),
-            None,
-        )
-        .into_string();
-        assert!(html.contains("isn't a release build"), "{html}");
-        assert!(
-            html.contains("tree/v1.2.3/crates/key-custody-cli"),
-            "{html}"
-        );
-        assert!(
-            html.contains("not signed by the official monokulo key"),
-            "{html}"
-        );
-        assert!(html.contains("cdcd"), "{html}");
+        // A build that is not a release points at the source and a custom key
+        // is named.
+        {
+            let html = snp_section(
+                &SnpKeyEntry::Ready(Box::new(ready(Some("cdcd"), vec![]))),
+                None,
+            )
+            .into_string();
+            assert!(html.contains("isn't a release build"), "{html}");
+            assert!(
+                html.contains("tree/v1.2.3/crates/key-custody-cli"),
+                "{html}"
+            );
+            assert!(
+                html.contains("not signed by the official monokulo key"),
+                "{html}"
+            );
+            assert!(html.contains("cdcd"), "{html}");
+        }
     }
 
     #[test]

@@ -1409,87 +1409,6 @@ mod tests {
     }
 
     #[test]
-    fn mainnet_wallets_are_the_list_with_no_fold() {
-        let html = list_section(
-            &[
-                wallet("Cake", "mainnet", 2),
-                wallet("Savings", "mainnet", 1),
-            ],
-            &[],
-        )
-        .into_string();
-        let head = between(&html, r#"<div class="net-section-head">"#, "</div>");
-        assert!(
-            head.contains(r#"<h2><span class="tag-network is-main">"#),
-            "{head}"
-        );
-        assert!(head.contains("Real money · 2 wallets"), "{head}");
-        assert!(
-            html.contains(
-                "<thead><tr><th>Name</th><th>Kind</th><th>Address</th><th>Stores</th></tr></thead>"
-            ),
-            "{html}"
-        );
-        assert!(!html.contains("test-wallets"), "{html}");
-        assert!(!html.contains("No mainnet wallets yet"), "{html}");
-        // The address shortened by `views::short_address`, all of it in reach.
-        assert!(html.contains(r#"<code><span class="short-value" title="Cake-address-0123456789abcdef"><span class="short-value-text" aria-hidden="true">Cake-a…s-0123…abcdef</span><span class="short-value-full">Cake-address-0123456789abcdef</span></span></code>"#), "{html}");
-        assert!(!html.contains("..."), "{html}");
-        // On a phone, "2 stores" and "1 store".
-        assert!(
-            html.contains(r#"2<span class="card-unit"> stores</span>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"1<span class="card-unit"> store</span>"#),
-            "{html}"
-        );
-        // The one orange button.
-        assert_eq!(
-            html.matches(r#"data-variant="primary""#).count(),
-            1,
-            "{html}"
-        );
-    }
-
-    #[test]
-    fn with_only_test_wallets_the_fold_starts_open_and_says_why() {
-        let html = list_section(
-            &[
-                wallet("Feather test", "stagenet", 1),
-                wallet("Lab", "testnet", 0),
-            ],
-            &[],
-        )
-        .into_string();
-        assert!(html.contains(r#"<p class="hint">No mainnet wallets yet. Add one when you're ready to take real payments.</p>"#), "{html}");
-        assert!(!html.contains("net-section-head"), "{html}");
-        let fold = between(&html, r#"<details class="test-wallets""#, "</details>");
-        assert!(
-            fold.starts_with(
-                r#"<details class="test-wallets" open><summary><span class="tag-network is-test">"#
-            ),
-            "{fold}"
-        );
-        assert!(fold.contains("Test networks</span></span><strong>2 wallets</strong><span class=\"hint\">no real value</span></summary>"), "{fold}");
-        assert!(fold.contains("<th>Network</th><th>Name</th>"), "{fold}");
-        // Each row carries its own network's badge.
-        assert!(
-            fold.contains(r#"<td class="card-meta"><span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
-            "{fold}"
-        );
-        assert!(
-            fold.contains(r#"<span class="tag-network-name">Stagenet</span>"#),
-            "{fold}"
-        );
-        assert!(
-            fold.contains(r#"<span class="tag-network-name">Testnet</span>"#),
-            "{fold}"
-        );
-        assert!(!html.contains("tag-slow"), "{html}");
-    }
-
-    #[test]
     fn mixed_wallets_put_mainnet_first_and_fold_the_test_ones_shut() {
         let html = list_section(
             &[
@@ -1517,6 +1436,87 @@ mod tests {
             "{main}"
         );
         assert!(html[fold_at..retired_at].contains("Feather test"), "{html}");
+
+        // Mainnet wallets are the list with no fold.
+        {
+            let html = list_section(
+                &[
+                    wallet("Cake", "mainnet", 2),
+                    wallet("Savings", "mainnet", 1),
+                ],
+                &[],
+            )
+            .into_string();
+            let head = between(&html, r#"<div class="net-section-head">"#, "</div>");
+            assert!(
+                head.contains(r#"<h2><span class="tag-network is-main">"#),
+                "{head}"
+            );
+            assert!(head.contains("Real money · 2 wallets"), "{head}");
+            assert!(
+                html.contains(
+                    "<thead><tr><th>Name</th><th>Kind</th><th>Address</th><th>Stores</th></tr></thead>"
+                ),
+                "{html}"
+            );
+            assert!(!html.contains("test-wallets"), "{html}");
+            assert!(!html.contains("No mainnet wallets yet"), "{html}");
+            // The address shortened by `views::short_address`, all of it in reach.
+            assert!(html.contains(r#"<code><span class="short-value" title="Cake-address-0123456789abcdef"><span class="short-value-text" aria-hidden="true">Cake-a…s-0123…abcdef</span><span class="short-value-full">Cake-address-0123456789abcdef</span></span></code>"#), "{html}");
+            assert!(!html.contains("..."), "{html}");
+            // On a phone, "2 stores" and "1 store".
+            assert!(
+                html.contains(r#"2<span class="card-unit"> stores</span>"#),
+                "{html}"
+            );
+            assert!(
+                html.contains(r#"1<span class="card-unit"> store</span>"#),
+                "{html}"
+            );
+            // The one orange button.
+            assert_eq!(
+                html.matches(r#"data-variant="primary""#).count(),
+                1,
+                "{html}"
+            );
+        }
+
+        // With only test wallets the fold starts open and says why.
+        {
+            let html = list_section(
+                &[
+                    wallet("Feather test", "stagenet", 1),
+                    wallet("Lab", "testnet", 0),
+                ],
+                &[],
+            )
+            .into_string();
+            assert!(html.contains(r#"<p class="hint">No mainnet wallets yet. Add one when you're ready to take real payments.</p>"#), "{html}");
+            assert!(!html.contains("net-section-head"), "{html}");
+            let fold = between(&html, r#"<details class="test-wallets""#, "</details>");
+            assert!(
+                fold.starts_with(
+                    r#"<details class="test-wallets" open><summary><span class="tag-network is-test">"#
+                ),
+                "{fold}"
+            );
+            assert!(fold.contains("Test networks</span></span><strong>2 wallets</strong><span class=\"hint\">no real value</span></summary>"), "{fold}");
+            assert!(fold.contains("<th>Network</th><th>Name</th>"), "{fold}");
+            // Each row carries its own network's badge.
+            assert!(
+                fold.contains(r#"<td class="card-meta"><span class="tag-network is-test" data-size="icon" title="Stagenet">"#),
+                "{fold}"
+            );
+            assert!(
+                fold.contains(r#"<span class="tag-network-name">Stagenet</span>"#),
+                "{fold}"
+            );
+            assert!(
+                fold.contains(r#"<span class="tag-network-name">Testnet</span>"#),
+                "{fold}"
+            );
+            assert!(!html.contains("tag-slow"), "{html}");
+        }
     }
 
     fn summary(name: &str, network: &str, stores: u64) -> crate::db::WalletSummary {
@@ -1561,45 +1561,7 @@ mod tests {
     const DISABLED: &str = r#"<button class="mk-btn" type="button" data-variant="danger" disabled aria-describedby="retire-why">Retire wallet</button>"#;
 
     #[test]
-    fn retire_is_blocked_by_a_store_with_its_fix_beside_it() {
-        let html = retire(
-            RetireState::Checked {
-                stores: 1,
-                orders: 0,
-                until: None,
-            },
-            &[store("s1", "Bakery", None, None)],
-        );
-        assert!(html.starts_with("<h2 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>"), "{html}");
-        assert!(html.contains("<p>Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app.</p>"), "{html}");
-        assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix"><span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
-        assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No order on it can still be paid</span></li>"#), "{html}");
-        assert!(
-            html.contains("Retire becomes available when both are ticked."),
-            "{html}"
-        );
-        assert!(html.contains(DISABLED), "{html}");
-        assert!(
-            html.contains(">Close</a>") && !html.contains("<form"),
-            "{html}"
-        );
-        // A store of another account: counted, not named.
-        let html = retire(
-            RetireState::Checked {
-                stores: 2,
-                orders: 0,
-                until: None,
-            },
-            &[],
-        );
-        assert!(
-            html.contains(r#"<span class="fix">2 stores do</span>"#),
-            "{html}"
-        );
-    }
-
-    #[test]
-    fn retire_is_blocked_by_orders_until_about_when() {
+    fn retire_waits_for_orders_stores_and_the_check_then_asks_for_the_name() {
         let html = retire(
             RetireState::Checked {
                 stores: 0,
@@ -1623,37 +1585,75 @@ mod tests {
             html.contains(r#"<span class="fix">1 order can</span>"#),
             "{html}"
         );
-    }
 
-    #[test]
-    fn retire_waits_when_monokulo_cant_check() {
-        let html = retire(RetireState::Unknown, &[]);
-        assert!(html.contains(r#"Monokulo can't check right now<span class="fix"><a href="/account/wallets/w_Shop takings/retire">try again</a></span>"#), "{html}");
-        assert!(
-            html.contains("Retire becomes available once Monokulo can check."),
-            "{html}"
-        );
-        assert!(html.contains(DISABLED), "{html}");
-    }
+        // Retire is blocked by a store with its fix beside it.
+        {
+            let html = retire(
+                RetireState::Checked {
+                    stores: 1,
+                    orders: 0,
+                    until: None,
+                },
+                &[store("s1", "Bakery", None, None)],
+            );
+            assert!(html.starts_with("<h2 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>"), "{html}");
+            assert!(html.contains("<p>Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app.</p>"), "{html}");
+            assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix"><span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
+            assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No order on it can still be paid</span></li>"#), "{html}");
+            assert!(
+                html.contains("Retire becomes available when both are ticked."),
+                "{html}"
+            );
+            assert!(html.contains(DISABLED), "{html}");
+            assert!(
+                html.contains(">Close</a>") && !html.contains("<form"),
+                "{html}"
+            );
+            // A store of another account: counted, not named.
+            let html = retire(
+                RetireState::Checked {
+                    stores: 2,
+                    orders: 0,
+                    until: None,
+                },
+                &[],
+            );
+            assert!(
+                html.contains(r#"<span class="fix">2 stores do</span>"#),
+                "{html}"
+            );
+        }
 
-    #[test]
-    fn retire_is_ready_once_both_are_ticked_and_asks_for_the_name() {
-        let html = retire(
-            RetireState::Checked {
-                stores: 0,
-                orders: 0,
-                until: None,
-            },
-            &[],
-        );
-        assert_eq!(html.matches(r#"<li class="ok">"#).count(), 2, "{html}");
-        assert!(!html.contains(r#"class="no""#), "{html}");
-        assert!(html.contains(r#"<form method="post" action="/account/wallets/w_Shop takings/retire"><div class="setting-field"><div class="setting-label-row"><label class="setting-label" for="retire-confirm">Type <strong>“Shop takings”</strong> to confirm</label></div><input class="mk-input" type="text" name="confirm" id="retire-confirm" autocomplete="off" required spellcheck="false"></div>"#), "{html}");
-        assert!(html.contains(r#"<div class="dialog-actions"><a class="mk-btn" href="/account/wallets/w_Shop takings" data-closes-dialog="">Cancel</a><button class="mk-btn" type="submit" data-variant="danger">Retire wallet</button></div>"#), "{html}");
-        assert!(
-            !html.contains("disabled") && !html.contains("retire-why"),
-            "{html}"
-        );
+        // Retire is ready once both are ticked and asks for the name.
+        {
+            let html = retire(
+                RetireState::Checked {
+                    stores: 0,
+                    orders: 0,
+                    until: None,
+                },
+                &[],
+            );
+            assert_eq!(html.matches(r#"<li class="ok">"#).count(), 2, "{html}");
+            assert!(!html.contains(r#"class="no""#), "{html}");
+            assert!(html.contains(r#"<form method="post" action="/account/wallets/w_Shop takings/retire"><div class="setting-field"><div class="setting-label-row"><label class="setting-label" for="retire-confirm">Type <strong>“Shop takings”</strong> to confirm</label></div><input class="mk-input" type="text" name="confirm" id="retire-confirm" autocomplete="off" required spellcheck="false"></div>"#), "{html}");
+            assert!(html.contains(r#"<div class="dialog-actions"><a class="mk-btn" href="/account/wallets/w_Shop takings" data-closes-dialog="">Cancel</a><button class="mk-btn" type="submit" data-variant="danger">Retire wallet</button></div>"#), "{html}");
+            assert!(
+                !html.contains("disabled") && !html.contains("retire-why"),
+                "{html}"
+            );
+        }
+
+        // Retire waits when monokulo cant check.
+        {
+            let html = retire(RetireState::Unknown, &[]);
+            assert!(html.contains(r#"Monokulo can't check right now<span class="fix"><a href="/account/wallets/w_Shop takings/retire">try again</a></span>"#), "{html}");
+            assert!(
+                html.contains("Retire becomes available once Monokulo can check."),
+                "{html}"
+            );
+            assert!(html.contains(DISABLED), "{html}");
+        }
     }
 
     /// The pages holding the dialogs' content, for a browser without

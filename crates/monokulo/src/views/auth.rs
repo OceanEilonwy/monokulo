@@ -142,32 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn login_page_includes_a_hidden_next_field_when_present() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: None,
-                error: None,
-                next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
-            },
-        )
-        .into_string();
-        assert!(
-            html.contains(r#"type="hidden" name="next""#),
-            "expected a hidden next field, got: {html}"
-        );
-        assert!(
-            html.contains("/plugins/connect/acme-cart?nonce"),
-            "expected the next value's content present, got: {html}"
-        );
-        assert!(
-            html.contains("abc"),
-            "expected the next value's content present, got: {html}"
-        );
-    }
-
-    #[test]
-    fn login_page_escapes_special_characters_in_next_rather_than_injecting_them_raw() {
+    fn the_login_page_carries_next_only_when_given_and_escaped() {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
@@ -185,22 +160,47 @@ mod tests {
             !html.contains("a=1&b=2"),
             "a raw, unescaped & would be a template-injection smell, got: {html}"
         );
-    }
 
-    #[test]
-    fn login_page_has_no_hidden_next_field_when_absent() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: None,
-                error: None,
-                next: None,
-            },
-        )
-        .into_string();
-        assert!(
-            !html.contains(r#"name="next""#),
-            "expected no hidden next field, got: {html}"
-        );
+        // Login page has no hidden next field when absent.
+        {
+            let html = login_page(
+                &chrome(),
+                &LoginViewModel {
+                    connecting_site: None,
+                    error: None,
+                    next: None,
+                },
+            )
+            .into_string();
+            assert!(
+                !html.contains(r#"name="next""#),
+                "expected no hidden next field, got: {html}"
+            );
+        }
+
+        // Login page includes a hidden next field when present.
+        {
+            let html = login_page(
+                &chrome(),
+                &LoginViewModel {
+                    connecting_site: None,
+                    error: None,
+                    next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
+                },
+            )
+            .into_string();
+            assert!(
+                html.contains(r#"type="hidden" name="next""#),
+                "expected a hidden next field, got: {html}"
+            );
+            assert!(
+                html.contains("/plugins/connect/acme-cart?nonce"),
+                "expected the next value's content present, got: {html}"
+            );
+            assert!(
+                html.contains("abc"),
+                "expected the next value's content present, got: {html}"
+            );
+        }
     }
 }
