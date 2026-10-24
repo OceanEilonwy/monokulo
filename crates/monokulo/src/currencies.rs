@@ -208,95 +208,37 @@ mod tests {
         }
     }
 
+    /// An input names a currency by its code (any case) or one of its
+    /// tickers; anything else names none. `is_known_currency` says the same.
     #[test]
-    fn the_canonical_code_itself_resolves_case_insensitively() {
+    fn a_code_or_ticker_resolves_to_its_canonical_code_and_anything_else_to_none() {
         let db = Db::open_in_memory().unwrap();
-        assert_eq!(
-            resolve_currency(&db, "USD").unwrap(),
-            Some("USD".to_string())
-        );
-        assert_eq!(
-            resolve_currency(&db, "usd").unwrap(),
-            Some("USD".to_string())
-        );
-        assert_eq!(
-            resolve_currency(&db, "UsD").unwrap(),
-            Some("USD".to_string())
-        );
-    }
-
-    #[test]
-    fn a_known_ticker_alias_resolves_to_its_canonical_code() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(
-            resolve_currency(&db, "US$").unwrap(),
-            Some("USD".to_string())
-        );
-        assert_eq!(resolve_currency(&db, "$").unwrap(), Some("USD".to_string()));
-        assert_eq!(resolve_currency(&db, "£").unwrap(), Some("GBP".to_string()));
-    }
-
-    #[test]
-    fn xmr_is_itself_a_selectable_currency() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(
-            resolve_currency(&db, "XMR").unwrap(),
-            Some("XMR".to_string())
-        );
-    }
-
-    #[test]
-    fn an_unknown_input_resolves_to_none() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(resolve_currency(&db, "NOTREAL").unwrap(), None);
-        assert_eq!(resolve_currency(&db, "").unwrap(), None);
-        assert_eq!(resolve_currency(&db, "   ").unwrap(), None);
-    }
-
-    #[test]
-    fn is_known_currency_mirrors_resolve_currencys_own_answer() {
-        let db = Db::open_in_memory().unwrap();
-        assert!(is_known_currency(&db, "EUR").unwrap());
-        assert!(!is_known_currency(&db, "NOTREAL").unwrap());
-    }
-
-    #[test]
-    fn currency_options_marks_exactly_one_option_selected_by_canonical_code() {
-        let db = Db::open_in_memory().unwrap();
-        let options = currency_options(&db, "EUR").unwrap();
-        let selected: Vec<&str> = options
-            .iter()
-            .filter(|o| o.selected)
-            .map(|o| o.code.as_str())
-            .collect();
-        assert_eq!(selected, vec!["EUR"]);
-    }
-
-    #[test]
-    fn currency_options_marks_the_matching_option_selected_from_a_ticker_alias() {
-        let db = Db::open_in_memory().unwrap();
-        let options = currency_options(&db, "£").unwrap();
-        let selected: Vec<&str> = options
-            .iter()
-            .filter(|o| o.selected)
-            .map(|o| o.code.as_str())
-            .collect();
-        assert_eq!(selected, vec!["GBP"]);
-    }
-
-    #[test]
-    fn currency_options_selects_nothing_for_an_unknown_input() {
-        let db = Db::open_in_memory().unwrap();
-        let options = currency_options(&db, "NOTREAL").unwrap();
-        assert!(options.iter().all(|o| !o.selected));
-    }
-
-    #[test]
-    fn every_seeded_currency_is_individually_resolvable_by_its_own_canonical_code() {
-        // A real, whole-table sanity check - proves the seed data itself
-        // (migration 0013) is well-formed JSON for every row, not just the
-        // handful of currencies the tests above happen to touch.
-        let db = Db::open_in_memory().unwrap();
+        for (input, code) in [
+            ("US$", Some("USD")),
+            ("$", Some("USD")),
+            ("£", Some("GBP")),
+            ("USD", Some("USD")),
+            ("usd", Some("USD")),
+            ("UsD", Some("USD")),
+            ("XMR", Some("XMR")),
+            ("EUR", Some("EUR")),
+            ("NOTREAL", None),
+            ("", None),
+            ("   ", None),
+        ] {
+            assert_eq!(
+                resolve_currency(&db, input).unwrap().as_deref(),
+                code,
+                "{input:?}"
+            );
+            assert_eq!(
+                is_known_currency(&db, input).unwrap(),
+                code.is_some(),
+                "{input:?}"
+            );
+        }
+        // Every seeded row (migration 0013) resolves by its own code and
+        // has tickers that are valid JSON.
         let all = db.list_currencies().unwrap();
         assert!(
             all.len() >= 15,
@@ -317,6 +259,26 @@ mod tests {
                 "{} has no tickers at all",
                 row.canonical_code
             );
+        }
+    }
+
+    /// The option the input names, by code or ticker, is the one selected;
+    /// an unknown input selects none.
+    #[test]
+    fn currency_options_selects_the_one_option_the_input_names() {
+        let db = Db::open_in_memory().unwrap();
+        for (input, selected) in [
+            ("EUR", vec!["EUR"]),
+            ("£", vec!["GBP"]),
+            ("NOTREAL", vec![]),
+        ] {
+            let options = currency_options(&db, input).unwrap();
+            let chosen: Vec<&str> = options
+                .iter()
+                .filter(|o| o.selected)
+                .map(|o| o.code.as_str())
+                .collect();
+            assert_eq!(chosen, selected, "{input:?}");
         }
     }
 }
