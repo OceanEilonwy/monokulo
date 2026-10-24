@@ -90,8 +90,8 @@ pub(crate) enum TestStatus {
 }
 
 /// Which browser project a test ran in: against the fixture server or the
-/// real binaries, in whichever browser (`real-binaries-webkit`).
-/// Playwright's `JUnit` report names it as each testsuite's `hostname`.
+/// real binaries. Playwright's `JUnit` report names it as each testsuite's
+/// `hostname`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum BrowserKind {
     Fixture,
