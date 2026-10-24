@@ -124,6 +124,11 @@ jobs:
           compression-level: 0
           retention-days: 1
           overwrite: true
+      # A coverage run's instrumented tests, built as the next step runs
+      # them, so it times only the tests (it took 695 s with the build).
+      - name: Build the instrumented tests
+        if: ${{ inputs.coverage }}
+        run: cargo xtask coverage build-rust
       - name: Run the tests
         id: tests
         # Windows runs them in the rust tests partition jobs.
@@ -132,6 +137,7 @@ jobs:
         shell: bash
         env:
           COVERAGE_TOOLS_PREINSTALLED: '1'
+          COVERAGE_RUST_PREBUILT: '1'
         run: |
           if ${{ inputs.coverage }}; then
             cargo xtask coverage rust
@@ -141,11 +147,14 @@ jobs:
             cargo nextest run --workspace --locked --profile ci --features monokulo/snp \
               ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
           fi
+      # A coverage run leaves them to the plain Linux job beside it: it has
+      # no plain build for them, and building one took 450 to 721 s.
       - name: Run the doctests
         id: doctests
+        if: ${{ !inputs.coverage }}
         continue-on-error: true
         # nextest does not run doctests. xtask has none; naming it made the
-        # step build it again (171 s against 110 on Linux, 721 in coverage).
+        # step build it again (171 s against 110 on Linux).
         run: cargo test --workspace --locked --exclude xtask --doc --features monokulo/snp
       # On a pull request, a test over its time limit that xtask/src/slow.rs
       # doesn't list fails here (--fail-slow), after the summary says which.
@@ -175,7 +184,7 @@ jobs:
         shell: bash
         run: |
           test '${{ steps.tests.outcome }}' = success || test '${{ runner.os }}' = Windows
-          test '${{ steps.doctests.outcome }}' = success
+          test '${{ steps.doctests.outcome }}' != failure
       - name: Preserve property test regressions
         if: failure()
         uses: actions/upload-artifact@v7

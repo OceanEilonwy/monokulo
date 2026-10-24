@@ -20,6 +20,8 @@ use std::{
 
 pub(crate) const HELP: &str = "\
         coverage rust Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
+        coverage build-rust\n\
+                      Build the instrumented tests `coverage rust` runs, and run none (CI's build step)\n\
         coverage browser\n\
                       Run deterministic Playwright tests and collect authored browser source coverage\n\
         coverage stagenet\n\
@@ -244,6 +246,43 @@ fn nonempty(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.len() > 0)
 }
 
+/// What the instrumented Rust tests are built from, for both `coverage
+/// rust` and `coverage build-rust`: the same arguments build the same
+/// binaries, so the run after a build compiles nothing.
+const RUST_BUILD: [&str; 7] = [
+    "--workspace",
+    "--locked",
+    "--branch",
+    "--exclude",
+    "xtask",
+    // Every feature a build can ship, as every test build has:
+    // monokulo/snp is the snp key custody backend and its tests (zmq
+    // is on by default).
+    "--features",
+    "monokulo/snp",
+];
+
+/// The workspace's crates unoptimised, so lines map to source (CI
+/// optimises them otherwise); dependencies stay optimised.
+fn rust_build_env() -> [(&'static str, String); 1] {
+    [("CARGO_PROFILE_DEV_OPT_LEVEL", "0".to_string())]
+}
+
+/// `coverage build-rust`: the instrumented tests built and none run, so
+/// CI's build and its test run have times of their own. The run then sets
+/// `COVERAGE_RUST_PREBUILT=1`.
+fn build_rust() -> io::Result<Exit> {
+    let mut args = vec!["+nightly", "llvm-cov", "nextest", "--no-report"];
+    args.extend(RUST_BUILD);
+    args.extend(["-E", "none()", "--no-tests=pass"]);
+    let status = Command::new("cargo")
+        .args(&args)
+        .current_dir(root())
+        .envs(rust_build_env())
+        .status()?;
+    Ok(Exit::of(status))
+}
+
 /// Rust: workspace tests under cargo-llvm-cov and nextest, with branch
 /// coverage; the `JUnit` report is kept for the job summary either way.
 fn collect_rust(log: &Log) -> io::Result<Exit> {
@@ -294,33 +333,15 @@ fn collect_rust(log: &Log) -> io::Result<Exit> {
     // Both reports use the same profile data; the report never reruns tests.
     // nextest (.config/nextest.toml's ci profile) runs the test binaries side
     // by side and leaves the JUnit report.
-    let tests = log.run(
-        "cargo",
-        &[
-            "+nightly",
-            "llvm-cov",
-            "nextest",
-            "--workspace",
-            "--locked",
-            "--branch",
-            "--html",
-            "--output-dir",
-            &output,
-            "--exclude",
-            "xtask",
-            "--profile",
-            "ci",
-            // Every feature a build can ship, as every test build has:
-            // monokulo/snp is the snp key custody backend and its tests (zmq
-            // is on by default).
-            "--features",
-            "monokulo/snp",
-        ],
-        None,
-        // The workspace's crates unoptimised, so lines map to source (CI
-        // optimises them otherwise); dependencies stay optimised.
-        &[("CARGO_PROFILE_DEV_OPT_LEVEL", "0".to_string())],
-    )?;
+    let mut args = vec!["+nightly", "llvm-cov", "nextest"];
+    args.extend(RUST_BUILD);
+    args.extend(["--html", "--output-dir", &output, "--profile", "ci"]);
+    // After `coverage build-rust` (CI's build step) the instrumented tests
+    // are built; cargo-llvm-cov would otherwise clean and build them again.
+    if env::var("COVERAGE_RUST_PREBUILT").as_deref() == Ok("1") {
+        args.push("--no-clean");
+    }
+    let tests = log.run("cargo", &args, None, &rust_build_env())?;
     if junit.is_file() {
         fs::copy(&junit, log.output.join("junit.xml"))?;
     }
@@ -1024,6 +1045,7 @@ pub(crate) fn coverage(command: &str) -> io::Result<Exit> {
             return Ok(Exit::SUCCESS);
         }
         "validate" => return Ok(validate()),
+        "build-rust" => return build_rust(),
         _ => {
             let Some(component) = Component::parse(command) else {
                 crate::help();
