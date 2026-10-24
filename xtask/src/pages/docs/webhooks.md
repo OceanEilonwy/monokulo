@@ -65,7 +65,7 @@ plus the headers you added. The body:
 | --- | --- |
 | `api_version` | `2`. |
 | `event_id` | The event's id. The same on every retry of it: dedupe on this. |
-| `event` | `order.<status>` when the order's status changes (`order.unconfirmed`, `order.confirming`, `order.paid`, `order.partial`, `order.overpaid`, `order.expired`, `order.cancelled`); `order.double_spend_detected` when a payment to it was double-spent; `order.double_spend_reversed` when that turned out to be wrong. |
+| `event` | `order.<status>` when the order's status changes (`order.unconfirmed`, `order.confirming`, `order.paid`, `order.partial`, `order.overpaid`, `order.expired`, `order.cancelled`); `order.double_spend_detected` when a payment to it was double-spent; `order.double_spend_reversed` when that turned out to be wrong. (`webhook.test` is a [test](#test-it), with a body of its own.) |
 | `created_at` | When the event happened, in Unix seconds. |
 | `order_id` | Monokulo's id for the order: `createOrder` gave it to your page as `orderId`. |
 | `status` | The order's new status. On `order.<status>` events only. |
@@ -114,6 +114,49 @@ Then Monokulo gives up on it.
 Each order's events are sent one at a time, oldest first: the next waits
 until the one before is delivered or given up on.
 
+## Test it
+
+*Send a test webhook*, on each webhook in the store's settings, sends it
+a `webhook.test` delivery now and shows what your server answered: in
+place, or back on the settings page without JavaScript. A shop plugin
+sends one with the API's `send-test-webhook` form (see
+[Shop plugins](../plugins/#6-test-the-connection-optional)), which answers
+the same. Up to 6 a minute for a store.
+
+It's a delivery like any other: the same headers, signed the same way,
+listed among the webhook's deliveries (marked *test*) and tried again on
+the same schedule if your server doesn't answer `2xx`. Only its body is
+different. It names the store and the webhook, and has no order:
+
+```json
+{
+  "api_version": 2,
+  "event_id": "evt_9c41d2b7e05a3f18",
+  "event": "webhook.test",
+  "created_at": 1760020392,
+  "store": { "id": "917701c2-15c7-4bcb-bbc8-72d9ab28e785", "name": "Bakery" },
+  "webhook": { "id": "wh_3f0c2a9e5b7d41c6a8e2f1d0b9c7a6e5" },
+  "_links": {
+    "curies": [{ "name": "mk", "href": "https://docs.monokulo.com/rels/{rel}", "templated": true }],
+    "mk:store": { "href": "https://www.monokulo.com/api/v1/store", "title": "The store the key belongs to, and where its payments go." }
+  }
+}
+```
+
+| Field | What it is |
+| --- | --- |
+| `api_version`, `event_id`, `created_at`, `store` | As on every event. |
+| `event` | `webhook.test`. |
+| `webhook` | The webhook it was sent to: `{ "id" }`. |
+| `_links` | [`mk:store`](../rels/store/): the store in the API, on Monokulo's web address. |
+
+Check it as you check any delivery (signature, age, `event_id`), then
+answer `2xx` and change nothing: there's no `order_id`, no `status`,
+nothing to act on. A receiver that does nothing with events it doesn't
+know already handles it, as long as it still answers `2xx`; one that
+answers `4xx` to an unknown event shows as a failed test, and the test is
+tried again like any failed delivery.
+
 ## See how it's doing
 
 The store's settings, *Webhooks*, show each webhook with one line on how
@@ -132,6 +175,7 @@ one that gave up after 90 (`webhooks.keep_delivered_days`,
   the start of your server's last answer.
 - *Send again* (the circular arrow) on a delivery that gave up sends it again now; *Retry failed*
   does it for all of a webhook's.
+- *Send a test webhook* sends it a `webhook.test` now ([Test it](#test-it)).
 - *Delete* removes the webhook and its deliveries, once you confirm.
 
 ## Settings

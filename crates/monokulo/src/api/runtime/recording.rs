@@ -36,6 +36,9 @@ use crate::http::{build_router, AppState};
 /// and [`stable`] puts every `*_at` field there.
 pub const RECORDED_AT: i64 = 1_767_225_600;
 
+/// How long every recorded duration (`*_ms`) took, as [`stable`] writes it.
+const DURATION_MS: u64 = 12;
+
 /// The address the recorded instance has.
 pub const PUBLIC_URI: &str = "https://www.monokulo.com";
 
@@ -185,18 +188,44 @@ impl Recorder {
 
 /// The options file of a recorded instance: its web address (`None` for
 /// one with none yet) and, with `onion`, an onion address served by an
-/// external tor.
+/// external tor. Webhooks may go to private addresses: the store's go to
+/// a receiver on this machine ([`receiver`]).
 fn options(public_uri: Option<&str>, onion: bool) -> String {
     let public = public_uri
         .map(|uri| format!("public_uri = \"{uri}\"\n"))
         .unwrap_or_default();
+    let webhooks = "\n[webhooks]\nallow_private_urls = true\n";
     if onion {
         format!(
-            "{public}onion_uri = \"{ONION_URI}\"\n\n[tor]\nmode = \"external\"\n\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
+            "{public}onion_uri = \"{ONION_URI}\"\n\n[tor]\nmode = \"external\"\n\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n{webhooks}"
         )
     } else {
-        public
+        format!("{public}{webhooks}")
     }
+}
+
+/// A webhook receiver on this machine that takes every delivery: its URL.
+/// It answers the same each time, so the examples of a test delivery
+/// (`send-test-webhook`) are the same each time too.
+async fn receiver() -> String {
+    let app = axum::Router::new().fallback(|| async { "ok" });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/monokulo/webhook")
+}
+
+/// Points every webhook of `state`'s stores at `url`: the plugin's,
+/// registered at `bakery.example`, at the fixture's [`receiver`].
+fn webhooks_to(state: &AppState, url: &str) {
+    state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute("UPDATE webhooks SET url = ?1", [url])
+        .unwrap();
 }
 
 /// A state like a real instance's, on `engine`, with [`options`].
@@ -318,6 +347,9 @@ pub struct Fixture {
     pub ak: String,
     /// What the app's handshake answered.
     pub connected: Value,
+    /// Where the store's webhook goes: a receiver on this machine that
+    /// takes every delivery ([`receiver`]).
+    pub receiver: String,
 }
 
 /// A [`Fixture`] on `engine` (a test engine's router) at `public_uri`,
@@ -342,7 +374,20 @@ pub async fn fixture_on(
     let store = store_with_keys(&router, &state, &session, "bakery.example", "XMR").await;
     let cookie = format!("session={session}");
     let connected = connect_app(&router, &store.id, &cookie).await;
+    // A webhook, as the store's server registers one, so a test delivery
+    // (`send-test-webhook`) has somewhere to go.
+    let receiver = receiver().await;
+    crate::webhooks::create(
+        &state.db,
+        &state.encryption_key,
+        &crate::db::ConnectionId::new(store.id.clone()),
+        &receiver,
+        &std::collections::BTreeMap::new(),
+    )
+    .await
+    .unwrap();
     Fixture {
+        receiver,
         ak: connected["app_key"].as_str().unwrap().to_owned(),
         state,
         router,
@@ -525,15 +570,50 @@ fn path_of(template: &str, order_id: &str) -> String {
 }
 
 /// What a client sends `handler`: `order` to make an order, a log report
-/// to the logs, nothing elsewhere.
+/// to the logs, an empty object to test the store's webhook (the plugin's,
+/// as a plugin's "Test connection" sends it), nothing elsewhere.
 fn body_for(handler: &catalog::HandlerInfo, order: &Value) -> Option<Value> {
     match (handler.method, handler.template) {
         ("POST", t) if t == super::super::v1::orders::Path::TEMPLATE => Some(order.clone()),
         ("POST", t) if t == super::super::v1::logs::Path::TEMPLATE => Some(
             json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]}),
         ),
+        ("POST", t) if t == super::super::v1::webhook_tests::Path::TEMPLATE => Some(json!({})),
         _ => None,
     }
+}
+
+/// The `send-test-webhook` form's answers: a test delivered to the
+/// plugin's webhook, one to a webhook the store doesn't have, then the
+/// store past its test limit (`rate-limited`; the limit's clock is the
+/// abuse protection's, stopped, so its wait is the same every time).
+async fn record_test_webhooks(router: &axum::Router, sk: &str) {
+    let uri = super::super::v1::webhook_tests::Path::TEMPLATE;
+    let sent = call_api(router, "POST", uri, Some(sk), Some(json!({}))).await;
+    assert_eq!(sent.status(), StatusCode::OK);
+    assert_eq!(body_json(sent).await["delivered"], true);
+    let unknown = json!({"webhook_id": "wh_00000000000000000000000000000000"});
+    let answer = call_api(router, "POST", uri, Some(sk), Some(unknown)).await;
+    assert_eq!(answer.status(), StatusCode::NOT_FOUND);
+    let answer = call_api(
+        router,
+        "POST",
+        uri,
+        Some(sk),
+        Some(json!({"webhook_id": 7})),
+    )
+    .await;
+    assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    let mut last = StatusCode::OK;
+    for _ in 0..=crate::webhooks::test_delivery::TESTS_PER_MINUTE {
+        last = call_api(router, "POST", uri, Some(sk), Some(json!({})))
+            .await
+            .status();
+        if last == StatusCode::TOO_MANY_REQUESTS {
+            break;
+        }
+    }
+    assert_eq!(last, StatusCode::TOO_MANY_REQUESTS);
 }
 
 /// The order's changes, followed with `key` (of kind `kind`) on `router`,
@@ -654,8 +734,13 @@ async fn record_route_problems(
     // A body or query a route can't read.
     let orders = super::super::v1::orders::Path::TEMPLATE;
     let logs = super::super::v1::logs::Path::TEMPLATE;
-    for uri in [orders, logs] {
-        call_api(router, "POST", uri, Some(keys.sk), Some(json!({}))).await;
+    let tests = super::super::v1::webhook_tests::Path::TEMPLATE;
+    for uri in [orders, logs, tests] {
+        // An empty object is all a test webhook takes: it would send one
+        // (`record_test_webhooks` does).
+        if uri != tests {
+            call_api(router, "POST", uri, Some(keys.sk), Some(json!({}))).await;
+        }
         let unlabelled = router
             .clone()
             .oneshot(
@@ -818,15 +903,21 @@ async fn record_route_problems(
         if !handler.problems().contains(&Problem::Internal) || handler.method == "DELETE" {
             continue;
         }
-        if handler.template == super::super::v1::store::Path::TEMPLATE {
+        // Their secret key alone, which a wrong encryption key leaves
+        // unknown (`401`): each fails here another way, below.
+        if handler.template == super::super::v1::store::Path::TEMPLATE
+            || handler.template == super::super::v1::webhook_tests::Path::TEMPLATE
+        {
             continue;
         }
         // The public key and the app's are checked without opening the
         // store's secret key.
         let key = if handler.who.admits(Some(super::auth::Key::Pk)) {
             keys.pk
-        } else {
+        } else if handler.who.admits(Some(super::auth::Key::Ak)) {
             keys.ak
+        } else {
+            keys.sk
         };
         let answer = call_api(
             &wrong_key,
@@ -847,6 +938,11 @@ async fn record_route_problems(
     sql(state, "ALTER TABLE wallets RENAME TO wallets_away");
     let answer = call_api(router, "GET", "/api/v1/store", Some(keys.sk), None).await;
     sql(state, "ALTER TABLE wallets_away RENAME TO wallets");
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    sql(state, "ALTER TABLE webhooks RENAME TO webhooks_away");
+    let tests = super::super::v1::webhook_tests::Path::TEMPLATE;
+    let answer = call_api(router, "POST", tests, Some(keys.sk), Some(json!({}))).await;
+    sql(state, "ALTER TABLE webhooks_away RENAME TO webhooks");
     assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
     sql(
         state,
@@ -934,6 +1030,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         pk,
         ak,
         cookie,
+        receiver,
         ..
     } = fixture;
     let (sk, pk) = (sk.as_str(), pk.as_str());
@@ -960,6 +1057,8 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         .unwrap();
     assert_eq!(finished.status(), StatusCode::OK);
     assert_eq!(body_json(finished).await["secret_token"], sk);
+    // The plugin registered its webhook at its shop: point it here.
+    webhooks_to(&state, &receiver);
     for (uri, body) in [
         (finish.clone(), json!({"token": code})),
         (
@@ -1189,6 +1288,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         pk,
         ak: ak.as_str(),
     };
+    webhooks_to(&state, &receiver);
     record_route_problems(&state, &router, &order_id, &keys, &recorder).await;
 
     // The same Monokulo once its admin has given it an onion address: the
@@ -1201,6 +1301,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     let onion = recorder.with_onion();
     let onion_router = onion.around(build_router(onion_state.clone()));
     let finished = finish_plugin(&onion_router, &onion_state, &store_id).await;
+    webhooks_to(&onion_state, &receiver);
     assert_eq!(finished["onion_api"], format!("{ONION_URI}/api/v1"));
     let connected = connect_app(&onion_router, &store_id, &cookie).await;
     assert_eq!(connected["onion_api"], format!("{ONION_URI}/api/v1"));
@@ -1258,6 +1359,8 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         None,
     )
     .await;
+
+    record_test_webhooks(&router, sk).await;
 
     // Last, the app disconnects itself; its key no longer works.
     call(&router, "DELETE", "/api/v1/app".into(), Some(&ak), None).await;
@@ -1402,6 +1505,13 @@ pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
                             };
                             continue;
                         }
+                    }
+                    // How long something took (a test delivery's
+                    // `duration_ms`): a few milliseconds, the same each
+                    // run.
+                    if key.ends_with("_ms") && v.is_u64() {
+                        *v = Value::from(DURATION_MS);
+                        continue;
                     }
                     walk(v, rename);
                 }

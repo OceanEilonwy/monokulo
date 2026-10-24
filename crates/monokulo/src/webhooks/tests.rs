@@ -558,9 +558,16 @@ struct Shop {
     /// The store's secret key, for what its POS does through the engine.
     sk: String,
     store: ConnectionId,
+    /// The merchant's session, for the dashboard.
+    session: String,
 }
 
 async fn shop() -> Shop {
+    shop_with("").await
+}
+
+/// [`shop`], with `options` added to its options file.
+async fn shop_with(options: &str) -> Shop {
     let engine = engine_test_support::TestEngineConfig::new()
         .with_networks(&[monero::Network::Mainnet])
         .spawn()
@@ -574,7 +581,9 @@ async fn shop() -> Shop {
         )),
         ..AppState::for_tests()
     }
-    .with_options("public_uri = \"https://www.monokulo.com\"\n[signup]\nmode = \"public\"\n")
+    .with_options(&format!(
+        "public_uri = \"https://www.monokulo.com\"\n[signup]\nmode = \"public\"\n{options}"
+    ))
     .await;
     let state = AppState {
         exchange_rate: Arc::new(
@@ -599,6 +608,7 @@ async fn shop() -> Shop {
         pk,
         sk,
         store,
+        session,
     }
 }
 
@@ -742,7 +752,7 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
         .recent_deliveries(&webhook.id, 100)
         .unwrap();
     assert_eq!(all_again.len(), 3, "nothing queued twice");
-    assert_eq!(all[2].order_id.as_str(), later);
+    assert_eq!(all[2].order_id.as_ref().unwrap().as_str(), later);
     let seqs: Vec<i64> = all.iter().map(|d| d.event_seq).collect();
     assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
     let engine_events = shop.engine.store().lock().order_events_for_test().unwrap();
@@ -852,6 +862,34 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
     ] {
         assert!(events.contains(event), "{event} delivered: {events:?}");
     }
+
+    // And a test delivery, as the API's `send-test-webhook` form sends one
+    // (sent nowhere: the body is made and listed whatever the receiver
+    // does): the published vector's fields, and none an order event has.
+    let answer = shop
+        .router
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/v1/webhook-tests",
+            Some(&shop.sk),
+            Some(serde_json::json!({})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), StatusCode::OK);
+    let test = &shop.deliveries(&webhook, delivered.len() + 1).await[delivered.len()];
+    assert!(test.is_test());
+    let body: serde_json::Value = serde_json::from_str(&test.body).unwrap();
+    let fields: Vec<String> = body.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(
+        Some(fields),
+        super::vectors::fields_of("webhook.test"),
+        "{body}"
+    );
+    for order_field in ["order_id", "status", "txid", "amount", "xmr_amount"] {
+        assert!(body.get(order_field).is_none(), "{order_field}: {body}");
+    }
 }
 
 /// An event for a store monokulo doesn't have, or one without webhooks,
@@ -907,7 +945,7 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
     let deliveries = shop.deliveries(&webhook, 1).await;
     reading.abort();
     assert_eq!(deliveries.len(), 1);
-    assert_eq!(deliveries[0].order_id.as_str(), new);
+    assert_eq!(deliveries[0].order_id.as_ref().unwrap().as_str(), new);
 }
 
 /// Delivery and the log together: an engine event, read and delivered to
@@ -1007,7 +1045,7 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
         .recent_deliveries(&webhook.id, 100)
         .unwrap()
         .into_iter()
-        .map(|d| d.order_id.to_string())
+        .map(|d| d.order_id.as_ref().unwrap().to_string())
         .collect();
     left.sort();
     assert_eq!(
@@ -1122,3 +1160,5 @@ async fn order_with_key(shop: &Shop, key: &str) -> String {
         .unwrap()
         .to_string()
 }
+
+mod test_deliveries;

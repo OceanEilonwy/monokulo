@@ -24,8 +24,8 @@ mod webhooks;
 pub use apps::{AppConnection, AppOrder, NewApp};
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
-    Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewWebhook,
-    WebhookHealth, WebhookRow, KEPT_ATTEMPTS,
+    Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewTestDelivery,
+    NewWebhook, WebhookHealth, WebhookRow, KEPT_ATTEMPTS,
 };
 
 /// Reads a `store_connections.fx_providers` cell: a JSON array of provider

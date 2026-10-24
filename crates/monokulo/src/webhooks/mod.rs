@@ -1,7 +1,8 @@
 //! Stores' webhooks: monokulo holds them, reads the
 //! engine's order-event log ([`subscriber`]), makes each event's body
 //! ([`body`]) and delivers it, signed, with retries ([`delivery`]). The
-//! engine only keeps the log.
+//! engine only keeps the log. A merchant or a store's plugin can also send
+//! a webhook a test delivery, about no order ([`test_delivery`]).
 //!
 //! ```text
 //! engine: order changes ──(same transaction)──▶ order_events
@@ -14,6 +15,7 @@
 pub mod body;
 pub mod delivery;
 pub mod subscriber;
+pub mod test_delivery;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -30,10 +32,14 @@ pub const MAX_EXTRA_HEADER_BYTES: usize = 4 * 1024;
 pub const MAX_URL_LEN: usize = 2048;
 
 /// What the subscriber and the store pages tell the delivery worker: that
-/// there's something to send now.
+/// there's something to send now. Also the HTTP client deliveries go out
+/// on, which test deliveries share with the worker, and how many test
+/// deliveries each store has sent this minute ([`test_delivery`]).
 #[derive(Default)]
 pub struct Webhooks {
     wake: tokio::sync::Notify,
+    client: tokio::sync::OnceCell<delivery::WebhookClient>,
+    tests: test_delivery::Limiter,
 }
 
 /// This Monokulo's addresses, read as each event is queued, for the
@@ -67,6 +73,15 @@ impl Webhooks {
     /// Until [`Self::wake`] is called (or was since the last time).
     pub async fn woken(&self) {
         self.wake.notified().await;
+    }
+
+    /// The HTTP client deliveries are sent with, built the first time it's
+    /// asked for. Fails only if TLS can't be set up; asked again, it tries
+    /// again.
+    pub async fn client(&self) -> reqwest::Result<&delivery::WebhookClient> {
+        self.client
+            .get_or_try_init(|| async { delivery::WebhookClient::build() })
+            .await
     }
 }
 

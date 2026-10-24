@@ -4,8 +4,9 @@
 //! up), and a delivery's detail as a dialog, or a page without JavaScript.
 //!
 //! Every action is a plain POST form: "Send again" on a delivery, "Retry
-//! failed (N)" on a webhook whose deliveries gave up, adding and deleting a
-//! webhook. "Details" and "Delete" are links to pages holding the same
+//! failed (N)" on a webhook whose deliveries gave up, "Send a test
+//! webhook" (which fixi sends instead, putting the webhook back in place
+//! with what came of it), adding and deleting a webhook. "Details" and "Delete" are links to pages holding the same
 //! content as their dialogs (`ui::Dialog`'s island opens the dialog
 //! instead).
 
@@ -33,6 +34,18 @@ pub struct WebhooksCard {
     pub unavailable: bool,
     /// A webhook was just made: its signing secret, shown this once.
     pub created_secret: Option<String>,
+    /// A test delivery just sent, or refused: said on its webhook.
+    pub test: Option<TestNote>,
+}
+
+/// What came of "Send a test webhook", said on the webhook it was for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TestNote {
+    /// The test delivery just sent: its id. Said on the webhook whose
+    /// latest deliveries have it.
+    Sent(i64),
+    /// No test was sent to the webhook `webhook`, for the reason `message`.
+    Refused { webhook: String, message: String },
 }
 
 /// One webhook, how it's doing and one page of its deliveries (newest
@@ -77,6 +90,17 @@ impl<'a> Paths<'a> {
     pub fn retry_failed(&self, webhook: &str) -> String {
         format!("{}/retry-failed", self.webhook(webhook))
     }
+    pub fn test(&self, webhook: &str) -> String {
+        format!("{}/test", self.webhook(webhook))
+    }
+    /// The settings page showing the test delivery `delivery` just sent
+    /// to `webhook`, at that webhook.
+    pub fn tested(&self, webhook: &str, delivery: i64) -> String {
+        format!(
+            "/stores/{}/settings?tab=connections&tested={delivery}#webhook-{webhook}",
+            self.store_id
+        )
+    }
     pub fn all(&self, webhook: &str) -> String {
         format!("{}/deliveries", self.webhook(webhook))
     }
@@ -114,6 +138,14 @@ pub fn duration(ms: u64) -> String {
     } else {
         format!("{}.{} s", ms / 1000, (ms % 1000) / 100)
     }
+}
+
+/// What marks a test delivery where an order would be.
+fn test_tag() -> Markup {
+    ui::Tag::new("test")
+        .tone(ui::TagTone::Unknown)
+        .attr("data-test-delivery", "")
+        .render()
 }
 
 /// A delivery's status as a tag: its word and its tint.
@@ -235,7 +267,10 @@ pub fn deliveries_table(
                 td data-label="Status" { (state_tag(state)) }
                 td data-label="Event" { code { (delivery.event_type) } }
                 td data-label="Order" {
-                    a href=(crate::base::url(paths.order(delivery.order_id.as_str()))) { (short_id(delivery.order_id.as_str())) }
+                    @match &delivery.order_id {
+                        Some(order) => a href=(crate::base::url(paths.order(order.as_str()))) { (short_id(order.as_str())) },
+                        None => (test_tag()),
+                    }
                 }
                 td data-label="Time" { (clock.time(delivery.last_attempt_at.unwrap_or(delivery.created_at))) }
                 td data-label="Response" {
@@ -332,6 +367,93 @@ fn delete_dialog_id(webhook: &str) -> String {
     format!("{webhook}-delete-dialog")
 }
 
+/// What came of a test of `entry`'s webhook, if the card has one to say:
+/// the test delivery's outcome, or why none was sent.
+fn test_note(card: &WebhooksCard, entry: &WebhookEntry) -> Option<Markup> {
+    match card.test.as_ref()? {
+        TestNote::Refused { webhook, message } => (webhook == entry.webhook.id.as_str())
+            .then(|| ui::Alert::new(message.as_str(), ui::Tone::Error).render()),
+        TestNote::Sent(id) => {
+            let delivery = entry.recent.iter().find(|d| d.id == *id)?;
+            let took = delivery.last_duration_ms.map(duration).unwrap_or_default();
+            Some(match (delivery.state(), delivery.last_status_code) {
+                (DeliveryState::Delivered, status) => ui::Alert::new(
+                    html! {
+                        "Your server answered "
+                        @if let Some(status) = status { code { (status) } " " }
+                        "in " (took) "."
+                    },
+                    ui::Tone::Success,
+                )
+                .title("Test webhook delivered.")
+                .render(),
+                (state, status) => ui::Alert::new(
+                    html! {
+                        @match status {
+                            Some(status) => { "Your server answered " code { (status) } "." }
+                            None => { "No answer: " (delivery.last_error.as_deref().map_or_else(|| "no answer".to_string(), short_error)) "." }
+                        }
+                        @if state == DeliveryState::Retrying {
+                            @if let Some(next) = delivery.next_attempt_at {
+                                " Monokulo tries it again at " (card.clock.text(next)) ", like any delivery."
+                            }
+                        }
+                    },
+                    ui::Tone::Error,
+                )
+                .title("Test webhook not delivered.")
+                .render(),
+            })
+        }
+    }
+}
+
+/// One webhook: its address, "Send a test webhook" and "Delete", how it's
+/// doing, what came of a test just sent, and its latest deliveries. Also
+/// what "Send a test webhook" puts in its place when fixi sends it.
+pub fn webhook_block(card: &WebhooksCard, entry: &WebhookEntry) -> Markup {
+    let paths = Paths::new(&card.store_id);
+    let id = entry.webhook.id.as_str();
+    let note = test_note(card, entry);
+    let test = crate::base::url(paths.test(id));
+    html! {
+        div class="wh" id=(format!("webhook-{id}")) {
+            div class="wh-head" {
+                code class="wh-url" { (entry.webhook.url) }
+                @if let Some(plugin) = &entry.plugin {
+                    (ui::Tag::new(plugin.as_str()).tone(ui::TagTone::Unknown))
+                }
+                span class="card-spacer" {}
+                form method="post" action=(test) class="inline-form"
+                    fx-action=(test) fx-method="POST" fx-target=(format!("#webhook-{id}")) fx-swap="outerHTML" {
+                    (ui::Button::new("Send a test webhook")
+                        .size(ui::ControlSize::Compact)
+                        .kind(ui::ButtonType::Submit))
+                }
+                (ui::LinkButton::new("Delete", crate::base::url(paths.delete(id)))
+                    .variant(ui::ButtonVariant::Danger)
+                    .size(ui::ControlSize::Compact)
+                    .attr("data-opens-dialog", delete_dialog_id(id)))
+            }
+            (health_line(card, entry))
+            @if let Some(note) = &note {
+                div class="wh-test" data-test-result { (note) }
+            }
+            @if !entry.recent.is_empty() {
+                (ui::Disclosure::new(
+                    html! { "Recent deliveries " (ui::Hint::new(format!("({PAGE} a page)")).inline(true)) },
+                    html! {
+                        (deliveries_results(&paths, &card.clock, card.max_attempts, entry))
+                        (ui::Hint::new(html! { a href=(crate::base::url(paths.all(id))) { "All deliveries for this webhook" } }))
+                    },
+                )
+                .open(note.is_some() || entry.health.retrying > 0 || entry.health.gave_up > 0)
+                .attr("data-disclosure", "deliveries"))
+            }
+        }
+    }
+}
+
 /// The Webhooks card. `error`: why the last action on it was refused.
 pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
     let paths = Paths::new(&card.store_id);
@@ -359,32 +481,7 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
                 p class="muted" { "No webhooks yet. Monokulo can tell your server when an order is paid, confirming or expired." }
             }
             @for entry in &card.webhooks {
-                @let id = entry.webhook.id.as_str();
-                div class="wh" id=(format!("webhook-{id}")) {
-                    div class="wh-head" {
-                        code class="wh-url" { (entry.webhook.url) }
-                        @if let Some(plugin) = &entry.plugin {
-                            (ui::Tag::new(plugin.as_str()).tone(ui::TagTone::Unknown))
-                        }
-                        span class="card-spacer" {}
-                        (ui::LinkButton::new("Delete", crate::base::url(paths.delete(id)))
-                            .variant(ui::ButtonVariant::Danger)
-                            .size(ui::ControlSize::Compact)
-                            .attr("data-opens-dialog", delete_dialog_id(id)))
-                    }
-                    (health_line(card, entry))
-                    @if !entry.recent.is_empty() {
-                        (ui::Disclosure::new(
-                            html! { "Recent deliveries " (ui::Hint::new(format!("({PAGE} a page)")).inline(true)) },
-                            html! {
-                                (deliveries_results(&paths, &card.clock, card.max_attempts, entry))
-                                (ui::Hint::new(html! { a href=(crate::base::url(paths.all(id))) { "All deliveries for this webhook" } }))
-                            },
-                        )
-                        .open(entry.health.retrying > 0 || entry.health.gave_up > 0)
-                        .attr("data-disclosure", "deliveries"))
-                    }
-                }
+                (webhook_block(card, entry))
             }
             h4 { "Add a webhook" }
             form method="post" action=(crate::base::url(paths.add())) {
@@ -521,10 +618,16 @@ pub fn detail_content(
             "Endpoint",
             html! { span class="endpoint" { (webhook.url) } },
         ),
-        fact(
-            "Order",
-            html! { a href=(crate::base::url(paths.order(delivery.order_id.as_str()))) { (short_id(delivery.order_id.as_str())) } },
-        ),
+        match &delivery.order_id {
+            Some(order) => fact(
+                "Order",
+                html! { a href=(crate::base::url(paths.order(order.as_str()))) { (short_id(order.as_str())) } },
+            ),
+            None => fact(
+                "Order",
+                html! { (test_tag()) " None: a test delivery, sent when asked. No order changed." },
+            ),
+        },
     ];
     match state {
         DeliveryState::Retrying | DeliveryState::Queued => {

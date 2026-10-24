@@ -31,7 +31,8 @@ pub enum Problem {
     /// The key is valid but may not do this: each route says which keys it
     /// takes. A store's public key (`pk_`) only makes and reads orders;
     /// only an app's own key (`ak_`) reads or disconnects the app; only the
-    /// store's secret key (`sk_`) sends a plugin's logs. A store that takes
+    /// store's secret key (`sk_`) sends a plugin's logs and test webhooks.
+    /// A store that takes
     /// orders only from its verified websites also refuses an order made
     /// with its public key anywhere else.
     #[problem(status = 403, title = "Not allowed with this key")]
@@ -79,8 +80,10 @@ pub enum Problem {
     /// refused. The merchant turns them on in the store's settings.
     #[problem(status = 403, title = "Client logs are off for this store")]
     LogsOff,
-    /// Too many requests from this client. Wait `retry_after` seconds (also
-    /// in the `Retry-After` header) before trying again.
+    /// Too many requests from this client, or, sending a test webhook
+    /// (`send-test-webhook`), more than 6 in a minute for the store. Wait
+    /// `retry_after` seconds (also in the `Retry-After` header) before
+    /// trying again.
     #[problem(status = 429, title = "Too many requests")]
     RateLimited,
     /// Too many requests from this connection: solve the challenge in

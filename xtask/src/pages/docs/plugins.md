@@ -167,6 +167,13 @@ any more; an order your plugin made is never cancelled (only the POS
 cancels, its own orders), but a receiver that sees `order.cancelled` should
 treat it as it treats `order.expired`.
 
+`webhook.test` is a [test delivery](../webhooks/#test-it): the merchant
+pressed *Send a test webhook*, or your plugin sent the form below. Verify
+it like any other, answer `2xx`, and change nothing: it has no order. If
+you like, keep when the last one arrived (its `created_at`) and show it in
+your settings as "Last test webhook received", so the shop's admin can see
+deliveries reach the shop.
+
 ### 5. Forward your errors (optional)
 
 Follow the entry's `send-logs` form; your `sk_` key is the only one offered
@@ -185,9 +192,51 @@ Kept only when the store turned on client logs (otherwise a `403`
 `logs-off` problem). Levels are PSR-3's (`error`, `warning`, …); at most 20
 entries a time.
 
+### 6. Test the connection (optional)
+
+Follow the entry's `send-test-webhook` form, also offered to your `sk_`
+key only, for a "Test connection" button: Monokulo sends your webhook a
+signed `webhook.test` and answers once your receiver has answered.
+
+```
+POST /api/v1/webhook-tests
+Authorization: Bearer {secret_token}
+Monokulo-Client: {slug}/{your version}
+Content-Type: application/json
+
+{}
+```
+
+```json
+{
+  "webhook_id": "wh_3f0c2a9e5b7d41c6a8e2f1d0b9c7a6e5",
+  "event_id": "evt_9c41d2b7e05a3f18",
+  "delivered": true,
+  "status": 200,
+  "duration_ms": 12,
+  "response": "HTTP/1.1 200 OK\ncontent-type: text/plain; charset=utf-8\n\nok",
+  "_links": { "self": { "href": "/api/v1/webhook-tests" }, "mk:store": { "href": "/api/v1/store" } }
+}
+```
+
+`{}` tests the webhook your plugin registered when it connected; name
+another of the store's with `webhook_id`. It's `200` whatever your
+receiver said: `delivered` is whether it answered `2xx`; otherwise `status`
+(left out when nothing answered) and `error` say why, and
+`next_attempt_at` when Monokulo tries again. Monokulo can't see whether
+your receiver checked the signature; a receiver that answers `2xx` only
+after checking it makes `delivered` mean it did, and the `event_id` it
+received should be the one answered here. Up to 6 a minute for a store,
+then `429` `rate-limited` with `retry_after`.
+
 ## Test your receiver
 
 [webhook-vectors.json](webhook-vectors.json) holds one signed delivery for
 each event, and deliveries a receiver must refuse. Monokulo's own tests
 build it from the code that sends real webhooks and check real deliveries
 against it, so a receiver that passes on it handles what Monokulo sends.
+
+Then test it end to end: a smoke test that connects your plugin to a
+Monokulo sends the `send-test-webhook` form and checks that `delivered`
+is `true` and that your receiver recorded that `event_id` and changed no
+order. It needs no Monero node and no payment.

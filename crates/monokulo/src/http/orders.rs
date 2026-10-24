@@ -685,6 +685,9 @@ pub struct StoreSettingsQuery {
     saved: Option<String>,
     /// The tab to show (`StoreTab::from_id`).
     tab: Option<String>,
+    /// A test webhook delivery just sent (`webhooks::test`): its id, said
+    /// on its webhook.
+    tested: Option<i64>,
 }
 
 pub async fn store_settings(
@@ -714,6 +717,7 @@ pub async fn store_settings(
         PageState {
             outcome,
             tab: query.tab.as_deref().and_then(StoreTab::from_id),
+            webhook_test: query.tested.map(views::webhooks::TestNote::Sent),
             ..Default::default()
         },
     )
@@ -765,6 +769,8 @@ pub(super) struct PageState {
     /// The settings form as sent, after a save it refused.
     pub(super) sent: Option<Vec<(String, String)>>,
     pub(super) created_webhook_signing_secret: Option<String>,
+    /// What came of a test webhook delivery, said on its webhook.
+    pub(super) webhook_test: Option<views::webhooks::TestNote>,
     pub(super) wallet: WalletState,
     /// The tab asked for; else the one the outcome was on.
     pub(super) tab: Option<StoreTab>,
@@ -866,6 +872,7 @@ pub(super) async fn render_store_settings_page_with(
         outcome,
         sent,
         created_webhook_signing_secret,
+        webhook_test,
         wallet: wallet_state,
         tab,
     } = page;
@@ -975,8 +982,14 @@ pub(super) async fn render_store_settings_page_with(
         .any(|domain| crate::embed_domains::DomainState::of(domain, now).counts());
     let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
 
-    let webhooks =
-        super::webhooks::card(state, &row, &chrome.clock, created_webhook_signing_secret).await;
+    let webhooks = super::webhooks::card(
+        state,
+        &row,
+        &chrome.clock,
+        created_webhook_signing_secret,
+        webhook_test,
+    )
+    .await;
 
     let row = row.into_row();
     let wallet = store_wallet_view(state, &row, user, wallet_state).await;

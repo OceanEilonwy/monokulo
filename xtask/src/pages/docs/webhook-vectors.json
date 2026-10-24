@@ -100,6 +100,15 @@
         "X-Monokulo-Signature": "t=1760020380,v1=bea2d7fbf63ee9719e2a467c2d3423631e7550f32ae4c22cbeb7f3841671b605"
       },
       "name": "order.paid from a Monokulo with an onion address"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000012\",\"event\":\"webhook.test\",\"created_at\":1760020332,\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"},\"webhook\":{\"id\":\"wh_00000000000000000000000000000000\"},\"_links\":{\"curies\":[{\"href\":\"https://docs.monokulo.com/rels/{rel}\",\"name\":\"mk\",\"templated\":true}],\"mk:store\":{\"href\":\"https://www.monokulo.com/api/v1/store\",\"title\":\"The store the key belongs to, and where its payments go.\"}}}",
+      "headers": {
+        "X-Monokulo-Event": "webhook.test",
+        "X-Monokulo-Event-Id": "evt_0000000000000012",
+        "X-Monokulo-Signature": "t=1760020380,v1=2b1c50f6f1401734dc7d78164fd4658364d2585e7d9c6bcf84aedc05526e3448"
+      },
+      "name": "webhook.test"
     }
   ],
   "refuse": [
