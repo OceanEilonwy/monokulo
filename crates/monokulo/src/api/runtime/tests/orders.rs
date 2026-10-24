@@ -1727,115 +1727,111 @@ async fn creating_an_order_with_an_unknown_currency_is_rejected_before_ever_reac
             .contains("unknown currency"),
         "got: {body}"
     );
-}
 
-/// The other half of the same two-stage split (`crate::currencies`'s own
-/// doc comment): `EUR` is a perfectly real, known currency - this test's
-/// own `spawn_mock_coingecko` only ever prices `"usd"` (a fixed stub
-/// response), so a request for `EUR` genuinely has no rate available.
-/// That must surface as a distinct "unsupported", not "unknown",
-/// currency error.
-#[tokio::test]
-async fn creating_an_order_with_a_known_but_provider_unsupported_currency_gets_a_distinct_error() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
+    // The store's own base currency ("EUR", a perfectly real known currency -
+    // `crate::currencies`'s selection-time check happily accepted it when this
+    // store was created) turns out to have no available rate provider at
+    // resolution time (this test module's mock Coingecko only ever prices
+    // `"usd"`) - resolving the confirmation threshold needs a real EUR rate to
+    // convert the order's own amount into base-currency terms, and there isn't
+    // one. The order-currency itself ("USD") is perfectly priceable; it's
+    // specifically the base currency conversion that fails - proving the
+    // "usable" check really is a separate, later concern from "known"
+    // (`crate::currencies`'s own doc comment, and
+    // `confirmation_thresholds::resolve_for_order`'s).
+    {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
 
-    let session_token = signed_up_and_logged_in_session_token(
-        &router,
-        "pay-endpoint-unsupported-currency@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let pk = create_connection(&router, &state, &session_token).await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pay-endpoint-unpriceable-base-currency@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection_with_base_currency(&router, &state, &session_token, "EUR").await;
 
-    let response = router
-        .oneshot(create_order_request(&pk, "25.00", "EUR"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(response).await;
-    assert!(
-        body["detail"]
-            .as_str()
+        let response = router
+            .clone()
+            .oneshot(create_order_request(&pk, "25.00", "USD"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert!(
+            body["detail"].as_str().unwrap().contains("EUR"),
+            "expected a clear error naming the unpriceable base currency, got: {body}"
+        );
+
+        // The engine must never have created a real order at all - threshold
+        // resolution runs *before* `EngineClient::create_order`, so a
+        // failure here must leave no ghost order behind on the engine.
+        let store = engine.store().lock();
+        let tenant_id = store
+            .list_active_tenants()
             .unwrap()
-            .contains("unsupported currency"),
-        "got: {body}"
-    );
-}
+            .into_iter()
+            .find(|t| t.public_key == pk)
+            .unwrap()
+            .id;
+        let orders = store.list_orders(&tenant_id, None, 100, None).unwrap();
+        assert!(
+            orders.is_empty(),
+            "expected no order to have been created on the real engine, got: {orders:?}"
+        );
+    }
 
-/// The store's own base currency ("EUR", a perfectly real known
-/// currency - `crate::currencies`'s selection-time check happily
-/// accepted it when this store was created) turns out to have no
-/// available rate provider at resolution time (this test module's mock
-/// Coingecko only ever prices `"usd"`) - resolving the confirmation
-/// threshold needs a real EUR rate to convert the order's own amount
-/// into base-currency terms, and there isn't one. The order-currency
-/// itself ("USD") is perfectly priceable; it's specifically the base
-/// currency conversion that fails - proving the "usable" check really
-/// is a separate, later concern from "known" (`crate::currencies`'s own
-/// doc comment, and `confirmation_thresholds::resolve_for_order`'s).
-#[tokio::test]
-async fn creating_an_order_is_rejected_when_the_stores_own_base_currency_has_no_available_rate_provider(
-) {
-    let (state, engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
+    // The other half of the same two-stage split (`crate::currencies`'s own doc
+    // comment): `EUR` is a perfectly real, known currency - this test's own
+    // `spawn_mock_coingecko` only ever prices `"usd"` (a fixed stub response),
+    // so a request for `EUR` genuinely has no rate available. That must surface
+    // as a distinct "unsupported", not "unknown", currency error.
+    {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
 
-    let session_token = signed_up_and_logged_in_session_token(
-        &router,
-        "pay-endpoint-unpriceable-base-currency@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let pk = create_connection_with_base_currency(&router, &state, &session_token, "EUR").await;
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pay-endpoint-unsupported-currency@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
-    let response = router
-        .clone()
-        .oneshot(create_order_request(&pk, "25.00", "USD"))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(response).await;
-    assert!(
-        body["detail"].as_str().unwrap().contains("EUR"),
-        "expected a clear error naming the unpriceable base currency, got: {body}"
-    );
+        let response = router
+            .oneshot(create_order_request(&pk, "25.00", "EUR"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert!(
+            body["detail"]
+                .as_str()
+                .unwrap()
+                .contains("unsupported currency"),
+            "got: {body}"
+        );
+    }
 
-    // The engine must never have created a real order at all - threshold
-    // resolution runs *before* `EngineClient::create_order`, so a
-    // failure here must leave no ghost order behind on the engine.
-    let store = engine.store().lock();
-    let tenant_id = store
-        .list_active_tenants()
-        .unwrap()
-        .into_iter()
-        .find(|t| t.public_key == pk)
-        .unwrap()
-        .id;
-    let orders = store.list_orders(&tenant_id, None, 100, None).unwrap();
-    assert!(
-        orders.is_empty(),
-        "expected no order to have been created on the real engine, got: {orders:?}"
-    );
-}
+    // Creating an order with a malformed amount is a clear 400 not a 500.
+    {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
 
-#[tokio::test]
-async fn creating_an_order_with_a_malformed_amount_is_a_clear_400_not_a_500() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pay-endpoint-bad-amount@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &state, &session_token).await;
 
-    let session_token = signed_up_and_logged_in_session_token(
-        &router,
-        "pay-endpoint-bad-amount@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let pk = create_connection(&router, &state, &session_token).await;
-
-    let response = router
-        .oneshot(create_order_request(&pk, "not-a-number", TEST_CURRENCY))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let response = router
+            .oneshot(create_order_request(&pk, "not-a-number", TEST_CURRENCY))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }
 
 #[tokio::test]
