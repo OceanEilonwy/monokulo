@@ -647,6 +647,26 @@ mod tests {
         let piconero_per_usd = 6_700_000_000u64;
         let amount = compute_xmr_amount("25.00", piconero_per_usd).unwrap();
         assert_eq!(amount, 167_500_000_000);
+
+        // Zero or empty amount is rejected.
+        {
+            assert_eq!(
+                compute_xmr_amount("0.00", 1_000_000),
+                Err(AmountError::NotPositive)
+            );
+            assert_eq!(
+                compute_xmr_amount("", 1_000_000),
+                Err(AmountError::InvalidDecimal)
+            );
+        }
+
+        // Non numeric amount is rejected.
+        {
+            assert_eq!(
+                compute_xmr_amount("abc", 1_000_000),
+                Err(AmountError::InvalidDecimal)
+            );
+        }
     }
 
     #[test]
@@ -717,26 +737,6 @@ mod tests {
         assert_eq!(
             compute_xmr_amount("0.000000000000000", 1_000_000),
             Err(AmountError::NotPositive)
-        );
-    }
-
-    #[test]
-    fn zero_or_empty_amount_is_rejected() {
-        assert_eq!(
-            compute_xmr_amount("0.00", 1_000_000),
-            Err(AmountError::NotPositive)
-        );
-        assert_eq!(
-            compute_xmr_amount("", 1_000_000),
-            Err(AmountError::InvalidDecimal)
-        );
-    }
-
-    #[test]
-    fn non_numeric_amount_is_rejected() {
-        assert_eq!(
-            compute_xmr_amount("abc", 1_000_000),
-            Err(AmountError::InvalidDecimal)
         );
     }
 

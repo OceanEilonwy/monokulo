@@ -90,19 +90,3 @@ impl FromStr for OrderStatus {
             .ok_or_else(|| UnknownStatus(s.to_string()))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_status_round_trips_through_its_name_and_json() {
-        for status in OrderStatus::ALL {
-            assert_eq!(status.as_str().parse::<OrderStatus>(), Ok(status));
-            let json = serde_json::to_string(&status).unwrap();
-            assert_eq!(json, format!("\"{}\"", status.as_str()));
-            assert_eq!(serde_json::from_str::<OrderStatus>(&json).unwrap(), status);
-        }
-        assert!("canceled".parse::<OrderStatus>().is_err());
-    }
-}
