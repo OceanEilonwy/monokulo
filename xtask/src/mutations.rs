@@ -53,22 +53,22 @@ const fn m(
 }
 
 const PORTFOLIO_TEST: &str =
-    "work::tests::properties::combined_portfolio_interactions_have_fixed_positive_controls";
+    "work::tests::boundaries::combined_portfolio_interactions_have_fixed_positive_controls";
 const STAGING_TEST: &str =
     "store::work::tests::every_reorg_staging_cleanup_boundary_survives_reopen";
 const RECORDED_TEST: &str =
-    "work::tests::properties::every_recorded_ringct_variant_runs_complete_money_histories";
+    "work::tests::boundaries::every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_0";
 const PROOF_SCHEDULE_TEST: &str =
-    "work::tests::properties::concurrency::every_proof_config_shutdown_admission_schedule_recovers";
+    "work::tests::boundaries::concurrency::every_proof_config_shutdown_admission_schedule_recovers";
 const BLOCK_TEST: &str =
-    "work::blocks::properties::every_late_commit_boundary_is_exercised_with_and_without_staging";
-const STATUS_GRID: &str = "status::properties::status_decision_boundaries_match_independent_grid";
+    "work::blocks::boundaries::every_late_commit_boundary_is_exercised_with_and_without_staging";
+const STATUS_GRID: &str = "status::boundaries::status_decision_boundaries_match_independent_grid";
 const RETRY_EXPIRY: &str =
-    "work::scheduler::properties::retry_expiry_boundaries_use_production_upkeep";
+    "work::scheduler::boundaries::retry_expiry_boundaries_use_production_upkeep";
 const RETRY_GRID: &str =
-    "work::scheduler::properties::retry_policy_decision_grid_checks_free_attempts_and_deadlines";
+    "work::scheduler::boundaries::retry_policy_decision_grid_checks_free_attempts_and_deadlines";
 const RESERVATION_GRID: &str =
-    "work::mempool::properties::reservation_decision_grid_checks_completed_busy_and_changed_windows";
+    "work::mempool::boundaries::reservation_decision_grid_checks_completed_busy_and_changed_windows";
 
 const MUTATIONS: &[Mutation] = &[
     m("never-forget-retries", "crates/engine/src/work/retry.rs",
@@ -103,13 +103,13 @@ const MUTATIONS: &[Mutation] = &[
       "BOUNDARY: reservation-decision-grid"),
     m("double-credit-amount", "crates/engine/src/store/mod.rs",
       "sum.saturating_add(v.amount_piconero)", "sum.saturating_add(v.amount_piconero).saturating_add(v.amount_piconero)",
-      "work::tests::properties::combined_portfolio_interactions_have_fixed_positive_controls", "BOUNDARY: independent-amount-ledger"),
+      "work::tests::boundaries::combined_portfolio_interactions_have_fixed_positive_controls", "BOUNDARY: independent-amount-ledger"),
     m("accept-stale-block-parent", "crates/engine/src/work/blocks.rs",
       "if s.get_scanned_block_hash(network, block.parent)?", "if false && s.get_scanned_block_hash(network, block.parent)?",
       BLOCK_TEST, "BOUNDARY: stale-block-publication"),
     m("omit-tenant-order-filter", "crates/engine/src/store/mod.rs",
       "SELECT * FROM orders WHERE id = ?1 AND tenant_id = ?2", "SELECT * FROM orders WHERE id = ?1 AND ?2 IS NOT NULL",
-      "http::tests::properties::authorization::named_revocation_and_cross_tenant_history_replays", "BOUNDARY: tenant-authorization"),
+      "http::tests::boundaries::authorization::named_revocation_and_cross_tenant_history_replays", "BOUNDARY: tenant-authorization"),
     Mutation {
         name: "lose-payment-recompute-obligation",
         path: "crates/engine/migrations/0017_pending_payment_recomputes.sql",
@@ -121,16 +121,16 @@ const MUTATIONS: &[Mutation] = &[
     },
     m("lose-paid-event", "crates/engine/src/scanner.rs",
       "if old_status == new_status {", "if old_status == new_status || new_status.as_str() == \"paid\" {",
-      "work::tests::properties::concurrency::every_overlap_admission_order_and_abandoned_caller_recovers", "BOUNDARY: paid-event"),
+      "work::tests::boundaries::concurrency::every_overlap_admission_order_and_abandoned_caller_recovers", "BOUNDARY: paid-event"),
     m("accept-stale-round-completion", "crates/engine/src/work/scheduler.rs",
       "if self.pending != Some(effect) {", "if false && self.pending != Some(effect) {",
-      "work::scheduler::properties::late_completions_from_another_round_are_rejected", "BOUNDARY: stale-round-completion"),
+      "work::scheduler::boundaries::properties::late_completions_from_another_round_are_rejected", "BOUNDARY: stale-round-completion"),
     m("trust-one-spent-vote", "crates/engine/src/daemon_fallback.rs",
       "let status = if votes.iter().all(|vote| *vote == votes[0]) {", "let status = if true {", PORTFOLIO_TEST,
       "BOUNDARY: independent-void-ledger"),
     m("accept-wrong-scan-window", "crates/engine/src/work/mempool.rs",
       "if lease.generation() != generation {", "if false && lease.generation() != generation {",
-      "work::mempool::properties::a_completion_for_another_window_cannot_publish_or_release_its_owner", "BOUNDARY: wrong-window-owner"),
+      "work::mempool::boundaries::a_completion_for_another_window_cannot_publish_or_release_its_owner", "BOUNDARY: wrong-window-owner"),
     m("bypass-proven-settlement", "crates/engine/src/store/mod.rs",
       "!settles_on_proven_blocks()", "false", PORTFOLIO_TEST, "BOUNDARY: independent-status"),
     m("reverse-conflict-winner", "crates/engine/src/store/conflicts.rs",
@@ -148,12 +148,12 @@ const MUTATIONS: &[Mutation] = &[
     m("new-arrivals-starve-old-windows", "crates/engine/src/work/mempool.rs",
       "rotation.update(pool_txids);",
       "rotation.update(pool_txids); rotation.queue.make_contiguous().sort_by_key(|id| (!state.is_new(id), id.clone()));",
-      "work::mempool::properties::scale::expanded_windows_are_served_during_continuous_new_transaction_floods",
+      "work::mempool::boundaries::scale::expanded_windows_are_served_during_continuous_new_transaction_floods",
       "BOUNDARY: sustained-arrival-starvation"),
     m("share-transaction-tenant-cursor", "crates/engine/src/work/mempool.rs",
       "async fn tenant_page(round: &Round<'_>, txid: &str) -> Result<Vec<TenantWindow>, ScannerError> {",
       "async fn tenant_page(round: &Round<'_>, txid: &str) -> Result<Vec<TenantWindow>, ScannerError> { let shared = format!(\"global-{}\", txid.len()); let txid = shared.as_str();",
-      "work::mempool::properties::scale::transaction_cursors_cannot_be_shared_between_three_transactions",
+      "work::mempool::boundaries::scale::transaction_cursors_cannot_be_shared_between_three_transactions",
       "BOUNDARY: transaction-tenant-fairness"),
 ];
 
