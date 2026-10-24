@@ -102,6 +102,53 @@ Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.tom
   with no `AuthedTenant` fails it ("GET …/probe with no bearer: 200").
 - 347 `lookup_payment_requires_authentication` is replaced by it.
 
+### T-i and Q1 (L2, L3): the local run
+- **Module move.** The ~70 fixed-input tests that sat in `::properties::`
+  modules now don't: each property module that also held fixed tests is
+  named `boundaries` (`#[path]` files unchanged), and its `proptest!`
+  blocks sit in a nested `mod properties` at the end of the file (or of
+  their inline module, for `zmq`). So every generated case is under
+  `::properties::` (129, as before) and no fixed test is. Regression files
+  are keyed on the property's own name, so none moved. Crash-child names
+  (`order_creation_crash_child`, `migration_crash_child`,
+  `crash_process_child`) follow. Modules with no fixed tests are untouched.
+- **`.config/nextest.toml`.** The default profile's `default-filter` is
+  `not (::properties:: | ::scale:: | real_blocks_prove… | *_hashed_with_randomx)`:
+  the reference-vector unit stays local. Profiles inherit the default
+  profile's settings, its default-filter too (the file's comment on
+  overrides said the same of overrides), so `ci` and `live` set
+  `default-filter = "all()"`; CI, `cargo xtask coverage rust`, `xtask
+  engine properties|scale` all pass `--profile ci`. Checked with `nextest
+  list`: default 698 tests, ci 831 + the new L2 tests (every test). No
+  case counts changed. Priorities follow the new names (the RingCT parts
+  and the proof-config shutdown test first locally).
+- **L3.** `every_recorded_ringct_variant_runs_complete_money_histories` is
+  four tests, `…_on_worker_{0,1}_{whole,pruned}` (9 histories each); each
+  prints its own `ENGINE_BOUNDARY_HITS`, which the mutation runner adds up.
+- **L2.** Each family the decision names got named fixed-input tests
+  outside `properties` that run the property's own history
+  (`properties::<name>_case(..)`, the body extracted from the `proptest!`
+  unchanged) on inputs at its boundary, using the saved shrunk
+  counterexample where one exists:
+  - `money::` (14): one test each, e.g. grace one second inside, at and
+    past its edge; every evidence kind short of a corroborated spend;
+    split payments through a voiding fork; a paged block failing and forked.
+  - `nodes::` (14, `real_verifier*` included): the saved counterexamples of
+    `all_node_outages…` and `corroborated_key_images…`; the 15 s deadline at
+    ±1 ms; a cancelled call per RPC kind; and
+    `the_verifier_and_scanner_reconcile_a_verified_payment_across_forks`,
+    the `real_verifier_and_scanner` history (both halves) on the stand-in.
+  - `expansions`: stored amounts at `i64::MAX`, `i64::MAX - 1`, 2^53,
+    2^53 + 1 and 1, one under/at/over; the recompute queue at 63, 64, 65
+    and 129; repeated multi-order forks.
+  - proof: verifier histories with a forged majority and total outages,
+    with and without restarts; anchor timeouts including the saved
+    `rpc_timeouts` counterexample (3 nodes, blob reads, no restart).
+  - The git history names no other bug any of these properties found (the
+    commits that cite a property or fuzz run concern the portfolio and
+    scanner histories, which already have reviewed-seed and fixed tests),
+    so the other rows pin each property's own boundaries.
+
 ## Decisions
 
 ## Deviations from the plan
