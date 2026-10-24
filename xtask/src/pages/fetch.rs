@@ -455,74 +455,87 @@ mod tests {
 
     const SHA: &str = "7e8f34dac14b985bd24a323147b71a10e2bc4b05";
 
-    fn pick(key: Key, name: &str, build: Build) -> bool {
-        (SOURCES.iter().find(|s| s.key == key).unwrap().wanted)(name, build)
-    }
-
+    /// Which artifacts each source takes, by name and build; where an apk
+    /// repository's files are served; which part and workflow each source
+    /// belongs to; what `--current` names; and how the sources are kept.
     #[test]
-    fn each_apk_repository_artifact_is_served_by_its_release_and_architecture() {
-        assert!(pick(
-            Key::Site,
-            "openwrt-repo-25.12-aarch64_cortex-a53",
-            Build::Zmq
-        ));
-        assert!(pick(Key::Site, "openwrt-repo-26.06-x86_64", Build::Zmq));
-        assert!(!pick(
-            Key::Site,
-            "monokulo-openwrt-25.12-aarch64_cortex-a53",
-            Build::Zmq
-        ));
+    fn the_sources_pick_only_the_artifacts_the_report_reads() {
+        let coverage = format!("coverage-{SHA}");
+        let coverage_rust = format!("coverage-rust-{SHA}");
+        // (source, artifact, build, taken)
+        let picks: &[(Key, &str, Build, bool)] = &[
+            (
+                Key::Site,
+                "openwrt-repo-25.12-aarch64_cortex-a53",
+                Build::Zmq,
+                true,
+            ),
+            (Key::Site, "openwrt-repo-26.06-x86_64", Build::Zmq, true),
+            (
+                Key::Site,
+                "monokulo-openwrt-25.12-aarch64_cortex-a53",
+                Build::Zmq,
+                false,
+            ),
+            (Key::Coverage, &coverage, Build::Zmq, true),
+            (Key::Coverage, &coverage_rust, Build::Zmq, false),
+            (
+                Key::Fuzz,
+                "engine-fuzz-portfolio-zmq-37702639422",
+                Build::Zmq,
+                true,
+            ),
+            (
+                Key::Fuzz,
+                "engine-fuzz-portfolio-default-37702639422",
+                Build::Zmq,
+                false,
+            ),
+            (
+                Key::Fuzz,
+                "engine-fuzz-portfolio-default-37702639422",
+                Build::Default,
+                true,
+            ),
+            (
+                Key::Properties,
+                "engine-properties-zmq-37695839811",
+                Build::Zmq,
+                true,
+            ),
+            (
+                Key::Properties,
+                "engine-properties-default-37695839811",
+                Build::Zmq,
+                false,
+            ),
+            (
+                Key::Properties,
+                "engine-properties-default-37695839811",
+                Build::Default,
+                true,
+            ),
+            (Key::Live, "live-network-37800000001", Build::Zmq, true),
+            (Key::Live, "engine-scale-measurements-1", Build::Zmq, false),
+        ];
+        for (key, name, build, taken) in picks {
+            let wanted = SOURCES.iter().find(|s| s.key == *key).unwrap().wanted;
+            assert_eq!(
+                wanted(name, *build),
+                *taken,
+                "{} {name} {build}",
+                key.name()
+            );
+        }
+
+        // Each apk repository artifact is served by its release and architecture.
         assert_eq!(
             openwrt_repo_dir("openwrt-repo-25.12-aarch64_cortex-a53").unwrap(),
             PathBuf::from("openwrt/25.12/aarch64_cortex-a53")
         );
         assert!(openwrt_repo_dir("openwrt-repo-25.12").is_err());
-    }
 
-    #[test]
-    fn the_sources_pick_only_the_artifacts_the_report_reads() {
-        assert!(pick(Key::Coverage, &format!("coverage-{SHA}"), Build::Zmq));
-        assert!(!pick(
-            Key::Coverage,
-            &format!("coverage-rust-{SHA}"),
-            Build::Zmq
-        ));
-        assert!(pick(
-            Key::Fuzz,
-            "engine-fuzz-portfolio-zmq-37702639422",
-            Build::Zmq
-        ));
-        assert!(!pick(
-            Key::Fuzz,
-            "engine-fuzz-portfolio-default-37702639422",
-            Build::Zmq
-        ));
-        assert!(pick(
-            Key::Fuzz,
-            "engine-fuzz-portfolio-default-37702639422",
-            Build::Default
-        ));
-        assert!(pick(
-            Key::Properties,
-            "engine-properties-zmq-37695839811",
-            Build::Zmq
-        ));
-        assert!(!pick(
-            Key::Properties,
-            "engine-properties-default-37695839811",
-            Build::Zmq
-        ));
-        assert!(pick(
-            Key::Properties,
-            "engine-properties-default-37695839811",
-            Build::Default
-        ));
-        assert!(pick(Key::Live, "live-network-37800000001", Build::Zmq));
-        assert!(!pick(Key::Live, "engine-scale-measurements-1", Build::Zmq));
-    }
-
-    #[test]
-    fn each_source_belongs_to_the_part_whose_workflow_makes_it() {
+        // Each source belongs to the part whose workflow makes it.
         let parts: Vec<_> = SOURCES
             .iter()
             .map(|s| (s.key.name(), s.key.part(), s.workflow))
@@ -544,10 +557,8 @@ mod tests {
         assert!(PARTS
             .iter()
             .all(|p| SOURCES.iter().any(|s| s.key.part() == *p)));
-    }
 
-    #[test]
-    fn current_names_a_part_and_this_run_s_conclusion() {
+        // --current names a part, with this run's conclusion.
         let args = parse(&[
             "dir",
             "--repo",
@@ -566,10 +577,8 @@ mod tests {
         assert!(args.current.is_none());
         assert_eq!(args.conclusion, "success");
         assert!(parse(&["dir", "--repo", "o/r", "--current", "coverage"]).is_err());
-    }
 
-    #[test]
-    fn sources_json_round_trips_and_leaves_out_what_was_not_found() {
+        // sources.json round-trips and leaves out what was not found.
         let mut sources = Sources::default();
         *sources.slot(Key::Coverage) = Some(SourceRun {
             run_id: 37_760_252_886,
