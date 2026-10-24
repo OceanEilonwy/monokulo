@@ -183,6 +183,14 @@ settings! {
         example: "http://127.0.0.1:8443",
         applies: Restart,
     },
+    ENGINE_STATUS_CACHE_MS: u64 {
+        key: "engine.status_cache_ms",
+        default: 10_000,
+        check: range(1_000, 300_000),
+        description: "Milliseconds a status fetched from the engine is reused before a page asks it again. Every page's status dot, the status page and the admin pages share it, so a burst of page loads costs the engine one request, not one each; under a second that shield is gone.",
+        example: "10000",
+        applies: Restart,
+    },
     ENGINE_TOKEN: Secret {
         key: "engine.token",
         env: "MONOKULO_ENGINE_TOKEN",
@@ -620,25 +628,33 @@ impl Section for BootConfig {
     }
 }
 
-/// Where monokulo listens and where it reaches the engine: read once at
-/// start, so both apply on restart.
+/// Where monokulo listens, where it reaches the engine and how long it
+/// trusts the engine's status (`http::status_page`): read once at start, so
+/// all apply on restart.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
     pub bind: SocketAddr,
     pub engine_mode: EngineMode,
     pub engine_url: HttpUrl,
+    pub status_cache: Duration,
 }
 
 impl Section for ServerConfig {
     const NAME: &'static str = "server";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&SERVER_BIND, &ENGINE_MODE, &ENGINE_URL]
+        &[
+            &SERVER_BIND,
+            &ENGINE_MODE,
+            &ENGINE_URL,
+            &ENGINE_STATUS_CACHE_MS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(ServerConfig {
             bind: snapshot.get(&SERVER_BIND).0,
             engine_mode: snapshot.get(&ENGINE_MODE),
             engine_url: snapshot.get(&ENGINE_URL),
+            status_cache: Duration::from_millis(snapshot.get(&ENGINE_STATUS_CACHE_MS)),
         })
     }
 }
@@ -1507,6 +1523,7 @@ impl MonokuloSettings {
                 bind: SERVER_BIND.default_value().0,
                 engine_mode: ENGINE_MODE.default_value(),
                 engine_url: ENGINE_URL.default_value(),
+                status_cache: Duration::from_millis(ENGINE_STATUS_CACHE_MS.default_value()),
             }),
             per_request: live_settings::Live::new(per_request),
             cli_links: live_settings::Live::new(CliLinks {
@@ -1827,6 +1844,24 @@ mod tests {
             none.with_cli([(EXCHANGE_RATE_CACHE_SECONDS.key.to_string(), "9".to_string())].into());
         let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(Ok(file), &given);
         assert_eq!(resolved.cache_seconds, 9);
+    }
+
+    /// The browser tests trust the engine's status for a second
+    /// (e2e/browser/real-stack.js), so this pins what an instance runs
+    /// without the setting: ten seconds. Under a second is refused, and a
+    /// refused value stops monokulo at start.
+    #[test]
+    fn the_engine_status_is_trusted_for_ten_seconds_unless_set_and_never_under_one() {
+        assert_eq!(ENGINE_STATUS_CACHE_MS.default_value(), 10_000);
+        assert_eq!(
+            ServerConfig::from_snapshot(&Snapshot::defaults())
+                .unwrap()
+                .status_cache,
+            Duration::from_secs(10)
+        );
+        assert_eq!(ENGINE_STATUS_CACHE_MS.parse("1000"), Ok(1_000));
+        assert!(ENGINE_STATUS_CACHE_MS.parse("999").is_err());
+        assert!(ENGINE_STATUS_CACHE_MS.parse("0").is_err());
     }
 
     /// With nothing saved and nothing in the environment: Coingecko and
