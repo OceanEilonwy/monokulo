@@ -172,6 +172,36 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
     )
 }
 
+/// Fixed-input cases of the verifier history properties below: three nodes
+/// that serve the honest chain, fail, hang, or serve a forged branch, a
+/// phase at a time (one each, a forged majority, a lone honest node), then
+/// all down and all hanging: nothing forged is ever proven, and every node
+/// is back on the chain afterwards, with and without restarts between the
+/// phases.
+#[test]
+fn a_forged_majority_and_total_outages_never_prove_a_forged_branch() {
+    let phases = vec![
+        [0, 1, 3, 0, 0],
+        [3, 3, 0, 2, 0],
+        [2, 1, 3, 0, 0],
+        [3, 0, 1, 0, 0],
+    ];
+    for restart in [false, true] {
+        runtime().block_on(verifier_history(3, phases.clone(), restart));
+    }
+}
+
+/// The saved counterexample of the timeout property (three nodes, a block
+/// blob read failing, no restart), and the other anchor reads timing out.
+#[test]
+fn anchor_reads_failing_or_timing_out_use_the_healthy_peers() {
+    runtime().block_on(async {
+        anchor_rpc_history(3, Rpc::Blob, false, false).await;
+        anchor_rpc_history(4, Rpc::Hash, true, false).await;
+        anchor_rpc_history(3, Rpc::Difficulty, true, true).await;
+    });
+}
+
 /// The generated cases (`proptest!`): left out of the local
 /// default run, run by CI and the scheduled property job.
 mod properties {
