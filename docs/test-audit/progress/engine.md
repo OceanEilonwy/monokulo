@@ -153,13 +153,91 @@ Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.tom
     so the other rows pin each property's own boundaries.
 
 ## Decisions
+- **Stand-in hash: Keccak-256(key || input)**, through a `Function` enum in
+  `pow::hasher` rather than a trait: the hasher is a thread taking
+  requests, so the choice is made when the thread starts and everything
+  else (keys, stats, `/status`) is shared. `Function::StandIn` and
+  `Hasher::stand_in` exist only with `test` or `test-support`.
+- **Generated vs fixed by module name**, not a list: the filter is
+  `::properties::`, and the module move makes it exact. The new name for a
+  property module that also holds fixed tests is `boundaries` everywhere
+  (`property_support` calls them "generated boundary tests").
+- **Sweep parts**: about 2 s each measured alone; sweeps under 3 s alone
+  stay whole. Bounded parts require every fault to be reached, so a sweep
+  whose round shrinks fails loudly rather than testing nothing.
+- **`loops` real-time sibling**: the retry family has one real-clock test
+  left, the first-round registration that shares the setup; a real 5 s wait
+  would undo the saving.
+- **N2 reads routes from `build_router`'s source.** Axum's `Router` can't
+  list its routes; walking the `.route(` calls in the function's source
+  catches a new route wherever it is added there, and the explicit
+  not-a-store list keeps the exceptions reasoned and fails when stale.
+- **L2 inputs**: the saved shrunk counterexample where a family has one
+  (`all_node_outages…`, `corroborated_key_images…`, `rpc_timeouts`), else
+  each property's own edges (±1 at a grace period, deadline or limit, every
+  evidence or RPC kind, a restart and a fault on the way). Each fixed test
+  calls the property's body, extracted unchanged into
+  `properties::<name>_case`, so the two can't drift apart.
+- Built with `CARGO_INCREMENTAL=0` after 18:05: `/home` filled to 100% (the
+  linker died with SIGBUS); I removed only this worktree's
+  `target/debug/incremental`.
 
 ## Deviations from the plan
+- Real RandomX is in 5 tests, not "about 8" (see F9): nothing else hashes
+  or compares for real; `check_hash` keeps its pure unit test.
+- F2: 475 (closed-order grace + lookup) was already a two-row table and
+  stays as it is; 530 went into 468 (the same gap story) rather than 479,
+  whose cases are live-scan boundaries. 476 went into 479.
+- F8: `scanner::…reconcile_now…` and `…void_recheck…` sweeps are not split
+  (2.8 s and 0.7 s alone).
+- L2: the `real_verifier*` sibling runs on the stand-in hash (it is a logic
+  test); the two properties keep real `RandomX` in CI.
+- `store::boundaries` migration tests (`every_reached_upgrade_fault…` and
+  the crash ones) are 1.6 s alone on a quiet machine but took 40-170 s
+  whenever the machine was at load 100-190 (other agents' builds at nice
+  0 against ours at nice 10). Not caused by these changes (the tests are
+  unchanged and fast alone), but they are the most load-sensitive tests in
+  the crate; worth watching in the combined run.
 
 ## Tests already failing on main
 None: the ci-profile baseline passed (859 tests, 21 skipped).
 
 ## Needs from other chunks
+- **Chunk A, `xtask/src/mutations.rs`** names engine tests that moved
+  (`--exact`, so each must be the new full path):
+  - `work::tests::properties::combined_portfolio_interactions_have_fixed_positive_controls` → `work::tests::boundaries::combined_portfolio_interactions_have_fixed_positive_controls`
+  - `work::tests::properties::every_recorded_ringct_variant_runs_complete_money_histories` (`RECORDED_TEST`) → split in six; point it at one part, e.g. `work::tests::boundaries::every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_0`, which prints all three `REQUIRED_HITS` (the others are `…_on_worker_{0,1}_with_foreign_{0,1,2}`)
+  - `work::tests::properties::concurrency::every_proof_config_shutdown_admission_schedule_recovers` → `work::tests::boundaries::concurrency::…`
+  - `work::tests::properties::concurrency::every_overlap_admission_order_and_abandoned_caller_recovers` → `work::tests::boundaries::concurrency::…`
+  - `work::blocks::properties::every_late_commit_boundary_is_exercised_with_and_without_staging` → `work::blocks::boundaries::…`
+  - `status::properties::status_decision_boundaries_match_independent_grid` → `status::boundaries::…`
+  - `work::scheduler::properties::retry_expiry_boundaries_use_production_upkeep` → `work::scheduler::boundaries::…`
+  - `work::scheduler::properties::retry_policy_decision_grid_checks_free_attempts_and_deadlines` → `work::scheduler::boundaries::…`
+  - `work::scheduler::properties::late_completions_from_another_round_are_rejected` (generated) → `work::scheduler::boundaries::properties::…`
+  - `work::mempool::properties::reservation_decision_grid_checks_completed_busy_and_changed_windows` → `work::mempool::boundaries::…`
+  - `work::mempool::properties::a_completion_for_another_window_cannot_publish_or_release_its_owner` → `work::mempool::boundaries::…`
+  - `work::mempool::properties::scale::expanded_windows_are_served_during_continuous_new_transaction_floods` and `…::transaction_cursors_cannot_be_shared_between_three_transactions` → `work::mempool::boundaries::scale::…`
+  - `http::tests::properties::authorization::named_revocation_and_cross_tenant_history_replays` → `http::tests::boundaries::authorization::…`
+  - `router::properties::*` (key-custody) unchanged.
+- **Chunk A, `cargo xtask test` (T-j) and any new local runner**: plain
+  `cargo nextest run` now leaves out properties, scale and real RandomX;
+  anything that must run them passes `--profile ci` (all of today's CI,
+  coverage, `xtask engine properties|scale` and live already do).
+  `xtask engine properties` (`-E test(::properties::)`) now runs the
+  generated cases only; the fixed-input tests that sat beside them run in
+  the ordinary ci run instead.
+- Nothing needed from chunks B or C.
 
-## Timings (`-p engine`, this machine, four agents building at once)
-- Baseline, ci profile, before any change: 66.9 s wall, 859 tests.
+## Timings (`-p engine`, this machine)
+- Baseline, ci profile, before any change: 66.9 s wall, 859 tests (load
+  about 110).
+- After F9 only, ci profile: 20.8 s, 861 tests.
+- Final, default profile: **5.6 s** at load 3 (698 tests, before the 36 L2
+  tests); 12.9 s at load 40 (731 tests). The slowest local tests are now
+  the RingCT parts and `every_proof_config_shutdown…` (about 2-5 s).
+- Final, ci profile: **32.8 s** at load 40 (867 tests); 163 s at load 165.
+- Against the plan: the whole Rust workspace was to be about 19 s locally
+  after T-i and 13 s with F8; the engine alone, which held the floor
+  (33.7 s property, 19.2 s SQL sweep), is now 5.6 s quiet, so it no longer
+  sets the workspace floor. The workspace figure is for the orchestrator's
+  combined run.
