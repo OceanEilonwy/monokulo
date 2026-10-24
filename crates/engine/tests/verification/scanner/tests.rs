@@ -54,7 +54,7 @@
 //!    `a_status_change_whose_order_event_cannot_be_written_is_rolled_back_rather_than_lost`.
 //! 5. **Dishonest or swapped daemons** (some closed, some accepted trust
 //!    boundaries).
-//!    `swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg`
+//!    `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`
 //!    (a node presenting a different history is handled by, and is indistinguishable
 //!    from, ordinary reorg detection - which is why no per-daemon sync state exists);
 //!    `a_daemon_that_omits_a_transaction_from_its_mempool_only_delays_detection`;
@@ -75,7 +75,7 @@
 //!    (a payment and an unrelated void in one tick, across two orders sharing one
 //!    transaction - the cross-tenant case migration 0004 exists for).
 //! 7. **Everything else worth naming.**
-//!    `an_output_whose_amount_cannot_be_decrypted_is_skipped_not_recorded_as_zero` and
+//!    `an_undecryptable_amount_is_neither_recorded_nor_staged` and
 //!    `an_amount_that_only_decrypts_on_a_later_tick_is_recorded_then_never_unrecorded`
 //!    (inconsistent amount recovery across ticks, both orderings);
 //!    `a_payment_completing_an_order_in_the_tick_its_deadline_passes_settles_rather_than_expiring`
@@ -746,114 +746,69 @@ async fn setup_with_expiry(
     )
 }
 
-/// The default grace period for recently-expired orders.
+/// The grace period for recently-expired orders, at its boundary. An order
+/// a prior tick already flipped to `Expired` (the state the widening exists
+/// for: a still-`pending` order is covered by the base four-status clause
+/// anyway) gets a pool payment. Expired moments ago, inside a generous grace
+/// period, it is matched by ordinary live scanning and comes alive again;
+/// expired 10,000 s ago against a 60 s grace period, it is not (the gap the
+/// manual rescan exists to close) and stays untouched.
 #[tokio::test]
 async fn a_recently_expired_orders_late_payment_is_still_matched_within_its_grace_period() {
-    let now = crate::now_unix();
-    let (store, key_custody, handle, tenant_id, order_id) = setup_with_expiry(now - 300).await;
+    for (expired_ago, grace, matched) in [(300, 3600, true), (10_000, 60, false)] {
+        let now = crate::now_unix();
+        let (store, key_custody, handle, tenant_id, order_id) =
+            setup_with_expiry(now - expired_ago).await;
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 0, now)
+            .unwrap();
+        assert_eq!(
+            status,
+            OrderStatus::Expired,
+            "test setup must actually produce an expired order"
+        );
 
-    // A prior tick already flipped this order to `Expired` - the exact state
-    // the grace-period widening needs to matter at all (a still-`pending`
-    // order is already covered by the base four-status clause regardless).
-    let (_, status) = store
-        .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 0, now)
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.set_mempool(vec![fixture_tx()]);
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+            20,
+            grace,
+        )
+        .await
         .unwrap();
-    assert_eq!(
-        status,
-        OrderStatus::Expired,
-        "test setup must actually produce an expired order"
-    );
 
-    let store = store.into_shared();
-    let daemon = FakeDaemonClient::new();
-    daemon.set_mempool(vec![fixture_tx()]);
-
-    // A generous grace period - the order expired moments ago, well inside it.
-    run_scan_tick(
-        &store,
-        &key_custody,
-        &daemon,
-        "mainnet",
-        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
-        20,
-        3600,
-    )
-    .await
-    .unwrap();
-
-    let s = store.lock();
-    assert_eq!(
-        s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+        let s = store.lock();
+        assert_eq!(
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+                .unwrap()
+                .len(),
+            usize::from(matched),
+            "expired {expired_ago}s ago, grace {grace}s"
+        );
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
+            )
             .unwrap()
-            .len(),
-        1,
-        "a late payment within the grace period must still be matched by ordinary live scanning"
-    );
-    let order = s
-        .get_order(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            &shared::ids::OrderId::new(order_id.clone()),
-        )
-        .unwrap()
-        .unwrap();
-    // No native 0-conf threshold configured (`setup_with_expiry`), so a mempool-only
-    // sighting correctly settles at `Unconfirmed`, not `Paid` - the real point
-    // here is that the order came alive again at all (it must not still read
-    // `Expired` with the payment silently uncounted).
-    assert_eq!(
-        order.status,
-        OrderStatus::Unconfirmed,
-        "the order must reflect the late payment, not remain stuck at Expired"
-    );
-}
-
-#[tokio::test]
-async fn a_payment_arriving_after_the_grace_period_has_elapsed_is_genuinely_not_matched() {
-    let now = crate::now_unix();
-    let (store, key_custody, handle, tenant_id, order_id) = setup_with_expiry(now - 10_000).await;
-
-    let (_, status) = store
-        .recompute_order_status(&shared::ids::OrderId::new(order_id.clone()), 0, now)
-        .unwrap();
-    assert_eq!(
-        status,
-        OrderStatus::Expired,
-        "test setup must actually produce an expired order"
-    );
-
-    let store = store.into_shared();
-    let daemon = FakeDaemonClient::new();
-    daemon.set_mempool(vec![fixture_tx()]);
-
-    // A short grace period the order's 10,000-second-old expiry is well past -
-    // proving the boundary is real, not just documented (exactly the gap the
-    // manual rescan exists to close).
-    run_scan_tick(
-        &store,
-        &key_custody,
-        &daemon,
-        "mainnet",
-        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
-        20,
-        60,
-    )
-    .await
-    .unwrap();
-
-    let s = store.lock();
-    assert_eq!(
-        s.get_all_payments(&shared::ids::OrderId::new(order_id.clone())).unwrap().len(),
-        0,
-        "a payment arriving after the grace period has elapsed must not be matched by ordinary live scanning"
-    );
-    let order = s
-        .get_order(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            &shared::ids::OrderId::new(order_id.clone()),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(order.status, OrderStatus::Expired, "must remain untouched");
+            .unwrap();
+        // No native 0-conf threshold configured (`setup_with_expiry`), so a
+        // mempool-only sighting settles at `Unconfirmed`, not `Paid`: the
+        // point is that the order came alive again, not still `Expired` with
+        // the payment silently uncounted.
+        let expected = if matched {
+            OrderStatus::Unconfirmed
+        } else {
+            OrderStatus::Expired
+        };
+        assert_eq!(order.status, expected, "expired {expired_ago}s ago");
+    }
 }
 
 /// One transaction scanned for two stores. The store it pays gets the
@@ -1949,63 +1904,6 @@ async fn first_run_bootstrap_tolerates_a_daemon_reporting_a_tip_it_cannot_yet_se
         store.lock().max_scanned_height(Network::Mainnet).unwrap(),
         Some(11)
     );
-}
-
-#[tokio::test]
-async fn an_output_whose_amount_cannot_be_decrypted_is_skipped_not_recorded_as_zero() {
-    // Monero output-amount recovery can fail, which is why `MatchedOutput::
-    // amount_piconero` is an `Option` at all. Recording the failure as a
-    // 0-piconero payment is strictly worse than recording nothing: the row
-    // contributes no money while still participating in `min_confirmations` and
-    // `all_zero_conf` (see status.rs's
-    // `a_zeroed_but_present_row_is_not_a_safe_substitute_for_exclusion`, which
-    // documents exactly how that corrupts the derived status), and it can never
-    // be removed afterwards, because voiding requires affirmative double-spend
-    // proof that will never arrive for a perfectly valid output.
-    let (store, _key_custody, _handle, tenant_id, order_id) = setup().await;
-
-    let scan = ScanResult {
-        matches: vec![MatchedOutput {
-            output_index: 0,
-            subaddress_index: SubaddressIndex { major: 0, minor: 1 }, // the order created by setup()
-            amount_piconero: None,
-        }],
-        txid: "tx_with_an_undecryptable_output".into(),
-        key_images_json: "[]".into(),
-        output_keys: HashMap::default(),
-    };
-
-    let touched = record_scan_match(
-        &store,
-        &shared::ids::TenantId::new(tenant_id.clone()),
-        &scan,
-        1500,
-        Some(50),
-    )
-    .unwrap();
-    assert!(
-        touched.is_empty(),
-        "an unmeasurable output must not even mark the order as needing a recompute"
-    );
-    assert!(
-        store
-            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-            .unwrap()
-            .is_empty(),
-        "nothing may be persisted for an output whose amount could not be recovered"
-    );
-
-    // The order is untouched, so a later tick that *can* decrypt the amount is
-    // still free to record it properly.
-    let order = store
-        .get_order(
-            &shared::ids::TenantId::new(tenant_id),
-            &shared::ids::OrderId::new(order_id),
-        )
-        .unwrap()
-        .unwrap();
-    assert_eq!(order.status, OrderStatus::Pending);
-    assert_eq!(order.amount_received_piconero, 0);
 }
 
 #[tokio::test]
@@ -4550,43 +4448,159 @@ fn voided(store: &crate::store::SharedStore, order_id: &str) -> Vec<bool> {
         .collect()
 }
 
+/// A void recheck pass over a voided payment, by what fresh evidence says.
+/// Every key image defaults to `Unspent` unless a node is told otherwise, so
+/// a node told nothing models the original accusation no longer holding up:
+/// the void is reversed, the order's sticky flag cleared and the merchant
+/// told. A void still supported, one aged out of the recheck window (fresh
+/// evidence would clear it, but nobody looks), and one whose node is down
+/// (the round fails and is retried; nothing is decided meanwhile) are left
+/// alone.
 #[tokio::test]
 async fn the_void_recheck_reverses_a_void_no_longer_supported_by_fresh_evidence() {
-    let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+    for evidence in [
+        "no longer spent",
+        "still spent",
+        "outside the window",
+        "node down",
+    ] {
+        let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+            .unwrap()[0]
+            .clone();
+        let daemon = chain_replica();
+        match evidence {
+            "still spent" => {
+                let key_images: Vec<String> =
+                    serde_json::from_str(&payment.key_images_json).unwrap();
+                for ki in &key_images {
+                    daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
+                }
+            }
+            "outside the window" => {
+                let old_timestamp = crate::now_unix() - DOUBLE_SPEND_RECHECK_WINDOW_SECS - 3600;
+                let s = store.lock();
+                let order = shared::ids::OrderId::new(order_id.clone());
+                assert!(s
+                    .unvoid_payment(&order, &payment.txid, payment.output_index)
+                    .unwrap());
+                assert!(s
+                    .void_payment(&order, &payment.txid, payment.output_index, old_timestamp)
+                    .unwrap());
+            }
+            "node down" => daemon.set_online(false), // every call, get_height too, fails
+            _ => {}
+        }
+        let round = round_with_void_recheck_due(&store, &daemon).await;
+        assert_eq!(round.is_err(), evidence == "node down", "{evidence}");
+        let reversed = evidence == "no longer spent";
+        assert_eq!(voided(&store, &order_id), vec![!reversed], "{evidence}");
+        let s = store.lock();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.clone()),
+                &shared::ids::OrderId::new(order_id.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            order.double_spend_detected_at.is_none(),
+            reversed,
+            "{evidence}: the sticky flag clears with the order's only void"
+        );
+        let told = s
+            .order_events_for_test()
+            .unwrap()
+            .into_iter()
+            .any(|d| d.event_type == "order.double_spend_reversed");
+        assert_eq!(
+            told, reversed,
+            "{evidence}: the merchant told about the accusation is told it was wrong"
+        );
+    }
 
-    // Every key image defaults to `Unspent` unless explicitly told otherwise, so
-    // simply not calling `set_key_image_status` models the original accusation
-    // no longer holding up.
-    round_with_void_recheck_due(&store, &chain_replica())
+    {
+        // Two independent payments on one order, both voided - only one is a false
+        // accusation. The order-level sticky flag must survive the correction of the
+        // first, since the second remains a genuine, still-supported incident.
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let first = fixture_tx();
+        let second = independent_payment_tx(5);
+        let now = crate::now_unix();
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
+            &shared::ids::TenantId::new(tenant_id.clone()),
+            &first,
+            0..3,
+            now,
+            Some(50),
+        )
         .await
         .unwrap();
-
-    let s = store.lock();
-    let payment = &s
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-        .unwrap()[0];
-    assert!(payment.voided_at.is_none(), "the void should be reversed");
-    let order = s
-        .get_order(
+        scan_transaction_for_tenant(
+            &store,
+            &key_custody,
+            handle,
             &shared::ids::TenantId::new(tenant_id.clone()),
-            &shared::ids::OrderId::new(order_id.clone()),
+            &second,
+            0..3,
+            now,
+            Some(50),
         )
-        .unwrap()
+        .await
         .unwrap();
-    assert!(
-        order.double_spend_detected_at.is_none(),
-        "the only voided payment on the order was cleared - the sticky flag should clear too"
-    );
-    let events: Vec<String> = s
-        .order_events_for_test()
-        .unwrap()
-        .into_iter()
-        .map(|d| d.event_type)
-        .collect();
-    assert!(
-        events.contains(&"order.double_spend_reversed".to_owned()),
-        "the merchant told about the original accusation deserves to be told it was wrong too: {events:?}"
-    );
+        // Void both by their *actual* recorded output_index - not assumed to be 0,
+        // since that depends on which output of each fixture transaction matched.
+        for payment in store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+            .unwrap()
+        {
+            store
+                .void_payment(
+                    &shared::ids::OrderId::new(order_id.clone()),
+                    &payment.txid,
+                    payment.output_index,
+                    now,
+                )
+                .unwrap();
+        }
+        store
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.clone()), now)
+            .unwrap();
+
+        let store = store.into_shared();
+        let recheck_daemon = FakeDaemonClient::new();
+        for ki in &key_images_of(&second) {
+            recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
+            // still genuinely spent
+        }
+        // `first`'s key images default to Unspent - the accusation being corrected.
+
+        round_with_void_recheck_due(&store, &recheck_daemon)
+            .await
+            .unwrap();
+
+        let s = store.lock();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+            .unwrap();
+        let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
+        assert_eq!(voided.len(), 1, "the still-justified void must remain");
+        assert_eq!(voided[0].txid, tx_id_hex(&second));
+        assert_eq!(
+            kept[0].txid,
+            tx_id_hex(&first),
+            "the false accusation is reversed"
+        );
+        assert!(
+            s.get_order(&shared::ids::TenantId::new(tenant_id.clone()), &shared::ids::OrderId::new(order_id.clone())).unwrap().unwrap().double_spend_detected_at.is_some(),
+            "the other voided payment still genuinely justifies the flag - it must not be cleared as a side effect"
+        );
+    }
 }
 
 #[tokio::test]
@@ -4631,183 +4645,6 @@ async fn node_disagreement_never_restores_a_void() {
     ]);
     round_with_void_recheck_due(&store, &daemon).await.unwrap();
     assert_eq!(voided(&store, &order_id), vec![true]);
-}
-
-#[tokio::test]
-async fn the_void_recheck_leaves_a_still_supported_void_alone() {
-    let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-    let payment = store
-        .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-        .unwrap()[0]
-        .clone();
-    let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
-
-    let recheck_daemon = chain_replica();
-    for ki in &key_images {
-        recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
-    }
-
-    round_with_void_recheck_due(&store, &recheck_daemon)
-        .await
-        .unwrap();
-    assert_eq!(
-        voided(&store, &order_id),
-        vec![true],
-        "a still-supported void must not be reversed"
-    );
-    assert!(store
-        .lock()
-        .get_order(
-            &shared::ids::TenantId::new(tenant_id.clone()),
-            &shared::ids::OrderId::new(order_id.clone())
-        )
-        .unwrap()
-        .unwrap()
-        .double_spend_detected_at
-        .is_some());
-}
-
-#[tokio::test]
-async fn the_void_recheck_ignores_a_void_outside_the_recheck_window() {
-    let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-    let payment = store
-        .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-        .unwrap()[0]
-        .clone();
-
-    // Backdate the void to well outside the recheck window - fresh evidence would
-    // clear it if only the recheck looked, but it's aged out.
-    let old_timestamp = crate::now_unix() - DOUBLE_SPEND_RECHECK_WINDOW_SECS - 3600;
-    {
-        let s = store.lock();
-        assert!(s
-            .unvoid_payment(
-                &shared::ids::OrderId::new(order_id.clone()),
-                &payment.txid,
-                payment.output_index
-            )
-            .unwrap());
-        assert!(s
-            .void_payment(
-                &shared::ids::OrderId::new(order_id.clone()),
-                &payment.txid,
-                payment.output_index,
-                old_timestamp
-            )
-            .unwrap());
-    }
-
-    round_with_void_recheck_due(&store, &chain_replica())
-        .await
-        .unwrap(); // would say Unspent if asked
-    assert_eq!(
-        voided(&store, &order_id),
-        vec![true],
-        "a void outside the recheck window must not be touched"
-    );
-}
-
-#[tokio::test]
-async fn the_void_recheck_keeps_the_flag_set_while_another_voided_payment_still_justifies_it() {
-    // Two independent payments on one order, both voided - only one is a false
-    // accusation. The order-level sticky flag must survive the correction of the
-    // first, since the second remains a genuine, still-supported incident.
-    let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-    let first = fixture_tx();
-    let second = independent_payment_tx(5);
-    let now = crate::now_unix();
-    scan_transaction_for_tenant(
-        &store,
-        &key_custody,
-        handle,
-        &shared::ids::TenantId::new(tenant_id.clone()),
-        &first,
-        0..3,
-        now,
-        Some(50),
-    )
-    .await
-    .unwrap();
-    scan_transaction_for_tenant(
-        &store,
-        &key_custody,
-        handle,
-        &shared::ids::TenantId::new(tenant_id.clone()),
-        &second,
-        0..3,
-        now,
-        Some(50),
-    )
-    .await
-    .unwrap();
-    // Void both by their *actual* recorded output_index - not assumed to be 0,
-    // since that depends on which output of each fixture transaction matched.
-    for payment in store
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-        .unwrap()
-    {
-        store
-            .void_payment(
-                &shared::ids::OrderId::new(order_id.clone()),
-                &payment.txid,
-                payment.output_index,
-                now,
-            )
-            .unwrap();
-    }
-    store
-        .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.clone()), now)
-        .unwrap();
-
-    let store = store.into_shared();
-    let recheck_daemon = FakeDaemonClient::new();
-    for ki in &key_images_of(&second) {
-        recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
-        // still genuinely spent
-    }
-    // `first`'s key images default to Unspent - the accusation being corrected.
-
-    round_with_void_recheck_due(&store, &recheck_daemon)
-        .await
-        .unwrap();
-
-    let s = store.lock();
-    let payments = s
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-        .unwrap();
-    let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
-    assert_eq!(voided.len(), 1, "the still-justified void must remain");
-    assert_eq!(voided[0].txid, tx_id_hex(&second));
-    assert_eq!(
-        kept[0].txid,
-        tx_id_hex(&first),
-        "the false accusation is reversed"
-    );
-    assert!(
-        s.get_order(&shared::ids::TenantId::new(tenant_id.clone()), &shared::ids::OrderId::new(order_id.clone())).unwrap().unwrap().double_spend_detected_at.is_some(),
-        "the other voided payment still genuinely justifies the flag - it must not be cleared as a side effect"
-    );
-}
-
-#[tokio::test]
-async fn the_void_recheck_does_nothing_while_the_chain_height_is_unreachable() {
-    let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-
-    let recheck_daemon = chain_replica();
-    recheck_daemon.set_online(false); // every call, including get_height, now fails
-
-    // A node that is down fails the round (it is retried next round);
-    // nothing is decided about the void meanwhile.
-    assert!(round_with_void_recheck_due(&store, &recheck_daemon)
-        .await
-        .is_err());
-    assert_eq!(
-        voided(&store, &order_id),
-        vec![true],
-        "a recheck that can't run must not touch anything"
-    );
 }
 
 /// Wraps a `FakeDaemonClient`, failing exactly the call index in `fail_on_call`
@@ -5928,143 +5765,19 @@ async fn a_key_image_lookup_failing_mid_reconciliation_leaves_the_reorg_detectab
 }
 
 #[tokio::test]
-async fn swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg() {
-    // The concrete answer to "do we need to record where we synced up to *per
-    // daemon*, so it can be redone if a daemon turns out to be dishonest?".
-    //
-    // This system configures exactly one daemon per network (`main.rs` builds a
-    // `HashMap<Network, Arc<dyn MoneroDaemonClient>>`), so there is no pool of
-    // daemon identities to key sync state by. What there *is* is a record of
-    // which `(height, hash)` pairs this scanner has accepted - and that record is
-    // checked against whatever daemon is answering *now*, with no notion of which
-    // daemon supplied it originally. So pointing the scanner at a different node
-    // serving a different history is not a case the reorg machinery fails to
-    // cover: it is bit-for-bit the same case, and the same code re-derives,
-    // re-locates and rescans exactly as it would for an honest reorg. That is the
-    // property this test pins down - the same store, two entirely separate
-    // daemon instances, no notification that anything changed.
-    let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-    let tx = fixture_tx();
-
-    let honest = FakeDaemonClient::new();
-    for h in 1..=49 {
-        honest.push_block(&format!("a_{h}"), vec![]);
-    }
-    honest.push_block("a_50", vec![tx.clone()]);
-    honest.push_block("a_51", vec![]);
-    let store = store.into_shared();
-    store
-        .lock()
-        .set_scanned_block(Network::Mainnet, 49, "a_49")
-        .unwrap();
-    run_scan_tick(
-        &store,
-        &key_custody,
-        &honest,
-        "mainnet",
-        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
-        20,
-        0,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        store
-            .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-            .unwrap()[0]
-            .block_height,
-        Some(50)
-    );
-
-    // A different node entirely: same network, chain diverging at 48, and the
-    // payment nowhere in it. Nothing tells the scanner the daemon changed.
-    let other = FakeDaemonClient::new();
-    for h in 1..=47 {
-        other.push_block(&format!("a_{h}"), vec![]);
-    }
-    for h in 48..=55 {
-        other.push_block(&format!("b_{h}"), vec![]);
-    }
-
-    run_scan_tick(
-        &store,
-        &key_custody,
-        &other,
-        "mainnet",
-        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
-        20,
-        0,
-    )
-    .await
-    .unwrap();
-    {
-        let s = store.lock();
-        assert_eq!(
-            s.max_scanned_height(Network::Mainnet).unwrap(),
-            Some(48),
-            "the divergence is found and rewound, exactly as for a reorg: the first recorded height that \
-             differs is 49, so the scan restarts from 48, one below it - detection can only ever be as \
-             fine-grained as the window of hashes it kept"
-        );
-        let payment = &s
-            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
-            .unwrap()[0];
-        assert!(
-            payment.voided_at.is_none(),
-            "the new node not having the transaction proves nothing about it - never void on that"
-        );
-    }
-
-    // ...and the scanner then works forward over the new node's chain.
-    run_scan_tick(
-        &store,
-        &key_custody,
-        &other,
-        "mainnet",
-        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
-        20,
-        0,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        store.lock().max_scanned_height(Network::Mainnet).unwrap(),
-        Some(55)
-    );
-
-    // Swapping back is symmetric: the *first* node is now the one presenting a
-    // divergent history, and gets reconciled the same way.
-    run_scan_tick(
-        &store,
-        &key_custody,
-        &honest,
-        "mainnet",
-        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
-        20,
-        0,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        store.lock().max_scanned_height(Network::Mainnet).unwrap(),
-        Some(47),
-        "no daemon is privileged - the stored chain is re-validated against whoever is answering"
-    );
-}
-
-#[tokio::test]
 async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg(
 ) {
-    // The composed version of `swapping_to_a_daemon_serving_a_different_chain_
-    // reconciles_exactly_like_a_reorg` above: that test proves the *scanner*
-    // doesn't care which daemon answers, by handing it two raw `FakeDaemonClient`s
-    // directly. It never exercises `daemon_fallback::FallbackDaemonClient` itself -
-    // the actual code path production runs, which decides *when* to move to a
-    // different node in the first place. This test proves the two compose
-    // correctly: a real failover, triggered by the primary going unreachable
-    // (not swapped by the test), landing on a fallback with a genuinely different,
-    // divergent chain, still reconciles exactly like an ordinary reorg.
+    // The answer to "do we need to record where we synced up to *per daemon*,
+    // so it can be redone if a daemon turns out to be dishonest?": no. What is
+    // recorded is which `(height, hash)` pairs this scanner accepted, checked
+    // against whatever daemon is answering *now*, with no notion of which one
+    // supplied them. So a node serving a different history is bit-for-bit an
+    // honest reorg, re-derived, re-located and rescanned by the same code.
+    // Here through `daemon_fallback::FallbackDaemonClient`, the code path
+    // production runs, which decides *when* to move to another node: a real
+    // failover, triggered by the primary going unreachable (not swapped by the
+    // test), landing on a fallback with a genuinely divergent chain, then a
+    // swap back to the primary itself.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
     let tx = fixture_tx();
 
@@ -6139,7 +5852,8 @@ async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_differe
         assert_eq!(
             s.max_scanned_height(Network::Mainnet).unwrap(),
             Some(48),
-            "failover to a genuinely diverging fallback reconciles exactly like the raw-swap test above"
+            "failover to a genuinely diverging fallback is found and rewound exactly like a reorg: the \
+             first recorded height that differs is 49, so the scan restarts from 48"
         );
         assert!(
             s.get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
@@ -6165,6 +5879,29 @@ async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_differe
         store.lock().max_scanned_height(Network::Mainnet).unwrap(),
         Some(52),
         "scanning continues forward on the fallback's own chain"
+    );
+
+    // Swapping back is symmetric: the primary, back and taller, is now the
+    // one presenting a divergent history, and is reconciled the same way.
+    primary.set_online(true);
+    for h in 51..=53 {
+        primary.push_block(&format!("a_{h}"), vec![]);
+    }
+    run_scan_tick(
+        &store,
+        &key_custody,
+        &*primary,
+        "mainnet",
+        &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
+        20,
+        0,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        store.lock().max_scanned_height(Network::Mainnet).unwrap(),
+        Some(47),
+        "no daemon is privileged - the stored chain is re-validated against whoever is answering"
     );
 }
 
@@ -6636,7 +6373,7 @@ async fn a_daemon_far_behind_the_recorded_high_water_mark_neither_rescans_nor_di
     //
     // Recovery needs no special case: once the node climbs back into the window,
     // any genuine divergence is caught by the ordinary hash comparison (see
-    // `swapping_to_a_daemon_serving_a_different_chain_reconciles_exactly_like_a_reorg`).
+    // `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`).
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
     let tx = fixture_tx();
     scan_transaction_for_tenant(
@@ -8568,62 +8305,88 @@ async fn tenants_are_scanned_concurrently_not_one_after_another() {
 
 // -- Fixes from the independent review of the per-tenant cursors ---------
 
+/// A store whose keys' backend is down while a late payment to its order is
+/// mined falls behind; by the time it catches up, the order is out of the
+/// scan window (the grace period ended during the gap, or the order closed
+/// since, well past a 60 s grace period). It was in scope when the gap
+/// began, so the store is still caught up, not skipped, and the payment
+/// found once, at its block.
 #[tokio::test]
 async fn a_late_payment_in_the_grace_period_is_found_even_if_the_grace_period_ends_during_the_gap()
 {
-    let store = Store::open_in_memory().unwrap();
-    let custody = FlakyKeyCustody::default();
-    let now = crate::now_unix();
-    // Expired 50s ago, inside a one-hour grace period.
-    let (a, a_handle, a_order) = fixture_tenant(&store, &custody, now - 50).await;
-    let store = store.into_shared();
-    let tenants = [(a.clone(), a_handle)];
-    let daemon = FakeDaemonClient::new();
-    daemon.push_block("h1", vec![]);
-    daemon.push_block("h2", vec![]);
-    daemon.set_block_timestamp(2, (now - 100) as u64);
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
-        .await
-        .unwrap();
-    assert_eq!(
-        order_status(
-            &store,
-            &shared::ids::OrderId::new(a_order.as_str().to_owned())
-        ),
-        OrderStatus::Expired
-    );
+    for case in ["grace ends during the gap", "order closes during the gap"] {
+        let store = Store::open_in_memory().unwrap();
+        let custody = FlakyKeyCustody::default();
+        let now = crate::now_unix();
+        let ends = case == "grace ends during the gap";
+        // Expired 50s ago, inside a one-hour grace period; or still open.
+        let expires_at = if ends { now - 50 } else { now + 3600 };
+        let grace = if ends { 3600 } else { 60 };
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, expires_at).await;
+        let store = store.into_shared();
+        let tenants = [(a.clone(), a_handle)];
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_block_timestamp(2, (now - if ends { 100 } else { 1000 }) as u64);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, grace)
+            .await
+            .unwrap();
+        if ends {
+            assert_eq!(
+                order_status(
+                    &store,
+                    &shared::ids::OrderId::new(a_order.as_str().to_owned())
+                ),
+                OrderStatus::Expired
+            );
+        }
 
-    // Backend down while the late payment is mined.
-    custody.fail(a_handle);
-    daemon.push_block("h3", vec![fixture_tx()]);
-    daemon.set_block_timestamp(3, (now - 20) as u64);
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
-        .await
-        .unwrap();
-    assert_eq!(cursor_of(&store, a.as_str()), Some(2));
+        // Backend down while the late payment is mined.
+        custody.fail(a_handle);
+        daemon.push_block("h3", vec![fixture_tx()]);
+        if ends {
+            daemon.set_block_timestamp(3, (now - 20) as u64);
+        }
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, grace)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2), "{case}");
 
-    // The grace period is over by now (modelled by a grace of 0), so the
-    // order is no longer in scope today. It was in scope during the gap,
-    // though, so the tenant must still be caught up rather than skipped.
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
-        .await
-        .unwrap();
-    assert_eq!(
-        cursor_of(&store, a.as_str()),
-        Some(2),
-        "not moved past the block with the payment"
-    );
-    custody.recover(a_handle);
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
-        .await
-        .unwrap();
-    assert_eq!(cursor_of(&store, a.as_str()), Some(3));
-    let payments = store
-        .lock()
-        .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
-        .unwrap();
-    assert_eq!(payments.len(), 1, "the late payment was recorded");
-    assert_eq!(payments[0].block_height, Some(3));
+        let grace = if ends {
+            // The grace period is over by now (modelled by a grace of 0).
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
+                .await
+                .unwrap();
+            assert_eq!(
+                cursor_of(&store, a.as_str()),
+                Some(2),
+                "not moved past the block with the payment"
+            );
+            0
+        } else {
+            // Say it was cancelled and expired 500s ago.
+            store
+                .lock()
+                .execute_raw_for_test(&format!(
+                    "UPDATE orders SET status = 'expired', closed_at_utc = {} WHERE id = '{a_order}'",
+                    now - 500
+                ))
+                .unwrap();
+            grace
+        };
+        custody.recover(a_handle);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, grace)
+            .await
+            .unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3), "{case}");
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
+        assert_eq!(payments.len(), 1, "{case}: the late payment was recorded");
+        assert_eq!(payments[0].block_height, Some(3), "{case}");
+    }
 }
 
 #[tokio::test]
@@ -9239,55 +9002,6 @@ async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_
             );
         }
     }
-}
-
-#[tokio::test]
-async fn catch_up_after_a_gap_longer_than_the_grace_period_still_finds_a_payment_to_an_order_that_closed_since(
-) {
-    let store = Store::open_in_memory().unwrap();
-    let custody = FlakyKeyCustody::default();
-    let now = crate::now_unix();
-    let (a, a_handle, a_order) = fixture_tenant(&store, &custody, now + 3600).await;
-    let store = store.into_shared();
-    let tenants = [(a.clone(), a_handle)];
-    let daemon = FakeDaemonClient::new();
-    daemon.push_block("h1", vec![]);
-    daemon.push_block("h2", vec![]);
-    daemon.set_block_timestamp(2, (now - 1000) as u64);
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
-        .await
-        .unwrap();
-
-    custody.fail(a_handle);
-    daemon.push_block("h3", vec![fixture_tx()]);
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
-        .await
-        .unwrap();
-    assert_eq!(cursor_of(&store, a.as_str()), Some(2));
-    // While it was behind, the order closed (say it was cancelled and
-    // expired) 500s ago, well past a 60s grace period by now.
-    store
-        .lock()
-        .execute_raw_for_test(&format!(
-            "UPDATE orders SET status = 'expired', closed_at_utc = {} WHERE id = '{a_order}'",
-            now - 500
-        ))
-        .unwrap();
-
-    custody.recover(a_handle);
-    run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
-        .await
-        .unwrap();
-    assert_eq!(cursor_of(&store, a.as_str()), Some(3));
-    assert_eq!(
-        store
-            .lock()
-            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
-            .unwrap()
-            .len(),
-        1,
-        "it was open when the gap began"
-    );
 }
 
 #[tokio::test]
@@ -10041,8 +9755,14 @@ fn a_coinbase_input_has_no_key_image() {
 }
 
 /// An output that matched but whose amount couldn't be decrypted is
-/// neither recorded nor staged (a zero row would be worse than none),
-/// and the skip is logged.
+/// neither recorded nor staged, and the skip is logged.
+///
+/// Monero output-amount recovery can fail, which is why
+/// `MatchedOutput::amount_piconero` is an `Option` at all. A 0-piconero row
+/// would be strictly worse than none: it contributes no money while still
+/// taking part in `min_confirmations` and `all_zero_conf`, and it can never
+/// be removed, because voiding needs affirmative double-spend proof that
+/// never arrives for a perfectly valid output.
 #[tokio::test]
 async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
     let (_guard, logs) = crate::test_log::capture();
@@ -10057,15 +9777,18 @@ async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
         key_images_json: "[]".into(),
         output_keys: HashMap::default(),
     };
-    assert!(record_scan_match(
-        &store,
-        &shared::ids::TenantId::new(tenant_id.clone()),
-        &scan,
-        100,
-        Some(5)
-    )
-    .unwrap()
-    .is_empty());
+    assert!(
+        record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.clone()),
+            &scan,
+            100,
+            Some(5)
+        )
+        .unwrap()
+        .is_empty(),
+        "an unmeasurable output must not even mark the order as needing a recompute"
+    );
     stage_block_match(
         &store,
         Network::Mainnet,
@@ -10075,17 +9798,28 @@ async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
     )
     .unwrap();
     assert!(store
-        .get_all_payments(&shared::ids::OrderId::new(order_id))
+        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
         .unwrap()
         .is_empty());
     assert!(store
         .take_staged_payments(
             Network::Mainnet,
-            &shared::ids::TenantId::new(tenant_id),
+            &shared::ids::TenantId::new(tenant_id.clone()),
             "any"
         )
         .unwrap()
         .is_empty());
+    // The order is untouched, so a later tick that *can* decrypt the amount
+    // is still free to record it properly.
+    let order = store
+        .get_order(
+            &shared::ids::TenantId::new(tenant_id),
+            &shared::ids::OrderId::new(order_id),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(order.status, OrderStatus::Pending);
+    assert_eq!(order.amount_received_piconero, 0);
     assert_eq!(
         logs.count("its amount could not be decrypted"),
         2,

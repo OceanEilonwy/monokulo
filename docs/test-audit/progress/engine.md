@@ -59,6 +59,35 @@ Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.tom
   `a_store_is_registered_on_the_scanner_loop_s_first_round`, which shares
   the setup (`a_registered_store`).
 
+### F2 and F3 (engine): table merges and deletes, research 17-24
+62 tests removed, 4 table tests added in their place (net −58):
+- `status::tests`: the 20 `derive_status` cases are one table,
+  `derive_status_decides_each_case`, every case a named row, the overflow
+  saturation row (595) kept.
+- `daemon_fallback`: the four two-node key-image cases are one table,
+  `two_nodes_answers_on_a_key_image_are_corroborated`, keeping both
+  disagreement rows (220, 229).
+- `daemon_rpc`: five response-shape tests into
+  `response_shapes_a_real_node_sends_parse` (the doc comment naming the old
+  test updated).
+- `settings` 588 into `engine_settings` 259; `status_page` 278 into 282;
+  `store` 640 into 642 and 681 into 678 (a two-row table).
+- `http::tests`: confirmations (4 tests into 329), amounts (2 into 317), bad
+  keys (3 into 316, the off-curve and non-canonical regression rows and
+  their reasons kept), `/status` states (5 into
+  `status_endpoint_reflects_each_scan_tick_and_node_state`), 335 into 390,
+  357 into 302 as a second block.
+- `scanner::tests`: void recheck (5 into 578, a four-row table over what
+  fresh evidence says, plus the two-payment flag case), grace period 476
+  into 479 (a two-row boundary table), 530 into 468 (two gap rows), 519
+  into 522, 570 into 529 (the swap-back step moved; the doc references to
+  570 point at 529 now).
+- Deleted: `cli` 208 (clap's own `--help`), `work` 804 (Display strings,
+  logs only; serde names are what monokulo reads), `store` 648, 650, 675
+  (N2's table covers wrong, rotated and disabled keys over HTTP).
+- **656 stays** (F3 overturn): the only pin that a deleted store's keys are
+  not re-registered at boot.
+
 ## Decisions
 
 ## Deviations from the plan
