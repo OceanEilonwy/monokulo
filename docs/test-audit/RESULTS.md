@@ -49,9 +49,22 @@ Chunk by chunk:
   - N2: the store-route auth table, read from the router.
   - The ci profile went from 66.9 s to 32.8 s locally.
 
-## Coverage
+## Coverage, measured
 
-See "Coverage, measured" below.
+Both coverage runs were made on CI with the same toolchain. Main is run 40109179915 at 5fddb1419, and the branch is run 40109531936.
+
+| | main | After |
+|---|---|---|
+| Rust lines | 92,822 / 104,968 (12,146 uncovered) | 88,774 / 101,240 (12,466 uncovered) |
+| Browser lines | 2,160 / 2,322 | 2,116 / 2,322 |
+
+Uncovered lines are the fair measure here. Deleting a test removes its own lines, which were all covered, so it changes no uncovered count.
+
+**Rust: 320 more lines uncovered, about 0.3% of the code.** Almost all of them are render arms the presentational tests used to reach: `views/query.rs` +76, `views/webhooks.rs` +68, `views/admin.rs` +35, `views/wallets.rs` +33. There is also the CLI wallet's command highlighting (+21) and a cleared-invites message (+12). The handler lines were checked one by one. Two handler paths had lost their only test, and both are pinned again: the owner's view of a webhook's deliveries (as a page and as a fixi fragment), and an unknown order's payment link answering 404. No auth, ownership, amount or key decision lost its test.
+
+**Browser: 44 lines.** 39 of them are the engine page's animation code (`fly`, `pulse` and `drop`, on the admin diagnostic page). The other 15 are in the POS: the order list's wording for each state, and the theme switch. The double-spend warning on the order on screen is still tested (pos-terminal "double spend on the order on screen warns the merchant").
+
+`docs/coverage-line-baseline.json` is re-baselined from the branch's run, with floors about 1% under the measured lines.
 
 ## What CI showed, and the fixes made at integration
 

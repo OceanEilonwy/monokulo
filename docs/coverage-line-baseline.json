@@ -1,41 +1,41 @@
 {
-  "note": "Reviewed complete local run and isolated clean committed checkout on 2026-09-26. Browser baseline uses the committed source (501/575 lines), while the main worktree's preexisting POS edits measured 537/613. Floors apply only when every recorded tool version matches; changed toolchains require review, while branch totals remain trend data.",
+  "note": "Reviewed from CI coverage run 40109531936 on 2026-10-25, after the test audit (docs/test-audit/RESULTS.md): Rust 88,774/101,240 lines against main's 92,822/104,968 (320 more uncovered, render arms), browser 2,116/2,322 against 2,160/2,322 (the engine page's animations, the POS order list's state wording). Floors sit about 1% under the measured lines. They apply only when every recorded tool version matches; changed toolchains require review, while branch totals remain trend data.",
   "components": {
     "rust": {
       "tools": {
-        "cargo": "cargo 1.100.0-nightly (3d7cf6e93 2026-09-25)",
+        "cargo": "cargo 1.101.0-nightly (15be64aa0 2026-10-20)",
         "collector": "cargo-llvm-cov 0.9.1",
-        "rustc": "rustc 1.100.0-nightly (5ceaf6608 2026-09-25)"
+        "rustc": "rustc 1.101.0-nightly (48f4b0553 2026-10-23)"
       },
       "measured_lines": {
-        "covered": 24451,
-        "total": 27070
+        "covered": 88774,
+        "total": 101240
       },
       "measured_branches": {
-        "covered": 1294,
-        "total": 1698
+        "covered": 7028,
+        "total": 9228
       },
-      "floor_lines": 24000
+      "floor_lines": 88000
     },
     "browser": {
       "tools": {
-        "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
-        "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+        "rustc": "rustc 1.101.0-nightly (48f4b0553 2026-10-23)",
+        "cargo": "cargo 1.101.0-nightly (15be64aa0 2026-10-20)",
         "collector": "istanbul-lib-instrument 6.0.3",
         "playwright": "1.63.0",
-        "node": "v24.14.1",
+        "node": "v24.21.0",
         "vite": "8.3.1",
         "solidPlugin": "3.0.0-next.44"
       },
       "measured_lines": {
-        "covered": 501,
-        "total": 575
+        "covered": 2116,
+        "total": 2322
       },
       "measured_branches": {
-        "covered": 369,
-        "total": 546
+        "covered": 1441,
+        "total": 1983
       },
-      "floor_lines": 480
+      "floor_lines": 2080
     }
   }
 }
