@@ -1416,19 +1416,6 @@ mod tests {
             "{html}"
         );
     }
-
-    /// The default heads the tiers, in the same words, and has no remove:
-    /// it's set in its own field.
-    #[test]
-    fn the_default_heads_the_tiers_without_a_remove() {
-        let html = render(on(StoreTab::Payments));
-        assert!(html.contains("Default confirmations"));
-        assert!(html.contains(r#"value="10""#));
-        assert!(
-            html.contains(r#"<p class="tier-default"><strong>Every order</strong>: the default, 10 confirmations <span class="muted">(about 20 min)</span></p>"#),
-            "{html}"
-        );
-    }
     /// Tiers read smallest first under the default, each with about how
     /// long it waits, and each can be removed even at the limit, when
     /// there's no blank row to add another.
@@ -1484,5 +1471,17 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains("new_unit_amount"), "{html}");
+
+        // The default heads the tiers, in the same words, and has no remove:
+        // it's set in its own field.
+        {
+            let html = render(on(StoreTab::Payments));
+            assert!(html.contains("Default confirmations"));
+            assert!(html.contains(r#"value="10""#));
+            assert!(
+                html.contains(r#"<p class="tier-default"><strong>Every order</strong>: the default, 10 confirmations <span class="muted">(about 20 min)</span></p>"#),
+                "{html}"
+            );
+        }
     }
 }

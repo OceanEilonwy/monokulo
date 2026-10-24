@@ -68,7 +68,25 @@ Scope: every Rust crate except the engine. Tests run with
 - `orders::tests::get_page` is now used only by the snp tests, so it is behind `feature = "snp"`.
 - −33 tests.
 
+### 5. F2/F3 views (merges and rewrites)
+- Folded into their hosts as rows or steps: checkout states 1872/1873/1886 into 1889 and 1874 into
+  the no-JS test; admin 1834 into 1821 and 1853 into 1817; auth 1850/1851 into 1856 (renamed
+  `the_login_page_carries_next_only_when_given_and_escaped`); key_entry 1902 into 1906; orders 1909
+  into 1915; status 1956/1958/1960 into 1965 (renamed `the_proof_of_work_window_at_each_distance_from_the_tip`)
+  and 1957 into 1952; store_settings 1983 into 1985; wallets 2012/2031 into 2029, and 2020 (the
+  `Unknown` row)/2021/2033 into 2017 (renamed `retire_waits_for_orders_stores_and_the_check_then_asks_for_the_name`).
+- 1969 deleted (its rule is now the dismiss handler test from slice 1).
+- Rewrites (research 30): 1875 is `checkout_page_works_without_javascript` (noscript refresh only,
+  its off link, the noscript Save, no site nav), for a page with and without a refund address;
+  1878 is `the_checkout_escapes_what_the_merchant_typed`; 1868 drops the time-format part;
+  1968 is `the_store_page_never_shows_the_engine_endpoint`.
+- −19 tests.
+
 ## Decisions
+- 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
+  pages keep what was typed through three different view models (`shown`, a field's
+  `value`/`saved_value`, the posted `sent` list), and 1826 alone pins "partly saved" against
+  "nothing saved". One test across the three would need their private fixtures made crate-wide.
 
 ## Deviations from the plan
 

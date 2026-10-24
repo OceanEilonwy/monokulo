@@ -684,23 +684,6 @@ mod tests {
     }
 
     #[test]
-    fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let data = OrderDetailViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
-            order: Some(test_order_detail_data(None)),
-        };
-        let html = detail_page(&chrome(), &data).into_string();
-        // The point: no dash, no row at all - a
-        // permanently-visible "Double-spend detected at" label reads as a
-        // warning even when it says nothing happened.
-        assert!(
-            !html.contains("Double-spend detected at"),
-            "expected the row fully absent when no double-spend occurred, got: {html}"
-        );
-    }
-
-    #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
         let data = OrderDetailViewModel {
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
@@ -717,6 +700,24 @@ mod tests {
                 && html.contains(">14 Nov 2023, 22:13</time>"),
             "expected the real detected-at time shown, got: {html}"
         );
+
+        // Detail page hides the double spend row entirely when none was
+        // detected.
+        {
+            let data = OrderDetailViewModel {
+                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+                display_name: "shop.example.com".to_string(),
+                order: Some(test_order_detail_data(None)),
+            };
+            let html = detail_page(&chrome(), &data).into_string();
+            // The point: no dash, no row at all - a
+            // permanently-visible "Double-spend detected at" label reads as a
+            // warning even when it says nothing happened.
+            assert!(
+                !html.contains("Double-spend detected at"),
+                "expected the row fully absent when no double-spend occurred, got: {html}"
+            );
+        }
     }
 
     fn payment(txid: &str, amount_piconero: u64, first_seen_at: i64) -> PaymentRowViewModel {

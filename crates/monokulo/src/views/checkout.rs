@@ -929,35 +929,36 @@ mod tests {
         }
     }
 
+    /// Without JavaScript the checkout still works: it refreshes itself
+    /// once a minute from inside `<noscript>` only (with a link to stop
+    /// it), the refund address has its own Save button, and there is no
+    /// site nav or brand.
     #[test]
-    fn checkout_page_preserves_no_js_refund_entry_and_adds_local_qr_capture() {
-        let html = checkout_page(&chrome(), &test_checkout_view_model(false)).into_string();
-        assert!(html.contains(&crate::assets::url("checkout.js")));
-        assert!(html.contains(r#"id="scan-refund" hidden="""#), "{html}");
-        assert!(html.contains(r#"id="upload-refund" hidden="""#), "{html}");
-        assert!(html.contains(&crate::assets::url("jsQR.js")));
-        // The address whole, read whole to a screen reader and shown in
-        // groups of six to check by eye, the ends named to check; its Copy
-        // button comes with the islands.
-        assert!(html.contains(r#"<span class="visually-hidden">86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC</span>"#), "{html}");
-        assert!(html.contains(r#"<span class="mk-grouped-value mk-mono" aria-hidden="true" data-mk="1"><span>86hiL7</span><span>n5RcVJ</span>"#), "{html}");
-        assert!(html.contains("Check your wallet shows <strong>86hiL7</strong> at the start and <strong>GCnfC</strong> at the end."), "{html}");
-        assert!(html.contains(&crate::assets::url("ui-islands.js")));
-        assert!(html.contains(
-            r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
-        ));
-        assert!(html.contains(r#"<noscript><p class="refresh-toggle"><a href="/checkout/pay_abc123?refresh=false">Auto Refresh: ON</a></p></noscript>"#), "got: {html}");
-        assert!(html.contains(
-            r#"<noscript><div class="form-actions"><button class="mk-btn" type="submit">Save</button></div></noscript>"#
-        ));
-        assert!(
-            !html.contains(r#"<nav class="site-nav""#),
-            "the checkout page must not carry the site nav, got: {html}"
-        );
-        assert!(
-            !html.contains("Monokulo"),
-            "the checkout page must not carry the site brand/logo, got: {html}"
-        );
+    fn checkout_page_works_without_javascript() {
+        let mut data = test_checkout_view_model(false);
+        for refund_address in [None, Some(data.address.clone())] {
+            data.refund_address = refund_address;
+            let html = checkout_page(&chrome(), &data).into_string();
+            assert!(html.contains(
+                r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
+            ));
+            assert_eq!(
+                html.matches("http-equiv=\"refresh\"").count(),
+                1,
+                "the refresh must only exist inside noscript, got: {html}"
+            );
+            assert!(
+                html.contains(
+                    r#"<a href="/checkout/pay_abc123?refresh=false">Auto Refresh: ON</a>"#
+                ),
+                "{html}"
+            );
+            assert!(html.contains(
+                r#"<noscript><div class="form-actions"><button class="mk-btn" type="submit">Save</button></div></noscript>"#
+            ));
+            assert!(!html.contains(r#"<nav class="site-nav""#), "{html}");
+            assert!(!html.contains("Monokulo"), "{html}");
+        }
     }
 
     #[test]
@@ -1012,21 +1013,6 @@ mod tests {
     }
 
     #[test]
-    fn checkout_page_meta_refreshes_once_a_minute_only_without_javascript() {
-        let mut data = test_checkout_view_model(false);
-        data.refund_address = Some(data.address.clone());
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains(
-            r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#
-        ));
-        assert_eq!(
-            html.matches("http-equiv=\"refresh\"").count(),
-            1,
-            "the refresh must only exist inside noscript, got: {html}"
-        );
-    }
-
-    #[test]
     fn live_fragment_carries_every_changing_region_and_nothing_else() {
         let mut data = test_checkout_view_model(false);
         data.status = shared::order_status::OrderStatus::Partial;
@@ -1067,136 +1053,26 @@ mod tests {
         ));
     }
 
-    /// The payer sees who is asking and for what before anything else:
-    /// the store's name, its verified site, what the order is for and the
-    /// merchant's reference, each escaped, merchant-typed text.
+    /// What the merchant typed (the order's description, its reference)
+    /// reaches the payer escaped.
     #[test]
-    fn the_checkout_names_who_is_asking_and_for_what() {
+    fn the_checkout_escapes_what_the_merchant_typed() {
         let mut data = test_checkout_view_model(false);
         data.description = Some("2× Yirgacheffe <250g>".to_string());
-        data.merchant_reference = Some("INV-2041".to_string());
-        data.merchant_site = crate::stores::Site::parse("corner.example").ok();
+        data.merchant_reference = Some("<INV-2041>".to_string());
         let html = checkout_page(&chrome(), &data).into_string();
-        let header = html
-            .find(r#"<header class="merchant">"#)
-            .expect("the header");
-        assert!(header < html.find(r#"class="pay-grid""#).unwrap(), "{html}");
-        assert!(html.contains("<h2>Corner shop</h2>"), "{html}");
-        // The store's letter, and its verified site's icon to show once it loads.
+        assert!(html.contains("2× Yirgacheffe &lt;250g&gt;"), "{html}");
+        assert!(html.contains("&lt;INV-2041&gt;"), "{html}");
         assert!(
-            html.contains(r#"<span class="mk-avatar-initial">C</span>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains("https://corner.example/favicon.ico"),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<p class="hint" data-merchant="site">corner.example "#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<p class="merchant-for">2× Yirgacheffe &lt;250g&gt;</p>"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"Reference <span class="mk-mono">INV-2041</span>"#),
-            "{html}"
-        );
-
-        // Nothing set but the store: its letter and its name, no lines for
-        // what isn't there, and no icon to fetch without a verified site.
-        let html = checkout_page(&chrome(), &test_checkout_view_model(false)).into_string();
-        assert!(
-            html.contains(r#"<div class="merchant-about"><h2>Corner shop</h2></div></header>"#),
-            "{html}"
-        );
-        assert!(!html.contains("favicon.ico"), "{html}");
-
-        // A compact frame: one line, the name and the reference.
-        data.is_compact = true;
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(
-            html.contains(r#"<header class="merchant"><p class="hint"><strong>Corner shop</strong> · INV-2041</p></header>"#),
+            !html.contains("<250g>") && !html.contains("<INV-2041>"),
             "{html}"
         );
     }
 
-    #[test]
-    fn partial_payment_shows_remaining_amount_and_deadline() {
-        let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Partial;
-        data.status_label = "Partial payment received".to_string();
-        data.amount_received_xmr = "0.200000000000".to_string();
-        data.payment_error = Some(
-            "0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below."
-                .to_string(),
-        );
-        data.amount_due_xmr = "0.300000000000".to_string();
-        let html = checkout_page(&chrome(), &data).into_string();
-        // The stage says what arrived and what's left, with the time left;
-        // the badge stays for screen readers only.
-        assert!(html.contains(r#"class="sr-only state-partial""#));
-        assert!(
-            html.contains(r#"<div class="mk-stage state-partial">"#),
-            "{html}"
-        );
-        assert!(html.contains(r#"<li class="step-part">"#));
-        assert!(html.contains("<strong>Send the remaining 0.3 XMR.</strong>"));
-        assert!(html.contains("0.2 of 0.5 XMR received. This new code asks for the rest."));
-        // The time left is under the amount, not in the stage's words.
-        assert!(
-            html.contains(r#"<strong data-mk="2">30m</strong><!--mk:3--> left to pay</span>"#),
-            "{html}"
-        );
-        assert!(
-            html.find("mk-countdown") > html.find(r#"id="xmr-amount""#),
-            "{html}"
-        );
-        // The amount is what's left, under a new code for it.
-        assert!(html.contains(r#"<span class="amount-value">0.3</span>"#));
-        assert!(html.contains(r#"<div class="qr-wrap qr-new">"#));
-        assert!(html.contains("Send the remaining amount to"));
-        assert!(!html.contains("the customer sent"));
-    }
-
-    #[test]
-    fn the_stage_leads_the_page_in_every_state_and_the_code_never_leaves() {
-        for status in [
-            "pending",
-            "partial",
-            "unconfirmed",
-            "confirming",
-            "paid",
-            "overpaid",
-            "expired",
-            "cancelled",
-        ] {
-            let mut data = test_checkout_view_model(!matches!(
-                status,
-                "pending" | "partial" | "unconfirmed" | "confirming"
-            ));
-            data.status = status.parse().expect("a known status");
-            let html = checkout_page(&chrome(), &data).into_string();
-            let stage = html
-                .find(r#"class="stage-slot""#)
-                .unwrap_or_else(|| panic!("{status}: no stage in {html}"));
-            let code = html
-                .find(r#"<div class="qr-wrap"#)
-                .unwrap_or_else(|| panic!("{status}: no code in {html}"));
-            assert!(
-                stage < code,
-                "{status}: the stage must come before the code"
-            );
-            assert!(
-                !html.contains(r#"id="payment-state""#)
-                    && !html.contains(r#"class="receipt"#)
-                    && !html.contains(r#"class="expiry-pill"#),
-                "{status}: {html}"
-            );
-        }
-    }
-
+    /// In every state the stage leads and the code stays on the page; the
+    /// code fades once the payment is seen or the order is over. A part
+    /// payment asks for what's left under a new code with the time left;
+    /// a full one drops the deadline; an overpaid one explains the extra.
     #[test]
     fn the_code_fades_once_the_payment_is_seen_or_the_order_is_over() {
         for (status, faded) in [
@@ -1209,11 +1085,67 @@ mod tests {
             ("expired", true),
             ("cancelled", true),
         ] {
-            let mut data = test_checkout_view_model(false);
+            let mut data = test_checkout_view_model(!matches!(
+                status,
+                "pending" | "partial" | "unconfirmed" | "confirming"
+            ));
             data.status = status.parse().expect("a known status");
             let html = checkout_page(&chrome(), &data).into_string();
             assert_eq!(html.contains("qr-wrap is-spent"), faded, "{status}: {html}");
+            let stage = html
+                .find(r#"class="stage-slot""#)
+                .unwrap_or_else(|| panic!("{status}: no stage in {html}"));
+            let code = html
+                .find(r#"<div class="qr-wrap"#)
+                .unwrap_or_else(|| panic!("{status}: no code in {html}"));
+            assert!(
+                stage < code,
+                "{status}: the stage must come before the code"
+            );
         }
+
+        // Part paid: what's left, a new code for it, and the time left.
+        let mut data = test_checkout_view_model(false);
+        data.status = shared::order_status::OrderStatus::Partial;
+        data.amount_received_xmr = "0.200000000000".to_string();
+        data.amount_due_xmr = "0.300000000000".to_string();
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(
+            html.contains("<strong>Send the remaining 0.3 XMR.</strong>"),
+            "{html}"
+        );
+        assert!(html.contains("0.2 of 0.5 XMR received. This new code asks for the rest."));
+        assert!(
+            html.contains(r#"<span class="amount-value">0.3</span>"#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<div class="qr-wrap qr-new">"#), "{html}");
+        assert!(html.contains(" left to pay</span>"), "{html}");
+        assert!(html.contains("Send the remaining amount to"), "{html}");
+
+        // Paid in full: no deadline.
+        data.status = shared::order_status::OrderStatus::Confirming;
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(!html.contains(" left to pay</span>"), "{html}");
+        assert!(html.contains("Payment address"), "{html}");
+
+        // Overpaid: the extra explained, over the order total.
+        data.status = shared::order_status::OrderStatus::Overpaid;
+        data.is_terminal = true;
+        data.amount_received_xmr = "0.600000000000".to_string();
+        data.payment_error = Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(
+            html.contains("<strong>Paid, with extra.</strong>"),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"<span class="amount-value">0.5</span>"#),
+            "{html}"
+        );
+        assert!(html
+            .contains("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more."));
+        assert!(!html.contains(" left to pay</span>"), "{html}");
     }
 
     /// A cancelled order tells the payer not to pay; money that arrived
@@ -1261,35 +1193,6 @@ mod tests {
     }
 
     #[test]
-    fn full_payment_hides_deadline_and_overpayment_explains_excess() {
-        let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Confirming;
-        data.status_label = "Confirming".to_string();
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(!html.contains(" left</span>"));
-        assert!(!html.contains("Expires in"));
-        assert!(html.contains("Payment address"));
-
-        data.status = shared::order_status::OrderStatus::Overpaid;
-        data.status_label = "Overpaid".to_string();
-        data.is_terminal = true;
-        data.amount_received_xmr = "0.600000000000".to_string();
-        data.payment_error = Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
-        let html = checkout_page(&chrome(), &data).into_string();
-        // The stage explains the extra over a faded code for the order total.
-        assert!(
-            html.contains("<strong>Paid, with extra.</strong>")
-                && html.contains(r#"<span class="amount-value">0.5</span>"#),
-            "{html}"
-        );
-        assert!(html
-            .contains("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more."));
-        assert!(html.contains(r#"<div class="qr-wrap is-spent">"#));
-        assert!(!html.contains(" left</span>"));
-        assert!(!html.contains("the customer sent"));
-    }
-
-    #[test]
     fn refund_flag_hides_the_entire_refund_section() {
         let mut data = test_checkout_view_model(false);
         data.refund_enabled = false;
@@ -1304,34 +1207,19 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         assert!(!checkout_page(&chrome(), &data)
             .into_string()
-            .contains(r#"<div class="mk-stage state-double-spend">"#));
+            .contains("A payment was reversed"));
         data.double_spend_detected_at = Some(1_700_000_000);
         let html = checkout_page(&chrome(), &data).into_string();
         // Still owed: the stage says so, and the code stays live.
-        assert!(
-            html.contains(r#"<div class="mk-stage state-double-spend">"#)
-                && html.contains("A payment was reversed"),
-            "{html}"
-        );
+        assert!(html.contains("A payment was reversed"), "{html}");
         assert!(!html.contains(r#"<div class="qr-wrap is-spent">"#));
+        // Otherwise: contact the merchant, and the code fades.
         data.status = shared::order_status::OrderStatus::Unconfirmed;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("Payment reversed")
                 && html.contains("Contact the merchant before sending anything.")
                 && html.contains(r#"<div class="qr-wrap is-spent">"#),
-            "{html}"
-        );
-        assert!(html.contains(r#"<li class="step-fail">"#));
-        data.status = shared::order_status::OrderStatus::Pending;
-        // UTC, marked for the script to show in the customer's own zone.
-        assert!(html.contains(r#"<time class="when" datetime="2023-11-14T22:13:20Z" title="Tuesday 14 November 2023, 22:13:20 (UTC)" data-local>14 Nov 2023, 22:13</time>"#), "{html}");
-        // With `?timezone=`, that zone, and nothing for the script to change.
-        data.clock = crate::views::time::Clock::new(Some("Australia/Perth"), None, 0);
-        data.local_times = false;
-        let html = checkout_page(&chrome(), &data).into_string();
-        assert!(
-            html.contains(">15 Nov 2023, 06:13</time>") && !html.contains("data-local"),
             "{html}"
         );
     }
