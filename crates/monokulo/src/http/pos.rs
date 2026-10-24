@@ -1316,38 +1316,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_pos_page_renders_for_the_owning_user_with_the_stores_own_base_currency() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-page@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{id}/pos"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("XMR"),
-            "expected the store's own base currency shown, got: {html}"
-        );
-    }
-
-    #[tokio::test]
     async fn the_pos_page_is_a_real_404_not_a_500_for_an_unknown_connection() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());

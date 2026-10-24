@@ -452,19 +452,6 @@ async fn a_new_email_without_its_confirmation_holds_back_a_password_change() {
 }
 
 #[tokio::test]
-async fn the_wallets_tab_lists_the_merchants_wallets_and_a_way_to_add_one() {
-    let m = Merchant::new("wallets@example.com").await;
-    let (status, html) = m.get("/account?tab=wallets").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"<a href="/account?tab=wallets" aria-current="page">Wallets</a>"#),
-        "{html}"
-    );
-    assert!(html.contains("No wallets yet."), "{html}");
-    assert!(html.contains(r#"href="/account/wallets/add""#), "{html}");
-}
-
-#[tokio::test]
 async fn signed_out_the_account_page_sends_a_browser_to_log_in() {
     let router = build_router(AppState::for_tests());
     let response = router

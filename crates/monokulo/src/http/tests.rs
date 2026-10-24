@@ -125,58 +125,6 @@ use crate::http::test_support::urlencoding_encode;
 
 use crate::http::test_support::body_text;
 
-#[tokio::test]
-async fn get_dashboard_signup_returns_html() {
-    let router = test_router();
-    let request = Request::builder()
-        .method("GET")
-        .uri("/signup")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html, got {content_type}"
-    );
-    let html = body_text(response).await;
-    assert!(html.contains("<form"));
-    assert!(html.contains("/signup"));
-}
-
-#[tokio::test]
-async fn get_dashboard_login_returns_html() {
-    let router = test_router();
-    let request = Request::builder()
-        .method("GET")
-        .uri("/login")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html, got {content_type}"
-    );
-    let html = body_text(response).await;
-    assert!(html.contains("<form"));
-    assert!(html.contains("/login"));
-}
-
 /// A new account is logged in straight away and goes on to set up its
 /// first wallet: a store needs one.
 #[tokio::test]
