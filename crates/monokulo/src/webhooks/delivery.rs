@@ -341,7 +341,7 @@ pub async fn run_delivery_tick(
                 otel.kind = "client",
                 store.id = %delivery.store_id,
                 webhook.id = %delivery.webhook_id,
-                order.id = %delivery.order_id,
+                order.id = delivery.order_id.as_ref().map(|order| order.as_str()),
                 webhook.event = %delivery.event_type,
                 webhook.event_id = %delivery.event_id,
                 attempt = delivery.attempt_count.saturating_add(1),
@@ -442,7 +442,7 @@ pub async fn prune_deliveries(
 }
 
 /// One line per attempt, inside its `webhook delivery` span.
-fn log_attempt(delivery: &DueDelivery, result: &AttemptResult, max_attempts: u32) {
+pub(super) fn log_attempt(delivery: &DueDelivery, result: &AttemptResult, max_attempts: u32) {
     let status = result.status;
     let duration_ms = u64::try_from(result.duration.as_millis()).unwrap_or(u64::MAX);
     if result.delivered {
@@ -482,8 +482,8 @@ pub async fn run_delivery_loop(
     webhooks: Arc<super::Webhooks>,
 ) {
     let client = loop {
-        match WebhookClient::build() {
-            Ok(client) => break client,
+        match webhooks.client().await {
+            Ok(client) => break client.clone(),
             Err(e) => {
                 tracing::error!(error = %e, "could not build the webhook HTTP client; trying again in 30 s");
                 tokio::time::sleep(Duration::from_secs(30)).await;

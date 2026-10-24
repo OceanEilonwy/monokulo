@@ -1,7 +1,8 @@
 //! A store's webhooks on its settings page (`views::webhooks`): adding and
-//! deleting one, a delivery's detail, "Send again" and "Retry failed".
-//! Every action is a plain form POST that comes back to the settings page
-//! (`303`) with a toast; nothing here needs JavaScript.
+//! deleting one, a delivery's detail, "Send again", "Retry failed" and
+//! "Send a test webhook". Every action is a plain form POST that comes back
+//! to the settings page (`303`); nothing here needs JavaScript. With it
+//! (fixi), "Send a test webhook" puts the webhook back in place instead.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +18,7 @@ use super::{AppState, AuthedUser};
 use crate::db::{ConnectionId, DbError, StoreConnectionRow, UserRow};
 use crate::views;
 use crate::views::store_settings::StoreSection;
-use crate::views::webhooks::{WebhookEntry, WebhooksCard};
+use crate::views::webhooks::{TestNote, WebhookEntry, WebhooksCard};
 
 const SECTION: StoreSection = StoreSection::Webhooks;
 
@@ -28,6 +29,7 @@ pub(super) async fn card(
     store: &StoreConnectionRow,
     clock: &views::time::Clock,
     created_secret: Option<String>,
+    test: Option<TestNote>,
 ) -> WebhooksCard {
     let (store_id, since) = (
         store.id.clone(),
@@ -52,6 +54,7 @@ pub(super) async fn card(
         webhooks,
         unavailable,
         created_secret,
+        test,
     }
 }
 
@@ -398,6 +401,72 @@ pub async fn retry_failed(
             tracing::error!(store.id = %id, error = %e, "failed webhook deliveries could not be retried");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+/// `POST …/settings/webhooks/{webhook}/test`: sends the webhook a test
+/// delivery (`webhook.test`) now, then shows how it went on the webhook:
+/// back on the settings page (`303`), or, asked by fixi, the webhook alone,
+/// to put in its place. Past the store's test limit nothing is sent, and
+/// the webhook says so (without JavaScript, the page refusing it, `422`).
+pub async fn test(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    FxRequest(fixi): FxRequest,
+    Path((id, webhook)): Path<(ConnectionId, WebhookId)>,
+) -> Response {
+    use crate::webhooks::test_delivery::{self, TestError};
+    let (row, entry) = match owned(&state, &user, &id, &webhook, 0).await {
+        Ok(found) => found,
+        Err(status) => return status.into_response(),
+    };
+    let note = match test_delivery::send(&state, &row, &entry.webhook).await {
+        Ok(delivery) => {
+            tracing::info!(
+                store.id = %id,
+                webhook.id = %webhook,
+                webhook.delivery = delivery.id,
+                delivered = delivery.delivered_at.is_some(),
+                "test webhook sent from the dashboard"
+            );
+            if !fixi {
+                return crate::base::see_other(
+                    views::webhooks::Paths::new(id.as_str()).tested(webhook.as_str(), delivery.id),
+                );
+            }
+            TestNote::Sent(delivery.id)
+        }
+        Err(e) => {
+            let message = match e {
+                TestError::RateLimited { retry_after } => format!(
+                    "This store has sent {} test webhooks in the last minute. Try again in {retry_after} s.",
+                    test_delivery::TESTS_PER_MINUTE
+                ),
+                TestError::Failed(_) => "Couldn't send a test webhook. Please try again.".into(),
+            };
+            if !fixi {
+                return render_store_settings_page(
+                    &state,
+                    row,
+                    &user,
+                    Some(message),
+                    None,
+                    Some(SECTION),
+                )
+                .await;
+            }
+            TestNote::Refused {
+                webhook: webhook.to_string(),
+                message,
+            }
+        }
+    };
+    let clock = views::time::Clock::for_user(&user);
+    let card = card(&state, &row, &clock, None, Some(note)).await;
+    match card.webhooks.iter().find(|e| e.webhook.id == webhook) {
+        Some(entry) => views::webhooks::webhook_block(&card, entry).into_response(),
+        // Deleted meanwhile (another tab).
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 

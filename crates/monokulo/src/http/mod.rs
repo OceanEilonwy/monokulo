@@ -583,6 +583,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(webhooks::retry_failed),
         )
         .route(
+            "/stores/{id}/settings/webhooks/{webhook_id}/test",
+            axum::routing::post(webhooks::test),
+        )
+        .route(
             "/stores/{id}/settings/webhooks/{webhook_id}/deliveries",
             axum::routing::get(webhooks::all),
         )

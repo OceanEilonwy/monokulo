@@ -239,7 +239,10 @@ async fn the_entry_offers_each_key_its_own_forms() {
     for (key, forms) in [
         (None, vec![]),
         (Some(fixture.pk.as_str()), vec!["create-order"]),
-        (Some(fixture.sk.as_str()), vec!["create-order", "send-logs"]),
+        (
+            Some(fixture.sk.as_str()),
+            vec!["create-order", "send-logs", "send-test-webhook"],
+        ),
         (
             Some(fixture.ak.as_str()),
             vec!["create-order", "disconnect"],

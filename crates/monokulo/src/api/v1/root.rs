@@ -1,4 +1,4 @@
-use super::{app, events, logs, openapi, orders, store};
+use super::{app, events, logs, openapi, orders, store, webhook_tests};
 use crate::api::{self, prelude::*};
 
 api::resource!("/api/v1", rel = "root");
@@ -7,7 +7,8 @@ api::resource!("/api/v1", rel = "root");
 ///
 /// Links to the store, its orders and its events (and, for a connected
 /// app, the app itself), the forms the key may use (a shop's server also
-/// gets the one for sending its warnings and errors), and the API's
+/// gets the ones for sending its warnings and errors and for sending one
+/// of the store's webhooks a test delivery), and the API's
 /// description. A link or form the key may not use is left out, so a
 /// client can find out what its key does by reading this. While this
 /// Monokulo has an onion address, `mk:onion-api` says where the same entry
@@ -34,6 +35,7 @@ struct Body {
     service_doc: Href,
     create_order: Form<orders::create>,
     send_logs: Form<logs::send>,
+    send_test_webhook: Form<webhook_tests::send>,
     disconnect: Form<app::delete>,
 }
 
@@ -86,6 +88,7 @@ fn body(instance: &Instance) -> Body {
         },
         create_order: Form::new(),
         send_logs: Form::new(),
+        send_test_webhook: Form::new(),
         disconnect: Form::new(),
     }
 }

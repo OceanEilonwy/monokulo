@@ -2,6 +2,11 @@
 //! `crate::webhooks`): what the store settings page lists, what the
 //! subscriber queues from the engine's order-event log, and what the
 //! delivery worker sends.
+//!
+//! A test delivery (`webhook.test`, `crate::webhooks::test_delivery`) is a
+//! row like any other, with no order and no place in the engine's log: its
+//! `order_id` is `''` and its `event_seq` `0` (the log starts at 1), so the
+//! table needed no change for it.
 
 use rusqlite::{params, OptionalExtension as _};
 use shared::ids::WebhookId;
@@ -71,7 +76,8 @@ pub struct DeliveryRow {
     pub event_seq: i64,
     pub event_id: String,
     pub event_type: String,
-    pub order_id: OrderId,
+    /// The order it's about; `None` for a test delivery.
+    pub order_id: Option<OrderId>,
     /// The exact body sent.
     pub body: String,
     pub created_at: i64,
@@ -101,6 +107,27 @@ impl DeliveryRow {
             DeliveryState::Retrying
         }
     }
+
+    /// Whether it's a test delivery (`webhook.test`), about no order.
+    pub fn is_test(&self) -> bool {
+        self.order_id.is_none()
+    }
+}
+
+/// A stored `order_id` as a delivery has it: none for a test delivery's
+/// `''`.
+fn order_of(stored: String) -> Option<OrderId> {
+    (!stored.is_empty()).then(|| OrderId::new(stored))
+}
+
+/// A test delivery just attempted, for [`Db::record_test_delivery`].
+pub struct NewTestDelivery<'a> {
+    pub webhook_id: &'a WebhookId,
+    pub event_id: &'a str,
+    pub body: &'a str,
+    /// When it was made: its one attempt's time too.
+    pub at: i64,
+    pub outcome: &'a AttemptOutcome,
 }
 
 /// A delivery due now, with what sending it takes.
@@ -109,7 +136,8 @@ pub struct DueDelivery {
     pub delivery_id: i64,
     pub webhook_id: WebhookId,
     pub store_id: ConnectionId,
-    pub order_id: OrderId,
+    /// The order it's about; `None` for a test delivery.
+    pub order_id: Option<OrderId>,
     pub event_id: String,
     pub event_type: String,
     pub body: String,
@@ -183,7 +211,7 @@ fn delivery_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRow> {
         event_seq: row.get(2)?,
         event_id: row.get(3)?,
         event_type: row.get(4)?,
-        order_id: row.get(5)?,
+        order_id: order_of(row.get(5)?),
         body: row.get(6)?,
         created_at: row.get(7)?,
         attempt_count: row.get::<_, Unsigned<u32>>(8)?.0,
@@ -343,6 +371,46 @@ impl Db {
         Ok(queued)
     }
 
+    /// Records a test delivery already attempted once, with how that went:
+    /// delivered, waiting for its next attempt (`outcome.next_attempt_at`)
+    /// like any delivery, or given up on. Written whole, in one statement,
+    /// so the delivery worker never sees it before its first attempt is
+    /// recorded. Returns its id.
+    pub fn record_test_delivery(&self, new: &NewTestDelivery<'_>) -> Result<i64> {
+        let outcome = new.outcome;
+        let at = outcome.attempt.at;
+        let (next, delivered, gave_up) = match (outcome.delivered, outcome.next_attempt_at) {
+            (true, _) => (None, Some(at), None),
+            (false, Some(next)) => (Some(next), None, None),
+            (false, None) => (None, None, Some(at)),
+        };
+        self.conn.execute(
+            "INSERT INTO webhook_deliveries
+                (webhook_id, event_seq, event_id, event_type, order_id, body, created_at_utc,
+                 attempt_count, next_attempt_at_utc, last_attempt_at_utc, last_status_code,
+                 last_error, last_duration_ms, last_response, delivered_at_utc, gave_up_at_utc,
+                 attempts_json)
+             VALUES (?1, 0, ?2, ?3, '', ?4, ?5, 1, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                new.webhook_id,
+                new.event_id,
+                crate::webhooks::body::TEST_EVENT,
+                new.body,
+                new.at,
+                next,
+                at,
+                outcome.attempt.status,
+                outcome.attempt.error,
+                Unsigned(outcome.attempt.ms),
+                outcome.response,
+                delivered,
+                gave_up,
+                serde_json::to_string(&[&outcome.attempt]).unwrap_or_else(|_| "[]".to_string()),
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
     /// Deliveries due by `now`, picked fairly:
     /// - at most one per (webhook, order), the oldest queued among every
     ///   waiting one (due or between attempts), so two events for one
@@ -377,7 +445,7 @@ impl Db {
                     delivery_id: row.get(0)?,
                     webhook_id: row.get(1)?,
                     store_id: row.get(2)?,
-                    order_id: row.get(3)?,
+                    order_id: order_of(row.get(3)?),
                     event_id: row.get(4)?,
                     event_type: row.get(5)?,
                     body: row.get(6)?,

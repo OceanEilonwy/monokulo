@@ -3,7 +3,8 @@
 //! (its price, its exchange rate) and the store it belongs to.
 //!
 //! Made once, when the event is queued, and sent byte for byte on every
-//! attempt.
+//! attempt. A test delivery has a body of its own, about no order
+//! ([`test_body`]).
 
 use serde::Serialize;
 
@@ -139,6 +140,62 @@ pub fn body_v2(
             name: &store.name,
         },
         links: links(store, &event.order_id, bases),
+    };
+    serde_json::to_string(&body).expect("a webhook body always serializes")
+}
+
+/// The event a test delivery carries: sent when the merchant (the store's
+/// settings) or the store's plugin (the API's `send-test-webhook` form)
+/// asks, never because of an order.
+pub const TEST_EVENT: &str = "webhook.test";
+
+/// A test delivery's body: the envelope of an order event (`api_version`,
+/// `event_id`, `event`, `created_at`, `store`, `_links`) and the webhook it
+/// was sent to, but no order: no `order_id`, no `status`, nothing a
+/// receiver could take for an order changing.
+#[derive(Serialize)]
+struct TestBody<'a> {
+    api_version: u8,
+    event_id: &'a str,
+    event: &'a str,
+    created_at: i64,
+    store: StoreRef<'a>,
+    webhook: WebhookRef<'a>,
+    /// The store in the API (`mk:store`), absolute, as an order event's
+    /// links are.
+    #[serde(rename = "_links", skip_serializing_if = "AbsoluteLinks::is_empty")]
+    links: AbsoluteLinks,
+}
+
+#[derive(Serialize)]
+struct WebhookRef<'a> {
+    id: &'a str,
+}
+
+/// The body of the test event `event_id`, made at `created_at`, for
+/// `store`'s webhook `webhook_id`, its links on `bases`.
+pub fn test_body(
+    event_id: &str,
+    created_at: i64,
+    store: &StoreConnectionRow,
+    webhook_id: &str,
+    bases: &LinkBases,
+) -> String {
+    let mut links = AbsoluteLinks::default();
+    if let Some(web) = &bases.web {
+        links.add(web, crate::api::v1::store::Path {});
+    }
+    let body = TestBody {
+        api_version: API_VERSION,
+        event_id,
+        event: TEST_EVENT,
+        created_at,
+        store: StoreRef {
+            id: store.id.as_str(),
+            name: &store.name,
+        },
+        webhook: WebhookRef { id: webhook_id },
+        links,
     };
     serde_json::to_string(&body).expect("a webhook body always serializes")
 }
@@ -370,6 +427,37 @@ mod tests {
         ))
         .unwrap();
         assert!(neither.get("_links").is_none());
+    }
+
+    /// A test delivery names the store and the webhook and links the
+    /// store; it has no order, so nothing in it reads as an order event.
+    #[test]
+    fn a_test_body_names_the_store_and_webhook_and_no_order() {
+        let body = test_body(
+            "evt_4be2d07a85c113e9",
+            1_760_020_320,
+            &store(),
+            "wh_1",
+            &LinkBases {
+                web: Some("https://pay.example/monokulo".into()),
+                onion: Some("http://abc.onion".into()),
+            },
+        );
+        assert_eq!(
+            body,
+            r#"{"api_version":2,"event_id":"evt_4be2d07a85c113e9","event":"webhook.test","created_at":1760020320,"store":{"id":"917701c2","name":"Bakery"},"webhook":{"id":"wh_1"},"_links":{"curies":[{"href":"https://docs.monokulo.com/rels/{rel}","name":"mk","templated":true}],"mk:store":{"href":"https://pay.example/monokulo/api/v1/store","title":"The store the key belongs to, and where its payments go."}}}"#
+        );
+        let bare: serde_json::Value = serde_json::from_str(&test_body(
+            "evt_1",
+            0,
+            &store(),
+            "wh_1",
+            &LinkBases::default(),
+        ))
+        .unwrap();
+        for absent in ["_links", "order_id", "status"] {
+            assert!(bare.get(absent).is_none(), "{absent}: {bare}");
+        }
     }
 
     #[test]

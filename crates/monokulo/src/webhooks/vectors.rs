@@ -1,7 +1,8 @@
 //! The webhook test vectors every plugin tests its receiver against
 //! (`xtask/src/pages/docs/webhook-vectors.json`, published beside the
-//! plugins page): one signed delivery for each event, built by the same
-//! [`super::body::body_v2`] and [`shared::webhook_sign::sign_payload`]
+//! plugins page): one signed delivery for each event (`webhook.test`
+//! included), built by the same [`super::body::body_v2`] (and
+//! [`super::body::test_body`]) and [`shared::webhook_sign::sign_payload`]
 //! monokulo sends with, and deliveries a receiver must refuse.
 //!
 //! The file is checked against what this code builds, so it can't drift
@@ -154,6 +155,24 @@ fn vectors() -> Value {
             ..web()
         },
     ));
+    // A test delivery ("Send a test webhook", `send-test-webhook`): no
+    // order. A receiver checks it like any other and answers `2xx`.
+    let test = super::body::test_body(
+        "evt_0000000000000012",
+        SENT_AT - 60 + 12,
+        &store(),
+        "wh_00000000000000000000000000000000",
+        &web(),
+    );
+    deliveries.push(json!({
+        "name": super::body::TEST_EVENT,
+        "headers": {
+            "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, SENT_AT, test.as_bytes()),
+            "X-Monokulo-Event": super::body::TEST_EVENT,
+            "X-Monokulo-Event-Id": "evt_0000000000000012",
+        },
+        "body": test,
+    }));
 
     let paid = body_v2(&event(4, "order.paid"), &store(), Some(&eur), &web());
     let signed = shared::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
@@ -232,7 +251,7 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
         )
     };
     let deliveries = vectors["deliveries"].as_array().unwrap();
-    assert_eq!(deliveries.len(), 11);
+    assert_eq!(deliveries.len(), 12);
     for delivery in deliveries {
         assert!(verifies(delivery), "{delivery}");
         let body: Value = serde_json::from_str(delivery["body"].as_str().unwrap()).unwrap();

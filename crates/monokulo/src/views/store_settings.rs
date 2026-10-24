@@ -1194,6 +1194,7 @@ mod tests {
                 webhooks: vec![],
                 unavailable: false,
                 created_secret: None,
+                test: None,
             },
             outcome: None,
             sent: None,

@@ -13,7 +13,7 @@ no URL has the store in it.
 
 | Key | Who has it | What it may do |
 | --- | --- | --- |
-| `sk_…` | The shop's server: the store's secret key, which a [plugin](../plugins/) gets when it connects. | Everything about the store's orders and events, and send a plugin's logs. |
+| `sk_…` | The shop's server: the store's secret key, which a [plugin](../plugins/) gets when it connects. | Everything about the store's orders and events, send a plugin's logs, and send the store's webhooks a test delivery (`send-test-webhook`, see [Webhooks](../webhooks/#test-it)). |
 | `ak_…` | A [connected app](../apps/): its own key, made when it connects. | The same as the secret key, and read or disconnect its own connection. |
 | `pk_…` | A browser page: the store's public key. It proves nothing. | Make an order and read it. A store that takes orders only from its verified websites refuses one from anywhere else. |
 
@@ -155,7 +155,9 @@ sale, the checkout's own scripts); only pages for people answer with HTML:
 no key) may be asked to solve a small proof of work (`challenge-required`);
 the JS library does it by itself. A server never is: a request with the
 store's secret key or an app's key, both handshakes and every log report
-are only ever rate limited (`rate-limited`, with `Retry-After`).
+are only ever rate limited (`rate-limited`, with `Retry-After`). Sending
+a test webhook (`send-test-webhook`) has a limit of its own, 6 a minute
+for a store, answered the same way.
 
 A `503` is worth retrying: `rates-unavailable` (no exchange rate for the
 order's currency right now: the rate providers are down or rate limiting

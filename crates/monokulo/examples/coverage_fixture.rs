@@ -41,6 +41,21 @@ struct Controls {
     db: Database,
     /// The site's engine, its status cache with it.
     site_engine: monokulo::http::Engine,
+    /// Where this fixture is served.
+    url: String,
+}
+
+/// `POST /__coverage/webhook-receiver?status=N`: a store's webhook
+/// receiver, answering every delivery with `N` (`200` without it).
+async fn webhook_receiver(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> (StatusCode, &'static str) {
+    let status = query
+        .get("status")
+        .and_then(|s| s.parse::<u16>().ok())
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .unwrap_or(StatusCode::OK);
+    (status, "ok")
 }
 
 async fn ready() -> &'static str {
@@ -593,6 +608,27 @@ async fn seed_webhooks(
         return Ok(Json(serde_json::json!({ "webhooks": [] })));
     }
     let now = monokulo::now_unix();
+    // `?receiver`: one webhook, to this fixture's own receiver, which
+    // answers every delivery (`?receiver=500` with that status): "Send a
+    // test webhook" has a real server to reach.
+    if let Some(status) = query.get("receiver") {
+        let created = monokulo::webhooks::create(
+            &control.db,
+            &ENCRYPTION_KEY,
+            &store,
+            &match status.as_str() {
+                "" => format!("{}/__coverage/webhook-receiver", control.url),
+                status => format!(
+                    "{}/__coverage/webhook-receiver?status={status}",
+                    control.url
+                ),
+            },
+            &Default::default(),
+        )
+        .await
+        .map_err(failed)?;
+        return Ok(Json(serde_json::json!({ "webhook": created.webhook.id })));
+    }
     // `?many=N`: one webhook with N deliveries, all delivered, a minute
     // apart: enough to page through.
     if let Some(many) = query.get("many").and_then(|n| n.parse::<i64>().ok()) {
@@ -1232,6 +1268,17 @@ async fn main() {
         engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
+    // Stores' webhooks may reach this machine: the test webhooks go to the
+    // receiver above (`/__coverage/webhook-receiver`).
+    let state = AppState {
+        settings: state
+            .settings
+            .with_webhooks(monokulo::settings::WebhookConfig {
+                allow_private_urls: true,
+                ..Default::default()
+            }),
+        ..state
+    };
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))
@@ -1252,6 +1299,7 @@ async fn main() {
         .route("/__coverage/integration/order", post(plugin_order))
         .route("/__coverage/status/{story}", post(status_story))
         .route("/__coverage/webhooks", post(seed_webhooks))
+        .route("/__coverage/webhook-receiver", post(webhook_receiver))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),
@@ -1260,6 +1308,7 @@ async fn main() {
             order_id: order.order_id.clone().into_string(),
             db: state.db.clone(),
             site_engine: state.engine.clone(),
+            url: url.clone(),
         });
     // Coingecko's two endpoints, answering 1 XMR = 400 AUD (or USD).
     let prices = Router::new()
