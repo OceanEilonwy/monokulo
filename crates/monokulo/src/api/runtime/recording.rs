@@ -31,6 +31,11 @@ use crate::http::test_support::{
 };
 use crate::http::{build_router, AppState};
 
+/// The moment every recorded time is: 2026-01-01T00:00:00Z, the start of
+/// a minute. The abuse protection's clock is stopped there ([`abuse`]),
+/// and [`stable`] puts every `*_at` field there.
+pub const RECORDED_AT: i64 = 1_767_225_600;
+
 /// The address the recorded instance has.
 pub const PUBLIC_URI: &str = "https://www.monokulo.com";
 
@@ -200,6 +205,7 @@ async fn state(engine: axum::Router, public_uri: Option<&str>, onion: bool) -> A
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::embedded_for_tests(
             engine,
         )),
+        abuse: abuse(crate::abuse::AbuseConfig::default()),
         ..AppState::for_tests()
     }
     .with_options(&options(public_uri, onion))
@@ -396,16 +402,15 @@ async fn record_handshake_failures(
         assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
     }
 
-    let limited = recorder.around(build_router(AppState {
-        abuse: Arc::new(crate::abuse::AbuseProtection::new(
-            crate::abuse::AbuseConfig {
-                soft_per_min: 1,
-                hard_per_min: 1,
-                ..Default::default()
-            },
-        )),
-        ..state.clone()
-    }));
+    let limited = with_abuse(
+        state,
+        crate::abuse::AbuseConfig {
+            soft_per_min: 1,
+            hard_per_min: 1,
+            ..Default::default()
+        },
+        recorder,
+    );
     for (uri, body, peer) in [
         (
             finish.as_str(),
@@ -576,16 +581,28 @@ async fn rate_limited_coingecko(secs: u64) -> String {
     format!("http://{addr}")
 }
 
-/// `router` on a Monokulo like `state` but with abuse protection `config`.
+/// `router` on a Monokulo like `state` but with abuse protection `config`,
+/// on the recording's clock ([`abuse`]).
 fn with_abuse(
     state: &AppState,
     config: crate::abuse::AbuseConfig,
     recorder: &Recorder,
 ) -> axum::Router {
     recorder.around(build_router(AppState {
-        abuse: Arc::new(crate::abuse::AbuseProtection::new(config)),
+        abuse: abuse(config),
         ..state.clone()
     }))
+}
+
+/// Abuse protection with `config`, its clock stopped at [`RECORDED_AT`]:
+/// how long a client is told to wait (`retry_after`, `Retry-After`) and
+/// when a challenge expires depend on where in the minute its requests
+/// fall, so on the system's clock they'd change from run to run.
+fn abuse(config: crate::abuse::AbuseConfig) -> Arc<crate::abuse::AbuseProtection> {
+    Arc::new(
+        crate::abuse::AbuseProtection::new(config)
+            .with_clock(crate::abuse::Clock::Fixed(RECORDED_AT)),
+    )
 }
 
 /// Runs a statement on `state`'s database, to make it fail for a moment.
@@ -1279,9 +1296,35 @@ async fn state_without_address(engine: axum::Router) -> AppState {
     state(engine, None, false).await
 }
 
-/// `exchanges` with what changes from run to run (ids, keys, addresses,
-/// times) replaced by stable stand-ins of the same shape, the same one
-/// each time the same value appears.
+/// A challenge (`crate::abuse::challenge`: the hex of
+/// `pow|<difficulty>|<expires>|<client>|<random>`, a dot, the hex of its
+/// HMAC) with its two random parts, the nonce and the HMAC under this
+/// process's random key, made zeros of the same length. Those are random
+/// so no one can forge or guess a challenge, and stay so: everything else
+/// in it (its expiry on the recording's stopped clock among them) is as
+/// recorded. `None` for anything else.
+fn challenge_stand_in(value: &str) -> Option<String> {
+    let (payload, mac) = value.split_once('.')?;
+    let text = String::from_utf8(hex::decode(payload).ok()?).ok()?;
+    if !text.starts_with("pow|") || hex::decode(mac).ok()?.len() != 32 {
+        return None;
+    }
+    let (fields, random) = text.rsplit_once('|')?;
+    let payload = format!("{fields}|{}", "0".repeat(random.len()));
+    Some(format!(
+        "{}.{}",
+        hex::encode(payload),
+        "0".repeat(mac.len())
+    ))
+}
+
+/// `exchanges` with what changes from run to run replaced by stable
+/// stand-ins of the same shape, the same one each time the same value
+/// appears: ids, keys and addresses (random, and the engine's), times
+/// (the engine's clock isn't the recording's to stop) and a challenge's
+/// random parts ([`challenge_stand_in`]). The rest is made the same each
+/// run where it's recorded: the abuse protection's clock is stopped
+/// ([`abuse`]), and the exchanges are made one after another, in order.
 pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
     let mut names: HashMap<String, String> = HashMap::new();
     let mut counts: HashMap<String, usize> = HashMap::new();
@@ -1330,7 +1373,9 @@ pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
         match value {
             Value::String(s) => {
                 // Whole values, and ids inside paths.
-                if let Some(name) = rename(s) {
+                if let Some(stand_in) = challenge_stand_in(s) {
+                    *s = stand_in;
+                } else if let Some(name) = rename(s) {
                     *s = name;
                 } else {
                     let parts: Vec<String> = s
@@ -1348,7 +1393,7 @@ pub fn stable(exchanges: Vec<Exchange>) -> Vec<Exchange> {
                         if let Some(at) = v.as_i64() {
                             // Times: a fixed moment, keeping how long an
                             // order runs (to the minute).
-                            let base = 1_767_225_600;
+                            let base = RECORDED_AT;
                             *v = match (key.as_str(), created) {
                                 ("expires_at", Some(created)) => {
                                     Value::from(base + ((at - created) + 30) / 60 * 60)

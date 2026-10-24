@@ -91,10 +91,36 @@ impl AbuseConfig {
     }
 }
 
+/// The time abuse protection reads: the system's, or one moment fixed.
+/// A client's rolling minute, and so the `Retry-After` it's told, depends
+/// on where in the minute its requests fall; on a fixed clock every
+/// request falls on the same second, so the answers are the same on every
+/// machine and every run. The recorded reference (`cargo xtask api
+/// openapi`) uses one, so its `rate-limited` examples never change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Clock {
+    #[default]
+    System,
+    /// Always this moment, in Unix seconds.
+    Fixed(i64),
+}
+
+impl Clock {
+    /// Seconds since the Unix epoch, by this clock.
+    pub fn now(self) -> i64 {
+        match self {
+            Clock::System => crate::now_unix(),
+            Clock::Fixed(at) => at,
+        }
+    }
+}
+
 /// All abuse-protection state for one monokulo process, shared by every
 /// request (`AppState::abuse`).
 pub struct AbuseProtection {
     config: RwLock<AbuseConfig>,
+    /// What its limits and challenges read the time from.
+    clock: Clock,
     pub limiter: limiter::TieredLimiter<ClientIdentity>,
     /// Log reports only, so a client flooding them never spends the budget
     /// its pages and API calls need.
@@ -119,7 +145,18 @@ impl AbuseProtection {
             streams: Arc::new(streams::StreamLimiter::new(config.stream_cap)),
             stats: stats::ChallengeStats::default(),
             config: RwLock::new(config),
+            clock: Clock::System,
         }
+    }
+
+    /// This, reading the time from `clock`.
+    pub fn with_clock(self, clock: Clock) -> Self {
+        AbuseProtection { clock, ..self }
+    }
+
+    /// Seconds since the Unix epoch, by its clock.
+    pub fn now(&self) -> i64 {
+        self.clock.now()
     }
 
     pub fn config(&self) -> AbuseConfig {

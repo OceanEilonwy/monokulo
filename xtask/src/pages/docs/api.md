@@ -235,6 +235,15 @@ code, so neither Node nor `npm ci` is needed. The example records the
 exchanges against an in-process test engine, checks each against the
 document, and writes it with them as examples.
 
+The document is the same, byte for byte, each time it's written from
+the same commit, on any machine, so a plugin can copy its examples into
+its own tests and compare them exactly. Ids, keys and addresses are
+stand-ins (`order_000…01`, `sk_000…01`), every time is
+2026-01-01T00:00:00Z (`1767225600`; an order's `expires_at` keeps how
+long it runs), a rate limit's `retry_after` is the one a client gets on
+that second (`120` in the `rate-limited` examples), and a challenge's
+random nonce and signature are zeros.
+
 ## Versions
 
 `/api/v1` changes only by adding: new links, forms, fields and problems.

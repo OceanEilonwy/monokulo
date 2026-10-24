@@ -211,7 +211,7 @@ pub async fn api_and_checkout_middleware(
             KeyCheck::Invalid => {
                 if let Some(anonymous) = &anonymous {
                     if let Tier::Blocked { retry_after_secs } =
-                        state.abuse.check(anonymous, false, crate::now_unix())
+                        state.abuse.check(anonymous, false, state.abuse.now())
                     {
                         return blocked(&state, class, retry_after_secs);
                     }
@@ -308,8 +308,8 @@ async fn guard(
     let Some(client) = client else {
         return next.run(request).await;
     };
-    let now = crate::now_unix();
     let abuse = &state.abuse;
+    let now = abuse.now();
 
     if class == RouteClass::Logs {
         if let Err(retry_after_secs) = abuse.check_logs(&client, now) {
@@ -864,6 +864,38 @@ mod tests {
         let response = router.clone().oneshot(stolen).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert!(text(response).await.contains("different connection"));
+    }
+
+    /// On a stopped clock every request falls on the same second, so the
+    /// wait a client is told is the same each time: half a minute into
+    /// one, two requests against a limit of two wait out the rest of it
+    /// and half the next, as their count decays (the recorded reference's
+    /// `rate-limited` examples rest on this).
+    #[tokio::test]
+    async fn on_a_stopped_clock_the_wait_is_the_same_every_time() {
+        for _ in 0..2 {
+            let router = build_router(AppState {
+                abuse: Arc::new(
+                    AbuseProtection::new(AbuseConfig {
+                        soft_per_min: 2,
+                        hard_per_min: 2,
+                        ..Default::default()
+                    })
+                    .with_clock(crate::abuse::Clock::Fixed(1_767_225_630)),
+                ),
+                ..state(AbuseConfig::default())
+            });
+            let peer = "198.51.100.5:1";
+            for _ in 0..2 {
+                router.clone().oneshot(get("/api/v1", peer)).await.unwrap();
+            }
+            let response = router.clone().oneshot(get("/api/v1", peer)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(response.headers()["retry-after"], "60");
+            let body: serde_json::Value = serde_json::from_str(&text(response).await).unwrap();
+            assert_eq!(body["retry_after"], 60);
+            assert_eq!(body["detail"], "Rate limit exceeded; retry in 60 s.");
+        }
     }
 
     #[tokio::test]
