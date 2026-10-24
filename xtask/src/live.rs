@@ -918,11 +918,19 @@ mod tests {
         junit(&path).unwrap().remove(0)
     }
 
+    /// Both checks of the workspace's `#[ignore]`d tests, from one read of
+    /// every Rust file: each says why, for the job summary, and each runs
+    /// daily or is listed here with why not.
     #[test]
-    fn every_ignored_test_runs_daily_or_says_why_not() {
+    fn every_ignored_test_says_why_and_runs_daily_or_says_why_not() {
         let ignored = ignored_tests(&root()).unwrap();
         let mut problems = Vec::new();
         for (name, reason) in &ignored {
+            if reason.as_deref().is_none_or(|r| r.trim().is_empty()) {
+                problems.push(format!(
+                    "give {name} a reason (#[ignore = \"needs ...\"]), for the job summary"
+                ));
+            }
             let path = name.split_once(" › ").map_or(name.as_str(), |(_, p)| p);
             let daily = path.rsplit("::").next().unwrap_or(path).starts_with(PREFIX);
             let listed = NOT_DAILY.iter().any(|(n, _)| n == name);
