@@ -1,11 +1,10 @@
-// The engine page in a real browser, against the
-// coverage fixture's engine: following it live, scrubbing the timeline,
-// replaying and going live again, moving and resizing the timeline's window,
-// the legend, the chain strip's cells at each width, the round's lanes, the
-// network picker, the live "Machine and links" strip, the playback control
-// following the keys, and the page without JavaScript, which says it needs
-// it. The page is an app (apps/engine): it
-// draws and words everything from the data monokulo sends.
+// The engine page in a real browser, against the coverage fixture's engine:
+// following it live, scrubbing the timeline, replaying and going live
+// again, moving and resizing the timeline's window, the legend, the network
+// picker, the live "Machine and links" strip, the playback control
+// following the keys, and a long history kept bounded. The page is an app
+// (apps/engine): it draws and words everything from the data monokulo
+// sends; how it draws is tested there.
 // The fixture plays a scripted story into the engine's activity record
 // (`POST /__coverage/engine/story`): a block with a payment, a pool payment
 // settling, a store catching up and joining the frontier, and a reorg.
@@ -19,26 +18,47 @@ let fixture;
 test.beforeAll(async () => { fixture = await startCoverageFixture(); });
 test.afterAll(async () => { await stopCoverageFixture(fixture && fixture.process); });
 
-// One of the playback radio group's options.
-let mode;
-
-async function openAsAdmin(page, context) {
-  mode = () => page.locator("#tl-mode");
-  if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
-  await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
-  await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
-}
-
 test('the engine page follows the engine live, scrubs, replays and moves its window', async ({ page, context }) => {
-  // The story alone takes about ten seconds, and the run captures eight
-  // screenshots: more than the suite's default on a loaded runner.
+  // The story takes a few seconds, the run captures screenshots, and a
+  // long history is played through at the end: more than the suite's
+  // default on a loaded runner.
   test.setTimeout(90_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(String(error)));
+  // The page's stream, kept for the long history at the end.
+  await page.addInitScript(() => {
+    const Original = window.EventSource;
+    window.EventSource = class extends Original {
+      constructor(url, options) {
+        super(url, options);
+        if (String(url).includes('/status/engine/events')) {
+          window.engineSource = this;
+          this.addEventListener('history', e => { window.engineHistory = JSON.parse(e.data); });
+        }
+      }
+    };
+  });
   await page.setViewportSize({ width: 1600, height: 900 });
-  await openAsAdmin(page, context);
+  if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
+  await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
+  await page.goto(`${fixture.base_url}/status/engine`);
+  const mode = () => page.locator('#tl-mode');
+  const shown = page.locator('#tl-modes .mk-select .mk-button');
+
+  // The network picker goes at once: picking a network loads it.
+  await expect(page.locator('.engine-network').getByRole('button', { name: 'Go' })).toBeHidden();
+  await Promise.all([
+    page.waitForURL(/\/status\/engine\?network=mainnet$/),
+    page.evaluate(() => {
+      const select = document.getElementById('engine-network');
+      select.value = 'mainnet';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }),
+  ]);
+
   await expect(page.locator('#engine-timeline')).toBeVisible();
   await expect(mode()).toHaveValue('live');
+  await expect(shown).toHaveText(/Live/);
   await expect(page.locator('.engine-page a[data-reload]')).toBeHidden();
   await expect(page.locator('#engine-summary')).toContainText('3,412,880');
   await expect(page.locator('#pills .pill.frontier')).toHaveText('Frontier, 41 stores');
@@ -47,6 +67,21 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   const next = page.locator('#cells .cell.next');
   await expect(next.locator('.cnt')).toHaveText('23');
   await expect(next).toHaveAttribute('title', /23 transactions waiting in the node's pool, 96 kB of the 300 kB/);
+
+  // The "Machine and links" strip, and the Scanning panel, open, with a
+  // short line in its summary.
+  const strip = page.locator('#engine-machine');
+  for (const tile of ['cpu', 'memory', 'transfer', 'round-trip', 'first-byte', 'block-size']) {
+    await expect(strip.locator(`[data-tile="${tile}"]`)).toHaveCount(1);
+  }
+  // The chip says how long ago the engine reported the figures.
+  await expect(page.locator('#machine-age')).toHaveText(/^live · \d+ s ago$/);
+  await expect(page.locator('#machine-live .live-dot')).toBeVisible();
+  await expect(page.locator('#d-scanning')).toHaveAttribute('open', '');
+  await expect(page.locator('#scan-sum')).toHaveText(/^(at the tip|[\d,]+ behind)( · .*)?$/);
+  await expect(page.locator('#scan-body dt').first()).toHaveText('Progress');
+  const age = async () => Number((await page.locator('#machine-age').textContent()).match(/\d+/)[0]);
+  const reportedAge = await age();
 
   // The legend opens from the (?) and closes with Escape.
   await page.locator('#engine-help summary').click();
@@ -66,6 +101,18 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await page.evaluate(() => { window.engineStoryWatched = true; });
   const before = await page.locator('#engine-events tr').count();
   await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
+  // Paused while a block or the node is lit, the light still goes out;
+  // End goes live again.
+  const lit = page.locator('.engine-page :is(.flash, .probe, .lit, .spark, .enter)');
+  await expect.poll(() => lit.count(), { timeout: 20000 }).toBeGreaterThan(0);
+  await page.locator('#tl-win').focus();
+  await page.keyboard.press(' ');
+  await expect(mode()).toHaveValue('paused');
+  await expect(shown).toHaveText(/Pause/);
+  await expect(lit).toHaveCount(0, { timeout: 3000 });
+  await page.keyboard.press('End');
+  await expect(mode()).toHaveValue('live');
+  await expect(shown).toHaveText(/Live/);
   const events = page.locator('#engine-events');
   await expect.poll(() => page.locator('#engine-events tr').count(), { timeout: 20000 }).toBeGreaterThan(before);
   await expect(events).toContainText('Block 3,412,881 scanned for 41 stores and committed, 1 payment found in it.', { timeout: 20000 });
@@ -80,6 +127,12 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(timingDetails.locator('summary')).toHaveText('Timing details');
   await timingDetails.locator('summary').click();
   await captureCoverageStage(page, 'engine-live', test.info(), shot);
+  // Each machine event draws the strip again with the engine's newer
+  // report: the age goes back down when one comes.
+  let last = reportedAge;
+  await expect.poll(async () => { const now = await age(); const fresher = now < last; last = now; return fresher; },
+    { message: 'a newer report arrived', timeout: 20_000, intervals: [500] }).toBe(true);
+  await captureCoverageStage(page, 'engine-strip', test.info(), shot);
 
   // The reorg, gone to from its event (live, it can begin and end within
   // one message on a slow machine): its panel opens by itself while it is open.
@@ -102,9 +155,17 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await expect(marker).toBeVisible();
   await expect(marker).toHaveAttribute('aria-valuetext', /^Playback position: .* ago/);
 
-  // Left and right jump between key events; End returns to live, and the
-  // marker goes.
+  // Space plays and pauses: the control drawn over the select says so,
+  // though from paused to playing and back no option turns on or off to
+  // give it away. Left and right jump between key events; End returns to
+  // live, and the marker goes.
   await page.locator('#tl-win').focus();
+  await page.keyboard.press(' ');
+  await expect(mode()).toHaveValue('replay');
+  await expect(shown).toHaveText(/Play/);
+  await page.keyboard.press(' ');
+  await expect(mode()).toHaveValue('paused');
+  await expect(shown).toHaveText(/Pause/);
   await page.keyboard.press('ArrowRight');
   await expect(mode()).toHaveValue('paused');
   await page.keyboard.press('End');
@@ -202,542 +263,51 @@ test('the engine page follows the engine live, scrubs, replays and moves its win
   await card.locator('#round-resume').click();
   await expect(card.locator('#round-resume')).toHaveCount(0);
 
+  // A full 30-minute history, followed by another two full histories of
+  // distinct events: the page keeps the newest it can hold, stays quick,
+  // and its memory stays bounded.
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('HeapProfiler.collectGarbage');
+  const heldBefore = await cdp.send('Runtime.getHeapUsage');
+  const timings = [];
+  for (let cycle = 0; cycle < 3; cycle++) {
+    timings.push(await page.evaluate(cycle => {
+      const history = window.engineHistory;
+      const now = Date.now();
+      const marks = Array.from({ length: 50000 }, (_, index) => ({ seq: 100000 + cycle * 50000 + index,
+        at_ms: now - 1700000 + index * 30, round: index, tier: 'blocks', key: index % 5000 === 0,
+        what: { kind: 'tx_matched', path: 'fast', txid: `frame${cycle}` } }));
+      const frame = { ...history.frame, at_ms: now - 2000, marks, effects: [] };
+      const started = performance.now();
+      window.engineSource.dispatchEvent(new MessageEvent('frame', { data: JSON.stringify(frame) }));
+      return performance.now() - started;
+    }, cycle));
+    // Played on the page's next draw: its newest events are this frame's.
+    await expect(page.locator('#engine-events tbody tr').first()).toContainText(`Transaction frame${cycle} in the pool`);
+    await mode().selectOption('paused');
+    await expect(mode()).toHaveValue('paused');
+    await mode().selectOption('live');
+  }
+  await cdp.send('HeapProfiler.collectGarbage');
+  const heldAfter = await cdp.send('Runtime.getHeapUsage');
+  expect(heldAfter.usedSize - heldBefore.usedSize).toBeLessThan(45 * 1024 * 1024);
+  expect(Math.max(...timings)).toBeLessThan(1500);
+  await expect(page.locator('#engine-events tbody tr')).toHaveCount(60);
+  // A dropped stream offers a reload, until the history comes again; a
+  // page brought back from the back/forward cache needs none.
+  await page.evaluate(() => window.engineSource.dispatchEvent(new Event('error')));
+  await expect(page.locator('[data-reload]')).toBeVisible();
+  await page.evaluate(() => window.engineSource.dispatchEvent(new MessageEvent('history', { data: JSON.stringify(window.engineHistory) })));
+  await expect(page.locator('[data-reload]')).toBeHidden();
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent('pagehide'));
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  });
+  await expect(page.locator('[data-reload]')).toBeHidden();
 
+  // Once the sampler has an hour's first samples, CPU has a figure.
+  await expect(strip.locator('[data-tile="cpu"] .v')).not.toHaveText('–', { timeout: 30_000 });
   await page.locator('#engine-filters input[data-tier="blocks"]').uncheck();
   await expect(events.locator('.tierchip.t-blocks')).toHaveCount(0);
   expect(errors).toEqual([]);
-});
-
-// The chain strip's cells as laid out: every one drawn, its box, and the
-// strip's content box (inside its padding).
-async function stripCells(page) {
-  return page.evaluate(() => {
-    const strip = document.getElementById('strip');
-    const box = strip.getBoundingClientRect();
-    const style = getComputedStyle(strip);
-    const left = box.left + parseFloat(style.paddingLeft), right = box.right - parseFloat(style.paddingRight);
-    const cells = [...document.querySelectorAll('#cells > .cell')].map((cell) => {
-      const r = cell.getBoundingClientRect();
-      return { h: Number(cell.dataset.h), next: cell.classList.contains('next'), left: r.left, right: r.right, top: r.top, width: r.width };
-    });
-    return { left, right, cells };
-  });
-}
-
-test('the playback control reads what the keys chose, and a pause leaves nothing lit', async ({ page, context }) => {
-  test.setTimeout(60_000);
-  await page.setViewportSize({ width: 1600, height: 900 });
-  await openAsAdmin(page, context);
-  const shown = page.locator('#tl-modes .mk-select .mk-button');
-  await expect(shown).toHaveText(/Live/);
-
-  // Paused while a block or the node is lit, the light still goes out.
-  const lit = page.locator('.engine-page :is(.flash, .probe, .lit, .spark, .enter)');
-  await page.request.post(`${fixture.base_url}/__coverage/engine/story`);
-  await expect.poll(() => lit.count(), { timeout: 20000 }).toBeGreaterThan(0);
-  await page.locator('#tl-win').focus();
-  await page.keyboard.press(' ');
-  await expect(mode()).toHaveValue('paused');
-  await expect(shown).toHaveText(/Pause/);
-  await expect(lit).toHaveCount(0, { timeout: 3000 });
-
-  // Space plays and pauses, End goes live: the control drawn over the
-  // select says so, though from paused to playing and back no option turns
-  // on or off to give it away. The story leaves seconds to replay.
-  await page.keyboard.press('End');
-  await expect(page.locator('#engine-events')).toContainText('caught up and joined the frontier', { timeout: 20000 });
-  const first = await page.locator('#engine-events tr').last().getAttribute('data-at');
-  await page.locator(`#engine-events tr[data-at="${first}"]`).last().click();
-  await expect(mode()).toHaveValue('paused');
-  await page.locator('#tl-win').focus();
-  await page.keyboard.press(' ');
-  await expect(mode()).toHaveValue('replay');
-  await expect(shown).toHaveText(/Play/);
-  await page.keyboard.press(' ');
-  await expect(mode()).toHaveValue('paused');
-  await expect(shown).toHaveText(/Pause/);
-  await page.keyboard.press('End');
-  await expect(mode()).toHaveValue('live');
-  await expect(shown).toHaveText(/Live/);
-});
-
-test('the chain strip shows more blocks when wider, never wider blocks', async ({ page, context }) => {
-  test.setTimeout(60_000);
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  await expect(page.locator('#cells .cell.next')).toHaveCount(1);
-  const counts = [];
-  for (const width of [1280, 1024, 800, 390]) {
-    await page.setViewportSize({ width, height: 900 });
-    // The script fits the strip again once it has been resized. Until then
-    // the cells that no longer fit wrap onto a second, hidden line (the
-    // strip clips it), so wait for every cell to be back on one line
-    // inside it.
-    await expect.poll(async () => {
-      const { left, right, cells } = await stripCells(page);
-      return cells.every((c) => c.left >= left - 0.5 && c.right <= right + 0.5 && Math.abs(c.top - cells[0].top) < 8);
-    }).toBe(true);
-    const { left, right, cells } = await stripCells(page);
-    const top = cells[0].top;
-    for (const cell of cells) {
-      // Whole cells only, on one line, inside the strip.
-      expect(cell.left, `${width}px: block ${cell.h}`).toBeGreaterThanOrEqual(left - 0.5);
-      expect(cell.right, `${width}px: block ${cell.h}`).toBeLessThanOrEqual(right + 0.5);
-      expect(Math.abs(cell.top - top), `${width}px: block ${cell.h}`).toBeLessThan(8);
-      // A fixed size: 22px, the next block 32px.
-      expect(Math.round(cell.width), `${width}px: block ${cell.h}`).toBe(cell.next ? 32 : 22);
-    }
-    // The newest block is the rightmost, at the right edge.
-    const newest = cells.reduce((a, b) => (b.h > a.h ? b : a));
-    expect(newest.next).toBe(true);
-    expect(Math.max(...cells.map((c) => c.right))).toBe(newest.right);
-    expect(right - newest.right).toBeLessThan(1);
-    // Room for no other whole cell on the left.
-    expect(Math.min(...cells.map((c) => c.left)) - left).toBeLessThan(26);
-    counts.push(cells.length);
-  }
-  for (let i = 1; i < counts.length; i++) expect(counts[i], `${counts}`).toBeLessThan(counts[i - 1]);
-
-  // On a phone the strip is the cells alone: the node list a --space-md
-  // (12px) gap under them.
-  const gap = await page.evaluate(() => {
-    const cells = document.getElementById('cells').getBoundingClientRect();
-    const node = document.querySelector('#nodes .node').getBoundingClientRect();
-    const space = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--space-md'));
-    return { gap: node.top - cells.bottom, space };
-  });
-  expect(Math.abs(gap.gap - gap.space), JSON.stringify(gap)).toBeLessThanOrEqual(1);
-});
-
-test('the round lanes use the width, their chips on their own row at the right', async ({ page, context }) => {
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  const lanes = async () => page.evaluate(() => {
-    const card = document.getElementById('engine-round');
-    const padding = parseFloat(getComputedStyle(card).paddingRight);
-    const edge = card.getBoundingClientRect().right - padding;
-    return [...card.querySelectorAll('.lanes .track')].map((track) => {
-      const t = track.getBoundingClientRect();
-      const chip = track.nextElementSibling.querySelector('.engine-chip').getBoundingClientRect();
-      const bar = track.querySelector('.bar').getBoundingClientRect();
-      return { edge, chipRight: chip.right, chipMiddle: chip.top + chip.height / 2, trackMiddle: t.top + t.height / 2, trackWidth: t.width, trackRight: t.right, chipLeft: chip.left, bar: bar.width };
-    });
-  });
-  for (const width of [1280, 800]) {
-    await page.setViewportSize({ width, height: 900 });
-    for (const lane of await lanes()) {
-      expect(Math.abs(lane.chipRight - lane.edge), `${width}px`).toBeLessThan(1.5);
-      expect(Math.abs(lane.chipMiddle - lane.trackMiddle), `${width}px: on the lane's row`).toBeLessThan(4);
-      expect(lane.chipLeft, `${width}px`).toBeGreaterThan(lane.trackRight);
-    }
-  }
-  // A phone keeps a mini form of the bars beside the label and the chip,
-  // even when a lane ends with the longest words a chip can hold.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.evaluate(() => {
-    for (const chip of document.querySelectorAll('#engine-round .outcome .engine-chip')) {
-      chip.textContent = 'Waiting: payments to re-examine are waiting to retry';
-    }
-  });
-  for (const lane of await lanes()) {
-    expect(lane.trackWidth).toBeGreaterThan(120);
-    expect(lane.bar).toBeGreaterThan(0);
-    expect(Math.abs(lane.chipMiddle - lane.trackMiddle)).toBeLessThan(4);
-  }
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-});
-
-test('the network picker goes at once with JavaScript, with Go without', async ({ page, context, browser }) => {
-  await openAsAdmin(page, context);
-  await expect(page.locator('.engine-network').getByRole('button', { name: 'Go' })).toBeHidden();
-  await expect(page.locator('.mk-select .mk-button').first()).toBeVisible();
-  // Picking a network submits the form: the page loads it.
-  await Promise.all([
-    page.waitForURL(/\/status\/engine\?network=mainnet$/),
-    page.evaluate(() => {
-      const select = document.getElementById('engine-network');
-      select.value = 'mainnet';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    }),
-  ]);
-
-  const noJs = await browser.newContext({ javaScriptEnabled: false });
-  await noJs.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
-  const plain = await noJs.newPage();
-  await plain.goto(`${fixture.base_url}/status/engine`);
-  await expect(plain.locator('#engine-network')).toBeVisible();
-  await expect(plain.locator('#engine-network option[value="testnet"]')).toBeDisabled();
-  await plain.locator('.engine-network').getByRole('button', { name: 'Go' }).click();
-  await expect(plain).toHaveURL(/\/status\/engine\?network=mainnet$/);
-  await noJs.close();
-});
-
-test('the machine strip and the Scanning panel follow the engine live', async ({ page, context }) => {
-  test.setTimeout(60_000);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(String(error)));
-  await openAsAdmin(page, context);
-  const strip = page.locator('#engine-machine');
-  for (const tile of ['cpu', 'memory', 'transfer', 'round-trip', 'first-byte', 'block-size']) {
-    await expect(strip.locator(`[data-tile="${tile}"]`)).toHaveCount(1);
-  }
-  // The chip says how long ago the engine reported the figures.
-  await expect(page.locator('#machine-age')).toHaveText(/^live · \d+ s ago$/);
-  await expect(page.locator('#machine-live .live-dot')).toBeVisible();
-  // The Scanning panel is open, with a short line in its summary.
-  await expect(page.locator('#d-scanning')).toHaveAttribute('open', '');
-  await expect(page.locator('#scan-sum')).toHaveText(/^(at the tip|[\d,]+ behind)( · .*)?$/);
-  // Each machine event draws them again with the engine's newer report:
-  // the age goes back down when one comes.
-  const age = async () => Number((await page.locator('#machine-age').textContent()).match(/\d+/)[0]);
-  let last = await age(), fresher = false;
-  for (let i = 0; i < 40 && !fresher; i++) {
-    await page.waitForTimeout(500);
-    const now = await age();
-    fresher = now < last;
-    last = now;
-  }
-  expect(fresher, 'a newer report arrived').toBe(true);
-  await expect(page.locator('#scan-body dt').first()).toHaveText('Progress');
-  // Once the sampler has an hour's first samples, CPU has a figure.
-  await expect(strip.locator('[data-tile="cpu"] .v')).not.toHaveText('–', { timeout: 30_000 });
-  // The panels are a grid under the round: an open one spans the row.
-  const [scanning, reorg] = await Promise.all(['#d-scanning', '#d-reorg'].map((id) => page.locator(id).boundingBox()));
-  const panels = await page.locator('#engine-panels').boundingBox();
-  expect(Math.abs(scanning.width - panels.width)).toBeLessThan(1);
-  expect(reorg.width).toBeLessThan(panels.width / 2);
-  await captureCoverageStage(page, 'engine-strip', test.info(), { group: 'engine', shapes: ['mobile-portrait', 'tablet-portrait', 'desktop'] });
-  expect(errors).toEqual([]);
-});
-
-// A theme spacing step, in pixels.
-const space = (page, step) => page.evaluate((step) => parseFloat(getComputedStyle(document.documentElement).getPropertyValue(`--space-${step}`)), step);
-
-test('the chain strip labels its blocks from above, at the right blocks', async ({ page, context }) => {
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  await expect(page.locator('#pills .pill.catchup')).toHaveText('Catching up, 3 stores');
-  const sm = await space(page, 'sm');
-  const layout = () => page.evaluate(() => {
-    const box = (el) => el.getBoundingClientRect();
-    const cells = [...document.querySelectorAll('#cells > .cell')].map((c) => ({ h: Number(c.dataset.h), ...JSON.parse(JSON.stringify(box(c))) }));
-    const top = Math.min(...cells.map((c) => c.top));
-    const labels = [...document.querySelectorAll('#pills .pill, #chain-marks .m-tip, #chain-marks .m-hw')].map((el) => box(el).bottom);
-    const axis = [...document.querySelectorAll('#chain-axis span')].map((el) => box(el).top);
-    const win = document.querySelector('#chain-marks .m-win');
-    const catchup = document.querySelector('#pills .pill.catchup');
-    // A label's tick (a pseudo-element): its left and right, from the
-    // label's box and the tick's offsets inside the label's border.
-    const tickOf = (el, pseudo) => {
-      if (!el) return null;
-      const r = box(el), style = getComputedStyle(el), tick = getComputedStyle(el, pseudo);
-      const width = parseFloat(tick.borderLeftWidth) || parseFloat(tick.width);
-      const left = tick.left !== 'auto'
-        ? r.left + parseFloat(style.borderLeftWidth) + parseFloat(tick.left)
-        : r.right - parseFloat(style.borderRightWidth) - parseFloat(tick.right) - width;
-      return { left, right: left + width, middle: left + width / 2 };
-    };
-    const ticks = {
-      catchup: tickOf(catchup, '::before'),
-      frontier: tickOf(document.querySelector('#pills .pill.frontier'), '::before'),
-      tip: tickOf(document.querySelector('#chain-marks .m-tip'), '::after'),
-    };
-    return { cells, top, bottom: Math.max(...cells.map((c) => c.bottom)), labels, axis, win: win && box(win).bottom, tick: ticks.catchup && ticks.catchup.middle, ticks };
-  });
-  // Wide: the catching-up stores' block is drawn (beyond the cut), and the
-  // tick lands on it.
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await expect.poll(async () => (await layout()).cells.length).toBeGreaterThan(30);
-  // (Pills and marks glide to their blocks.)
-  await page.waitForTimeout(600);
-  const l = await layout();
-  for (const bottom of l.labels) expect(bottom, 'every label above the blocks').toBeLessThanOrEqual(l.top);
-  for (const top of l.axis) expect(top, 'the block numbers under them').toBeGreaterThanOrEqual(l.bottom);
-  // The reorg window's line a --space-sm step above the blocks.
-  expect(Math.abs(l.top - l.win - sm), `${l.top} ${l.win}`).toBeLessThanOrEqual(1);
-  const onto = l.cells.filter((c) => Math.abs(c.left + c.width / 2 - l.tick) <= 1.5);
-  expect(onto.length, 'the tick lands on a block').toBe(1);
-  expect(onto[0].h).toBeLessThan(Math.max(...l.cells.map((c) => c.h)) - 20);
-  // The frontier and the node's tip on one block: their ticks are the same
-  // two pixels, one line of the normal width, not two side by side.
-  expect(Math.abs(l.ticks.frontier.left - l.ticks.tip.left), JSON.stringify(l.ticks)).toBeLessThanOrEqual(0.5);
-  expect(Math.abs(l.ticks.frontier.right - l.ticks.tip.right), JSON.stringify(l.ticks)).toBeLessThanOrEqual(0.5);
-  // Narrow: no cut, and the stores are behind the oldest block drawn: the
-  // tick is at it, the left edge, not further right.
-  await page.setViewportSize({ width: 800, height: 900 });
-  await expect.poll(async () => (await layout()).cells.length).toBeLessThan(20);
-  // (The pill glides there.)
-  await expect.poll(async () => {
-    const now = await layout();
-    const oldest = now.cells.reduce((a, b) => (a.h < b.h ? a : b));
-    return oldest.h > onto[0].h && Math.abs(now.tick - (oldest.left + oldest.width / 2)) <= 1.5;
-  }).toBe(true);
-  // The node list is the network's nodes, and nothing else.
-  await expect(page.locator('#nodes > .node')).toHaveCount(2);
-  await expect(page.locator('#node-call')).toHaveCount(0);
-  await expect(page.locator('#nodes > .node .label')).toHaveText(['node-a.example:18081', 'node-b.example:18081']);
-});
-
-test('the round card has room: inset bars, its end marker, chips apart', async ({ page, context }) => {
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  const [xs, lg] = [await space(page, 'xs'), await space(page, 'lg')];
-  const card = await page.evaluate(() => {
-    const box = (el) => JSON.parse(JSON.stringify(el.getBoundingClientRect()));
-    const round = document.getElementById('engine-round');
-    const lanes = [...round.querySelectorAll('.lanes .track')].map((track) => ({
-      track: box(track),
-      share: track.querySelector('.share') && box(track.querySelector('.share')),
-      bars: [...track.querySelectorAll('.bar')].map((bar) => ({
-        ...box(bar),
-        cls: bar.className,
-        shapes: [...bar.children].map((shape) => ({ cls: shape.className, ...box(shape), display: getComputedStyle(shape).display })),
-      })),
-      chip: box(track.nextElementSibling.querySelector('.engine-chip')),
-    }));
-    const label = round.querySelector('.ruler-label');
-    const lastBar = round.querySelector('.bar.last');
-    const marker = getComputedStyle(lastBar, '::after');
-    const lastBox = lastBar.getBoundingClientRect();
-    return {
-      lanes,
-      label: box(label),
-      lasts: round.querySelectorAll('.bar.last').length,
-      marker: { height: parseFloat(marker.height), width: parseFloat(marker.width), left: lastBox.right - parseFloat(marker.right) - parseFloat(marker.width) },
-      lastRight: lastBox.right,
-      lastTime: box(lastBar.nextElementSibling),
-      ruleLine: getComputedStyle(label, '::before').content,
-      lanesBox: box(round.querySelector('.lanes')),
-      details: box(round.querySelector('[data-round-breakdown]')),
-    };
-  });
-  for (const [i, lane] of card.lanes.entries()) {
-    // The chips apart, each on its lane's row.
-    if (i) expect(lane.chip.top, `lane ${i}`).toBeGreaterThanOrEqual(card.lanes[i - 1].chip.bottom);
-    if (!lane.share) continue;
-    // Inside the dashed outline with a --space-xs gap all round: nothing
-    // covers it.
-    for (const bar of lane.bars) {
-      expect(bar.left - (lane.share.left + 1.5), `lane ${i} start`).toBeGreaterThanOrEqual(xs - 0.5);
-      expect(bar.top - (lane.share.top + 1.5), `lane ${i} top`).toBeGreaterThanOrEqual(xs - 0.5);
-      expect(lane.share.bottom - 1.5 - bar.bottom, `lane ${i} bottom`).toBeGreaterThanOrEqual(xs - 0.5);
-    }
-  }
-  // Blocks' unit, then Mempool, Settlement and Upkeep (306ms, 3 % of the
-  // round's 10s budget), then its cache carry: on a wide track a thread
-  // crosses the gap to an outline over the carry's own time, the outline
-  // exactly the solid part's height.
-  const blocks = card.lanes[1].bars;
-  expect(blocks).toHaveLength(1);
-  expect(blocks[0].cls).toBe('bar last');
-  const [fill, thread, work] = blocks[0].shapes;
-  expect([fill.cls, thread.cls, work.cls]).toEqual(['fill', 'thread band', 'work band']);
-  expect(work.height).toBe(fill.height);
-  expect(thread.height).toBe(1);
-  expect(Math.abs(thread.left - fill.right)).toBeLessThanOrEqual(1);
-  expect(work.left - fill.right, 'split: the outline over the carry alone').toBeGreaterThan(20);
-  // The marker 3px past the end of the segment that finished last, its
-  // time and the round's total moved with it.
-  expect(Math.abs(card.marker.left - card.lastRight - 3), JSON.stringify(card.marker)).toBeLessThanOrEqual(0.5);
-  expect(card.lastTime.left).toBeGreaterThanOrEqual(card.marker.left + card.marker.width + 3);
-  const middle = card.marker.left + card.marker.width / 2;
-  expect(Math.abs(card.label.left + card.label.width / 2 - middle), `label ${JSON.stringify(card.label)} marker ${middle}`).toBeLessThanOrEqual(1.5);
-  // The marker is on that one segment, in its lane only: no line running
-  // across the other lanes to the total.
-  expect(card.lasts).toBe(1);
-  expect(card.marker.width).toBe(2);
-  expect(card.marker.height).toBeLessThanOrEqual(card.lanes[1].track.height);
-  expect(card.ruleLine).toBe('none');
-  expect(card.label.top).toBeGreaterThan(card.lanes[4].track.bottom);
-  // Room above Timing details.
-  expect(Math.abs(card.details.top - card.lanesBox.bottom - lg), `${card.details.top} ${card.lanesBox.bottom}`).toBeLessThanOrEqual(1);
-  // The playback row centred in its card.
-  const centred = await page.evaluate(() => {
-    const cardBox = document.getElementById('engine-timeline');
-    const style = getComputedStyle(cardBox);
-    const outer = cardBox.getBoundingClientRect();
-    const middle = outer.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop) + (cardBox.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / 2;
-    const modes = document.getElementById('tl-modes').getBoundingClientRect();
-    return { middle, modes: modes.top + modes.height / 2 };
-  });
-  expect(Math.abs(centred.middle - centred.modes), JSON.stringify(centred)).toBeLessThanOrEqual(1.5);
-});
-
-test('on a phone a gap between the thresholds is joined', async ({ page, context }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  const blocks = await page.evaluate(() => {
-    const bar = document.querySelector('#engine-round .track.t-blocks .bar');
-    const track = bar.closest('.track').getBoundingClientRect();
-    const [fill, thread, work] = [...bar.children].map((el) => ({ ...JSON.parse(JSON.stringify(el.getBoundingClientRect())), display: getComputedStyle(el).display, cls: el.className }));
-    return { track: track.width, fill, thread, work };
-  });
-  expect(blocks.track).toBeLessThan(480);
-  expect(blocks.work.cls).toBe('work band');
-  // The thread goes and the outline starts where the solid part ends.
-  expect(blocks.thread.display).toBe('none');
-  expect(Math.abs(blocks.work.left - blocks.fill.right)).toBeLessThanOrEqual(0.5);
-  expect(blocks.work.height).toBe(blocks.fill.height);
-});
-
-// Shapes back to back in a segment are one run, `(    ][****)`: Chain's
-// tip request (outlined) runs straight into its unit (solid). Where they
-// meet, both are square and touch; the run's own ends stay rounded: on a
-// wide track and a phone's.
-for (const width of [1280, 390]) {
-  {
-    test(`${width}px: an outline and a unit back to back are one run`, async ({ browser }) => {
-      const context = await browser.newContext({ viewport: { width, height: 900 } });
-      const page = await context.newPage();
-      await openAsAdmin(page, context);
-      await expect(page.locator('#engine-round .track.t-chain .bar').first()).toBeVisible();
-      const runs = await page.evaluate(() => [...document.querySelectorAll('#engine-round .bar')].flatMap((bar) => {
-        const shapes = [...bar.children].map((el) => {
-          const s = getComputedStyle(el), box = el.getBoundingClientRect();
-          return { cls: el.className, left: box.left, right: box.right, tl: s.borderTopLeftRadius, bl: s.borderBottomLeftRadius, tr: s.borderTopRightRadius, br: s.borderBottomRightRadius };
-        });
-        return shapes.slice(1).map((next, i) => ({ lane: bar.closest('.track').className, prev: shapes[i], next }));
-      }));
-      const chain = runs.find((pair) => pair.lane.includes('t-chain'));
-      expect(chain, JSON.stringify(runs)).toBeTruthy();
-      expect(chain.prev.cls).toBe('work meets-next');
-      expect(chain.next.cls).toBe('fill meets-prev');
-      // Outer ends rounded, the shared edge square, no gap between them.
-      expect([chain.prev.tl, chain.prev.bl, chain.next.tr, chain.next.br]).toEqual(['2px', '2px', '2px', '2px']);
-      expect([chain.prev.tr, chain.prev.br, chain.next.tl, chain.next.bl]).toEqual(['0px', '0px', '0px', '0px']);
-      expect(Math.abs(chain.next.left - chain.prev.right)).toBeLessThanOrEqual(0.5);
-      // And every pair that meets anywhere on the page, square at the seam.
-      for (const pair of runs.filter((pair) => pair.prev.cls.includes('meets-next'))) {
-        expect(pair.next.cls, JSON.stringify(pair)).toContain('meets-prev');
-        expect([pair.prev.tr, pair.prev.br, pair.next.tl, pair.next.bl], JSON.stringify(pair)).toEqual(['0px', '0px', '0px', '0px']);
-      }
-      await context.close();
-    });
-  }
-}
-
-test('the chain strip labels take as few levels as they can, with 1px leaders', async ({ page, context }) => {
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  const read = () => page.evaluate(() => {
-    const strip = document.getElementById('strip');
-    const labels = [...document.querySelectorAll('#chain-marks .m-tip, #chain-marks .m-hw, #pills .pill')]
-      .filter((el) => el.offsetParent !== null)
-      .map((el) => {
-        const r = el.getBoundingClientRect();
-        const leader = getComputedStyle(el, el.classList.contains('pill') ? '::before' : '::after');
-        return { text: el.textContent, level: Number(getComputedStyle(el).getPropertyValue('--level')), left: r.left, right: r.right, top: r.top, bottom: r.bottom, leader: leader.borderLeftWidth };
-      });
-    return { labels, levels: Number(getComputedStyle(strip).getPropertyValue('--levels')), height: strip.getBoundingClientRect().height };
-  });
-  const gap = 4;
-  // The user's case: stores catching up far to the left, the frontier and
-  // the node's tip on one block. Only the frontier goes up.
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await page.waitForTimeout(700);
-  let s = await read();
-  const by = (text) => s.labels.find((l) => l.text.startsWith(text));
-  expect([by('node tip').level, by('Frontier').level, by('Catching up').level]).toEqual([0, 1, 0]);
-  expect(s.levels).toBe(2);
-  // The strip is as tall as the levels it uses.
-  expect(s.height).toBe(32 + (s.levels - 1) * 22 + 46);
-  for (const width of [1280, 800]) {
-    await page.setViewportSize({ width, height: 900 });
-    await page.waitForTimeout(700);
-    s = await read();
-    expect(s.labels.length).toBeGreaterThan(1);
-    for (const [i, a] of s.labels.entries()) {
-      expect(a.leader, `${a.text}: a 1px leader`).toBe('1px');
-      for (const b of s.labels.slice(i + 1)) {
-        const apart = a.right + gap - 0.5 <= b.left || b.right + gap - 0.5 <= a.left || a.bottom <= b.top || b.bottom <= a.top;
-        expect(apart, `${width}px: ${a.text} and ${b.text} apart`).toBe(true);
-      }
-      // Up a level only because it would overlap a label on each one below.
-      for (let below = 0; below < a.level; below++) {
-        const blocked = s.labels.some((b) => b !== a && b.level === below && !(b.right + gap <= a.left + 0.5 || a.right + gap <= b.left + 0.5));
-        expect(blocked, `${width}px: ${a.text} could go down to level ${below}`).toBe(true);
-      }
-    }
-    expect(s.levels).toBe(Math.max(1, ...s.labels.map((l) => l.level + 1)));
-  }
-  // A phone shows no labels: the strip is the cells alone.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(300);
-  s = await read();
-  expect(s.labels).toEqual([]);
-});
-
-test('the timeline scrub bar reaches the playback control', async ({ page, context }) => {
-  await openAsAdmin(page, context);
-  await expect(page.locator('#engine-timeline')).toBeVisible();
-  const xl = await space(page, 'xl');
-  const xs = await space(page, 'xs');
-  const measure = () => page.evaluate(() => {
-    const box = (el) => el.getBoundingClientRect();
-    const card = document.getElementById('engine-timeline');
-    const style = getComputedStyle(card);
-    return {
-      bar: box(document.getElementById('tl')),
-      win: box(document.getElementById('tl-win')),
-      handle: box(document.getElementById('tl-to')),
-      head: box(document.getElementById('tl-head')),
-      modes: box(document.getElementById('tl-modes')),
-      inner: box(card).right - parseFloat(style.paddingRight) - parseFloat(style.borderRightWidth),
-      innerLeft: box(card).left + parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth),
-    };
-  });
-  for (const mode of ['live', 'paused']) {
-    // Pause is the control's longest option, and paused the readout shows.
-    if (mode === 'paused') await page.locator('#tl-mode').selectOption('paused');
-    for (const width of [1280, 820]) {
-      await page.setViewportSize({ width, height: 900 });
-      await page.waitForTimeout(300);
-      const m = await measure();
-      expect(Math.abs(m.modes.left - m.bar.right - xl), `${mode} ${width}px: ${m.bar.right} to ${m.modes.left}`).toBeLessThanOrEqual(1);
-      // The window ends at the bar's new right edge, its right handle
-      // (16px outside the window) still clear of the control.
-      if (mode === 'live') {
-        expect(Math.abs(m.win.right - m.bar.right), `${width}px`).toBeLessThanOrEqual(3);
-        expect(Math.abs(m.head.left + m.head.width / 2 - m.bar.right), `${width}px: the head marker at now, 1.5s behind`).toBeLessThanOrEqual(3);
-      }
-      expect(m.modes.left - m.handle.right, `${mode} ${width}px: the handle clear of the control`).toBeGreaterThanOrEqual(xs);
-    }
-  }
-  // A phone: the bar takes the card's width, less room for the right
-  // handle inside the card, the control under it.
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.waitForTimeout(300);
-  const m = await measure();
-  expect(Math.abs(m.bar.right - (m.inner - await space(page, 'lg')))).toBeLessThanOrEqual(1);
-  expect(m.handle.right).toBeLessThanOrEqual(m.inner + 0.5);
-  expect(Math.abs(m.bar.left - m.innerLeft)).toBeLessThanOrEqual(1);
-  expect(m.modes.top).toBeGreaterThan(m.bar.bottom);
-});
-
-// Without JavaScript the page says it needs it, and the network picker
-// still goes (Go submits it); none of the live view is drawn.
-test('without JavaScript the engine page says it needs it', async ({ browser }) => {
-  const context = await browser.newContext({ javaScriptEnabled: false });
-  await context.addCookies([{ name: 'session', value: fixture.admin_session, url: fixture.base_url }]);
-  const page = await context.newPage();
-  await page.goto(`${fixture.base_url}/status/engine?network=mainnet`);
-  // (Playwright's locators don't look inside `noscript`: the page is asked.)
-  const shown = await page.evaluate(() => {
-    const message = document.querySelector('#engine-app noscript [role]');
-    return message && { text: message.textContent, height: message.getBoundingClientRect().height };
-  });
-  expect(shown.text).toContain('The engine page needs JavaScript');
-  expect(shown.height).toBeGreaterThan(0);
-  await expect(page.locator('#engine-timeline')).toHaveCount(0);
-  await expect(page.locator('#engine-summary')).toHaveCount(0);
-  await expect(page.locator('.engine-network').getByRole('button', { name: 'Go' })).toBeVisible();
-  await captureCoverageStage(page, 'engine-no-js', test.info(), shot);
-  await context.close();
-});
-
-test('the engine page is for admins only', async ({ page, context }) => {
-  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
-  const response = await page.goto(`${fixture.base_url}/status/engine`);
-  expect(response.status()).toBe(403);
 });
