@@ -2471,6 +2471,23 @@ mod sources {
             ..KEY
         };
         assert!(secret_file.check_declaration().is_err());
+        let secret_stored_alone = Setting {
+            sources: Sources::of(&[Source::Database]),
+            env_var: "",
+            ..TOKEN
+        };
+        assert!(
+            secret_stored_alone.check_declaration().is_err(),
+            "a secret always has its variable"
+        );
+        let secret_page = Setting {
+            sources: Sources::of(&[Source::Database, Source::Env]),
+            ..TOKEN
+        };
+        assert!(
+            secret_page.check_declaration().is_ok(),
+            "a secret the admin page sets is kept in the database, encrypted by its store"
+        );
         assert!(
             KEY.check_declaration().is_ok(),
             "a required setting's default is a placeholder"

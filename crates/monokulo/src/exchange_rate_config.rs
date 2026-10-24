@@ -44,6 +44,11 @@
 //!   `https://pro-api.coinmarketcap.com/public-api`). Enabling a provider on
 //!   the instance only makes it *selectable*; each store still turns it on
 //!   and orders it on its own settings page.
+//! - `exchange_rate.coinmarketcap_api_key` - a CoinMarketCap API key, set
+//!   on the admin settings page (kept encrypted) or by
+//!   `MONOKULO_EXCHANGE_RATE_COINMARKETCAP_API_KEY`, which locks it. With
+//!   one, CoinMarketCap is asked through its keyed API; without, keyless
+//!   (`shared::coinmarketcap`).
 //! - `MONOKULO_EXCHANGE_RATE_CACHE_SECONDS` - how long a Coingecko or
 //!   CoinMarketCap lookup result (a rate *or* the supported-currency list - both use this
 //!   same TTL) is trusted before the next request triggers a fresh live
@@ -83,6 +88,8 @@ pub struct ExchangeRateConfig {
     pub coingecko_base_url: String,
     pub coinmarketcap_enabled: bool,
     pub coinmarketcap_base_url: String,
+    /// Empty: CoinMarketCap is asked without a key.
+    pub coinmarketcap_api_key: live_settings::Secret,
     pub haveno_enabled: bool,
     pub haveno_base_url: String,
     pub cache_seconds: u64,
@@ -305,7 +312,12 @@ impl ExchangeRateProviders {
         let coinmarketcap = if config.coinmarketcap_enabled {
             Some(Arc::new(
                 CoinMarketCapRateProvider::new(config.coinmarketcap_base_url.clone())
-                    .with_cache_limit(config.http_cache_bytes),
+                    .with_cache_limit(config.http_cache_bytes)
+                    .with_api_key(
+                        Some(config.coinmarketcap_api_key.expose())
+                            .filter(|key| !key.is_empty())
+                            .map(shared::coinmarketcap::ApiKey::new),
+                    ),
             ))
         } else {
             None
@@ -334,6 +346,12 @@ impl ExchangeRateProviders {
     /// 3.3). A changed provider starts with an empty rate cache.
     pub fn reconfigure(&self, config: &ExchangeRateConfig) {
         *self.fiat.write() = Arc::new(Self::fiat_for(config));
+    }
+
+    /// Why CoinMarketCap refused its API key the last time it was asked,
+    /// while it is enabled with one (for the admin settings page).
+    pub fn coinmarketcap_key_problem(&self) -> Option<String> {
+        self.fiat().coinmarketcap.as_ref()?.key_problem()
     }
 
     fn fiat(&self) -> Arc<FiatProviders> {

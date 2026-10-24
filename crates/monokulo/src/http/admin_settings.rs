@@ -105,6 +105,14 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 .locked
                 .or_else(|| only_for_a_remote_engine(state, view.key))
                 .or_else(|| read_only.clone().filter(|_| view.sources.toml));
+            let stored_secret = crate::settings::is_stored_secret(view.key);
+            // A key CoinMarketCap refused since it was saved, beside it.
+            let problem = view.problem.map(|p| p.message).or_else(|| {
+                (view.key == crate::settings::EXCHANGE_RATE_COINMARKETCAP_API_KEY.key
+                    && !view.value.is_empty())
+                .then(|| state.exchange_rate.coinmarketcap_key_problem())
+                .flatten()
+            });
             AdminScalarFieldView {
                 key: view.key.to_string(),
                 name: String::new(),
@@ -116,9 +124,10 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 example: view.example.map(str::to_string),
                 restart_only: view.applies == live_settings::Applies::Restart,
                 pending_restart: view.pending_restart,
-                problem: view.problem.map(|p| p.message),
+                problem,
                 locked,
                 saved_value: None,
+                stored_secret,
             }
         })
         .collect()
@@ -236,6 +245,7 @@ async fn fetch_engine_settings(
                 problem: s.problem,
                 locked: s.locked,
                 saved_value: None,
+                stored_secret: false,
             }
         })
         .collect();
@@ -662,6 +672,14 @@ fn split_tab(
         if name == "tab" || admin_nodes::is_node_field(name) {
             continue;
         }
+        // A secret setting's Remove box goes with it.
+        if name
+            .strip_suffix(":remove")
+            .is_some_and(crate::settings::is_stored_secret)
+        {
+            tab.monokulo.insert(name.clone(), value.clone());
+            continue;
+        }
         let engine_key = name.strip_prefix("engine:");
         let shown = match engine_key {
             None if is_monokulo_key(name) => {
@@ -785,6 +803,9 @@ async fn check_monokulo(
         .check(monokulo_changes(form))
         .await
         .map_err(registry_refusal)?;
+    if let Some(refused) = check_coinmarketcap_key(registry, form, &report).await {
+        return Err(refused);
+    }
     use live_settings::Section;
     let site_changed = crate::settings::SnpEntryPolicy::keys()
         .iter()
@@ -801,15 +822,79 @@ async fn check_monokulo(
 /// save's value is what this site's SEV-SNP key entry is checked against.
 const ENGINE_ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
 
-/// Monokulo's part of a form as its registry takes it.
+/// Monokulo's part of a form as its registry takes it. A secret the page
+/// may set is write-only: a new value replaces it, its Remove box deletes
+/// it, and its box left empty leaves it as it is.
 fn monokulo_changes(form: &HashMap<String, String>) -> live_settings::Changes {
     crate::settings::ALL
         .iter()
         .filter_map(|setting| {
-            let value = form.get(setting.key())?;
-            Some((setting.key().to_string(), Some(value.clone())))
+            let key = setting.key();
+            if crate::settings::is_stored_secret(key) {
+                if let Some(new) = new_secret(form, key) {
+                    return Some((key.to_string(), Some(new.to_string())));
+                }
+                let remove = form
+                    .get(&views::admin::secret_remove_name(key))
+                    .is_some_and(|ticked| ticked == "on");
+                return remove.then(|| (key.to_string(), None));
+            }
+            let value = form.get(key)?;
+            Some((key.to_string(), Some(value.clone())))
         })
         .collect()
+}
+
+/// The new value `form` gives the secret setting `key`, if any.
+fn new_secret<'a>(form: &'a HashMap<String, String>, key: &str) -> Option<&'a str> {
+    form.get(key)
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+}
+
+/// A new CoinMarketCap API key, asked about at CoinMarketCap before it is
+/// saved (`/v1/key/info`, which costs no credits): one it refuses is
+/// refused here, with its reason. One it can't be asked about now
+/// (unreachable, rate limited) is saved, and logged; if it's refused later,
+/// the page says so beside it.
+async fn check_coinmarketcap_key(
+    registry: &live_settings::Registry,
+    form: &HashMap<String, String>,
+    report: &live_settings::CheckReport,
+) -> Option<Refusal> {
+    let key_setting = &crate::settings::EXCHANGE_RATE_COINMARKETCAP_API_KEY;
+    if !report.would().changed.contains(&key_setting.key) {
+        return None;
+    }
+    let key = new_secret(form, key_setting.key)?;
+    let base_key = crate::settings::EXCHANGE_RATE_COINMARKETCAP_BASE_URL.key;
+    let base_url = form
+        .get(base_key)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .or_else(|| {
+            registry
+                .describe()
+                .into_iter()
+                .find(|view| view.key == base_key)
+                .map(|view| view.value)
+        })?;
+    let key = shared::coinmarketcap::ApiKey::new(key);
+    match shared::coinmarketcap::check_api_key(base_url.trim(), &key).await {
+        shared::coinmarketcap::KeyCheck::Accepted => None,
+        shared::coinmarketcap::KeyCheck::Rejected { status, message } => {
+            tracing::warn!(status, reason = %message, "CoinMarketCap refused the API key entered on the admin settings page");
+            let why = format!("CoinMarketCap refused this key (HTTP {status}: {message}). Check it on your CoinMarketCap developer dashboard.");
+            Some(Refusal {
+                fields: vec![live_settings::FieldError::new(key_setting.key, why.clone())],
+                message: why,
+            })
+        }
+        shared::coinmarketcap::KeyCheck::Unchecked(reason) => {
+            tracing::warn!(reason = %reason, "the new CoinMarketCap API key couldn't be checked now, so it is saved unchecked");
+            None
+        }
+    }
 }
 
 /// Saves monokulo's part of a tab through its registry, after its check:
@@ -1732,6 +1817,8 @@ pub async fn reload(
 
 #[cfg(test)]
 mod tests {
+    mod coinmarketcap_key;
+
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::Router;
@@ -1810,7 +1897,10 @@ mod tests {
         let exchange_rate = test_exchange_rate_provider();
         let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
         let settings = crate::settings::MonokuloSettings::load(
-            crate::db::Database::inline(db.clone()),
+            crate::settings::DbSettings::new(
+                crate::db::Database::inline(db.clone()),
+                crate::http::TEST_ENCRYPTION_KEY,
+            ),
             engine_client.clone(),
             exchange_rate.clone(),
             abuse.clone(),
@@ -2164,6 +2254,10 @@ mod tests {
             crate::settings::ALL
                 .iter()
                 .filter(|s| (s.sources().toml || s.sources().database) && s.editable())
+                // The one secret the page sets (the CoinMarketCap API key) is
+                // write-only, never shown back: its own tests
+                // (`tests::coinmarketcap_key`).
+                .filter(|s| !crate::settings::is_stored_secret(s.key()))
                 // Checked against the engine's before saving: their own
                 // test below.
                 .filter(|s| !s.key().starts_with("key_custody.snp_entry_"))

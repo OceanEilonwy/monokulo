@@ -336,6 +336,16 @@ pub struct AdminScalarFieldView {
     /// again to fix): with JavaScript the setting is then still unsaved,
     /// and Discard goes back to this.
     pub saved_value: Option<String>,
+    /// A secret the page may set (`sources: [Database, Env]`: the
+    /// CoinMarketCap API key). Write-only: the page says whether one is
+    /// set, never what it is, and offers a box to replace it and a box to
+    /// remove it ([`secret_remove_name`]).
+    pub stored_secret: bool,
+}
+
+/// The name of the box that removes the secret setting `key` on save.
+pub fn secret_remove_name(key: &str) -> String {
+    format!("{key}:remove")
 }
 
 /// Where a setting's value comes from, as the chip beside its name shows
@@ -1291,8 +1301,11 @@ fn scalar_field_needing(field: &AdminScalarFieldView, needs: Option<(String, boo
     setting.render(html! {
         @if list {
             div class="setting-choices" { (scalar_input(field)) }
-        // A secret comes from the environment only, and is never shown:
-        // always locked.
+        // A secret the page may set is asked for, never shown.
+        } @else if field.locked.is_none() && field.stored_secret {
+            (secret_input(field))
+        // Any other secret comes from the environment only, and is never
+        // shown: always locked.
         } @else if field.locked.is_some() || field.kind == SettingKindView::Secret {
             (locked_input(field))
         } @else {
@@ -1303,6 +1316,37 @@ fn scalar_field_needing(field: &AdminScalarFieldView, needs: Option<(String, boo
         }
         (field_status(field))
     })
+}
+
+/// A secret the page may set: whether one is set (never its value), an
+/// empty password box whose new value replaces it on save (left empty, it
+/// stays as it is), and, while one is set, a box that removes it.
+fn secret_input(field: &AdminScalarFieldView) -> Markup {
+    let set = !field.value.is_empty();
+    let input = ui::Input::new(field.form_name())
+        .kind(ui::InputType::Password)
+        .id(field_id(field.form_name()))
+        .autocomplete("off")
+        .placeholder(if set {
+            "Enter a new key to replace it"
+        } else {
+            "Paste your API key"
+        })
+        .maybe_described_by(help_id(field));
+    html! {
+        @if set {
+            (ui::FieldNote::new("A key is set. It isn't shown again: enter a new one to replace it, or remove it."))
+        } @else {
+            (ui::FieldNote::new("No key is set."))
+        }
+        (input)
+        @if set {
+            (ui::Checkbox::new()
+                .text("Remove the key")
+                .name(secret_remove_name(&field.key))
+                .id(format!("{}-remove", field_id(field.form_name()))))
+        }
+    }
 }
 
 /// A setting the page can't change (given on the command line or in the
@@ -2209,6 +2253,12 @@ mod tests {
                 "exchange-rates",
             ),
             (
+                "exchange_rate.coinmarketcap_api_key",
+                M,
+                Payments,
+                "exchange-rates",
+            ),
+            (
                 "exchange_rate.haveno_enabled",
                 M,
                 Payments,
@@ -2773,6 +2823,7 @@ mod tests {
             label: "logging dev mode until".into(),
             value: "0".into(),
             saved_value: Some((now + 600).to_string()),
+            stored_secret: false,
             kind: SettingKindView::TimeLimit {
                 now,
                 until_label: "1 Jan, 00:00".into(),

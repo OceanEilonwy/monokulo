@@ -188,7 +188,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
-        db.clone(),
+        settings::DbSettings::new(db.clone(), encryption_key.clone()),
         engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),

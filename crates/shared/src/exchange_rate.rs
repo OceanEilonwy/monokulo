@@ -88,6 +88,10 @@ pub enum ExchangeRateError {
         status: u16,
         retry_after: Option<std::time::Duration>,
     },
+    /// The provider refused the API key it was given (`401`, `402` or
+    /// `403`), in its own words, which never hold the key.
+    #[error("the rate provider refused its API key (HTTP {status}: {message})")]
+    KeyRejected { status: u16, message: String },
 }
 
 impl ExchangeRateError {

@@ -119,6 +119,10 @@ jobs:
       - name: Run the Rust tests
         id: rust
         continue-on-error: true
+        # With the secret set, the CoinMarketCap live test uses the keyed
+        # API; without it (a fork), the keyless one.
+        env:
+          COINMARKETCAP_API_KEY: ${{ secrets.COINMARKETCAP_API_KEY }}
         run: cargo xtask live tests
       - name: Run the browser tests
         id: browser

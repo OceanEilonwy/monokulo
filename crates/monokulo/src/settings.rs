@@ -15,6 +15,18 @@
 //! row is encrypted with (`crate::crypto`). Keeping it in the database it
 //! protects, or changing it while running, would leak it or make every
 //! stored token unreadable.
+//!
+//! One secret is a deliberate exception, agreed with the instance's owner:
+//! the CoinMarketCap API key (`exchange_rate.coinmarketcap_api_key`) may be
+//! set from the admin settings page as well as from its environment
+//! variable (`sources: [Database, Env]`). The page only asks for it, never
+//! shows it back (it says whether one is set, with Replace and Remove);
+//! [`DbSettings`] keeps it in its own `encrypted_settings` table, encrypted
+//! with `crypto.encryption_key` and bound to its key, so neither the
+//! database file nor the Query page holds it in the clear. Its variable,
+//! when set, still wins and locks it on the page. It applies on a save or a
+//! reload, like the other live settings. Every other secret stays in the
+//! environment only.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -225,6 +237,15 @@ settings! {
         default: live_settings::parsed_default("https://pro-api.coinmarketcap.com/public-api"),
         description: "Where CoinMarketCap's keyless API is reached. Change it only to use a proxy or mirror.",
         example: "https://pro-api.coinmarketcap.com/public-api",
+    },
+    EXCHANGE_RATE_COINMARKETCAP_API_KEY: Secret {
+        key: "exchange_rate.coinmarketcap_api_key",
+        env: "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_API_KEY",
+        default: Secret::default(),
+        // Unset is valid: CoinMarketCap is then asked without a key.
+        check: |key: &Secret| if key.expose().is_empty() { Ok(()) } else { shared::coinmarketcap::check_api_key_format(key.expose()) },
+        description: "Your CoinMarketCap API key, from the CoinMarketCap developer dashboard. With one, rates come from CoinMarketCap's keyed API under your plan's limits; without one, from its keyless API, which is limited per address and meant for trying it out. Kept encrypted, and never shown again once saved.",
+        sources: [Database, Env],
     },
     EXCHANGE_RATE_HAVENO_ENABLED: bool {
         key: "exchange_rate.haveno_enabled",
@@ -956,6 +977,7 @@ impl Section for ExchangeRateConfig {
             &EXCHANGE_RATE_COINGECKO_BASE_URL,
             &EXCHANGE_RATE_COINMARKETCAP_ENABLED,
             &EXCHANGE_RATE_COINMARKETCAP_BASE_URL,
+            &EXCHANGE_RATE_COINMARKETCAP_API_KEY,
             &EXCHANGE_RATE_HAVENO_ENABLED,
             &EXCHANGE_RATE_HAVENO_BASE_URL,
             &EXCHANGE_RATE_CACHE_SECONDS,
@@ -973,6 +995,7 @@ impl Section for ExchangeRateConfig {
                 .get(&EXCHANGE_RATE_COINMARKETCAP_BASE_URL)
                 .as_str()
                 .to_string(),
+            coinmarketcap_api_key: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_API_KEY),
             haveno_enabled: snapshot.get(&EXCHANGE_RATE_HAVENO_ENABLED),
             haveno_base_url: snapshot
                 .get(&EXCHANGE_RATE_HAVENO_BASE_URL)
@@ -1151,25 +1174,81 @@ impl Section for TorConfig {
 /// same reading and writing connections as everything else (so a save
 /// queues behind other writes on the writer's thread, never on a Tokio
 /// worker).
-pub struct DbSettings(pub Database);
+///
+/// A secret the admin page may set (`sources: [Database, Env]`: only the
+/// CoinMarketCap API key) goes to the `encrypted_settings` table instead,
+/// encrypted with `crypto.encryption_key` and bound to its own key
+/// (`crypto::Binding::Setting`), and comes back decrypted. One that can't
+/// be decrypted (the encryption key was changed) is left out, as if unset,
+/// and logged, naming the setting only.
+pub struct DbSettings {
+    db: Database,
+    key: crate::crypto::AtRestKey,
+}
+
+impl DbSettings {
+    pub fn new(db: Database, key: crate::crypto::AtRestKey) -> Self {
+        DbSettings { db, key }
+    }
+}
+
+/// Whether `key` is a secret kept encrypted by [`DbSettings`].
+pub fn is_stored_secret(key: &str) -> bool {
+    ALL.iter().any(|setting| {
+        setting.key() == key
+            && setting.kind() == live_settings::SettingKind::Secret
+            && setting.sources().database
+    })
+}
 
 #[live_settings::async_trait]
 impl live_settings::SettingsStore for DbSettings {
     async fn read_all(
         &self,
     ) -> Result<std::collections::HashMap<String, String>, live_settings::StoreError> {
-        self.0
-            .read(|db| db.list_settings())
+        let (mut plain, encrypted) = self
+            .db
+            .read(|db| {
+                Ok::<_, crate::db::DbError>((db.list_settings()?, db.list_encrypted_settings()?))
+            })
             .await
-            .map_err(live_settings::StoreError::new)
+            .map_err(live_settings::StoreError::new)?;
+        for (key, value) in encrypted {
+            if !is_stored_secret(&key) {
+                continue;
+            }
+            match crate::crypto::decrypt(&self.key, crate::crypto::Binding::Setting(&key), &value) {
+                Ok(secret) => {
+                    plain.insert(key, secret);
+                }
+                Err(error) => tracing::error!(
+                    setting = %key,
+                    %error,
+                    "a saved secret setting can't be decrypted with this encryption key, so it is treated as unset: enter it again on the admin settings page"
+                ),
+            }
+        }
+        Ok(plain)
     }
 
     async fn write_all(
         &self,
         changes: Vec<(&'static str, Option<String>)>,
     ) -> Result<(), live_settings::StoreError> {
-        self.0
-            .write(move |db| db.write_settings(&changes))
+        let mut plain = Vec::new();
+        let mut encrypted = Vec::new();
+        for (key, value) in changes {
+            if is_stored_secret(key) {
+                let value = value.map(|secret| {
+                    crate::crypto::encrypt(&self.key, crate::crypto::Binding::Setting(key), &secret)
+                });
+                encrypted.push((key, value));
+            } else {
+                plain.push((key, value));
+            }
+        }
+        self.db
+            .write(move |db| db.write_settings_and_secrets(&plain, &encrypted))
             .await
             .map_err(live_settings::StoreError::new)
     }
@@ -1520,7 +1599,7 @@ impl MonokuloSettings {
     /// through the registry apply the same way. Anything invalid, or a
     /// missing secret, stops it with every problem named.
     pub async fn load(
-        db: Database,
+        store: DbSettings,
         engine_client: EngineClient,
         exchange_rates: Arc<ExchangeRateProviders>,
         abuse: Arc<AbuseProtection>,
@@ -1530,7 +1609,7 @@ impl MonokuloSettings {
     ) -> Result<Arc<Self>, String> {
         // The options file holds the configuration and the database the
         // runtime switches, each key in its own place.
-        let layered = live_settings::LayeredStore::new(options, Arc::new(DbSettings(db)), ALL);
+        let layered = live_settings::LayeredStore::new(options, Arc::new(store), ALL);
         let mut builder = Registry::builder_with_env(Arc::new(layered), ALL, env).await;
         builder.reloadable(EngineConnectionReloadable { engine_client });
         builder.reloadable(ExchangeRatesReloadable {
@@ -1603,6 +1682,91 @@ pub(crate) fn test_secrets() -> live_settings::Env {
 mod tests {
     use super::*;
     use crate::db::Db;
+
+    /// The CoinMarketCap API key, the one secret the admin page may set:
+    /// stored encrypted, bound to its key, in its own table (the Query page
+    /// and its export hide the column), read back decrypted; removed with
+    /// its row; and, under another encryption key, treated as unset rather
+    /// than stopping anything.
+    #[tokio::test]
+    async fn a_secret_the_page_sets_is_stored_encrypted_and_read_back_decrypted() {
+        use live_settings::SettingsStore;
+        const KEY: &str = "b54bcf4d-1bca-4e8e-9a24-22ff2c3d462c";
+        let api_key = EXCHANGE_RATE_COINMARKETCAP_API_KEY.key;
+        assert!(is_stored_secret(api_key));
+        assert!(!is_stored_secret(CRYPTO_ENCRYPTION_KEY.key), "env only");
+        assert!(!is_stored_secret(ABUSE_UNDER_ATTACK.key), "not a secret");
+
+        let shared_db = Db::open_in_memory().unwrap().into_shared();
+        let db = Database::inline(shared_db.clone());
+        let store = DbSettings::new(db.clone(), crate::http::TEST_ENCRYPTION_KEY);
+        store
+            .write_all(vec![
+                (api_key, Some(KEY.to_string())),
+                (ABUSE_UNDER_ATTACK.key, Some("true".to_string())),
+            ])
+            .await
+            .unwrap();
+
+        let raw = shared_db.lock().list_encrypted_settings().unwrap();
+        let stored = raw.get(api_key).expect("kept in encrypted_settings");
+        assert!(!stored.contains(KEY), "the raw value isn't the key");
+        assert_eq!(
+            crate::crypto::decrypt(
+                &crate::http::TEST_ENCRYPTION_KEY,
+                crate::crypto::Binding::Setting(api_key),
+                stored
+            )
+            .unwrap(),
+            KEY
+        );
+        assert_eq!(shared_db.lock().get_setting(api_key).unwrap(), None);
+        let read = store.read_all().await.unwrap();
+        assert_eq!(read.get(api_key).map(String::as_str), Some(KEY));
+        assert_eq!(
+            read.get(ABUSE_UNDER_ATTACK.key).map(String::as_str),
+            Some("true")
+        );
+
+        // The Query page (and its export) reads the column as hidden.
+        let result = shared_db
+            .lock()
+            .admin_query(
+                "SELECT key, value_encrypted FROM encrypted_settings",
+                shared::sqlite_query::Limits::EXPORT,
+            )
+            .unwrap();
+        assert_eq!(
+            result.hidden,
+            vec!["encrypted_settings.value_encrypted".to_string()]
+        );
+        assert!(!format!("{:?}", result.rows).contains(stored.as_str()));
+
+        // Under another key it can't be read: unset, and nothing else lost.
+        let other = DbSettings::new(db.clone(), crate::crypto::AtRestKey::new([8; 32]));
+        let read = other.read_all().await.unwrap();
+        assert_eq!(read.get(api_key), None);
+        assert_eq!(
+            read.get(ABUSE_UNDER_ATTACK.key).map(String::as_str),
+            Some("true")
+        );
+
+        // Copied under another setting's key, it doesn't decrypt there.
+        assert!(crate::crypto::decrypt(
+            &crate::http::TEST_ENCRYPTION_KEY,
+            crate::crypto::Binding::Setting("exchange_rate.other"),
+            stored
+        )
+        .is_err());
+
+        store.write_all(vec![(api_key, None)]).await.unwrap();
+        assert!(shared_db
+            .lock()
+            .list_encrypted_settings()
+            .unwrap()
+            .is_empty());
+        assert_eq!(store.read_all().await.unwrap().get(api_key), None);
+    }
 
     #[test]
     fn a_public_uri_is_an_http_base_url_maybe_with_a_path() {
@@ -1716,6 +1880,7 @@ mod tests {
                 coingecko_base_url: "https://api.coingecko.com".to_string(),
                 coinmarketcap_enabled: true,
                 coinmarketcap_base_url: "https://pro-api.coinmarketcap.com/public-api".to_string(),
+                coinmarketcap_api_key: Secret::default(),
                 haveno_enabled: false,
                 haveno_base_url: "https://haveno.markets".to_string(),
                 cache_seconds: 30,
@@ -1872,7 +2037,10 @@ mod tests {
             let options = options.to_string();
             async move {
                 MonokuloSettings::load(
-                    Database::inline(Db::open_in_memory().unwrap().into_shared()),
+                    DbSettings::new(
+                        Database::inline(Db::open_in_memory().unwrap().into_shared()),
+                        crate::http::TEST_ENCRYPTION_KEY,
+                    ),
                     EngineClient::for_tests("http://127.0.0.1:1"),
                     Arc::new(ExchangeRateProviders::xmr_only()),
                     Default::default(),
@@ -1916,7 +2084,7 @@ mod tests {
         let rates = Arc::new(ExchangeRateProviders::xmr_only());
         let abuse: Arc<AbuseProtection> = Default::default();
         let settings = MonokuloSettings::load(
-            db,
+            DbSettings::new(db, crate::http::TEST_ENCRYPTION_KEY),
             engine.clone(),
             rates.clone(),
             abuse.clone(),

@@ -330,7 +330,7 @@ impl AppState {
     /// admin page does ([`AppState::save_setting`]).
     pub async fn with_options(self, options: &str) -> Self {
         let settings = crate::settings::MonokuloSettings::load(
-            self.db.clone(),
+            crate::settings::DbSettings::new(self.db.clone(), self.encryption_key.clone()),
             self.engine.client.clone(),
             self.exchange_rate.clone(),
             self.abuse.clone(),
