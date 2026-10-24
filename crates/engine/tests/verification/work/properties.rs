@@ -648,33 +648,43 @@ fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
     }
 }
 
-// Every recorded RingCT variant, split by worker and pruning so the four
-// parts run side by side; each prints its own boundary hits, which
-// `cargo xtask engine mutations` adds up.
+// Every recorded RingCT variant, split by worker and foreign outputs so
+// the six parts run side by side; each covers whole and pruned histories
+// and prints its own boundary hits.
 #[test]
-fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_whole() {
-    recorded_ringct_histories(0, false);
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_0() {
+    recorded_ringct_histories(0, 0);
 }
 
 #[test]
-fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_pruned() {
-    recorded_ringct_histories(0, true);
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_1() {
+    recorded_ringct_histories(0, 1);
 }
 
 #[test]
-fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_whole() {
-    recorded_ringct_histories(1, false);
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_2() {
+    recorded_ringct_histories(0, 2);
 }
 
 #[test]
-fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_pruned() {
-    recorded_ringct_histories(1, true);
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_foreign_0() {
+    recorded_ringct_histories(1, 0);
 }
 
-fn recorded_ringct_histories(worker: u8, pruned: bool) {
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_foreign_1() {
+    recorded_ringct_histories(1, 1);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_foreign_2() {
+    recorded_ringct_histories(1, 2);
+}
+
+fn recorded_ringct_histories(worker: u8, foreign: u8) {
     use crate::work::portfolio::scenario::reviewed::recorded;
     let mut hits = std::collections::BTreeMap::<String, u64>::new();
-    for foreign in 0..3 {
+    for pruned in [false, true] {
         for goal in 0..3 {
             let reached =
                 crate::work::portfolio::explore(&recorded(worker, pruned, foreign, goal).encode());

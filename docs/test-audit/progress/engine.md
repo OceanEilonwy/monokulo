@@ -123,8 +123,11 @@ Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.tom
   case counts changed. Priorities follow the new names (the RingCT parts
   and the proof-config shutdown test first locally).
 - **L3.** `every_recorded_ringct_variant_runs_complete_money_histories` is
-  four tests, `…_on_worker_{0,1}_{whole,pruned}` (9 histories each); each
-  prints its own `ENGINE_BOUNDARY_HITS`, which the mutation runner adds up.
+  six tests, `…_on_worker_{0,1}_with_foreign_{0,1,2}` (6 histories each,
+  about 1.8 s alone). Split by worker and foreign outputs rather than by
+  pruning so that each part still covers whole and pruned histories and
+  prints all three hits `xtask/src/mutations.rs`'s `REQUIRED_HITS` asks of
+  `RECORDED_TEST` (a first split by pruning would have broken that).
 - **L2.** Each family the decision names got named fixed-input tests
   outside `properties` that run the property's own history
   (`properties::<name>_case(..)`, the body extracted from the `proptest!`
