@@ -2411,6 +2411,18 @@ mod tests {
             Group::Other(SettingOwner::Engine).to_string(),
             "other-engine"
         );
+
+        // Other only appears while a setting nobody placed is in it.
+        {
+            let html = page(&full_view(SettingsTab::General));
+            assert!(!html.contains("tab=other"), "{html}");
+            let mut data = full_view(SettingsTab::Other);
+            data.engine_fields
+                .push(field_for("telemetry.sample_rate", SettingOwner::Engine));
+            let html = page(&data);
+            assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
+            assert!(html.contains(r#"name="telemetry.sample_rate""#), "{html}");
+        }
     }
 
     #[test]
@@ -2556,19 +2568,6 @@ mod tests {
                 "{tab:?}"
             );
         }
-    }
-
-    /// Other only appears while a setting nobody placed is in it.
-    #[test]
-    fn the_other_tab_shows_only_with_something_in_it() {
-        let html = page(&full_view(SettingsTab::General));
-        assert!(!html.contains("tab=other"), "{html}");
-        let mut data = full_view(SettingsTab::Other);
-        data.engine_fields
-            .push(field_for("telemetry.sample_rate", SettingOwner::Engine));
-        let html = page(&data);
-        assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
-        assert!(html.contains(r#"name="telemetry.sample_rate""#), "{html}");
     }
 
     #[test]
@@ -2720,62 +2719,6 @@ mod tests {
         assert!(!secret.contains('\u{2022}'));
     }
 
-    #[test]
-    fn development_logging_is_chosen_as_off_or_a_number_of_hours_and_says_when_it_ends() {
-        let now = 1_790_000_000;
-        let field = |value: &str| AdminScalarFieldView {
-            key: "logging.dev_mode_until".to_string(),
-            label: "logging dev mode until".to_string(),
-            value: value.to_string(),
-            kind: SettingKindView::TimeLimit {
-                now,
-                until_label: "21 Sep, 22:23".into(),
-                saved_until_label: None,
-            },
-            ..Default::default()
-        };
-        let off = scalar_field(&field("0")).into_string();
-        assert!(
-            off.contains(r#"<option value="0" selected>Off</option>"#),
-            "{off}"
-        );
-        assert!(
-            off.contains(&format!(
-                r#"<option value="{}">On for 1 hour</option>"#,
-                now + 3600
-            )),
-            "{off}"
-        );
-        assert!(
-            off.contains(&format!(
-                r#"<option value="{}">On for 24 hours</option>"#,
-                now + 86_400
-            )),
-            "{off}"
-        );
-        assert!(!off.contains("On until"), "{off}");
-
-        let on = scalar_field(&field(&(now + 600).to_string())).into_string();
-        assert!(
-            on.contains(&format!(
-                r#"<option value="{}" selected>On until 21 Sep, 22:23</option>"#,
-                now + 600
-            )),
-            "{on}"
-        );
-        assert!(on.contains(r#"<option value="0">Off</option>"#), "{on}");
-
-        let ended = scalar_field(&field(&(now - 1).to_string())).into_string();
-        // Off, and sent as it is, so saving the tab as shown changes nothing.
-        assert!(
-            ended.contains(&format!(
-                r#"<option value="{}" selected>Off</option>"#,
-                now - 1
-            )),
-            "a time already past is off: {ended}"
-        );
-    }
-
     /// A card, by id, as the page renders it: from its start to its end.
     fn card<'a>(html: &'a str, group: &str) -> &'a str {
         let start = html
@@ -2886,5 +2829,62 @@ mod tests {
             )),
             "{html}"
         );
+
+        // Development logging is chosen as off or a number of hours and says
+        // when it ends.
+        {
+            let now = 1_790_000_000;
+            let field = |value: &str| AdminScalarFieldView {
+                key: "logging.dev_mode_until".to_string(),
+                label: "logging dev mode until".to_string(),
+                value: value.to_string(),
+                kind: SettingKindView::TimeLimit {
+                    now,
+                    until_label: "21 Sep, 22:23".into(),
+                    saved_until_label: None,
+                },
+                ..Default::default()
+            };
+            let off = scalar_field(&field("0")).into_string();
+            assert!(
+                off.contains(r#"<option value="0" selected>Off</option>"#),
+                "{off}"
+            );
+            assert!(
+                off.contains(&format!(
+                    r#"<option value="{}">On for 1 hour</option>"#,
+                    now + 3600
+                )),
+                "{off}"
+            );
+            assert!(
+                off.contains(&format!(
+                    r#"<option value="{}">On for 24 hours</option>"#,
+                    now + 86_400
+                )),
+                "{off}"
+            );
+            assert!(!off.contains("On until"), "{off}");
+
+            let on = scalar_field(&field(&(now + 600).to_string())).into_string();
+            assert!(
+                on.contains(&format!(
+                    r#"<option value="{}" selected>On until 21 Sep, 22:23</option>"#,
+                    now + 600
+                )),
+                "{on}"
+            );
+            assert!(on.contains(r#"<option value="0">Off</option>"#), "{on}");
+
+            let ended = scalar_field(&field(&(now - 1).to_string())).into_string();
+            // Off, and sent as it is, so saving the tab as shown changes nothing.
+            assert!(
+                ended.contains(&format!(
+                    r#"<option value="{}" selected>Off</option>"#,
+                    now - 1
+                )),
+                "a time already past is off: {ended}"
+            );
+        }
     }
 }

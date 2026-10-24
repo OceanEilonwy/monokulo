@@ -680,25 +680,6 @@ mod tests {
         );
     }
 
-    /// "Watch it live" is a neutral button in the card's header, for an
-    /// admin only, and the card's one link to the engine page.
-    #[test]
-    fn watch_it_live_is_a_button_in_the_header_for_an_admin_only() {
-        let html = render(&admin_with(following(0, 1), vec![]));
-        assert!(
-            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet" data-watch-live=""><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
-                && html.contains("</svg>Watch it live</a></div>"),
-            "an eye, then the words: {html}"
-        );
-        assert_eq!(html.matches("/status/engine").count(), 1);
-        let html = render(&StatusPageViewModel {
-            networks: vec![network("mainnet", vec![])],
-            ..empty()
-        });
-        assert!(!html.contains("Watch it live"), "{html}");
-        assert!(!html.contains("/status/engine"), "{html}");
-    }
-
     /// Someone not an admin sees the nodes, their use and whether they
     /// answer, and nothing of proof-of-work checking.
     #[test]
@@ -726,54 +707,29 @@ mod tests {
         ] {
             assert!(!html.contains(absent), "{absent} in {html}");
         }
-    }
 
-    /// Caught up: every block of the window proven, the last one the one
-    /// orders settle up to.
-    #[test]
-    fn the_window_when_caught_up() {
-        let html = render(&admin_with(following(0, 3_412_160), vec![]));
-        assert!(
-            html.contains(r#"<p class="pline">Orders settle on blocks up to <strong>3,412,881</strong>, proven by the engine itself. <span class="tag tag-unknown">caught up</span></p>"#),
-            "{html}"
-        );
-        let pips = pip_classes(&html);
-        assert_eq!(pips.len(), 30);
-        assert!(pips.iter().all(|pip| *pip == "pip"), "{pips:?}");
-        assert!(
-            html.contains(r#"<span class="pip" data-settles title="block 3,412,881"></span><span class="pip-tip"></span></div>"#),
-            "the settled block is ringed, then the tip: {html}"
-        );
-        assert!(html.contains(
-            r#"<p class="pip-figures">Last 30 blocks · settles to 3,412,881 · tip 3,412,881</p>"#
-        ));
-        assert!(html.contains(
-            r#"<p class="hint" data-pip-anchor="">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
-        ));
-        assert!(
-            !html.contains("before the anchor"),
-            "the anchor is older than the window"
-        );
-    }
-
-    /// Three behind: the last three blocks only seen, a neutral chip.
-    #[test]
-    fn the_window_three_behind() {
-        let html = render(&admin_with(following(3, 3_412_160), vec![]));
-        assert!(
-            html.contains(r#"<span class="tag tag-unknown">3 behind the tip</span>"#),
-            "{html}"
-        );
-        let pips = pip_classes(&html);
-        assert_eq!(pips.len(), 30);
-        assert_eq!(pips[..27], ["pip"; 27]);
-        assert_eq!(pips[27..], ["pip seen"; 3]);
-        assert!(html.contains(r#"<span class="pip" data-settles title="block 3,412,878">"#));
+        // "Watch it live" is a neutral button in the card's header, for an
+        // admin only, and the card's one link to the engine page.
+        {
+            let html = render(&admin_with(following(0, 1), vec![]));
+            assert!(
+                html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet" data-watch-live=""><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
+                    && html.contains("</svg>Watch it live</a></div>"),
+                "an eye, then the words: {html}"
+            );
+            assert_eq!(html.matches("/status/engine").count(), 1);
+            let html = render(&StatusPageViewModel {
+                networks: vec![network("mainnet", vec![])],
+                ..empty()
+            });
+            assert!(!html.contains("Watch it live"), "{html}");
+            assert!(!html.contains("/status/engine"), "{html}");
+        }
     }
 
     /// Fourteen behind: the same neutral chip, never amber.
     #[test]
-    fn the_window_fourteen_behind() {
+    fn the_proof_of_work_window_at_each_distance_from_the_tip() {
         let html = render(&admin_with(following(14, 3_412_160), vec![]));
         assert!(
             html.contains(r#"<span class="tag tag-unknown">14 behind the tip</span>"#),
@@ -792,20 +748,60 @@ mod tests {
             !html.contains("data-settles title"),
             "settled is off the window: {html}"
         );
-    }
 
-    /// An anchor inside the window: the blocks below it are drawn as
-    /// before the anchor, and the legend says so. One older than the
-    /// window is only the line under it.
-    #[test]
-    fn the_window_with_the_anchor_inside_or_older() {
-        let html = render(&admin_with(following(0, 3_412_871), vec![]));
-        let pips = pip_classes(&html);
-        assert_eq!(pips[..19], ["pip before"; 19]);
-        assert_eq!(pips[19..], ["pip"; 11]);
-        assert!(html.contains("before the anchor"));
-        let html = render(&admin_with(following(0, 3_000_000), vec![]));
-        assert!(!pip_classes(&html).contains(&"pip before"));
-        assert!(html.contains("Anchored at block 3,000,000, 2d ago"));
+        // Three behind: the last three blocks only seen, a neutral chip.
+        {
+            let html = render(&admin_with(following(3, 3_412_160), vec![]));
+            assert!(
+                html.contains(r#"<span class="tag tag-unknown">3 behind the tip</span>"#),
+                "{html}"
+            );
+            let pips = pip_classes(&html);
+            assert_eq!(pips.len(), 30);
+            assert_eq!(pips[..27], ["pip"; 27]);
+            assert_eq!(pips[27..], ["pip seen"; 3]);
+            assert!(html.contains(r#"<span class="pip" data-settles title="block 3,412,878">"#));
+        }
+
+        // Caught up: every block of the window proven, the last one the one
+        // orders settle up to.
+        {
+            let html = render(&admin_with(following(0, 3_412_160), vec![]));
+            assert!(
+                html.contains(r#"<p class="pline">Orders settle on blocks up to <strong>3,412,881</strong>, proven by the engine itself. <span class="tag tag-unknown">caught up</span></p>"#),
+                "{html}"
+            );
+            let pips = pip_classes(&html);
+            assert_eq!(pips.len(), 30);
+            assert!(pips.iter().all(|pip| *pip == "pip"), "{pips:?}");
+            assert!(
+                html.contains(r#"<span class="pip" data-settles title="block 3,412,881"></span><span class="pip-tip"></span></div>"#),
+                "the settled block is ringed, then the tip: {html}"
+            );
+            assert!(html.contains(
+                r#"<p class="pip-figures">Last 30 blocks · settles to 3,412,881 · tip 3,412,881</p>"#
+            ));
+            assert!(html.contains(
+                r#"<p class="hint" data-pip-anchor="">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
+            ));
+            assert!(
+                !html.contains("before the anchor"),
+                "the anchor is older than the window"
+            );
+        }
+
+        // An anchor inside the window: the blocks below it are drawn as before
+        // the anchor, and the legend says so. One older than the window is only
+        // the line under it.
+        {
+            let html = render(&admin_with(following(0, 3_412_871), vec![]));
+            let pips = pip_classes(&html);
+            assert_eq!(pips[..19], ["pip before"; 19]);
+            assert_eq!(pips[19..], ["pip"; 11]);
+            assert!(html.contains("before the anchor"));
+            let html = render(&admin_with(following(0, 3_000_000), vec![]));
+            assert!(!pip_classes(&html).contains(&"pip before"));
+            assert!(html.contains("Anchored at block 3,000,000, 2d ago"));
+        }
     }
 }
