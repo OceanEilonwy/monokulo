@@ -81,6 +81,8 @@ pub enum Binding<'a> {
     InviteToken(&'a str),
     /// `webhooks.signing_secret_encrypted` of this webhook.
     WebhookSecret(&'a str),
+    /// `encrypted_settings.value_encrypted` of this setting's key.
+    Setting(&'a str),
 }
 
 impl Binding<'_> {
@@ -89,6 +91,7 @@ impl Binding<'_> {
             Binding::StoreSecret(id) => format!("store_connections.tenant_secret_token:{id}"),
             Binding::InviteToken(id) => format!("invite_links.token:{id}"),
             Binding::WebhookSecret(id) => format!("webhooks.signing_secret:{id}"),
+            Binding::Setting(key) => format!("encrypted_settings.value:{key}"),
         }
         .into_bytes()
     }

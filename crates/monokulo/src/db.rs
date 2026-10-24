@@ -168,6 +168,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         45,
         include_str!("../migrations/0045_pos_cancellation_in_engine.sql"),
     ),
+    (
+        46,
+        include_str!("../migrations/0046_encrypted_settings.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1204,6 +1208,50 @@ impl Db {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Stores and deletes settings and encrypted secret settings
+    /// (`encrypted_settings`, values already encrypted by
+    /// `settings::DbSettings`) in one transaction: all of them or none.
+    pub fn write_settings_and_secrets(
+        &self,
+        plain: &[(&str, Option<String>)],
+        encrypted: &[(&str, Option<String>)],
+    ) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (key, value) in plain {
+            match value {
+                Some(value) => self.set_setting(key, value)?,
+                None => self.delete_setting(key)?,
+            }
+        }
+        for (key, value) in encrypted {
+            match value {
+                Some(value) => self.conn.execute(
+                    "INSERT INTO encrypted_settings (key, value_encrypted) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value_encrypted = excluded.value_encrypted",
+                    params![key, value],
+                )?,
+                None => self.conn.execute(
+                    "DELETE FROM encrypted_settings WHERE key = ?1",
+                    params![key],
+                )?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every encrypted secret setting, still encrypted.
+    pub fn list_encrypted_settings(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value_encrypted FROM encrypted_settings")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()
+            .map_err(DbError::from)
     }
 
     /// Every stored setting at once - the admin settings page's `GET` reads

@@ -1,18 +1,32 @@
-//! Live exchange-rate provider backed by CoinMarketCap's keyless public API
-//! (<https://coinmarketcap.com/api/documentation/pro-api-reference/keyless-public-api/>),
+//! Live exchange-rate provider backed by CoinMarketCap's API: keyless
+//! (<https://coinmarketcap.com/api/documentation/pro-api-reference/keyless-public-api/>)
+//! or, given an API key, keyed
+//! (<https://coinmarketcap.com/api/documentation/guides/authentication>),
 //! checked against the real API while building this:
 //!
 //! `GET {base_url}/v2/tools/price-conversion?amount=1&id=328&convert=EUR` ->
 //! `{"data":{"id":328,"symbol":"XMR",...,"quote":{"EUR":{"price":477.48...,
 //! "last_updated":"..."}}},"status":{"error_code":0,...}}`. `328` is
 //! Monero's CoinMarketCap id (using the id, not `symbol=XMR`, because the
-//! symbol is shared with an unrelated token). No key and no special
-//! headers are needed.
+//! symbol is shared with an unrelated token).
 //!
-//! Quirks of the keyless tier that shape this client:
+//! **Keyless and keyed.** Without a key the request goes to the keyless
+//! base, `https://pro-api.coinmarketcap.com/public-api`, with no special
+//! headers. With one, the same path goes to the keyed base, the same
+//! address without `/public-api` ([`keyed_base_url`]), with the key in the
+//! `X-CMC_PRO_API_KEY` header (marked sensitive, so it is never printed);
+//! the answer has the same shape. A key CoinMarketCap refuses (`401`
+//! invalid or missing, `402` unpaid, `403` disabled or not on its plan) is
+//! [`ExchangeRateError::KeyRejected`], in CoinMarketCap's own words, and
+//! [`CoinMarketCapRateProvider::key_problem`] says so until a request with
+//! it succeeds.
 //!
-//! - **One `convert` currency per request** (`convert=USD,EUR` is a `400`),
-//!   so, like Coingecko, rates are fetched one currency at a time.
+//! Quirks that shape this client:
+//!
+//! - **One `convert` currency per request** on the keyless tier
+//!   (`convert=USD,EUR` is a `400`; on a keyed plan each extra currency
+//!   costs a credit), so, like Coingecko, rates are fetched one currency at
+//!   a time.
 //! - **Failures can arrive as HTTP 200.** The real error signal is
 //!   `status.error_code` in the body (`0` or absent on success), which the
 //!   API sends as a number in some errors and as a string (`"500"`) in
@@ -23,10 +37,11 @@
 //!   monokulo only asks it for codes from its own `currencies` table; it
 //!   deliberately offers no "supported currencies" list of its own - the
 //!   keyless tier has no fiat map (`/v1/fiat/map` needs a key).
-//! - **Rate limits are per IP and undisclosed.** A `429` (like a `5xx`) is
-//!   `ExchangeRateError::Unavailable`, with its `Retry-After` when sent:
-//!   the last rate is used while still usable, and otherwise the caller's
-//!   provider order moves on to the next provider.
+//! - **Rate limits are per IP and undisclosed** without a key, and per key
+//!   with one. A `429` (like a `5xx`) is `ExchangeRateError::Unavailable`,
+//!   with its `Retry-After` when sent: the last rate is used while still
+//!   usable, and otherwise the caller's provider order moves on to the
+//!   next provider. A refused key falls back the same way.
 //!
 //! Same pull-based, caller-supplied-TTL cache as `CoingeckoRateProvider`,
 //! for the same reasons (see its doc comment).
@@ -37,9 +52,143 @@ use crate::exchange_rate::{piconero_per_unit_from_price, ExchangeRateError};
 /// also lists an unrelated "Monero AI" token under the same symbol).
 const MONERO_ID: u32 = 328;
 
+/// The header a keyed request carries its API key in.
+pub const API_KEY_HEADER: &str = "X-CMC_PRO_API_KEY";
+
+/// The path the keyless tier is served under, beside the keyed API.
+const KEYLESS_SUFFIX: &str = "/public-api";
+
+/// Where keyed requests go for a provider configured at `base_url`: the
+/// same address without the keyless tier's `/public-api`
+/// (`https://pro-api.coinmarketcap.com/public-api` ->
+/// `https://pro-api.coinmarketcap.com`). A base without it (a proxy) is
+/// used as it is.
+pub fn keyed_base_url(base_url: &str) -> &str {
+    let trimmed = base_url.trim_end_matches('/');
+    trimmed.strip_suffix(KEYLESS_SUFFIX).unwrap_or(trimmed)
+}
+
+/// Whether `key` looks like a CoinMarketCap API key: 32 to 64 letters,
+/// digits and hyphens (CoinMarketCap issues them as UUIDs, 36 characters).
+/// The message never repeats the key.
+pub fn check_api_key_format(key: &str) -> Result<(), String> {
+    let shaped = (32..=64).contains(&key.len())
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    if shaped {
+        Ok(())
+    } else {
+        Err("A CoinMarketCap API key is 32 to 64 letters, digits and hyphens: copy it from the API Key box of your CoinMarketCap developer dashboard.".to_string())
+    }
+}
+
+/// A CoinMarketCap API key. Never printed: `Debug` hides it, and it is
+/// scrubbed from memory when dropped.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    pub fn new(key: impl Into<String>) -> Self {
+        ApiKey(key.into())
+    }
+
+    fn header_value(&self) -> Option<reqwest::header::HeaderValue> {
+        let mut value = reqwest::header::HeaderValue::from_str(&self.0).ok()?;
+        value.set_sensitive(true);
+        Some(value)
+    }
+
+    /// `text` with any copy of the key in it hidden, before it is logged
+    /// or shown.
+    fn scrub(&self, text: &str) -> String {
+        if self.0.is_empty() {
+            text.to_string()
+        } else {
+            text.replace(&self.0, "[the key]")
+        }
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApiKey(<redacted>)")
+    }
+}
+
+impl Drop for ApiKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+/// What CoinMarketCap said of a key asked about with [`check_api_key`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyCheck {
+    /// The key works.
+    Accepted,
+    /// CoinMarketCap refused it (`401`, `402` or `403`), in its own words.
+    Rejected { status: u16, message: String },
+    /// It couldn't be asked (unreachable, rate limited, a bad answer).
+    Unchecked(String),
+}
+
+/// Asks CoinMarketCap whether `key` works, at its `/v1/key/info`, which
+/// costs no credits (it counts toward the per-minute limit). `base_url` is
+/// the provider's configured base; the request goes to its keyed base.
+pub async fn check_api_key(base_url: &str, key: &ApiKey) -> KeyCheck {
+    let Some(header) = key.header_value() else {
+        return KeyCheck::Rejected {
+            status: 0,
+            message: "the key can't be sent in a header".to_string(),
+        };
+    };
+    let client = match reqwest::Client::builder()
+        .user_agent(concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => return KeyCheck::Unchecked(e.to_string()),
+    };
+    let url = format!("{}/v1/key/info", keyed_base_url(base_url));
+    let response = match client.get(&url).header(API_KEY_HEADER, header).send().await {
+        Ok(response) => response,
+        Err(e) => return KeyCheck::Unchecked(key.scrub(&e.to_string())),
+    };
+    let status = response.status().as_u16();
+    if matches!(status, 401..=403) {
+        let message = refusal_message(response).await;
+        return KeyCheck::Rejected {
+            status,
+            message: key.scrub(&message),
+        };
+    }
+    if !response.status().is_success() {
+        return KeyCheck::Unchecked(format!("CoinMarketCap answered HTTP {status}"));
+    }
+    KeyCheck::Accepted
+}
+
+/// CoinMarketCap's `status.error_message` for a refusal, or a stand-in.
+async fn refusal_message(response: reqwest::Response) -> String {
+    let status = response.status();
+    crate::exchange_rate::read_json::<serde_json::Value>(response)
+        .await
+        .ok()
+        .and_then(|body| {
+            body.pointer("/status/error_message")
+                .and_then(serde_json::Value::as_str)
+                .map(|m| m.chars().take(200).collect::<String>())
+        })
+        .unwrap_or_else(|| status.canonical_reason().unwrap_or("refused").to_string())
+}
+
 #[derive(Debug)]
 pub struct CoinMarketCapRateProvider {
     base_url: String,
+    api_key: Option<ApiKey>,
+    /// Why CoinMarketCap last refused the key, until a request with it
+    /// succeeds.
+    key_problem: parking_lot::Mutex<Option<String>>,
     client: reqwest_middleware::ClientWithMiddleware,
     cache: std::sync::Arc<
         tokio::sync::Mutex<std::collections::HashMap<String, (u64, std::time::Instant)>>,
@@ -54,6 +203,8 @@ impl CoinMarketCapRateProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
         CoinMarketCapRateProvider {
             base_url: base_url.into(),
+            api_key: None,
+            key_problem: parking_lot::Mutex::new(None),
             client: crate::http_cache::build_client(
                 concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
                 crate::http_cache::DEFAULT_MAX_CACHE_BYTES,
@@ -72,6 +223,19 @@ impl CoinMarketCapRateProvider {
         self
     }
 
+    /// This provider asking with `key` (keyed base and header), or
+    /// keyless without one.
+    pub fn with_api_key(mut self, key: Option<ApiKey>) -> Self {
+        self.api_key = key;
+        self
+    }
+
+    /// Why CoinMarketCap refused this provider's API key the last time it
+    /// was asked, until a request with it succeeds. Never holds the key.
+    pub fn key_problem(&self) -> Option<String> {
+        self.key_problem.lock().clone()
+    }
+
     /// One live fetch. `Ok(None)`: a well-formed answer with no usable price
     /// (or a currency code that cannot be a fiat code at all). `Err`: a
     /// transport failure, a non-2xx status, a body that is not CoinMarketCap's
@@ -81,12 +245,44 @@ impl CoinMarketCapRateProvider {
         if currency_upper.len() != 3 || !currency_upper.bytes().all(|b| b.is_ascii_uppercase()) {
             return Ok(None);
         }
+        let base = match &self.api_key {
+            Some(_) => keyed_base_url(&self.base_url),
+            None => self.base_url.as_str(),
+        };
         let url = format!(
-            "{}/v2/tools/price-conversion?amount=1&id={MONERO_ID}&convert={currency_upper}",
-            self.base_url
+            "{base}/v2/tools/price-conversion?amount=1&id={MONERO_ID}&convert={currency_upper}"
         );
-        let response = crate::exchange_rate::checked(self.client.get(&url).send().await?)?;
+        let mut request = self.client.get(&url);
+        if let Some(key) = &self.api_key {
+            let header = key.header_value().ok_or_else(|| {
+                ExchangeRateError::UnexpectedResponse(
+                    "the CoinMarketCap API key can't be sent in a header".to_string(),
+                )
+            })?;
+            request = request.header(API_KEY_HEADER, header);
+        }
+        let response = request.send().await?;
+        if let Some(key) = &self.api_key {
+            let status = response.status().as_u16();
+            if matches!(status, 401..=403) {
+                let message = key.scrub(&refusal_message(response).await);
+                tracing::warn!(
+                    provider = "coinmarketcap",
+                    status,
+                    reason = %message,
+                    "CoinMarketCap refused the API key"
+                );
+                *self.key_problem.lock() = Some(format!(
+                    "CoinMarketCap refused this key (HTTP {status}: {message}). Until it's fixed, rates come from the store's next provider, or CoinMarketCap's last rate while it's recent enough."
+                ));
+                return Err(ExchangeRateError::KeyRejected { status, message });
+            }
+        }
+        let response = crate::exchange_rate::checked(response)?;
         let body: serde_json::Value = crate::exchange_rate::read_json(response).await?;
+        if self.api_key.is_some() {
+            *self.key_problem.lock() = None;
+        }
 
         if let Some(code) = body.pointer("/status/error_code") {
             let ok = match code {
@@ -426,6 +622,252 @@ mod tests {
         );
     }
 
+    /// A key shaped like CoinMarketCap's own (a UUID).
+    const KEY: &str = "b54bcf4d-1bca-4e8e-9a24-22ff2c3d462c";
+
+    /// One request a [`spawn_keyed_server`] saw: its path and its
+    /// `X-CMC_PRO_API_KEY`, if any.
+    type Seen = Arc<parking_lot::Mutex<Vec<(String, Option<String>)>>>;
+
+    /// A local server standing in for both CoinMarketCap bases: the keyless
+    /// `/public-api/...` and the keyed `/...`, plus the keyed
+    /// `/v1/key/info`. It records each request's path and key, and answers
+    /// with `handler(path, key)`. Returns the keyless base, as configured
+    /// in production.
+    async fn spawn_keyed_server<F>(handler: F) -> (String, Seen)
+    where
+        F: Fn(&str, Option<&str>) -> Response + Send + Sync + 'static,
+    {
+        let seen: Seen = Arc::default();
+        let handler = Arc::new(handler);
+        let record = seen.clone();
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let handler = handler.clone();
+            let record = record.clone();
+            async move {
+                let path = request.uri().path().to_string();
+                let key = request
+                    .headers()
+                    .get(API_KEY_HEADER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                record.lock().push((path.clone(), key.clone()));
+                handler(&path, key.as_deref())
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/public-api"), seen)
+    }
+
+    fn refusal(status: u16, code: u32, message: &str) -> Response {
+        (
+            axum::http::StatusCode::from_u16(status).unwrap(),
+            [("content-type", "application/json")],
+            format!(r#"{{"status":{{"error_code":{code},"error_message":"{message}"}}}}"#),
+        )
+            .into_response()
+    }
+
+    #[test]
+    fn the_keyed_base_is_the_keyless_one_without_public_api() {
+        assert_eq!(
+            keyed_base_url("https://pro-api.coinmarketcap.com/public-api"),
+            "https://pro-api.coinmarketcap.com"
+        );
+        assert_eq!(
+            keyed_base_url("https://pro-api.coinmarketcap.com/public-api/"),
+            "https://pro-api.coinmarketcap.com"
+        );
+        // A proxy without the keyless path is used as it is.
+        assert_eq!(
+            keyed_base_url("https://cmc.example.net/proxy"),
+            "https://cmc.example.net/proxy"
+        );
+    }
+
+    #[test]
+    fn a_key_must_look_like_one_and_the_refusal_never_repeats_it() {
+        assert!(check_api_key_format(KEY).is_ok());
+        assert!(check_api_key_format("0123456789abcdef0123456789abcdef").is_ok());
+        for bad in [
+            "",
+            "short",
+            "has spaces in it but is long enough to pass",
+            &"a".repeat(65),
+            "b54bcf4d-1bca-4e8e-9a24-22ff2c3d462c\n",
+        ] {
+            let message = check_api_key_format(bad).unwrap_err();
+            assert!(bad.is_empty() || !message.contains(bad), "{message}");
+        }
+        assert_eq!(format!("{:?}", ApiKey::new(KEY)), "ApiKey(<redacted>)");
+    }
+
+    #[tokio::test]
+    async fn with_a_key_the_keyed_base_and_header_are_used_and_without_one_neither() {
+        let (base, seen) = spawn_keyed_server(|_, _| quote("USD", "149.23")).await;
+        let keyed =
+            CoinMarketCapRateProvider::new(base.clone()).with_api_key(Some(ApiKey::new(KEY)));
+        assert_eq!(
+            keyed.piconero_per_unit_cached("USD", TTL).await.unwrap(),
+            Some(6_701_065_469)
+        );
+        let keyless = CoinMarketCapRateProvider::new(base);
+        assert_eq!(
+            keyless.piconero_per_unit_cached("USD", TTL).await.unwrap(),
+            Some(6_701_065_469)
+        );
+        assert_eq!(
+            *seen.lock(),
+            vec![
+                (
+                    "/v2/tools/price-conversion".to_string(),
+                    Some(KEY.to_string())
+                ),
+                ("/public-api/v2/tools/price-conversion".to_string(), None),
+            ]
+        );
+        assert!(
+            !format!("{keyed:?}").contains(KEY),
+            "Debug never prints the key"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_is_reported_without_the_key_falls_back_and_clears_once_it_works() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = calls.clone();
+        let (base, _) =
+            spawn_keyed_server(move |_, _| match counter.fetch_add(1, Ordering::SeqCst) {
+                0 => quote("USD", "100.0"),
+                1 | 2 => refusal(401, 1001, "This API Key is invalid."),
+                _ => quote("USD", "100.0"),
+            })
+            .await;
+        let provider = CoinMarketCapRateProvider::new(base).with_api_key(Some(ApiKey::new(KEY)));
+        let rate = Some(10_000_000_000);
+        assert_eq!(
+            provider.piconero_per_unit_cached("USD", TTL).await.unwrap(),
+            rate
+        );
+        assert_eq!(provider.key_problem(), None);
+
+        // Refused with a recent rate in hand: that rate, as for any other
+        // failure, and the refusal is said.
+        assert_eq!(
+            provider
+                .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
+                .await
+                .unwrap(),
+            rate,
+            "stale, so asked again; refused, so the last rate"
+        );
+        let problem = provider.key_problem().expect("the refusal is reported");
+        assert!(
+            problem.contains("HTTP 401: This API Key is invalid."),
+            "{problem}"
+        );
+        assert!(!problem.contains(KEY));
+
+        // Refused with nothing usable: the error says so, without the key.
+        let fresh = CoinMarketCapRateProvider::new(provider.base_url.clone())
+            .with_api_key(Some(ApiKey::new(KEY)));
+        let error = fresh
+            .piconero_per_unit_cached("USD", TTL)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ExchangeRateError::KeyRejected { status: 401, message } if message == "This API Key is invalid."),
+            "got {error:?}"
+        );
+        assert!(!error.to_string().contains(KEY));
+
+        // A request with it that works clears the refusal.
+        assert_eq!(
+            fresh.piconero_per_unit_cached("USD", TTL).await.unwrap(),
+            rate
+        );
+        assert_eq!(fresh.key_problem(), None);
+    }
+
+    #[tokio::test]
+    async fn a_keyed_429_is_still_unavailable_with_its_retry_after() {
+        let (base, _) = spawn_keyed_server(|_, _| {
+            (
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "7")],
+                r#"{"status":{"error_code":1008,"error_message":"You've exceeded your API Key's HTTP request rate limit."}}"#,
+            )
+                .into_response()
+        })
+        .await;
+        let provider = CoinMarketCapRateProvider::new(base).with_api_key(Some(ApiKey::new(KEY)));
+        let error = provider
+            .piconero_per_unit_cached("USD", TTL)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ExchangeRateError::Unavailable {
+                    status: 429,
+                    retry_after: Some(wait)
+                } if wait == std::time::Duration::from_secs(7)
+            ),
+            "got {error:?}"
+        );
+        assert_eq!(
+            provider.key_problem(),
+            None,
+            "a rate limit isn't a refused key"
+        );
+    }
+
+    #[tokio::test]
+    async fn checking_a_key_asks_key_info_on_the_keyed_base() {
+        let (base, seen) = spawn_keyed_server(|path, key| match (path, key) {
+            ("/v1/key/info", Some(KEY)) => {
+                json_body(r#"{"data":{"plan":{}},"status":{"error_code":0}}"#)
+            }
+            ("/v1/key/info", Some(_)) => refusal(401, 1001, "This API Key is invalid."),
+            _ => refusal(429, 1011, "You've hit an IP rate limit."),
+        })
+        .await;
+        assert_eq!(
+            check_api_key(&base, &ApiKey::new(KEY)).await,
+            KeyCheck::Accepted
+        );
+        let other = "00000000-0000-0000-0000-000000000000";
+        assert_eq!(
+            check_api_key(&base, &ApiKey::new(other)).await,
+            KeyCheck::Rejected {
+                status: 401,
+                message: "This API Key is invalid.".to_string()
+            }
+        );
+        assert_eq!(
+            seen.lock()
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["/v1/key/info", "/v1/key/info"]
+        );
+        // Rate limited, or unreachable: not known either way.
+        let (limited, _) =
+            spawn_keyed_server(|_, _| refusal(429, 1011, "You've hit an IP rate limit.")).await;
+        assert!(matches!(
+            check_api_key(&limited, &ApiKey::new(KEY)).await,
+            KeyCheck::Unchecked(_)
+        ));
+        assert!(matches!(
+            check_api_key("http://127.0.0.1:1/public-api", &ApiKey::new(KEY)).await,
+            KeyCheck::Unchecked(_)
+        ));
+    }
+
     /// CoinMarketCap's own words for a refusal: a plain request for the
     /// live test's quote, its status and body.
     async fn plain_answer(url: &str) -> (u16, String) {
@@ -438,6 +880,11 @@ mod tests {
         }
     }
 
+    /// Where the live test finds a CoinMarketCap API key: the
+    /// live-network workflow sets it from its `COINMARKETCAP_API_KEY`
+    /// secret.
+    const LIVE_KEY_VAR: &str = "COINMARKETCAP_API_KEY";
+
     #[tokio::test]
     // Run daily by `cargo xtask live` (live-network.yml), never per change.
     #[ignore = "needs the live CoinMarketCap API"]
@@ -446,7 +893,23 @@ mod tests {
         const TRIES: u32 = 6;
         const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
         let url = format!("{BASE}/v2/tools/price-conversion?amount=1&id={MONERO_ID}&convert=USD");
-        let provider = CoinMarketCapRateProvider::new(BASE);
+        // With the live-network workflow's COINMARKETCAP_API_KEY secret, the
+        // keyed API, its header and its answer are what's tested; without
+        // it (a fork, a run on a laptop), the keyless API.
+        let key = std::env::var(LIVE_KEY_VAR)
+            .ok()
+            .filter(|key| !key.trim().is_empty())
+            .map(|key| ApiKey::new(key.trim()));
+        let keyed = key.is_some();
+        println!(
+            "live coinmarketcap smoke test: {}",
+            if keyed {
+                "keyed API (its key from the environment)"
+            } else {
+                "keyless API"
+            }
+        );
+        let provider = CoinMarketCapRateProvider::new(BASE).with_api_key(key);
         // The keyless API's rate pool is shared by everyone on an address,
         // and a CI runner's address is shared by many. CoinMarketCap's advice
         // for its 429 is to back off exponentially (1, 2, 4, 8 s); a
@@ -475,6 +938,12 @@ mod tests {
             println!("attempt {attempt}: HTTP 429, Retry-After {retry_after:?}");
             // A wait longer than a test should take ends the tries early.
             if attempt == TRIES || retry_after.is_some_and(|wait| wait > MAX_WAIT) {
+                // A key has its own limits, which one call a day never
+                // reaches: a 429 with one is a real failure.
+                assert!(
+                    !keyed,
+                    "the keyed API rate-limited {attempt} times (HTTP 429, Retry-After {retry_after:?})"
+                );
                 // Only CoinMarketCap's own documented limit, in its own
                 // shape, is inconclusive; anything else fails the test.
                 let (status, body) = plain_answer(&url).await;
