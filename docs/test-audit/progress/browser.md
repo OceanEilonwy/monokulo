@@ -96,6 +96,24 @@ Counts are tests as Playwright or node lists them.
       Tablet and Mobile, with no orientation toggle.
     - The `asIs` capture option is gone: nothing used it after the cuts.
 
+15. **Coverage-run fix: `a230bfc1d`.** On the integrated branch, CI's coverage run failed the live-view flow with
+    `InvalidStateError: Transition was aborted because of invalid state. ViewTransition opt-in disabled`.
+    - Cause: `COVERAGE_INSTRUMENT=1` (set by the coverage run, not the screenshots) routes every `/static/`
+      request through Playwright (`serveInstrumentedAssets`), even requests the route only passes on.
+    - A page loaded with intercepted requests is revealed outside the cross-document view transition that
+      site.css's `@view-transition` lets the previous page start. Chromium aborts that transition, and
+      the page reports the error.
+    - The merged live-view flow now navigates (the network picker) on a page whose errors it checks, so
+      the coverage run tripped on it.
+    - Evidence: `pagereveal.viewTransition` is null with interception and present without it. The
+      failure reproduces with `route.continue()` alone (an empty assets directory).
+    - Not a visitor-facing bug: a real browser doesn't intercept requests. The fix is in the harness:
+      intercepted pages opt out with an adopted `@view-transition { navigation: none }` sheet.
+    - Checked: live-view passed 3 of 3 with `COVERAGE_INSTRUMENT=1 COVERAGE_SCREENSHOTS=1`. All 10 specs
+      that use `serveInstrumentedAssets` ran 48 tests under instrumentation: 47 passed and 1 failed. The
+      failure was pos-terminal 2566 (the card not visible after a reload), and it didn't reproduce in 7
+      reruns (4 of that test and 3 of the whole spec).
+
 ## Decisions
 
 - **2657 deleted (G1) rather than sped up (Q6).** Tier 2 deletes it, and views test 1831 pins the marker.

@@ -53,6 +53,18 @@ async function stopCoverageFixture(child) {
 module.exports = { startCoverageFixture, stopCoverageFixture };
 
 async function serveInstrumentedAssets(context) {
+  // A page whose requests Playwright intercepts (any route on them, even
+  // one that only passes them on) is revealed outside the cross-document
+  // view transition the page before it started (site.css's
+  // `@view-transition`), and Chromium aborts that transition with an error
+  // the page reports: "ViewTransition opt-in disabled". No visitor's
+  // browser intercepts, so these pages opt out instead: an adopted sheet
+  // comes after the page's own in the cascade.
+  await context.addInitScript(() => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync('@view-transition { navigation: none; }');
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  });
   await context.route('**/static/*', async route => {
     // A script's URL carries its digest (crate::assets); the file is named without it.
     const name = path.basename(new URL(route.request().url()).pathname).replace(/\.[0-9a-f]{16}(?=\.(js|css)$)/, '');
