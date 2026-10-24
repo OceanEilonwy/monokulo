@@ -473,7 +473,10 @@ fn no_handler_answers_with_an_error_object() {
         if name == "tests.rs" || name.ends_with("_tests.rs") {
             continue;
         }
-        let text = std::fs::read_to_string(&file).unwrap();
+        // A Windows checkout may have CRLF line endings.
+        let text = std::fs::read_to_string(&file)
+            .unwrap()
+            .replace("\r\n", "\n");
         // Everything before the file's own test module.
         let code = text.split("#[cfg(test)]\nmod tests").next().unwrap();
         for m in pattern.find_iter(code) {
