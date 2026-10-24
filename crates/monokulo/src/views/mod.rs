@@ -1141,4 +1141,34 @@ mod tests {
             ""
         );
     }
+
+    /// A page refreshes itself only where it must without JavaScript: the
+    /// checkout (its state moves on) and the connection check (waiting is
+    /// the proof). No other view writes a meta refresh.
+    #[test]
+    fn only_the_checkout_and_the_connection_check_refresh_themselves() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/views");
+        let mut dirs = vec![dir.clone()];
+        let mut refreshing = Vec::new();
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|ext| ext != "rs") {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                // The page itself, not the tests that quote it.
+                let page = source.split("#[cfg(test)]").next().unwrap();
+                if page.contains(r#"http-equiv="refresh""#) {
+                    refreshing.push(path.file_name().unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        refreshing.sort();
+        assert_eq!(refreshing, ["challenge.rs", "checkout.rs"]);
+    }
 }

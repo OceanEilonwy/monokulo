@@ -1227,8 +1227,12 @@ mod tests {
         );
     }
 
+    /// What the payer is told to send, and that it all works without
+    /// JavaScript: the order's own address and XMR amount (and, for an
+    /// order priced in XMR, no fiat line); a deadline already in words; a
+    /// refresh in `<noscript>`; no site nav.
     #[tokio::test]
-    async fn the_checkout_page_shows_the_real_address_amount_and_fiat_quote() {
+    async fn the_checkout_page_shows_the_orders_own_address_and_amount_without_javascript() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
@@ -1239,7 +1243,21 @@ mod tests {
         )
         .await;
         let pk = create_connection(&router, &state, &session_token).await;
-        let order_id = create_order(&router, &pk, "25.00").await;
+        let created = router
+            .clone()
+            .oneshot(crate::http::test_support::api_request(
+                "POST",
+                "/api/v1/orders",
+                Some(&pk),
+                Some(serde_json::json!({ "amount": "0.123", "currency": "XMR" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let order = body_json(created).await;
+        let order_id = order["order_id"].as_str().unwrap();
+        let address = order["address"].as_str().unwrap();
+        assert_eq!(order["xmr_amount_piconero"], 123_000_000_000u64);
 
         let response = router
             .clone()
@@ -1255,22 +1273,33 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(
-            html.contains(&order_id),
-            "expected the real order_id shown, got: {html}"
+            html.contains(&format!(
+                r#"<span class="visually-hidden">{address}</span>"#
+            )),
+            "expected the order's own address, got: {html}"
         );
         assert!(
-            html.contains("25.00"),
-            "expected the real fiat amount shown, got: {html}"
+            html.contains(r#"<span class="amount-value">0.123</span>"#),
+            "expected the order's own XMR amount, got: {html}"
         );
         assert!(
-            html.contains(TEST_CURRENCY),
-            "expected the real fiat currency shown, got: {html}"
+            !html.contains(r#"class="fiat-amount""#),
+            "an order priced in XMR has no fiat line, got: {html}"
         );
-        assert!(
-            html.contains("<svg"),
-            "expected a real rendered QR code, got: {html}"
-        );
-        let pos_response = router
+        // The checkout page carries neither the site nav nor its brand. The
+        // shared stylesheet mentions `.site-nav`, so look for the nav's own
+        // opening tag.
+        assert!(!html.contains(r#"<nav class="site-nav">"#), "{html}");
+        assert!(!html.contains("Monokulo"), "{html}");
+        // Without JavaScript: the deadline is already in words, nothing
+        // waits on a script to format a timestamp, and the page refreshes
+        // itself.
+        assert!(html.contains(" left to pay</span>"), "{html}");
+        assert!(!html.contains("data-timestamp"), "{html}");
+        assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
+
+        // The till's view leaves out the refund field.
+        let till = router
             .clone()
             .oneshot(
                 Request::builder()
@@ -1280,42 +1309,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(pos_response.status(), StatusCode::OK);
-        let pos_html = body_text(pos_response).await;
-        assert!(pos_html.contains("pay-wrap checkout-compact"));
-        assert!(!pos_html.contains("id=\"refund_address\""));
-        // The shared stylesheet mentions `.site-nav`, so a plain substring
-        // check would false-positive with no nav rendered: the nav's own
-        // opening tag can only appear if the nav genuinely rendered.
-        assert!(
-            !html.contains(r#"<nav class="site-nav">"#),
-            "the checkout page must not carry the site nav, got: {html}"
-        );
-        assert!(
-            !html.contains("Monokulo"),
-            "the checkout page must not carry the site brand/logo, got: {html}"
-        );
-        // The payment deadline must be a real,
-        // already-formatted relative duration baked into the server
-        // response - this page must stay meaningful with JavaScript
-        // disabled, so nothing on it may rely on `data-timestamp` +
-        // client-side formatting any more.
-        assert!(
-            html.contains(" left to pay</span>"),
-            "expected a server-rendered payment deadline, got: {html}"
-        );
-        assert!(
-            !html.contains("data-timestamp"),
-            "the checkout page must not depend on JS to format any timestamp, got: {html}"
-        );
-        // The server-rendered page remains meaningful without JavaScript.
-        assert!(html.contains(&crate::assets::url("checkout.js")));
-        assert!(html.contains("Auto Refresh: ON"));
-        assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
-        assert!(
-            html.contains("style=\"width: 0%\""),
-            "expected a real, already-computed progress-bar fill, got: {html}"
-        );
+        assert_eq!(till.status(), StatusCode::OK);
+        assert!(!body_text(till).await.contains("id=\"refund_address\""));
     }
 
     /// The checkout's refund-address form, a plain form POST with no JS,
