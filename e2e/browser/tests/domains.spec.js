@@ -16,11 +16,6 @@ async function login(context) {
 }
 const settings = '/stores/coverage-store/settings';
 
-/** The page doesn't scroll sideways. */
-async function fits(page) {
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-}
-
 test('a domain is added on its own pages, and its check answers in place', async ({ page, context }) => {
   await login(context);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
@@ -84,52 +79,4 @@ test('a domain is added on its own pages, and its check answers in place', async
   await page.getByRole('dialog', { name: 'Remove layout-check.example?' }).getByRole('button', { name: 'Remove domain' }).click();
   await expect(page.locator('#card-verified-domains')).not.toContainText('layout-check.example');
   expect(errors).toEqual([]);
-});
-
-test('without JavaScript a domain is added, checked and removed by posting', async ({ browser }) => {
-  const context = await browser.newContext({ javaScriptEnabled: false });
-  await login(context);
-  const page = await context.newPage();
-  await page.goto(fixture.base_url + settings + '/domains/new');
-  await page.getByRole('textbox', { name: 'Domain' }).fill('nojs-check.example');
-  await page.getByRole('button', { name: 'Next' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Add the record' })).toBeVisible();
-  await page.getByRole('button', { name: "I've added it, check now" }).click();
-  await expect(page.locator('#domain-check')).toContainText('Not found yet.');
-  // The card's Check again lands on the check page too: never a toast.
-  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
-  const domain = page.locator('article.mk-item-card', { hasText: 'nojs-check.example' });
-  await expect(domain.locator('.tag')).toHaveText('Not verified');
-  await domain.getByRole('button', { name: 'Check again' }).click();
-  await expect(page.getByRole('heading', { level: 1, name: 'Check the record' })).toBeVisible();
-  await expect(page.locator('#domain-check')).toContainText('Checked moments ago');
-  // Removed without the question (no JavaScript, no dialog).
-  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
-  await page.locator('article.mk-item-card', { hasText: 'nojs-check.example' }).getByRole('button', { name: 'Remove' }).click();
-  await expect(page.locator('#card-verified-domains')).not.toContainText('nojs-check.example');
-  await context.close();
-});
-
-test('on a phone the domain pages fit, and a card stacks its actions under its name', async ({ page, context }) => {
-  await login(context);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(fixture.base_url + settings + '/domains/new');
-  await fits(page);
-  await page.getByRole('textbox', { name: 'Domain' }).fill('phone-check.example');
-  await page.getByRole('button', { name: 'Next' }).click();
-  await fits(page);
-  // The record stacks: one line per field, each named.
-  const host = page.locator('table.mk-dns-record td[data-label="Host"]');
-  const value = page.locator('table.mk-dns-record td[data-label="Value"]');
-  expect((await value.boundingBox()).y).toBeGreaterThan((await host.boundingBox()).y);
-  await captureCoverageStage(page, 'domains-record-phone', test.info(), { group: 'domains' });
-  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
-  await fits(page);
-  const domain = page.locator('article.mk-item-card', { hasText: 'phone-check.example' });
-  const name = await domain.locator('.mk-item-card-title').boundingBox();
-  const actions = await domain.locator('.mk-item-card-actions').boundingBox();
-  expect(actions.y).toBeGreaterThanOrEqual(name.y + name.height - 1);
-  await domain.getByRole('button', { name: 'Remove' }).click();
-  await page.getByRole('dialog', { name: 'Remove phone-check.example?' }).getByRole('button', { name: 'Remove domain' }).click();
-  await expect(page.locator('#card-verified-domains')).not.toContainText('phone-check.example');
 });

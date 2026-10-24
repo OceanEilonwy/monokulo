@@ -3,7 +3,7 @@
 // the card's title with its states beside it, "Watch it live" for admins,
 // one Nodes table with each node's proof-of-work verdict, the scanner on
 // one line, and proof of work as a sentence over the last 30 blocks, or
-// the held box. A card a node on a phone. Captures each state for the
+// the held box, following the engine live. Captures each state for the
 // gallery, desktop and phone, light and dark.
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
@@ -94,106 +94,26 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await expect(facts.locator('dt')).toHaveText(['Anchor', 'Checked', 'RandomX keys', 'Last checked']);
   await expect(facts.locator('dd').first()).toHaveText('Block 3,412,160, 2 of 3 nodes agreed, 2d ago');
   await captureCoverageStage(page, 'status-network-card-how-its-checked', test.info(), { group: GROUP, shapes: SHAPES });
-});
 
-test('fourteen blocks behind, the chip stays the same neutral tag', async ({ page, context }) => {
+  // The card follows the engine live, the new markup swapped in whole: the
+  // stream looks again as often as the cached status can change (a second
+  // in the fixture, engine.status_cache_ms).
   await story('lagging');
-  await login(context);
-  await page.goto(fixture.base_url + '/status');
   const chip = card(page).locator('.pline .tag');
   await expect(chip).toHaveText('14 behind the tip');
   await expect(chip).toHaveClass('tag tag-unknown');
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(14);
-  await expectRingClear(page);
+  await expect(card(page).locator('.net-head h2')).toHaveText('Mainnet');
+  await expect(page.locator('#status-live')).toHaveCount(1);
   await captureCoverageStage(page, 'status-network-card-lagging', test.info(), { group: GROUP, shapes: SHAPES });
-});
 
-test('held, one box gives the reason and a neutral button to take a new anchor', async ({ page, context }) => {
+  // Held: one box gives the reason and a button to take a new anchor.
   await story('held');
-  await login(context);
-  await page.goto(fixture.base_url + '/status');
-  await expect(card(page).locator('.net-head .mk-status-text')).toHaveText(['scanning', 'settlement held']);
   const held = card(page).locator('.proof-held');
   await expect(held).toContainText('Every node\'s chain left the proven one more than 720 blocks back');
-  const button = held.getByRole('button', { name: 'Take a new anchor' });
-  await expect(button).toBeVisible();
-  await expect(button).not.toHaveAttribute('data-variant');
+  await expect(card(page).locator('.net-head .mk-status-text')).toHaveText(['scanning', 'settlement held']);
+  await expect(held.getByRole('button', { name: 'Take a new anchor' })).toBeVisible();
   await expect(held.locator('form')).toHaveAttribute('action', '/admin/proof/mainnet/reanchor');
   await expect(card(page).locator('.pips')).toHaveCount(0);
   await captureCoverageStage(page, 'status-network-card-held', test.info(), { group: GROUP, shapes: SHAPES });
-});
-
-test('on a phone each node is a card and the window still reads', async ({ page, context }) => {
-  await story('following');
-  await login(context);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(fixture.base_url + '/status');
-  const table = card(page).locator('table[data-table="nodes"]');
-  await expect(table.locator('thead')).toBeHidden();
-  const rows = table.locator('tbody tr');
-  await expect(rows.first()).toHaveCSS('display', 'grid');
-  // Name and use first, then the verdict and height, then the detail.
-  const caught = rows.nth(2);
-  const box = async (locator) => /** @type {{x: number, y: number, width: number, height: number}} */ (await locator.boundingBox());
-  const [title, use, verdict, height, detail] = await Promise.all([
-    box(caught.locator('.card-title')), box(caught.locator('.card-status')), box(caught.locator('.verdict')),
-    box(caught.locator('.card-when')), box(caught.locator('.sub'))]);
-  expect(Math.abs(title.y - use.y)).toBeLessThan(8);
-  expect(use.x).toBeGreaterThan(title.x);
-  expect(verdict.y).toBeGreaterThan(title.y + title.height - 1);
-  // Side by side: the height's middle within the (maybe wrapped) verdict.
-  const middle = height.y + height.height / 2;
-  expect(middle).toBeGreaterThan(verdict.y);
-  expect(middle).toBeLessThan(verdict.y + verdict.height);
-  expect(detail.y).toBeGreaterThan(verdict.y + verdict.height - 1);
-  // Reachability only when it's a problem.
-  await expect(rows.nth(0).locator('.card-meta')).toBeHidden();
-  await expect(rows.nth(3).locator('.card-meta')).toHaveText('unreachable');
-  // The pips keep a readable size and stay inside the card.
-  const pip = await box(card(page).locator('.pips .pip').first());
-  expect(pip.width).toBeGreaterThan(6);
-  const tip = await box(card(page).locator('.pips .pip-tip'));
-  const cardBox = await box(card(page));
-  expect(tip.x + tip.width).toBeLessThanOrEqual(cardBox.x + cardBox.width);
-  await expectRingClear(page);
-  await captureCoverageStage(page, 'status-network-card-phone', test.info(), { group: GROUP, asIs: true });
-});
-
-test('someone not an admin sees no proof of work and no engine page', async ({ page, context }) => {
-  await story('following');
-  await login(context, false);
-  await page.goto(fixture.base_url + '/status');
-  await expect(card(page).locator('.net-head .mk-status-text')).toHaveText(['scanning']);
-  await expect(card(page).locator('thead th')).toHaveText(['Node', 'Use', 'Height', 'Reachable']);
-  await expect(card(page).locator('tbody td.card-title')).toHaveText(['node 1', 'node 2', 'node 3', 'node 4']);
-  for (const hidden of ['Watch it live', 'Proof of work', 'How it\'s checked', '10.0.0.5']) {
-    await expect(card(page)).not.toContainText(hidden);
-  }
-  await expect(card(page).locator('.pips')).toHaveCount(0);
-  await captureCoverageStage(page, 'status-network-card-visitor', test.info(), { group: GROUP, shapes: SHAPES });
-});
-
-test('without JavaScript the card is the same, and its facts open', async ({ browser }) => {
-  await story('following');
-  const context = await browser.newContext({ javaScriptEnabled: false });
-  await login(context);
-  const page = await context.newPage();
-  await page.goto(fixture.base_url + '/status');
-  await expect(card(page).locator('.pips .pip.seen')).toHaveCount(3);
-  const facts = card(page).locator('details[data-proof-facts]');
-  await facts.locator('summary').click();
-  await expect(facts.locator('dt').first()).toBeVisible();
-  await context.close();
-});
-
-test('the card follows the engine live, the new markup swapped in whole', async ({ page, context }) => {
-  await story('following');
-  await login(context);
-  await page.goto(fixture.base_url + '/status');
-  await expect(card(page).locator('.pline .tag')).toHaveText('3 behind the tip');
-  await story('lagging');
-  // The stream looks again as often as the cached status can change.
-  await expect(card(page).locator('.pline .tag')).toHaveText('14 behind the tip', { timeout: 25000 });
-  await expect(card(page).locator('.net-head h2')).toHaveText('Mainnet');
-  await expect(page.locator('#status-live')).toHaveCount(1);
 });

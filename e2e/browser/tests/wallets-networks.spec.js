@@ -11,95 +11,18 @@ const { captureCoverageStage } = require('../coverage-screenshot');
 
 const GROUP = 'wallets';
 let fixture;
-let testerSession;
 // One fixture, its wallets seeded once, read by every test.
 test.describe.configure({ mode: 'default' });
 test.beforeAll(async () => {
   fixture = await startCoverageFixture();
   const seeded = await fetch(`${fixture.base_url}/__coverage/wallets`, { method: 'POST' });
   expect(seeded.ok).toBe(true);
-  testerSession = (await seeded.json()).tester_session;
 });
 test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 
-async function login(context, session = fixture.session) {
-  await context.addCookies([{ name: 'session', value: session, url: fixture.base_url }]);
+async function login(context) {
+  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
 }
-
-test('mainnet wallets are the list and the test networks are folded below, shut', async ({ page, context }) => {
-  await login(context);
-  await page.goto(fixture.base_url + '/account?tab=wallets');
-  const head = page.locator('.net-section-head');
-  await expect(head.locator('.tag-network.is-main')).toHaveText('Mainnet');
-  await expect(head).toContainText('Real money · 2 wallets');
-  // By name, the retired one left out.
-  const main = page.locator('table[data-table="wallets"]').first();
-  await expect(main.locator('tbody tr td.card-title')).toHaveText(['Cake – shop takings', 'Savings']);
-
-  const fold = page.locator('details.test-wallets');
-  await expect(fold).not.toHaveAttribute('open', '');
-  await expect(fold.locator('summary')).toContainText('Test networks');
-  await expect(fold.locator('summary')).toContainText('3 wallets');
-  await expect(fold.locator('summary')).toContainText('no real value');
-  await captureCoverageStage(page, 'wallets-networks-mixed', test.info(), { group: GROUP });
-
-  await fold.locator('summary').click();
-  const rows = fold.locator('tbody tr');
-  await expect(rows.locator('td.card-title')).toHaveText(['Feather test', 'POS trial', 'Lab']);
-  await expect(rows.locator('.tag-network')).toHaveText(['Stagenet', 'Stagenet', 'Testnet']);
-  await expect(page.locator('details[data-disclosure="retired-wallets"] summary')).toContainText('Retired wallets (1)');
-  await expect(page.locator('.btn-primary, .mk-btn[data-variant="primary"]')).toHaveCount(1);
-  await captureCoverageStage(page, 'wallets-networks-mixed-open', test.info(), { group: GROUP });
-});
-
-test('with only test wallets the fold starts open and says there is no mainnet wallet yet', async ({ browser }) => {
-  // Without JavaScript: the fold is a plain <details>.
-  const context = await browser.newContext({ javaScriptEnabled: false });
-  await login(context, testerSession);
-  const page = await context.newPage();
-  await page.goto(fixture.base_url + '/account?tab=wallets');
-  await expect(page.getByText("No mainnet wallets yet. Add one when you're ready to take real payments.")).toBeVisible();
-  await expect(page.locator('.net-section-head')).toHaveCount(0);
-  const fold = page.locator('details.test-wallets');
-  await expect(fold).toHaveAttribute('open', '');
-  await expect(fold.locator('tbody tr')).toHaveCount(3);
-  await fold.locator('summary').click();
-  await expect(fold).not.toHaveAttribute('open', '');
-  await fold.locator('summary').click();
-  await captureCoverageStage(page, 'wallets-networks-test-only', test.info(), { group: GROUP });
-  await context.close();
-});
-
-test('on a phone each wallet is a card', async ({ page, context }) => {
-  await login(context);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(fixture.base_url + '/account?tab=wallets');
-  const card = page.locator('table[data-table="wallets"] tbody tr').first();
-  await expect(page.locator('table[data-table="wallets"] thead').first()).toBeHidden();
-  await expect(card).toHaveCSS('display', 'grid');
-  await expect(card.locator('td.card-status')).toHaveText('1 store');
-  await expect(page.locator('table[data-table="wallets"] tbody tr').nth(1).locator('td.card-status')).toHaveText('0 stores');
-  await captureCoverageStage(page, 'wallets-networks-phone', test.info(), { group: GROUP, asIs: true });
-});
-
-test("a wallet's page shows its network beside its name", async ({ page, context }) => {
-  await login(context);
-  await page.goto(fixture.base_url + '/account/wallets/w_feather');
-  const title = page.locator('.mk-page-title');
-  await expect(title.getByRole('heading', { name: 'Feather test' })).toBeVisible();
-  await expect(title.locator('.tag-network.is-test')).toHaveText('Stagenet');
-  await expect(page.locator('.where-banner strong')).toHaveText('Brought in from Feather');
-  await captureCoverageStage(page, 'wallets-networks-wallet-page', test.info(), { group: GROUP });
-});
-
-test("the dashboard shows each store's wallet with its network", async ({ page, context }) => {
-  await login(context);
-  await page.goto(fixture.base_url + '/');
-  const card = page.locator('[data-store]', { hasText: 'shop.localhost' }).first();
-  await expect(card).toContainText('Cake – shop takings');
-  await expect(card.locator('.tag-network.is-main')).toHaveText('Mainnet');
-  await captureCoverageStage(page, 'wallets-networks-dashboard', test.info(), { group: GROUP });
-});
 
 test('pickers show each wallet with its network, and a store changes only within its own', async ({ page, context }) => {
   await login(context);

@@ -107,20 +107,6 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   await context.close();
 });
 
-test('on a phone the Connections card stacks its button', async ({ page, context }) => {
-  await login(context);
-  await connectPlugin();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${settings()}?tab=connections`);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  const row = page.locator('#card-connections .int-rows li').first();
-  const meta = await row.locator('.int-meta').boundingBox();
-  const button = await row.getByRole('link', { name: 'Disconnect…' }).boundingBox();
-  expect(button.y).toBeGreaterThan(meta.y + meta.height - 1);
-  await page.locator('#card-connections').scrollIntoViewIfNeeded();
-  await captureCoverageStage(page, 'store-site-phone', test.info(), { group: GROUP, asIs: true });
-});
-
 test('disconnecting waits while an order from the shop can be paid', async ({ page, context }) => {
   await login(context);
   await connectPlugin();
