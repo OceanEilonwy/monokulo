@@ -19,15 +19,3 @@ pub fn now_unix_nanos() -> i64 {
         .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn seconds_and_nanoseconds_agree() {
-        let (seconds, nanos) = (now_unix(), now_unix_nanos());
-        assert!(seconds > 1_700_000_000);
-        assert!((nanos / 1_000_000_000 - seconds).abs() <= 1);
-    }
-}

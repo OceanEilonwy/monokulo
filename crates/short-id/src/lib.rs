@@ -88,89 +88,89 @@ mod tests {
 
     const ADDRESS: &str = "44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A";
 
+    /// What each kind of value is shortened to: six characters at each
+    /// end (after a known prefix, which stays; `order_` goes), an address
+    /// or measurement's middle too, centred; a value shortening would save
+    /// fewer than four characters of stays whole; one ellipsis, never
+    /// three dots.
     #[test]
-    fn an_order_id_drops_order_and_keeps_six_characters_at_each_end() {
-        assert_eq!(
-            short_id("order_a8723b2e45b0d44ea8723b2e45b0d44e"),
-            "a8723b…b0d44e"
-        );
-        // Short enough to show whole: still without `order_`.
-        assert_eq!(short_id("order_a8723b2e45b0d44e"), "a8723b2e45b0d44e");
-        assert_eq!(short_id("abc"), "abc");
-    }
-
-    #[test]
-    fn a_known_prefix_stays_in_front_of_the_shortened_value() {
-        let pk = format!("pk_b4c4e8{}3fa21c", "0".repeat(36));
-        assert_eq!(short_id(&pk), "pk_b4c4e8…3fa21c");
-        assert_eq!(
-            short_id(&format!("sk_{}", "ab".repeat(32))),
-            "sk_ababab…ababab"
-        );
-        assert_eq!(
-            short_id("evt_0123456789abcdef0123456789abcdef"),
-            "evt_012345…abcdef"
-        );
-        assert_eq!(
-            short_id(&format!("sess_{}", "f".repeat(64))),
-            "sess_ffffff…ffffff"
-        );
-        // Not a prefix: too long a word, capitals, or nothing before the `_`.
-        assert_eq!(short_id("verylongword_0123456789"), "verylo…456789");
-        assert_eq!(short_id("PK_0123456789abcdef"), "PK_012…abcdef");
-        assert_eq!(short_id("_0123456789abcdef"), "_01234…abcdef");
-    }
-
-    #[test]
-    fn a_txid_keeps_six_characters_at_each_end() {
+    fn each_kind_of_value_keeps_its_ends_and_an_address_its_middle() {
+        assert_eq!(ADDRESS.len(), 95);
         let txid = format!("3f9a1c{}e21b07", "9".repeat(52));
         assert_eq!(txid.len(), 64);
-        assert_eq!(short_id(&txid), "3f9a1c…e21b07");
-    }
-
-    #[test]
-    fn a_value_is_whole_when_shortening_would_save_fewer_than_four_characters() {
-        // 13 characters are shown, so 17 is the shortest value cut.
-        assert_eq!(short_id("0123456789abcdef"), "0123456789abcdef");
-        assert_eq!(short_id("0123456789abcdefg"), "012345…bcdefg");
-        // Counted after the prefix: an event id of 16 is whole.
-        assert_eq!(short_id("evt_0123456789abcdef"), "evt_0123456789abcdef");
-        assert_eq!(short_id("evt_0123456789abcdefg"), "evt_012345…bcdefg");
-        assert_eq!(short_id(""), "");
-        // An address: 20 are shown, so 24 is the shortest cut.
-        let whole = "0123456789abcdefghijklm";
-        assert_eq!(short_address(whole), whole);
-        assert_eq!(
-            short_address("0123456789abcdefghijklmn"),
-            "012345…9abcde…ijklmn"
-        );
-    }
-
-    #[test]
-    fn an_address_shows_its_start_its_middle_and_its_end() {
-        assert_eq!(ADDRESS.len(), 95);
-        assert_eq!(short_address(ADDRESS), "44AFFq…Xft3Xj…QBEP3A");
-    }
-
-    #[test]
-    fn a_measurement_shows_its_start_its_middle_and_its_end() {
-        // 48 bytes in hex: 96 characters, the middle 6 at 45 to 50.
-        let measurement = format!("{}{}{}", "a".repeat(45), "012345", "b".repeat(45));
-        assert_eq!(short_address(&measurement), "aaaaaa…012345…bbbbbb");
-    }
-
-    #[test]
-    fn an_address_middle_is_centred_on_odd_and_even_lengths() {
-        // Odd, 25: len/2 is 12, so characters 9 to 14.
-        assert_eq!(
-            short_address("abcdefghijklmnopqrstuvwxy"),
-            "abcdef…jklmno…tuvwxy"
-        );
-        // Even, 26: len/2 is 13, so characters 10 to 15.
-        assert_eq!(
-            short_address("abcdefghijklmnopqrstuvwxyz"),
-            "abcdef…klmnop…uvwxyz"
-        );
+        for (value, short) in [
+            (txid, "3f9a1c…e21b07"),
+            (
+                "order_a8723b2e45b0d44ea8723b2e45b0d44e".to_owned(),
+                "a8723b…b0d44e",
+            ),
+            // Short enough to show whole: still without `order_`.
+            ("order_a8723b2e45b0d44e".to_owned(), "a8723b2e45b0d44e"),
+            ("abc".to_owned(), "abc"),
+            (
+                format!("pk_b4c4e8{}3fa21c", "0".repeat(36)),
+                "pk_b4c4e8…3fa21c",
+            ),
+            (format!("sk_{}", "ab".repeat(32)), "sk_ababab…ababab"),
+            (
+                "evt_0123456789abcdef0123456789abcdef".to_owned(),
+                "evt_012345…abcdef",
+            ),
+            (format!("sess_{}", "f".repeat(64)), "sess_ffffff…ffffff"),
+            // Not a prefix: too long a word, capitals, or nothing before the `_`.
+            ("verylongword_0123456789".to_owned(), "verylo…456789"),
+            ("PK_0123456789abcdef".to_owned(), "PK_012…abcdef"),
+            ("_0123456789abcdef".to_owned(), "_01234…abcdef"),
+            // 13 characters are shown, so 17 is the shortest value cut,
+            // counted after the prefix.
+            ("0123456789abcdef".to_owned(), "0123456789abcdef"),
+            ("0123456789abcdefg".to_owned(), "012345…bcdefg"),
+            ("evt_0123456789abcdef".to_owned(), "evt_0123456789abcdef"),
+            ("evt_0123456789abcdefg".to_owned(), "evt_012345…bcdefg"),
+            (String::new(), ""),
+        ] {
+            assert_eq!(short_id(&value), short, "{value}");
+        }
+        for (value, short) in [
+            (ADDRESS.to_owned(), "44AFFq…Xft3Xj…QBEP3A"),
+            // 48 bytes in hex: 96 characters, the middle 6 at 45 to 50.
+            (
+                format!("{}{}{}", "a".repeat(45), "012345", "b".repeat(45)),
+                "aaaaaa…012345…bbbbbb",
+            ),
+            // Odd, 25: len/2 is 12, so characters 9 to 14.
+            (
+                "abcdefghijklmnopqrstuvwxy".to_owned(),
+                "abcdef…jklmno…tuvwxy",
+            ),
+            // Even, 26: len/2 is 13, so characters 10 to 15.
+            (
+                "abcdefghijklmnopqrstuvwxyz".to_owned(),
+                "abcdef…klmnop…uvwxyz",
+            ),
+            // 20 are shown, so 24 is the shortest cut.
+            (
+                "0123456789abcdefghijklm".to_owned(),
+                "0123456789abcdefghijklm",
+            ),
+            (
+                "0123456789abcdefghijklmn".to_owned(),
+                "012345…9abcde…ijklmn",
+            ),
+        ] {
+            assert_eq!(short_address(&value), short, "{value}");
+        }
+        for value in [
+            "order_a8723b2e45b0d44ea8723b2e45b0d44e".to_owned(),
+            format!("pk_{}", "a".repeat(48)),
+            "f".repeat(64),
+            ADDRESS.to_owned(),
+        ] {
+            for short in [short_id(&value), short_address(&value)] {
+                assert!(!short.contains("..."), "{short}");
+                assert!(short.contains('…'), "{short}");
+            }
+        }
     }
 
     #[test]
@@ -179,21 +179,5 @@ mod tests {
         assert_eq!(short_id(&format!("é{}ü", "€".repeat(30))), "é€€€€€…€€€€€ü");
         let address = format!("ä{}ö", "ß".repeat(40));
         assert_eq!(short_address(&address), "äßßßßß…ßßßßßß…ßßßßßö");
-    }
-
-    #[test]
-    fn a_shortened_value_shows_one_ellipsis_never_three_dots() {
-        let values = [
-            "order_a8723b2e45b0d44ea8723b2e45b0d44e".to_owned(),
-            format!("pk_{}", "a".repeat(48)),
-            "f".repeat(64),
-            ADDRESS.to_owned(),
-        ];
-        for value in &values {
-            for short in [short_id(value), short_address(value)] {
-                assert!(!short.contains("..."), "{short}");
-                assert!(short.contains('…'), "{short}");
-            }
-        }
     }
 }

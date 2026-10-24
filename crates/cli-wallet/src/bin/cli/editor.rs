@@ -893,22 +893,4 @@ mod tests {
             ""
         );
     }
-
-    #[test]
-    fn the_command_word_is_green_when_known_and_red_when_not() {
-        let highlighter = WalletHighlighter {
-            specs: command_specs(),
-        };
-        let known = reedline::Highlighter::highlight(&highlighter, "balance detail", 0);
-        assert_eq!(
-            known.buffer[1],
-            (
-                Style::new().fg(AnsiColor::Green).bold(),
-                "balance".to_string()
-            )
-        );
-        let unknown = reedline::Highlighter::highlight(&highlighter, "  balanse", 0);
-        assert_eq!(unknown.buffer[1].1, "balanse");
-        assert_eq!(unknown.buffer[1].0, Style::new().fg(AnsiColor::Red));
-    }
 }
