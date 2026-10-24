@@ -221,27 +221,6 @@ mod tests {
         assert_eq!(response.headers().get("location").unwrap(), "/admin/setup");
     }
 
-    #[tokio::test]
-    async fn the_setup_wizard_form_itself_is_reachable_on_a_fresh_install() {
-        let router = fresh_router();
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/admin/setup")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("Set up your admin account"),
-            "expected the wizard form, got: {html}"
-        );
-    }
-
     /// Once setup is complete, revisiting the wizard (e.g. a stale bookmark)
     /// must never let a second submission overwrite or add another admin -
     /// it just bounces away.

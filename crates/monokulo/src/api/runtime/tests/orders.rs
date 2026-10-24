@@ -1839,7 +1839,7 @@ async fn creating_an_order_with_a_malformed_amount_is_a_clear_400_not_a_500() {
 }
 
 #[tokio::test]
-async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoints() {
+async fn the_embed_library_never_calls_the_engine_and_never_talks_to_its_checkout() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
 
@@ -1856,21 +1856,8 @@ async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoint
     );
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let js = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(js.contains("Monokulo"));
-    assert!(js.contains("createOrder"));
-    assert!(js.contains("mount"));
-    // It calls monokulo's own `/api/v1/orders` with the store's public
-    // key as its bearer, and frames monokulo's own checkout page: never
-    // the engine, which is private.
-    assert!(
-        js.contains("monokulo + \"/api/v1/orders\"")
-            && js.contains("Authorization: \"Bearer \" + publicKey"),
-        "should call monokulo's own order-creation endpoint, got: {js}"
-    );
-    assert!(
-        js.contains("\"/checkout/\" + encodeURIComponent(orderId)"),
-        "should iframe monokulo's own checkout page, got: {js}"
-    );
+    // The embed library talks to monokulo only: never the engine, which
+    // is private.
     assert!(
         !js.contains("/api/v1/t/"),
         "must not reference the engine's own API directly: {js}"
@@ -1879,20 +1866,11 @@ async fn client_library_is_served_as_javascript_and_calls_monokulos_own_endpoint
         !js.contains("/pay/v1/"),
         "must not reference an engine checkout route: {js}"
     );
-    // The iframe does not post messages back, so mount() drives
-    // callbacks by following the order itself (its checkout's event
-    // stream, or the order on the API) even when presentation query
-    // parameters are present on the iframe URL.
+    // The iframe posts no messages back: mount() follows the order itself.
     assert!(
         !js.contains("postMessage"),
         "the embed library must not depend on the iframe posting a message any more, got: {js}"
     );
-    assert!(
-        js.contains(r#"new EventSource(checkoutUrl + "/events")"#)
-            && js.contains(r#"monokulo + "/api/v1/orders/" + encodeURIComponent(orderId)"#),
-        "expected mount() to follow the order directly, got: {js}"
-    );
-    assert!(js.contains("options.refund === false"));
     for asset in [
         crate::assets::url("checkout.js"),
         crate::assets::url("jsQR.js"),

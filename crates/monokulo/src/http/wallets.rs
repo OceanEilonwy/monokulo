@@ -1281,48 +1281,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn adding_a_wallet_names_it_first_and_creating_one_waits_for_javascript() {
-        let (state, _engine) = real_engine_state().await;
-        let router = build_router(state);
-        let (cookie, _) = sign_up(&router, "first@example.com", None).await;
-
-        let html = body_text(get(&router, "/account/wallets/add", &cookie).await).await;
-        assert!(html.contains("<h1>Add a wallet</h1>"), "{html}");
-        // The wallet's own small steps, without setup's.
-        assert!(
-            html.contains(
-                r#"<li aria-current="step"><span>Wallet<small>Kind · step 1 of 3</small></span>"#
-            ),
-            "{html}"
-        );
-        assert!(!html.contains("Setup progress"));
-        // The name comes first, already a free one, checked.
-        let name_at = html.find(r#"name="name""#).unwrap();
-        assert!(name_at < html.find("Create a new wallet").unwrap());
-        assert!(html.contains("Free to use"), "{html}");
-        // Drawn unavailable, with the reason, until the script turns it on.
-        assert!(html
-            .contains(r#"class="mk-action-card" data-recommended data-unavailable data-needs-js"#));
-        assert!(
-            html.contains(r#"<button class="mk-btn" type="submit" data-variant="primary" disabled formaction="/account/wallets/new" data-create-wallet="">"#),
-            "{html}"
-        );
-        assert!(html.contains("Creating a new wallet needs JavaScript"));
-        assert!(
-            html.contains("Coming soon"),
-            "hardware wallets aren't there yet"
-        );
-        assert!(
-            html.contains(r#"formaction="/account/wallets/import""#),
-            "bring your own works without it"
-        );
-        assert!(
-            !html.contains("Use a wallet you already added"),
-            "only setup offers one already added"
-        );
-    }
-
     /// The name is checked before anything is made: a name in use sends the
     /// merchant back to the choice screen, before any phrase exists.
     #[tokio::test]

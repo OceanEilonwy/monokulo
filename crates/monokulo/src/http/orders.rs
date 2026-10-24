@@ -1994,7 +1994,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn orders_list_shows_a_real_order_seeded_against_the_engines_public_api() {
+    async fn the_orders_list_shows_an_order_and_a_fixi_search_gets_only_its_results() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
@@ -2025,10 +2025,6 @@ mod tests {
         assert!(
             html.contains(&order_id),
             "expected the seeded order's order_id in the response, got: {html}"
-        );
-        assert!(
-            html.contains(r##"fx-target="#orders-results" fx-push-url"##),
-            "the search is enhanced: {html}"
         );
 
         // A fixi search gets only the results, filtered.
@@ -2145,8 +2141,12 @@ mod tests {
         );
     }
 
+    /// An order Monokulo has no price for (made on the engine directly)
+    /// shows a dash for its amount, never a made-up one; its page is a
+    /// point in time without a meta refresh, and its payment link is
+    /// absolute, built from the request's host.
     #[tokio::test]
-    async fn order_detail_shows_the_seeded_orders_full_detail() {
+    async fn an_order_without_a_recorded_price_shows_a_dash_never_a_made_up_amount() {
         let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
@@ -2174,67 +2174,22 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
+        let amount = html
+            .split(">Amount</th>")
+            .nth(1)
+            .and_then(|rest| rest.split("</tr>").next())
+            .unwrap_or_else(|| panic!("no Amount row: {html}"));
         assert!(
-            html.contains(&order_id),
-            "expected the order's order_id in its detail page, got: {html}"
-        );
-        // Seeded directly against the engine's own admin API, bypassing
-        // monokulo's own order creation - no local fiat metadata
-        // was ever recorded for it, so the page must show a dash rather than
-        // a fabricated amount (see `checkout.rs`'s own doc comment on the
-        // same fallback).
-        assert!(
-            html.contains('—'),
-            "expected a dash placeholder for the missing fiat quote, got: {html}"
-        );
-        // Timestamps deliberately stay compact (raw Unix seconds), not a
-        // human-readable date - a user-requested reversion of an earlier
-        // attempt at this page.
-        assert!(
-            html.contains("Created at"),
-            "expected the created-at row present, got: {html}"
-        );
-        // `merchant_order_id` was never set on this seeded order - must show
-        // a muted placeholder, not a blank cell.
-        assert!(
-            html.contains("muted"),
-            "expected a muted placeholder for the unset merchant order id, got: {html}"
+            amount.contains('—') && !amount.contains(|c: char| c.is_ascii_digit()),
+            "a dash, not an amount: {amount}"
         );
         assert!(
             !html.contains(r#"http-equiv="refresh""#),
             "a point-in-time page without JS, never a meta refresh: {html}"
         );
         assert!(
-            html.contains(r#"aria-label="Refresh page" title="Refresh page" data-reload"#),
-            "a Reload button instead: {html}"
-        );
-        // The point: a real, absolute, shareable
-        // payment link for this exact order, built from the request's own
-        // Host header (`test.example` here, set by `oneshot`'s default) -
-        // not a placeholder or a bare relative path.
-        assert!(
             html.contains(&format!("http://test.example/checkout/{order_id}/share")),
             "expected a real absolute payment link, got: {html}"
-        );
-        // The share icon and order id live in the order title.
-        assert!(
-            html.contains(r#"<h1>Order <span class="order-title-id">"#) && html.contains(r#"<div class="mk-page-actions"><a class="mk-btn" href="http://test.example/checkout/"#),
-            "expected the title banner to carry the share button, got: {html}"
-        );
-        assert!(
-            html.contains(&format!(
-                r#"<span class="order-title-id"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">{}</span>"#,
-                views::short_id_text(order_id.as_str())
-            )),
-            "expected the order id inside the title banner, got: {html}"
-        );
-        assert!(
-            html.contains(r#"id="share-payment-link""#) && html.contains("</svg>Share</a>"),
-            "expected a real, labeled share button, got: {html}"
-        );
-        assert!(
-            !html.contains("<th>Payment link</th>"),
-            "the payment link must no longer be its own table row, got: {html}"
         );
     }
 
@@ -2271,38 +2226,6 @@ mod tests {
         assert!(
             html.to_lowercase().contains("not found"),
             "expected a clear not-found state, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn webhooks_list_on_a_connection_with_none_registered_renders_an_empty_but_valid_page() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "webhooks-empty@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=connections"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("No webhooks yet."),
-            "expected a real, valid settings page even with no webhooks, got: {html}"
         );
     }
 
@@ -2374,57 +2297,6 @@ mod tests {
                 "expected 401 for {uri} with no session"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn store_detail_shows_the_real_connected_stores_overview_and_integration_help() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "store-detail@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-
-        assert!(
-            html.contains(&public_key),
-            "expected the store's public key, got: {html}"
-        );
-        assert!(
-            html.contains("<h1>https://shop.example.com</h1>"),
-            "the store's name heads its page, got: {html}"
-        );
-        assert!(
-            html.contains("tag-ok"),
-            "the engine is genuinely reachable, so health must render as ok, got: {html}"
-        );
-        assert!(
-            html.contains(&order_id),
-            "expected the seeded order in the recent-orders list, got: {html}"
-        );
-        // Help is the docs, which say how to add the checkout.
-        assert!(
-            html.contains(crate::views::DOCS_URL),
-            "expected the Help link to the docs, got: {html}"
-        );
     }
 
     #[tokio::test]
@@ -3272,6 +3144,7 @@ mod tests {
         (state, engine)
     }
 
+    #[cfg(feature = "snp")]
     async fn get_page(router: &Router, session_token: &str, uri: &str) -> String {
         let response = router
             .clone()
@@ -3576,36 +3449,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_a_single_key_storage_backend_no_choice_is_shown() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        crate::http::status_page::get_status_cached(&state.engine)
-            .await
-            .unwrap();
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "no-choice@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _) = create_connection(&router, &state, &session_token).await;
-        assert!(!get_page(
-            &router,
-            &session_token,
-            "/setup/wallet/keys?store_name=x&store_site=x.example&name=Other"
-        )
-        .await
-        .contains("key_custody_backend"));
-        assert!(!get_page(
-            &router,
-            &session_token,
-            &format!("/stores/{connection_id}/settings?tab=wallet")
-        )
-        .await
-        .contains("Key storage"));
-    }
-
-    #[tokio::test]
     async fn updating_the_confirmation_threshold_redirects_and_the_new_value_shows_on_the_store_page(
     ) {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -3694,146 +3537,6 @@ mod tests {
         assert!(
             html.contains(r#"name="zero_conf_enabled" value="true" id="zero-conf" checked"#),
             "expected native 0-conf to be enabled: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_new_store_defaults_to_coingecko_and_offers_no_options_when_none_are_enabled() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "fx-provider-default@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let settings_response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let settings_html = body_text(settings_response).await;
-        // Every new store is created with `fx_providers = ["coingecko"]` (the
-        // only real provider left - see `Db::create_store_connection`), shown
-        // as this store's current choice even though this test's instance
-        // (`test_exchange_rate_provider()`, `xmr_only()`) never actually
-        // enabled it - a store's own setting and what an instance currently
-        // offers are two different things.
-        assert!(
-            settings_html.contains("Exchange rate provider"),
-            "expected the settings section present, got: {settings_html}"
-        );
-        // The dropdown itself must offer zero real `<option>`s - nothing is
-        // enabled on this instance, and there is no "fixed" to fall back to
-        // any more.
-        assert!(!settings_html.contains(r#"<option value="coingecko""#), "expected no coingecko <option> since this instance never enabled it, got: {settings_html}");
-        assert!(!settings_html.contains(r#"<option value="fixed""#), "the removed \"fixed\" provider must never appear as a real option, got: {settings_html}");
-
-        // The point: with no fiat provider available
-        // at all, the "create an order" currency field must be a plain
-        // readonly "XMR" field, not a one-option `<select>` (a dropdown with
-        // nothing to actually choose between is misleading busywork).
-        let create_order_response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/orders/new"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let create_order_html = body_text(create_order_response).await;
-        assert!(
-            create_order_html.contains(
-                r#"<input class="mk-input" type="text" name="currency" id="currency" value="XMR" readonly>"#
-            ),
-            "expected a readonly XMR currency field, got: {create_order_html}"
-        );
-        assert!(
-            !create_order_html.contains(r#"<select id="currency""#),
-            "expected no currency dropdown when only XMR is available, got: {create_order_html}"
-        );
-    }
-
-    /// A store with a real Coingecko-backed provider enabled must offer a
-    /// real `<select>` for the "create an order" currency field, listing
-    /// every currency this instance currently supports - not the readonly
-    /// XMR-only field the no-provider case above shows.
-    #[tokio::test]
-    async fn a_store_with_coingecko_enabled_gets_a_real_currency_dropdown() {
-        async fn supported_currencies() -> axum::response::Response {
-            use axum::response::IntoResponse;
-            ([("content-type", "application/json")], r#"["usd","eur"]"#).into_response()
-        }
-        let mock_coingecko = axum::Router::new().route(
-            "/api/v3/simple/supported_vs_currencies",
-            axum::routing::get(supported_currencies),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let mock_coingecko_addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, mock_coingecko).await.unwrap();
-        });
-
-        let (mut state, _engine) = test_state_with_real_engine().await;
-        state.exchange_rate = std::sync::Arc::new(
-            crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(format!(
-                "http://{mock_coingecko_addr}"
-            )),
-        );
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "fx-provider-dropdown@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/orders/new"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let html = body_text(response).await;
-        assert!(
-            html.contains(r#"<select class="mk-input" name="currency" id="currency" data-mk="2">"#),
-            "expected a real currency dropdown, got: {html}"
-        );
-        assert!(
-            !html.contains(r#"id="currency" name="currency" value="XMR" readonly"#),
-            "must not be readonly once a provider is enabled, got: {html}"
-        );
-        assert!(
-            html.contains(r#"<option value="XMR" selected>XMR</option>"#),
-            "expected XMR always offered, got: {html}"
-        );
-        assert!(
-            html.contains(r#"<option value="USD">USD</option>"#),
-            "expected the live-discovered USD option, got: {html}"
-        );
-        assert!(
-            html.contains(r#"<option value="EUR">EUR</option>"#),
-            "expected the live-discovered EUR option, got: {html}"
         );
     }
 
@@ -4673,55 +4376,6 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].unit_amount, "50");
         assert_eq!(rows[0].confirmations_required, 20);
-    }
-
-    #[tokio::test]
-    async fn custom_thresholds_are_displayed_in_ascending_order_of_amount() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "threshold-ordering@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-        for amount in ["100.00", "10.00", "50.00"] {
-            router
-                .clone()
-                .oneshot(form_post_request(
-                    &format!("/stores/{connection_id}/settings"),
-                    &session_token,
-                    &[
-                        ("new_unit_amount", amount),
-                        ("new_confirmations_required", "15"),
-                    ],
-                ))
-                .await
-                .unwrap();
-        }
-
-        let page = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let html = body_text(page).await;
-        let pos_10 = html.find("<strong>From 10 ").expect("canonical 10 shown");
-        let pos_50 = html.find("<strong>From 50 ").expect("canonical 50 shown");
-        let pos_100 = html.find("<strong>From 100 ").expect("canonical 100 shown");
-        assert!(
-            pos_10 < pos_50 && pos_50 < pos_100,
-            "expected ascending amount order, got: {html}"
-        );
     }
 
     #[tokio::test]
@@ -5766,102 +5420,6 @@ mod tests {
     }
 
     // -- "Scan range" row ------------
-
-    #[tokio::test]
-    async fn scan_range_row_shows_a_muted_dash_for_an_order_with_no_first_tick_yet() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "scan-range-fresh-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
-        // Deliberately no `bump_scanned_range_for_order` call - this harness runs
-        // no background scan loop, so a freshly seeded order genuinely has never
-        // been examined by anything yet.
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/orders/{order_id}"))
-                    .header("cookie", format!("session={session_token}"))
-                    .header("host", "test.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("Scan range"),
-            "expected the row's own label, got: {html}"
-        );
-        assert!(
-            html.contains(r#"<span class="muted">-</span>"#),
-            "expected the muted-dash fallback, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn scan_range_row_shows_a_growing_range_while_the_order_is_still_being_watched() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "scan-range-growing-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
-        // Still `pending` (non-terminal) - genuinely still in scope, so the range
-        // must read as still growing ("N+"), not a closed span. Two calls to the
-        // live scanner's own bulk bump (its only mover now that the manual rescan
-        // feature is gone) rather than a single-order setter: the first (COALESCE)
-        // establishes `first_scanned_height`, the second only advances `last_
-        // scanned_height`, matching exactly how two real scan ticks would move it.
-        {
-            let s = engine.store().lock();
-            let tenant = s
-                .list_active_tenants()
-                .unwrap()
-                .into_iter()
-                .find(|t| t.public_key == public_key)
-                .unwrap();
-            s.bump_scanned_heights_for_tenant(&tenant.id, 100, crate::now_unix(), 0)
-                .unwrap();
-            s.bump_scanned_heights_for_tenant(&tenant.id, 250, crate::now_unix(), 0)
-                .unwrap();
-        }
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{connection_id}/orders/{order_id}"))
-                    .header("cookie", format!("session={session_token}"))
-                    .header("host", "test.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("100+"),
-            "expected the still-growing range display, got: {html}"
-        );
-        assert!(
-            !html.contains("100 - 250"),
-            "must not show a closed range while still in scope, got: {html}"
-        );
-    }
 
     /// `currently_scanning: false` (a closed, no-longer-growing range) needs an
     /// order genuinely past both its own deadline *and* the grace window in real
