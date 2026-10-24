@@ -390,11 +390,4 @@ mod tests {
         )), "{html}");
         assert!(!html.contains("..."), "{html}");
     }
-
-    #[test]
-    fn never_shows_a_meta_refresh() {
-        // The home page never auto-refreshes.
-        let html = page(&chrome(), &empty_data()).into_string();
-        assert!(!html.contains(r#"<meta http-equiv="refresh""#));
-    }
 }

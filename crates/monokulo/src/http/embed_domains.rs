@@ -2120,4 +2120,48 @@ mod tests {
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
         assert!(!html.contains("failed its DNS check"), "got: {html}");
     }
+
+    /// Dismissing shrinks only the "any website" warning: a domain that
+    /// failed its check is still warned about, with nothing to dismiss it,
+    /// and another merchant can't dismiss this store's warning.
+    #[tokio::test]
+    async fn dismissing_the_any_site_warning_leaves_a_failing_domain_warned_about() {
+        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "dismiss@example.com").await;
+        let id = create_store(&router, &state, &session).await;
+        let store = shared::ids::ConnectionId::new(id.to_string());
+        let domain = state.db.lock().list_store_domains(&store).unwrap()[0].clone();
+        let now = crate::now_unix();
+        state
+            .db
+            .lock()
+            .record_store_domain_check(&domain.id, now - 60, None)
+            .unwrap();
+        state
+            .db
+            .lock()
+            .record_store_domain_check(&domain.id, now, Some("no TXT record"))
+            .unwrap();
+        let dismiss = format!("/stores/{id}/settings/embed-restriction/dismiss-warning");
+
+        let other = session_for(&router, "someone-else@example.com").await;
+        assert_eq!(
+            send(&router, "POST", &dismiss, &other, None).await.0,
+            StatusCode::NOT_FOUND
+        );
+        assert!(!state.db.lock().embed_warning_dismissed(&store).unwrap());
+
+        assert_eq!(
+            send(&router, "POST", &dismiss, &session, None).await.0,
+            StatusCode::FOUND
+        );
+        assert!(state.db.lock().embed_warning_dismissed(&store).unwrap());
+        let (_, html) = send(&router, "GET", &format!("/stores/{id}"), &session, None).await;
+        assert!(
+            html.contains(&format!("{} failed its DNS check", domain.domain)),
+            "got: {html}"
+        );
+        assert!(!html.contains("dismiss-warning"), "got: {html}");
+    }
 }
