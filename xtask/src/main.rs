@@ -8,6 +8,7 @@ mod pages;
 mod ratchets;
 mod recording;
 mod rounds;
+mod slow;
 mod snp;
 mod stress;
 mod suites;
@@ -30,7 +31,7 @@ Usage: cargo xtask coverage <rust|browser|stagenet|all|report|summary|validate|o
        cargo xtask engine <fuzz|properties|scale|mutations> [...]
        cargo xtask test
        cargo xtask ratchets [--prune]
-       cargo xtask test-summary TITLE LABEL=JUNIT...
+       cargo xtask test-summary [--fail-slow] TITLE LABEL=JUNIT...
        cargo xtask test-timings [--db PATH] <run|load|report> [...]
        cargo xtask pages <build|fetch|landing|docs> [...]
        cargo xtask live <tests|browser|probe|wallets|report> [...]
@@ -103,6 +104,11 @@ fn main() -> ExitCode {
         ["ui", rest @ ..] => ui::ui(&root(), rest),
         ["test", rest @ ..] => suites::test(rest),
         ["ratchets", rest @ ..] => ratchets::ratchets(rest),
+        ["test-summary", "--fail-slow", title, suites @ ..] if !suites.is_empty() => {
+            let (text, fast) = summary::test_summary_failing_slow(title, suites);
+            print!("{text}");
+            Ok(Exit::passed(fast))
+        }
         ["test-summary", title, suites @ ..] if !suites.is_empty() => {
             print!("{}", summary::test_summary(title, suites));
             Ok(Exit::SUCCESS)
