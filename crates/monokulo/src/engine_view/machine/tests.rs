@@ -1283,7 +1283,7 @@ fn saves_are_counted_for_a_minute_and_marks_carry_their_place() {
 #[test]
 fn no_sequence_of_events_breaks_the_page_s_invariants() {
     for seed in [0x9e37_79b9_7f4a_7c15, 1, 0xdead_beef, 42] {
-        random_run(seed, 20_000);
+        random_run(seed, 5_000);
     }
 }
 

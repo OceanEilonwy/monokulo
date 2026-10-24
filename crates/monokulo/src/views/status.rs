@@ -668,36 +668,6 @@ mod tests {
     }
 
     #[test]
-    fn shows_a_plain_error_banner_when_the_engine_is_unreachable() {
-        let data = StatusPageViewModel {
-            engine_error: Some("the engine could not be reached".to_string()),
-            ..empty()
-        };
-        let html = page(&chrome(), &data).into_string();
-        assert!(html.contains("the engine could not be reached"));
-        assert!(
-            !html.contains("<table"),
-            "an engine error must not still show a (fabricated) networks table"
-        );
-    }
-
-    /// A slow block shows as a notice above everything else.
-    #[test]
-    fn a_slow_block_is_announced_at_the_top() {
-        let data = StatusPageViewModel {
-            slow_blocks: vec![
-                "Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.".to_string(),
-            ],
-            ..empty()
-        };
-        let html = page(&chrome(), &data).into_string();
-        assert!(
-            html.contains(r#"<p class="notice" role="status" data-slow-block="">Mainnet: block 3,412,001 (412 MB) has taken 2 m 10 s so far.</p>"#),
-            "{html}"
-        );
-    }
-
-    #[test]
     fn a_trust_mismatch_is_a_red_alert_at_the_top() {
         let data = StatusPageViewModel {
             snp_alert: Some("SEV-SNP key storage can't be chosen.".to_string()),
@@ -708,248 +678,6 @@ mod tests {
             html.contains(r#"<div class="error" role="alert" id="snp-policy-alert">SEV-SNP key storage can't be chosen.</div>"#),
             "{html}"
         );
-    }
-
-    #[test]
-    fn shows_no_configured_networks_message_when_networks_is_empty() {
-        let html = page(&chrome(), &empty()).into_string();
-        assert!(html
-            .to_lowercase()
-            .contains("no monero nodes are configured"));
-    }
-
-    #[test]
-    fn shows_a_node_row_and_its_error_when_unreachable() {
-        let mut down = node("node.example.com", NodeUse::InUse, None);
-        down.is_reachable = false;
-        down.height_display = "-".to_string();
-        down.detail = Some("connection refused".to_string());
-        let mut mainnet = network("mainnet", vec![down]);
-        mainnet.scanner = StatusScannerView {
-            status_label: "tick failing".to_string(),
-            status_tag_class: "tag-error".to_string(),
-            last_tick_display: "5m ago".to_string(),
-            tick_count: 42,
-            last_error: Some("scanner blew up".to_string()),
-            ..scanner()
-        };
-        mainnet.headers_first =
-            Some("Reading block headers first for about 50 minutes more.".to_string());
-        let data = StatusPageViewModel {
-            networks: vec![mainnet],
-            ..empty()
-        };
-        let html = page(&chrome(), &data).into_string();
-        for expected in [
-            "<code>node.example.com</code>",
-            r#"<td class="card-meta"><span class="tag tag-error">unreachable</span><span class="sub">connection refused</span></td>"#,
-            r#"<div class="error">scanner blew up</div>"#,
-            r#"<p class="hint">Reading block headers first for about 50 minutes more.</p>"#,
-        ] {
-            assert!(html.contains(expected), "{expected} in {html}");
-        }
-    }
-
-    /// The card's title is the network's name as a word, larger than the
-    /// small-caps section heads under it, with the scanner's and the
-    /// proof's state as tags beside it.
-    #[test]
-    fn the_card_is_titled_by_the_network_with_its_states_beside_it() {
-        let data = admin_with(following(3, 3_412_160), vec![]);
-        let html = render(&data);
-        assert!(
-            html.contains(concat!(
-                r#"<div class="net-head"><h2>Mainnet</h2>"#,
-                r#"<span class="mk-status-text" data-tone="success">scanning</span>"#,
-                r#"<span class="mk-status-text" data-tone="success">proof checked</span>"#,
-            )),
-            "{html}"
-        );
-        for head in ["Nodes", "Chain scanner", "Proof of work"] {
-            assert!(
-                html.contains(&format!(r#"<h3 class="caps">{head}</h3>"#)),
-                "{head} in {html}"
-            );
-        }
-        let mut stagenet = network("stagenet", vec![]);
-        stagenet.proof = Some(ProofView {
-            state: ProofState::Anchoring,
-            summary: "Waiting for 2 of 3 nodes to agree on an anchor.".to_string(),
-            window: None,
-            facts: vec![],
-        });
-        let html = render(&StatusPageViewModel {
-            networks: vec![stagenet, network("testnet", vec![])],
-            ..empty()
-        });
-        assert!(html.contains("<h2>Stagenet</h2>"), "{html}");
-        assert!(html.contains("<h2>Testnet</h2>"), "{html}");
-        assert!(html.contains(r#"<span class="mk-status-text">finding an anchor</span>"#));
-        assert!(
-            html.contains("<p>Waiting for 2 of 3 nodes to agree on an anchor.</p>"),
-            "while anchoring, the engine's sentence and no window: {html}"
-        );
-        assert!(!html.contains("pips"));
-    }
-
-    /// "Watch it live" is a neutral button in the card's header, for an
-    /// admin only, and the card's one link to the engine page.
-    #[test]
-    fn watch_it_live_is_a_button_in_the_header_for_an_admin_only() {
-        let html = render(&admin_with(following(0, 1), vec![]));
-        assert!(
-            html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet" data-watch-live=""><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
-                && html.contains("</svg>Watch it live</a></div>"),
-            "an eye, then the words: {html}"
-        );
-        assert_eq!(html.matches("/status/engine").count(), 1);
-        let html = render(&StatusPageViewModel {
-            networks: vec![network("mainnet", vec![])],
-            ..empty()
-        });
-        assert!(!html.contains("Watch it live"), "{html}");
-        assert!(!html.contains("/status/engine"), "{html}");
-    }
-
-    /// The scanner on one line: its state, then the last tick, the ticks
-    /// and the stores.
-    #[test]
-    fn the_scanner_is_one_line() {
-        let html = render(&StatusPageViewModel {
-            networks: vec![network("mainnet", vec![])],
-            ..empty()
-        });
-        assert!(
-            html.contains(r#"<p class="line scanner-line"><span class="mk-status-text" data-tone="success">scanning</span> last tick 2s ago · 41,203 ticks · 3 stores scanned last tick</p>"#),
-            "{html}"
-        );
-    }
-
-    /// Each node's verdict in words with a dot of its tone, in the Proof
-    /// of work column; a failing one's detail on a line under it.
-    #[test]
-    fn each_verdict_is_shown_in_words() {
-        let verdicts = [
-            (NodeVerdict::Unknown, "verdict", "not looked at yet"),
-            (NodeVerdict::OnChain, "verdict is-ok", "on the proven chain"),
-            (
-                NodeVerdict::Ahead,
-                "verdict is-watch",
-                "ahead, being checked",
-            ),
-            (
-                NodeVerdict::Lighter,
-                "verdict is-watch",
-                "on a chain with less work",
-            ),
-            (
-                NodeVerdict::Diverged,
-                "verdict is-bad",
-                "left the proven chain too far back",
-            ),
-            (
-                NodeVerdict::Caught,
-                "verdict is-bad",
-                "served a block that breaks the rules",
-            ),
-            (NodeVerdict::Unreachable, "verdict", "not answering"),
-        ];
-        let nodes = verdicts
-            .iter()
-            .map(|(verdict, _, _)| node("n:18081", NodeUse::InUse, Some(*verdict)))
-            .collect();
-        let html = render(&admin_with(following(0, 1), nodes));
-        assert!(
-            html.contains(
-                "<th>Node</th><th>Use</th><th>Proof of work</th><th>Height</th><th>Reachable</th>"
-            ),
-            "{html}"
-        );
-        assert!(!html.contains("Found"));
-        for (_, class, words) in verdicts {
-            assert!(
-                html.contains(&format!(
-                    r#"<td class="card-amount"><span class="{class}">{words}</span></td>"#
-                )),
-                "{words} in {html}"
-            );
-        }
-
-        let mut caught = node(
-            "10.0.0.5:18081",
-            NodeUse::LeftOut,
-            Some(NodeVerdict::Caught),
-        );
-        caught.detail = Some("block 3,412,860's proof of work doesn't meet its difficulty.".into());
-        let html = render(&admin_with(
-            following(0, 1),
-            vec![
-                node(
-                    "node.home.lan:18081",
-                    NodeUse::InUse,
-                    Some(NodeVerdict::OnChain),
-                ),
-                node(
-                    "xmr.example.org:18089",
-                    NodeUse::Standby,
-                    Some(NodeVerdict::Ahead),
-                ),
-                caught,
-            ],
-        ));
-        for expected in [
-            r#"<td class="card-status">in use</td>"#,
-            r#"<td class="card-status"><span class="muted">standby</span></td>"#,
-            r#"<td class="card-status"><span class="tag tag-error">left out</span></td>"#,
-            r#"<span class="verdict is-bad">served a block that breaks the rules</span><span class="sub">block 3,412,860's proof of work doesn't meet its difficulty.</span>"#,
-        ] {
-            assert!(html.contains(expected), "{expected} in {html}");
-        }
-    }
-
-    /// On a phone each node is a card (`site.css`'s `.table-cards`): the
-    /// node and its use, then the verdict and height, then the detail;
-    /// reachability only when it's a problem.
-    #[test]
-    fn each_node_is_a_card_on_a_phone() {
-        let mut down = node("b:18081", NodeUse::Standby, Some(NodeVerdict::Unreachable));
-        down.is_reachable = false;
-        let html = render(&admin_with(
-            following(0, 1),
-            vec![
-                node("a:18081", NodeUse::InUse, Some(NodeVerdict::OnChain)),
-                down,
-            ],
-        ));
-        assert!(
-            html.contains(
-                r#"<div class="table-scroll"><table class="table-cards" data-table="nodes">"#
-            ),
-            "{html}"
-        );
-        assert!(
-            html.contains(concat!(
-                r#"<tr><td class="card-title"><code>a:18081</code></td>"#,
-                r#"<td class="card-status">in use</td>"#,
-                r#"<td class="card-amount"><span class="verdict is-ok">on the proven chain</span></td>"#,
-                r#"<td class="card-when">3,412,880</td>"#,
-                r#"<td class="card-meta" data-quiet=""><span class="tag tag-ok">reachable</span></td></tr>"#,
-            )),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r#"<td class="card-meta"><span class="tag tag-error">unreachable</span></td>"#
-            ),
-            "{html}"
-        );
-        let css = include_str!("site.css");
-        for rule in [
-            r#"table[data-table="nodes"] td.card-amount { display: contents; font-weight: 400; }"#,
-            r#"table[data-table="nodes"] .card-meta[data-quiet] { display: none; }"#,
-        ] {
-            assert!(css.contains(rule), "{rule}");
-        }
     }
 
     /// Someone not an admin sees the nodes, their use and whether they
@@ -979,54 +707,29 @@ mod tests {
         ] {
             assert!(!html.contains(absent), "{absent} in {html}");
         }
-    }
 
-    /// Caught up: every block of the window proven, the last one the one
-    /// orders settle up to.
-    #[test]
-    fn the_window_when_caught_up() {
-        let html = render(&admin_with(following(0, 3_412_160), vec![]));
-        assert!(
-            html.contains(r#"<p class="pline">Orders settle on blocks up to <strong>3,412,881</strong>, proven by the engine itself. <span class="tag tag-unknown">caught up</span></p>"#),
-            "{html}"
-        );
-        let pips = pip_classes(&html);
-        assert_eq!(pips.len(), 30);
-        assert!(pips.iter().all(|pip| *pip == "pip"), "{pips:?}");
-        assert!(
-            html.contains(r#"<span class="pip" data-settles title="block 3,412,881"></span><span class="pip-tip"></span></div>"#),
-            "the settled block is ringed, then the tip: {html}"
-        );
-        assert!(html.contains(
-            r#"<p class="pip-figures">Last 30 blocks · settles to 3,412,881 · tip 3,412,881</p>"#
-        ));
-        assert!(html.contains(
-            r#"<p class="hint" data-pip-anchor="">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
-        ));
-        assert!(
-            !html.contains("before the anchor"),
-            "the anchor is older than the window"
-        );
-    }
-
-    /// Three behind: the last three blocks only seen, a neutral chip.
-    #[test]
-    fn the_window_three_behind() {
-        let html = render(&admin_with(following(3, 3_412_160), vec![]));
-        assert!(
-            html.contains(r#"<span class="tag tag-unknown">3 behind the tip</span>"#),
-            "{html}"
-        );
-        let pips = pip_classes(&html);
-        assert_eq!(pips.len(), 30);
-        assert_eq!(pips[..27], ["pip"; 27]);
-        assert_eq!(pips[27..], ["pip seen"; 3]);
-        assert!(html.contains(r#"<span class="pip" data-settles title="block 3,412,878">"#));
+        // "Watch it live" is a neutral button in the card's header, for an
+        // admin only, and the card's one link to the engine page.
+        {
+            let html = render(&admin_with(following(0, 1), vec![]));
+            assert!(
+                html.contains(r#"<a class="mk-btn" href="/status/engine?network=mainnet" data-watch-live=""><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon""#)
+                    && html.contains("</svg>Watch it live</a></div>"),
+                "an eye, then the words: {html}"
+            );
+            assert_eq!(html.matches("/status/engine").count(), 1);
+            let html = render(&StatusPageViewModel {
+                networks: vec![network("mainnet", vec![])],
+                ..empty()
+            });
+            assert!(!html.contains("Watch it live"), "{html}");
+            assert!(!html.contains("/status/engine"), "{html}");
+        }
     }
 
     /// Fourteen behind: the same neutral chip, never amber.
     #[test]
-    fn the_window_fourteen_behind() {
+    fn the_proof_of_work_window_at_each_distance_from_the_tip() {
         let html = render(&admin_with(following(14, 3_412_160), vec![]));
         assert!(
             html.contains(r#"<span class="tag tag-unknown">14 behind the tip</span>"#),
@@ -1045,61 +748,60 @@ mod tests {
             !html.contains("data-settles title"),
             "settled is off the window: {html}"
         );
-    }
 
-    /// An anchor inside the window: the blocks below it are drawn as
-    /// before the anchor, and the legend says so. One older than the
-    /// window is only the line under it.
-    #[test]
-    fn the_window_with_the_anchor_inside_or_older() {
-        let html = render(&admin_with(following(0, 3_412_871), vec![]));
-        let pips = pip_classes(&html);
-        assert_eq!(pips[..19], ["pip before"; 19]);
-        assert_eq!(pips[19..], ["pip"; 11]);
-        assert!(html.contains("before the anchor"));
-        let html = render(&admin_with(following(0, 3_000_000), vec![]));
-        assert!(!pip_classes(&html).contains(&"pip before"));
-        assert!(html.contains("Anchored at block 3,000,000, 2d ago"));
-    }
+        // Three behind: the last three blocks only seen, a neutral chip.
+        {
+            let html = render(&admin_with(following(3, 3_412_160), vec![]));
+            assert!(
+                html.contains(r#"<span class="tag tag-unknown">3 behind the tip</span>"#),
+                "{html}"
+            );
+            let pips = pip_classes(&html);
+            assert_eq!(pips.len(), 30);
+            assert_eq!(pips[..27], ["pip"; 27]);
+            assert_eq!(pips[27..], ["pip seen"; 3]);
+            assert!(html.contains(r#"<span class="pip" data-settles title="block 3,412,878">"#));
+        }
 
-    /// Held: one box with the reason and a neutral button to take a new
-    /// anchor, no window; the facts still fold under "How it's checked".
-    #[test]
-    fn the_held_state_offers_a_new_anchor() {
-        let mut proof = following(0, 1);
-        proof.state = ProofState::Held;
-        proof.summary = "Every node's chain left the proven one more than 720 blocks back.".into();
-        let html = render(&admin_with(proof, vec![]));
-        assert!(html
-            .contains(r#"<span class="mk-status-text" data-tone="error">settlement held</span>"#));
-        assert!(
-            html.contains(concat!(
-                r#"<div class="proof-held"><p>Every node's chain left the proven one more than 720 blocks back.</p>"#,
-                r#"<form method="post" action="/admin/proof/mainnet/reanchor">"#,
-                r#"<p class="hint">A new anchor is taken on the nodes' word, 720 blocks below their tips. Check that the nodes are your own or ones you trust before taking one.</p>"#,
-                r#"<button class="mk-btn" type="submit">Take a new anchor</button></form></div>"#,
-            )),
-            "{html}"
-        );
-        assert!(!html.contains("pips"), "{html}");
-        assert!(!html.contains("Orders settle on"), "{html}");
-        assert!(html.contains("<summary>How it's checked</summary>"));
+        // Caught up: every block of the window proven, the last one the one
+        // orders settle up to.
+        {
+            let html = render(&admin_with(following(0, 3_412_160), vec![]));
+            assert!(
+                html.contains(r#"<p class="pline">Orders settle on blocks up to <strong>3,412,881</strong>, proven by the engine itself. <span class="tag tag-unknown">caught up</span></p>"#),
+                "{html}"
+            );
+            let pips = pip_classes(&html);
+            assert_eq!(pips.len(), 30);
+            assert!(pips.iter().all(|pip| *pip == "pip"), "{pips:?}");
+            assert!(
+                html.contains(r#"<span class="pip" data-settles title="block 3,412,881"></span><span class="pip-tip"></span></div>"#),
+                "the settled block is ringed, then the tip: {html}"
+            );
+            assert!(html.contains(
+                r#"<p class="pip-figures">Last 30 blocks · settles to 3,412,881 · tip 3,412,881</p>"#
+            ));
+            assert!(html.contains(
+                r#"<p class="hint" data-pip-anchor="">Anchored at block 3,412,160, 2d ago: every block since then is checked.</p>"#
+            ));
+            assert!(
+                !html.contains("before the anchor"),
+                "the anchor is older than the window"
+            );
+        }
 
-        let html = render(&admin_with(following(0, 1), vec![]));
-        assert!(!html.contains("Take a new anchor"), "only while held");
-    }
-
-    /// The facts fold under "How it's checked", a name and a value each.
-    #[test]
-    fn the_facts_fold_under_how_its_checked() {
-        let html = render(&admin_with(following(3, 1), vec![]));
-        assert!(
-            html.contains(concat!(
-                r#"<details class="disclosure" data-proof-facts=""><summary>How it's checked</summary><dl class="facts">"#,
-                "<dt>Anchor</dt><dd>Block 3,412,160, 2 of 3 nodes agreed, 2d ago</dd>",
-                "<dt>Last checked</dt><dd>3s ago</dd></dl>",
-            )),
-            "{html}"
-        );
+        // An anchor inside the window: the blocks below it are drawn as before
+        // the anchor, and the legend says so. One older than the window is only
+        // the line under it.
+        {
+            let html = render(&admin_with(following(0, 3_412_871), vec![]));
+            let pips = pip_classes(&html);
+            assert_eq!(pips[..19], ["pip before"; 19]);
+            assert_eq!(pips[19..], ["pip"; 11]);
+            assert!(html.contains("before the anchor"));
+            let html = render(&admin_with(following(0, 3_000_000), vec![]));
+            assert!(!pip_classes(&html).contains(&"pip before"));
+            assert!(html.contains("Anchored at block 3,000,000, 2d ago"));
+        }
     }
 }

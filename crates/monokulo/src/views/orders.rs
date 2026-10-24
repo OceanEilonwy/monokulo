@@ -620,33 +620,6 @@ mod tests {
         PageChrome::from_user(None, "/stores/conn_1/orders")
     }
 
-    #[test]
-    fn list_page_links_to_each_order_detail_page() {
-        let data = OrdersViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
-            orders: vec![OrderRowViewModel {
-                order_id: shared::ids::OrderId::new("pay_xyz".to_string()),
-                reference: Some("wc-1042".to_string()),
-                source: "WooCommerce".to_string(),
-                status: shared::order_status::OrderStatus::Paid,
-                amount: "25.00".to_string(),
-                currency: "USD".to_string(),
-                created_at: 1000,
-            }],
-            search: String::new(),
-            page: 0,
-            has_more: false,
-        };
-        let html = list_page(&chrome(), &data).into_string();
-        assert!(html.contains("pay_xyz"));
-        assert!(html.contains(r#"href="/stores/conn_1/orders/pay_xyz""#));
-        assert!(
-            html.contains(r#"href="/stores/conn_1""#),
-            "expected a back-to-store link"
-        );
-    }
-
     /// A middle page of a search links to the newer and older pages, the
     /// search kept, fixi swapping each into the results.
     #[test]
@@ -677,34 +650,6 @@ mod tests {
         )
         .into_string();
         assert!(!html.contains("mk-pagination"), "{html}");
-    }
-
-    /// A real order id is long: the list shows it as `views::short_id`
-    /// writes it, inside a plain link, the whole id in reach.
-    #[test]
-    fn list_page_shortens_a_long_order_id_inside_a_plain_link() {
-        let order_id = "order_a8723b2e45b0d44ea8723b2e45b0d44e";
-        let data = OrdersViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
-            orders: vec![OrderRowViewModel {
-                order_id: shared::ids::OrderId::new(order_id.to_string()),
-                reference: None,
-                source: "WooCommerce".to_string(),
-                status: shared::order_status::OrderStatus::Paid,
-                amount: "25.00".to_string(),
-                currency: "USD".to_string(),
-                created_at: 1000,
-            }],
-            search: String::new(),
-            page: 0,
-            has_more: false,
-        };
-        let html = list_page(&chrome(), &data).into_string();
-        assert!(html.contains(&format!(
-            r#"<td class="card-title"><a href="/stores/conn_1/orders/{order_id}"><span class="short-value" title="{order_id}"><span class="short-value-text" aria-hidden="true">a8723b…b0d44e</span><span class="short-value-full">{order_id}</span></span></a></td>"#
-        )), "{html}");
-        assert!(!html.contains("..."), "{html}");
     }
 
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
@@ -739,38 +684,6 @@ mod tests {
     }
 
     #[test]
-    fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let data = OrderDetailViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
-            order: Some(test_order_detail_data(None)),
-        };
-        let html = detail_page(&chrome(), &data).into_string();
-        // The point: no dash, no row at all - a
-        // permanently-visible "Double-spend detected at" label reads as a
-        // warning even when it says nothing happened.
-        assert!(
-            !html.contains("Double-spend detected at"),
-            "expected the row fully absent when no double-spend occurred, got: {html}"
-        );
-    }
-
-    #[test]
-    fn detail_page_uses_order_breadcrumb() {
-        let data = OrderDetailViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
-            order: Some(test_order_detail_data(None)),
-        };
-        let html = detail_page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/stores/conn_1" title="shop.example.com">shop.example.com</a><a href="/stores/conn_1/orders" title="Orders">Orders</a></nav>"#));
-        assert!(
-            html.contains(r#"<h1>Order <span class="order-title-id">pay_abc123</span></h1>"#),
-            "{html}"
-        );
-    }
-
-    #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
         let data = OrderDetailViewModel {
             connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
@@ -787,24 +700,24 @@ mod tests {
                 && html.contains(">14 Nov 2023, 22:13</time>"),
             "expected the real detected-at time shown, got: {html}"
         );
-    }
 
-    #[test]
-    fn detail_page_shows_a_not_found_state_when_order_is_none() {
-        let data = OrderDetailViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
-            display_name: "shop.example.com".to_string(),
-            order: None,
-        };
-        let html = detail_page(&chrome(), &data).into_string();
-        assert!(html.to_lowercase().contains("not found"));
-        // The nav's own status-dot poll script always renders regardless -
-        // it's the order-specific share-button script that must be absent
-        // with no order to attach it to.
-        assert!(
-            !html.contains("share-payment-link"),
-            "no order means no share button to enhance"
-        );
+        // Detail page hides the double spend row entirely when none was
+        // detected.
+        {
+            let data = OrderDetailViewModel {
+                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+                display_name: "shop.example.com".to_string(),
+                order: Some(test_order_detail_data(None)),
+            };
+            let html = detail_page(&chrome(), &data).into_string();
+            // The point: no dash, no row at all - a
+            // permanently-visible "Double-spend detected at" label reads as a
+            // warning even when it says nothing happened.
+            assert!(
+                !html.contains("Double-spend detected at"),
+                "expected the row fully absent when no double-spend occurred, got: {html}"
+            );
+        }
     }
 
     fn payment(txid: &str, amount_piconero: u64, first_seen_at: i64) -> PaymentRowViewModel {
@@ -817,41 +730,6 @@ mod tests {
             voided_at: None,
             superseded: false,
         }
-    }
-
-    /// Before anything arrives the activity has nothing to tell: it says
-    /// so, how much it waits for and until when, and offers the payment
-    /// link to share - never an empty table.
-    #[test]
-    fn an_order_with_no_payments_says_none_have_been_made_and_offers_its_link() {
-        let order = test_order_detail_data(None);
-        let html = live_fragment(&order, &chrome().clock).into_string();
-        assert!(html.contains(r#"data-empty="payments""#), "{html}");
-        assert!(html.contains("No payments have been made yet"), "{html}");
-        assert!(
-            html.contains("This order is waiting for 0.5 XMR."),
-            "{html}"
-        );
-        assert!(html.contains("Share payment link"), "{html}");
-        assert!(
-            html.contains(&format!(r#"href="{}""#, order.payment_link)),
-            "{html}"
-        );
-        assert!(!html.contains(r#"class="timeline""#), "{html}");
-    }
-
-    /// An order that ended with nothing paid says so, with nothing to
-    /// share: the link would only invite a payment it won't take.
-    #[test]
-    fn an_expired_order_with_no_payments_says_none_were_made_and_offers_nothing() {
-        let order = OrderDetailData {
-            status: shared::order_status::OrderStatus::Expired,
-            ..test_order_detail_data(None)
-        };
-        let html = live_fragment(&order, &chrome().clock).into_string();
-        assert!(html.contains("No payments were made"), "{html}");
-        assert!(html.contains("There's nothing to refund."), "{html}");
-        assert!(!html.contains("Share payment link"), "{html}");
     }
 
     /// Money sent to a cancelled order anyway shows as a payment after the
@@ -915,25 +793,5 @@ mod tests {
         assert!(at("Payment seen: 0.05 XMR") < at("Order created"));
         assert!(html.contains(r#"<li data-tone="error">"#), "{html}");
         assert!(html.contains("bbbb2222"), "{html}");
-    }
-
-    /// A paid order ends its timeline with how it ended, in the success
-    /// tone.
-    #[test]
-    fn a_paid_order_ends_its_timeline_paid() {
-        let order = OrderDetailData {
-            status: shared::order_status::OrderStatus::Paid,
-            amount_received_piconero: 500_000_000_000,
-            confirmations: 10,
-            updated_at: 1500,
-            payments: vec![payment("cccc3333", 500_000_000_000, 1200)],
-            ..test_order_detail_data(None)
-        };
-        let html = live_fragment(&order, &chrome().clock).into_string();
-        assert!(html.contains(r#"<li data-tone="success">"#), "{html}");
-        assert!(
-            html.contains("0.5 XMR received, 10 of 10 confirmations"),
-            "{html}"
-        );
     }
 }

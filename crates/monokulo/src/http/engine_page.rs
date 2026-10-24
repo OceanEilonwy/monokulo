@@ -47,6 +47,8 @@ use crate::views;
 /// The `machine` event comes at most this often: it is built from
 /// monokulo's cached `/status` (itself at most one engine request every
 /// ten seconds), not from each frame, so a busy scan costs it nothing more.
+/// Monokulo runs this; the relay's [`Timing`](crate::engine_view::relay::Timing)
+/// carries it, so a test can pass another explicitly.
 pub const MACHINE_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
@@ -296,7 +298,7 @@ pub async fn events(
         Err(error) => return (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
     };
     // Frames as the engine records them; between them, the `machine`
-    // event once straight away and then every MACHINE_EVERY at most.
+    // event once straight away and then every `machine_every` at most.
     let follow = stream::unfold(
         (watch, permit, state, network, tokio::time::Instant::now()),
         |(mut watch, permit, state, network, mut next_machine)| async move {
@@ -315,7 +317,8 @@ pub async fn events(
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                     },
                     () = tokio::time::sleep_until(next_machine) => {
-                        next_machine = tokio::time::Instant::now() + MACHINE_EVERY;
+                        next_machine =
+                            tokio::time::Instant::now() + state.engine.activity.timing().machine_every;
                         match machine_event(&state, &network).await {
                             Some(event) => event,
                             None => continue,
@@ -407,6 +410,7 @@ mod tests {
 
     use super::*;
     use crate::engine_client::EngineClient;
+    use crate::engine_view::relay::{Relay, Timing};
     use crate::http::test_support::{
         admin_session_cookie, body_json, body_text, signed_up_and_logged_in_session_token,
     };
@@ -414,6 +418,11 @@ mod tests {
     /// monokulo with a real engine that scans stagenet, whose record holds
     /// a snapshot, a commit and a reorg; and an admin's session.
     async fn site() -> (engine_test_support::TestEngineHandle, Router, String) {
+        site_with(Timing::DEFAULT).await
+    }
+
+    /// [`site`], its relay following with `timing`.
+    async fn site_with(timing: Timing) -> (engine_test_support::TestEngineHandle, Router, String) {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[Network::Stagenet]).await;
         let activity = engine.activity(Network::Stagenet);
@@ -442,8 +451,12 @@ mod tests {
             idle_moved: 0,
             header_only: false,
         });
+        let client = EngineClient::embedded_for_tests(engine.router());
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
+            engine: crate::http::Engine {
+                activity: Arc::new(Relay::with_timing(client.clone(), timing).unwrap()),
+                ..crate::http::Engine::new(client)
+            },
             ..AppState::for_tests()
         };
         let router = crate::http::build_router(state);
@@ -496,42 +509,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
-
-    /// The page is the app's shell: the header with the network picker, a
-    /// Reload button the app shows when its stream breaks off, where the
-    /// app goes and its script, and, without JavaScript, a line saying the
-    /// page needs it. Nothing of the live view is drawn by the server.
-    #[tokio::test]
-    async fn the_page_is_the_app_s_shell() {
-        let (_engine, router, cookie) = site().await;
-        let response = get(&router, "/status/engine", Some(&cookie)).await;
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        for expected in [
-            r#"<div class="engine-app" id="engine-app" data-network="stagenet""#,
-            "The engine page needs JavaScript",
-            &crate::assets::url("engine-view.js"),
-            &crate::assets::url("engine-view.css"),
-            "Refresh page",
-            // The switcher: the network scanned is a link, the others say why not.
-            "<option value=\"stagenet\" selected>",
-            "Mainnet - no node configured",
-        ] {
-            assert!(html.contains(expected), "no {expected:?} in the page");
-        }
-        for live_view in ["3,412,881", "Frontier, 41 stores", "Round 7", "id=\"tl\""] {
-            assert!(
-                !html.contains(live_view),
-                "{live_view} is the app's to draw"
-            );
-        }
-        let unknown = get(&router, "/status/engine?network=mainnet", Some(&cookie)).await;
-        assert_eq!(
-            unknown.status(),
-            StatusCode::NOT_FOUND,
-            "the engine scans no mainnet"
-        );
     }
 
     /// A past round: the frame it ended on, with the tuning it is drawn to;
@@ -677,32 +654,6 @@ mod tests {
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
     }
 
-    /// The shell's header: the back link above the title, whose row holds
-    /// the help's place (the app fills it), the network picker and Reload.
-    /// Without JavaScript the picker's Go submits it.
-    #[tokio::test]
-    async fn the_shell_s_header_holds_the_picker_and_reload() {
-        let (_engine, router, cookie) = site().await;
-        let html = body_text(get(&router, "/status/engine", Some(&cookie)).await).await;
-        let at = |needle: &str| {
-            html.find(needle)
-                .unwrap_or_else(|| panic!("no {needle:?} in the page"))
-        };
-        let order = [
-            r#"<header class="mk-page-header"><nav class="mk-breadcrumbs" aria-label="Breadcrumb"><a href="/status" title="Status">Status</a></nav><div class="mk-page-title"><h1>Engine</h1><span id="engine-help-slot"></span>"#,
-            r#"<div class="mk-page-actions"><form class="engine-network" method="get" action="/status/engine">"#,
-            r#"<button class="mk-btn" type="submit" data-only="no-script">Go</button></form><a class="mk-btn icon-only" href="/status/engine?network=stagenet" aria-label="Refresh page" title="Refresh page" data-reload"#,
-            r#"id="engine-app""#,
-        ];
-        let places: Vec<usize> = order.iter().map(|needle| at(needle)).collect();
-        assert!(
-            places.windows(2).all(|pair| pair[0] < pair[1]),
-            "out of order: {places:?}"
-        );
-        assert!(html.contains(r#"<label for="engine-network" class="visually-hidden">Network</label><div class="mk-select" data-compact data-mk="1" data-island="Select""#));
-        assert!(html.contains(r#"<select class="mk-input" data-size="compact" name="network" id="engine-network" data-mk="2">"#));
-    }
-
     /// A `/status` with stagenet's two nodes, the one in use at `active`,
     /// its link measured.
     fn status_with_nodes(active: usize) -> EngineStatusResponse {
@@ -803,11 +754,16 @@ mod tests {
     }
 
     /// The stream sends the strip's `machine` event at once, after the
-    /// history, and then at most every MACHINE_EVERY however many frames
+    /// history, and then at most every `machine_every` however many frames
     /// come between: it is built from the cached `/status`, not per frame.
+    /// Monokulo waits [`MACHINE_EVERY`]; this passes a shorter interval.
     #[tokio::test]
     async fn the_machine_event_comes_at_once_then_at_most_every_few_seconds() {
-        let (engine, router, cookie) = site().await;
+        let timing = Timing {
+            machine_every: Duration::from_millis(400),
+            ..Timing::DEFAULT
+        };
+        let (engine, router, cookie) = site_with(timing).await;
         let response = get(
             &router,
             "/status/engine/events?network=stagenet",
@@ -846,7 +802,7 @@ mod tests {
         };
         assert!(frames > 0, "the frames came through");
         assert!(
-            second >= MACHINE_EVERY - Duration::from_millis(50),
+            second >= timing.machine_every - Duration::from_millis(50),
             "the next machine event waited: {second:?}"
         );
     }

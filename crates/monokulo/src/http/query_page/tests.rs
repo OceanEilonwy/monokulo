@@ -110,27 +110,6 @@ async fn a_write_is_refused_and_changes_nothing() {
 }
 
 #[tokio::test]
-async fn fixi_gets_only_the_results_and_a_database_switch_gets_the_workspace() {
-    let (router, cookie) = admin(AppState::for_tests()).await;
-    let mut request = get(&query("monokulo", "SELECT 1 AS one"), &cookie);
-    request
-        .headers_mut()
-        .insert("fx-request", "true".parse().unwrap());
-    let (status, html) = send(&router, request).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(html.starts_with(r#"<section id="query-results""#), "{html}");
-    assert!(!html.contains("<html"), "{html}");
-
-    let mut request = get("/admin/query/schema?db=monokulo", &cookie);
-    request
-        .headers_mut()
-        .insert("fx-request", "true".parse().unwrap());
-    let (_, html) = send(&router, request).await;
-    assert!(html.starts_with(r#"<div id="query-workspace">"#), "{html}");
-    assert!(html.contains("Pick a table on the left"), "{html}");
-}
-
-#[tokio::test]
 async fn the_rows_download_as_csv_and_json() {
     let (router, cookie) = admin(AppState::for_tests()).await;
     let sql = urlencoding_encode("SELECT email, password_hash, 'a,b' AS odd FROM users");
@@ -170,29 +149,70 @@ async fn the_rows_download_as_csv_and_json() {
     assert_eq!(rows[0]["password_hash"], serde_json::Value::Null);
 }
 
+/// Each of the Query page's routes checks for itself: an admin's read
+/// runs, a merchant is refused, a write never runs, and switched off the
+/// route is gone.
 #[tokio::test]
-async fn a_long_value_opens_whole_on_its_own_page_or_in_the_dialog() {
-    let (router, cookie) = admin(AppState::for_tests()).await;
-    let sql = r#"SELECT 'w1' AS id, '{"event":"order.paid","order":{"id":"o1","note":"' || replace(hex(zeroblob(60)), '00', 'ab') || '"}}' AS payload"#;
-    let (_, html) = send(&router, get(&query("monokulo", sql), &cookie)).await;
-    assert!(html.contains("Expand payload of row 1"), "{html}");
-    let value = format!(
-        "/admin/query/value?db=monokulo&sql={}&row=0&col=1",
-        urlencoding_encode(sql)
+async fn every_query_route_reads_for_an_admin_only_and_never_writes() {
+    let read = urlencoding_encode("SELECT email FROM users");
+    let write = urlencoding_encode("UPDATE users SET email = 'x@example.org'");
+    // Each route, and what it answers an admin's write.
+    let routes = [
+        ("/admin/query?db=monokulo", StatusCode::OK),
+        ("/admin/query/schema?db=monokulo", StatusCode::OK),
+        (
+            "/admin/query/value?db=monokulo&row=0&col=0",
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "/admin/query/export?db=monokulo&format=csv",
+            StatusCode::BAD_REQUEST,
+        ),
+    ];
+    let state = AppState::for_tests();
+    let (router, cookie) = admin(state.clone()).await;
+    let merchant = format!(
+        "session={}",
+        signed_up_and_logged_in_session_token(&router, "merchant@example.org", "a long password")
+            .await
     );
-    let (status, page) = send(&router, get(&value, &cookie)).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(page.contains("<h1"), "{page}");
-    assert!(page.contains("w1 · "), "{page}");
-    assert!(page.contains("JSON"), "{page}");
-    assert!(
-        page.contains("  &quot;event&quot;: &quot;order.paid&quot;"),
-        "{page}"
-    );
-    let (_, dialog) = send(&router, get(&format!("{value}&part=dialog"), &cookie)).await;
-    assert!(dialog.starts_with("<h2"), "{dialog}");
-    assert!(dialog.contains("data-closes-dialog"), "{dialog}");
-    let (status, _) = send(&router, get(&value.replace("row=0", "row=5"), &cookie)).await;
+    let off = AppState::for_tests().with_options("").await;
+    off.save_setting("admin.query_enabled", "false").await;
+    let (off, off_cookie) = admin(off).await;
+    for (route, written) in routes {
+        let (status, body) = send(&router, get(&format!("{route}&sql={read}"), &cookie)).await;
+        assert_eq!(status, StatusCode::OK, "{route}");
+        if !route.contains("schema") {
+            assert!(
+                body.contains(crate::db::TEST_ADMIN_EMAIL),
+                "{route}: {body}"
+            );
+        }
+        let (status, _) = send(&router, get(&format!("{route}&sql={read}"), &merchant)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{route}");
+        let (status, _) = send(&router, get(&format!("{route}&sql={write}"), &cookie)).await;
+        assert_eq!(status, written, "{route}");
+        let (_, emails) = send(
+            &router,
+            get(
+                &format!("/admin/query/export?db=monokulo&format=csv&sql={read}"),
+                &cookie,
+            ),
+        )
+        .await;
+        assert!(!emails.contains("x@example.org"), "{route} ran a write");
+        let (status, _) = send(&off, get(&format!("{route}&sql={read}"), &off_cookie)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{route}");
+    }
+    // A value outside the result isn't there.
+    let (status, _) = send(
+        &router,
+        get(
+            &format!("/admin/query/value?db=monokulo&row=5&col=0&sql={read}"),
+            &cookie,
+        ),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 

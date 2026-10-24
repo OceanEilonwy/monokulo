@@ -112,7 +112,7 @@ impl Merchant {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/_test/whoami")
+                    .uri("/account")
                     .header("cookie", format!("session={session}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -189,6 +189,222 @@ async fn a_merchant_picks_a_theme_and_a_time_zone_and_every_page_follows() {
         .await
         .1
         .contains("<strong>Nothing to save</strong>"));
+
+    // The theme is chosen at sign-up too (System unless another is picked), and
+    // the new account has it from its first page.
+    {
+        let router = build_router(AppState::for_tests());
+        let form = body_text(
+            router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/signup")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            form.contains(r#"<input type="radio" name="theme" value="system" checked>"#),
+            "{form}"
+        );
+        assert!(
+            form.contains("You can change it any time from the account menu."),
+            "{form}"
+        );
+
+        let sign_up = |email: &str, theme: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/signup")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "email={}&password={}&theme={theme}",
+                    urlencoding_encode(email),
+                    urlencoding_encode(PASSWORD)
+                )))
+                .unwrap()
+        };
+        for (email, theme, attribute) in [
+            ("dark@example.com", "dark", Some(r#"data-theme="dark""#)),
+            ("light@example.com", "light", Some(r#"data-theme="light""#)),
+            ("system@example.com", "system", None),
+        ] {
+            let response = router.clone().oneshot(sign_up(email, theme)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FOUND);
+            let cookie = response.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .split(';')
+                .next()
+                .unwrap()
+                .to_string();
+            let page = body_text(
+                router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri("/account")
+                            .header("cookie", cookie)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            match attribute {
+                Some(attribute) => assert!(html_tag(&page).contains(attribute), "{theme}: {page}"),
+                None => assert!(!html_tag(&page).contains("data-theme"), "{page}"),
+            }
+        }
+
+        // A refused sign-up keeps the theme picked.
+        let refused = body_text(
+            router
+                .oneshot(sign_up("not an address", "dark"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            refused.contains(r#"<input type="radio" name="theme" value="dark" checked>"#),
+            "{refused}"
+        );
+    }
+
+    // From any page's theme toggle: Light, Dark or System, back on that page
+    // (an off-site next falls back to the dashboard), kept on the account so
+    // every later page renders in it without JavaScript.
+    {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let state = crate::http::AppState {
+            engine: crate::http::Engine::new(
+                crate::engine_client::EngineClient::embedded_for_tests(engine.router()),
+            ),
+            ..crate::http::AppState::for_tests()
+        };
+        let router = crate::http::build_router(state);
+        let session = crate::http::test_support::signed_up_and_logged_in_session_token(
+            &router,
+            "theme@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+
+        let pick = |theme: &str, next: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/theme")
+                .header("cookie", format!("session={session}"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!(
+                    "theme={theme}&next={}",
+                    next.replace('/', "%2F").replace(':', "%3A")
+                )))
+                .unwrap()
+        };
+        let page_theme = |router: axum::Router| {
+            let session = session.clone();
+            async move {
+                let response = router
+                    .oneshot(
+                        Request::builder()
+                            .uri("/")
+                            .header("cookie", format!("session={session}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let html = String::from_utf8(
+                    response
+                        .into_body()
+                        .collect()
+                        .await
+                        .unwrap()
+                        .to_bytes()
+                        .to_vec(),
+                )
+                .unwrap();
+                html.split("<html")
+                    .nth(1)
+                    .unwrap()
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            }
+        };
+
+        for (theme, attribute) in [
+            ("dark", Some("data-theme=\"dark\"")),
+            ("light", Some("data-theme=\"light\"")),
+            ("system", None),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(pick(theme, "/stores"))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FOUND);
+            assert_eq!(
+                response.headers()["location"],
+                "/stores",
+                "{theme}: back to the page it was picked on"
+            );
+            let html_tag = page_theme(router.clone()).await;
+            match attribute {
+                Some(attribute) => assert!(html_tag.contains(attribute), "{theme}: {html_tag}"),
+                None => assert!(
+                    !html_tag.contains("data-theme"),
+                    "system follows the device: {html_tag}"
+                ),
+            }
+        }
+        let response = router
+            .clone()
+            .oneshot(pick("dark", "https://evil.example/phish"))
+            .await
+            .unwrap();
+        assert_eq!(response.headers()["location"], "/");
+        // A switch posted with no choice moves to the next theme: from
+        // Dark (just picked) to System, then Light, then Dark.
+        for attribute in [
+            None,
+            Some("data-theme=\"light\""),
+            Some("data-theme=\"dark\""),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/theme")
+                        .header("cookie", format!("session={session}"))
+                        .header("content-type", "application/x-www-form-urlencoded")
+                        .body(Body::from("next=%2F"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FOUND);
+            let html_tag = page_theme(router.clone()).await;
+            match attribute {
+                Some(attribute) => assert!(html_tag.contains(attribute), "{html_tag}"),
+                None => assert!(!html_tag.contains("data-theme"), "{html_tag}"),
+            }
+        }
+    }
 }
 
 /// Automatic follows the browser's zone (the `tz` cookie fx-glue.js sets),
@@ -452,19 +668,6 @@ async fn a_new_email_without_its_confirmation_holds_back_a_password_change() {
 }
 
 #[tokio::test]
-async fn the_wallets_tab_lists_the_merchants_wallets_and_a_way_to_add_one() {
-    let m = Merchant::new("wallets@example.com").await;
-    let (status, html) = m.get("/account?tab=wallets").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        html.contains(r#"<a href="/account?tab=wallets" aria-current="page">Wallets</a>"#),
-        "{html}"
-    );
-    assert!(html.contains("No wallets yet."), "{html}");
-    assert!(html.contains(r#"href="/account/wallets/add""#), "{html}");
-}
-
-#[tokio::test]
 async fn signed_out_the_account_page_sends_a_browser_to_log_in() {
     let router = build_router(AppState::for_tests());
     let response = router
@@ -481,92 +684,5 @@ async fn signed_out_the_account_page_sends_a_browser_to_log_in() {
     assert_eq!(
         response.headers()["location"],
         "/login?next=%2Faccount%3Ftab%3Dwallets"
-    );
-}
-
-/// The theme is chosen at sign-up too (System unless another is picked),
-/// and the new account has it from its first page.
-#[tokio::test]
-async fn the_theme_picked_at_sign_up_is_the_new_accounts() {
-    let router = build_router(AppState::for_tests());
-    let form = body_text(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/signup")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        form.contains(r#"<input type="radio" name="theme" value="system" checked>"#),
-        "{form}"
-    );
-    assert!(
-        form.contains("You can change it any time from the account menu."),
-        "{form}"
-    );
-
-    let sign_up = |email: &str, theme: &str| {
-        Request::builder()
-            .method("POST")
-            .uri("/signup")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(format!(
-                "email={}&password={}&theme={theme}",
-                urlencoding_encode(email),
-                urlencoding_encode(PASSWORD)
-            )))
-            .unwrap()
-    };
-    for (email, theme, attribute) in [
-        ("dark@example.com", "dark", Some(r#"data-theme="dark""#)),
-        ("light@example.com", "light", Some(r#"data-theme="light""#)),
-        ("system@example.com", "system", None),
-    ] {
-        let response = router.clone().oneshot(sign_up(email, theme)).await.unwrap();
-        assert_eq!(response.status(), StatusCode::FOUND);
-        let cookie = response.headers()["set-cookie"]
-            .to_str()
-            .unwrap()
-            .split(';')
-            .next()
-            .unwrap()
-            .to_string();
-        let page = body_text(
-            router
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .uri("/account")
-                        .header("cookie", cookie)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap(),
-        )
-        .await;
-        match attribute {
-            Some(attribute) => assert!(html_tag(&page).contains(attribute), "{theme}: {page}"),
-            None => assert!(!html_tag(&page).contains("data-theme"), "{page}"),
-        }
-    }
-
-    // A refused sign-up keeps the theme picked.
-    let refused = body_text(
-        router
-            .oneshot(sign_up("not an address", "dark"))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(
-        refused.contains(r#"<input type="radio" name="theme" value="dark" checked>"#),
-        "{refused}"
     );
 }

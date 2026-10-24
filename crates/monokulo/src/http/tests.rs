@@ -16,17 +16,17 @@ fn test_router() -> Router {
     build_router(AppState::for_tests())
 }
 
-/// `GET /_test/whoami` (a route behind `AuthedUser`) with `cookie` as the
-/// `Cookie` header.
-fn whoami_request(cookie: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("GET").uri("/_test/whoami");
+/// `GET /account` (a page behind `AuthedUser`) with `cookie` as the
+/// `Cookie` header, as a script asks: a `401` without a session.
+fn account_request(cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri("/account");
     if let Some(cookie) = cookie {
         builder = builder.header("cookie", cookie);
     }
     builder.body(Body::empty()).unwrap()
 }
 
-use crate::http::test_support::{body_json, signed_up_and_logged_in_session_token};
+use crate::http::test_support::signed_up_and_logged_in_session_token;
 
 #[tokio::test]
 async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_password() {
@@ -58,40 +58,30 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
     );
 }
 
-/// A session is a cookie: it reaches a protected route as its own user,
+/// A session is a cookie: it reaches a protected page as its own user,
 /// and the same token sent as a bearer header is not a session at all.
 #[tokio::test]
-async fn a_session_cookie_reaches_the_protected_test_route_as_the_right_user_and_a_bearer_does_not()
-{
-    let state = AppState::for_tests();
-    let router = build_router(state.clone());
+async fn a_session_cookie_reaches_a_protected_page_as_the_right_user_and_a_bearer_does_not() {
+    let router = test_router();
     let token = signed_up_and_logged_in_session_token(
         &router,
         "grace@example.com",
         "correct horse battery staple",
     )
     .await;
-    let user_id = state
-        .db
-        .lock()
-        .get_user_by_email("grace@example.com")
-        .unwrap()
-        .unwrap()
-        .id;
 
     let response = router
         .clone()
-        .oneshot(whoami_request(Some(&format!("session={token}"))))
+        .oneshot(account_request(Some(&format!("session={token}"))))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    assert_eq!(body["user_id"].as_str().unwrap(), user_id.as_str());
+    assert!(body_text(response).await.contains("grace@example.com"));
 
     let bearer = router
         .oneshot(
             Request::builder()
-                .uri("/_test/whoami")
+                .uri("/account")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -101,21 +91,18 @@ async fn a_session_cookie_reaches_the_protected_test_route_as_the_right_user_and
     assert_eq!(bearer.status(), StatusCode::UNAUTHORIZED);
 }
 
+/// No session, or one nobody issued: a protected page answers `401`.
 #[tokio::test]
-async fn the_protected_test_route_rejects_a_request_with_no_session() {
+async fn a_protected_page_refuses_no_session_and_an_unknown_one() {
     let router = test_router();
-    let response = router.oneshot(whoami_request(None)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
-async fn the_protected_test_route_rejects_an_unknown_session() {
-    let router = test_router();
-    let response = router
-        .oneshot(whoami_request(Some("session=garbage-token-nobody-issued")))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    for cookie in [None, Some("session=garbage-token-nobody-issued")] {
+        let response = router
+            .clone()
+            .oneshot(account_request(cookie))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{cookie:?}");
+    }
 }
 
 // -- The sign-up and log-in pages ---------------------------------------------
@@ -137,58 +124,6 @@ fn form_request(uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
 use crate::http::test_support::urlencoding_encode;
 
 use crate::http::test_support::body_text;
-
-#[tokio::test]
-async fn get_dashboard_signup_returns_html() {
-    let router = test_router();
-    let request = Request::builder()
-        .method("GET")
-        .uri("/signup")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html, got {content_type}"
-    );
-    let html = body_text(response).await;
-    assert!(html.contains("<form"));
-    assert!(html.contains("/signup"));
-}
-
-#[tokio::test]
-async fn get_dashboard_login_returns_html() {
-    let router = test_router();
-    let request = Request::builder()
-        .method("GET")
-        .uri("/login")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        content_type.contains("text/html"),
-        "expected text/html, got {content_type}"
-    );
-    let html = body_text(response).await;
-    assert!(html.contains("<form"));
-    assert!(html.contains("/login"));
-}
 
 /// A new account is logged in straight away and goes on to set up its
 /// first wallet: a store needs one.
@@ -266,8 +201,11 @@ async fn posting_a_duplicate_email_to_dashboard_signup_rerenders_the_form_with_a
     );
 }
 
+/// Logging in redirects home with a session cookie that scripts can't
+/// read (`HttpOnly`) and other sites' forms don't carry (`SameSite=Lax`,
+/// which `http::csrf` relies on), and that cookie signs the user in.
 #[tokio::test]
-async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
+async fn logging_in_sets_an_httponly_samesite_session_cookie_that_signs_the_user_in() {
     let router = test_router();
 
     let signup = router
@@ -284,6 +222,7 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
     assert_eq!(signup.status(), StatusCode::FOUND);
 
     let response = router
+        .clone()
         .oneshot(form_request(
             "/login",
             &[
@@ -293,9 +232,7 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
         ))
         .await
         .unwrap();
-    // A plain login with no `next` redirects straight to the real dashboard
-    // home page (`http/home.rs`) now that one exists - see
-    // `auth::login_submit`'s own doc comment.
+    // With no `next`, home (`auth::login_submit`).
     assert_eq!(response.status(), StatusCode::FOUND);
     assert_eq!(response.headers().get("location").unwrap(), "/");
     let set_cookie = response
@@ -303,7 +240,8 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
         .get("set-cookie")
         .unwrap()
         .to_str()
-        .unwrap();
+        .unwrap()
+        .to_string();
     assert!(
         set_cookie.starts_with("session="),
         "expected a `session` cookie, got: {set_cookie}"
@@ -316,72 +254,15 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
         set_cookie.to_lowercase().contains("samesite=lax"),
         "expected SameSite=Lax, got: {set_cookie}"
     );
-}
 
-#[tokio::test]
-async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protected_route() {
-    let router = test_router();
-
-    let signup = router
-        .clone()
-        .oneshot(form_request(
-            "/signup",
-            &[
-                ("email", "cookie-auth@example.com"),
-                ("password", "correct horse battery staple"),
-            ],
-        ))
+    // What a browser sends back: `session=<value>`, without the attributes.
+    let session_pair = set_cookie.split(';').next().unwrap();
+    let account = router
+        .oneshot(account_request(Some(session_pair)))
         .await
         .unwrap();
-    assert_eq!(signup.status(), StatusCode::FOUND);
-
-    let login = router
-        .clone()
-        .oneshot(form_request(
-            "/login",
-            &[
-                ("email", "cookie-auth@example.com"),
-                ("password", "correct horse battery staple"),
-            ],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(login.status(), StatusCode::FOUND);
-    let set_cookie = login
-        .headers()
-        .get("set-cookie")
-        .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    // Extract just `session=<value>` from the full `Set-Cookie` line (which
-    // also carries `; HttpOnly; SameSite=Lax; Path=/`) - that's what a
-    // browser would send back in a `Cookie` request header.
-    let session_pair = set_cookie.split(';').next().unwrap().to_string();
-    assert!(session_pair.starts_with("session="));
-
-    // Prove the cookie path through `AuthedUser` is real, not just present
-    // in the code: use it (as a `Cookie` header, no `Authorization` header
-    // at all) against the existing bearer-only protected test route.
-    let whoami_request = Request::builder()
-        .method("GET")
-        .uri("/_test/whoami")
-        .header("cookie", session_pair)
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(whoami_request).await.unwrap();
-    assert_eq!(
-        response.status(),
-        StatusCode::OK,
-        "the session cookie must authenticate via AuthedUser"
-    );
-    let body = body_json(response).await;
-    assert!(body
-        .as_object()
-        .unwrap()
-        .get("user_id")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| !s.is_empty()));
+    assert_eq!(account.status(), StatusCode::OK);
+    assert!(body_text(account).await.contains("form-login@example.com"));
 }
 
 /// A browser loading a page it must be signed in for is sent to log in,
@@ -539,19 +420,12 @@ async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_goes_to_l
     assert_eq!(logout.headers().get("location").unwrap(), "/login");
 
     // The same, now-deleted session cookie must no longer authenticate.
-    let whoami_after = router
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri("/_test/whoami")
-                .header("cookie", session_pair)
-                .body(Body::empty())
-                .unwrap(),
-        )
+    let after = router
+        .oneshot(account_request(Some(&session_pair)))
         .await
         .unwrap();
     assert_eq!(
-        whoami_after.status(),
+        after.status(),
         StatusCode::UNAUTHORIZED,
         "the logged-out session must no longer authenticate"
     );
@@ -595,27 +469,28 @@ async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_g
         html.contains("Invalid email or password"),
         "expected a generic login error, got: {html}"
     );
-}
 
-#[tokio::test]
-async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wrong_password() {
-    let router = test_router();
-    let response = router
-        .oneshot(form_request(
-            "/login",
-            &[
-                ("email", "nobody-has-this-account@example.com"),
-                ("password", "whatever"),
-            ],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-    assert!(
-        html.contains("Invalid email or password"),
-        "expected the same generic login error, got: {html}"
-    );
+    // An unknown email at dashboard login gets the same generic error as a
+    // wrong password.
+    {
+        let router = test_router();
+        let response = router
+            .oneshot(form_request(
+                "/login",
+                &[
+                    ("email", "nobody-has-this-account@example.com"),
+                    ("password", "whatever"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("Invalid email or password"),
+            "expected the same generic login error, got: {html}"
+        );
+    }
 }
 
 // -- Setting up a store (`/setup`) -----------------------------------------
@@ -646,7 +521,7 @@ async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEn
 /// Signs up and logs in a fresh user through the browser form flow, returning
 /// the `session=<value>` pair (no `HttpOnly`/`SameSite`/`Path` attributes) a
 /// browser would send back as a `Cookie` header - same extraction
-/// `the_session_cookie_from_dashboard_login_authenticates_against_a_protected_route`
+/// `logging_in_sets_an_httponly_samesite_session_cookie_that_signs_the_user_in`
 /// above uses.
 async fn signed_up_and_logged_in_session_cookie(
     router: &Router,

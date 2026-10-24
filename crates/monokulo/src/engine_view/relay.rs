@@ -57,6 +57,9 @@ pub struct Timing {
     /// (every 15 s), the stream is taken for dead and opened again: 45 s,
     /// three keep-alives missed.
     pub quiet: Duration,
+    /// How often the engine page's stream sends its `machine` event at
+    /// most: [`crate::http::engine_page::MACHINE_EVERY`].
+    pub machine_every: Duration,
 }
 
 /// Why a [`Timing`] can't be used.
@@ -68,6 +71,8 @@ pub enum TimingError {
     Backoff,
     #[error("the quiet limit must be above zero")]
     Quiet,
+    #[error("the machine event's interval must be above zero")]
+    MachineEvery,
 }
 
 impl Timing {
@@ -76,6 +81,7 @@ impl Timing {
         backoff: Duration::from_millis(500),
         max_backoff: Duration::from_secs(10),
         quiet: Duration::from_secs(45),
+        machine_every: crate::http::engine_page::MACHINE_EVERY,
     };
 
     pub const fn validate(&self) -> Result<(), TimingError> {
@@ -85,6 +91,8 @@ impl Timing {
             Err(TimingError::Backoff)
         } else if self.quiet.is_zero() {
             Err(TimingError::Quiet)
+        } else if self.machine_every.is_zero() {
+            Err(TimingError::MachineEvery)
         } else {
             Ok(())
         }
@@ -203,6 +211,11 @@ impl Relay {
             networks: Mutex::default(),
             timing: Timing::DEFAULT,
         }
+    }
+
+    /// How this relay follows the engine.
+    pub fn timing(&self) -> Timing {
+        self.timing
     }
 
     /// [`Self::new`] following with `timing` instead of the default.
@@ -424,6 +437,7 @@ mod tests {
         backoff: Duration::from_millis(20),
         max_backoff: Duration::from_millis(200),
         quiet: Duration::from_secs(45),
+        machine_every: crate::http::engine_page::MACHINE_EVERY,
     };
 
     fn relay_over(router: axum::Router, timing: Timing) -> Arc<Relay> {
@@ -598,7 +612,7 @@ mod tests {
     async fn reads_alone_keep_the_history_current_then_let_it_go() {
         let engine = engine_with_a_snapshot().await;
         let activity = engine.activity(Network::Stagenet);
-        let relay = relay(&engine, Duration::from_millis(300));
+        let relay = relay(&engine, Duration::from_millis(100));
         let reorg = |history: &History| history.live().reorg.is_some();
         assert!(!relay.read("stagenet", reorg).await.unwrap());
         assert!(
@@ -761,6 +775,13 @@ mod tests {
                     ..ok
                 },
                 TimingError::Quiet,
+            ),
+            (
+                Timing {
+                    machine_every: Duration::ZERO,
+                    ..ok
+                },
+                TimingError::MachineEvery,
             ),
         ] {
             assert_eq!(timing.validate(), Err(error));

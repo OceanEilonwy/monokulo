@@ -200,24 +200,23 @@ pub fn generate_webhook_secret() -> String {
 mod tests {
     use super::*;
 
+    /// Every kind of token carries its own prefix, and no two are alike.
     #[test]
     fn generated_public_and_secret_keys_have_expected_prefixes_and_are_unique() {
         let pk1 = generate_public_key();
         let pk2 = generate_public_key();
-        let sk1 = generate_secret_token();
-        let sk2 = generate_secret_token();
         assert!(pk1.starts_with("pk_"));
-        assert!(sk1.expose().starts_with("sk_"));
         assert_ne!(pk1, pk2);
-        assert_ne!(sk1, sk2);
-    }
-
-    #[test]
-    fn generated_session_tokens_have_the_expected_prefix_and_are_unique() {
-        let t1 = generate_session_token();
-        let t2 = generate_session_token();
-        assert!(t1.expose().starts_with("sess_"));
-        assert_ne!(t1, t2);
+        for (prefix, generate) in [
+            ("sk_", generate_secret_token as fn() -> _),
+            ("sess_", generate_session_token),
+            ("conn_", generate_connect_token),
+            ("invite_", generate_invite_token),
+        ] {
+            let (t1, t2) = (generate(), generate());
+            assert!(t1.expose().starts_with(prefix), "{prefix}");
+            assert_ne!(t1, t2, "{prefix}");
+        }
     }
 
     #[test]
@@ -234,22 +233,6 @@ mod tests {
         let err = check_engine_token(&short).unwrap_err();
         assert!(err.contains("at least 32 characters"), "{err}");
         assert!(err.contains("openssl rand -hex 32"), "{err}");
-    }
-
-    #[test]
-    fn generated_connect_tokens_have_the_expected_prefix_and_are_unique() {
-        let t1 = generate_connect_token();
-        let t2 = generate_connect_token();
-        assert!(t1.expose().starts_with("conn_"));
-        assert_ne!(t1, t2);
-    }
-
-    #[test]
-    fn generated_invite_tokens_have_the_expected_prefix_and_are_unique() {
-        let t1 = generate_invite_token();
-        let t2 = generate_invite_token();
-        assert!(t1.expose().starts_with("invite_"));
-        assert_ne!(t1, t2);
     }
 
     #[test]

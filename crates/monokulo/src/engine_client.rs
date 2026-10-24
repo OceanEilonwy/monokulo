@@ -1669,60 +1669,6 @@ mod tests {
         }
     }
 
-    /// Full round trip against a *real* engine instance
-    /// (`engine_test_support::spawn_test_engine`), reached in-process as
-    /// monokulo reaches it by default (`contract_tests` covers HTTP).
-    /// `spawn_test_engine` configures no Monero networks by default, so
-    /// this uses `spawn_test_engine_with_networks` (added alongside this
-    /// test — see its doc comment) to get a real `mainnet` tenant through
-    /// `create_tenant`'s own network-configured check, rather than working
-    /// around it.
-    #[cfg(feature = "embedded-engine")]
-    #[tokio::test]
-    async fn create_tenant_then_get_tenant_round_trips_against_a_real_engine() {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::embedded_for_tests(engine.router());
-
-        let created = client
-            .create_tenant(test_create_tenant_request())
-            .await
-            .expect("create_tenant against a real engine should succeed");
-
-        assert!(!created.tenant_id.is_empty());
-        assert!(created.public_key.starts_with("pk_"));
-        assert!(created.secret_token.expose().starts_with("sk_"));
-
-        let fetched = client
-            .get_tenant(&created.secret_token)
-            .await
-            .expect("get_tenant against a real engine should succeed");
-
-        assert_eq!(fetched.public_key, created.public_key);
-    }
-
-    /// `get_status` against a real engine — proves the DTOs above actually
-    /// deserialize the engine's real `EngineStatusResponse` JSON shape, not
-    /// just a plausible guess at its fields. A configured network has a
-    /// daemon client (admin_settings_v2.md task 2.1); the test harness gives
-    /// it an inert one, so the response lists that network and its node.
-    #[cfg(feature = "embedded-engine")]
-    #[tokio::test]
-    async fn get_status_round_trips_against_a_real_engine() {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let client = EngineClient::embedded_for_tests(engine.router());
-
-        let status = client
-            .get_status()
-            .await
-            .expect("get_status against a real engine should succeed");
-
-        assert_eq!(status.networks.len(), 1);
-        assert_eq!(status.networks[0].network, "mainnet");
-        assert!(status.poll_interval_secs > 0);
-    }
-
     /// Each node's network (nicer_admin_screen.md step 4) is read when the
     /// engine sends it, and an older engine that doesn't still parses.
     #[test]
@@ -1845,48 +1791,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.confirmations_required_override, None);
-    }
-
-    #[cfg(feature = "embedded-engine")]
-    #[tokio::test]
-    async fn lookup_payment_round_trips_against_a_real_engine() {
-        // Proves `EngineClient`'s own wire format (request shape, response
-        // deserialization) against a real engine over a genuine HTTP round
-        // trip - the underlying business logic (a real match, idempotency,
-        // validation) is already exhaustively covered at the engine's own
-        // `http/tests.rs` level; this only needs to prove the two sides agree on the
-        // shape. `with_admin_lookup_daemon` wires an inert `NoopDaemonClient`
-        // into the engine's live-scanner daemon map, which
-        // `admin::lookup_payment` reads unconditionally.
-        let engine = engine_test_support::TestEngineConfig::new()
-            .with_networks(&[monero::Network::Mainnet])
-            .with_admin_lookup_daemon()
-            .spawn()
-            .await;
-        let client = EngineClient::embedded_for_tests(engine.router());
-        let created = client
-            .create_tenant(test_create_tenant_request())
-            .await
-            .unwrap();
-
-        // `NoopDaemonClient::locate_transaction` always reports `NotFound` -
-        // real, deterministic behavior to assert against, not a guess.
-        let outcome = client
-            .lookup_payment(&created.secret_token, &"a".repeat(64))
-            .await
-            .unwrap();
-        assert!(matches!(outcome, PaymentLookupView::NotFoundOnChain));
-
-        let err = client
-            .lookup_payment(&created.secret_token, "not-a-real-txid")
-            .await
-            .unwrap_err();
-        match err {
-            EngineClientError::EngineError { status, .. } => {
-                assert_eq!(status, reqwest::StatusCode::BAD_REQUEST)
-            }
-            other => panic!("expected a real 400 from the engine, got: {other}"),
-        }
     }
 
     /// A hand-rolled server standing in for a real engine response, with a

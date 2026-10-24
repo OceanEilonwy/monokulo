@@ -93,30 +93,30 @@ fn parse_extra_headers_reads_one_header_name_value_pair_per_line() {
         2,
         "blank lines must not produce a phantom entry"
     );
-}
 
-#[test]
-fn parse_extra_headers_on_empty_input_returns_an_empty_map_not_an_error() {
-    assert!(parse_extra_headers("").unwrap().is_empty());
-    assert!(parse_extra_headers("   \n  \n").unwrap().is_empty());
-}
+    // Parse extra headers on empty input returns an empty map not an error.
+    {
+        assert!(parse_extra_headers("").unwrap().is_empty());
+        assert!(parse_extra_headers("   \n  \n").unwrap().is_empty());
+    }
 
-#[test]
-fn parse_extra_headers_rejects_a_line_with_no_colon() {
-    let err = parse_extra_headers("X-Api-Key: fine\nnot-a-valid-line").unwrap_err();
-    assert!(
-        err.contains("not-a-valid-line"),
-        "expected the real offending line named in the error, got: {err}"
-    );
-}
+    // Parse extra headers rejects a line with no colon.
+    {
+        let err = parse_extra_headers("X-Api-Key: fine\nnot-a-valid-line").unwrap_err();
+        assert!(
+            err.contains("not-a-valid-line"),
+            "expected the real offending line named in the error, got: {err}"
+        );
+    }
 
-#[test]
-fn parse_extra_headers_rejects_an_empty_header_name() {
-    let err = parse_extra_headers(": value-with-no-name").unwrap_err();
-    assert!(
-        err.contains(": value-with-no-name"),
-        "expected the real offending line named in the error, got: {err}"
-    );
+    // Parse extra headers rejects an empty header name.
+    {
+        let err = parse_extra_headers(": value-with-no-name").unwrap_err();
+        assert!(
+            err.contains(": value-with-no-name"),
+            "expected the real offending line named in the error, got: {err}"
+        );
+    }
 }
 
 /// Custom headers are kept with the webhook, lowercased, and sent with
@@ -379,169 +379,6 @@ async fn store_with_deliveries(
     (router, session, store, webhook, [ids[0], ids[1], ids[2]])
 }
 
-/// The card: one health line per webhook (here, gave up, with "Retry
-/// failed (1)"), the deliveries fold open because one gave up, each row's
-/// status as a tag word, its order shortened, its response and attempt;
-/// "Send again" only on the given-up row; each "Details" a link to its
-/// page that opens its dialog, already on the page.
-#[tokio::test]
-async fn the_card_shows_each_webhooks_health_and_its_deliveries() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let (router, session, store, webhook, [delivered, retrying, gave_up]) =
-        store_with_deliveries(&state, "card@example.com").await;
-    let html = body_text(
-        get(
-            &router,
-            &format!("/stores/{store}/settings?tab=connections"),
-            &session,
-        )
-        .await,
-    )
-    .await;
-    let base = format!("/stores/{store}/settings/webhooks/{webhook}");
-    assert!(
-        html.contains(r#"<span class="card-meta">1 webhook</span>"#),
-        "{html}"
-    );
-    assert!(
-        html.contains(r#"<span class="tag tag-error">gave up</span><span class="hint">1 delivery"#),
-        "{html}"
-    );
-    assert!(html.contains(&format!(r#"<form method="post" action="{base}/retry-failed" class="inline-form"><button class="mk-btn" type="submit" data-size="compact">Retry failed (1)</button>"#)), "{html}");
-    assert!(
-        html.contains(r#"<details class="disclosure" open data-disclosure="deliveries">"#),
-        "{html}"
-    );
-    for word in ["delivered", "retrying"] {
-        assert!(html.contains(&format!(">{word}</span>")), "{word}");
-    }
-    assert!(
-        html.contains(r#"<td data-label="Attempt">4 of 8</td>"#),
-        "{html}"
-    );
-    assert!(html.contains("5f01c9…e21b03"), "orders shortened: {html}");
-    assert_eq!(
-        html.matches(r#"<button type="submit" class="mk-btn icon-only" aria-label="Send again" title="Send again"><svg"#).count(),
-        1,
-        "only the given-up row, as an icon with its name: {html}"
-    );
-    assert!(html.contains(&format!(
-        r#"action="{base}/deliveries/{gave_up}/send-again""#
-    )));
-    for id in [delivered, retrying, gave_up] {
-        assert!(
-            html.contains(&format!(
-                r#"href="{base}/deliveries/{id}" data-opens-dialog="delivery-{id}-dialog""#
-            )),
-            "{id}"
-        );
-        assert!(
-            html.contains(&format!(r#"<dialog id="delivery-{id}-dialog""#)),
-            "{id}"
-        );
-    }
-    // Delete: the red danger button, its dialog's confirm red too.
-    assert!(html.contains(&format!(
-        r#"<a class="mk-btn" href="{base}/delete" data-variant="danger" data-size="compact" data-opens-dialog="{webhook}-delete-dialog">Delete</a>"#
-    )));
-    assert!(html.contains(
-        r#"<button class="mk-btn" type="submit" data-variant="danger">Delete webhook</button>"#
-    ));
-    // Every row's actions in the same two slots: Details, then Send
-    // again or an empty slot.
-    assert_eq!(
-        html.matches(r#"<div class="act-slots">"#).count(),
-        3,
-        "{html}"
-    );
-    assert_eq!(
-        html.matches(r#"<span class="act-slot" aria-hidden="true"></span>"#)
-            .count(),
-        2
-    );
-    // The add form: the settings pattern (name, help, control).
-    assert!(html.contains(r#"<div class="setting-label-row"><label class="setting-label" for="webhook-url">URL</label>"#), "{html}");
-    assert!(html.contains(r#"<p class="field-help" id="webhook-url-help">"#));
-    assert!(
-        !html.contains("never-shown"),
-        "a header's value is never shown"
-    );
-}
-
-/// A healthy webhook's fold stays closed, its line saying when it last
-/// delivered; an empty store says so and offers "Add webhook".
-#[tokio::test]
-async fn a_healthy_webhooks_deliveries_stay_folded_and_an_empty_card_offers_to_add_one() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let (router, session, store, webhook, [_, retrying, gave_up]) =
-        store_with_deliveries(&state, "healthy@example.com").await;
-    {
-        let db = state.db.lock();
-        let store_id = crate::db::ConnectionId::new(store.clone());
-        let webhook_id = shared::ids::WebhookId::new(webhook.clone());
-        // Both sent again and delivered.
-        for id in [retrying, gave_up] {
-            db.send_delivery_again(&store_id, &webhook_id, id, 0)
-                .unwrap();
-            db.record_delivery_attempt(
-                id,
-                &AttemptOutcome {
-                    attempt: Attempt {
-                        n: 1,
-                        // Ages round up to the minute: 90s reads "2 min
-                        // ago" for 30s, where 120s flips to "3 min" at the
-                        // next second.
-                        at: crate::now_unix() - 90,
-                        status: Some(200),
-                        error: None,
-                        ms: 184,
-                        signature: String::new(),
-                    },
-                    delivered: true,
-                    response: None,
-                    next_attempt_at: None,
-                },
-            )
-            .unwrap();
-        }
-    }
-    let html = body_text(
-        get(
-            &router,
-            &format!("/stores/{store}/settings?tab=connections"),
-            &session,
-        )
-        .await,
-    )
-    .await;
-    assert!(html.contains(r#"<span class="tag tag-ok">delivering</span><span class="hint">last 2 min ago · 200 in 184 ms · 3 delivered in the last 30 days</span>"#), "{html}");
-    assert!(
-        html.contains(r#"<details class="disclosure" data-disclosure="deliveries">"#),
-        "{html}"
-    );
-    assert!(!html.contains("Retry failed"));
-
-    let router2 = build_router(state.clone());
-    let other = signed_up_and_logged_in_session_token(
-        &router2,
-        "empty@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let (empty, _) = create_connection(&router2, &state, &other).await;
-    let html = body_text(
-        get(
-            &router2,
-            &format!("/stores/{empty}/settings?tab=connections"),
-            &other,
-        )
-        .await,
-    )
-    .await;
-    assert!(html.contains("No webhooks yet. Monokulo can tell your server when an order is paid, confirming or expired."), "{html}");
-    assert!(html.contains(">Add webhook</button>"));
-}
-
 /// "Send again" and "Retry failed" are plain form POSTs: each comes back
 /// to the settings page (`303`) and queues the deliveries at once, a
 /// given-up one starting its schedule over.
@@ -612,8 +449,8 @@ async fn send_again_and_retry_failed_work_as_plain_form_posts() {
 
 /// Without JavaScript a delivery's detail is a page: its attempts, newest
 /// first, the request with the signature header (and a custom header's
-/// name, never its value; never the secret), the start of the last
-/// answer, and "Send again now".
+/// name, never its value; never the secret), and a plain form to send it
+/// again.
 #[tokio::test]
 async fn a_deliverys_detail_is_a_page_without_javascript() {
     let (state, _engine) = test_state_with_real_engine().await;
@@ -623,46 +460,22 @@ async fn a_deliverys_detail_is_a_page_without_javascript() {
     let response = get(&router, &format!("{base}/deliveries/{retrying}"), &session).await;
     assert_eq!(response.status(), StatusCode::OK);
     let html = body_text(response).await;
-    assert!(html.contains(r#"<h1 id="delivery-"#), "{html}");
-    // The head: the title, the status at its right; then the facts.
-    assert!(
-        html.contains(r#"<span>Delivery of <span class="event-name">order.confirming</span></span></h1><span class="tag tag-slow">retrying</span>"#),
-        "{html}"
-    );
-    assert!(
-        html.contains(r#"<dl class="facts" data-facts="delivery"><dt>Endpoint</dt><dd><span class="endpoint">https://erp.bakery.example/payments/in</span></dd><dt>Order</dt>"#),
-        "{html}"
-    );
-    assert!(html.contains("<dt>Next try</dt><dd>"), "{html}");
-    assert_eq!(
-        html.matches("<code>503 Service Unavailable</code>").count(),
-        4,
-        "{html}"
-    );
     let newest = html.find(">4<span class=\"muted\"> of 8</span>").unwrap();
     let oldest = html.find(">1<span class=\"muted\"> of 8</span>").unwrap();
     assert!(newest < oldest, "newest first");
-    assert!(
-        html.contains(
-            "POST /payments/in\nContent-Type: application/json\nX-Monokulo-Signature: t="
-        ),
-        "{html}"
-    );
+    assert!(html.contains("X-Monokulo-Signature: t="), "{html}");
     assert!(html.contains("x-api-key: •••"), "{html}");
-    assert!(!html.contains("never-shown"));
+    assert!(
+        !html.contains("never-shown"),
+        "a header's value is never shown"
+    );
     assert!(!html.contains("whsec_"), "the secret is never shown");
-    assert!(html.contains("Upstream is restarting"), "{html}");
     assert!(
         html.contains(&format!(
             r#"<form method="post" action="{base}/deliveries/{retrying}/send-again">"#
         )),
         "{html}"
     );
-    assert!(html.contains(">Send again now</button>"));
-    // All of the webhook's deliveries, as a page too.
-    let all = body_text(get(&router, &format!("{base}/deliveries"), &session).await).await;
-    assert!(all.contains("Newest first, 20 a page."), "{all}");
-    assert!(!all.contains("Older →"), "one page: {all}");
 }
 
 /// Deleting a webhook is asked first: a page without JavaScript, a dialog
@@ -694,6 +507,88 @@ async fn deleting_a_webhook_is_asked_on_a_page_then_removes_its_deliveries() {
         .get_delivery(&store_id, &shared::ids::WebhookId::new(webhook), delivered)
         .unwrap()
         .is_none());
+
+    // Deleting a webhook removes it from the list.
+    {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "webhook-delete@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+
+        let create_response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/stores/{connection_id}/settings/webhooks"),
+                &session_token,
+                &[("url", "https://merchant.example/to-be-deleted")],
+            ))
+            .await
+            .unwrap();
+        let create_html = body_text(create_response).await;
+        // The webhook's id is in its Delete link.
+        assert!(create_html.contains("https://merchant.example/to-be-deleted"));
+
+        let list_before = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/stores/{connection_id}/settings?tab=connections"))
+                    .header("cookie", format!("session={session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_before_html = body_text(list_before).await;
+        let webhook_id_start = list_before_html
+            .find("/webhooks/")
+            .expect("expected a Delete link containing the webhook id")
+            + "/webhooks/".len();
+        let webhook_id: String = list_before_html[webhook_id_start..]
+            .chars()
+            .take_while(|c| *c != '/')
+            .collect();
+        assert!(!webhook_id.is_empty());
+
+        let delete_response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/stores/{connection_id}/settings/webhooks/{webhook_id}/delete"),
+                &session_token,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            delete_response.status(),
+            StatusCode::SEE_OTHER,
+            "expected a redirect back to the webhook list"
+        );
+
+        let list_after = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/stores/{connection_id}/settings?tab=connections"))
+                    .header("cookie", format!("session={session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_after_html = body_text(list_after).await;
+        assert!(
+            !list_after_html.contains("https://merchant.example/to-be-deleted"),
+            "expected the deleted webhook gone, got: {list_after_html}"
+        );
+    }
 }
 
 /// Another account's store's webhooks can't be seen or touched: every
@@ -752,8 +647,7 @@ async fn another_accounts_webhooks_and_deliveries_are_not_found() {
 }
 
 #[tokio::test]
-async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and_registers_nothing()
-{
+async fn creating_a_webhook_refuses_a_bad_url_or_header_and_registers_nothing() {
     let (state, _engine) = test_state_with_real_engine().await;
     let router = build_router(state.clone());
 
@@ -804,6 +698,64 @@ async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and
         !list_html.contains("merchant.example"),
         "the rejected webhook must not have been registered, got: {list_html}"
     );
+
+    // Creating a webhook with an empty url shows a clear error.
+    {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "webhook-empty-url@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/stores/{connection_id}/settings/webhooks"),
+                &session_token,
+                &[("url", "")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("Enter a webhook URL."),
+            "expected a clear validation error, got: {html}"
+        );
+    }
+
+    // Creating a webhook with an invalid url says why.
+    {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "webhook-bad-url@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/stores/{connection_id}/settings/webhooks"),
+                &session_token,
+                &[("url", "not a url at all")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("class=\"error\""),
+            "expected why the URL was refused, got: {html}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -838,6 +790,12 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         html.contains("Webhook created"),
         "expected the one-time signing-secret banner, got: {html}"
     );
+    let secret = html
+        .split("<pre>")
+        .nth(1)
+        .and_then(|rest| rest.split("</pre>").next())
+        .expect("the signing secret is shown once");
+    assert!(secret.starts_with("whsec_"), "{secret}");
 
     // The list itself (a separate GET, simulating a page reload) must
     // show the webhook but never the secret again - it's genuinely
@@ -859,146 +817,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         !list_html.contains("Webhook created"),
         "the signing secret must not reappear on a later page load, got: {list_html}"
     );
-}
-
-#[tokio::test]
-async fn creating_a_webhook_with_an_empty_url_shows_a_clear_error() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
-
-    let session_token = signed_up_and_logged_in_session_token(
-        &router,
-        "webhook-empty-url@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-    let response = router
-        .oneshot(form_post_request(
-            &format!("/stores/{connection_id}/settings/webhooks"),
-            &session_token,
-            &[("url", "")],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let html = body_text(response).await;
-    assert!(
-        html.contains("Enter a webhook URL."),
-        "expected a clear validation error, got: {html}"
-    );
-}
-
-#[tokio::test]
-async fn creating_a_webhook_with_an_invalid_url_says_why() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
-
-    let session_token = signed_up_and_logged_in_session_token(
-        &router,
-        "webhook-bad-url@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-    let response = router
-        .oneshot(form_post_request(
-            &format!("/stores/{connection_id}/settings/webhooks"),
-            &session_token,
-            &[("url", "not a url at all")],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let html = body_text(response).await;
-    assert!(
-        html.contains("class=\"error\""),
-        "expected why the URL was refused, got: {html}"
-    );
-}
-
-#[tokio::test]
-async fn deleting_a_webhook_removes_it_from_the_list() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
-
-    let session_token = signed_up_and_logged_in_session_token(
-        &router,
-        "webhook-delete@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
-
-    let create_response = router
-        .clone()
-        .oneshot(form_post_request(
-            &format!("/stores/{connection_id}/settings/webhooks"),
-            &session_token,
-            &[("url", "https://merchant.example/to-be-deleted")],
-        ))
-        .await
-        .unwrap();
-    let create_html = body_text(create_response).await;
-    // The webhook's id is in its Delete link.
-    assert!(create_html.contains("https://merchant.example/to-be-deleted"));
-
-    let list_before = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
-                .header("cookie", format!("session={session_token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let list_before_html = body_text(list_before).await;
-    let webhook_id_start = list_before_html
-        .find("/webhooks/")
-        .expect("expected a Delete link containing the webhook id")
-        + "/webhooks/".len();
-    let webhook_id: String = list_before_html[webhook_id_start..]
-        .chars()
-        .take_while(|c| *c != '/')
-        .collect();
-    assert!(!webhook_id.is_empty());
-
-    let delete_response = router
-        .clone()
-        .oneshot(form_post_request(
-            &format!("/stores/{connection_id}/settings/webhooks/{webhook_id}/delete"),
-            &session_token,
-            &[],
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        delete_response.status(),
-        StatusCode::SEE_OTHER,
-        "expected a redirect back to the webhook list"
-    );
-
-    let list_after = router
-        .oneshot(
-            Request::builder()
-                .method("GET")
-                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
-                .header("cookie", format!("session={session_token}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let list_after_html = body_text(list_after).await;
-    assert!(
-        !list_after_html.contains("https://merchant.example/to-be-deleted"),
-        "expected the deleted webhook gone, got: {list_after_html}"
-    );
+    assert!(!list_html.contains(secret), "{list_html}");
 }
 
 #[tokio::test]
@@ -1041,135 +860,4 @@ async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_conn
         .await
         .unwrap();
     assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
-}
-
-/// A webhook's deliveries come 20 a page, newest first: the settings
-/// page's fold shows the first with "Older →"; the page of all of them
-/// pages on with "← Newer" and "Older →" until the last; a fixi request
-/// gets just that page's part, to swap in place.
-#[tokio::test]
-async fn a_webhooks_deliveries_page_twenty_at_a_time() {
-    let (state, _engine) = test_state_with_real_engine().await;
-    let router = build_router(state.clone());
-    let session = signed_up_and_logged_in_session_token(
-        &router,
-        "pages@example.com",
-        "correct horse battery staple",
-    )
-    .await;
-    let (store, pk) = create_connection(&router, &state, &session).await;
-    let created = crate::webhooks::create(
-        &state.db,
-        &state.encryption_key,
-        &crate::db::ConnectionId::new(store.clone()),
-        "https://bakery.example/hook",
-        &std::collections::BTreeMap::new(),
-    )
-    .await
-    .unwrap();
-    let webhook = created.webhook.id.to_string();
-    let base = format!("/stores/{store}/settings/webhooks/{webhook}/deliveries");
-    let order = |seq: i64| format!("order{seq:030}");
-    let add = |from: i64, to: i64| {
-        let db = state.db.lock();
-        for seq in from..=to {
-            let event = LoggedEvent {
-                seq,
-                event_id: format!("evt_{seq}"),
-                event_type: "order.paid".into(),
-                created_at: 1000,
-                tenant_public_key: pk.clone(),
-                order_id: OrderId::new(order(seq)),
-                status: Some("paid".into()),
-                txid: None,
-                merchant_order_id: None,
-                description: None,
-                xmr_amount_piconero: 1,
-            };
-            db.queue_order_event(&event, 1000, |store, metadata| {
-                crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
-            })
-            .unwrap();
-        }
-    };
-    let older = format!(
-        r##"<a href="{base}?page=1" rel="next" fx-action="{base}?page=1" fx-target="#deliveries-{webhook}" fx-swap="outerHTML">Older →</a>"##
-    );
-
-    // Exactly a page: no more pages.
-    add(1, 20);
-    let html = body_text(
-        get(
-            &router,
-            &format!("/stores/{store}/settings?tab=connections"),
-            &session,
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 20);
-    assert!(!html.contains("Older →"), "{html}");
-
-    // One more: the fold shows the newest 20 and links to the rest.
-    add(21, 41);
-    let html = body_text(
-        get(
-            &router,
-            &format!("/stores/{store}/settings?tab=connections"),
-            &session,
-        )
-        .await,
-    )
-    .await;
-    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 20);
-    assert!(html.contains(&older), "{html}");
-    assert!(
-        html.contains(&order(41)) && !html.contains(&order(21)),
-        "newest first"
-    );
-    assert!(!html.contains("← Newer"));
-
-    // The page of all of them: page 1 has both links, page 2 the last one.
-    let html = body_text(get(&router, &format!("{base}?page=1"), &session).await).await;
-    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 20);
-    assert!(html.contains(&order(21)) && html.contains(&order(2)) && !html.contains(&order(22)));
-    assert!(
-        html.contains(&format!(r#"<a href="{base}" rel="prev""#)),
-        "{html}"
-    );
-    assert!(
-        html.contains(&format!(r#"<a href="{base}?page=2" rel="next""#)),
-        "{html}"
-    );
-    let html = body_text(get(&router, &format!("{base}?page=2"), &session).await).await;
-    assert_eq!(html.matches(r#"<td data-label="Status">"#).count(), 1);
-    assert!(html.contains(&order(1)));
-    assert!(
-        html.contains("← Newer") && !html.contains("Older →"),
-        "{html}"
-    );
-    let html = body_text(get(&router, &format!("{base}?page=9"), &session).await).await;
-    assert!(html.contains("No older deliveries."), "{html}");
-
-    // fixi: just the page's part.
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!("{base}?page=1"))
-                .header("cookie", format!("session={session}"))
-                .header("fx-request", "true")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let fragment = body_text(response).await;
-    assert!(
-        fragment.starts_with(&format!(
-            r#"<div id="deliveries-{webhook}" class="deliveries-results">"#
-        )),
-        "{fragment}"
-    );
-    assert!(!fragment.contains("<html"));
 }

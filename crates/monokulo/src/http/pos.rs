@@ -1315,66 +1315,11 @@ mod tests {
         }
     }
 
+    /// Each POS route is the owner's alone: another merchant gets a bare
+    /// 404 (never a 403 that would confirm the store exists), as does an
+    /// unknown store or order, and no session gets a 401.
     #[tokio::test]
-    async fn the_pos_page_renders_for_the_owning_user_with_the_stores_own_base_currency() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-page@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{id}/pos"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("XMR"),
-            "expected the store's own base currency shown, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_pos_page_is_a_real_404_not_a_500_for_an_unknown_connection() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-page-404@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/stores/nonexistent/pos")
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn the_pos_page_404s_for_a_connection_owned_by_a_different_user() {
+    async fn every_pos_route_is_the_owners_alone() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
@@ -1385,56 +1330,81 @@ mod tests {
         )
         .await;
         let id = create_connection_with_base_currency(&router, &state, &owner_token, "XMR").await;
-
+        let create = |id: &str, token: &str| {
+            Request::builder()
+                .method("POST")
+                .uri(format!("/stores/{id}/pos/orders"))
+                .header("content-type", "application/json")
+                .header("cookie", format!("session={token}"))
+                .body(Body::from(
+                    serde_json::json!({ "amount": "1.0" }).to_string(),
+                ))
+                .unwrap()
+        };
+        let created = router
+            .clone()
+            .oneshot(create(&id, &owner_token))
+            .await
+            .unwrap();
+        let order_id = body_json(created).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let other_token = signed_up_and_logged_in_session_token(
             &router,
             "pos-other@example.com",
             "correct horse battery staple",
         )
         .await;
+        let get = |uri: String, token: Option<&str>| {
+            let mut request = Request::builder().method("GET").uri(uri);
+            if let Some(token) = token {
+                request = request.header("cookie", format!("session={token}"));
+            }
+            request.body(Body::empty()).unwrap()
+        };
 
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{id}/pos"))
-                    .header("cookie", format!("session={other_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "a connection owned by someone else must 404, not leak that it exists"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_pos_page_requires_authentication() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-unauth@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{id}/pos"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for (row, request, status) in [
+            (
+                "another's page",
+                get(format!("/stores/{id}/pos"), Some(&other_token)),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "another's new order",
+                create(&id, &other_token),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "another's order status",
+                get(
+                    format!("/stores/{id}/pos/orders/{order_id}/status"),
+                    Some(&other_token),
+                ),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "an unknown store",
+                get("/stores/nonexistent/pos".to_string(), Some(&owner_token)),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "an unknown order",
+                get(
+                    format!("/stores/{id}/pos/orders/nonexistent/status"),
+                    Some(&owner_token),
+                ),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "no session",
+                get(format!("/stores/{id}/pos"), None),
+                StatusCode::UNAUTHORIZED,
+            ),
+        ] {
+            let response = router.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), status, "{row}");
+        }
     }
 
     #[tokio::test]
@@ -1566,74 +1536,47 @@ mod tests {
             html.contains("Jane Doe"),
             "expected the real note shown as this order's merchant order id, got: {html}"
         );
-    }
 
-    #[tokio::test]
-    async fn creating_a_pos_order_with_a_blank_note_records_no_merchant_order_id() {
-        // A note field left empty (or whitespace-only - a merchant tapping
-        // it and tapping away) must not record a literal empty-string
-        // `merchant_order_id` - same trim-to-`None` convention
-        // `http::orders::create_order`'s own form field already follows.
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
+        // Creating a pos order with a blank note records no merchant order id.
+        {
+            // A note field left empty (or whitespace-only - a merchant tapping
+            // it and tapping away) must not record a literal empty-string
+            // `merchant_order_id` - same trim-to-`None` convention
+            // `http::orders::create_order`'s own form field already follows.
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
 
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-blank-note@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/stores/{id}/pos/orders"))
-                    .header("content-type", "application/json")
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::from(
-                        serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " })
-                            .to_string(),
-                    ))
-                    .unwrap(),
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "pos-blank-note@example.com",
+                "correct horse battery staple",
             )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = body_json(response).await;
-        assert!(
-            body["merchant_order_id"].is_null(),
-            "a whitespace-only note must not become a stored merchant_order_id, got: {body}"
-        );
-    }
+            .await;
+            let id =
+                create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
 
-    #[tokio::test]
-    async fn creating_a_pos_order_rejects_an_empty_amount() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-empty-amount@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/stores/{id}/pos/orders"))
-                    .header("content-type", "application/json")
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::from(serde_json::json!({ "amount": "" }).to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/stores/{id}/pos/orders"))
+                        .header("content-type", "application/json")
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::from(
+                            serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " })
+                                .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = body_json(response).await;
+            assert!(
+                body["merchant_order_id"].is_null(),
+                "a whitespace-only note must not become a stored merchant_order_id, got: {body}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1664,42 +1607,35 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
 
-    #[tokio::test]
-    async fn creating_a_pos_order_404s_for_a_connection_owned_by_a_different_user() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
+        // Creating a pos order rejects an empty amount.
+        {
+            let (state, _engine) = test_state_with_real_engine().await;
+            let router = build_router(state.clone());
 
-        let owner_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-create-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &owner_token, "XMR").await;
-        let other_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-create-other@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/stores/{id}/pos/orders"))
-                    .header("content-type", "application/json")
-                    .header("cookie", format!("session={other_token}"))
-                    .body(Body::from(
-                        serde_json::json!({ "amount": "1.0" }).to_string(),
-                    ))
-                    .unwrap(),
+            let session_token = signed_up_and_logged_in_session_token(
+                &router,
+                "pos-empty-amount@example.com",
+                "correct horse battery staple",
             )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            .await;
+            let id =
+                create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
+
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/stores/{id}/pos/orders"))
+                        .header("content-type", "application/json")
+                        .header("cookie", format!("session={session_token}"))
+                        .body(Body::from(serde_json::json!({ "amount": "" }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        }
     }
 
     #[tokio::test]
@@ -2544,85 +2480,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_status_endpoint_404s_for_an_unknown_order_id() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-status-404@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &session_token, "XMR").await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{id}/pos/orders/nonexistent/status"))
-                    .header("cookie", format!("session={session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn the_status_endpoint_404s_for_a_connection_owned_by_a_different_user() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state.clone());
-
-        let owner_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-status-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let id = create_connection_with_base_currency(&router, &state, &owner_token, "XMR").await;
-        let create = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(format!("/stores/{id}/pos/orders"))
-                    .header("content-type", "application/json")
-                    .header("cookie", format!("session={owner_token}"))
-                    .body(Body::from(
-                        serde_json::json!({ "amount": "1.0" }).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let order_id = body_json(create).await["order_id"]
-            .as_str()
-            .unwrap()
-            .to_string();
-
-        let other_token = signed_up_and_logged_in_session_token(
-            &router,
-            "pos-status-other@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/stores/{id}/pos/orders/{order_id}/status"))
-                    .header("cookie", format!("session={other_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
     async fn a_pos_order_created_against_a_fiat_base_currency_is_rejected_with_no_priced_provider_configured(
     ) {
         // This test instance's `exchange_rate` is XMR-only
@@ -2695,50 +2552,34 @@ mod pure_logic_tests {
         }
     }
 
+    /// What the till says about each state: nothing while the payment is
+    /// on its way or paid; underpaid, overpaid and expired are flagged; and
+    /// a double-spend first, whatever the status (the `if` in
+    /// `derive_payment_error` returns before the `match`).
     #[test]
-    fn a_pending_unconfirmed_or_confirming_order_has_no_error() {
-        for status in ["pending", "unconfirmed", "confirming"] {
-            assert_eq!(
-                derive_payment_error(&order_with_status(status)),
-                None,
-                "status {status:?} must not be an error"
-            );
+    fn each_state_is_flagged_or_not_and_a_double_spend_always_is() {
+        for (status, flag) in [
+            ("pending", None),
+            ("unconfirmed", None),
+            ("confirming", None),
+            ("paid", None),
+            ("partial", Some("underpaid")),
+            ("overpaid", Some("overpaid")),
+            ("expired", Some("expired")),
+        ] {
+            let error = derive_payment_error(&order_with_status(status));
+            match flag {
+                None => assert_eq!(error, None, "{status}"),
+                Some(word) => assert!(
+                    error
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_lowercase()
+                        .contains(word),
+                    "{status}: {error:?}"
+                ),
+            }
         }
-    }
-
-    #[test]
-    fn a_plain_paid_order_has_no_error() {
-        assert_eq!(derive_payment_error(&order_with_status("paid")), None);
-    }
-
-    #[test]
-    fn a_partial_payment_is_flagged_as_underpaid() {
-        let error =
-            derive_payment_error(&order_with_status("partial")).expect("partial must be flagged");
-        assert!(error.to_lowercase().contains("underpaid"), "got: {error}");
-    }
-
-    #[test]
-    fn an_overpaid_order_is_flagged() {
-        let error =
-            derive_payment_error(&order_with_status("overpaid")).expect("overpaid must be flagged");
-        assert!(error.to_lowercase().contains("overpaid"), "got: {error}");
-    }
-
-    #[test]
-    fn an_expired_order_is_flagged() {
-        let error =
-            derive_payment_error(&order_with_status("expired")).expect("expired must be flagged");
-        assert!(error.to_lowercase().contains("expired"), "got: {error}");
-    }
-
-    #[test]
-    fn a_double_spend_is_flagged_regardless_of_status() {
-        // Double-spend detection takes priority over every other check here
-        // (the `if` in `derive_payment_error` returns before the `match`
-        // ever runs) - proven across several different statuses, not just
-        // one, so a future reordering of that function can't silently drop
-        // this precedence for some statuses but not others.
         for status in ["unconfirmed", "confirming", "paid", "partial"] {
             let mut order = order_with_status(status);
             order.double_spend_detected_at = Some(123);

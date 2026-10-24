@@ -344,21 +344,6 @@ pub async fn theme_submit(
     }
 }
 
-#[cfg(test)]
-mod theme_selector_tests {
-    use super::*;
-
-    #[test]
-    fn named_theme_options_select_directly() {
-        for current in [Theme::Light, Theme::System, Theme::Dark] {
-            assert_eq!(selected_theme(current, Some("light")), Theme::Light);
-            assert_eq!(selected_theme(current, Some("system")), Theme::System);
-            assert_eq!(selected_theme(current, Some("dark")), Theme::Dark);
-            assert_eq!(selected_theme(current, None), current.next());
-        }
-    }
-}
-
 /// `POST /login`. If a *validated* `next` was carried through the form
 /// (see [`is_safe_redirect_path`]), a successful login redirects there -
 /// this is what lets the connect flow (`http/connect.rs`) send a browser
@@ -407,163 +392,40 @@ pub async fn login_submit(
 mod tests {
     use super::{is_safe_redirect_path, SafePath};
 
-    /// A redirect target from a request exists only once checked.
+    /// A redirect target from a request exists only once checked: a path
+    /// on this site, never anything a browser could take elsewhere. These
+    /// are what keep `login_submit` from following an attacker's `next`
+    /// after a real login.
     #[test]
     fn a_safe_path_is_made_only_from_a_path_on_this_site() {
         assert_eq!(
             SafePath::parse("/account/wallets").map(|p| p.as_str().to_string()),
             Some("/account/wallets".to_string())
         );
-        assert!(SafePath::parse("//evil.example.com").is_none());
-        assert!(SafePath::parse("https://evil.example.com").is_none());
-    }
-
-    // The load-bearing open-redirect proof: every one of these
-    // must be *rejected* - if any were accepted, `login_submit` would follow
-    // an attacker-controlled `next` value after a real, successful login.
-    #[test]
-    fn a_protocol_relative_next_is_rejected() {
-        assert!(!is_safe_redirect_path("//evil.example.com"));
-        assert!(!is_safe_redirect_path("//evil.example.com/path"));
-    }
-
-    #[test]
-    fn an_absolute_url_next_is_rejected() {
-        assert!(!is_safe_redirect_path("https://evil.example.com"));
-        assert!(!is_safe_redirect_path("http://evil.example.com/account"));
-    }
-
-    #[test]
-    fn a_backslash_smuggled_next_is_rejected() {
-        // Some browsers normalize a leading backslash to a forward slash
-        // while parsing a URL, so this can behave identically to
-        // `//evil.example.com` even though it doesn't start with two
-        // literal `/` characters.
-        assert!(!is_safe_redirect_path("/\\evil.example.com"));
-    }
-
-    #[test]
-    fn a_next_with_no_leading_slash_is_rejected() {
-        assert!(!is_safe_redirect_path("evil.example.com"));
-        assert!(!is_safe_redirect_path("account/wallets"));
-    }
-
-    #[test]
-    fn a_javascript_scheme_next_is_rejected() {
-        assert!(!is_safe_redirect_path("/javascript:alert(1)"));
-    }
-
-    #[test]
-    fn a_genuine_relative_path_is_accepted() {
-        assert!(is_safe_redirect_path("/plugins/connect/woocommerce"));
-        assert!(is_safe_redirect_path(
-            "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"
-        ));
-        assert!(is_safe_redirect_path("/account/wallets"));
-    }
-
-    /// A merchant picks Light, Dark or System from any page's theme toggle
-    /// and lands back on that page; the choice is kept on their account, so
-    /// every later page (and the POS) renders in it without JavaScript. A
-    /// crafted off-site `next` falls back to the dashboard.
-    #[tokio::test]
-    async fn the_theme_a_merchant_picks_is_kept_and_they_return_to_their_page() {
-        use axum::body::Body;
-        use axum::http::{Request, StatusCode};
-        use http_body_util::BodyExt;
-        use tower::ServiceExt;
-
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        let state = crate::http::AppState {
-            engine: crate::http::Engine::new(
-                crate::engine_client::EngineClient::embedded_for_tests(engine.router()),
-            ),
-            ..crate::http::AppState::for_tests()
-        };
-        let router = crate::http::build_router(state);
-        let session = crate::http::test_support::signed_up_and_logged_in_session_token(
-            &router,
-            "theme@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-
-        let pick = |theme: &str, next: &str| {
-            Request::builder()
-                .method("POST")
-                .uri("/theme")
-                .header("cookie", format!("session={session}"))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!(
-                    "theme={theme}&next={}",
-                    next.replace('/', "%2F").replace(':', "%3A")
-                )))
-                .unwrap()
-        };
-        let page_theme = |router: axum::Router| {
-            let session = session.clone();
-            async move {
-                let response = router
-                    .oneshot(
-                        Request::builder()
-                            .uri("/")
-                            .header("cookie", format!("session={session}"))
-                            .body(Body::empty())
-                            .unwrap(),
-                    )
-                    .await
-                    .unwrap();
-                let html = String::from_utf8(
-                    response
-                        .into_body()
-                        .collect()
-                        .await
-                        .unwrap()
-                        .to_bytes()
-                        .to_vec(),
-                )
-                .unwrap();
-                html.split("<html")
-                    .nth(1)
-                    .unwrap()
-                    .split('>')
-                    .next()
-                    .unwrap()
-                    .to_string()
-            }
-        };
-
-        for (theme, attribute) in [
-            ("dark", Some("data-theme=\"dark\"")),
-            ("light", Some("data-theme=\"light\"")),
-            ("system", None),
+        for accepted in [
+            "/plugins/connect/woocommerce",
+            "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc",
+            "/account/wallets",
         ] {
-            let response = router
-                .clone()
-                .oneshot(pick(theme, "/stores"))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::FOUND);
-            assert_eq!(
-                response.headers()["location"],
-                "/stores",
-                "{theme}: back to the page it was picked on"
-            );
-            let html_tag = page_theme(router.clone()).await;
-            match attribute {
-                Some(attribute) => assert!(html_tag.contains(attribute), "{theme}: {html_tag}"),
-                None => assert!(
-                    !html_tag.contains("data-theme"),
-                    "system follows the device: {html_tag}"
-                ),
-            }
+            assert!(is_safe_redirect_path(accepted), "{accepted}");
         }
-        let response = router
-            .clone()
-            .oneshot(pick("dark", "https://evil.example/phish"))
-            .await
-            .unwrap();
-        assert_eq!(response.headers()["location"], "/");
+        for refused in [
+            // Protocol-relative.
+            "//evil.example.com",
+            "//evil.example.com/path",
+            // Absolute.
+            "https://evil.example.com",
+            "http://evil.example.com/account",
+            // Some browsers read a leading backslash as a slash, which
+            // makes this `//evil.example.com`.
+            "/\\evil.example.com",
+            "/javascript:alert(1)",
+            // No leading slash.
+            "evil.example.com",
+            "account/wallets",
+        ] {
+            assert!(!is_safe_redirect_path(refused), "{refused}");
+            assert!(SafePath::parse(refused).is_none(), "{refused}");
+        }
     }
 }

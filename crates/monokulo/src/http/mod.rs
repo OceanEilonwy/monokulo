@@ -740,12 +740,6 @@ pub fn build_router(state: AppState) -> Router {
         axum::routing::get(key_entry::bundle),
     );
 
-    // Test-only route exercising `AuthedUser` - see its doc comment.
-    // Compiled only under `#[cfg(test)]`, so it never exists in the real
-    // binary; nothing outside this crate's own tests should ever reach it.
-    #[cfg(test)]
-    let router = router.route("/_test/whoami", axum::routing::get(test_whoami));
-
     // Outermost, so every line from the middleware above (abuse, embed
     // policy) carries the request's span (structured_logging.md 2.1), with
     // the store it concerns recorded first.
@@ -1194,13 +1188,6 @@ async fn record_store(request: axum::extract::Request, next: middleware::Next) -
         tracing::Span::current().record("store.id", store);
     }
     next.run(request).await
-}
-
-/// Test-only route behind [`AuthedUser`] and nothing else, so the session
-/// tests exercise the extractor alone. Not a real API surface.
-#[cfg(test)]
-async fn test_whoami(AuthedUser(user, _): AuthedUser) -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({ "user_id": user.id }))
 }
 
 /// `Unauthorized` (a missing/invalid session), `BadRequest` (a request

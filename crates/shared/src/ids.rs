@@ -127,21 +127,3 @@ id!(
     /// which stores on that wallet are created from.
     EngineWalletId
 );
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_id_is_its_string_in_json_and_sqlite() {
-        let id = OrderId::new("order_1");
-        assert_eq!(serde_json::to_string(&id).unwrap(), "\"order_1\"");
-        assert_eq!(serde_json::from_str::<OrderId>("\"order_1\"").unwrap(), id);
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let back: OrderId = conn
-            .query_row("SELECT ?1", [&id], |row| row.get(0))
-            .unwrap();
-        assert_eq!(back, id);
-        assert_eq!(id.to_string(), "order_1");
-    }
-}

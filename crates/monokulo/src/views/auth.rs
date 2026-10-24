@@ -142,139 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn signup_page_renders_with_no_error() {
-        let html = signup_page(
-            &chrome(),
-            &SignupViewModel {
-                next: None,
-                error: None,
-                invite_required: false,
-                invite_token: String::new(),
-                theme: crate::db::Theme::System,
-            },
-        )
-        .into_string();
-        assert!(html.contains("<form"));
-        assert!(html.to_lowercase().contains("sign up"));
-    }
-
-    /// The fields are the shared `Field`: each input named by its label and
-    /// described by its hint, the password's rule stated where it's typed.
-    #[test]
-    fn signup_fields_are_labelled_and_say_the_password_rule() {
-        let html = signup_page(
-            &chrome(),
-            &SignupViewModel {
-                next: None,
-                error: None,
-                invite_required: false,
-                invite_token: String::new(),
-                theme: crate::db::Theme::System,
-            },
-        )
-        .into_string();
-        assert!(html.contains(r#"<label for="signup-email">Email</label><input class="mk-input" id="signup-email" name="email" type="email" autocomplete="email" required>"#), "{html}");
-        assert!(html.contains(r#"<input class="mk-input" id="signup-password" name="password" type="password" autocomplete="new-password" required aria-describedby="signup-password-help" minlength="8">"#), "{html}");
-        assert!(html.contains(
-            r#"<p class="mk-hint" id="signup-password-help">At least 8 characters.</p>"#
-        ));
-        assert!(html.contains(
-            r#"<button class="mk-btn" type="submit" data-variant="primary">Sign up</button>"#
-        ));
-    }
-
-    #[test]
-    fn signup_page_shows_the_error_when_present() {
-        let html = signup_page(
-            &chrome(),
-            &SignupViewModel {
-                next: None,
-                error: Some("that email is already registered".to_string()),
-                invite_required: false,
-                invite_token: String::new(),
-                theme: crate::db::Theme::System,
-            },
-        )
-        .into_string();
-        assert!(html.contains("that email is already registered"));
-    }
-
-    #[test]
-    fn signup_page_shows_the_invite_required_message_and_hides_the_form() {
-        let html = signup_page(
-            &chrome(),
-            &SignupViewModel {
-                next: None,
-                error: None,
-                invite_required: true,
-                invite_token: String::new(),
-                theme: crate::db::Theme::System,
-            },
-        )
-        .into_string();
-        assert!(
-            !html.contains("<form method=\"post\" action=\"/signup\""),
-            "an invite-only instance with no token must not show the signup form"
-        );
-        assert!(html.contains("/request-invite"));
-    }
-
-    #[test]
-    fn login_page_renders_with_no_error() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: None,
-                error: None,
-                next: None,
-            },
-        )
-        .into_string();
-        assert!(html.contains("<form"));
-        assert!(html.to_lowercase().contains("log in"));
-    }
-
-    #[test]
-    fn login_page_shows_the_error_when_present() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: None,
-                error: Some("invalid email or password".to_string()),
-                next: None,
-            },
-        )
-        .into_string();
-        assert!(html.contains("invalid email or password"));
-    }
-
-    #[test]
-    fn login_page_includes_a_hidden_next_field_when_present() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: None,
-                error: None,
-                next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
-            },
-        )
-        .into_string();
-        assert!(
-            html.contains(r#"type="hidden" name="next""#),
-            "expected a hidden next field, got: {html}"
-        );
-        assert!(
-            html.contains("/plugins/connect/acme-cart?nonce"),
-            "expected the next value's content present, got: {html}"
-        );
-        assert!(
-            html.contains("abc"),
-            "expected the next value's content present, got: {html}"
-        );
-    }
-
-    #[test]
-    fn login_page_escapes_special_characters_in_next_rather_than_injecting_them_raw() {
+    fn the_login_page_carries_next_only_when_given_and_escaped() {
         let html = login_page(
             &chrome(),
             &LoginViewModel {
@@ -292,48 +160,47 @@ mod tests {
             !html.contains("a=1&b=2"),
             "a raw, unescaped & would be a template-injection smell, got: {html}"
         );
-    }
 
-    /// On the way to connecting a shop, the login page names the shop and
-    /// the plugin that sent the merchant.
-    #[test]
-    fn login_page_names_the_connecting_shop_and_its_plugin() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: Some(crate::plugins::ConnectingPlugin {
-                    plugin: crate::plugins::Plugin::parse("acme-cart", "Acme Cart").unwrap(),
-                    site: crate::stores::Site::parse("shop.example").unwrap(),
-                }),
-                error: None,
-                next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
-            },
-        )
-        .into_string();
-        assert!(
-            html.contains("shop.example wants to connect to Monokulo."),
-            "{html}"
-        );
-        assert!(
-            html.contains("Its Acme Cart plugin sent you here."),
-            "{html}"
-        );
-    }
+        // Login page has no hidden next field when absent.
+        {
+            let html = login_page(
+                &chrome(),
+                &LoginViewModel {
+                    connecting_site: None,
+                    error: None,
+                    next: None,
+                },
+            )
+            .into_string();
+            assert!(
+                !html.contains(r#"name="next""#),
+                "expected no hidden next field, got: {html}"
+            );
+        }
 
-    #[test]
-    fn login_page_has_no_hidden_next_field_when_absent() {
-        let html = login_page(
-            &chrome(),
-            &LoginViewModel {
-                connecting_site: None,
-                error: None,
-                next: None,
-            },
-        )
-        .into_string();
-        assert!(
-            !html.contains(r#"name="next""#),
-            "expected no hidden next field, got: {html}"
-        );
+        // Login page includes a hidden next field when present.
+        {
+            let html = login_page(
+                &chrome(),
+                &LoginViewModel {
+                    connecting_site: None,
+                    error: None,
+                    next: Some("/plugins/connect/acme-cart?nonce=abc".to_string()),
+                },
+            )
+            .into_string();
+            assert!(
+                html.contains(r#"type="hidden" name="next""#),
+                "expected a hidden next field, got: {html}"
+            );
+            assert!(
+                html.contains("/plugins/connect/acme-cart?nonce"),
+                "expected the next value's content present, got: {html}"
+            );
+            assert!(
+                html.contains("abc"),
+                "expected the next value's content present, got: {html}"
+            );
+        }
     }
 }

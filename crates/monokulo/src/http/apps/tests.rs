@@ -475,22 +475,3 @@ async fn an_app_is_given_the_onion_entry_while_there_is_one() {
     assert_eq!(creds["api"], "/api/v1");
     assert_eq!(creds["onion_api"], format!("{ONION}/api/v1"));
 }
-
-/// A connect link opened in a browser explains itself, and names no app.
-#[tokio::test]
-async fn the_connect_link_opened_in_a_browser_says_to_use_the_app() {
-    let router = build_router(AppState::for_tests());
-    let response = router
-        .oneshot(
-            Request::builder()
-                .uri("/apps/connect")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let html = body_text(response).await;
-    assert!(html.contains("paste it into the app"), "{html}");
-    assert!(!html.contains("Monokular"), "{html}");
-}

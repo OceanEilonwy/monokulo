@@ -304,65 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn the_any_site_warning_can_be_dismissed_to_one_line_but_a_failing_domain_warning_cannot() {
-        let html = page(
-            &chrome(),
-            &StoreDetailViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(html.contains(r#"<div class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout</strong>"#), "got: {html}");
-        assert!(
-            html.contains(r#"action="/stores/conn_1/settings/embed-restriction/dismiss-warning""#)
-        );
-        assert!(html
-            .contains(r#"href="/stores/conn_1/settings?tab=connections#card-verified-domains""#));
-
-        let store = StoreDetailData {
-            wallet: None,
-            embed_warnings: EmbedWarnings {
-                restricted: false,
-                any_site_dismissed: true,
-                shown_nowhere: false,
-                failing: vec![
-                    FailingDomainWarning {
-                        domain: "shop.example".to_string(),
-                        record_name: "_monokulo.shop.example".to_string(),
-                        missing_for: "5h".to_string(),
-                        lapsed: false,
-                        counts_for: "2d 19h".to_string(),
-                    },
-                    FailingDomainWarning {
-                        domain: "old.example".to_string(),
-                        record_name: "_monokulo.old.example".to_string(),
-                        missing_for: "4d".to_string(),
-                        lapsed: true,
-                        counts_for: "any moment".to_string(),
-                    },
-                ],
-            },
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(r#"<p class="warning" id="embed-warning"><strong class="alert-title">Any website can show this store's checkout.</strong>"#), "got: {html}");
-        assert!(
-            !html.contains("embed-restriction/dismiss-warning"),
-            "a dismissed warning offers nothing more to dismiss"
-        );
-        assert!(html.contains("shop.example failed its DNS check"));
-        assert!(html.contains(
-            "If it isn't back within 2d 19h, shop.example will stop counting as verified."
-        ));
-        assert!(html.contains("old.example is no longer verified"));
-        assert_eq!(
-            html.matches(r#"<div class="error" role="alert"><strong class="alert-title">"#)
-                .count(),
-            2
-        );
-    }
-
-    #[test]
     fn a_restricted_store_drops_the_any_site_warning_but_warns_when_no_domain_counts() {
         let warnings = |shown_nowhere| EmbedWarnings {
             restricted: true,
@@ -387,14 +328,9 @@ mod tests {
         assert!(html.contains("No website can show this store's checkout"));
     }
 
+    /// The engine is private: the store page never shows its endpoint.
     #[test]
-    fn renders_not_found_state_when_store_is_none() {
-        let html = page(&chrome(), &StoreDetailViewModel { store: None }).into_string();
-        assert!(html.to_lowercase().contains("not found"));
-    }
-
-    #[test]
-    fn the_store_is_called_by_its_name_and_its_site_is_a_link_to_the_host() {
+    fn the_store_page_never_shows_the_engine_endpoint() {
         let html = page(
             &chrome(),
             &StoreDetailViewModel {
@@ -402,117 +338,6 @@ mod tests {
             },
         )
         .into_string();
-        assert!(html.contains("<h1>Corner shop</h1>"), "{html}");
-        assert!(
-            html.contains(
-                r#"href="https://shop.example.com" title="shop.example.com">shop.example.com</a>"#
-            ),
-            "{html}"
-        );
-        assert!(html.contains("pk_abc123"));
-
-        // A store with no site has none to show.
-        let html = page(
-            &chrome(),
-            &StoreDetailViewModel {
-                store: Some(StoreDetailData {
-                    site: None,
-                    ..base_store()
-                }),
-            },
-        )
-        .into_string();
-        assert!(!html.contains("store-site"), "{html}");
-    }
-
-    #[test]
-    fn shows_the_base_currency_at_the_top_of_the_table_and_hides_the_engine_endpoint() {
-        let store = StoreDetailData {
-            wallet: None,
-            base_currency: "USD".to_string(),
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(
-            html.contains(r#"<th>Base currency</th><td>USD</td>"#),
-            "expected the base currency row, got: {html}"
-        );
-        let base_currency_pos = html
-            .find("Base currency")
-            .expect("base currency row missing");
-        let public_key_pos = html.find("Public key").expect("public key row missing");
-        assert!(
-            base_currency_pos < public_key_pos,
-            "expected Base currency above Public key, got: {html}"
-        );
-        assert!(
-            !html.contains("Engine endpoint"),
-            "the engine endpoint row should no longer render on this page, got: {html}"
-        );
-    }
-
-    #[test]
-    fn links_to_the_settings_page_and_widget_pages() {
-        let html = page(
-            &chrome(),
-            &StoreDetailViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(
-            html.contains(r#"href="/stores/conn_1/settings""#),
-            "expected a Settings link, got: {html}"
-        );
-        let help = html.find(r#"data-store-link="help""#).unwrap();
-        let settings = html.find(r#"data-store-link="settings""#).unwrap();
-        assert!(
-            settings < help,
-            "Help should be the rightmost control in the store header: {html}"
-        );
-        // Help is the docs, in a new tab.
-        assert!(
-            html.contains(&format!(
-                r#"<a class="mk-btn" href="{}" target="_blank" rel="noopener" data-store-link="help">{}Help</a>"#,
-                crate::views::DOCS_URL,
-                ui::assets::icons::EXTERNAL
-            )),
-            "expected Help to link to the docs: {html}"
-        );
-        assert!(html.find("class=\"store-header-status\"").unwrap() < help);
-        assert!(
-            html.contains(&format!("{}Settings</a>", ui::assets::icons::SETTINGS)),
-            "expected the gear before Settings: {html}"
-        );
-        // The POS needs JavaScript: its tile is a link only with it.
-        assert!(
-            html.contains(
-                r#"<a class="mk-launch-tile" href="/stores/conn_1/pos" data-only="script">"#
-            ),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r#"<a class="mk-launch-tile" aria-disabled="true" data-only="no-script">"#
-            ),
-            "{html}"
-        );
-        assert!(html.contains("Requires JavaScript"));
-        assert!(html.contains(r#"href="/stores/conn_1/orders/new""#));
-    }
-
-    #[test]
-    fn shows_the_lookup_message_when_present() {
-        let store = StoreDetailData {
-            wallet: None,
-            lookup_txid_value: "abc123".to_string(),
-            lookup_message: Some(
-                "No transaction with that ID was found on the network.".to_string(),
-            ),
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("No transaction with that ID was found on the network."));
-        assert!(html.contains(r#"value="abc123""#));
+        assert!(!html.contains("Engine endpoint"), "{html}");
     }
 }

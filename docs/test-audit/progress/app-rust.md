@@ -1,0 +1,220 @@
+# Test audit, chunk C (app-rust): progress
+
+Branch `worktree-agent-a1bc4044ad73128f6`, started from origin/main `6bac4c3b1`.
+Scope: every Rust crate except the engine. Tests run with
+`nice -n 10 cargo nextest run -p <crate>`.
+
+## Before (origin/main 6bac4c3b1, local, 32 cores, warm build)
+
+| Crate | Tests | nextest wall |
+|---|---|---|
+| monokulo | 1018 (2 skipped) | 21.98 s |
+| shared | 176 (4 skipped) | 0.63 s |
+| short-id | 9 | 0.20 s |
+| ui | 13 | 0.01 s |
+| telemetry | 42 | 0.05 s |
+| live-settings | 65 | 0.02 s |
+| cli-wallet | 64 | 0.14 s |
+| mock-woocommerce | 9 | 1.44 s |
+
+## Done
+
+### 1. Additions (N3, and the 1459 / 1653 / 1910 rewrites)
+- N3: `http::connect::tests::disconnecting_refuses_and_changes_nothing_while_the_engine_is_unreachable`
+  (new). Checked by mutation: dropping the `None` refusal in
+  `store_site::disconnect_submit` fails it (the webhook would have been deleted first).
+- N3: `http::embed_domains::tests::dismissing_the_any_site_warning_leaves_a_failing_domain_warned_about`
+  (new): the dismiss POST, another merchant's 404, and the failing-domain warning still standing
+  with nothing to dismiss it. Replaces 1969 (deleted with the views F2 slice).
+- N3: 1761 `creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward` now reads the
+  secret off the creation page and asserts its value is absent on reload.
+- 1459 rewritten as `the_checkout_page_shows_the_orders_own_address_and_amount_without_javascript`:
+  the order's own address and XMR amount (from the API's create answer), no fiat line on an XMR
+  order (from deleted e2e 2499), and the no-JS asserts (deadline in words, no `data-timestamp`,
+  `<noscript>` refresh, no site nav), plus the till view leaving out the refund field.
+- 1653 rewritten as `every_query_route_reads_for_an_admin_only_and_never_writes`: a table over the
+  4 query routes (page, schema, value, export) × {admin read 200, merchant 403, admin write never
+  runs, switched off 404}, plus the value route's out-of-range 404.
+- 1910 rewritten as a source guard, `views::tests::only_the_checkout_and_the_connection_check_refresh_themselves`:
+  only `views/checkout.rs` and `views/challenge.rs` write a meta refresh outside their tests.
+
+### 2. F7 dead code
+- `test_whoami` and its `#[cfg(test)]` route are gone. The session tests use `GET /account`:
+  1700 is now `a_session_cookie_reaches_a_protected_page_as_the_right_user_and_a_bearer_does_not`
+  (the page names the user); 1709 and 1712 are one table, `a_protected_page_refuses_no_session_and_an_unknown_one`;
+  1715 folds into 1725 as `logging_in_sets_an_httponly_samesite_session_cookie_that_signs_the_user_in`,
+  keeping the `HttpOnly` and `SameSite=Lax` asserts; the logout test and the account tests'
+  `signed_in` helper ask `/account` too. −2 tests.
+- `XmrIdentityProvider::supported_currencies` removed with its test 2125. −1 test.
+- `telemetry::trace::current_trace_id` was already removed upstream (7befca7a7), and 2314 already
+  asserts through `trace::traceparent`. Nothing to do.
+
+### 3. F1 views (presentational deletes)
+- 125 `views::` tests deleted as the DB lists them (the 126th, 1910, became the source guard in
+  slice 1), with the helpers only they used. `views::pos`, `views::home`, `views::connected_apps`
+  and `views::domains` have no tests left, so their test modules went. −125 tests.
+
+### 4. F1 http (presentational deletes and rewrites)
+- 33 `http::` tests deleted. 1511 kept (the key tool's download and checksum URLs).
+- 1573 rewritten as `an_order_without_a_recorded_price_shows_a_dash_never_a_made_up_amount`:
+  the Amount row holds a dash and no digit, no meta refresh, and the absolute payment link.
+- 1575 rewritten as `the_orders_list_shows_an_order_and_a_fixi_search_gets_only_its_results`:
+  keeps the fixi fragment half (`<div id="orders-results">`, no `<html>`, filtered).
+- 1600 (now in `api/runtime/tests/orders.rs`) rewritten as
+  `the_embed_library_never_calls_the_engine_and_never_talks_to_its_checkout`: only the negative
+  asserts (no engine routes, no `postMessage`, checkout.js never touches `window.parent`/`top`) and
+  the scripts' content type.
+- 1686 and 1692 are in `http/status_page.rs`, which chunk B owns: not deleted here (see Needs).
+- `orders::tests::get_page` is now used only by the snp tests, so it is behind `feature = "snp"`.
+- −33 tests.
+
+### 5. F2/F3 views (merges and rewrites)
+- Folded into their hosts as rows or steps: checkout states 1872/1873/1886 into 1889 and 1874 into
+  the no-JS test; admin 1834 into 1821 and 1853 into 1817; auth 1850/1851 into 1856 (renamed
+  `the_login_page_carries_next_only_when_given_and_escaped`); key_entry 1902 into 1906; orders 1909
+  into 1915; status 1956/1958/1960 into 1965 (renamed `the_proof_of_work_window_at_each_distance_from_the_tip`)
+  and 1957 into 1952; store_settings 1983 into 1985; wallets 2012/2031 into 2029, and 2020 (the
+  `Unknown` row)/2021/2033 into 2017 (renamed `retire_waits_for_orders_stores_and_the_check_then_asks_for_the_name`).
+- 1969 deleted (its rule is now the dismiss handler test from slice 1).
+- Rewrites (research 30): 1875 is `checkout_page_works_without_javascript` (noscript refresh only,
+  its off link, the noscript Save, no site nav), for a page with and without a refund address;
+  1878 is `the_checkout_escapes_what_the_merchant_typed`; 1868 drops the time-format part;
+  1968 is `the_store_page_never_shows_the_engine_endpoint`.
+- −19 tests.
+
+### 6. F2/F3 http (tables and trims)
+- True tables, one setup: the open-redirect guard (6 into 1463, every input a row, each also
+  refused by `SafePath::parse`); piconero formatting (2 into 1487); `derive_payment_error`
+  (5 into 1601); POS ownership and auth as `every_pos_route_is_the_owners_alone` (1648, 1649, 1652,
+  1664, 1688 into 1658: one row per route, another merchant's page, new order and order status
+  each a row); the orders cross-user 404s (1540, 1541, 1583 into 1545: one row per route).
+- Steps of the host test, each keeping its own setup (they write state the others would see):
+  thresholds 1537/1566/1591/1595 into 1536 (renamed `the_confirmation_settings_refuse_what_they_cannot_hold`),
+  1542 into 1546, 1565 into 1568, 1563 into 1585, API order creation 1611/1616/1619 into 1614,
+  POS 1645 into 1634 and 1643 into 1644, login 1705 into 1717, webhooks 1774/1776 into 1762
+  (renamed `creating_a_webhook_refuses_a_bad_url_or_header_and_registers_nothing`), 1793 into 1778,
+  `parse_extra_headers` 1737/1740/1744 into 1736.
+- Trims (research 38): 1528 keeps newest-first lines, the engine-lines note, the GET search form
+  and its Refresh submit, no meta refresh, the line page with its narrow/widen links, the fixi
+  fragment and the retention 404; 1749 keeps newest-first attempts, the signature header, a
+  header's name without its value, no secret, and the send-again form.
+- −40 tests.
+
+### 7. F2 monokulo units (research 33)
+- currencies: 1170/1172/1173/1175/1176 into 1174 as one input table
+  (`a_code_or_ticker_resolves_to_its_canonical_code_and_anything_else_to_none`, also checking
+  `is_known_currency` per row), 1167/1171 into 1165 (`currency_options_selects_the_one_option_the_input_names`).
+- crypto: 1160/1162 into 1161 (tampered, non-hex, truncated).
+- templates: 1799/1800/1804 into 1805 as one table; 1794 `display_or_dash` deleted.
+- db: the round trips 1180/1208/1209/1218/1219 into 1213 (`each_kind_of_row_reads_back_as_it_was_written`),
+  the unknown lookups 1225/1226/1237/1239 into 1230 (`looking_up_anything_unknown_returns_none_rather_than_an_error`),
+  the settings row 1183/1217 into 1187 (`a_setting_reads_as_none_until_saved_overwrites_and_deletes`).
+  1205 (threshold count) was already gone upstream.
+- −24 tests.
+
+### 8. F2/F3 shared and the other crates (research 10, 11, 14, 34)
+- shared: auth tokens 2069/2071/2074 into 2073 (one row per kind); exchange_rate 2122/2131 into 2121
+  (2118, 2124 and 2132 were already gone upstream); password 2227/2229 into 2234 (one hash pair,
+  the wrong password a row: two fewer Argon2 hashes); webhook_sign 2214 into 2210; deleted the
+  plain round trips 2067, 2146, 2151, 2158, 2163, 2201 (and the empty test modules of `ids`,
+  `order_status`, `time`). −14.
+- short-id: 2244-2251 into 2252, one table each for `short_id` and `short_address`. −7.
+- telemetry: 2322 into 2328 (also asserting the full client address is gone). −1.
+- ui: `select` 2334/2337/2339/2340 into 2335. −4.
+- live-settings: 1038 deleted. cli-wallet: 985 deleted (the prompt highlighter loses its only
+  test; a dev tool, research 14). −2.
+
+### 9. F6 mock-woocommerce (research 12)
+- 1078 (order creation and its checkout link), 1079 (working credentials, the engine knowing the
+  key, the webhook registered at the receiver) and 1076 (the CLI flow registers no webhook) fold
+  into 1080, the full checkout. 1075 folds into 1081: after the real delivery, the receiver refuses
+  a wrongly signed and an unsigned request and records nothing, so a mock that took anything would
+  fail. 1073 and 1074 (the mock's own receiver) deleted; 1072 was already gone upstream.
+- 9 → 3 tests (each spawned an engine and monokulo). Wall 1.44 s → 1.92 s: the three left run
+  longer each, the serial time falls.
+
+### 10. F6 monokulo: the engine page throttle and cheaper keepers (2064, research 35)
+- 2064: the engine page's `machine` interval is now `machine_every` in the relay's `Timing`
+  (`const DEFAULT` = `MACHINE_EVERY`, 5 s; `validate()` refuses zero, and `timing_is_validated`
+  has the row). The handler reads `state.engine.activity.timing().machine_every`; the test builds
+  its relay with `Relay::with_timing(.., Timing { machine_every: 400 ms, ..DEFAULT })`. No
+  `cfg(test)` value. 5.27 s → 0.74 s.
+- 1399 random invariants: the same 4 seeds, 5,000 steps each instead of 20,000 (a test setting,
+  not a production value). 1.33 s → 0.25 s.
+- 1365 relay reads: its own linger 300 ms → 100 ms. 0.68 s → 0.47 s.
+- Looked at and left: 2065 (the onion listener test has no fixed wait; its time is the listener's
+  own stop), 2063 (its one 200 ms sleep is the "nothing more comes" check), 1362, 1360, 2235.
+
+### 11. G3 (tier 2, Rust rows only)
+- Deleted: 1263, 1265, 1268 (engine_client round trips), 1388, 1417, 1426 (admin settings), 1588,
+  1808, 1825, 1920 (and the then-empty `views/query/tests.rs`), 1978, 2035 (and the empty
+  `views::webhooks` test module).
+- Folded: theme 1374 into 1361 as a step; 1477 (from `http/auth.rs`) into 1361 too, and 1464, the
+  pure `selected_theme` check, becomes HTTP rows there (a switch posted with no choice cycles
+  Dark → System → Light → Dark), since the function is private to `http::auth`; admin settings
+  1376/1379/1386/1392 into 1381, 1402/1408 into 1405, 1398 into 1400; orders 1549 into 1548 and
+  1589/1597/1598 into 1594.
+- 1817: G3 says delete, but F2 had folded 1853 into it. Its `Group::of` lookup table went; the
+  folded 1853 check stays, under 1853's own name `the_other_tab_shows_only_with_something_in_it`.
+- The two browser rows (component specs 2761, 2777) are chunk B's.
+- −26 tests.
+
+## Decisions
+- 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
+  pages keep what was typed through three different view models (`shown`, a field's
+  `value`/`saved_value`, the posted `sent` list), and 1826 alone pins "partly saved" against
+  "nothing saved". One test across the three would need their private fixtures made crate-wide.
+
+- Q7: `shared::dns::Resolver::with_addresses` is already `#[cfg(test)]` upstream (7befca7a7),
+  which is stricter than `test-support`, and nothing outside `shared`'s own tests calls it. Left
+  as it is; widening it to `any(test, feature = "test-support")` would only make it reachable from
+  more builds.
+
+- The monokulo run's wall time (about 22 s) is set by `http::prefix_tests::every_url_a_page_gives_carries_the_path_monokulo_is_served_under`
+  (19 s) and `over_tor_no_url_carries_the_web_address_s_path` (13 s), added upstream after the
+  audit (b231f2c24), so not in the DB. Not touched (outside this chunk's list); worth a look.
+
+## Deviations from the plan
+- 1815 and 1826 not folded into 1966 (see Decisions): −2 fewer than planned.
+- 1817 trimmed rather than deleted (G3), keeping the 1853 check F2 folded into it.
+- 1464 became HTTP rows in 1361 rather than a copy of the pure-function test, which can't be
+  reached from `http::account`.
+- Rows already gone upstream, nothing to do: 1072, 1205, 2118, 2124, 2132, and
+  `telemetry::trace::current_trace_id` (F7).
+- Rows in chunk B's `http/status_page.rs` left for chunk B: 1668, 1686, 1692 (and 2045, theirs).
+
+## Tests already failing on main
+None in scope: the baseline run above passed everywhere.
+
+## Needs from other chunks
+- Disk: `/home` filled to 100% (365 MB free) at about 17:45 and a link died with a bus error. I
+  removed my own `target/debug/incremental` (7 GB); space came back later. Worth watching while
+  four agents build.
+- Chunk B (`http/status_page.rs`): F1 deletes 1686
+  `http::status_page::tests::http_tests::status_page_lists_a_configured_networks_node_and_a_scanner_not_yet_run`
+  and 1692 `..._shows_a_plain_error_banner_when_a_remote_engine_is_unreachable_over_http`, and the F2
+  merge 1668 `relative_time_never_goes_negative_for_a_clock_that_moved_backward` into 1669
+  `relative_time_picks_the_right_bucket`. Also the doc comment at `status_page.rs:1218` names
+  `get_status_round_trips_against_a_real_engine`, which G3 deletes here (1263).
+
+## After (branch head, local, 32 cores)
+
+| Crate | Tests before → after | nextest wall before → after |
+|---|---|---|
+| monokulo | 1018 → 749 (−269) | 21.98 s → 21.37 s |
+| monokulo `--features snp` | | 754 tests, 21.46 s, all pass |
+| shared | 176 → 161 (−15) | 0.63 s → 0.59 s |
+| short-id | 9 → 2 | 0.20 s → 0.004 s |
+| ui | 13 → 9 | 0.01 s → 0.005 s |
+| telemetry | 42 → 41 | 0.05 s → 0.06 s |
+| live-settings | 65 → 64 | 0.02 s → 0.03 s |
+| cli-wallet | 64 → 63 | 0.14 s → 0.12 s |
+| mock-woocommerce | 9 → 3 | 1.44 s → 1.62 s |
+| **total** | **1396 → 1092 (−304)** | |
+
+- monokulo's summed test time (serial) 177.3 s → 144.6 s. Its wall time barely moves because the
+  two `http::prefix_tests` (19 s and 13 s, see Decisions) set it.
+- Timings were taken with the other three agents building; the load average moved between about
+  20 and 170 during the session, so treat small differences as noise.
+- `cargo clippy -p <crate> --all-targets --all-features -- -D warnings` is clean for every crate
+  changed, and `cargo fmt` leaves them unchanged.
