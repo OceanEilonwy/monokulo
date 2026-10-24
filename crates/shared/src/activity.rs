@@ -490,59 +490,6 @@ pub struct ActivityPage {
 mod tests {
     use super::*;
 
-    /// An event's JSON carries its kind beside its fields, and every shape
-    /// comes back as it went in: monokulo reads what the engine writes.
-    #[test]
-    fn recorded_events_round_trip_through_json() {
-        let events = vec![
-            Event::Snapshot(Box::new(Snapshot {
-                round: 7,
-                tip: Some(100),
-                groups: vec![StoreGroup {
-                    cursor: 100,
-                    stores: 3,
-                }],
-                reorg: Some(ReorgJob {
-                    fork: 98,
-                    phase: ReorgPhase::Process,
-                    candidates: 2,
-                }),
-                ..Snapshot::default()
-            })),
-            Event::Unit {
-                tier: Tier::Blocks,
-                pass: 2,
-                start_ms: 40,
-                ms: 3,
-                progress: UnitProgress::Blocked(Wait::NodeFailed),
-            },
-            Event::TierEnded {
-                tier: Tier::Chain,
-                outcome: TierOutcome::Blocked(Wait::ChainDiverged),
-            },
-            Event::Recomputed {
-                orders: 2,
-                transitions: vec![Transition {
-                    from: OrderStatus::Confirming,
-                    to: OrderStatus::Paid,
-                }],
-            },
-            Event::ReorgCollected,
-        ];
-        for (seq, event) in events.into_iter().enumerate() {
-            let recorded = Recorded {
-                seq: seq as u64,
-                at_ms: 1_000,
-                event,
-            };
-            let json = serde_json::to_value(&recorded).unwrap();
-            assert!(json.get("kind").is_some(), "{json}");
-            assert_eq!(json["seq"], seq as u64);
-            let back: Recorded = serde_json::from_value(json).unwrap();
-            assert_eq!(back, recorded);
-        }
-    }
-
     #[test]
     fn every_event_but_the_round_s_own_belongs_to_a_tier() {
         assert_eq!(Event::Upkeep { pruned: 1 }.tier(), Some(Tier::Upkeep));

@@ -207,22 +207,6 @@ mod tests {
     const T: i64 = 1_700_000_000;
 
     #[test]
-    fn signature_matches_a_fixed_test_vector() {
-        // A regression/drift guard: if `sign_payload` ever changes its output for
-        // this exact input, this test catches it immediately. Cross-checked with
-        // Python's stdlib: hmac.new(secret, b"1700000000." + payload,
-        // hashlib.sha256).hexdigest().
-        let secret = "whsec_test_vector_secret";
-        let payload = br#"{"event":"order.paid","order_id":"order_test123"}"#;
-        let signature = sign_payload(secret, T, payload);
-        assert_eq!(
-            signature,
-            "t=1700000000,v1=ee45d544d20342265419fe84e4ad7553640a8b069efac546af2c3d9dabc271fc"
-        );
-        assert!(verify_signature(secret, payload, &signature, T));
-    }
-
-    #[test]
     fn signature_is_sensitive_to_the_secret_the_payload_and_the_time() {
         let payload = b"{\"event\":\"order.paid\"}";
         let sig_a = sign_payload("secret_a", T, payload);
@@ -518,10 +502,11 @@ mod tests {
     const KNOWN_VECTOR_SIGNATURE_HEADER: &str =
         "t=1700000000,v1=36a7d36d510620adf9ae9e3e42891dcc796ae88c6ac19818bab778998d2a35e6";
 
+    /// Fixed vectors: `sign_payload`'s output, checked against Python's
+    /// and PHP's own HMAC-SHA256 of the same input (the PHP test carries
+    /// the first), so a change to it is caught at once.
     #[test]
     fn known_vector_for_cross_language_php_verification() {
-        // Produced by `sign_payload` and checked against Python's and PHP's own
-        // HMAC-SHA256 of the same input; the PHP test carries the same vector.
         let signature = sign_payload(
             KNOWN_VECTOR_SECRET,
             KNOWN_VECTOR_TIMESTAMP,
@@ -534,5 +519,14 @@ mod tests {
             KNOWN_VECTOR_SIGNATURE_HEADER,
             KNOWN_VECTOR_TIMESTAMP
         ));
+        // Python: hmac.new(secret, b"1700000000." + payload, hashlib.sha256).hexdigest()
+        let secret = "whsec_test_vector_secret";
+        let payload = br#"{"event":"order.paid","order_id":"order_test123"}"#;
+        let signature = sign_payload(secret, T, payload);
+        assert_eq!(
+            signature,
+            "t=1700000000,v1=ee45d544d20342265419fe84e4ad7553640a8b069efac546af2c3d9dabc271fc"
+        );
+        assert!(verify_signature(secret, payload, &signature, T));
     }
 }

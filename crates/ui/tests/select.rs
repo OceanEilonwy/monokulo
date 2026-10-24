@@ -11,65 +11,48 @@ fn option(choice: Choice) -> String {
     html[start..end].to_string()
 }
 
+/// Without JavaScript an option says everything in words: its detail, its
+/// network as `[Stagenet]`, `[Current]`, its note. The enhanced list gets
+/// the parts (a logo is for the list only), and a plain option is plain.
 #[test]
 fn an_option_says_everything_in_words_and_gives_the_list_its_parts() {
-    assert_eq!(
-        option(
+    for (choice, html) in [
+        (
             Choice::new("w_1", "Copper Heron")
                 .detail("48xQ7…v3Rk")
                 .current(true)
                 .note("since 1 Sep 2026")
-                .selected(true)
+                .selected(true),
+            r#"<option value="w_1" selected data-label="Copper Heron" data-detail="48xQ7…v3Rk" data-chip="Current" data-chip-tone="current" data-note="since 1 Sep 2026">Copper Heron (48xQ7…v3Rk) [Current] - since 1 Sep 2026</option>"#,
         ),
-        r#"<option value="w_1" selected data-label="Copper Heron" data-detail="48xQ7…v3Rk" data-chip="Current" data-chip-tone="current" data-note="since 1 Sep 2026">Copper Heron (48xQ7…v3Rk) [Current] - since 1 Sep 2026</option>"#
-    );
-}
-
-#[test]
-fn an_option_names_its_network_in_words_and_for_the_badge() {
-    assert_eq!(
-        option(
+        (
             Choice::new("w_2", "Feather test")
                 .network("stagenet")
-                .note("1 store")
+                .note("1 store"),
+            r#"<option value="w_2" data-label="Feather test" data-network="stagenet" data-note="1 store">Feather test [Stagenet] - 1 store</option>"#,
         ),
-        r#"<option value="w_2" data-label="Feather test" data-network="stagenet" data-note="1 store">Feather test [Stagenet] - 1 store</option>"#
-    );
-}
-
-/// The setup flow's network dropdown: the badge alone, `[Stagenet]`
-/// without JavaScript.
-#[test]
-fn a_network_on_its_own_is_its_badge() {
-    assert_eq!(
-        option(
+        // The setup flow's network dropdown: the badge alone.
+        (
             Choice::new("stagenet", "")
                 .network("stagenet")
-                .selected(true)
+                .selected(true),
+            r#"<option value="stagenet" selected data-label="" data-network="stagenet">[Stagenet]</option>"#,
         ),
-        r#"<option value="stagenet" selected data-label="" data-network="stagenet">[Stagenet]</option>"#
-    );
-}
-
-/// A logo is drawn by the enhanced list; the words don't change.
-#[test]
-fn a_logo_is_for_the_list_only() {
-    assert_eq!(
-        option(Choice::new("feather", "Feather").logo("/static/wallet-logos/feather.png")),
-        r#"<option value="feather" data-label="Feather" data-logo="/static/wallet-logos/feather.png">Feather</option>"#
-    );
-}
-
-#[test]
-fn a_plain_option_is_a_plain_option() {
-    assert_eq!(
-        option(Choice::new("info", "Info and up")),
-        r#"<option value="info">Info and up</option>"#
-    );
-    assert_eq!(
-        option(Choice::prompt("Choose a wallet…", true)),
-        r#"<option value="" selected disabled>Choose a wallet…</option>"#
-    );
+        (
+            Choice::new("feather", "Feather").logo("/static/wallet-logos/feather.png"),
+            r#"<option value="feather" data-label="Feather" data-logo="/static/wallet-logos/feather.png">Feather</option>"#,
+        ),
+        (
+            Choice::new("info", "Info and up"),
+            r#"<option value="info">Info and up</option>"#,
+        ),
+        (
+            Choice::prompt("Choose a wallet…", true),
+            r#"<option value="" selected disabled>Choose a wallet…</option>"#,
+        ),
+    ] {
+        assert_eq!(option(choice), html);
+    }
 }
 
 #[test]
