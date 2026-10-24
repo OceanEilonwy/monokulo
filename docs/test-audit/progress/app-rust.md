@@ -100,6 +100,18 @@ Scope: every Rust crate except the engine. Tests run with
   header's name without its value, no secret, and the send-again form.
 - −40 tests.
 
+### 7. F2 monokulo units (research 33)
+- currencies: 1170/1172/1173/1175/1176 into 1174 as one input table
+  (`a_code_or_ticker_resolves_to_its_canonical_code_and_anything_else_to_none`, also checking
+  `is_known_currency` per row), 1167/1171 into 1165 (`currency_options_selects_the_one_option_the_input_names`).
+- crypto: 1160/1162 into 1161 (tampered, non-hex, truncated).
+- templates: 1799/1800/1804 into 1805 as one table; 1794 `display_or_dash` deleted.
+- db: the round trips 1180/1208/1209/1218/1219 into 1213 (`each_kind_of_row_reads_back_as_it_was_written`),
+  the unknown lookups 1225/1226/1237/1239 into 1230 (`looking_up_anything_unknown_returns_none_rather_than_an_error`),
+  the settings row 1183/1217 into 1187 (`a_setting_reads_as_none_until_saved_overwrites_and_deletes`).
+  1205 (threshold count) was already gone upstream.
+- −24 tests.
+
 ## Decisions
 - 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
   pages keep what was typed through three different view models (`shown`, a field's
@@ -112,6 +124,9 @@ Scope: every Rust crate except the engine. Tests run with
 None in scope: the baseline run above passed everywhere.
 
 ## Needs from other chunks
+- Disk: `/home` filled to 100% (365 MB free) at about 17:45 and a link died with a bus error. I
+  removed my own `target/debug/incremental` (7 GB); space came back later. Worth watching while
+  four agents build.
 - Chunk B (`http/status_page.rs`): F1 deletes 1686
   `http::status_page::tests::http_tests::status_page_lists_a_configured_networks_node_and_a_scanner_not_yet_run`
   and 1692 `..._shows_a_plain_error_banner_when_a_remote_engine_is_unreachable_over_http`, and the F2
