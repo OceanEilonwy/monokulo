@@ -2112,18 +2112,155 @@ async fn lookup_payment_rejects_a_malformed_txid() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
 
+/// Every `.route(path, method(handler)...)` in `build_router`'s source, as
+/// `(method, path)` pairs. Read from the source rather than listed by hand:
+/// a route added there is in this list without anyone remembering to add
+/// it, and the auth table below fails until it either refuses every
+/// credential that isn't the store's own `sk_` or is named as not acting
+/// for a store.
+fn build_router_routes() -> Vec<(String, String)> {
+    let source = include_str!("../../../src/http/mod.rs");
+    let start = source.find("pub fn build_router(").unwrap();
+    let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
+    let mut routes = Vec::new();
+    let mut rest = body;
+    while let Some(at) = rest.find(".route(") {
+        let call = &rest[at + ".route(".len()..];
+        let mut depth = 1;
+        let end = call
+            .char_indices()
+            .find(|&(_, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            })
+            .unwrap()
+            .0;
+        let call = &call[..end];
+        let path = call.split('"').nth(1).unwrap().to_owned();
+        let mut methods = 0;
+        for method in ["get", "post", "put", "patch", "delete"] {
+            for (i, _) in call.match_indices(&format!("{method}(")) {
+                let before = call[..i].chars().next_back();
+                if before.is_none_or(|c| !c.is_alphanumeric() && c != '_') {
+                    routes.push((method.to_ascii_uppercase(), path.clone()));
+                    methods += 1;
+                }
+            }
+        }
+        assert!(methods > 0, "no method found for {path}: {call}");
+        rest = &rest[at + ".route(".len() + end..];
+    }
+    routes
+}
+
+/// The routes that act for no store, so take no store credential (each
+/// still needs the engine token, which every request here carries): store
+/// and wallet provisioning before a store has an `sk_`, instance-wide
+/// status, settings, logs, queries and streams, and the snp key handoff.
+const NOT_A_STORE_S_ROUTE: &[&str] = &[
+    "/api/v1/admin/tenants",
+    "/api/v1/admin/wallets",
+    "/api/v1/admin/wallets/{id}",
+    "/api/v1/admin/wallets/{id}/retire",
+    "/api/v1/admin/wallets/{id}/restore",
+    "/api/v1/admin/key-custody/bundle",
+    "/api/v1/admin/key-custody/handoff",
+    "/status",
+    "/api/v1/admin/settings",
+    "/api/v1/admin/settings/reload",
+    "/api/v1/admin/settings/check",
+    "/api/v1/admin/proof/{network}/anchor",
+    "/api/v1/admin/query",
+    "/api/v1/admin/query/schema",
+    "/api/v1/admin/logs",
+    "/api/v1/admin/logs/trace/{trace_id}",
+    "/api/v1/admin/logs/histogram",
+    "/api/v1/admin/logs/attributes",
+    "/api/v1/admin/order-events",
+    "/api/v1/admin/engine/activity/stream",
+];
+
+/// Every route that acts for a store refuses, with `401`, every credential
+/// but that store's own current `sk_`: none, an unknown key, the store's
+/// public `pk_` (which is embedded in web pages), a secret since rotated, and
+/// the secret of a store since deleted. Auth is a per-handler extractor
+/// (`AuthedTenant`), so each route is checked, not the router as a whole.
+/// The store's own secret is the control: it gets past auth on every one.
 #[tokio::test]
-async fn lookup_payment_requires_authentication() {
-    let (state, _daemon) = test_app_state_with_real_daemon().await;
+async fn every_store_route_refuses_every_credential_but_the_store_s_own_secret() {
+    let state = AppState::for_tests();
+    let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
-    let req = json_request(
-        "POST",
-        "/api/v1/admin/tenant/payments/lookup",
-        None,
-        &serde_json::json!({ "txid": "0".repeat(64) }),
+
+    let rotated = create_tenant(&router, 2).await;
+    let rotated_id = tenant_row(&store, &rotated).id;
+    store.lock().rotate_tenant_secret(&rotated_id).unwrap();
+    let deleted = create_tenant(&router, 3).await;
+    let deleted_id = tenant_row(&store, &deleted).id;
+    store.lock().disable_tenant(&deleted_id, 1).unwrap();
+
+    let store_routes: Vec<(String, String)> = build_router_routes()
+        .into_iter()
+        .filter(|(_, path)| !NOT_A_STORE_S_ROUTE.contains(&path.as_str()))
+        .collect();
+    for path in NOT_A_STORE_S_ROUTE {
+        assert!(
+            build_router_routes().iter().any(|(_, p)| p == path),
+            "{path} is no longer a route: take it off the list"
+        );
+    }
+    assert!(
+        store_routes
+            .iter()
+            .any(|(method, path)| method == "POST"
+                && path == "/api/v1/admin/tenant/key-custody/bundle"),
+        "{store_routes:?}"
     );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(store_routes.len() >= 12, "{store_routes:?}");
+
+    for (seed, (method, path)) in (10u8..).zip(&store_routes) {
+        let own = create_tenant(&router, seed).await;
+        let order = new_order(&router, &own).await;
+        let uri = path.replace("{order_id}", order["order_id"].as_str().unwrap());
+        assert!(!uri.contains('{'), "a path parameter to fill in: {uri}");
+        let request =
+            |bearer: Option<&str>| json_request(method, &uri, bearer, &serde_json::json!({}));
+        for (credential, bearer) in [
+            ("no bearer", None),
+            ("an unknown key", Some(format!("sk_{}", "0".repeat(64)))),
+            ("the store's own pk_", Some(own.public_key.clone())),
+            ("a rotated secret", Some(rotated.secret_token.clone())),
+            (
+                "a deleted store's secret",
+                Some(deleted.secret_token.clone()),
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(request(bearer.as_deref()))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {path} with {credential}"
+            );
+        }
+        let response = router
+            .clone()
+            .oneshot(request(Some(&own.secret_token)))
+            .await
+            .unwrap();
+        assert_ne!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {path} with the store's own secret"
+        );
+    }
 }
 
 #[tokio::test]

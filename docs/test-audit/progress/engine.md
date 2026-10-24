@@ -88,6 +88,20 @@ Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.tom
 - **656 stays** (F3 overturn): the only pin that a deleted store's keys are
   not re-registered at boot.
 
+### N2: every store route's auth table (replaces 347)
+- `http::tests::every_store_route_refuses_every_credential_but_the_store_s_own_secret`:
+  every route of `build_router` is read from its source
+  (`build_router_routes`, which walks each `.route(path, method(..))` call),
+  less an explicit `NOT_A_STORE_S_ROUTE` list (provisioning, status,
+  settings, logs, queries, streams, the snp handoff; a stale entry fails).
+  Each remaining route × {no bearer, unknown `sk_`, the store's own `pk_`,
+  a rotated secret, a deleted store's secret} must be `401`, and the
+  store's own secret must get past auth (the control). 12 routes today,
+  `POST tenant/key-custody/bundle` asserted among them.
+- Checked by hand: adding `.route("/api/v1/admin/tenant/probe", get(..))`
+  with no `AuthedTenant` fails it ("GET …/probe with no bearer: 200").
+- 347 `lookup_payment_requires_authentication` is replaced by it.
+
 ## Decisions
 
 ## Deviations from the plan
