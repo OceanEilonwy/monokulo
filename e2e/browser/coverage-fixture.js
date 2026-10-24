@@ -1,16 +1,18 @@
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { BUILD_ARGS } = require('./real-stack');
+const { BUILD_ARGS, PREBUILT } = require('./real-stack');
 
 const root = path.resolve(__dirname, '../..');
 const binary = path.join(root, 'target/debug/examples/coverage_fixture');
 const coverageAssets = path.join(root, 'target/coverage/browser/assets');
 
 async function startCoverageFixture() {
-  const build = spawnSync('cargo', [...BUILD_ARGS, '--offline'],
-    { cwd: root, encoding: 'utf8' });
-  if (build.status !== 0) throw new Error(`coverage fixture build failed:\n${build.stderr || build.error}`);
+  if (!PREBUILT) {
+    const build = spawnSync('cargo', [...BUILD_ARGS, '--offline'],
+      { cwd: root, encoding: 'utf8' });
+    if (build.status !== 0) throw new Error(`coverage fixture build failed:\n${build.stderr || build.error}`);
+  }
   const child = spawn(binary, [], { cwd: root, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
   let diagnostics = '';
   child.stderr.on('data', chunk => { diagnostics += chunk.toString(); });

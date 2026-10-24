@@ -2299,6 +2299,7 @@ mod tests {
             ("server.bind", "127.0.0.1:9081"),
             ("engine.mode", "remote"),
             ("engine.url", "http://127.0.0.1:9443"),
+            ("engine.status_cache_ms", "2500"),
             ("key_custody.snp_bundles_per_user", "17"),
             ("key_custody.snp_bundles_per_user_per_min", "29"),
             ("webhooks.allow_private_urls", "true"),
