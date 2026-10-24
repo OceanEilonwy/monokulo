@@ -648,41 +648,58 @@ fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
     }
 }
 
+// Every recorded RingCT variant, split by worker and pruning so the four
+// parts run side by side; each prints its own boundary hits, which
+// `cargo xtask engine mutations` adds up.
 #[test]
-fn every_recorded_ringct_variant_runs_complete_money_histories() {
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_whole() {
+    recorded_ringct_histories(0, false);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_pruned() {
+    recorded_ringct_histories(0, true);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_whole() {
+    recorded_ringct_histories(1, false);
+}
+
+#[test]
+fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_pruned() {
+    recorded_ringct_histories(1, true);
+}
+
+fn recorded_ringct_histories(worker: u8, pruned: bool) {
     use crate::work::portfolio::scenario::reviewed::recorded;
     let mut hits = std::collections::BTreeMap::<String, u64>::new();
-    for worker in 0..=1 {
-        for pruned in [false, true] {
-            for foreign in 0..3 {
-                for goal in 0..3 {
-                    let reached = crate::work::portfolio::explore(
-                        &recorded(worker, pruned, foreign, goal).encode(),
-                    );
-                    for boundary in [
-                        "fixture:recorded-and-synthetic",
-                        "custody-handle-replaced",
-                        "unanimous-spent-void-checked",
-                        "disputed-spent-retains-funds",
-                        "void-restored-to-canonical-block",
-                        "connection-reopened-final-ledger",
-                    ] {
-                        assert!(
-                            reached.get(boundary).copied().unwrap_or_default() > 0,
-                            "BOUNDARY: recorded-history; {boundary} worker={worker} pruned={pruned} foreign={foreign} goal={goal}"
-                        );
-                    }
-                    for boundary in [
-                        "recorded-ringct-history",
-                        if pruned {
-                            "recorded-pruned-history"
-                        } else {
-                            "recorded-whole-history"
-                        },
-                    ] {
-                        *hits.entry(boundary.into()).or_default() += 1;
-                    }
-                }
+    for foreign in 0..3 {
+        for goal in 0..3 {
+            let reached =
+                crate::work::portfolio::explore(&recorded(worker, pruned, foreign, goal).encode());
+            for boundary in [
+                "fixture:recorded-and-synthetic",
+                "custody-handle-replaced",
+                "unanimous-spent-void-checked",
+                "disputed-spent-retains-funds",
+                "void-restored-to-canonical-block",
+                "connection-reopened-final-ledger",
+            ] {
+                assert!(
+                    reached.get(boundary).copied().unwrap_or_default() > 0,
+                    "BOUNDARY: recorded-history; {boundary} worker={worker} pruned={pruned} foreign={foreign} goal={goal}"
+                );
+            }
+            for boundary in [
+                "recorded-ringct-history",
+                if pruned {
+                    "recorded-pruned-history"
+                } else {
+                    "recorded-whole-history"
+                },
+            ] {
+                *hits.entry(boundary.into()).or_default() += 1;
             }
         }
     }
