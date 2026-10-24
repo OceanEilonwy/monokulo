@@ -395,4 +395,4 @@ mod tests {
 #[cfg(test)]
 #[path = "../tests/verification/resources/properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod properties;
+mod boundaries;

@@ -151,4 +151,4 @@ impl Scheduler {
 #[cfg(test)]
 #[path = "../../tests/verification/work/scheduler/properties.rs"]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod properties;
+mod boundaries;

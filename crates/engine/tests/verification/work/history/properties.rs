@@ -51,146 +51,6 @@ fn outputs_match(s: &Store, h: &Harness, count: usize, amount: u64, height: Opti
         && order.status == OrderStatus::Paid
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-
-    #[test]
-    fn stored_amount_boundaries_survive_scanning_mining_and_restarts(
-        total in stored_amount(), split in any::<u64>(), threshold in 0u64..9, class in 0u8..3,
-    ) {
-        runtime().block_on(async {
-            let mut h = Harness::new().await;
-            let target = match class { 0 => total.saturating_sub(1).max(1), 1 => total, _ => total.saturating_add(1).min(STORED_MAX) };
-            configure(&h, target, Some(threshold), i64::MAX);
-            let first = split % total;
-            let tx = payment_tx_outputs(71, &[(1, first), (1, total - first)]);
-            let orders = vec![h.order.clone()];
-            h.daemon.set_mempool(vec![tx.clone()]);
-            converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
-                let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
-                o.amount_received_piconero == total && o.status == money_status(std::iter::once((total, None)), h.model.height(), target, threshold, false)
-            }).await;
-            let ids = payment_identities(&h, &orders);
-            h.restart();
-            h.daemon.set_mempool(vec![]);
-            append(&mut h, vec![tx]);
-            for _ in 1..threshold { append(&mut h, vec![]); }
-            converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
-                let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
-                o.amount_received_piconero == total && o.status == money_status(std::iter::once((total, Some(3))), h.model.height(), target, threshold, false)
-                    && s.get_all_payments(&h.order).unwrap().iter().all(|p| p.block_height == Some(3))
-            }).await;
-            h.restart();
-            assert_eq!(payment_identities(&h, &orders), ids);
-        });
-    }
-
-    #[test]
-    fn unrepresentable_amounts_fail_without_corrupting_stored_money(
-        excess in 1u64..=STORED_MAX, aggregate in any::<bool>(),
-    ) {
-        runtime().block_on(assert_unrepresentable_amount(excess, aggregate));
-    }
-
-    #[test]
-    fn oversized_invoices_do_not_consume_an_address_or_idempotency_key(
-        excess in 1u64..=STORED_MAX,
-    ) {
-        runtime().block_on(async {
-            let h = Harness::new().await;
-            let s = h.store().lock();
-            let tenant = &h.tenants[0].0;
-            let minor = s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index;
-            let mut invoice = NewOrder {
-                tenant_id: tenant.clone(), merchant_order_id: None, minor_index: minor,
-                address: format!("boundary-{minor}"), xmr_amount_piconero: STORED_MAX + excess,
-                description: None, created_at: h.now, expires_at: i64::MAX,
-                confirmations_required_override: Some(0), idempotency_key: Some("boundary-invoice".to_owned()),
-            };
-            s.create_order_claiming_minor_index(minor, &invoice).unwrap_err();
-            assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor);
-            invoice.xmr_amount_piconero = 1;
-            let created = s.create_order_claiming_minor_index(minor, &invoice).unwrap().unwrap();
-            assert_eq!(created.xmr_amount_piconero, 1);
-            assert_eq!(created.minor_index, minor);
-            assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
-            let retried = s.create_order_claiming_minor_index(minor, &invoice).unwrap().unwrap();
-            assert_eq!(retried.id, created.id);
-            assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
-        });
-    }
-
-    #[test]
-    fn settlement_queue_wraparound_recomputes_every_order_once(
-        count in prop_oneof![Just(63usize), Just(64usize), Just(65usize), Just(127usize), Just(128usize), Just(129usize)],
-        threshold in 1u64..5, restart in any::<bool>(),
-    ) {
-        runtime().block_on(async {
-            let mut h = Harness::new().await;
-            configure(&h, 1, Some(threshold), i64::MAX);
-            let mut orders = vec![h.order.clone()];
-            for _ in 1..count { orders.push(add_order(&h, 1, threshold)); }
-            let tx = payment_tx_outputs(73, &(1..=count).map(|n| (n as u32, 1)).collect::<Vec<_>>());
-            append(&mut h, vec![tx]);
-            for _ in 1..threshold { append(&mut h, vec![]); }
-            round(&mut h, &orders, Duration::ZERO, GRACE, None).await;
-            if restart { h.restart(); }
-            converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
-                s.pending_payment_recomputes_page(NETWORK, "", 1).unwrap().is_empty() && orders.iter().all(|id| {
-                    let o = s.get_order(&h.tenants[0].0, id).unwrap().unwrap();
-                    let rows = s.get_all_payments(id).unwrap();
-                    o.status == OrderStatus::Paid && o.amount_received_piconero == 1
-                        && rows.len() == 1 && rows[0].block_height == Some(3)
-                })
-            }).await;
-            let deliveries = h.store().lock().order_events_for_test().unwrap();
-            assert_eq!(deliveries.iter().filter(|d| d.event_type == "order.paid").count(), count);
-        });
-    }
-
-    #[test]
-    fn repeated_multi_order_forks_faults_and_restarts_preserve_money(
-        amounts in proptest::collection::vec(1u64..1000, 3..10),
-        thresholds in proptest::array::uniform3(0u64..6),
-        phases in proptest::collection::vec((any::<u16>(), 1u8..7, any::<bool>(), 0usize..200, 0u16..512), 2..9),
-    ) {
-        runtime().block_on(async {
-            let mut h = Harness::new().await;
-            let targets: Vec<u64> = (0..3).map(|order| amounts.iter().enumerate()
-                .filter(|(i, _)| i % 3 == order).map(|(_, a)| *a).sum()).collect();
-            configure(&h, targets[0], Some(thresholds[0]), i64::MAX);
-            let orders = vec![h.order.clone(), add_order(&h, targets[1], thresholds[1]), add_order(&h, targets[2], thresholds[2])];
-            let mut payments: Vec<_> = amounts.iter().enumerate().map(|(i, &amount)| Payment {
-                tx: payment_tx(i as u8 + 80, (i % 3 + 1) as u32, amount), order: i % 3,
-                amount, height: None, voided: false,
-            }).collect();
-            h.daemon.set_mempool(payments.iter().map(|p| p.tx.clone()).collect());
-            converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| matches(s, h, &orders, &payments, &targets, &thresholds)).await;
-            let ids = payment_identities(&h, &orders);
-            // Every phase replaces the whole payment branch; pool sightings
-            // deliberately retain missing outputs without affirmative spend evidence.
-            append(&mut h, vec![]);
-            for (mask, depth, restart, fault, failures) in phases {
-                let mined: Vec<_> = payments.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0)
-                    .map(|(_, p)| p.tx.clone()).collect();
-                let mut replacement = vec![(h.model.hash(), mined)];
-                for _ in 1..depth { replacement.push((h.model.hash(), vec![])); }
-                h.daemon.reorg_from(3, replacement.iter().map(|(hash, txs)| (hash.as_str(), txs.clone())).collect());
-                h.model.blocks.truncate(2);
-                h.model.blocks.extend(replacement.iter().map(|(hash, _)| (hash.clone(), false)));
-                for (i, p) in payments.iter_mut().enumerate() { p.height = (mask & (1 << i) != 0).then_some(3); }
-                h.daemon.set_mempool(payments.iter().filter(|p| p.height.is_none()).map(|p| p.tx.clone()).collect());
-                h.daemon.fail_calls(failures);
-                h.custody.fail(h.tenants[0].1);
-                round(&mut h, &orders, Duration::ZERO, GRACE, Some(fault)).await;
-                if restart { h.restart(); }
-                converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| matches(s, h, &orders, &payments, &targets, &thresholds)).await;
-                assert_eq!(payment_identities(&h, &orders), ids);
-            }
-        });
-    }
-}
-
 /// Half the usual cases for each side of a property split in two, so the
 /// pair runs as many cases as one property did, on two cores at once.
 fn half_config() -> proptest::test_runner::Config {
@@ -254,26 +114,6 @@ async fn reorg_collection_crosses_full_queue_pages(
     assert_eq!(payment_identities(&h, &orders), ids);
 }
 
-// The slowest property, split by where the payment was first seen so its
-// two halves run side by side.
-proptest! {
-    #![proptest_config(persisted_config(half_config()))]
-
-    #[test]
-    fn reorg_collection_of_mined_outputs_crosses_full_queue_pages_without_losing_outputs(
-        count in queue_size(), interrupt in 1usize..25, fault in 0usize..200,
-    ) {
-        runtime().block_on(reorg_collection_crosses_full_queue_pages(count, true, interrupt, fault));
-    }
-
-    #[test]
-    fn reorg_collection_of_pool_outputs_crosses_full_queue_pages_without_losing_outputs(
-        count in queue_size(), interrupt in 1usize..25, fault in 0usize..200,
-    ) {
-        runtime().block_on(reorg_collection_crosses_full_queue_pages(count, false, interrupt, fault));
-    }
-}
-
 /// The case the property once shrank to (its seed no longer reproduces it
 /// since the split changed the inputs): a 255-output pool payment, faulted
 /// in the first reprocessing round.
@@ -283,7 +123,7 @@ fn reorg_collection_of_a_255_output_pool_payment_faulted_at_once() {
 }
 
 const CRASH_PATH: &str = "MONOKULO_PROPERTY_CRASH_PATH";
-const CRASH_TEST: &str = "work::tests::properties::money::expansions::crash_process_child";
+const CRASH_TEST: &str = "work::tests::boundaries::money::expansions::crash_process_child";
 
 /// Always reap the child, including when an assertion or I/O operation fails.
 struct CrashProcess(Option<std::process::Child>);
@@ -435,17 +275,6 @@ fn crash_process_child() {
             std::thread::park();
         }
     });
-}
-
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-
-    #[test]
-    fn process_death_during_sqlite_work_recovers_exactly_once_money(
-        phase in 0u8..3, steps in 0usize..3000, amount in 1u64..1000,
-    ) {
-        runtime().block_on(crash_history(phase, steps, amount, None));
-    }
 }
 
 async fn assert_unrepresentable_amount(excess: u64, aggregate: bool) {
@@ -660,18 +489,6 @@ const MONEY_CRASH_POINTS: [(u8, &str); 8] = [
     (2, "reorg.before_commit"),
     (2, "reorg.after_commit"),
 ];
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn production_worker_crashes_preserve_atomic_money(boundary in 0usize..8,amount in 1u64..10_000) {
-        let (phase,point)=MONEY_CRASH_POINTS[boundary];
-        runtime().block_on(crash_history_on(phase,0,amount,Some(point),true));
-    }
-    #[test]
-    fn repeated_recovery_process_deaths_preserve_obligations(prefix in 1usize..6,amount in 1u64..10_000) {
-        runtime().block_on(crash_pipeline(prefix,amount));
-    }
-}
 #[test]
 fn every_worker_crash_boundary_and_the_full_recovery_pipeline_run() {
     runtime().block_on(async {
@@ -817,4 +634,191 @@ fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_run
             "/proptest-regressions/work/expansion_properties.txt"
         ),
     )
+}
+
+/// The generated cases (`proptest!`): left out of the local
+/// default run, run by CI and the scheduled property job.
+mod properties {
+    use super::*;
+
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+
+        #[test]
+        fn stored_amount_boundaries_survive_scanning_mining_and_restarts(
+            total in stored_amount(), split in any::<u64>(), threshold in 0u64..9, class in 0u8..3,
+        ) {
+            runtime().block_on(async {
+                let mut h = Harness::new().await;
+                let target = match class { 0 => total.saturating_sub(1).max(1), 1 => total, _ => total.saturating_add(1).min(STORED_MAX) };
+                configure(&h, target, Some(threshold), i64::MAX);
+                let first = split % total;
+                let tx = payment_tx_outputs(71, &[(1, first), (1, total - first)]);
+                let orders = vec![h.order.clone()];
+                h.daemon.set_mempool(vec![tx.clone()]);
+                converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
+                    let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
+                    o.amount_received_piconero == total && o.status == money_status(std::iter::once((total, None)), h.model.height(), target, threshold, false)
+                }).await;
+                let ids = payment_identities(&h, &orders);
+                h.restart();
+                h.daemon.set_mempool(vec![]);
+                append(&mut h, vec![tx]);
+                for _ in 1..threshold { append(&mut h, vec![]); }
+                converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
+                    let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
+                    o.amount_received_piconero == total && o.status == money_status(std::iter::once((total, Some(3))), h.model.height(), target, threshold, false)
+                        && s.get_all_payments(&h.order).unwrap().iter().all(|p| p.block_height == Some(3))
+                }).await;
+                h.restart();
+                assert_eq!(payment_identities(&h, &orders), ids);
+            });
+        }
+
+        #[test]
+        fn unrepresentable_amounts_fail_without_corrupting_stored_money(
+            excess in 1u64..=STORED_MAX, aggregate in any::<bool>(),
+        ) {
+            runtime().block_on(assert_unrepresentable_amount(excess, aggregate));
+        }
+
+        #[test]
+        fn oversized_invoices_do_not_consume_an_address_or_idempotency_key(
+            excess in 1u64..=STORED_MAX,
+        ) {
+            runtime().block_on(async {
+                let h = Harness::new().await;
+                let s = h.store().lock();
+                let tenant = &h.tenants[0].0;
+                let minor = s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index;
+                let mut invoice = NewOrder {
+                    tenant_id: tenant.clone(), merchant_order_id: None, minor_index: minor,
+                    address: format!("boundary-{minor}"), xmr_amount_piconero: STORED_MAX + excess,
+                    description: None, created_at: h.now, expires_at: i64::MAX,
+                    confirmations_required_override: Some(0), idempotency_key: Some("boundary-invoice".to_owned()),
+                };
+                s.create_order_claiming_minor_index(minor, &invoice).unwrap_err();
+                assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor);
+                invoice.xmr_amount_piconero = 1;
+                let created = s.create_order_claiming_minor_index(minor, &invoice).unwrap().unwrap();
+                assert_eq!(created.xmr_amount_piconero, 1);
+                assert_eq!(created.minor_index, minor);
+                assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
+                let retried = s.create_order_claiming_minor_index(minor, &invoice).unwrap().unwrap();
+                assert_eq!(retried.id, created.id);
+                assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
+            });
+        }
+
+        #[test]
+        fn settlement_queue_wraparound_recomputes_every_order_once(
+            count in prop_oneof![Just(63usize), Just(64usize), Just(65usize), Just(127usize), Just(128usize), Just(129usize)],
+            threshold in 1u64..5, restart in any::<bool>(),
+        ) {
+            runtime().block_on(async {
+                let mut h = Harness::new().await;
+                configure(&h, 1, Some(threshold), i64::MAX);
+                let mut orders = vec![h.order.clone()];
+                for _ in 1..count { orders.push(add_order(&h, 1, threshold)); }
+                let tx = payment_tx_outputs(73, &(1..=count).map(|n| (n as u32, 1)).collect::<Vec<_>>());
+                append(&mut h, vec![tx]);
+                for _ in 1..threshold { append(&mut h, vec![]); }
+                round(&mut h, &orders, Duration::ZERO, GRACE, None).await;
+                if restart { h.restart(); }
+                converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
+                    s.pending_payment_recomputes_page(NETWORK, "", 1).unwrap().is_empty() && orders.iter().all(|id| {
+                        let o = s.get_order(&h.tenants[0].0, id).unwrap().unwrap();
+                        let rows = s.get_all_payments(id).unwrap();
+                        o.status == OrderStatus::Paid && o.amount_received_piconero == 1
+                            && rows.len() == 1 && rows[0].block_height == Some(3)
+                    })
+                }).await;
+                let deliveries = h.store().lock().order_events_for_test().unwrap();
+                assert_eq!(deliveries.iter().filter(|d| d.event_type == "order.paid").count(), count);
+            });
+        }
+
+        #[test]
+        fn repeated_multi_order_forks_faults_and_restarts_preserve_money(
+            amounts in proptest::collection::vec(1u64..1000, 3..10),
+            thresholds in proptest::array::uniform3(0u64..6),
+            phases in proptest::collection::vec((any::<u16>(), 1u8..7, any::<bool>(), 0usize..200, 0u16..512), 2..9),
+        ) {
+            runtime().block_on(async {
+                let mut h = Harness::new().await;
+                let targets: Vec<u64> = (0..3).map(|order| amounts.iter().enumerate()
+                    .filter(|(i, _)| i % 3 == order).map(|(_, a)| *a).sum()).collect();
+                configure(&h, targets[0], Some(thresholds[0]), i64::MAX);
+                let orders = vec![h.order.clone(), add_order(&h, targets[1], thresholds[1]), add_order(&h, targets[2], thresholds[2])];
+                let mut payments: Vec<_> = amounts.iter().enumerate().map(|(i, &amount)| Payment {
+                    tx: payment_tx(i as u8 + 80, (i % 3 + 1) as u32, amount), order: i % 3,
+                    amount, height: None, voided: false,
+                }).collect();
+                h.daemon.set_mempool(payments.iter().map(|p| p.tx.clone()).collect());
+                converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| matches(s, h, &orders, &payments, &targets, &thresholds)).await;
+                let ids = payment_identities(&h, &orders);
+                // Every phase replaces the whole payment branch; pool sightings
+                // deliberately retain missing outputs without affirmative spend evidence.
+                append(&mut h, vec![]);
+                for (mask, depth, restart, fault, failures) in phases {
+                    let mined: Vec<_> = payments.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0)
+                        .map(|(_, p)| p.tx.clone()).collect();
+                    let mut replacement = vec![(h.model.hash(), mined)];
+                    for _ in 1..depth { replacement.push((h.model.hash(), vec![])); }
+                    h.daemon.reorg_from(3, replacement.iter().map(|(hash, txs)| (hash.as_str(), txs.clone())).collect());
+                    h.model.blocks.truncate(2);
+                    h.model.blocks.extend(replacement.iter().map(|(hash, _)| (hash.clone(), false)));
+                    for (i, p) in payments.iter_mut().enumerate() { p.height = (mask & (1 << i) != 0).then_some(3); }
+                    h.daemon.set_mempool(payments.iter().filter(|p| p.height.is_none()).map(|p| p.tx.clone()).collect());
+                    h.daemon.fail_calls(failures);
+                    h.custody.fail(h.tenants[0].1);
+                    round(&mut h, &orders, Duration::ZERO, GRACE, Some(fault)).await;
+                    if restart { h.restart(); }
+                    converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| matches(s, h, &orders, &payments, &targets, &thresholds)).await;
+                    assert_eq!(payment_identities(&h, &orders), ids);
+                }
+            });
+        }
+    }
+    // The slowest property, split by where the payment was first seen so its
+    // two halves run side by side.
+    proptest! {
+        #![proptest_config(persisted_config(half_config()))]
+
+        #[test]
+        fn reorg_collection_of_mined_outputs_crosses_full_queue_pages_without_losing_outputs(
+            count in queue_size(), interrupt in 1usize..25, fault in 0usize..200,
+        ) {
+            runtime().block_on(reorg_collection_crosses_full_queue_pages(count, true, interrupt, fault));
+        }
+
+        #[test]
+        fn reorg_collection_of_pool_outputs_crosses_full_queue_pages_without_losing_outputs(
+            count in queue_size(), interrupt in 1usize..25, fault in 0usize..200,
+        ) {
+            runtime().block_on(reorg_collection_crosses_full_queue_pages(count, false, interrupt, fault));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+
+        #[test]
+        fn process_death_during_sqlite_work_recovers_exactly_once_money(
+            phase in 0u8..3, steps in 0usize..3000, amount in 1u64..1000,
+        ) {
+            runtime().block_on(crash_history(phase, steps, amount, None));
+        }
+    }
+    proptest! {
+        #![proptest_config(persisted_config(config()))]
+        #[test]
+        fn production_worker_crashes_preserve_atomic_money(boundary in 0usize..8,amount in 1u64..10_000) {
+            let (phase,point)=MONEY_CRASH_POINTS[boundary];
+            runtime().block_on(crash_history_on(phase,0,amount,Some(point),true));
+        }
+        #[test]
+        fn repeated_recovery_process_deaths_preserve_obligations(prefix in 1usize..6,amount in 1u64..10_000) {
+            runtime().block_on(crash_pipeline(prefix,amount));
+        }
+    }
 }

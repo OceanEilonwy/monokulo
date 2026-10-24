@@ -1128,4 +1128,4 @@ mod settlement {
 }
 
 #[path = "node_properties.rs"]
-mod properties;
+mod boundaries;

@@ -4426,7 +4426,7 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
 }
 
 #[path = "order_properties.rs"]
-mod properties;
+mod boundaries;
 
 // -- Wallets shared by several stores (migration 0028) ----------------------
 
