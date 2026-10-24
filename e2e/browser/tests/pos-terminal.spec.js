@@ -176,14 +176,11 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
   }
 });
 
-// What a copy needs granted, per browser, for the test to read the clipboard
-// back as the merchant's next paste would. Chromium: writing too (a real
-// Chrome lets the page in front write unasked; Playwright's asks). WebKit:
-// reading only. Firefox: nothing, and it knows neither permission.
-const CLIPBOARD_PERMISSIONS = { chromium: ['clipboard-read', 'clipboard-write'], webkit: ['clipboard-read'], firefox: [] };
-
-test('real POS payment card copies the address and saves a refund address', async ({ page, context, browserName }) => {
-  await context.grantPermissions(CLIPBOARD_PERMISSIONS[browserName]);
+test('real POS payment card copies the address and saves a refund address', async ({ page, context }) => {
+  // Writing too, for the test to read the clipboard back as the merchant's
+  // next paste would: a real Chrome lets the page in front write unasked;
+  // Playwright's asks.
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
   // The stage says what to do; the time left is under the status.
@@ -435,12 +432,7 @@ test('customer walks away: the order on screen expires', async ({ page, request 
   await expect(page.locator('.pos-order-heading .tag')).toContainText('Expired');
 });
 
-// Who reconnects a stream that failed to connect: Chromium and WebKit retry
-// the same EventSource themselves; Firefox closes it for good, and the POS
-// opens a new one after its wait.
-const RECONNECTS_FAILED_STREAM = { chromium: 'browser', webkit: 'browser', firefox: 'pos' };
-
-test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, request, browserName }) => {
+test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, request }) => {
   let online = true;
   // The Wi-Fi is down: every attempt to (re)open the update stream fails.
   await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
@@ -475,13 +467,9 @@ test('counter loses its connection: the order shows connection lost, then recove
   await expect.poll(async () => { await page.clock.runFor(1000); return badge.textContent(); }, { timeout: 15000 }).toContain('Unconfirmed');
   await expect(page.locator('.mk-stage-msg')).toContainText('Payment seen. Waiting for its first confirmation.');
   const streams = await eventSources(page);
-  if (RECONNECTS_FAILED_STREAM[browserName] === 'browser') {
-    expect(streams, 'one stream, retried by the browser').toHaveLength(1);
-    expect(streams[0].refused).toBe(0);
-  } else {
-    expect(streams.length, 'the POS opened another once the browser gave up').toBeGreaterThan(1);
-    expect(streams.slice(0, -1).every(stream => stream.refused === 1)).toBe(true);
-  }
+  // Chromium retries a stream that failed to connect itself.
+  expect(streams, 'one stream, retried by the browser').toHaveLength(1);
+  expect(streams[0].refused).toBe(0);
   expect(streams.at(-1).readyState, 'connected').toBe(1);
 });
 

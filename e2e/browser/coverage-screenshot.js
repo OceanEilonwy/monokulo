@@ -95,13 +95,8 @@ async function save(testInfo, name, { group, stage, shape, theme }, body) {
   await testInfo.attach(name, { body: `images/${filename}`, contentType: 'text/plain' });
 }
 
-/** Whether a test's browser feeds the gallery: Chromium's only. Firefox and
- * WebKit run the POS's tests to check how it behaves there, not to show it
- * again. */
-const photographs = project => (project.use.browserName || 'chromium') === 'chromium';
-
 async function captureCoverageStage(target, stage, testInfo, options = {}) {
-  if (!enabled || !photographs(testInfo.project)) return;
+  if (!enabled) return;
   // A test's timeout bounds what it tests, not the gallery: a stage is about
   // ten full-page screenshots, and a test with several of them on a busy
   // runner would otherwise time out on photographs alone. So the time spent
@@ -149,4 +144,4 @@ async function capture(target, stage, testInfo, options) {
   if (original) await target.setViewportSize(original);
 }
 
-module.exports = { captureCoverageStage, photographs, guessGroup, gallery, SHAPES, THEMES };
+module.exports = { captureCoverageStage, guessGroup, gallery, SHAPES, THEMES };
