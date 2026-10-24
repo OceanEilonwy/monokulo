@@ -17,16 +17,51 @@ test('real challenge solves in JavaScript and continues to the checkout', async 
   expect(page.url()).toContain('monokulo_proof=');
 });
 
-test('real challenge offers a ten second no-JavaScript continuation', async ({ browser }) => {
+// The one real ten second wait in the suite: waiting is the proof
+// (abuse/challenge.rs), so it isn't shortened for a test.
+test('real challenge offers a ten second no-JavaScript continuation', async ({ browser, page }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   try {
-    const page = await context.newPage();
+    const plain = await context.newPage();
+    await plain.goto(`${fixture.base_url}/__coverage/challenge`);
+    await expect(plain.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
+    await expect(plain.locator('meta[http-equiv="refresh"]')).toHaveAttribute('content', /^10;url=/);
+    await expect(plain.getByRole('link', { name: 'continue' })).toBeVisible();
+    await captureCoverageStage(plain, 'challenge-no-js', test.info());
+
+    // Meanwhile, a Tor .onion served over plain HTTP: not a secure
+    // context, so crypto.subtle is missing and the proof cannot be computed
+    // in the page, which waits ten seconds too, on its own clock.
+    await page.addInitScript(() => { Object.defineProperty(window.crypto, 'subtle', { get: () => undefined }); });
+    // The page's time stands still from the start: only the test moves it.
+    const start = new Date('2026-01-01T00:00:00Z');
+    await pauseClockAt(page, start);
+    // The page's own record of moving on: each navigation it makes, and the
+    // page's time when it made it, from the Navigation API's navigate event,
+    // dispatched as location.replace is called (inside the timer that calls
+    // it). Kept in sessionStorage, which the next document on this origin
+    // shares, so the record is read once the page has arrived.
+    await page.addInitScript(() => {
+      navigation.addEventListener('navigate', event => {
+        const made = JSON.parse(sessionStorage.getItem('navigations') || '[]');
+        sessionStorage.setItem('navigations', JSON.stringify([...made, { url: event.destination.url, at: Date.now() }]));
+      });
+    });
+    const navigations = () => page.evaluate(() => JSON.parse(sessionStorage.getItem('navigations') || '[]'));
     await page.goto(`${fixture.base_url}/__coverage/challenge`);
-    await expect(page.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
-    await expect(page.locator('meta[http-equiv="refresh"]')).toHaveAttribute('content', /^10;url=/);
-    await expect(page.getByRole('link', { name: 'continue' })).toBeVisible();
-    await captureCoverageStage(page, 'challenge-no-js', test.info());
-    await expect(page.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
+    // Said as the wait is set, in the same breath (challenge.js): 10.5s, so
+    // the server's own ten seconds have passed when the page continues. The
+    // page's time hasn't moved since, so it continues at 10.5s exactly: not
+    // a millisecond before, which the page's own time of moving on shows.
+    await expect(page.locator('#challenge-progress')).toHaveText('This page continues in 10 seconds.');
+    await page.clock.runFor(10499);
+    await page.clock.runFor(1);
+    await expect(page.locator('#checkout-root')).toBeVisible();
+    expect(page.url()).toContain('monokulo_wait=');
+    expect(await navigations(), 'continued once, to the wait, at 10.5s').toEqual([{ url: expect.stringContaining('monokulo_wait='), at: start.getTime() + 10500 }]);
+
+    // Without JavaScript the refresh goes on by itself.
+    await expect(plain.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
   } finally { await context.close(); }
 });
 
@@ -50,40 +85,10 @@ test('real challenge continues inside a cross-site checkout frame with and witho
         await page.locator('#payment').evaluate(element => { element.style.width = '300px'; element.style.height = '150px'; });
         await expect(frame.getByRole('link', { name: 'continue' })).toBeInViewport();
         await captureCoverageStage(page.locator('#payment'), 'challenge-cross-site-small', test.info());
+        // The link goes on at once, without waiting for the refresh.
+        await frame.getByRole('link', { name: 'continue' }).click();
       }
       await expect(frame.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
     } finally { await context.close(); }
   }
-});
-
-test('real challenge on a plain-HTTP onion (no Web Crypto) waits ten seconds and continues', async ({ page }) => {
-  // A Tor .onion served over plain HTTP is not a secure context, so
-  // crypto.subtle is missing and the proof cannot be computed in the page.
-  await page.addInitScript(() => { Object.defineProperty(window.crypto, 'subtle', { get: () => undefined }); });
-  // The page's time stands still from the start: only the test moves it.
-  const start = new Date('2026-01-01T00:00:00Z');
-  await pauseClockAt(page, start);
-  // The page's own record of moving on: each navigation it makes, and the
-  // page's time when it made it, from the Navigation API's navigate event,
-  // dispatched as location.replace is called (inside the timer that calls
-  // it). Kept in sessionStorage, which the next document on this origin
-  // shares, so the record is read once the page has arrived.
-  await page.addInitScript(() => {
-    navigation.addEventListener('navigate', event => {
-      const made = JSON.parse(sessionStorage.getItem('navigations') || '[]');
-      sessionStorage.setItem('navigations', JSON.stringify([...made, { url: event.destination.url, at: Date.now() }]));
-    });
-  });
-  const navigations = () => page.evaluate(() => JSON.parse(sessionStorage.getItem('navigations') || '[]'));
-  await page.goto(`${fixture.base_url}/__coverage/challenge`);
-  // Said as the wait is set, in the same breath (challenge.js): 10.5s, so
-  // the server's own ten seconds have passed when the page continues. The
-  // page's time hasn't moved since, so it continues at 10.5s exactly: not
-  // a millisecond before, which the page's own time of moving on shows.
-  await expect(page.locator('#challenge-progress')).toHaveText('This page continues in 10 seconds.');
-  await page.clock.runFor(10499);
-  await page.clock.runFor(1);
-  await expect(page.locator('#checkout-root')).toBeVisible();
-  expect(page.url()).toContain('monokulo_wait=');
-  expect(await navigations(), 'continued once, to the wait, at 10.5s').toEqual([{ url: expect.stringContaining('monokulo_wait='), at: start.getTime() + 10500 }]);
 });
