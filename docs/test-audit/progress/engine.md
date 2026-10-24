@@ -4,6 +4,11 @@ Branch `worktree-agent-abe8a1f728ce46081`, from origin/main `6bac4c3b1`.
 Scope: `crates/engine/**`, `crates/engine-test-support/**`, `.config/nextest.toml`.
 
 ## Done
+Totals (ci profile): 859 tests before, 867 after. 63 removed (F2/F3 62,
+347 replaced by N2); added: 19 sweep parts net, 6 RingCT parts for 1, 36
+L2 fixed-input tests, N2, the RandomX end-to-end test, the stand-in unit,
+the loops real-time sibling. Default profile: 731 of them.
+
 
 ### F9: proof of work, stand-in hasher (option P4)
 - `pow::hasher::Function { RandomX, StandIn }`; `StandIn` exists only with
@@ -232,8 +237,8 @@ None: the ci-profile baseline passed (859 tests, 21 skipped).
 - Baseline, ci profile, before any change: 66.9 s wall, 859 tests (load
   about 110).
 - After F9 only, ci profile: 20.8 s, 861 tests.
-- Final, default profile: **5.6 s** at load 3 (698 tests, before the 36 L2
-  tests); 12.9 s at load 40 (731 tests). The slowest local tests are now
+- Final, default profile: **6.3 s** at load 21 (731 tests); 5.6 s at
+  load 3 before the L2 tests; 12.9 s at load 40. The slowest local tests are now
   the RingCT parts and `every_proof_config_shutdown…` (about 2-5 s).
 - Final, ci profile: **32.8 s** at load 40 (867 tests); 163 s at load 165.
 - Against the plan: the whole Rust workspace was to be about 19 s locally
