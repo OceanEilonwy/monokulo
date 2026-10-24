@@ -2119,7 +2119,8 @@ async fn lookup_payment_rejects_a_malformed_txid() {
 /// credential that isn't the store's own `sk_` or is named as not acting
 /// for a store.
 fn build_router_routes() -> Vec<(String, String)> {
-    let source = include_str!("../../../src/http/mod.rs");
+    // A Windows checkout ends its lines with "\r\n".
+    let source = include_str!("../../../src/http/mod.rs").replace("\r\n", "\n");
     let start = source.find("pub fn build_router(").unwrap();
     let body = &source[start..start + source[start..].find("\n}\n").unwrap()];
     let mut routes = Vec::new();

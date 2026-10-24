@@ -713,7 +713,10 @@ mod tests {
             !text.contains("node.example.com"),
             "the standby node: {text}"
         );
-        assert!(!text.contains("999"), "{text}");
+        // The standby's figures (999) aren't the node's; only the node is
+        // checked, as the rest carries the clock and this machine's figures.
+        let node = fallback["node"].to_string();
+        assert!(!node.contains("999"), "{node}");
 
         let elsewhere = json(&primary_status, "mainnet");
         assert!(elsewhere["node"].is_null());
