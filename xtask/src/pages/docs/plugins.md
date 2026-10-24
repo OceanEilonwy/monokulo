@@ -123,7 +123,13 @@ has no recent rate for the currency) and
 [`engine-unavailable`](../problems/engine-unavailable/) (503: the payment
 engine is busy). Nothing was made; wait `retry_after` seconds (also in
 `Retry-After`) when given, and send the same request with the same
-`idempotency_key`.
+`idempotency_key`. A currency Monokulo can't price is final instead:
+[`invalid-amount`](../problems/invalid-amount/) (400), for a code that
+isn't a currency (refused before any rate provider is asked), a real one
+none of the store's rate providers quotes, or any order of a store whose
+base currency none of them quotes. Tell the merchant; retrying won't help.
+`rates-unavailable` is only for a currency they do quote but can't right
+now.
 
 ### 3. Send the customer to pay
 
@@ -141,12 +147,15 @@ its `self` link (`GET /api/v1/orders/{order_id}`), or follow its changes on
 `mk:order-events`; but mark the shop's order paid from the webhook.
 
 On the shop's own order page, link the merchant to the order in Monokulo
-with its [`mk:dashboard-order`](../rels/dashboard-order/) link (resolved
-like the others): its page on the merchant's dashboard. Only your secret
-key is given it; keep it with the order rather than building it. Every
-webhook carries it too, absolute, in its `_links` (with `mk:order` and
-`mk:checkout`), so an order made before your plugin kept its links gets
-them from its next event.
+with its [`mk:dashboard-order`](../rels/dashboard-order/) link: its page on
+the merchant's dashboard. Take it from the webhooks: every one carries it,
+absolute, in its `_links` (with `mk:order` and `mk:checkout`), on every
+event, `order.cancelled` included. Show the one the order's latest webhook
+carried, replacing any you had, rather than one kept from when the order
+was made, and never build it. Before the order's first webhook there's
+nothing to show yet; the order `create-order` answered with has it too,
+for your secret key only (a path: resolve it like the others), if you
+want the link that early.
 
 ### 4. Take webhooks
 
