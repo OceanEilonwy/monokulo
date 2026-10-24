@@ -92,6 +92,37 @@ async fn the_reference_is_written_from_real_exchanges() {
     }
 }
 
+/// The examples, the OpenAPI document and the reference are the same,
+/// byte for byte, each time they're written: plugins copy the recorded
+/// examples into their own tests and compare them exactly. Recorded twice,
+/// each time on a fresh engine and a fresh Monokulo, some seconds apart,
+/// so nothing that hangs on the clock (a rate limit's `retry_after`), on
+/// chance (an id, a key, a challenge) or on timing gets through.
+#[tokio::test]
+async fn the_reference_is_the_same_each_time_it_is_written() {
+    let mut written = Vec::new();
+    for _ in 0..2 {
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        written.push(Reference::of(recording::record(engine.router()).await).files());
+    }
+    for ((name, first), (_, second)) in written[0].iter().zip(&written[1]) {
+        if first != second {
+            let line = first
+                .lines()
+                .zip(second.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
+            panic!(
+                "{name} differs from one writing to the next, from line {}:\n{}\n{}",
+                line + 1,
+                first.lines().nth(line).unwrap_or_default(),
+                second.lines().nth(line).unwrap_or_default()
+            );
+        }
+    }
+}
+
 /// The served document is the one built from the code, without examples.
 #[test]
 fn the_served_document_has_no_recorded_examples() {
