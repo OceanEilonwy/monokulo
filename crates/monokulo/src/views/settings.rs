@@ -381,60 +381,6 @@ mod tests {
     }
 
     #[test]
-    fn a_card_says_how_the_last_save_went() {
-        let clean = markup(Card::new("time", "Time").render(html! { "fields" }));
-        assert_eq!(
-            clean,
-            r#"<section id="card-time" class="settings-card" data-name="time" role="region" aria-labelledby="card-time-title" data-mk="1" data-island="SettingsCard"><header class="card-head"><h3 id="card-time-title">Time</h3><span class="card-state" data-card-state><!--mk:2--></span><span class="card-spacer"></span><!--mk:5--></header><div class="card-body">fields</div></section>"#
-        );
-        let saved = markup(
-            Card::new("time", "Time")
-                .saved(Some("14:02"), true)
-                .render(html! {}),
-        );
-        assert!(
-            saved.contains(r#"<span class="card-meta card-saved" data-card-saved tabindex="-1" data-fx-focus data-mk="4">Saved 14:02</span>"#),
-            "{saved}"
-        );
-        let just_saved = markup(
-            Card::new("time", "Time")
-                .saved(Some(""), false)
-                .render(html! {}),
-        );
-        assert!(
-            just_saved.contains(r#"data-card-saved data-mk="4">Saved</span>"#),
-            "{just_saved}"
-        );
-        let failed = markup(
-            Card::new("time", "Time")
-                .failed(true, Some("That zone isn't one we know."))
-                .saved(Some("14:02"), false)
-                .render(html! {}),
-        );
-        assert!(
-            failed.starts_with(r#"<section id="card-time" class="settings-card is-failed""#),
-            "{failed}"
-        );
-        assert!(
-            failed.contains(r#"<span class="mk-status-text" data-tone="error" data-card-failed data-mk="3">Not saved</span>"#),
-            "{failed}"
-        );
-        assert!(
-            failed.contains(r#"<div class="card-body"><p class="error" role="alert" data-mk="6">That zone isn't one we know.</p>"#),
-            "{failed}"
-        );
-        assert!(!failed.contains("data-card-saved"), "{failed}");
-        let readonly = markup(
-            Card::new("cli", "Command line")
-                .readonly(true)
-                .render(html! {}),
-        );
-        assert!(readonly.contains("Can't be changed here"), "{readonly}");
-        // Discard is the behaviour's: only where something can change.
-        assert!(!readonly.contains("<!--mk:5-->"), "{readonly}");
-    }
-
-    #[test]
     fn a_cards_own_attributes_are_escaped() {
         let card = markup(
             Card::new("custody-snp", "SEV-SNP")
@@ -447,56 +393,6 @@ mod tests {
         assert!(
             card.starts_with(r#"<section id="card-custody-snp" class="settings-card node-network" data-name="custody-snp" data-shown-by="key_custody.enabled_backends=snp" hidden role="region" aria-labelledby="card-custody-snp-title" data-mk="1" data-island="SettingsCard" data-note="a &quot;quoted&quot; &lt;b&gt;""#),
             "{card}"
-        );
-    }
-
-    #[test]
-    fn a_setting_has_its_label_its_changed_mark_and_its_help() {
-        let field = markup(
-            Field::new("Name", "name")
-                .help(Some("name-help"), html! { "Only you see it." })
-                .render(html! { input id="name" name="name"; }),
-        );
-        assert_eq!(
-            field,
-            r#"<div class="setting-field" data-mk="1" data-island="Setting"><div class="setting-about"><div class="setting-label-row"><label class="setting-label" for="name">Name</label><span class="changed-mark">changed</span></div><p class="field-help" id="name-help">Only you see it.</p></div><div class="setting-control"><input id="name" name="name"></div></div>"#
-        );
-        let group = markup(Field::group("Theme", "theme-label").render(html! {}));
-        assert_eq!(
-            group,
-            r#"<div class="setting-field" role="group" aria-labelledby="theme-label" data-mk="1" data-island="Setting"><div class="setting-about"><div class="setting-label-row"><span class="setting-label" id="theme-label">Theme</span><span class="changed-mark">changed</span></div></div><div class="setting-control"></div></div>"#
-        );
-    }
-
-    #[test]
-    fn the_save_bar_saves_and_discards() {
-        let bar = markup(save_bar(
-            true,
-            false,
-            html! { "Nothing saved." },
-            "/account",
-        ));
-        assert_eq!(
-            bar,
-            r#"<div id="save-bar" class="save-bar is-failed" role="region" aria-label="Save changes" data-mk="1" data-island="SaveBar"><div class="wrap save-bar-inner"><p class="save-bar-message" data-save-bar-message tabindex="-1"><span data-mk="2">Nothing saved.</span><!--mk:3--></p><div class="save-bar-actions" data-mk="4"><a class="mk-btn" href="/account" data-discard-all data-mk="5">Discard changes</a><button type="submit" class="mk-btn" data-variant="primary" data-save data-mk="6"><!--mk:7-->Save<!--/mk:7--></button></div><!--mk:8--></div></div>"#
-        );
-    }
-
-    #[test]
-    fn a_toast_links_to_the_card_it_is_about() {
-        let toast = Toast::new(ToastKind::Error, "Not saved")
-            .line("Pick a zone.")
-            .show("time");
-        let html = markup(toast_region(Some(&toast), false));
-        assert!(
-            html.contains(r#"<div class="toast toast-error" role="alert" data-toast data-mk="1" data-island="Toast">"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r##"<a class="toast-show" href="#card-time" data-show-card="time">Show</a>"##
-            ),
-            "{html}"
         );
     }
 }

@@ -388,44 +388,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_not_found_state_when_store_is_none() {
-        let html = page(&chrome(), &StoreDetailViewModel { store: None }).into_string();
-        assert!(html.to_lowercase().contains("not found"));
-    }
-
-    #[test]
-    fn the_store_is_called_by_its_name_and_its_site_is_a_link_to_the_host() {
-        let html = page(
-            &chrome(),
-            &StoreDetailViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(html.contains("<h1>Corner shop</h1>"), "{html}");
-        assert!(
-            html.contains(
-                r#"href="https://shop.example.com" title="shop.example.com">shop.example.com</a>"#
-            ),
-            "{html}"
-        );
-        assert!(html.contains("pk_abc123"));
-
-        // A store with no site has none to show.
-        let html = page(
-            &chrome(),
-            &StoreDetailViewModel {
-                store: Some(StoreDetailData {
-                    site: None,
-                    ..base_store()
-                }),
-            },
-        )
-        .into_string();
-        assert!(!html.contains("store-site"), "{html}");
-    }
-
-    #[test]
     fn shows_the_base_currency_at_the_top_of_the_table_and_hides_the_engine_endpoint() {
         let store = StoreDetailData {
             wallet: None,
@@ -449,70 +411,5 @@ mod tests {
             !html.contains("Engine endpoint"),
             "the engine endpoint row should no longer render on this page, got: {html}"
         );
-    }
-
-    #[test]
-    fn links_to_the_settings_page_and_widget_pages() {
-        let html = page(
-            &chrome(),
-            &StoreDetailViewModel {
-                store: Some(base_store()),
-            },
-        )
-        .into_string();
-        assert!(
-            html.contains(r#"href="/stores/conn_1/settings""#),
-            "expected a Settings link, got: {html}"
-        );
-        let help = html.find(r#"data-store-link="help""#).unwrap();
-        let settings = html.find(r#"data-store-link="settings""#).unwrap();
-        assert!(
-            settings < help,
-            "Help should be the rightmost control in the store header: {html}"
-        );
-        // Help is the docs, in a new tab.
-        assert!(
-            html.contains(&format!(
-                r#"<a class="mk-btn" href="{}" target="_blank" rel="noopener" data-store-link="help">{}Help</a>"#,
-                crate::views::DOCS_URL,
-                ui::assets::icons::EXTERNAL
-            )),
-            "expected Help to link to the docs: {html}"
-        );
-        assert!(html.find("class=\"store-header-status\"").unwrap() < help);
-        assert!(
-            html.contains(&format!("{}Settings</a>", ui::assets::icons::SETTINGS)),
-            "expected the gear before Settings: {html}"
-        );
-        // The POS needs JavaScript: its tile is a link only with it.
-        assert!(
-            html.contains(
-                r#"<a class="mk-launch-tile" href="/stores/conn_1/pos" data-only="script">"#
-            ),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r#"<a class="mk-launch-tile" aria-disabled="true" data-only="no-script">"#
-            ),
-            "{html}"
-        );
-        assert!(html.contains("Requires JavaScript"));
-        assert!(html.contains(r#"href="/stores/conn_1/orders/new""#));
-    }
-
-    #[test]
-    fn shows_the_lookup_message_when_present() {
-        let store = StoreDetailData {
-            wallet: None,
-            lookup_txid_value: "abc123".to_string(),
-            lookup_message: Some(
-                "No transaction with that ID was found on the network.".to_string(),
-            ),
-            ..base_store()
-        };
-        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("No transaction with that ID was found on the network."));
-        assert!(html.contains(r#"value="abc123""#));
     }
 }

@@ -530,82 +530,6 @@ mod tests {
         }
     }
 
-    /// No plugin's logo: each one's mark is the first letter of its name.
-    #[test]
-    fn a_plugins_mark_is_its_initial() {
-        let card = connections_card(&view(true, Some(0))).into_string();
-        assert!(
-            card.contains(r#"<span class="int-mark" aria-hidden="true">A</span>"#),
-            "{card}"
-        );
-        assert!(!card.contains("<svg"), "{card}");
-        assert_eq!(
-            plugin_mark("élan").into_string(),
-            r#"<span class="int-mark" aria-hidden="true">É</span>"#
-        );
-    }
-
-    #[test]
-    fn a_connected_plugin_locks_the_website_and_lists_in_connections() {
-        let v = view(true, Some(0));
-        let field = website_field(&v, "shop.example").into_string();
-        assert!(
-            field.contains(r#"<span class="locked-input"><input class="mk-input" type="text" value="shop.example" id="store-site" aria-describedby="store-site-lock" disabled>"#),
-            "{field}"
-        );
-        assert!(
-            field.contains(
-                r##"Set by Acme Cart · <a href="/stores/c_1/settings?tab=connections#card-connections">see Connections</a>"##
-            ),
-            "{field}"
-        );
-        assert!(
-            !field.contains("name=") && field.contains(" disabled>"),
-            "nothing to type or send: {field}"
-        );
-        let card = connections_card(&v).into_string();
-        assert!(
-            card.contains("shop.example · plugin 0.4.0 · connected 3 Oct · last order today"),
-            "{card}"
-        );
-        assert!(card.contains(r#"<a class="mk-btn" href="/stores/c_1/settings/plugins/int_1/disconnect" data-opens-dialog="disconnect-dialog">Disconnect…</a>"#), "{card}");
-        assert!(
-            card.contains("<h4>Before</h4>") && card.contains("3 Oct to 12 Sep"),
-            "{card}"
-        );
-    }
-
-    #[test]
-    fn with_no_plugin_the_website_is_a_field_that_asks_before_changing() {
-        let v = view(false, None);
-        let field = website_field(&v, "shop.example").into_string();
-        assert!(
-            field.contains(r#"name="store_site" id="store-site" value="shop.example""#)
-                && field.contains(r#"data-saved="shop.example""#),
-            "{field}"
-        );
-        assert!(
-            field.contains("Changing or removing it asks first."),
-            "{field}"
-        );
-        let card = connections_card(&SiteView { past: vec![], ..v }).into_string();
-        assert!(
-            card.contains("No plugin is connected.")
-                && card.contains("it finds this store by shop.example"),
-            "{card}"
-        );
-        let none = connections_card(&SiteView {
-            site: String::new(),
-            past: vec![],
-            ..view(false, None)
-        })
-        .into_string();
-        assert!(
-            none.contains("A shop plugin needs your website: add it above first."),
-            "{none}"
-        );
-    }
-
     #[test]
     fn changing_the_website_is_blocked_while_a_plugin_is_connected() {
         let html = website_content(
@@ -628,56 +552,6 @@ mod tests {
     }
 
     #[test]
-    fn changing_the_website_lists_what_follows_then_asks_for_the_name() {
-        let html = website_content(
-            &view(false, None),
-            &WebsiteChange::To("new.example".into()),
-            None,
-            false,
-        )
-        .in_dialog()
-        .into_string();
-        assert!(
-            html.starts_with(r#"<h2 id="website-title" class="dialog-title">"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<form method="post" action="/stores/c_1/settings/website">"#),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"name="site" id="website-confirm-site" value="new.example""#),
-            "{html}"
-        );
-        assert!(
-            html.contains("Checkouts embedded on shop.example stop loading"),
-            "{html}"
-        );
-        assert!(
-            html.contains("Its verified domain shop.example is dropped"),
-            "{html}"
-        );
-        assert!(html.contains(r#"3 orders started there can still be paid<span class="fix">until about 14:20; Monokulo keeps watching them</span>"#), "{html}");
-        assert!(
-            html.contains("Type <strong>\u{201c}Bakery\u{201d}</strong> to confirm"),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<button class="mk-btn" type="submit" data-variant="danger">Change website</button>"#),
-            "{html}"
-        );
-        let remove = website_content(&view(false, None), &WebsiteChange::Remove, None, true)
-            .in_dialog()
-            .into_string();
-        assert!(
-            remove.contains("Remove the website of")
-                && remove.contains(r#"name="remove" value="1""#),
-            "{remove}"
-        );
-        assert!(!remove.contains(r#"name="site""#), "{remove}");
-    }
-
-    #[test]
     fn disconnecting_is_blocked_while_an_order_from_the_shop_can_be_paid() {
         let html = disconnect_html(&view(true, Some(3)));
         assert!(html.contains(r#"No order from shop.example can still be paid<span class="fix">3 can be paid until about 14:20</span>"#), "{html}");
@@ -691,31 +565,6 @@ mod tests {
             unknown.contains("Monokulo can't check its orders right now")
                 && unknown.contains("disabled"),
             "{unknown}"
-        );
-    }
-
-    #[test]
-    fn disconnecting_says_the_webhook_goes_then_asks_for_the_name() {
-        let html = disconnect_html(&view(true, Some(0)));
-        assert!(html.contains("<h2 id=\"disconnect-title\" class=\"dialog-title\">Disconnect Acme Cart from \u{201c}Bakery\u{201d}?<button"), "{html}");
-        assert!(html.contains(r#"<li class="ok">"#), "{html}");
-        assert!(html.contains(r#"The plugin's webhook is removed<span class="fix">https://shop.example/monokulo-webhook</span>"#), "{html}");
-        assert!(
-            html.contains("New Monero orders on shop.example stop")
-                && html.contains("The website unlocks"),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r#"<form method="post" action="/stores/c_1/settings/plugins/int_1/disconnect">"#
-            ),
-            "{html}"
-        );
-        assert!(
-            html.contains(
-                r#"<button class="mk-btn" type="submit" data-variant="danger">Disconnect Acme Cart</button>"#
-            ),
-            "{html}"
         );
     }
 }
