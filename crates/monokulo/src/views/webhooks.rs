@@ -347,6 +347,7 @@ pub fn deliveries_results(
                 p class="muted" { @if entry.page == 0 { "Nothing sent yet." } @else { "No older deliveries." } }
             } @else {
                 (deliveries_table(paths, clock, max_attempts, &entry.webhook, &entry.recent))
+                (detail_dialogs(clock, max_attempts, &entry.webhook, &entry.recent))
             }
             @if entry.page > 0 || entry.has_more {
                 p class="orders-pages" {
@@ -435,6 +436,7 @@ pub fn webhook_block(card: &WebhooksCard, entry: &WebhookEntry) -> Markup {
                     .size(ui::ControlSize::Compact)
                     .attr("data-opens-dialog", delete_dialog_id(id)))
             }
+            (delete_dialog(&card.store_id, entry))
             (health_line(card, entry))
             @if let Some(note) = &note {
                 div class="wh-test" data-test-result { (note) }
@@ -516,18 +518,31 @@ pub fn card(card: &WebhooksCard, error: Markup) -> Markup {
     )
 }
 
-/// Every dialog the card's links open: each webhook's delete, each recent
-/// delivery's detail.
-pub fn dialogs(card: &WebhooksCard) -> Markup {
+/// The webhook's "Delete this webhook?" dialog, kept in its block so the
+/// block swapped in by fixi brings it along.
+fn delete_dialog(store_id: &str, entry: &WebhookEntry) -> Markup {
+    ui::Dialog::new(
+        delete_dialog_id(entry.webhook.id.as_str()),
+        format!("{}-delete-title", entry.webhook.id),
+        delete_content(store_id, entry).in_dialog(),
+    )
+    .render()
+}
+
+/// The detail dialogs of `deliveries`, each beside its row: wherever the
+/// rows are, on the page as it loads or swapped in by fixi ("Send a test
+/// webhook", "Older →"), their "Details" open a dialog.
+fn detail_dialogs(
+    clock: &Clock,
+    max_attempts: u32,
+    webhook: &WebhookRow,
+    deliveries: &[DeliveryRow],
+) -> Markup {
     html! {
-        @for entry in &card.webhooks {
-            (ui::Dialog::new(delete_dialog_id(entry.webhook.id.as_str()), format!("{}-delete-title", entry.webhook.id),
-                delete_content(&card.store_id, entry).in_dialog()))
-            @for delivery in &entry.recent {
-                (ui::Dialog::new(dialog_id(delivery.id), format!("delivery-{}-title", delivery.id),
-                    detail_content(&card.store_id, &card.clock, card.max_attempts, &entry.webhook, delivery).in_dialog())
-                    .size(ui::DialogSize::Wide))
-            }
+        @for delivery in deliveries {
+            (ui::Dialog::new(dialog_id(delivery.id), format!("delivery-{}-title", delivery.id),
+                detail_content(webhook.store_id.as_str(), clock, max_attempts, webhook, delivery).in_dialog())
+                .size(ui::DialogSize::Wide))
         }
     }
 }
