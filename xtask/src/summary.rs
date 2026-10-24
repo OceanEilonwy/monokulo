@@ -2,15 +2,17 @@
 //! reports with their failures, and `cargo xtask coverage summary`, the
 //! coverage components' table. Both print Markdown for `$GITHUB_STEP_SUMMARY`.
 
+use crate::slow;
 use crate::support::{escape_html, files_under, read_json, root};
 use serde_json::Value;
 use std::{fmt::Write, fs, io, path::Path};
 use syn::visit::{self, Visit};
 
 pub(crate) const HELP: &str = "\
-        test-summary TITLE LABEL=JUNIT...\n\
+        test-summary [--fail-slow] TITLE LABEL=JUNIT...\n\
                       Print JUnit reports (nextest, Playwright, PHPUnit) as a GitHub job-summary table with\n\
-                      their failures and skipped tests; a missing report is a row that says so";
+                      their failures and skipped tests; a missing report is a row that says so. --fail-slow\n\
+                      fails on a Rust test over 5 s or a browser test over 15 s that xtask/src/slow.rs doesn't list";
 
 const MESSAGE_LIMIT: usize = 3000;
 
@@ -147,12 +149,14 @@ fn message(node: roxmltree::Node) -> String {
 }
 
 /// One suite's counts and wall time, whether cargo-nextest wrote it, and
-/// the name of every case it ran.
+/// the name of every case it ran, and the full name and time of each that
+/// was not skipped.
 struct Suite {
     counts: Counts,
     seconds: f64,
     nextest: bool,
     names: Vec<String>,
+    times: Vec<(String, f64)>,
 }
 
 /// One suite's counts, wall time, failures and skipped tests. The run's wall
@@ -199,6 +203,7 @@ fn read(
         .filter_map(|case| case.attribute("name"))
         .map(str::to_string)
         .collect();
+    let mut times = Vec::new();
     for case in cases {
         let child = |tag: &str| case.children().find(|c| c.has_tag_name(tag));
         let name = [case.attribute("classname"), case.attribute("name")]
@@ -231,12 +236,17 @@ fn read(
         } else {
             counts.passed += 1;
         }
+        if child("skipped").is_none() {
+            let secs = case.attribute("time").and_then(|t| t.parse().ok());
+            times.push((name, secs.unwrap_or(0.0)));
+        }
     }
     Ok(Suite {
         counts,
         seconds,
         nextest,
         names,
+        times,
     })
 }
 
@@ -299,9 +309,41 @@ pub(crate) fn test_summary(title: &str, suites: &[&str]) -> String {
     summarize(&root(), title, suites)
 }
 
+/// [`test_summary`] with `--fail-slow`: also each test over its limit that
+/// xtask/src/slow.rs doesn't list, and whether there were none.
+pub(crate) fn test_summary_failing_slow(title: &str, suites: &[&str]) -> (String, bool) {
+    let (text, slow) = report(&root(), title, suites, true);
+    (text, slow.is_empty())
+}
+
 /// [`test_summary`], with a nextest report's ignored tests read from the Rust
 /// source under `source`.
 fn summarize(source: &Path, title: &str, suites: &[&str]) -> String {
+    report(source, title, suites, false).0
+}
+
+/// A test over its limit (unless it is a property test, or listed in
+/// xtask/src/slow.rs), as `label: name (time)`.
+fn too_slow(label: &str, suite: &Suite) -> Vec<String> {
+    let limit = if suite.nextest {
+        slow::RUST_LIMIT_S
+    } else {
+        slow::BROWSER_LIMIT_S
+    };
+    suite
+        .times
+        .iter()
+        .filter(|(name, secs)| {
+            *secs > limit
+                && !(suite.nextest && name.contains("::properties::"))
+                && !slow::listed(name)
+        })
+        .map(|(name, secs)| format!("{label}: {name} ({secs:.1} s, over {limit:.0} s)"))
+        .collect()
+}
+
+/// [`summarize`]; with `limits`, also every test over its limit.
+fn report(source: &Path, title: &str, suites: &[&str], limits: bool) -> (String, Vec<String>) {
     let (mut failures, mut flaky, mut skips) = (Vec::new(), Vec::new(), Vec::new());
     // Each suite's counts and wall time, or why it has none.
     let mut rows: Vec<(String, Result<Suite, String>)> = Vec::new();
@@ -339,6 +381,12 @@ fn summarize(source: &Path, title: &str, suites: &[&str]) -> String {
         }
         rows.push((label.to_string(), row));
     }
+    let slow: Vec<String> = rows
+        .iter()
+        .filter(|_| limits)
+        .filter_map(|(label, row)| row.as_ref().ok().map(|suite| too_slow(label, suite)))
+        .flatten()
+        .collect();
     let mut out = format!(
         "## {title}\n\n| Suite | Result | Passed | Failed | Flaky | Skipped | Time |\n| --- | --- | ---: | ---: | ---: | ---: | ---: |\n"
     );
@@ -397,8 +445,20 @@ fn summarize(source: &Path, title: &str, suites: &[&str]) -> String {
             .unwrap();
         }
     }
+    if !slow.is_empty() {
+        writeln!(
+            out,
+            "### Too slow ({})\n\nMake each faster, or list it in xtask/src/slow.rs with why it takes that long.\n",
+            slow.len()
+        )
+        .unwrap();
+        for line in &slow {
+            writeln!(out, "- <code>{}</code>", escape_html(line)).unwrap();
+        }
+        out.push('\n');
+    }
     write_skips(&mut out, &skips);
-    out
+    (out, slow)
 }
 
 /// The Markdown for `cargo xtask coverage summary`: each component's tests,
@@ -486,6 +546,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!((suite.counts.passed, suite.seconds), (2, 3.5));
+    }
+
+    /// With --fail-slow, a Rust test over 5 s or a browser test over 15 s
+    /// fails the summary, unless it is a property test or slow.rs lists it.
+    #[test]
+    fn a_test_over_its_limit_fails_unless_it_is_listed_or_a_property() {
+        let scratch = Scratch::new("summary-slow");
+        let rust = scratch.join("rust.xml");
+        fs::write(
+            &rust,
+            r#"<testsuites name="nextest-run" time="9"><testsuite name="engine">
+            <testcase classname="engine" name="work::tests::takes_its_time" time="6.2"/>
+            <testcase classname="engine" name="work::tests::properties::money_matches" time="30"/>
+            <testcase classname="engine" name="proof::tests::a_made_up_block_is_caught" time="9"/>
+            <testcase classname="engine" name="work::tests::quick" time="4.9"/>
+            </testsuite></testsuites>"#,
+        )
+        .unwrap();
+        let browser = scratch.join("browser.xml");
+        fs::write(
+            &browser,
+            r#"<testsuites><testsuite name="pos.spec.js">
+            <testcase classname="pos.spec.js" name="waits a while" time="16"/>
+            <testcase classname="pos.spec.js" name="is quick enough" time="14"/>
+            <testcase classname="pos.spec.js" name="never ran" time="99"><skipped/></testcase>
+            </testsuite></testsuites>"#,
+        )
+        .unwrap();
+        let suites = [
+            format!("rust={}", rust.display()),
+            format!("browser={}", browser.display()),
+        ];
+        let suites: Vec<&str> = suites.iter().map(String::as_str).collect();
+        let (text, slow) = report(scratch.path(), "Tests", &suites, true);
+        assert_eq!(
+            slow,
+            [
+                "rust: engine › work::tests::takes_its_time (6.2 s, over 5 s)",
+                "browser: pos.spec.js › waits a while (16.0 s, over 15 s)"
+            ]
+        );
+        assert!(text.contains("### Too slow (2)"), "{text}");
+        // Without --fail-slow, times are only times.
+        let (text, slow) = report(scratch.path(), "Tests", &suites, false);
+        assert!(slow.is_empty() && !text.contains("Too slow"), "{text}");
     }
 
     #[test]

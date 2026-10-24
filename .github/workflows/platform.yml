@@ -147,15 +147,19 @@ jobs:
         # nextest does not run doctests. The packages the Build step named
         # (xtask has none), so this step only runs them.
         run: cargo test --workspace --locked --doc --features monokulo/snp ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+      # On a pull request, a test over its time limit that xtask/src/slow.rs
+      # doesn't list fails here (--fail-slow), after the summary says which.
       - name: Summarize
         if: always()
         shell: bash
         run: |
+          slow=0
           if test '${{ runner.os }}' != Windows; then
-            cargo xtask test-summary 'Rust tests (${{ runner.os }})' \
-              rust=${{ inputs.coverage && 'target/coverage/rust/junit.xml' || 'target/nextest/ci/junit.xml' }} >> "$GITHUB_STEP_SUMMARY"
+            cargo xtask test-summary ${{ github.event_name == 'pull_request' && !inputs.coverage && '--fail-slow' || '' }} 'Rust tests (${{ runner.os }})' \
+              rust=${{ inputs.coverage && 'target/coverage/rust/junit.xml' || 'target/nextest/ci/junit.xml' }} >> "$GITHUB_STEP_SUMMARY" || slow=$?
           fi
           echo "Doctests: ${{ steps.doctests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          exit "$slow"
       - name: Upload Rust coverage
         if: always() && inputs.coverage
         uses: actions/upload-artifact@v7
@@ -296,10 +300,11 @@ jobs:
           else
             cd e2e/browser && ./node_modules/.bin/playwright test -c coverage-browser.config.js
           fi
+      # As the rust tests job's: a pull request fails on a slow test.
       - name: Summarize
         if: always()
         run: |
-          cargo xtask test-summary 'Browser tests' \
+          cargo xtask test-summary ${{ github.event_name == 'pull_request' && !inputs.coverage && '--fail-slow' || '' }} 'Browser tests' \
             browser=target/coverage/browser/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser coverage
         if: always() && inputs.coverage
