@@ -47,6 +47,8 @@ use crate::views;
 /// The `machine` event comes at most this often: it is built from
 /// monokulo's cached `/status` (itself at most one engine request every
 /// ten seconds), not from each frame, so a busy scan costs it nothing more.
+/// Monokulo runs this; the relay's [`Timing`](crate::engine_view::relay::Timing)
+/// carries it, so a test can pass another explicitly.
 pub const MACHINE_EVERY: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Deserialize)]
@@ -296,7 +298,7 @@ pub async fn events(
         Err(error) => return (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
     };
     // Frames as the engine records them; between them, the `machine`
-    // event once straight away and then every MACHINE_EVERY at most.
+    // event once straight away and then every `machine_every` at most.
     let follow = stream::unfold(
         (watch, permit, state, network, tokio::time::Instant::now()),
         |(mut watch, permit, state, network, mut next_machine)| async move {
@@ -315,7 +317,8 @@ pub async fn events(
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                     },
                     () = tokio::time::sleep_until(next_machine) => {
-                        next_machine = tokio::time::Instant::now() + MACHINE_EVERY;
+                        next_machine =
+                            tokio::time::Instant::now() + state.engine.activity.timing().machine_every;
                         match machine_event(&state, &network).await {
                             Some(event) => event,
                             None => continue,
@@ -407,6 +410,7 @@ mod tests {
 
     use super::*;
     use crate::engine_client::EngineClient;
+    use crate::engine_view::relay::{Relay, Timing};
     use crate::http::test_support::{
         admin_session_cookie, body_json, body_text, signed_up_and_logged_in_session_token,
     };
@@ -414,6 +418,11 @@ mod tests {
     /// monokulo with a real engine that scans stagenet, whose record holds
     /// a snapshot, a commit and a reorg; and an admin's session.
     async fn site() -> (engine_test_support::TestEngineHandle, Router, String) {
+        site_with(Timing::DEFAULT).await
+    }
+
+    /// [`site`], its relay following with `timing`.
+    async fn site_with(timing: Timing) -> (engine_test_support::TestEngineHandle, Router, String) {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[Network::Stagenet]).await;
         let activity = engine.activity(Network::Stagenet);
@@ -442,8 +451,12 @@ mod tests {
             idle_moved: 0,
             header_only: false,
         });
+        let client = EngineClient::embedded_for_tests(engine.router());
         let state = AppState {
-            engine: crate::http::Engine::new(EngineClient::embedded_for_tests(engine.router())),
+            engine: crate::http::Engine {
+                activity: Arc::new(Relay::with_timing(client.clone(), timing).unwrap()),
+                ..crate::http::Engine::new(client)
+            },
             ..AppState::for_tests()
         };
         let router = crate::http::build_router(state);
@@ -741,11 +754,16 @@ mod tests {
     }
 
     /// The stream sends the strip's `machine` event at once, after the
-    /// history, and then at most every MACHINE_EVERY however many frames
+    /// history, and then at most every `machine_every` however many frames
     /// come between: it is built from the cached `/status`, not per frame.
+    /// Monokulo waits [`MACHINE_EVERY`]; this passes a shorter interval.
     #[tokio::test]
     async fn the_machine_event_comes_at_once_then_at_most_every_few_seconds() {
-        let (engine, router, cookie) = site().await;
+        let timing = Timing {
+            machine_every: Duration::from_millis(400),
+            ..Timing::DEFAULT
+        };
+        let (engine, router, cookie) = site_with(timing).await;
         let response = get(
             &router,
             "/status/engine/events?network=stagenet",
@@ -784,7 +802,7 @@ mod tests {
         };
         assert!(frames > 0, "the frames came through");
         assert!(
-            second >= MACHINE_EVERY - Duration::from_millis(50),
+            second >= timing.machine_every - Duration::from_millis(50),
             "the next machine event waited: {second:?}"
         );
     }
