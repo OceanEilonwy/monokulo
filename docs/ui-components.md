@@ -219,8 +219,8 @@ Run `npm run test:ui` (install Chromium once with `npx playwright install chromi
 `npm run build:ui`, `npm run typecheck -w @monokulo/pos` and
 `npm run typecheck -w @monokulo/engine`.
 Existing Rust palette checks also inspect the embedded package component CSS.
-For POS adoption use the existing `pos-responsive-layout` and terminal browser
-suites, plus `cargo test -p monokulo --lib http::pos::tests`.
+For POS adoption use the existing POS terminal browser
+suite (`pos-terminal.spec.js`), plus `cargo test -p monokulo --lib http::pos::tests`.
 
 Every page under the site's bar starts with a `PageHeader`: breadcrumbs (one
 link is a back link), the required title, then a wizard's progress; a badge or
