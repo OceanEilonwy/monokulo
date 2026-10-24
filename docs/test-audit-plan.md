@@ -63,7 +63,8 @@ Instrumented serial time is 623 s; that overstates the uninstrumented saving.
 | F5 | Firefox down to a 3-test smoke. WebKit keeps a wider smoke (POS new/background/resume, camera, counter pay, checkout pays, one fit loop) until question Q3 is answered. | Firefox and WebKit are 41% of PR e2e serial time (175 s + 205 s of 933 s) |
 | F6 | xtask: a pure `judge()` table test and a 2 s hanging-program test. Pages HTML folds. Mock-woocommerce folds. Component pixel and CSS specs. Make the slow keepers cheaper. | `judge()` saves 25.7 s serial, and the xtask wall time goes from 20 s to about 5 s |
 | F7 | Delete dead code together with its tests: `test_whoami` (5 tests plus the `signed_in` helper, repointed to `GET /account`), `XmrIdentityProvider::supported_currencies`, `telemetry::trace::current_trace_id` | Each one is called only by tests, which your rule on dead code covers |
-| F8 | Engine fixed costs: a committed proof chain that is re-verified on load (−74 s); split `every_sql_failure_*` by fault range (−38 s); a paused clock with one real-time sibling (−5 s) | The proof tests spend about 5 s each on RandomX caches and mining. nextest's process per test defeats `OnceLock`. |
+| F8 | Engine fixed costs: split `every_sql_failure_*` by fault range (−38 s); a paused clock with one real-time sibling (−5 s). The committed proof chain is replaced by F9. | |
+| F9 | **Proof of work, almost none locally, a little in CI (option P4, agreed).** (a) The follower's logic tests (anchoring, reorgs, RPC timeouts, forks, auth histories) get a stand-in hash function, for example keccak, through the existing `Follower::with_hasher`, an explicit injection like ScanTuning. The stand-in lives behind `test-support`, and production has RandomX as its only path. (b) Real RandomX stays in about 8 tests: `hashes_randomx_s_reference_vector`, the `pow::tests` real-mainnet fixture, one end-to-end proof test, `real_verifier_and_scanner`, and `check_hash` against difficulty. (c) Those tests leave the local default through nextest's default-filter (`test-group(proof-workers)`), except the reference-vector unit. PR CI and the scheduled run keep them. | 45 tests hash real RandomX today: `proof::` 25 (207 s), proof properties 6 (87 s), `real_verifier_and_scanner` 2 (68 s, 38.8 s the longest Rust test), `pow::` 12 (17 s). That is about 380 s, 30% of Rust serial time. `TestChain` mines every block above difficulty 1 at about 16 ms a hash, and each process builds up to two 256 MiB caches. Estimated after: about 37 tests under 1 s each (−250 to −300 s serial), and PR CI's real PoW under 60 s serial. Not measured. Risk: the logic tests stop proving the hash/difficulty comparison, so the kept real tests and `check_hash` units must cover it. |
 
 **Overturned research verdicts** (from 92 spot-checks across the reviewers; all are applied in the DB):
 - **656 stays:** it is the only pin that a deleted store's keys are not re-registered at boot.
@@ -170,7 +171,7 @@ T-a, T-b, T-c and T-d alone bring every test step under 300 s. They are CI confi
 | 7 | F6 xtask, components, mock-woocommerce | 1 d | |
 | 8 | T-g explicit tunings for the clock waits | 1.5 d | e2e 47 → 30 s |
 | 9 | T-i (after your yes) and T-j `cargo xtask test`; then measure | 0.5 d | **under 1 min** |
-| 10 | F8 engine fixed costs | 2.5 d | headroom |
+| 10 | F8 engine fixed costs; F9 proof of work (stand-in hasher, about 8 real-RandomX tests, CI only) | 3 d | headroom; no PoW locally |
 | 11 | Stop it growing back (R1–R4, below); re-baseline `docs/coverage-line-baseline.json` | 1.5 d | |
 | 12 | Tier 2, if you approve | 2 d | |
 
