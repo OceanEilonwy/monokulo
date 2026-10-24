@@ -174,15 +174,16 @@ fn one_resource_per_file() {
     walk(&root.join("src/api"), &mut sources);
     assert!(!sources.is_empty());
     for source in sources {
+        // `/` separators on every OS, as `file!()` and this path mix them on Windows.
         let relative = source
             .strip_prefix(&root)
             .unwrap()
             .to_string_lossy()
-            .into_owned();
+            .replace('\\', "/");
         assert!(
             catalog::resources()
                 .iter()
-                .any(|r| r.file.ends_with(&relative)),
+                .any(|r| r.file.replace('\\', "/").ends_with(&relative)),
             "{relative} declares no resource"
         );
     }
