@@ -7,7 +7,6 @@ use super::format::{capitalised, sentence};
 use super::inputs::{
     BrowserKind, CoverageRun, FuzzTarget, Gallery, LiveRun, Properties, Stress, Test, TestStatus,
 };
-use crate::support::project_browser;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -241,15 +240,10 @@ fn rust_case(t: &Test) -> Case {
 
 fn browser_case(t: &Test) -> Case {
     let spec = t.class.strip_suffix(".spec.js").unwrap_or(&t.class);
-    let notes: Vec<&str> = (t.kind == Some(BrowserKind::RealBinaries))
-        .then_some("real binaries")
-        .into_iter()
-        .chain(project_browser(&t.project))
-        .collect();
-    let group = if notes.is_empty() {
-        spec.to_string()
+    let group = if t.kind == Some(BrowserKind::RealBinaries) {
+        format!("{spec} (real binaries)")
     } else {
-        format!("{spec} ({})", notes.join(", "))
+        spec.to_string()
     };
     Case {
         suite: Suite::Browser,
@@ -382,12 +376,11 @@ mod tests {
     /// that claims it.
     #[test]
     fn each_test_lands_in_the_first_area_that_claims_it() {
-        // (class, name, browser kind, project, crate, group, label)
+        // (class, name, browser kind, crate, group, label)
         type Row<'a> = (
             &'a str,
             &'a str,
             Option<BrowserKind>,
-            &'a str,
             &'a str,
             &'a str,
             &'a str,
@@ -397,7 +390,6 @@ mod tests {
                 "engine",
                 "scanner::tests::a_reorg_moves_it",
                 None,
-                "",
                 "engine",
                 "engine::scanner",
                 "A reorg moves it",
@@ -406,7 +398,6 @@ mod tests {
                 "engine::backup_restore",
                 "restores_both",
                 None,
-                "",
                 "engine",
                 "engine::backup_restore",
                 "Restores both",
@@ -415,44 +406,22 @@ mod tests {
                 "checkout.spec.js",
                 "shows the amount",
                 Some(BrowserKind::RealBinaries),
-                "real-binaries",
                 "browser",
                 "checkout (real binaries)",
                 "Shows the amount",
             ),
-            // The POS's tests run in Firefox and WebKit too, under the same names.
-            (
-                "checkout.spec.js",
-                "shows the amount",
-                Some(BrowserKind::RealBinaries),
-                "real-binaries-webkit",
-                "browser",
-                "checkout (real binaries, WebKit)",
-                "Shows the amount",
-            ),
             (
                 "pos-terminal.spec.js",
                 "copies the address",
                 Some(BrowserKind::Fixture),
-                "fixture-firefox",
-                "browser",
-                "pos-terminal (Firefox)",
-                "Copies the address",
-            ),
-            (
-                "pos-terminal.spec.js",
-                "copies the address",
-                Some(BrowserKind::Fixture),
-                "fixture",
                 "browser",
                 "pos-terminal",
                 "Copies the address",
             ),
         ];
-        for (class, name, kind, project, krate, group, label) in rows {
+        for (class, name, kind, krate, group, label) in rows {
             let mut t = test(class, name);
             t.kind = *kind;
-            t.project = project.to_string();
             let case = if kind.is_some() {
                 browser_case(&t)
             } else {
@@ -465,7 +434,7 @@ mod tests {
                     case.label.as_str()
                 ),
                 (*krate, *group, *label),
-                "{class} {name} in {project:?}"
+                "{class} {name}"
             );
         }
         let report = Report::new(
