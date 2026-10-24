@@ -124,11 +124,18 @@ fn an_event_outside_any_span_has_empty_attributes_and_no_spans() {
     assert!(line.get("spans").is_none());
 }
 
+/// Pretty output is redacted as JSON is: secrets hidden, an address
+/// shortened, a client address cut to its network.
 #[test]
 fn pretty_output_is_redacted_too() {
     let (_telemetry, capture, _guard) = subscriber(Format::Pretty, "info");
     let secret = format!("sk_{}", "cd".repeat(32));
     tracing::error!(view_key = "deadbeef", detail = %format!("token {secret}"), "sending to {}", address());
+    tracing::info!(
+        client.address = "203.0.113.77:4000",
+        note = "plain",
+        "request"
+    );
     let text = capture.text();
     assert!(text.contains("sending to 44AFFq…EP3A"), "{text}");
     assert!(text.contains("view_key=[redacted]"), "{text}");
@@ -137,18 +144,8 @@ fn pretty_output_is_redacted_too() {
         !text.contains("deadbeef") && !text.contains(&secret),
         "{text}"
     );
-}
-
-#[test]
-fn pretty_output_truncates_a_client_address_like_json_does() {
-    let (_telemetry, capture, _guard) = subscriber(Format::Pretty, "info");
-    tracing::info!(
-        client.address = "203.0.113.77:4000",
-        note = "plain",
-        "request"
-    );
-    let text = capture.text();
     assert!(text.contains("client.address=203.0.113.0"), "{text}");
+    assert!(!text.contains("203.0.113.77"), "{text}");
     assert!(
         text.contains("note=plain"),
         "a string field is not quoted: {text}"

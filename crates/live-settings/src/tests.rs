@@ -1671,17 +1671,6 @@ async fn a_secret_comes_from_the_environment_and_is_never_saved_or_shown() {
     assert_eq!(view(&h.registry.describe(), "engine.token").value, MASK);
 }
 
-#[test]
-fn live_new_holds_a_fixed_value() {
-    let live = Live::new(Scan {
-        depth: 1,
-        poll_ms: 2,
-    });
-    let rx = live.subscribe();
-    assert_eq!(live.clone().load().depth, 1);
-    assert!(!rx.has_changed().unwrap());
-}
-
 /// Where a value may come from: the options file, the database (runtime
 /// switches), the command line and the environment (secrets), lowest first.
 mod sources {

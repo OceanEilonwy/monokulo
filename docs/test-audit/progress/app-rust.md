@@ -112,6 +112,18 @@ Scope: every Rust crate except the engine. Tests run with
   1205 (threshold count) was already gone upstream.
 - −24 tests.
 
+### 8. F2/F3 shared and the other crates (research 10, 11, 14, 34)
+- shared: auth tokens 2069/2071/2074 into 2073 (one row per kind); exchange_rate 2122/2131 into 2121
+  (2118, 2124 and 2132 were already gone upstream); password 2227/2229 into 2234 (one hash pair,
+  the wrong password a row: two fewer Argon2 hashes); webhook_sign 2214 into 2210; deleted the
+  plain round trips 2067, 2146, 2151, 2158, 2163, 2201 (and the empty test modules of `ids`,
+  `order_status`, `time`). −14.
+- short-id: 2244-2251 into 2252, one table each for `short_id` and `short_address`. −7.
+- telemetry: 2322 into 2328 (also asserting the full client address is gone). −1.
+- ui: `select` 2334/2337/2339/2340 into 2335. −4.
+- live-settings: 1038 deleted. cli-wallet: 985 deleted (the prompt highlighter loses its only
+  test; a dev tool, research 14). −2.
+
 ## Decisions
 - 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
   pages keep what was typed through three different view models (`shown`, a field's

@@ -140,18 +140,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hashed_password_verifies_against_the_original() {
-        let hashed = Hasher(()).hash("correct horse battery staple").unwrap();
-        assert!(Hasher(()).verify("correct horse battery staple", &hashed));
-    }
-
-    #[test]
-    fn a_hashed_password_rejects_a_wrong_password() {
-        let hashed = Hasher(()).hash("correct horse battery staple").unwrap();
-        assert!(!Hasher(()).verify("wrong password", &hashed));
-    }
-
-    #[test]
     fn hashing_the_same_password_twice_produces_different_hashes_but_both_verify() {
         let password = "correct horse battery staple";
         let hash1 = Hasher(()).hash(password).unwrap();
@@ -162,6 +150,7 @@ mod tests {
 
         assert!(Hasher(()).verify(password, &hash1));
         assert!(Hasher(()).verify(password, &hash2));
+        assert!(!Hasher(()).verify("wrong password", &hash1));
     }
 
     #[test]

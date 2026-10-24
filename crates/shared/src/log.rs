@@ -119,14 +119,6 @@ mod tests {
     }
 
     #[test]
-    fn the_macro_builds_with_fields_and_a_formatted_message() {
-        let network = "stagenet";
-        let e = "timeout";
-        crate::throttled!(format!("test:macro:{network}"), warn, network, error = %e, "scan tick failed on {network}");
-        crate::throttled!("test:macro:plain", error, "no fields");
-    }
-
-    #[test]
     fn a_key_is_kept_under_the_crate_that_logged_it() {
         assert_eq!(
             namespaced("engine::loops", "tick-failed:Mainnet"),

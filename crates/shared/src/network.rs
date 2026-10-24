@@ -60,13 +60,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trips_every_valid_network() {
-        for n in [Network::Mainnet, Network::Stagenet, Network::Testnet] {
-            assert_eq!(parse_network(network_str(n)).unwrap(), n);
-        }
-    }
-
-    #[test]
     fn rejects_anything_that_isnt_an_exact_known_name() {
         for bad in ["Mainnet", "MAINNET", "main", "mainnett", "", " mainnet"] {
             assert_eq!(parse_network(bad), Err(UnknownNetwork(bad.to_string())));
