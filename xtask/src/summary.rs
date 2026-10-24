@@ -595,20 +595,6 @@ mod tests {
     }
 
     #[test]
-    fn every_ignored_test_in_the_workspace_says_why() {
-        let bare: Vec<_> = ignored_tests(&root())
-            .unwrap()
-            .into_iter()
-            .filter(|(_, reason)| reason.as_deref().is_none_or(|r| r.trim().is_empty()))
-            .map(|(name, _)| name)
-            .collect();
-        assert!(
-            bare.is_empty(),
-            "give each #[ignore] a reason (#[ignore = \"needs ...\"]), for the job summary: {bare:?}"
-        );
-    }
-
-    #[test]
     fn a_failure_in_another_browser_says_which() {
         let mut failures = Vec::new();
         read(

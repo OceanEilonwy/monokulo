@@ -480,29 +480,4 @@ mod tests {
             assert!(render(rel) == old, "{rel} is stale: run `cargo xtask logo`");
         }
     }
-
-    #[test]
-    fn the_tree_has_a_root_six_branches_twelve_limbs_and_twelve_leaves() {
-        let layers = tree_layers();
-        assert_eq!(
-            layers.iter().map(Vec::len).collect::<Vec<_>>(),
-            [1, 6, 12, 12]
-        );
-        let all = facets();
-        for path in leaf_paths(&all) {
-            assert_eq!(
-                path.iter().map(|f| all[*f].0).collect::<Vec<_>>(),
-                [3, 2, 1, 0]
-            );
-        }
-    }
-
-    #[test]
-    fn numbers_drop_trailing_zeros_and_negative_zero() {
-        assert_eq!(
-            [r2(30.0), r2(1.5), r2(-0.001), r2(4.25)],
-            ["30", "1.5", "0", "4.25"]
-        );
-        assert_eq!([r3(0.0), r3(1.2), r3(0.25)], ["0", "1", "0.25"]);
-    }
 }

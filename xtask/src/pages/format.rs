@@ -163,68 +163,42 @@ pub(super) fn plural(n: usize, one: &str, many: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Every figure the report writes, as it reads: separators, coverage,
+    /// durations, dates, test names and rates per history. A value with
+    /// nothing to show is NONE or no text, never a made-up number.
     #[test]
-    fn numbers_take_separators() {
-        assert_eq!(int(0), "0");
-        assert_eq!(int(999), "999");
-        assert_eq!(int(1000), "1,000");
-        assert_eq!(int(1_234_567), "1,234,567");
-    }
-
-    #[test]
-    fn coverage_without_a_total_is_not_a_number() {
-        assert_eq!(
-            coverage(Counts {
-                covered: 0,
-                total: 0
-            }),
-            NONE
-        );
-        assert_eq!(
-            coverage(Counts {
-                covered: 7,
-                total: 8
-            }),
-            "87.5%"
-        );
-        assert_eq!(
-            ratio(Counts {
-                covered: 1500,
-                total: 2000
-            }),
-            "1,500 / 2,000"
-        );
-    }
-
-    #[test]
-    fn durations_pick_a_readable_unit() {
-        assert_eq!(duration(0.0123), "12 ms");
-        assert_eq!(duration(2.25), "2.2 s");
-        assert_eq!(duration(600.0), "10 min");
-        assert_eq!(duration(5400.0), "1.5 h");
-        assert_eq!(duration(f64::NAN), NONE);
-    }
-
-    #[test]
-    fn dates_read_the_day_and_refuse_anything_else() {
-        assert_eq!(date("2026-10-08T11:08:55Z").as_deref(), Some("8 Oct 2026"));
-        assert_eq!(date("2026-13-08"), None);
-        assert_eq!(date("yesterday"), None);
-        assert_eq!(date(""), None);
-    }
-
-    #[test]
-    fn test_names_read_as_sentences() {
-        assert_eq!(sentence("test_a_reorg_moves_it"), "A reorg moves it");
-        assert_eq!(sentence("ünïcode_first"), "Ünïcode first");
-        assert_eq!(sentence(""), "");
-    }
-
-    #[test]
-    fn rates_per_history_keep_two_figures() {
-        assert_eq!(per_case(12_515, 1114).as_deref(), Some("11×"));
-        assert_eq!(per_case(3, 2).as_deref(), Some("1.5×"));
-        assert_eq!(per_case(1, 4).as_deref(), Some("0.25×"));
-        assert_eq!(per_case(1, 0), None);
+    fn report_figures_read_as_people_write_them() {
+        let counts = |covered, total| Counts { covered, total };
+        let cases: &[(Option<String>, Option<&str>)] = &[
+            (Some(int(0)), Some("0")),
+            (Some(int(999)), Some("999")),
+            (Some(int(1000)), Some("1,000")),
+            (Some(int(1_234_567)), Some("1,234,567")),
+            (Some(coverage(counts(0, 0))), Some(NONE)),
+            (Some(coverage(counts(7, 8))), Some("87.5%")),
+            (Some(ratio(counts(1500, 2000))), Some("1,500 / 2,000")),
+            (Some(duration(0.0123)), Some("12 ms")),
+            (Some(duration(2.25)), Some("2.2 s")),
+            (Some(duration(600.0)), Some("10 min")),
+            (Some(duration(5400.0)), Some("1.5 h")),
+            (Some(duration(f64::NAN)), Some(NONE)),
+            (date("2026-10-08T11:08:55Z"), Some("8 Oct 2026")),
+            (date("2026-13-08"), None),
+            (date("yesterday"), None),
+            (date(""), None),
+            (
+                Some(sentence("test_a_reorg_moves_it")),
+                Some("A reorg moves it"),
+            ),
+            (Some(sentence("ünïcode_first")), Some("Ünïcode first")),
+            (Some(sentence("")), Some("")),
+            (per_case(12_515, 1114), Some("11×")),
+            (per_case(3, 2), Some("1.5×")),
+            (per_case(1, 4), Some("0.25×")),
+            (per_case(1, 0), None),
+        ];
+        for (row, (got, want)) in cases.iter().enumerate() {
+            assert_eq!(got.as_deref(), *want, "row {row}");
+        }
     }
 }
