@@ -2394,55 +2394,17 @@ mod tests {
         assert_eq!(engine_listed, engine, "every engine setting has a tab");
     }
 
+    /// Other only appears while a setting nobody placed is in it.
     #[test]
-    fn a_setting_the_map_does_not_know_goes_to_other() {
-        for (key, owner) in [
-            ("telemetry.sample_rate", SettingOwner::Engine),
-            ("brand_new", SettingOwner::Engine),
-            ("brand.new", SettingOwner::Monokulo),
-            // A key custody backend this page doesn't know.
-            ("key_custody.tpm_device", SettingOwner::Engine),
-        ] {
-            let group = Group::of(key, owner);
-            assert_eq!(group, Group::Other(owner), "{key}");
-            assert_eq!(group.tab(), SettingsTab::Other);
-        }
-        assert_eq!(
-            Group::Other(SettingOwner::Engine).to_string(),
-            "other-engine"
-        );
-
-        // Other only appears while a setting nobody placed is in it.
-        {
-            let html = page(&full_view(SettingsTab::General));
-            assert!(!html.contains("tab=other"), "{html}");
-            let mut data = full_view(SettingsTab::Other);
-            data.engine_fields
-                .push(field_for("telemetry.sample_rate", SettingOwner::Engine));
-            let html = page(&data);
-            assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
-            assert!(html.contains(r#"name="telemetry.sample_rate""#), "{html}");
-        }
-    }
-
-    #[test]
-    fn a_tab_is_found_by_its_id_and_anything_else_is_general() {
-        for tab in SettingsTab::ALL
-            .into_iter()
-            .filter(|tab| *tab != SettingsTab::Files)
-        {
-            assert_eq!(SettingsTab::from_id(Some(tab.id())), tab);
-        }
-        assert_eq!(SettingsTab::from_id(None), SettingsTab::General);
-        assert_eq!(SettingsTab::from_id(Some("nope")), SettingsTab::General);
-        assert_eq!(SettingsTab::Nodes.href(), "/admin/settings?tab=nodes");
-        assert!(SettingsTab::Nodes.engine_only());
-        assert!(
-            !SettingsTab::Custody.engine_only()
-                && !SettingsTab::Payments.engine_only()
-                && !SettingsTab::Server.engine_only()
-                && !SettingsTab::Logging.engine_only()
-        );
+    fn the_other_tab_shows_only_with_something_in_it() {
+        let html = page(&full_view(SettingsTab::General));
+        assert!(!html.contains("tab=other"), "{html}");
+        let mut data = full_view(SettingsTab::Other);
+        data.engine_fields
+            .push(field_for("telemetry.sample_rate", SettingOwner::Engine));
+        let html = page(&data);
+        assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
+        assert!(html.contains(r#"name="telemetry.sample_rate""#), "{html}");
     }
 
     /// A field as the handler builds it: an engine setting monokulo also

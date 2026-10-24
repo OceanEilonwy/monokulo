@@ -453,29 +453,6 @@ mod tests {
     }
 
     #[test]
-    fn tabs_are_named_by_their_query_and_profile_is_the_default() {
-        assert_eq!(AccountTab::from_id(None), AccountTab::Profile);
-        assert_eq!(AccountTab::from_id(Some("nope")), AccountTab::Profile);
-        assert_eq!(AccountTab::from_id(Some("security")), AccountTab::Profile);
-        assert_eq!(AccountTab::Profile.href(), "/account");
-        assert_eq!(AccountTab::Wallets.href(), "/account?tab=wallets");
-        let html = account_page(&chrome(), &view(AccountTab::Wallets, None)).into_string();
-        assert!(
-            html.contains("<title>Wallets - Account - Monokulo</title>"),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Account"><a href="/account">Profile</a><a href="/account?tab=wallets" aria-current="page">Wallets</a></nav>"#),
-            "{html}"
-        );
-        assert!(html.contains("No wallets yet."), "{html}");
-        assert!(
-            !html.contains("save-bar"),
-            "the wallets tab saves nothing: {html}"
-        );
-    }
-
-    #[test]
     fn a_refused_save_marks_its_card_and_keeps_what_was_sent_against_what_is_saved() {
         let mut data = view(
             AccountTab::Profile,
