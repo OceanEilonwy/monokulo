@@ -1245,6 +1245,17 @@ async fn main() {
         engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
+    // Stores' webhooks may reach this machine: the test webhooks go to the
+    // receiver above (`/__coverage/webhook-receiver`).
+    let state = AppState {
+        settings: state
+            .settings
+            .with_webhooks(monokulo::settings::WebhookConfig {
+                allow_private_urls: true,
+                ..Default::default()
+            }),
+        ..state
+    };
     // The status page's stream looks again once the cached engine status
     // runs out: at the setting's floor (engine.status_cache_ms), a second,
     // so a test sees a new story within one, not ten.

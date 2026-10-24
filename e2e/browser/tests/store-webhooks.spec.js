@@ -87,7 +87,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   const again = webhook(page, 'https://old-shop.example/?wc-api=monokulo');
   await expect(again.locator('.wh-health .tag')).toHaveText('sending');
   await expect(again.getByRole('button', { name: /Retry failed/ })).toHaveCount(0);
-  await expect(again.locator('td[data-label="Status"] .tag').first()).toHaveText('queued');
+  await expect(again.locator('table[data-table="deliveries"] td[data-label="Status"] .tag').first()).toHaveText('queued');
 
   // A webhook with many deliveries pages through them in place, 20 at a time.
   const response = await fetch(`${fixture.base_url}/__coverage/webhooks?many=45`, { method: 'POST' });
@@ -113,8 +113,94 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   await hook.getByRole('link', { name: 'Older →' }).click();
   await expect(rows).toHaveCount(5);
   await expect(hook.getByRole('link', { name: 'Older →' })).toHaveCount(0);
-  await hook.locator('.deliveries-results').scrollIntoViewIfNeeded();
+  await hook.locator('table[data-table="deliveries"]').scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-paged', test.info(), { group: GROUP });
   await hook.getByRole('link', { name: '← Newer' }).click();
   await expect(rows).toHaveCount(20);
+});
+
+/** One webhook, to the fixture's own receiver answering `status`. */
+async function seedReceiver(status = '') {
+  const response = await fetch(`${fixture.base_url}/__coverage/webhooks?receiver=${status}`, { method: 'POST' });
+  expect(response.ok).toBe(true);
+}
+const receiver = (page) => card(page).locator('.wh').filter({ has: page.locator('.wh-url', { hasText: '/__coverage/webhook-receiver' }) });
+
+test('Send a test webhook delivers one in place and lists it as a test', async ({ page, context }) => {
+  await login(context);
+  await seedReceiver();
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  const hook = receiver(page);
+  await expect(hook.locator('.wh-health .tag')).toHaveText('no deliveries yet');
+  const send = hook.getByRole('button', { name: 'Send a test webhook' });
+  // A neutral button beside the red Delete, not a second primary.
+  await expect(send).not.toHaveAttribute('data-variant', 'primary');
+  await send.click();
+  // Swapped in place by fixi: still the settings page.
+  const result = hook.locator('[data-test-result]');
+  await expect(result).toContainText('Test webhook delivered.');
+  await expect(result).toContainText('Your server answered 200 in');
+  await expect(page).toHaveURL(/\/settings\?tab=connections#card-webhooks$/);
+  await expect(hook.locator('.wh-health .tag')).toHaveText('delivering');
+  await expect(hook.locator('details[data-disclosure="deliveries"]')).toHaveAttribute('open', '');
+  const row = hook.locator('table[data-table="deliveries"] tbody tr').first();
+  await expect(row.locator('td[data-label="Event"]')).toHaveText('webhook.test');
+  await expect(row.locator('td[data-label="Order"] [data-test-delivery]')).toHaveText('test');
+  await expect(row.locator('td[data-label="Response"]')).toHaveText('200');
+  await hook.scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-test-delivered', test.info(), { group: GROUP });
+
+  // Its details, though the row was swapped in: a dialog, as for a row the
+  // page loaded with. No order, the request as signed.
+  await row.getByRole('link', { name: 'Details' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Delivery of webhook.test' });
+  await expect(dialog).toBeVisible();
+  await expect(page).toHaveURL(/\/settings\?tab=connections#card-webhooks$/);
+  await expect(dialog.locator('[data-facts="delivery"]')).toContainText('a test delivery');
+  await dialog.getByText('Request', { exact: true }).click();
+  await expect(dialog.locator('pre').first()).toContainText('X-Monokulo-Event: webhook.test');
+  await expect(dialog.locator('pre').first()).toContainText('"event": "webhook.test"');
+  await captureCoverageStage(page, 'store-webhooks-test-detail-dialog', test.info(), { group: GROUP });
+  await dialog.getByRole('link', { name: 'Close' }).click();
+  await expect(dialog).toBeHidden();
+  // Delete, in the block swapped in too, still asks first.
+  await hook.getByRole('link', { name: 'Delete', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Delete this webhook?' })).toBeVisible();
+});
+
+test('a test webhook the receiver refuses says what it answered and when it is tried again', async ({ page, context }) => {
+  await login(context);
+  await seedReceiver(500);
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  const hook = receiver(page);
+  await hook.getByRole('button', { name: 'Send a test webhook' }).click();
+  const result = hook.locator('[data-test-result]');
+  await expect(result).toContainText('Test webhook not delivered.');
+  await expect(result).toContainText('Your server answered 500.');
+  await expect(result).toContainText('Monokulo tries it again at');
+  await expect(hook.locator('.wh-health .tag')).toHaveText('retrying');
+  await expect(hook.locator('table[data-table="deliveries"] tbody tr').first().locator('td[data-label="Status"] .tag')).toHaveText('retrying');
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await hook.scrollIntoViewIfNeeded();
+  await captureCoverageStage(page, 'store-webhooks-test-failed', test.info(), { group: GROUP, asIs: true });
+});
+
+test('without JavaScript, Send a test webhook is a form that comes back showing the delivery', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  await login(context);
+  const page = await context.newPage();
+  await seedReceiver();
+  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  await receiver(page).getByRole('button', { name: 'Send a test webhook' }).click();
+  await expect(page).toHaveURL(/\/settings\?tab=connections&tested=\d+#webhook-wh_[0-9a-f]+$/);
+  const hook = receiver(page);
+  await expect(hook.locator('[data-test-result]')).toContainText('Test webhook delivered.');
+  await expect(hook.locator('table[data-table="deliveries"] tbody tr').first().locator('td[data-label="Event"]')).toHaveText('webhook.test');
+  // Details is a link to its page.
+  await hook.locator('table[data-table="deliveries"] tbody tr').first().getByRole('link', { name: 'Details' }).click();
+  await expect(page).toHaveURL(/\/deliveries\/\d+$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'Delivery of webhook.test' })).toBeVisible();
+  await expect(page.locator('[data-facts="delivery"]')).toContainText('a test delivery');
+  await context.close();
 });
