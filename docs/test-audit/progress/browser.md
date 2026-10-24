@@ -114,6 +114,24 @@ Counts are tests as Playwright or node lists them.
       failure was pos-terminal 2566 (the card not visible after a reload), and it didn't reproduce in 7
       reruns (4 of that test and 3 of the whole spec).
 
+16. **POS flow flake (2566): `4a5782a3a`.** CI's coverage run failed after the reload: "Fixture o" was
+    missing from the stack because the fixture order had reopened in the foreground.
+    - Cause, in the test: it rang up its 44 tables through the API and never backgrounded them, so they
+      sat in the foreground with the fixture order.
+    - The POS opens on the newest foreground order (engine: `created_at_utc DESC, id DESC`). All the
+      orders share a second, so which one opened came down to the random id: the fixture order in 2 of
+      10 instrumented runs, a table otherwise.
+    - The flow backgrounded whatever was on screen. When that was a table, the reload could reopen the
+      fixture order.
+    - Not a merchant bug: a till's sale comes from its keypad, which it reaches only after backgrounding
+      or finishing the last one.
+    - Fix: each table is backgrounded after it is rung up (`keepOneInBackground`; the unused `ringUp`
+      helper is gone). The flow now asserts the fixture order is on screen at the start, and that the POS
+      opens on its keypad after the reload.
+    - Verified with `COVERAGE_INSTRUMENT=1 COVERAGE_SCREENSHOTS=1` and CI's instrumented assets: the test
+      passed 12 times at 4 workers and 10 times at 8, and the whole spec passed 3 times at 4 workers
+      (48 tests).
+
 ## Decisions
 
 - **2657 deleted (G1) rather than sped up (Q6).** Tier 2 deletes it, and views test 1831 pins the marker.
