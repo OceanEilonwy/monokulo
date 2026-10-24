@@ -145,6 +145,20 @@ Scope: every Rust crate except the engine. Tests run with
 - Looked at and left: 2065 (the onion listener test has no fixed wait; its time is the listener's
   own stop), 2063 (its one 200 ms sleep is the "nothing more comes" check), 1362, 1360, 2235.
 
+### 11. G3 (tier 2, Rust rows only)
+- Deleted: 1263, 1265, 1268 (engine_client round trips), 1388, 1417, 1426 (admin settings), 1588,
+  1808, 1825, 1920 (and the then-empty `views/query/tests.rs`), 1978, 2035 (and the empty
+  `views::webhooks` test module).
+- Folded: theme 1374 into 1361 as a step; 1477 (from `http/auth.rs`) into 1361 too, and 1464, the
+  pure `selected_theme` check, becomes HTTP rows there (a switch posted with no choice cycles
+  Dark → System → Light → Dark), since the function is private to `http::auth`; admin settings
+  1376/1379/1386/1392 into 1381, 1402/1408 into 1405, 1398 into 1400; orders 1549 into 1548 and
+  1589/1597/1598 into 1594.
+- 1817: G3 says delete, but F2 had folded 1853 into it. Its `Group::of` lookup table went; the
+  folded 1853 check stays, under 1853's own name `the_other_tab_shows_only_with_something_in_it`.
+- The two browser rows (component specs 2761, 2777) are chunk B's.
+- −26 tests.
+
 ## Decisions
 - 1815 (account) and 1826 (admin) stay instead of folding into 1966 (store_settings). The three
   pages keep what was typed through three different view models (`shown`, a field's

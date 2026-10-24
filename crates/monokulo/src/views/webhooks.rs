@@ -835,15 +835,3 @@ pub fn all_page(
     };
     page(store_name, "Webhook deliveries", header).render(chrome, body)
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_body_is_laid_out_in_the_order_it_was_sent() {
-        assert_eq!(
-            super::indented_json(r#"{"b":1,"a":"x,{y}\"","s":{"id":"1"}}"#),
-            "{\n  \"b\": 1,\n  \"a\": \"x,{y}\\\"\",\n  \"s\": {\n    \"id\": \"1\"\n  }\n}"
-        );
-        assert_eq!(super::indented_json("not json"), "not json");
-    }
-}
