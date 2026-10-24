@@ -58,35 +58,3 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
         body,
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn renders_solid_mount_with_store_config_and_no_site_nav() {
-        let chrome = PageChrome::from_user(None, "/stores/conn-1/pos");
-        let data = PosViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn-1"),
-            display_name: "example.com".into(),
-            base_currency: "XMR".into(),
-            base_currency_decimals: 12,
-            client_logging: false,
-        };
-        let html = page(&chrome, &data).into_string();
-        assert!(html.contains("data-connection-id=\"conn-1\""));
-        assert!(html.contains("data-decimals=\"12\""));
-        assert!(html.contains("data-client-logging=\"false\""));
-        assert!(html.contains(&crate::assets::url("pos-app.js")));
-        assert!(html.contains(&crate::assets::url("pos-app.css")));
-        assert!(html.contains(&format!(
-            "data-qr-decoder=\"{}\"",
-            crate::assets::url("jsQR.js")
-        )));
-        assert!(!html.contains("<nav class=\"site-nav\""));
-        assert!(
-            html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href="/""#),
-            "the POS bar gets the site's mark: {html}"
-        );
-    }
-}

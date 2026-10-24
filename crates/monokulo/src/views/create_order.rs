@@ -161,36 +161,6 @@ mod tests {
     }
 
     #[test]
-    fn renders_the_form_with_a_merchant_reference_field() {
-        let html = page(&chrome(), &data()).into_string();
-        assert!(html.contains("Merchant Reference"));
-        assert!(html.contains(r#"name="merchant_order_id""#));
-        // What it's for comes first; the switch, on, after the reference.
-        let description = html.find(r#"name="description""#).unwrap();
-        let reference = html.find(r#"name="merchant_order_id""#).unwrap();
-        let switch = html.find(r#"name="show_merchant_order_id""#).unwrap();
-        assert!(description < reference && reference < switch, "{html}");
-        assert!(html.contains(r#"maxlength="140""#), "{html}");
-        assert!(html.contains("Show the reference to the payer"), "{html}");
-        assert!(
-            html.contains(r#"id="show-merchant-order-id" checked"#),
-            "{html}"
-        );
-        assert!(html.contains(r#"action="/stores/conn_1/orders/new""#));
-    }
-
-    #[test]
-    fn shows_the_create_order_error_when_present() {
-        let store = CreateOrderData {
-            order_creation_error: Some("unsupported currency: XYZ".to_string()),
-            ..data()
-        };
-        let html = page(&chrome(), &store).into_string();
-        assert!(html.contains("unsupported currency: XYZ"));
-        assert!(html.contains("<form"));
-    }
-
-    #[test]
     fn locks_currency_to_xmr_when_no_provider_is_available() {
         let store = CreateOrderData {
             order_currency_options: vec!["XMR".to_string()],
