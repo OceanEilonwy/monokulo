@@ -244,10 +244,9 @@ impl ResolveError {
 /// conversion when it differs from the order's own currency, plus
 /// `EngineClient::get_tenant` for the store's current default/fallback
 /// confirmation count) that the pure functions above deliberately don't do
-/// themselves, then calls them. Shared by every order-creation surface
-/// (`api::v1::orders::create`, `http::orders::create_order`,
-/// `http::pos::create_order`) so they can never drift apart on what
-/// "resolve the threshold" means.
+/// themselves, then calls them. Called by the one order-making path
+/// (`crate::orders::make`), which the API, the dashboard and the till
+/// share.
 ///
 /// A base-currency rate-lookup failure fails order creation outright with a
 /// clear error - the same "a currency you can't actually get a price for
@@ -259,7 +258,7 @@ pub async fn resolve_for_order(
     row: &StoreConnectionRow,
     policy: &PolicyGuard,
     sk: &shared::auth::RawToken,
-    order_currency: &str,
+    order_currency: &crate::currencies::KnownCurrency,
     order_currency_piconero_per_unit: u64,
     xmr_amount_piconero: u64,
 ) -> Result<Resolution, ResolveError> {
@@ -267,8 +266,8 @@ pub async fn resolve_for_order(
         tracing::error!(store.id = %row.id, "resolving an order's confirmations under another store's policy lock");
         return Err(ResolveError::Internal);
     }
-    let base_currency = row.base_currency.clone();
-    let same_currency = base_currency.eq_ignore_ascii_case(order_currency);
+    let base_currency = crate::currencies::KnownCurrency::base_of(row);
+    let same_currency = base_currency == *order_currency;
 
     let base_currency_piconero_per_unit = if same_currency {
         None
@@ -290,7 +289,7 @@ pub async fn resolve_for_order(
                     "no usable exchange rate for the store's base currency right now"
                 );
                 return Err(e
-                    .unavailable(&base_currency)
+                    .unavailable(base_currency.as_str())
                     .map_or(ResolveError::Internal, ResolveError::RatesUnavailable));
             }
         }
@@ -326,7 +325,7 @@ pub async fn resolve_for_order(
 
     Ok(Resolution {
         confirmations_required,
-        base_currency,
+        base_currency: base_currency.to_string(),
         base_currency_piconero_per_unit: base_currency_piconero_per_unit
             .map(shared::xmr_amount::Piconero),
     })

@@ -101,19 +101,22 @@ pub struct MerchantRef(String);
     pattern = r"^[^\x00-\x1F\x7F-\x9F]*$",
     example = "Order #1042: Blue mug + 2 more",
     min_length = 1,
-    max_length = 140,
+    max_length = crate::stores::MAX_DESCRIPTION_CHARS,
     trim
 )]
 pub struct Description(String);
 
 /// The caller's key for one purchase: visible ASCII characters. A retry
-/// with the same key gets the order the first attempt made, never a
-/// second one.
+/// with the same key and the same order gets the order the first attempt
+/// made, never a second one. Keys sent with the public key are the
+/// website's own, apart from those of the shop's server and its apps, and
+/// anyone can send the public key: make a website's keys unguessable (a
+/// random id per checkout).
 #[api::scalar(
     pattern = r"^[!-~]+$",
     example = "order-1042-total-1250",
     min_length = 1,
-    max_length = 100
+    max_length = crate::engine_client::MAX_CALLER_IDEMPOTENCY_KEY_CHARS
 )]
 pub struct IdempotencyKey(String);
 

@@ -112,8 +112,11 @@ It answers `201 Created` with the order and its `Location`. Monokulo prices
 fiat in XMR itself. `amount` is a decimal string with up to 12 decimals in
 any currency, and trailing zeros don't count, so a shop that pads its prices
 (`12.50000000`) can send them as they are. Webhooks give `amount` back
-exactly as you sent it. A retry with the same `idempotency_key` gets the same
-order. While your plugin is the store's connected one, orders it makes this
+exactly as you sent it. A retry of the same order with the same
+`idempotency_key` gets the same order, at the price it was first made at,
+however the rate moved since; the key with anything else changed is
+[`idempotency-conflict`](../problems/idempotency-conflict/) (409). The
+server's keys and the apps' are one set, apart from the website's. While your plugin is the store's connected one, orders it makes this
 way show as yours on the dashboard. A refused order is
 `application/problem+json`: its `detail` says why, and its `type` links to
 the problem's page. Two are worth retrying rather than showing the

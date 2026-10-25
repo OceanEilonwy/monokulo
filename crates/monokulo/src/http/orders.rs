@@ -23,6 +23,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
+use crate::api::runtime::scalars::IdempotencyKey;
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
 use crate::engine_client::{EngineClientError, PaymentLookupView};
@@ -156,7 +157,7 @@ pub(super) async fn order_rows(
 }
 
 /// How an order's source reads in the orders table. Any other source is a
-/// plugin's slug (`api::v1::orders::order_source`), shown by the name the
+/// plugin's slug (`crate::orders::order_source`), shown by the name the
 /// store's newest integration of that plugin gave (`plugins`, newest
 /// first), else by the slug.
 fn source_label(source: Option<&str>, plugins: &[crate::db::StoreIntegrationRow]) -> String {
@@ -1102,7 +1103,7 @@ async fn render_create_order_page(
     // the first attempt may already have made.
     let request_key = submitted
         .map(|form| form.request_key.trim())
-        .filter(|key| crate::engine_client::valid_idempotency_key(key))
+        .filter(|key| IdempotencyKey::parse(key).is_ok())
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let default_currency = if order_currency_options.contains(&row.base_currency) {
@@ -1171,13 +1172,13 @@ impl CreateOrderForm {
 }
 
 /// `POST /stores/{id}/orders/new` - creates a real order
-/// directly from the dashboard, via the engine's authenticated
-/// order-creation API (`EngineClient::create_order`) - lets a merchant try the
-/// payment flow without wiring up a storefront first. Redirects straight to
-/// the new order's own detail page on success (POST-redirect-GET); a
-/// validation error (unsupported currency, unparseable amount) re-renders
-/// this same "create an order" page with the engine's real message, same
-/// convention `webhooks_create` already applies.
+/// directly from the dashboard (`crate::orders::make`, the path the API
+/// and the till share) - lets a merchant try the payment flow without
+/// wiring up a storefront first. Redirects straight to the new order's own
+/// detail page on success (POST-redirect-GET); a validation error
+/// (unsupported currency, unparseable amount) re-renders this same "create
+/// an order" page with the real message, same convention `webhooks_create`
+/// already applies.
 pub async fn create_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -1189,45 +1190,6 @@ pub async fn create_order(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-
-    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
-    let row = match load_owned_connection(&state.db, &user, &id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    // Bind the key to the merchant's input, rather than a changing FX quote.
-    // An unchanged retry returns its existing order before repricing it; a
-    // changed form restored by browser history is a different request.
-    use sha2::{Digest, Sha256};
-    let request_key =
-        crate::engine_client::valid_idempotency_key(form.request_key.trim()).then(|| {
-            let payload = serde_json::to_vec(&(
-                form.request_key.trim(),
-                form.amount.trim(),
-                form.currency.trim(),
-                form.merchant_order_id.trim(),
-                form.description.trim(),
-                form.shows_merchant_order_id(),
-            ))
-            .expect("strings serialize");
-            format!("dash:{}", hex::encode(Sha256::digest(payload)))
-        });
-    if let Some(key) = &request_key {
-        let (store_id, key) = (id.clone(), key.clone());
-        match state
-            .db
-            .read(move |db| db.dashboard_order_request(&store_id, &key))
-            .await
-        {
-            Ok(Some(order)) => {
-                return crate::base::redirect(format!("/stores/{id}/orders/{order}"))
-            }
-            Ok(None) => {}
-            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        }
-    }
 
     let amount = form.amount.trim();
     let currency = form.currency.trim();
@@ -1241,98 +1203,6 @@ pub async fn create_order(
         )
         .await;
     }
-
-    // Selection-time validation first, entirely independent of whether any
-    // provider can actually price it - see `crate::currencies`'s own doc
-    // comment and `api::v1::orders::create`'s matching check for why
-    // "unknown currency" and "unsupported currency" are kept as distinct
-    // messages rather than collapsed into one.
-    let wanted = currency.to_string();
-    let currency_known = state
-        .db
-        .read(move |db| crate::currencies::is_known_currency(db, &wanted))
-        .await;
-    match currency_known {
-        Ok(true) => {}
-        Ok(false) => {
-            return render_create_order_page(
-                &state,
-                row,
-                &user,
-                Some(&form),
-                Some(format!("unknown currency: {currency}")),
-            )
-            .await
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-
-    // The engine has no concept of currency - monokulo's own exchange rate
-    // does the same computation `api::v1::orders::create` does for a real
-    // storefront call. `"XMR"`
-    // always uses the trivial identity rate regardless of this store's
-    // chosen ordered `fx_providers`; every other currency goes through it.
-    let (piconero_per_unit, provider) = match state
-        .exchange_rate
-        .piconero_per_unit_for(&row, currency)
-        .await
-    {
-        Ok(Some(result)) => result,
-        Ok(None) => {
-            return render_create_order_page(
-                &state,
-                row,
-                &user,
-                Some(&form),
-                Some(format!("unsupported currency: {currency}")),
-            )
-            .await
-        }
-        Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
-            // Not a real failure - this store's provider (or no provider at
-            // all) simply can't price this currency on this instance, same
-            // user-facing meaning as `Ok(None)` above.
-            return render_create_order_page(
-                &state,
-                row,
-                &user,
-                Some(&form),
-                Some(format!("unsupported currency: {currency}")),
-            )
-            .await;
-        }
-        Err(e) => {
-            tracing::warn!(store.id = %row.id, currency = ?currency, error = %e, "no usable exchange rate right now");
-            let Some(unavailable) = e.unavailable(currency) else {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            };
-            // The form again, saying when to retry: 503, with the
-            // providers' Retry-After when they gave one.
-            let page = render_create_order_page(
-                &state,
-                row,
-                &user,
-                Some(&form),
-                Some(unavailable.message()),
-            )
-            .await;
-            return unavailable.page(page);
-        }
-    };
-    let xmr_amount_piconero =
-        match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
-            Ok(amount) => amount,
-            Err(e) => {
-                return render_create_order_page(
-                    &state,
-                    row,
-                    &user,
-                    Some(&form),
-                    Some(e.to_string()),
-                )
-                .await
-            }
-        };
     let merchant_order_id = {
         let trimmed = form.merchant_order_id.trim();
         if trimmed.is_empty() {
@@ -1354,136 +1224,66 @@ pub async fn create_order(
             .await
         }
     };
-    let show_merchant_order_id = form.shows_merchant_order_id();
 
-    let sk = match decrypt_sk(&state.encryption_key, &row) {
-        Ok(sk) => sk,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let resolution = match crate::confirmation_thresholds::resolve_for_order(
-        &state,
-        &row,
-        &policy,
-        &sk,
-        currency,
-        piconero_per_unit,
-        xmr_amount_piconero,
-    )
-    .await
-    {
-        Ok(resolution) => resolution,
-        Err(e) => {
-            use crate::confirmation_thresholds::ResolveError;
-            let page =
-                render_create_order_page(&state, row, &user, Some(&form), Some(e.message())).await;
-            return match e {
-                ResolveError::NoRate(_) => page,
-                ResolveError::RatesUnavailable(unavailable) => unavailable.page(page),
-                ResolveError::EngineUnavailable => {
-                    (StatusCode::SERVICE_UNAVAILABLE, page).into_response()
-                }
-                ResolveError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, page).into_response(),
-            };
-        }
-    };
+    // Bind the key to the merchant's input, rather than a changing FX quote.
+    // An unchanged retry gets its existing order; a changed form restored by
+    // browser history is a different request.
+    use sha2::{Digest, Sha256};
+    let request_key = IdempotencyKey::parse(form.request_key.trim())
+        .ok()
+        .map(|key| {
+            let payload = serde_json::to_vec(&(
+                key.as_str(),
+                amount,
+                currency,
+                form.merchant_order_id.trim(),
+                form.description.trim(),
+                form.shows_merchant_order_id(),
+            ))
+            .expect("strings serialize");
+            IdempotencyKey::parse(&hex::encode(Sha256::digest(payload))).expect("a hash is a key")
+        });
 
-    match state
-        .engine
-        .client
-        .create_order(
-            &sk,
-            shared::xmr_amount::Piconero(xmr_amount_piconero),
-            merchant_order_id,
-            description,
-            Some(resolution.confirmations_required),
-            request_key.clone(),
-        )
-        .await
-    {
-        Ok(order) => {
-            if let Some(key) = request_key {
-                let (store_id, order_id) = (id.clone(), order.order_id.clone());
-                if let Err(error) = state
-                    .db
-                    .write(move |db| db.record_dashboard_order_request(&store_id, &key, &order_id))
-                    .await
-                {
-                    tracing::error!(%error, "could not record dashboard order retry");
-                }
+    let request = crate::orders::OrderRequest {
+        amount: amount.to_string(),
+        currency: currency.to_string(),
+        merchant_order_id,
+        description,
+        show_merchant_order_id: form.shows_merchant_order_id(),
+        idempotency_key: request_key,
+    };
+    let order_id =
+        match crate::orders::make(&state, &row, crate::orders::Origin::Dashboard, request).await {
+            Ok(crate::orders::Made::Created(order)) => order.order_id,
+            Ok(crate::orders::Made::Found(order_id)) => order_id,
+            Err(crate::orders::MakeError::NoStore) => return StatusCode::NOT_FOUND.into_response(),
+            Err(e) => {
+                use crate::confirmation_thresholds::ResolveError;
+                use crate::orders::MakeError;
+                let page =
+                    render_create_order_page(&state, row, &user, Some(&form), Some(e.message()))
+                        .await;
+                // The form again, with the status the failure has: when it's
+                // worth retrying, 503, with the providers' Retry-After when
+                // they gave one.
+                return match e {
+                    MakeError::RatesUnavailable(unavailable)
+                    | MakeError::Threshold(ResolveError::RatesUnavailable(unavailable)) => {
+                        unavailable.page(page)
+                    }
+                    MakeError::EngineUnavailable
+                    | MakeError::Threshold(ResolveError::EngineUnavailable) => {
+                        (StatusCode::SERVICE_UNAVAILABLE, page).into_response()
+                    }
+                    MakeError::IdempotencyConflict => (StatusCode::CONFLICT, page).into_response(),
+                    MakeError::Internal | MakeError::Threshold(ResolveError::Internal) => {
+                        (StatusCode::INTERNAL_SERVER_ERROR, page).into_response()
+                    }
+                    _ => page,
+                };
             }
-            let (store_id, order_id, currency, amount, provider) = (
-                row.id.clone(),
-                order.order_id.clone(),
-                currency.to_string(),
-                amount.to_string(),
-                provider.to_string(),
-            );
-            let base_currency = resolution.base_currency.clone();
-            let (base_rate, confirmations) = (
-                resolution.base_currency_piconero_per_unit,
-                resolution.confirmations_required,
-            );
-            let recorded = state
-                .db
-                .write(move |db| {
-                    db.create_order_currency_metadata(
-                        &store_id,
-                        &order_id,
-                        &currency,
-                        &amount,
-                        shared::xmr_amount::Piconero(piconero_per_unit),
-                        &provider,
-                        crate::now_unix(),
-                        &base_currency,
-                        base_rate,
-                        confirmations,
-                        // The merchant's own signed-in session: as trusted as
-                        // the key.
-                        true,
-                        Some("dashboard"),
-                        show_merchant_order_id,
-                    )
-                })
-                .await;
-            if let Err(e) = recorded {
-                tracing::error!(
-                    order.id = %order.order_id,
-                    store.id = %row.id,
-                    error = %e,
-                    "failed to record local fiat metadata - the real order still exists on the engine and this \
-                     response is still correct, but its fiat display on monokulo's own pages will be missing"
-                );
-            }
-            crate::base::redirect(format!("/stores/{id}/orders/{}", order.order_id))
-        }
-        Err(EngineClientError::EngineError { status, message })
-            if status == reqwest::StatusCode::BAD_REQUEST =>
-        {
-            render_create_order_page(&state, row, &user, Some(&form), Some(message)).await
-        }
-        Err(e) => {
-            let (status, message) = if e.is_unavailable() {
-                (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "The payment engine is busy or unreachable. Try again in a moment.",
-                )
-            } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Something went wrong. Please try again.",
-                )
-            };
-            let page = render_create_order_page(
-                &state,
-                row,
-                &user,
-                Some(&form),
-                Some(message.to_string()),
-            )
-            .await;
-            (status, page).into_response()
-        }
-    }
+        };
+    crate::base::redirect(format!("/stores/{id}/orders/{order_id}"))
 }
 
 #[derive(Deserialize)]

@@ -28,6 +28,7 @@ pub mod live;
 pub mod logs;
 pub mod network;
 pub mod onion;
+pub mod orders;
 pub mod plugins;
 pub mod qr;
 pub mod settings;

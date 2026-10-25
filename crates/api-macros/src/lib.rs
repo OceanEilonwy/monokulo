@@ -1088,8 +1088,8 @@ fn expand_input(item: ItemStruct) -> syn::Result<Tokens> {
 struct ScalarArgs {
     pattern: Option<LitStr>,
     example: Option<LitStr>,
-    min_length: Option<LitInt>,
-    max_length: Option<LitInt>,
+    min_length: Option<Expr>,
+    max_length: Option<Expr>,
     trim: bool,
 }
 
@@ -1139,7 +1139,9 @@ impl Parse for ScalarArgs {
 
 /// `#[api::scalar(pattern = r"...", example = "...", min_length = 1,
 /// max_length = 120, trim)] pub struct Name(String);`: a string the API
-/// takes or gives, checked when it's read and described in the schema.
+/// takes or gives, checked when it's read and described in the schema. A
+/// length may be a constant's path, so the rule it restates is written
+/// once.
 #[proc_macro_attribute]
 pub fn scalar(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = syn::parse_macro_input!(attr as ScalarArgs);

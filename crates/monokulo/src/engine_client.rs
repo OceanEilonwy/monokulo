@@ -1440,22 +1440,19 @@ struct CreateOrderRequest {
     confirmations_required: Option<u64>,
     /// The engine's own `idempotency_key`: a retry with the same key gets
     /// the order the first attempt made. Namespaced by where the request
-    /// came from (`pay:`, `dash:`, `pos:`), so keys from different callers
-    /// of one store never collide.
+    /// came from (`crate::orders::IdempotencyScope`), so keys from
+    /// different callers of one store never collide.
     #[serde(skip_serializing_if = "Option::is_none")]
     idempotency_key: Option<String>,
 }
 
-/// Longest key a caller may pass through monokulo: the engine's limit (128)
-/// less room for monokulo's own prefix.
-pub const MAX_CALLER_IDEMPOTENCY_KEY_CHARS: usize = 100;
+/// The longest `idempotency_key` the engine takes.
+pub const ENGINE_MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
 
-/// Whether `key` is a usable caller key: 1..=100 visible ASCII characters.
-pub fn valid_idempotency_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= MAX_CALLER_IDEMPOTENCY_KEY_CHARS
-        && key.bytes().all(|b| b.is_ascii_graphic())
-}
+/// Longest key a caller may pass through monokulo (`IdempotencyKey`): the
+/// engine's limit less room for monokulo's own prefix, which
+/// `crate::orders` holds it to.
+pub const MAX_CALLER_IDEMPOTENCY_KEY_CHARS: usize = 100;
 
 /// Mirrors the engine's own `public::CreateOrderResponse`.
 #[derive(Debug, Deserialize)]

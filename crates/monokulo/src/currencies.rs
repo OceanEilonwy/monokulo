@@ -44,11 +44,41 @@ pub fn resolve_currency(db: &Db, input: &str) -> Result<Option<String>, DbError>
     Ok(None)
 }
 
-/// `true` iff `input` resolves to a known currency - a convenience for a
-/// caller that only needs the yes/no answer, not which canonical code it
-/// resolved to.
-pub fn is_known_currency(db: &Db, input: &str) -> Result<bool, DbError> {
-    Ok(resolve_currency(db, input)?.is_some())
+/// A currency of the `currencies` table, by its canonical code: what an
+/// order is priced in, asked of the rate providers and recorded as. Only
+/// [`KnownCurrency::resolve`] makes one from what a caller sent, so an
+/// alias (`RMB`, `US$`) or another casing (`xmr`) never reaches a rate
+/// provider or an order's record; `shared::coinmarketcap`'s safety rests
+/// on that.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnownCurrency(String);
+
+impl KnownCurrency {
+    /// The currency `input` names ([`resolve_currency`]), or `None`.
+    pub fn resolve(db: &Db, input: &str) -> Result<Option<Self>, DbError> {
+        Ok(resolve_currency(db, input)?.map(KnownCurrency))
+    }
+
+    /// The store's base currency, which was resolved when it was saved.
+    pub fn base_of(store: &crate::db::StoreConnectionRow) -> Self {
+        KnownCurrency(store.base_currency.clone())
+    }
+
+    /// For tests that price a currency without a database to resolve it.
+    #[cfg(test)]
+    pub fn for_test(code: &str) -> Self {
+        KnownCurrency(code.to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for KnownCurrency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// One `<option>` for a currency dropdown - every form in this crate that
@@ -204,12 +234,12 @@ mod tests {
             "MX", "ZA", "KR", "DE",
         ] {
             let code = guess_from_accept_language(&format!("en-{region}")).unwrap();
-            assert!(is_known_currency(&db, code).unwrap(), "{code}");
+            assert!(resolve_currency(&db, code).unwrap().is_some(), "{code}");
         }
     }
 
     /// An input names a currency by its code (any case) or one of its
-    /// tickers; anything else names none. `is_known_currency` says the same.
+    /// tickers; anything else names none. A `KnownCurrency` is that code.
     #[test]
     fn a_code_or_ticker_resolves_to_its_canonical_code_and_anything_else_to_none() {
         let db = Db::open_in_memory().unwrap();
@@ -232,8 +262,11 @@ mod tests {
                 "{input:?}"
             );
             assert_eq!(
-                is_known_currency(&db, input).unwrap(),
-                code.is_some(),
+                KnownCurrency::resolve(&db, input)
+                    .unwrap()
+                    .as_ref()
+                    .map(KnownCurrency::as_str),
+                code,
                 "{input:?}"
             );
         }
