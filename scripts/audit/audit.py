@@ -16,6 +16,7 @@ Agents (AUDIT_AGENT or --agent names who is asking):
     audit.py verify --job N ...   settle a verify job's finding
     audit.py note FINDING TEXT    add to a finding already recorded (yours or another's)
     audit.py amend FINDING --lines N-M [--file P]   correct where a finding points
+    audit.py fixplan --from FILE  record how findings get fixed and tested
     audit.py purpose PATH TEXT    say in one line what a file is for
     audit.py done --job N --summary TEXT
     audit.py release --job N      give a job back unfinished
@@ -619,6 +620,35 @@ def cmd_amend(args):
     print(f"finding {args.finding} now points at lines {start}-{end}")
 
 
+APPROACHES = ("construction", "construction+test", "extend_test", "new_test", "no_test")
+
+
+def cmd_fixplan(args):
+    agent = agent_name(args)
+    entries = json.loads(Path(args.from_file).read_text())
+    if isinstance(entries, dict):
+        entries = [entries]
+    conn = connect()
+    with Tx(conn):
+        for e in entries:
+            missing = [k for k in ("finding", "fix_group", "approach", "fix", "rationale", "effort") if not e.get(k)]
+            if missing:
+                sys.exit(f"entry {e.get('finding')}: missing {', '.join(missing)}")
+            if e["approach"] not in APPROACHES:
+                sys.exit(f"entry {e['finding']}: approach must be one of {', '.join(APPROACHES)}")
+            if e["approach"] != "construction" and e["approach"] != "no_test" and not (e.get("test_where") and e.get("test_what")):
+                sys.exit(f"entry {e['finding']}: a test approach needs test_where and test_what")
+            row = conn.execute("SELECT status FROM review_finding WHERE id = ?", (e["finding"],)).fetchone()
+            if row is None or row["status"] != "confirmed":
+                sys.exit(f"entry {e['finding']}: not a confirmed finding")
+            conn.execute(
+                "INSERT OR REPLACE INTO fix_plan VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (e["finding"], e["fix_group"], e["approach"], e["fix"], e.get("test_where", ""),
+                 e.get("test_what", ""), e["rationale"], e["effort"], agent),
+            )
+    print(f"planned {len(entries)} findings")
+
+
 def cmd_purpose(args):
     conn = connect()
     with Tx(conn):
@@ -810,6 +840,10 @@ def main():
     p.add_argument("--lines", required=True)
     p.add_argument("--file", help="move the finding to another file")
     p.set_defaults(run=cmd_amend)
+
+    p = sub.add_parser("fixplan", parents=[common])
+    p.add_argument("--from", dest="from_file", required=True, help="a JSON object or list of them")
+    p.set_defaults(run=cmd_fixplan)
 
     p = sub.add_parser("purpose", parents=[common])
     p.add_argument("path")

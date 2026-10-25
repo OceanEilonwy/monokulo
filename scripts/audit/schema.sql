@@ -130,3 +130,19 @@ CREATE VIEW IF NOT EXISTS finding_view AS
     JOIN crate_file cf ON cf.id = rf.crate_file_id
     JOIN review r ON r.id = rf.review_id
     LEFT JOIN module m ON m.id = r.module_id;
+
+-- How each confirmed finding should be fixed and what (if anything) should
+-- test it. A test has to earn its place: a fix that makes the bug
+-- impossible by construction needs none, unless the property is critical.
+CREATE TABLE IF NOT EXISTS fix_plan (
+    finding_id INTEGER PRIMARY KEY REFERENCES review_finding(id),
+    fix_group  TEXT NOT NULL,   -- findings fixed together share a group
+    approach   TEXT NOT NULL CHECK (approach IN
+        ('construction', 'construction+test', 'extend_test', 'new_test', 'no_test')),
+    fix        TEXT NOT NULL,   -- the fix, concretely
+    test_where TEXT NOT NULL DEFAULT '',  -- existing test to extend, or where a new one goes
+    test_what  TEXT NOT NULL DEFAULT '',  -- the property it asserts
+    rationale  TEXT NOT NULL,   -- why this approach, and why a test earns (or doesn't earn) its place
+    effort     TEXT NOT NULL CHECK (effort IN ('S', 'M', 'L')),
+    planned_by TEXT NOT NULL
+);
