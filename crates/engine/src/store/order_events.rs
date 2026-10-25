@@ -8,6 +8,7 @@
 //! an order (its price, its store) and delivers them.
 
 use rusqlite::{params, OptionalExtension as _};
+use shared::order_event::OrderEventKind;
 
 use super::{OrderId, Result, Store, StoreError, TenantId};
 
@@ -29,8 +30,9 @@ pub struct OrderEvent {
     /// The store's public key, which monokulo knows the store by.
     pub tenant_public_key: String,
     pub order_id: OrderId,
-    /// `order.<status>`, `order.double_spend_detected` or
-    /// `order.double_spend_reversed`.
+    /// A [`shared::order_event::OrderEventKind`]'s name, as stored: the
+    /// engine only passes it on, so a row a newer build wrote still goes
+    /// out as it was written.
     pub event_type: String,
     /// The event's own fields, a JSON object.
     pub payload_json: String,
@@ -109,15 +111,15 @@ impl OrderEventSpan {
 }
 
 impl Store {
-    /// Adds an event about `order_id` to the log, with `fields` and the
-    /// order's `order_id`, `merchant_order_id`, `description` and
-    /// `xmr_amount_piconero`.
+    /// Adds a `kind` event about `order_id` to the log, with `fields` and
+    /// the order's `order_id`, `merchant_order_id`, `description` and
+    /// `xmr_amount_piconero` (and its new `status`, for a status change).
     /// Called in the transaction that makes the change it announces, so the
     /// two land together or not at all. Returns its `seq`.
     pub fn append_order_event(
         &self,
         order_id: &OrderId,
-        event_type: &str,
+        kind: OrderEventKind,
         fields: &[(&str, &str)],
         now: i64,
     ) -> Result<i64> {
@@ -139,6 +141,9 @@ impl Store {
             .iter()
             .map(|(name, value)| ((*name).to_owned(), serde_json::Value::from(*value)))
             .collect();
+        if let Some(status) = kind.status() {
+            payload.insert("status".into(), status.as_str().into());
+        }
         payload.insert("order_id".into(), order_id.as_str().into());
         payload.insert("merchant_order_id".into(), merchant_order_id.into());
         payload.insert("description".into(), description.into());
@@ -154,7 +159,7 @@ impl Store {
                 event_id,
                 tenant_id,
                 order_id,
-                event_type,
+                kind.as_str(),
                 serde_json::Value::Object(payload).to_string(),
                 now
             ])?;

@@ -65,7 +65,7 @@ plus the headers you added. The body:
 | --- | --- |
 | `api_version` | `2`. |
 | `event_id` | The event's id. The same on every retry of it: dedupe on this. |
-| `event` | `order.<status>` when the order's status changes (`order.unconfirmed`, `order.confirming`, `order.paid`, `order.partial`, `order.overpaid`, `order.expired`, `order.cancelled`); `order.double_spend_detected` when a payment to it was double-spent; `order.double_spend_reversed` when that turned out to be wrong. (`webhook.test` is a [test](#test-it), with a body of its own.) |
+| `event` | What happened: one of the [events](#events) below. (`webhook.test` is a [test](#test-it), with a body of its own.) |
 | `created_at` | When the event happened, in Unix seconds. |
 | `order_id` | Monokulo's id for the order: `createOrder` gave it to your page as `orderId`. |
 | `status` | The order's new status. On `order.<status>` events only. |
@@ -80,6 +80,25 @@ plus the headers you added. The body:
 
 A field with no value is left out, never sent as `null`, as in the
 [API](../api/)'s bodies.
+
+### Events
+
+<!-- events: written by monokulo's webhooks::vectors -->
+
+- `order.pending`: The order is back to nothing received: the payment it had no longer counts (it was spent twice), so it comes after `order.double_spend_detected`. Treat the order as waiting for its payment again.
+- `order.unconfirmed`: A payment was seen in the pool, not yet in a block.
+- `order.confirming`: The payment is in a block, with too few confirmations yet.
+- `order.paid`: Paid in full, with enough confirmations: mark the shop's order paid.
+- `order.partial`: Less than the amount has arrived; the rest can still come before it expires.
+- `order.overpaid`: Paid more than the amount, with enough confirmations: paid too.
+- `order.expired`: It expired before it was paid: it takes no payment any more.
+- `order.cancelled`: The merchant cancelled it before anything was paid (below).
+- `order.double_spend_detected`: A payment to it was spent twice and no longer counts. The status it leaves the order in follows as its own event, when it changed.
+- `order.double_spend_reversed`: A double spend reported earlier was wrong: the payment counts again.
+
+<!-- end of events -->
+
+Answer `2xx` to an event you don't know: a later Monokulo may add one.
 
 `order.cancelled` means the merchant cancelled the order before anything
 was paid to it (today only the POS cancels, and only its own orders). It

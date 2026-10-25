@@ -1118,8 +1118,9 @@ impl Store {
     /// Test-only escape hatch for breaking the schema on purpose, so failure paths
     /// that only a genuine `StoreError` can reach (a scanner tick that must not mark
     /// a block scanned when recording a match failed) can be exercised without a
-    /// mock persistence layer. Not compiled into the binary.
-    #[cfg(test)]
+    /// mock persistence layer, or a stored row damaged. Not compiled into the
+    /// binary.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn execute_raw_for_test(&self, sql: &str) -> Result<()> {
         self.conn.execute_batch(sql)?;
         Ok(())

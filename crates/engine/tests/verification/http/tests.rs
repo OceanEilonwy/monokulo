@@ -13,6 +13,8 @@ use axum::Router;
 use http_body_util::BodyExt as _;
 use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
+use shared::order_event::OrderEventKind;
+use shared::order_status::OrderStatus;
 use tower::ServiceExt as _;
 
 use crate::daemon::fake::FakeDaemonClient;
@@ -2559,13 +2561,18 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
             store
                 .append_order_event(
                     &order_id,
-                    "order.unconfirmed",
-                    &[("status", "unconfirmed")],
+                    OrderEventKind::Status(OrderStatus::Unconfirmed),
+                    &[],
                     100,
                 )
                 .unwrap(),
             store
-                .append_order_event(&order_id, "order.paid", &[("status", "paid")], 200)
+                .append_order_event(
+                    &order_id,
+                    OrderEventKind::Status(OrderStatus::Paid),
+                    &[],
+                    200,
+                )
                 .unwrap(),
         )
     };
@@ -2597,7 +2604,7 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
         .db
         .lock()
         .in_transaction(|s| {
-            s.append_order_event(&order_id, "order.double_spend_detected", &[], 300)
+            s.append_order_event(&order_id, OrderEventKind::DoubleSpendDetected, &[], 300)
         })
         .unwrap();
     let (event, id, data) = next_logged_event(&mut body, &mut buffer).await;
@@ -2633,11 +2640,21 @@ async fn the_order_event_stream_says_when_a_reader_missed_events() {
         let store = state.db.lock();
         for at in [10, 20] {
             store
-                .append_order_event(&order_id, "order.unconfirmed", &[], at)
+                .append_order_event(
+                    &order_id,
+                    OrderEventKind::Status(OrderStatus::Unconfirmed),
+                    &[],
+                    at,
+                )
                 .unwrap();
         }
         let kept = store
-            .append_order_event(&order_id, "order.paid", &[], 5000)
+            .append_order_event(
+                &order_id,
+                OrderEventKind::Status(OrderStatus::Paid),
+                &[],
+                5000,
+            )
             .unwrap();
         assert_eq!(store.prune_order_events_before(1000).unwrap(), 2);
         kept

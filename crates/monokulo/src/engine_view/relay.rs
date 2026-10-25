@@ -328,6 +328,24 @@ impl Relay {
                             self.take(&channel, page).await;
                         }
                         Ok(None) => break,
+                        // A page that can't be read (or a stream gone
+                        // quiet) comes back the same from the same point:
+                        // the viewers are told, and it's asked for again
+                        // more slowly each time, as when it won't open.
+                        Err(error @ EngineClientError::Unreadable(_)) => {
+                            shared::throttled!(
+                                format!("engine-page-stream:{}", channel.network),
+                                warn,
+                                network = %channel.network,
+                                error = %error,
+                                "the engine page couldn't read the engine's activity stream (retried)"
+                            );
+                            let _ = channel
+                                .messages
+                                .send(Message::Unreachable(error.to_string()));
+                            backoff = (backoff * 2).min(self.timing.max_backoff);
+                            break;
+                        }
                         Err(error) => {
                             tracing::debug!(
                                 network = %channel.network,

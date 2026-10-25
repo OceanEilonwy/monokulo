@@ -128,11 +128,10 @@ fn event(seq: i64, store: &str, order: &str, event_type: &str) -> LoggedEvent {
     LoggedEvent {
         seq,
         event_id: format!("evt_{seq}"),
-        event_type: event_type.to_string(),
+        kind: event_type.into(),
         created_at: 1000 + seq,
         tenant_public_key: format!("pk_{store}"),
         order_id: OrderId::new(order),
-        status: event_type.strip_prefix("order.").map(str::to_string),
         txid: None,
         merchant_order_id: None,
         description: None,
@@ -939,6 +938,27 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
     let new = shop
         .order(serde_json::json!({ "amount": "2.00", "currency": "USD" }))
         .await;
+    // And one event monokulo can't read (a damaged row), before the one
+    // that pays the new order: it is skipped, not stopped on.
+    let damaged = {
+        let store = shop.engine.store().lock();
+        let seq = store
+            .append_order_event(
+                &engine::store::OrderId::new(new.as_str().to_owned()),
+                shared::order_event::OrderEventKind::Status(
+                    shared::order_status::OrderStatus::Unconfirmed,
+                ),
+                &[],
+                crate::now_unix(),
+            )
+            .unwrap();
+        store
+            .execute_raw_for_test(&format!(
+                "UPDATE order_events SET payload_json = '{{}}' WHERE seq = {seq}"
+            ))
+            .unwrap();
+        seq
+    };
     shop.engine.mark_order_paid(&new).unwrap();
     // Read from a position that was saved before the pruned events.
     let reading = shop.subscribe();
@@ -946,6 +966,8 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
     reading.abort();
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].order_id.as_ref().unwrap().as_str(), new);
+    assert!(deliveries[0].event_seq > damaged);
+    assert!(shop.state.db.lock().order_event_position().unwrap() > damaged);
 }
 
 /// Delivery and the log together: an engine event, read and delivered to
@@ -1135,7 +1157,7 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
         .expect("an announcement")
         .unwrap();
     assert_eq!(event.public_key, shop.pk);
-    assert_eq!(event.event.event, "sale.paid");
+    assert_eq!(event.event.event.as_str(), "sale.paid");
     assert_eq!(event.event.order_id, by_app);
     assert_eq!(event.event.device_name, "Till");
     reader.abort();
