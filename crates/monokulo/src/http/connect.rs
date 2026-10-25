@@ -31,7 +31,7 @@
 //!    request carried a `webhook_url`. See [`finish`] for its problems.
 
 use axum::extract::{Form, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -224,12 +224,12 @@ pub async fn start(
     State(state): State<AppState>,
     Path(platform): Path<String>,
     Query(query): Query<ConnectQuery>,
-    headers: HeaderMap,
+    authed: Option<super::AuthedUser>,
 ) -> Response {
     let Some(slug) = PluginSlug::parse(&platform) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let Some((user, _)) = super::resolve_authed_user(&state, &headers).await else {
+    let Some(super::AuthedUser(user, _)) = authed else {
         let mut this_url = format!(
             "/plugins/connect/{}?site_url={}&return_url={}&nonce={}",
             platform,

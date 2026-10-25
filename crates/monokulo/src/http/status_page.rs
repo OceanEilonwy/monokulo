@@ -489,15 +489,11 @@ fn fresh_status(engine: &Engine) -> Option<(Result<EngineStatusResponse, String>
 /// comment), not a fixed literal like most other pages.
 pub async fn status_page(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    authed: Option<super::AuthedUser>,
 ) -> Response {
-    let authed = super::resolve_authed_user(&state, &headers).await;
-    let view_model = status_view(
-        &state,
-        authed.as_ref().is_some_and(|(user, _)| user.is_admin),
-    )
-    .await;
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status").await;
+    let user = authed.map(|super::AuthedUser(user, _)| user);
+    let view_model = status_view(&state, user.as_ref().is_some_and(|user| user.is_admin)).await;
+    let chrome = super::page_chrome(&state, user.as_ref(), "/status").await;
     views::status::page(&chrome, &view_model).into_response()
 }
 
@@ -507,7 +503,7 @@ pub async fn status_page(
 /// client, like the checkout's.
 pub async fn status_events(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    authed: Option<super::AuthedUser>,
     extensions: axum::http::Extensions,
 ) -> Response {
     let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
@@ -523,9 +519,7 @@ pub async fn status_events(
         },
         None => None,
     };
-    let admin = super::resolve_authed_user(&state, &headers)
-        .await
-        .is_some_and(|(user, _)| user.is_admin);
+    let admin = authed.is_some_and(|super::AuthedUser(user, _)| user.is_admin);
     let stream = futures_util::stream::unfold(
         (state, None::<String>, true),
         move |(state, last, first)| {

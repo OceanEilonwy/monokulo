@@ -869,14 +869,36 @@ impl FromRequestParts<AppState> for AuthedUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        if let Some(ResolvedSession(user, hash)) = parts.extensions.get::<ResolvedSession>() {
-            return Ok(AuthedUser(user.clone(), hash.clone()));
-        }
-        match resolve_authed_user(state, &parts.headers).await {
-            Some((user, hash)) => Ok(AuthedUser(user, hash)),
+        match session_of(parts, state).await {
+            Some(authed) => Ok(authed),
             None => Err(unauthenticated(parts)),
         }
     }
+}
+
+/// `Option<AuthedUser>`, for a page anyone may load that shows more to
+/// someone signed in (the dashboard's front door, the status page, the
+/// plugin connect flow): `None` instead of the login redirect.
+impl axum::extract::OptionalFromRequestParts<AppState> for AuthedUser {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        Ok(session_of(parts, state).await)
+    }
+}
+
+/// The request's session: the one `abuse::site_middleware` already
+/// resolved, else looked up from the cookie.
+async fn session_of(parts: &Parts, state: &AppState) -> Option<AuthedUser> {
+    if let Some(ResolvedSession(user, hash)) = parts.extensions.get::<ResolvedSession>() {
+        return Some(AuthedUser(user.clone(), hash.clone()));
+    }
+    resolve_authed_user(state, &parts.headers)
+        .await
+        .map(|(user, hash)| AuthedUser(user, hash))
 }
 
 /// What a request without a valid session gets: a browser loading a page
