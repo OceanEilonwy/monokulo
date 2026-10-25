@@ -14,7 +14,8 @@ pub const TOKENS_CSS: &str = TOKENS.text();
 
 /// Every component's stylesheet, in cascade order, painted with
 /// [`TOKENS_CSS`]'s roles, baked with its compressed copies. The POS's
-/// artwork (`status.css`) is left out: only the POS shows it.
+/// artwork (`status.css`) is left out: a page that shows it opts in with
+/// [`STATUS`].
 pub const COMPONENTS: static_assets::Baked = static_assets::bake!(join "\n" [
     "web/components/primitives.css",
     "web/components/select.css",
@@ -31,6 +32,18 @@ pub const COMPONENTS: static_assets::Baked = static_assets::bake!(join "\n" [
     "web/components/chrome.css",
 ]);
 pub const COMPONENTS_CSS: &str = COMPONENTS.text();
+
+/// The POS's status artwork, which `StatusIcon` draws with: its spinner,
+/// disc and coins, painted with an order state's roles. Baked with its
+/// compressed copies, for a page that shows the symbols to add after
+/// [`COMPONENTS`] ([`STATUS_CSS`] is the text).
+pub const STATUS: static_assets::Baked = static_assets::bake!("web/components/status.css");
+pub const STATUS_CSS: &str = STATUS.text();
+
+/// The symbols `StatusIcon`'s coins and marks `<use>`, as inline SVG
+/// definitions that draw nothing themselves: a page that shows the icons
+/// includes them once, anywhere in its body.
+pub const STATUS_SYMBOLS: &str = include_str!("../web/status/symbols.svg").trim_ascii();
 
 /// The UI typeface, Manrope, Latin subset, by weight.
 pub const MANROPE_500: &[u8] = include_bytes!("../web/fonts/manrope-500.woff2");

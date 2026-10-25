@@ -1,5 +1,4 @@
-import { Show } from 'solid-js';
-import { Tag, type OrderState } from '@monokulo/ui/solid';
+import { StatusIcon as OrderIcon, Tag, type OrderState } from '@monokulo/ui/solid';
 import STATUS_SYMBOLS from '@monokulo/ui/status/symbols.svg?raw';
 
 /** What the POS needs to know about an order to show its status. */
@@ -37,21 +36,11 @@ export function StatusSymbols() {
   return <span class="pos-symbol-defs" aria-hidden="true" innerHTML={STATUS_SYMBOLS}/>;
 }
 
-/** One status symbol, centred in a square box sized by the caller's CSS. */
+/** One status symbol, centred in a square box sized by the caller's CSS:
+ * the ui package's `StatusIcon`, with the order's state and its wedge. */
 export function StatusIcon(props: { order: StatusSource; offline?: boolean }) {
   const state = () => stateOf(props.order, props.offline);
-  return <span class={['pos-icon', `pos-icon-${state()}`]} aria-hidden="true">
-    <Show when={state() === 'pending'}><span class="pos-spinner"/></Show>
-    <Show when={state() === 'unconfirmed'}><span class="pos-disc"/></Show>
-    <Show when={state() === 'confirming'}><span class="pos-disc" style={{ '--progress': `${progressPercent(props.order)}%` }}/></Show>
-    <Show when={state() === 'partial'}><svg viewBox="0 0 32 32"><use href="#pos-coin-partial"/></svg></Show>
-    <Show when={state() === 'paid'}><svg viewBox="0 0 32 32"><use href="#pos-coin"/></svg></Show>
-    <Show when={state() === 'overpaid'}><svg viewBox="0 0 44 32"><use href="#pos-coins-overpaid"/></svg></Show>
-    <Show when={state() === 'expired'}><svg viewBox="0 0 24 24"><use href="#pos-expired"/></svg></Show>
-    <Show when={state() === 'double-spend'}><svg viewBox="0 0 24 24"><use href="#pos-double-spend"/></svg></Show>
-    <Show when={state() === 'offline'}><svg viewBox="0 0 24 24"><use href="#pos-offline"/></svg></Show>
-    <Show when={state() === 'cancelled'}><svg viewBox="0 0 24 24"><use href="#pos-cancelled"/></svg></Show>
-  </span>;
+  return <OrderIcon state={state()} progress={state() === 'confirming' ? progressPercent(props.order) : undefined}/>;
 }
 
 /** Words short enough for a small phone's heading ("Waiting"); the full
