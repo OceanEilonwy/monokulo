@@ -93,7 +93,7 @@ fn stylesheets() -> Vec<(String, String)> {
 }
 
 /// Markup that can carry colours of its own: the views, the POS app and the
-/// coverage report's pages (rendered by xtask) and script.
+/// GitHub Pages site's pages (rendered by xtask) and scripts.
 fn markup_sources() -> Vec<(String, String)> {
     let mut sources = Vec::new();
     for (dir, ext) in [
@@ -104,7 +104,8 @@ fn markup_sources() -> Vec<(String, String)> {
         ("../../xtask/src/pages/render", "rs"),
         ("../../xtask/src/pages/landing", "rs"),
         ("../../xtask/src/pages/assets/coverage", "js"),
-        ("../../xtask/src/pages/assets/landing", "js"),
+        ("../../xtask/src/pages/install", "rs"),
+        ("../../xtask/src/pages/assets/site", "js"),
     ] {
         for path in files_with_extension(&crate_dir().join(dir), ext) {
             sources.push((
