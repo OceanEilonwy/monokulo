@@ -20,7 +20,7 @@ pub mod test_delivery;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use shared::ids::WebhookId;
+use engine_protocol::ids::WebhookId;
 
 use crate::db::{ConnectionId, Database, DbError, NewWebhook, WebhookRow};
 
@@ -173,7 +173,7 @@ pub async fn create(
     let url = check_url(url).map_err(CreateError::Invalid)?;
     let extra_headers = check_extra_headers(headers).map_err(CreateError::Invalid)?;
     let id = WebhookId::new(format!("wh_{}", uuid::Uuid::new_v4().simple()));
-    let signing_secret = shared::auth::generate_webhook_secret();
+    let signing_secret = credentials::auth::generate_webhook_secret();
     let encrypted = crate::crypto::encrypt(
         key,
         crate::crypto::Binding::WebhookSecret(id.as_str()),

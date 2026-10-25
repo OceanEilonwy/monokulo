@@ -79,7 +79,7 @@ fn pay(store: &Store, order_id: &str, txid: &str, height: Option<i64>) -> i64 {
 fn work(store: &Store, network: &str) -> Vec<i64> {
     store
         .due_reorg_candidates(
-            shared::network::parse_network(network).unwrap(),
+            engine_protocol::network::parse_network(network).unwrap(),
             i64::MAX,
             1000,
         )
@@ -304,7 +304,7 @@ fn staged_reorg_cleanup(network: monero::Network, fork: u64, restart: bool) {
         (network, fork + 1),
         (other, fork + 1),
     ] {
-        let t = TenantId::new(tenant(&store, shared::network::network_str(net)));
+        let t = TenantId::new(tenant(&store, engine_protocol::network::network_str(net)));
         let o = order(&store, t.as_str(), 100_000);
         let hash = format!("{net:?}-{height}");
         store
@@ -318,7 +318,7 @@ fn staged_reorg_cleanup(network: monero::Network, fork: u64, restart: bool) {
                 },
             )
             .unwrap();
-        store.conn.execute("INSERT INTO partial_block_matches(network,tenant_id,order_id,txid,output_index,amount_piconero,key_images_json,seen_at_utc,output_key) VALUES(?1,?2,?3,'staged-tx',0,17,'[]',1000,'output-key')", params![shared::network::SqlNetwork(net),t,o]).unwrap();
+        store.conn.execute("INSERT INTO partial_block_matches(network,tenant_id,order_id,txid,output_index,amount_piconero,key_images_json,seen_at_utc,output_key) VALUES(?1,?2,?3,'staged-tx',0,17,'[]',1000,'output-key')", params![engine_protocol::network::SqlNetwork(net),t,o]).unwrap();
         staged.push((net, t, height, hash));
     }
     store.open_reorg_job(network, fork, 1000).unwrap();
@@ -345,7 +345,7 @@ fn staged_reorg_cleanup(network: monero::Network, fork: u64, restart: bool) {
             .conn
             .query_row(
                 "SELECT COUNT(*) FROM partial_block_matches WHERE network=?1 AND tenant_id=?2",
-                params![shared::network::SqlNetwork(net), t],
+                params![engine_protocol::network::SqlNetwork(net), t],
                 |r| r.get(0),
             )
             .unwrap();

@@ -212,7 +212,7 @@ impl ApiParam for Instance {}
 pub struct Orders {
     pub state: AppState,
     pub store: Arc<StoreConnectionRow>,
-    pub sk: shared::auth::RawToken,
+    pub sk: credentials::auth::RawToken,
 }
 
 impl FromRequestParts<AppState> for Orders {

@@ -1,0 +1,29 @@
+[package]
+name = "service-runtime"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "What a long-running service process needs around its own work: supervised background loops, shutdown, the machine's resources and the clock"
+
+[features]
+# A node or engine that can't be reached (`unreachable`), for tests.
+# Enabled only from other crates' [dev-dependencies] and test features
+# (resolver 2 keeps it out of every normal build), never in production.
+test-support = []
+
+[dependencies]
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+# `supervise::supervise`'s own real use of `tokio::spawn`/`tokio::time::sleep`
+# (not test-only - both the scanner's and monokulo's real background
+# loops call this in production).
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+# Paused time, so supervise's restart backoff is tested without waiting it out.
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
+
+[lints]
+workspace = true

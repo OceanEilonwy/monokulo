@@ -7,8 +7,8 @@
 //! The engine sends no webhook itself: monokulo holds the merchant's side of
 //! an order (its price, its store) and delivers them.
 
+use engine_protocol::order_event::OrderEventKind;
 use rusqlite::{params, OptionalExtension as _};
-use shared::order_event::OrderEventKind;
 
 use super::{OrderId, Result, Store, StoreError, TenantId};
 
@@ -30,7 +30,7 @@ pub struct OrderEvent {
     /// The store's public key, which monokulo knows the store by.
     pub tenant_public_key: String,
     pub order_id: OrderId,
-    /// A [`shared::order_event::OrderEventKind`]'s name, as stored: the
+    /// A [`engine_protocol::order_event::OrderEventKind`]'s name, as stored: the
     /// engine only passes it on, so a row a newer build wrote still goes
     /// out as it was written.
     pub event_type: String,

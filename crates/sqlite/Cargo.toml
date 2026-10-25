@@ -1,0 +1,32 @@
+[package]
+name = "sqlite"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "SQLite for monokulo and the engine: connection pools, the migration runner and the admin Query page's read-only sandbox"
+
+[features]
+# The in-thread pool (`Pool::Inline`), for tests. Enabled only from other
+# crates' [dev-dependencies] and test features (resolver 2 keeps it out of
+# every normal build), never in production.
+test-support = []
+
+[dependencies]
+# `query`: the result's blobs are shown as hex.
+hex = "0.4.3"
+parking_lot = "0.12.5"
+# `query`: the authorizer and progress handler (`hooks`) that keep
+# the Query page read-only and short, and where each result column comes
+# from (`column_metadata`), so a secret one is marked hidden, and its
+# declared type (`column_decltype`).
+rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "column_metadata", "column_decltype"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+
+[dev-dependencies]
+# A fresh database file for each test.
+uuid = { version = "1.26.0", features = ["v4"] }
+
+[lints]
+workspace = true

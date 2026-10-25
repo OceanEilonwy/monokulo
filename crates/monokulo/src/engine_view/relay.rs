@@ -23,9 +23,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine_protocol::activity::ActivityPage;
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
-use shared::activity::ActivityPage;
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::Instant;
 
@@ -333,7 +333,7 @@ impl Relay {
                         // the viewers are told, and it's asked for again
                         // more slowly each time, as when it won't open.
                         Err(error @ EngineClientError::Unreadable(_)) => {
-                            shared::throttled!(
+                            telemetry::throttled!(
                                 format!("engine-page-stream:{}", channel.network),
                                 warn,
                                 network = %channel.network,
@@ -375,7 +375,7 @@ impl Relay {
                 match Upstream::open(&self.client, &channel.network, from).await {
                     Ok(upstream) => break upstream,
                     Err(error) => {
-                        shared::throttled!(
+                        telemetry::throttled!(
                             format!("engine-page-stream:{}", channel.network),
                             warn,
                             network = %channel.network,
@@ -442,8 +442,8 @@ impl Relay {
 mod tests {
     use axum::body::Body;
     use axum::response::{IntoResponse as _, Response};
+    use engine_protocol::activity::Event;
     use monero::Network;
-    use shared::activity::Event;
     use tower::ServiceExt as _;
 
     use super::*;
@@ -560,11 +560,13 @@ mod tests {
     async fn viewers_get_the_engine_s_history_then_its_new_events() {
         let engine = engine_test_support::spawn_test_engine().await;
         let activity = engine.activity(Network::Stagenet);
-        activity.record(Event::Snapshot(Box::new(shared::activity::Snapshot {
-            high_water: Some(100),
-            tip: Some(100),
-            ..Default::default()
-        })));
+        activity.record(Event::Snapshot(Box::new(
+            engine_protocol::activity::Snapshot {
+                high_water: Some(100),
+                tip: Some(100),
+                ..Default::default()
+            },
+        )));
         activity.record(Event::Seeded { height: 100 });
         let relay = relay(&engine, LINGER);
         let mut watch = relay.watch("stagenet").await.unwrap();
@@ -685,7 +687,7 @@ mod tests {
         assert!(unconfigured.is_err(), "the engine scans no mainnet");
         let nowhere = Arc::new(Relay::new(EngineClient::for_tests(format!(
             "http://{}",
-            shared::unreachable::address()
+            service_runtime::unreachable::address()
         ))));
         assert!(nowhere.watch("stagenet").await.is_err());
     }

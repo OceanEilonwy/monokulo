@@ -114,7 +114,7 @@ mod tests {
 
     fn data() -> CreateOrderData {
         CreateOrderData {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order_creation_error: None,
             order_currency_options: vec!["XMR".to_string(), "USD".to_string()],

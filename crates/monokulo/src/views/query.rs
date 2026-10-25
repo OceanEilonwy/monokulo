@@ -10,7 +10,7 @@
 //! a long value opens in a dialog, and the table list can be filtered.
 
 use maud::{html, Markup, PreEscaped};
-use shared::sqlite_query::{Cell, QueryError, QueryResult, TableInfo, ROW_COUNT_CAP};
+use sqlite::query::{Cell, QueryError, QueryResult, TableInfo, ROW_COUNT_CAP};
 use ui::assets::icons;
 use ui::{
     Alert, Button, ButtonType, ButtonVariant, Choice, ControlSize, CopyBlock, DataCell, DataGrid,

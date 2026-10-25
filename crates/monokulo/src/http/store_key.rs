@@ -118,7 +118,7 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
     let Some(presented) = presented else {
         return KeyCheck::Invalid;
     };
-    let hash = shared::auth::RawToken::presented(&presented).hash();
+    let hash = credentials::auth::RawToken::presented(&presented).hash();
     // Before the key is looked up, so a revocation written after the
     // lookup still reaches it.
     let held = state.revocations.hold(&hash);
@@ -223,7 +223,7 @@ impl StoreKeys {
     pub(crate) async fn current(
         &self,
         id: &crate::db::ConnectionId,
-    ) -> Result<Option<(StoreConnectionRow, shared::auth::RawToken)>, ()> {
+    ) -> Result<Option<(StoreConnectionRow, credentials::auth::RawToken)>, ()> {
         let Some(row) = self.row(id).await? else {
             return Ok(None);
         };
@@ -236,7 +236,7 @@ impl StoreKeys {
     pub(crate) async fn held(
         &self,
         id: &crate::db::ConnectionId,
-    ) -> Result<Option<(shared::auth::RawToken, crate::revocation::Hold)>, ()> {
+    ) -> Result<Option<(credentials::auth::RawToken, crate::revocation::Hold)>, ()> {
         loop {
             let Some((_, sk)) = self.current(id).await? else {
                 return Ok(None);

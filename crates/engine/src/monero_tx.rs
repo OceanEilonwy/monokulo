@@ -1,6 +1,6 @@
 //! Transactions as a node sends them: whole, or *pruned*.
 //!
-//! A pruned transaction is its prefix and RingCT base without the ring
+//! A pruned transaction is its prefix and `RingCT` base without the ring
 //! signatures and range proofs: all a view-key scan reads (output keys, the
 //! encrypted amounts, the key images) at about a sixth of the size. `monero`
 //! 0.22 decodes only whole transactions, and hashes a pruned one to the wrong
@@ -17,14 +17,14 @@
 
 use std::io::Cursor;
 
-use monero::blockdata::transaction::TransactionPrefix;
-use monero::consensus::encode::{self, deserialize, Decodable};
-use monero::cryptonote::hash::{Hash, Hashable};
+use monero::blockdata::transaction::{TransactionPrefix, TxIn};
+use monero::consensus::encode::{self, deserialize, Decodable as _};
+use monero::cryptonote::hash::{Hash, Hashable as _};
 use monero::util::ringct::{RctSig, RctSigBase, RctType};
 use monero::Transaction;
 
 /// Reads a pruned transaction blob: the prefix and, from version 2 on, the
-/// RingCT base. Anything left over is an error, so a whole transaction is
+/// `RingCT` base. Anything left over is an error, so a whole transaction is
 /// never read as a pruned one.
 pub fn decode_pruned(bytes: &[u8]) -> Result<Transaction, encode::Error> {
     let mut reader = Cursor::new(bytes);
@@ -50,7 +50,8 @@ pub fn decode_pruned(bytes: &[u8]) -> Result<Transaction, encode::Error> {
 pub fn decode_any(bytes: &[u8]) -> Result<Transaction, encode::Error> {
     match deserialize::<Transaction>(bytes) {
         Ok(tx) => Ok(tx),
-        Err(whole) => decode_pruned(bytes).map_err(|_| whole),
+        // Neither: the whole decoder's error says more than the pruned one's.
+        Err(whole) => decode_pruned(bytes).map_err(|_pruned| whole),
     }
 }
 
@@ -67,16 +68,24 @@ pub fn is_pruned(tx: &Transaction) -> bool {
 }
 
 fn has_ring_inputs(tx: &Transaction) -> bool {
-    tx.prefix
-        .inputs
-        .iter()
-        .any(|input| matches!(input, monero::blockdata::transaction::TxIn::ToKey { .. }))
+    tx.prefix.inputs.iter().any(|input| {
+        matches!(
+            input,
+            TxIn::ToKey {
+                amount: _,
+                key_offsets: _,
+                k_image: _
+            }
+        )
+    })
 }
 
 /// The id of a version 2 transaction from its pruned form and the hash of
-/// its prunable part: the hash of (prefix hash, base hash, prunable hash).
-/// `None` for a version 1 transaction (its id is the hash of the whole
-/// blob) or one with no RingCT base.
+/// its prunable part.
+///
+/// The id is the hash of (prefix hash, base hash, prunable hash). `None`
+/// for a version 1 transaction (its id is the hash of the whole blob) or
+/// one with no `RingCT` base.
 pub fn pruned_txid(tx: &Transaction, prunable_hash: &[u8; 32]) -> Option<Hash> {
     if *tx.prefix.version == 1 {
         return None;
@@ -95,14 +104,12 @@ mod tests {
     use monero::consensus::encode::serialize;
 
     fn fixture_tx() -> Transaction {
-        let raw = hex::decode(include_str!(
-            "../../engine/tests/fixtures/subaddress_tx.hex"
-        ))
-        .expect("fixture is valid hex");
+        let raw = hex::decode(include_str!("../tests/fixtures/subaddress_tx.hex"))
+            .expect("fixture is valid hex");
         deserialize(&raw).expect("fixture is a valid monero transaction")
     }
 
-    /// The pruned blob of a whole transaction: its prefix and RingCT base.
+    /// The pruned blob of a whole transaction: its prefix and `RingCT` base.
     fn pruned_blob(tx: &Transaction) -> Vec<u8> {
         let mut blob = serialize(&tx.prefix);
         blob.extend(serialize(tx.rct_signatures.sig.as_ref().unwrap()));
@@ -154,10 +161,10 @@ mod tests {
         let whole = fixture_tx();
         let whole_blob = serialize(&whole);
         let blob = pruned_blob(&whole);
-        assert!(decode_pruned(&whole_blob).is_err());
-        assert!(deserialize::<Transaction>(&blob).is_err());
+        decode_pruned(&whole_blob).unwrap_err();
+        deserialize::<Transaction>(&blob).unwrap_err();
         assert_eq!(decode_any(&whole_blob).unwrap(), whole);
         assert!(is_pruned(&decode_any(&blob).unwrap()));
-        assert!(decode_any(&blob[..blob.len() - 1]).is_err());
+        decode_any(&blob[..blob.len() - 1]).unwrap_err();
     }
 }

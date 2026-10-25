@@ -16,9 +16,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use credentials::auth::TokenHash;
 use futures_util::{Stream, StreamExt as _};
 use parking_lot::Mutex;
-use shared::auth::TokenHash;
 use tokio_util::sync::CancellationToken;
 
 /// The credentials something holds, by hash, each with the token that

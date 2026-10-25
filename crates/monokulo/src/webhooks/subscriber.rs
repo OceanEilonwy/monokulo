@@ -19,9 +19,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine_protocol::order_event::ReadOrderEventKind;
 use futures_util::StreamExt as _;
 use serde::Deserialize;
-use shared::order_event::ReadOrderEventKind;
 
 use crate::apps::AppEvents;
 use crate::db::{Database, DbError, LoggedEvent};
@@ -249,7 +249,7 @@ async fn announce_to_apps(db: &Database, apps: &AppEvents, logged: LoggedEvent) 
 /// connection opens).
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_subscriber(
     db: Database,

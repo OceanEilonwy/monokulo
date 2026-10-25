@@ -2,8 +2,8 @@
 //! networks check, each one's anchor, its proven chain and the `RandomX` keys
 //! below it, and the settlement ceiling those give.
 
+use engine_protocol::network::SqlNetwork;
 use rusqlite::{params, OptionalExtension as _};
-use shared::network::SqlNetwork;
 
 use super::work::sql_height;
 use super::{Result, Store, StoreError};
@@ -396,7 +396,7 @@ impl Store {
         )?;
         let views = statement
             .query_map(params![order_id, SqlNetwork(network)], |row| {
-                let amount: shared::sqlite::Unsigned<u64> = row.get(0)?;
+                let amount: sqlite::Unsigned<u64> = row.get(0)?;
                 let height: Option<i64> = row.get(1)?;
                 let found_in: Option<String> = row.get(2)?;
                 let proven: Option<String> = row.get(3)?;

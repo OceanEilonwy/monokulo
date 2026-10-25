@@ -310,7 +310,7 @@ fn a_testnet_wallet_is_created_with_the_flag_and_opened_without_it() {
     // An unreachable node fails as a testnet node. One that hangs up on
     // every request, not a closed port, which Windows takes two seconds to
     // refuse.
-    let nowhere = shared::unreachable::address().to_string();
+    let nowhere = service_runtime::unreachable::address().to_string();
     let unreachable = cli(
         &dir,
         &[
@@ -377,7 +377,7 @@ fn rescan_takes_a_block_range_and_leaves_the_file_alone_without_a_node() {
     let before = std::fs::read(dir.join("dave.db")).unwrap();
     // An unreachable node: the bad arguments fail before connecting, and
     // the good one fails to connect.
-    let nowhere = shared::unreachable::address().to_string();
+    let nowhere = service_runtime::unreachable::address().to_string();
     let cannot_reach = format!("cannot reach the stagenet node at http://{nowhere}");
     let node = ["--daemon-address", nowhere.as_str()];
     for (args, expected) in [

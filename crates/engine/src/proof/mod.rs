@@ -24,8 +24,10 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine_protocol::proof::{
+    AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
+};
 use futures_util::future::join_all;
-use shared::proof::{AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus};
 
 use crate::daemon::{DaemonError, MoneroDaemonClient};
 use crate::daemon_fallback::FallbackDaemonClient;
@@ -306,7 +308,7 @@ impl Follower {
         match self.checked_round(db, client, now).await {
             Ok(report) => report,
             Err(error) => {
-                shared::throttled!(
+                telemetry::throttled!(
                     format!("proof-round:{:?}", self.network),
                     warn,
                     network = ?self.network,
@@ -336,7 +338,7 @@ impl Follower {
             return;
         }
         if let Err(error) = self.db(db, Store::disable_proof).await {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("proof-off:{:?}", self.network),
                 warn,
                 network = ?self.network,
@@ -373,7 +375,7 @@ impl Follower {
         } else {
             let name = format!(
                 "engine-randomx-{}",
-                shared::network::network_str(self.network)
+                engine_protocol::network::network_str(self.network)
             );
             let hasher = Hasher::start_with(&name, self.function)?;
             self.hasher = Some(hasher.clone());
@@ -423,7 +425,7 @@ impl Follower {
                         .saturating_mul(1 << self.anchor_failures.saturating_sub(1).min(10))
                         .min(self.tuning.anchor_retry.saturating_mul(10));
                     self.next_anchor = Some(tokio::time::Instant::now() + wait);
-                    shared::throttled!(
+                    telemetry::throttled!(
                         format!("proof-anchor:{:?}", self.network),
                         info,
                         network = ?self.network,
@@ -922,7 +924,7 @@ impl Follower {
     }
 
     fn caught(&self, node: &NodeRef<'_>, height: u64, why: String) -> Finding {
-        shared::throttled!(
+        telemetry::throttled!(
             format!("proof-caught:{}", node.label),
             warn,
             network = ?self.network,
@@ -1102,7 +1104,7 @@ fn hashing(hasher: &Hasher) -> Hashing {
 /// memory is freed.
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_loop(
     network: monero::Network,

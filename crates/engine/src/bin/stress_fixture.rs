@@ -464,7 +464,8 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             orders
         };
         for order_index in 0..tenant_orders {
-            let minor = store.allocate_minor_index(&shared::ids::TenantId::new(id.to_string()))?;
+            let minor =
+                store.allocate_minor_index(&engine_protocol::ids::TenantId::new(id.to_string()))?;
             let subaddress = custody
                 .derive_subaddress(
                     handle,
@@ -567,7 +568,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         db: engine::store::Database::from_parts(db.clone(), reader_pool.clone(), &store.lock()),
         rate_limits: Arc::new(ApiRateLimits::new(100_000, Some(100_000))),
         log_store: None,
-        engine_token: Arc::new(shared::auth::RawToken::presented(FIXTURE_ENGINE_TOKEN).hash()),
+        engine_token: Arc::new(credentials::auth::RawToken::presented(FIXTURE_ENGINE_TOKEN).hash()),
         settings: EngineSettings::defaults(),
         custody: engine::http::Custody {
             backends: Arc::clone(&custody),
@@ -603,7 +604,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 let mut request = Request::new(Body::empty());
                 *request.uri_mut() = axum::http::Uri::from_static("/status");
                 request.headers_mut().insert(
-                    shared::auth::ENGINE_TOKEN_HEADER,
+                    credentials::auth::ENGINE_TOKEN_HEADER,
                     axum::http::HeaderValue::from_static(FIXTURE_ENGINE_TOKEN),
                 );
                 if router

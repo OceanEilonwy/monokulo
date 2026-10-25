@@ -53,7 +53,7 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
     );
     let stored = row.password_hash.clone();
     assert_eq!(
-        shared::password::run(move |hasher| hasher.verify(plaintext, &stored)).await,
+        credentials::password::run(move |hasher| hasher.verify(plaintext, &stored)).await,
         Some(true)
     );
 }
@@ -737,7 +737,7 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     let row = state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(store_id.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(store_id.clone()))
         .unwrap()
         .unwrap();
     assert_eq!(row.name, "Bakery");
@@ -818,7 +818,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
     let wallet = state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(bakery.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(bakery.clone()))
         .unwrap()
         .unwrap()
         .wallet_id
@@ -884,7 +884,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
     let row = state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(stall.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(stall.clone()))
         .unwrap()
         .unwrap();
     assert_eq!(row.name, "Market stall & café");
@@ -916,7 +916,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
         state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(stall.clone()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(stall.clone()))
             .unwrap()
             .unwrap()
             .site
@@ -962,7 +962,7 @@ async fn a_stores_name_and_site_are_changed_in_its_settings() {
     assert!(state
         .db
         .lock()
-        .list_store_domains(&shared::ids::ConnectionId::new(stall.clone()))
+        .list_store_domains(&engine_protocol::ids::ConnectionId::new(stall.clone()))
         .unwrap()
         .is_empty());
     // Changing works the same way, to the new site.
@@ -1032,7 +1032,7 @@ async fn a_store_with_no_site_has_a_name_only() {
     let row = state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(store_id.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(store_id.clone()))
         .unwrap()
         .unwrap();
     assert_eq!(row.site, None);
@@ -1111,7 +1111,7 @@ async fn a_stores_payment_description_is_saved_from_its_settings() {
         state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(store.clone()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(store.clone()))
             .unwrap()
             .unwrap()
             .payment_description
@@ -1492,7 +1492,7 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     };
     let db = state.db.clone();
     let router = build_router(state);
-    let raw_token = shared::auth::generate_invite_token();
+    let raw_token = credentials::auth::generate_invite_token();
     db.lock()
         .create_invite_link("link-1", &raw_token.hash(), None, None, crate::now_unix())
         .unwrap();
@@ -1781,7 +1781,7 @@ fn a_store_is_owned_only_by_the_user_it_belongs_to() {
         state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("c1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("c1"))
             .unwrap()
             .unwrap()
     };
@@ -1797,7 +1797,7 @@ fn state_with_owner_and_store(
     {
         let db = state.db.lock();
         db.create_user(
-            &shared::ids::UserId::new("u_owner"),
+            &engine_protocol::ids::UserId::new("u_owner"),
             "owner@example.com",
             "x",
             false,
@@ -1805,7 +1805,7 @@ fn state_with_owner_and_store(
         )
         .unwrap();
         db.create_user(
-            &shared::ids::UserId::new("u_other"),
+            &engine_protocol::ids::UserId::new("u_other"),
             "other@example.com",
             "x",
             false,
@@ -1814,8 +1814,8 @@ fn state_with_owner_and_store(
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("c1"),
-            &shared::ids::UserId::new("u_owner"),
+            &engine_protocol::ids::ConnectionId::new("c1"),
+            &engine_protocol::ids::UserId::new("u_owner"),
             "shop.example.com",
             tenant_public_key,
             "enc",
@@ -2032,7 +2032,7 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
     state
         .db
         .lock()
-        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .set_client_logging(&engine_protocol::ids::ConnectionId::new("c1"), true)
         .unwrap();
     assert!(with_script("/stores/c1").await);
     assert!(with_script("/stores/c1/orders?page=2").await);
@@ -2044,7 +2044,7 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
     {
         let db = state.db.lock();
         db.create_user(
-            &shared::ids::UserId::new("u_owner"),
+            &engine_protocol::ids::UserId::new("u_owner"),
             "owner@example.com",
             "x",
             false,
@@ -2058,8 +2058,8 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
         );
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("c1"),
-            &shared::ids::UserId::new("u_owner"),
+            &engine_protocol::ids::ConnectionId::new("c1"),
+            &engine_protocol::ids::UserId::new("u_owner"),
             "https://shop.example.com",
             "pk_shop",
             &encrypted,
@@ -2068,8 +2068,8 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
         )
         .unwrap();
         db.set_secret_key_hash(
-            &shared::ids::ConnectionId::new("c1"),
-            &shared::auth::RawToken::presented("sk_shop").hash(),
+            &engine_protocol::ids::ConnectionId::new("c1"),
+            &credentials::auth::RawToken::presented("sk_shop").hash(),
         )
         .unwrap();
     }
@@ -2093,7 +2093,7 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
     state
         .db
         .lock()
-        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .set_client_logging(&engine_protocol::ids::ConnectionId::new("c1"), true)
         .unwrap();
     assert_eq!(
         router.clone().oneshot(forward()).await.unwrap().status(),
@@ -2107,14 +2107,14 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
     {
         let db = state.db.lock();
         db.create_session(
-            &shared::auth::RawToken::presented("owner-token").hash(),
-            &shared::ids::UserId::new("u_owner"),
+            &credentials::auth::RawToken::presented("owner-token").hash(),
+            &engine_protocol::ids::UserId::new("u_owner"),
             crate::now_unix(),
         )
         .unwrap();
         db.create_session(
-            &shared::auth::RawToken::presented("other-token").hash(),
-            &shared::ids::UserId::new("u_other"),
+            &credentials::auth::RawToken::presented("other-token").hash(),
+            &engine_protocol::ids::UserId::new("u_other"),
             crate::now_unix(),
         )
         .unwrap();
@@ -2148,7 +2148,7 @@ async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in()
     state
         .db
         .lock()
-        .set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        .set_client_logging(&engine_protocol::ids::ConnectionId::new("c1"), true)
         .unwrap();
     assert_eq!(
         status(send("owner-token", batch(2))).await,

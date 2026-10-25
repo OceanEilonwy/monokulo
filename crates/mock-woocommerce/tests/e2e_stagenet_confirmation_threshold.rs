@@ -297,7 +297,9 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let public_key = monokulo
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+            connection_id.clone(),
+        ))
         .unwrap()
         .expect("the store setup made")
         .tenant_public_key;
@@ -360,7 +362,9 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let tiers = monokulo
         .db
         .lock()
-        .list_confirmation_thresholds(&shared::ids::ConnectionId::new(connection_id.clone()))
+        .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
+            connection_id.clone(),
+        ))
         .unwrap();
     assert_eq!(
         tiers
@@ -425,7 +429,10 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             .unwrap()
             .id;
         let stored = store
-            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+            .get_order(
+                &tenant_id,
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(

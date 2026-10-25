@@ -10,11 +10,11 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
+use engine_protocol::order_event::OrderEventKind;
+use engine_protocol::order_status::OrderStatus;
 use http_body_util::BodyExt as _;
 use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
-use shared::order_event::OrderEventKind;
-use shared::order_status::OrderStatus;
 use tower::ServiceExt as _;
 
 use crate::daemon::fake::FakeDaemonClient;
@@ -161,7 +161,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
             .to_owned();
         let order = store
             .lock()
-            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
+            .get_order(&tenant_id, &engine_protocol::ids::OrderId::new(order_id))
             .unwrap()
             .unwrap();
         assert_eq!(order.confirmations_required_override, expected, "{body}");
@@ -213,7 +213,9 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
 
     let s = store.lock();
     let tenant_row = s
-        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &tenant.secret_token,
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -581,7 +583,9 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
     let tenant = state
         .db
         .lock()
-        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&created.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &created.secret_token,
+        ))
         .unwrap()
         .unwrap();
     assert!(state.custody.wallet_handles.read().contains_key(&tenant.id));
@@ -1014,7 +1018,7 @@ async fn the_admin_cancel_route_cancels_an_unpaid_order_of_the_tenant_behind_the
     };
     let pay = |order: &str, amount: u64, txid: &str| {
         let store = store.lock();
-        let order = shared::ids::OrderId::new(order.to_owned());
+        let order = engine_protocol::ids::OrderId::new(order.to_owned());
         store
             .record_payment_match(
                 &order,
@@ -1499,7 +1503,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/admin/settings/reload")
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1652,7 +1656,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
                 .header("authorization", format!("Bearer {}", tenant.secret_token))
                 .header("content-type", "application/json");
             if let Some(value) = wrong {
-                request = request.header(shared::auth::ENGINE_TOKEN_HEADER, value);
+                request = request.header(credentials::auth::ENGINE_TOKEN_HEADER, value);
             }
             let response = router
                 .clone()
@@ -1672,7 +1676,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         .oneshot(
             Request::builder()
                 .uri("/status")
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1683,7 +1687,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         .oneshot(
             Request::builder()
                 .uri("/api/v1/admin/tenant")
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .header("authorization", format!("Bearer {}", tenant.secret_token))
                 .body(Body::empty())
                 .unwrap(),
@@ -1960,10 +1964,10 @@ async fn the_snp_trust_settings_cannot_be_changed_through_the_settings_api() {
 }
 
 /// Ports on 127.0.0.1 that hang up on every connection
-/// ([`shared::unreachable`]), so a node saved there fails at once, with no
+/// ([`service_runtime::unreachable`]), so a node saved there fails at once, with no
 /// DNS. Not closed ports: Windows takes two seconds to refuse each try.
 fn unreachable_ports<const N: usize>() -> [u16; N] {
-    std::array::from_fn(|_| shared::unreachable::address().port())
+    std::array::from_fn(|_| service_runtime::unreachable::address().port())
 }
 
 fn unreachable_port() -> u16 {
@@ -2350,7 +2354,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
 
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(
         payments.len(),
@@ -2371,7 +2375,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(body["outcome"], "matched");
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(
         payments.len(),
@@ -2554,7 +2558,7 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
     let state = AppState::for_tests();
     let router = build_router(state.clone(), 1_000_000);
     let tenant = create_tenant(&router, 12).await;
-    let order_id = shared::ids::OrderId::new(create_admin_order(&router, &tenant).await);
+    let order_id = engine_protocol::ids::OrderId::new(create_admin_order(&router, &tenant).await);
     let (first, second) = {
         let store = state.db.lock();
         (
@@ -2635,7 +2639,7 @@ async fn the_order_event_stream_says_when_a_reader_missed_events() {
     let state = AppState::for_tests();
     let router = build_router(state.clone(), 1_000_000);
     let tenant = create_tenant(&router, 13).await;
-    let order_id = shared::ids::OrderId::new(create_admin_order(&router, &tenant).await);
+    let order_id = engine_protocol::ids::OrderId::new(create_admin_order(&router, &tenant).await);
     let kept = {
         let store = state.db.lock();
         for at in [10, 20] {
@@ -2797,7 +2801,7 @@ async fn listing_orders_can_page_search_and_list_every_open_order() {
         let store = store.lock();
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(ids[1].clone()),
+                &engine_protocol::ids::OrderId::new(ids[1].clone()),
                 "tx_paid",
                 0,
                 1_000,
@@ -2809,7 +2813,7 @@ async fn listing_orders_can_page_search_and_list_every_open_order() {
             .unwrap();
         crate::scanner::recompute_and_notify(
             &store,
-            &shared::ids::OrderId::new(ids[1].clone()),
+            &engine_protocol::ids::OrderId::new(ids[1].clone()),
             100,
             crate::now_unix(),
         )
@@ -4417,7 +4421,7 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
             Request::builder()
                 .method("DELETE")
                 .uri(format!("/api/v1/admin/proof/{network}/anchor"))
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -4549,7 +4553,9 @@ async fn two_stores_on_one_wallet_never_hand_out_the_same_address() {
     );
     for tenant in [&shop, &market] {
         let row = s
-            .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+            .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+                &tenant.secret_token,
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(row.wallet_id, wallet_id);
@@ -4840,7 +4846,9 @@ async fn new_order(router: &Router, tenant: &TestTenant) -> serde_json::Value {
 fn tenant_row(store: &crate::store::SharedStore, tenant: &TestTenant) -> crate::store::Tenant {
     store
         .lock()
-        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &tenant.secret_token,
+        ))
         .unwrap()
         .unwrap()
 }
@@ -4884,8 +4892,10 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     assert_eq!(watcher.wallet_id, old_wallet);
     {
         let s = store.lock();
-        let before_id = shared::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
-        let after_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
+        let before_id =
+            engine_protocol::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
+        let after_id =
+            engine_protocol::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
         assert_eq!(
             s.find_order_by_minor_index(&watcher.id, 1)
                 .unwrap()
@@ -4914,7 +4924,8 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     // scanning the order decides.
     {
         let s = store.lock();
-        let before_id = shared::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
+        let before_id =
+            engine_protocol::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
         let now = crate::now_unix();
         s.execute_raw_for_test(&format!(
             "INSERT INTO scanned_blocks (network, height, block_hash)
@@ -4950,7 +4961,7 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     assert_eq!(body["order_ids"], serde_json::json!([before["order_id"]]));
     let s = store.lock();
     let paid = |order: &serde_json::Value| {
-        s.get_all_payments(&shared::ids::OrderId::new(
+        s.get_all_payments(&engine_protocol::ids::OrderId::new(
             order["order_id"].as_str().unwrap().to_owned(),
         ))
         .unwrap()
@@ -4998,7 +5009,8 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
     let before_change =
         crate::scanner::record_scan_match(&locked, &row.id, &found, began, None).unwrap();
     assert!(before_change.is_empty());
-    let order_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
+    let order_id =
+        engine_protocol::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
     assert!(locked.get_all_payments(&order_id).unwrap().is_empty());
     // A scan begun after the change is the store's own.
     let current =

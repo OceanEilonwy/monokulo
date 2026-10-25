@@ -16,7 +16,7 @@
 //! for anything else is refused before any pricing. Keys are kept apart by
 //! where they came from ([`IdempotencyScope`]).
 
-use shared::xmr_amount::Piconero;
+use pricing::xmr_amount::Piconero;
 
 use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
 use crate::api::runtime::scalars::IdempotencyKey;
@@ -470,7 +470,7 @@ async fn price_of(
     state: &AppState,
     row: &StoreConnectionRow,
     policy: &PolicyGuard,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     currency: &KnownCurrency,
     amount: &str,
 ) -> Result<OrderPrice, MakeError> {
@@ -493,7 +493,7 @@ async fn price_of(
         }
     };
     let xmr_amount_piconero =
-        shared::exchange_rate::compute_order_amount(currency.as_str(), amount, piconero_per_unit)
+        pricing::exchange_rate::compute_order_amount(currency.as_str(), amount, piconero_per_unit)
             .map_err(|e| MakeError::InvalidAmount(e.to_string()))?;
     let resolution = crate::confirmation_thresholds::resolve_for_order(
         state,

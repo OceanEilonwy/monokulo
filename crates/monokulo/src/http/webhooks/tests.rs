@@ -271,11 +271,11 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     worker.abort();
     assert_eq!(headers["authorization"], "Bearer shop-endpoint-secret");
     assert_eq!(headers["x-monokulo-event"], "order.paid");
-    assert!(shared::webhook_sign::verify_signature(
+    assert!(credentials::webhook_sign::verify_signature(
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
-        shared::time::now_unix()
+        service_runtime::time::now_unix()
     ));
     let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(payload["order_id"], order_id.as_str(), "{payload}");
@@ -402,7 +402,7 @@ async fn send_again_and_retry_failed_work_as_plain_form_posts() {
         format!("/stores/{store}/settings?saved=webhooks#card-webhooks").as_str()
     );
     let store_id = crate::db::ConnectionId::new(store.clone());
-    let webhook_id = shared::ids::WebhookId::new(webhook.clone());
+    let webhook_id = engine_protocol::ids::WebhookId::new(webhook.clone());
     let again = state
         .db
         .lock()
@@ -542,7 +542,11 @@ async fn deleting_a_webhook_is_asked_on_a_page_then_removes_its_deliveries() {
     assert!(state
         .db
         .lock()
-        .get_delivery(&store_id, &shared::ids::WebhookId::new(webhook), delivered)
+        .get_delivery(
+            &store_id,
+            &engine_protocol::ids::WebhookId::new(webhook),
+            delivered
+        )
         .unwrap()
         .is_none());
 

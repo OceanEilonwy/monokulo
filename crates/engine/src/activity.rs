@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use engine_protocol::activity::{Event, Recorded};
 use parking_lot::Mutex;
-use shared::activity::{Event, Recorded};
 
 /// How far back the record reaches.
 pub const KEEP: Duration = Duration::from_mins(30);
@@ -274,7 +274,7 @@ impl Activity {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use shared::activity::Snapshot;
+    use engine_protocol::activity::Snapshot;
 
     /// Records `event` at `at_ms`, whatever the clock says.
     fn record_at(activity: &Activity, at_ms: i64, event: Event) {
