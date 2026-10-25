@@ -5,33 +5,23 @@ repository.workspace = true
 edition = "2021"
 
 [features]
-# Test helpers (the test engine token, test hooks in the log and SQLite
-# helpers). Enabled only from other crates' [dev-dependencies] and test
+# Test helpers (an address that can't be reached). Enabled only from other crates' [dev-dependencies] and test
 # features (resolver 2 keeps it out of every normal build), never in
 # production.
 test-support = []
 
 [dependencies]
-subtle = "2.6.1"
 parking_lot = "0.12.5"
-argon2 = "0.5"
 # `http_cache`'s async cache trait.
 async-trait = "0.1.92"
 bytes = "1.12.1"
 hex = "0.4.3"
-hmac = "0.13.0"
 http = "1.5.0"
 # A provider's `Retry-After` given as a date (`exchange_rate::checked`).
 httpdate = "1.0.3"
 moka = { version = "0.12.16", features = ["future"] }
 monero = "0.22.0"
 rand = "0.10.2"
-# argon2's password-hash re-export needs rand_core's `OsRng`, which is behind
-# rand_core's own "getrandom" feature. Declared explicitly here (rather than
-# relying on another workspace member's dependency graph enabling it via
-# Cargo's feature unification during a workspace-wide build) so `cargo test
-# -p shared` builds correctly in isolation, not just as part of `--workspace`.
-rand_core = { version = "0.6", features = ["getrandom"] }
 # `exchange_rate::CoingeckoRateProvider`'s real HTTP client - same
 # rustls/json feature set the scanner and monokulo already pin, so
 # moving this module here doesn't change its TLS/JSON behavior at all.
@@ -41,7 +31,6 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 sqlite = { path = "../sqlite" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.11.0"
 thiserror = "2.0.20"
 # `log::throttled!` emits `tracing` events (structured_logging.md 1.2).
 telemetry = { path = "../telemetry" }

@@ -135,7 +135,7 @@ pub struct RecordedWebhookEvent {
     pub payload: serde_json::Value,
     /// The exact raw request body bytes, and the `X-Monokulo-Signature` value
     /// presented alongside them - kept verbatim (not just "it verified, trust me")
-    /// so a caller can independently re-run `shared::webhook_sign::verify_signature`
+    /// so a caller can independently re-run `credentials::webhook_sign::verify_signature`
     /// itself against a secret obtained through a different channel (e.g. this
     /// crate's own forced-delivery test, which cross-checks against the
     /// `webhook_signing_secret` `/finish` returned) - a real, non-circular proof
@@ -199,7 +199,7 @@ impl Drop for WebhookReceiver {
 
 /// `POST /monokulo/webhook` - the real receiver route. Takes the raw request body
 /// as [`Bytes`], deliberately *not* a pre-parsed `Json<T>` extractor: signature
-/// verification (`shared::webhook_sign::verify_signature`) must run against the
+/// verification (`credentials::webhook_sign::verify_signature`) must run against the
 /// exact bytes the sender signed, before any JSON parsing/re-serialization ever
 /// touches them, or it will never match (see that module's own doc comment on why
 /// this is the single easiest thing to get subtly wrong here). Only once the
@@ -227,7 +227,7 @@ async fn webhook_handler(
         return StatusCode::UNAUTHORIZED;
     };
 
-    if !shared::webhook_sign::verify_signature(
+    if !credentials::webhook_sign::verify_signature(
         &signing_secret,
         &body,
         presented_signature,
@@ -1430,7 +1430,7 @@ mod tests {
         // state). The two agreeing proves the receiver that verified this delivery
         // and the credentials this driver came away with are talking about the
         // same real secret, not two coincidentally-successful checks.
-        assert!(shared::webhook_sign::verify_signature(
+        assert!(credentials::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
@@ -1439,7 +1439,7 @@ mod tests {
         // And a specificity check: an arbitrary wrong secret must not verify the
         // same real bytes/signature - ruling out a `verify_signature` that
         // accidentally always returns `true`.
-        assert!(!shared::webhook_sign::verify_signature(
+        assert!(!credentials::webhook_sign::verify_signature(
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,
@@ -1456,7 +1456,7 @@ mod tests {
         );
         let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_should_never_be_recorded" }).to_string();
         let client = reqwest::Client::new();
-        let wrong_signature = shared::webhook_sign::sign_payload(
+        let wrong_signature = credentials::webhook_sign::sign_payload(
             "not-the-real-secret",
             shared::time::now_unix(),
             body.as_bytes(),
@@ -1514,7 +1514,7 @@ mod tests {
         let engine_client =
             monokulo::engine_client::EngineClient::embedded_for_tests(engine.router());
         let tenant_view = engine_client
-            .get_tenant(&shared::auth::RawToken::presented(
+            .get_tenant(&credentials::auth::RawToken::presented(
                 &credentials.secret_token,
             ))
             .await
@@ -1596,7 +1596,7 @@ mod tests {
         };
         let paid = paid.expect("expected a signed order.paid webhook within the deadline");
         assert_eq!(paid.payload["status"], serde_json::json!("paid"));
-        assert!(shared::webhook_sign::verify_signature(
+        assert!(credentials::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &paid.raw_body,
             &paid.signature,

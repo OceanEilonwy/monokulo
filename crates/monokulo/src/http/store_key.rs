@@ -116,7 +116,7 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
         return KeyCheck::Invalid;
     };
     let found = if presented.starts_with("ak_") {
-        let hash = shared::auth::RawToken::presented(&presented).hash();
+        let hash = credentials::auth::RawToken::presented(&presented).hash();
         state
             .db
             .read(move |db| {
@@ -142,7 +142,7 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
                 })
             })
     } else {
-        let hash = shared::auth::RawToken::presented(&presented).hash();
+        let hash = credentials::auth::RawToken::presented(&presented).hash();
         let found = state
             .db
             .read(move |db| db.get_store_connection_by_secret_key_hash(&hash))

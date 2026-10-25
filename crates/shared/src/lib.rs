@@ -5,7 +5,6 @@
 //! for Monero data (`network`, `monero_tx`). Key custody has a crate of its own
 //! (`key-custody`).
 
-pub mod auth;
 pub mod coinmarketcap;
 pub mod dns;
 pub mod exchange_rate;
@@ -13,7 +12,6 @@ pub mod haveno;
 pub mod http_cache;
 pub mod log;
 pub mod monero_tx;
-pub mod password;
 pub mod rate_limit;
 pub mod resources;
 pub mod shutdown;
@@ -21,5 +19,4 @@ pub mod supervise;
 pub mod time;
 #[cfg(any(test, feature = "test-support"))]
 pub mod unreachable;
-pub mod webhook_sign;
 pub mod xmr_amount;

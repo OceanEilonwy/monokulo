@@ -1,6 +1,6 @@
 //! The webhook delivery worker: sends due deliveries
 //! (`db::Db::due_deliveries`) to stores' endpoints, signed
-//! (`shared::webhook_sign`), and records each attempt.
+//! (`credentials::webhook_sign`), and records each attempt.
 //!
 //! The schedule: up to `webhooks.max_attempts` attempts (8), each allowed
 //! `webhooks.delivery_timeout_ms` (5 s), waiting 1, 2, 4, 8, 16, 32 and 64
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use shared::webhook_sign::{is_disallowed_address, sign_payload};
+use credentials::webhook_sign::{is_disallowed_address, sign_payload};
 
 use crate::db::{Attempt, AttemptOutcome, Database, DbError, DueDelivery};
 use crate::settings::WebhookConfig;

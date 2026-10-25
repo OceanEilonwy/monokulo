@@ -22,7 +22,7 @@ use super::AppState;
 /// computed once and reused - just something for the "unknown email" path
 /// to run `Hasher::verify` against so it does comparable work to the
 /// real-user path instead of short-circuiting. See module doc comment.
-/// Made by the first login's own password job (`shared::password::run`).
+/// Made by the first login's own password job (`credentials::password::run`).
 static DUMMY_PASSWORD_HASH: OnceLock<String> = OnceLock::new();
 
 /// The two ways login can fail, for the login form (`http/auth.rs`) to
@@ -44,7 +44,7 @@ pub(super) async fn authenticate(
     state: &AppState,
     email: &str,
     password: &str,
-) -> Result<(crate::db::UserRow, shared::auth::RawToken), LoginError> {
+) -> Result<(crate::db::UserRow, credentials::auth::RawToken), LoginError> {
     // Looked up as stored (`signup::normalize_email`); an address that
     // can't be normalised matches no account, and still pays for the
     // dummy hash below like any unknown one.
@@ -55,13 +55,13 @@ pub(super) async fn authenticate(
         .await
         .map_err(|_| LoginError::Internal)?;
 
-    // Off the async threads (`shared::password::run`), the dummy hash's
+    // Off the async threads (`credentials::password::run`), the dummy hash's
     // one-time computation included.
     let (password, stored) = (
         password.to_string(),
         user.as_ref().map(|u| u.password_hash.clone()),
     );
-    let password_ok = shared::password::run(move |hasher| {
+    let password_ok = credentials::password::run(move |hasher| {
         // A failed dummy hash is not cached: an empty one would make an
         // unknown email answer faster than a wrong password, which is what
         // the dummy exists to prevent.
@@ -103,8 +103,8 @@ pub(super) async fn authenticate(
 pub(super) async fn start_session(
     state: &AppState,
     user_id: &crate::db::UserId,
-) -> Result<shared::auth::RawToken, LoginError> {
-    let raw_token = shared::auth::generate_session_token();
+) -> Result<credentials::auth::RawToken, LoginError> {
+    let raw_token = credentials::auth::generate_session_token();
     let token_hash = raw_token.hash();
     let (hash, id) = (token_hash.clone(), user_id.clone());
     state

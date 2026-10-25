@@ -41,7 +41,7 @@ impl World {
             ids.push(
                 store
                     .lock()
-                    .find_tenant_by_secret_token(&shared::auth::RawToken::presented(
+                    .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
                         &t.secret_token,
                     ))
                     .unwrap()

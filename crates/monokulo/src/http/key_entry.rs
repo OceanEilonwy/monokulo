@@ -133,7 +133,7 @@ pub enum Purpose<'a> {
     /// A new store.
     Create,
     /// Moving the store whose secret is `sk`.
-    Move(&'a shared::auth::RawToken),
+    Move(&'a credentials::auth::RawToken),
 }
 
 /// The encrypted key entry for `user`'s form whose keys may go to `snp`

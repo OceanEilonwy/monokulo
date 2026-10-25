@@ -208,7 +208,7 @@ pub async fn request_handoff(
     );
     let response = http
         .post(&url)
-        .header(shared::auth::ENGINE_TOKEN_HEADER, &handoff.token)
+        .header(credentials::auth::ENGINE_TOKEN_HEADER, &handoff.token)
         .json(&bundle)
         .send()
         .await

@@ -934,11 +934,12 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         }
     };
     let token = s.cookie.split_once('=').unwrap().1;
-    let session = crate::http::session_log_id(&shared::auth::RawToken::presented(token).hash());
+    let session =
+        crate::http::session_log_id(&credentials::auth::RawToken::presented(token).hash());
     assert_eq!(session.len(), 16);
     assert!(
         !session.contains(token)
-            && !shared::auth::RawToken::presented(token)
+            && !credentials::auth::RawToken::presented(token)
                 .hash()
                 .as_str()
                 .contains(&session),

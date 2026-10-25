@@ -23,7 +23,7 @@
 //!
 //! Every request carries the engine token
 //! (`MONOKULO_ENGINE_TOKEN`, the engine's `ENGINE_TOKEN`) in
-//! `shared::auth::ENGINE_TOKEN_HEADER`: the engine refuses anything
+//! `credentials::auth::ENGINE_TOKEN_HEADER`: the engine refuses anything
 //! without it. A store's routes (`/api/v1/admin/tenant/...`) also need the
 //! store's own `sk_...` secret, sent as `Authorization: Bearer sk_...` — the
 //! exact format `AuthedTenant` (`src/http/mod.rs` at the repo root) parses.
@@ -32,11 +32,11 @@
 use std::pin::Pin;
 
 use bytes::Bytes;
+use credentials::auth::RawToken;
 use engine_protocol::ids::EngineWalletId;
 use futures_util::{Stream, StreamExt as _};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
-use shared::auth::RawToken;
 
 /// Longest one engine call may take, the order-event stream excepted. The
 /// engine refuses a request of its own after 30 s; a few seconds more
@@ -220,7 +220,7 @@ impl EngineTarget {
             .expect("an engine token read from the environment is a valid header value");
         value.set_sensitive(true);
         let headers = reqwest::header::HeaderMap::from_iter([(
-            reqwest::header::HeaderName::from_static(shared::auth::ENGINE_TOKEN_HEADER),
+            reqwest::header::HeaderName::from_static(credentials::auth::ENGINE_TOKEN_HEADER),
             value,
         )]);
         EngineTarget {
@@ -424,7 +424,7 @@ impl EngineTarget {
         let mut request = axum::http::Request::builder()
             .method(call.method)
             .uri(call.path)
-            .header(shared::auth::ENGINE_TOKEN_HEADER, self.token.expose())
+            .header(credentials::auth::ENGINE_TOKEN_HEADER, self.token.expose())
             .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
                 std::net::Ipv4Addr::LOCALHOST,
                 0,
@@ -513,12 +513,12 @@ impl EngineClient {
     }
 
     /// [`Self::new`] with the token every test engine accepts
-    /// (`shared::auth::TEST_ENGINE_TOKEN`).
+    /// (`credentials::auth::TEST_ENGINE_TOKEN`).
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_tests(base_url: impl Into<String>) -> Self {
         Self::new(
             base_url,
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
         )
     }
 
@@ -527,7 +527,7 @@ impl EngineClient {
     pub fn embedded_for_tests(router: axum::Router) -> Self {
         Self::embedded(
             router,
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
             None,
         )
     }
@@ -1616,7 +1616,7 @@ mod tests {
     fn the_same_cache_size_changes_nothing_and_a_new_one_makes_a_new_client() {
         let client = EngineClient::with_cache_limit(
             "http://127.0.0.1:8443",
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
             1024,
         );
         let before = client.target();
@@ -1636,7 +1636,7 @@ mod tests {
         );
         assert_eq!(
             client.target().token,
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
             "same token"
         );
     }
@@ -1867,14 +1867,14 @@ mod tests {
 
         client
             .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
+                &credentials::auth::RawToken::presented("sk_whatever"),
                 &engine_protocol::ids::OrderId::new("pay_1"),
             )
             .await
             .unwrap();
         client
             .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
+                &credentials::auth::RawToken::presented("sk_whatever"),
                 &engine_protocol::ids::OrderId::new("pay_1"),
             )
             .await
@@ -1909,14 +1909,14 @@ mod tests {
 
         client
             .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
+                &credentials::auth::RawToken::presented("sk_whatever"),
                 &engine_protocol::ids::OrderId::new("pay_1"),
             )
             .await
             .unwrap();
         client
             .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
+                &credentials::auth::RawToken::presented("sk_whatever"),
                 &engine_protocol::ids::OrderId::new("pay_1"),
             )
             .await
@@ -2007,7 +2007,7 @@ mod contract_tests {
                     .unwrap();
                 let client = EngineClient::embedded(
                     engine.router(),
-                    RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+                    RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
                     Some(runtime.handle().clone()),
                 );
                 (client, Some(runtime))

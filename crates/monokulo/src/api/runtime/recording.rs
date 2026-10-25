@@ -283,7 +283,7 @@ async fn connect_app(router: &axum::Router, id: &str, cookie: &str) -> Value {
 
 /// A connect code for store `id`, as the dashboard mints one for a plugin.
 fn plugin_connect_code(state: &AppState, id: &str) -> String {
-    let raw = shared::auth::generate_connect_token();
+    let raw = credentials::auth::generate_connect_token();
     state
         .db
         .lock()

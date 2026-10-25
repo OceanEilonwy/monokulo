@@ -62,13 +62,13 @@ pub(super) async fn load_owned_connection(
 pub(crate) fn decrypt_sk(
     encryption_key: &crate::crypto::AtRestKey,
     row: &StoreConnectionRow,
-) -> Result<shared::auth::RawToken, ()> {
+) -> Result<credentials::auth::RawToken, ()> {
     crypto::decrypt(
         encryption_key,
         crypto::Binding::StoreSecret(row.id.as_str()),
         &row.tenant_secret_token_encrypted,
     )
-    .map(|sk| shared::auth::RawToken::presented(&sk))
+    .map(|sk| credentials::auth::RawToken::presented(&sk))
     .map_err(|_| ())
 }
 
@@ -77,7 +77,7 @@ pub(crate) fn decrypt_sk(
 async fn build_orders_view_model(
     state: &AppState,
     row: &super::OwnedStore,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     search: &str,
     page: u32,
 ) -> Result<OrdersViewModel, ()> {
@@ -233,7 +233,7 @@ pub struct LookupPaymentForm {
 /// human-readable result message plus the matched order's id, if any.
 async fn perform_payment_lookup(
     state: &AppState,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     txid: &str,
 ) -> Result<(String, Option<String>), ()> {
     match state.engine.client.lookup_payment(sk, txid).await {
@@ -362,7 +362,7 @@ pub async fn order_detail(
 async fn order_detail_data(
     state: &AppState,
     row: &super::OwnedStore,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_id: &crate::db::OrderId,
     payment_link: String,
 ) -> Result<Option<OrderDetailData>, ()> {
@@ -3153,7 +3153,7 @@ mod tests {
         state
             .engine
             .client
-            .get_tenant(&shared::auth::RawToken::presented(&sk))
+            .get_tenant(&credentials::auth::RawToken::presented(&sk))
             .await
             .unwrap()
             .key_custody_backend
@@ -3854,7 +3854,7 @@ mod tests {
             state
                 .engine
                 .client
-                .get_tenant(&shared::auth::RawToken::presented(&sk))
+                .get_tenant(&credentials::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -3911,7 +3911,7 @@ mod tests {
             state
                 .engine
                 .client
-                .get_tenant(&shared::auth::RawToken::presented(&sk))
+                .get_tenant(&credentials::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -3975,7 +3975,7 @@ mod tests {
             state
                 .engine
                 .client
-                .get_tenant(&shared::auth::RawToken::presented(&sk))
+                .get_tenant(&credentials::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,

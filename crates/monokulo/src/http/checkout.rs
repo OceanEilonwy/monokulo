@@ -124,7 +124,7 @@ async fn load_order(
 ) -> Result<
     (
         Arc<StoreConnectionRow>,
-        shared::auth::RawToken,
+        credentials::auth::RawToken,
         OrderDetailResponse,
     ),
     LoadError,
@@ -145,7 +145,7 @@ async fn load_order_with(
 ) -> Result<
     (
         Arc<StoreConnectionRow>,
-        shared::auth::RawToken,
+        credentials::auth::RawToken,
         OrderDetailResponse,
     ),
     LoadError,
@@ -378,7 +378,7 @@ fn not_found_response() -> Response {
 async fn render_checkout_page(
     state: &AppState,
     row: Arc<StoreConnectionRow>,
-    sk: shared::auth::RawToken,
+    sk: credentials::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
@@ -407,7 +407,7 @@ async fn render_checkout_page(
 async fn build_checkout_view(
     state: &AppState,
     row: &StoreConnectionRow,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
     options: &CheckoutOptions,

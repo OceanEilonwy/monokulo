@@ -1,8 +1,8 @@
 //! Connected apps (migration 0043, `crate::apps`): their connections, the
 //! single-use codes that make them, and the orders they made.
 
+use credentials::auth::TokenHash;
 use rusqlite::{params, OptionalExtension as _};
-use shared::auth::TokenHash;
 use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};

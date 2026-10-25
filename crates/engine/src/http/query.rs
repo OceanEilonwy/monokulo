@@ -83,7 +83,7 @@ mod tests {
 
     fn query(sql: &str) -> Request<Body> {
         Request::post("/api/v1/admin/query")
-            .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+            .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&QueryRequest {
@@ -121,7 +121,7 @@ mod tests {
     #[tokio::test]
     async fn the_schema_lists_the_engines_tables_with_secrets_hidden() {
         let request = Request::get("/api/v1/admin/query/schema")
-            .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+            .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
             .body(Body::empty())
             .unwrap();
         let (status, body) = ask(router(), request).await;

@@ -134,7 +134,7 @@ impl LiveHub {
         self: &Arc<Self>,
         engine: &EngineClient,
         connection_id: &crate::db::ConnectionId,
-        sk: &shared::auth::RawToken,
+        sk: &credentials::auth::RawToken,
         order_id: &crate::db::OrderId,
     ) -> OrderSubscription {
         let mut stores = self.stores.lock();
@@ -314,7 +314,7 @@ async fn run_upstream(
     hub: std::sync::Weak<LiveHub>,
     engine: EngineClient,
     connection_id: crate::db::ConnectionId,
-    sk: shared::auth::RawToken,
+    sk: credentials::auth::RawToken,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
@@ -743,13 +743,13 @@ mod tests {
         let a = hub.subscribe(
             &engine,
             &engine_protocol::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
+            &credentials::auth::RawToken::presented("sk_x"),
             &engine_protocol::ids::OrderId::new("o1"),
         );
         let b = hub.subscribe(
             &engine,
             &engine_protocol::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
+            &credentials::auth::RawToken::presented("sk_x"),
             &engine_protocol::ids::OrderId::new("o2"),
         );
         assert_eq!(hub.upstream_count(), 1);
@@ -766,13 +766,13 @@ mod tests {
         let mut a = hub.subscribe(
             &engine,
             &engine_protocol::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
+            &credentials::auth::RawToken::presented("sk_x"),
             &engine_protocol::ids::OrderId::new("o1"),
         );
         let mut b = hub.subscribe(
             &engine,
             &engine_protocol::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
+            &credentials::auth::RawToken::presented("sk_x"),
             &engine_protocol::ids::OrderId::new("o2"),
         );
         a.changed.mark_unchanged();
@@ -835,7 +835,7 @@ mod tests {
         );
         let engine_side = engine.subscribe_order(
             &store,
-            &shared::auth::RawToken::presented("sk_test"),
+            &credentials::auth::RawToken::presented("sk_test"),
             &order,
         );
         let watch = changes.subscribe(&store, &order);
@@ -853,7 +853,7 @@ mod tests {
         let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
         let mut subscription = engine.subscribe_order(
             &engine_protocol::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_test"),
+            &credentials::auth::RawToken::presented("sk_test"),
             &engine_protocol::ids::OrderId::new("order"),
         );
         assert_eq!(engine.live_upstream_count(), 1);

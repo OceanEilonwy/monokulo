@@ -209,7 +209,7 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
     assert_eq!(picked, 1);
     let (headers, body) = received.requests.lock()[0].clone();
     let signature = headers["x-monokulo-signature"].to_str().unwrap();
-    assert!(shared::webhook_sign::verify_signature(
+    assert!(credentials::webhook_sign::verify_signature(
         &created.signing_secret,
         body.as_bytes(),
         signature,
@@ -813,7 +813,7 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
         .engine
         .client
         .cancel_order(
-            &shared::auth::RawToken::presented(&shop.sk),
+            &credentials::auth::RawToken::presented(&shop.sk),
             &engine_protocol::ids::OrderId::new(cancelled),
         )
         .await
@@ -974,7 +974,7 @@ async fn an_engine_event_reaches_the_endpoint_once() {
     }
     assert_eq!(sent.load(Ordering::SeqCst), 1);
     let (headers, body) = received.requests.lock()[0].clone();
-    assert!(shared::webhook_sign::verify_signature(
+    assert!(credentials::webhook_sign::verify_signature(
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
@@ -1079,8 +1079,8 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
 #[tokio::test]
 async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
     let shop = shop().await;
-    let key = shared::auth::generate_app_key();
-    let token = shared::auth::RawToken::presented("ct_sub").hash();
+    let key = credentials::auth::generate_app_key();
+    let token = credentials::auth::RawToken::presented("ct_sub").hash();
     {
         let db = shop.state.db.lock();
         db.create_app_connect_token(&token, &shop.store, "Till", crate::now_unix())

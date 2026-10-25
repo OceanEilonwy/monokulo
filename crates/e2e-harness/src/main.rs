@@ -294,7 +294,7 @@ async fn main() {
         activity_stream: engine::activity::StreamTuning::DEFAULT,
         log_store: None,
         engine_token: Arc::new(
-            shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
+            credentials::auth::RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN).hash(),
         ),
         settings: engine::engine_settings::EngineSettings::defaults(),
         custody: engine::http::Custody {

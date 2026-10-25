@@ -61,7 +61,7 @@ settings! {
         key: "server.token",
         env: "ENGINE_TOKEN",
         default: live_settings::Secret::default(),
-        check: |token: &live_settings::Secret| shared::auth::check_engine_token(token.expose()),
+        check: |token: &live_settings::Secret| credentials::auth::check_engine_token(token.expose()),
         description: "The token every request to the engine must carry; the engine refuses any request without it. Required, at least 32 characters. Generate one with `openssl rand -hex 32` and give the same value to the engine (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN).",
         applies: Restart,
         sources: [Env],
@@ -1235,7 +1235,7 @@ impl EngineSettings {
             nodes,
             None,
             rate_limits,
-            env.or_var(SERVER_TOKEN.env_var, shared::auth::TEST_ENGINE_TOKEN),
+            env.or_var(SERVER_TOKEN.env_var, credentials::auth::TEST_ENGINE_TOKEN),
             live_settings::OptionsFile::in_memory(""),
             false,
         )

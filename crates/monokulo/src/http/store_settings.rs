@@ -181,7 +181,7 @@ async fn refused(
 async fn plan(
     state: &AppState,
     row: &OwnedStore,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     sent: &[(String, String)],
 ) -> Result<Plan, Refusal> {
     let form: HashMap<String, String> = sent.iter().cloned().collect();
@@ -469,7 +469,7 @@ async fn plan(
 async fn apply(
     state: &AppState,
     row: &OwnedStore,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     policy: &crate::confirmation_thresholds::PolicyGuard,
     plan: Plan,
     saved: &mut Vec<StoreSection>,

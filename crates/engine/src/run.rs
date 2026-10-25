@@ -63,7 +63,7 @@ pub enum Host {
     /// it made for this run. Settings in
     /// [`STANDALONE_ONLY`](crate::engine_settings::STANDALONE_ONLY) do
     /// nothing here, so giving one stops the engine.
-    Embedded { token: shared::auth::RawToken },
+    Embedded { token: credentials::auth::RawToken },
 }
 
 /// Why an engine didn't start.
@@ -124,7 +124,7 @@ impl Engine {
                     .require(&config.env)
                     .map_err(StartError::Token)?;
                 (
-                    Arc::new(shared::auth::engine_token(token.expose()).hash()),
+                    Arc::new(credentials::auth::engine_token(token.expose()).hash()),
                     token.expose().to_owned(),
                     config.env.clone(),
                 )
@@ -503,7 +503,7 @@ mod tests {
             env: live_settings::Env::fixed(env.iter().copied()),
             database_path: dir.0.join("engine.db"),
             host: Host::Embedded {
-                token: shared::auth::RawToken::presented(TOKEN),
+                token: credentials::auth::RawToken::presented(TOKEN),
             },
         }
     }
@@ -517,7 +517,7 @@ mod tests {
         let request = Request::builder()
             .method(method)
             .uri(path)
-            .header(shared::auth::ENGINE_TOKEN_HEADER, TOKEN)
+            .header(credentials::auth::ENGINE_TOKEN_HEADER, TOKEN)
             .header("content-type", "application/json")
             .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
                 [127, 0, 0, 1],

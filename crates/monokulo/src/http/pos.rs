@@ -460,7 +460,7 @@ pub struct PosOrderData {
 async fn pos_order_data(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     row: crate::db::PosOrderRow,
 ) -> Result<PosOrderData, EngineClientError> {
     let detail = state
@@ -554,7 +554,7 @@ fn pos_order_view(
 /// watching many orders must not spend one request per order.
 async fn engine_orders(
     state: &AppState,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_ids: &[crate::db::OrderId],
 ) -> Result<HashMap<crate::db::OrderId, OrderView>, EngineClientError> {
     let mut orders = HashMap::with_capacity(order_ids.len());
@@ -600,7 +600,7 @@ const OPEN_ORDERS_PAGE: u32 = 200;
 async fn active_pos_orders(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
 ) -> Result<Vec<PosOrderData>, EngineClientError> {
     let mut open = Vec::new();
     loop {
@@ -816,7 +816,7 @@ pub async fn cancel_order(
 pub(crate) async fn resolve_confirmations_required(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_id: &crate::db::OrderId,
 ) -> u64 {
     let (store_id, order) = (connection_id.clone(), order_id.clone());
@@ -902,7 +902,7 @@ pub async fn order_status(
 async fn pos_status(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order: &OrderView,
     pos_row: Option<&crate::db::PosOrderRow>,
 ) -> PosStatusResponse {

@@ -90,7 +90,7 @@ use axum_extra::routing::RouterExt;
 
 use crate::db::{Database, UserRow};
 use crate::engine_client::EngineClient;
-use shared::auth::{RawToken, TokenHash};
+use credentials::auth::{RawToken, TokenHash};
 
 /// A store connection the signed-in user owns: made only by checking the
 /// row's owner ([`OwnedStore::check`], which `orders::load_owned_connection`

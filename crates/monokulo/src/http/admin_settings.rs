@@ -2648,7 +2648,7 @@ mod tests {
         for never in [
             r#"name="engine.token""#,
             r#"name="clear:engine.token""#,
-            shared::auth::TEST_ENGINE_TOKEN,
+            credentials::auth::TEST_ENGINE_TOKEN,
         ] {
             assert!(!page.contains(never), "{never}: {page}");
         }
@@ -3189,8 +3189,8 @@ mod tests {
             let direct: serde_json::Value = reqwest::Client::new()
                 .post(format!("http://{}/api/v1/admin/settings", engine.addr))
                 .header(
-                    shared::auth::ENGINE_TOKEN_HEADER,
-                    shared::auth::TEST_ENGINE_TOKEN,
+                    credentials::auth::ENGINE_TOKEN_HEADER,
+                    credentials::auth::TEST_ENGINE_TOKEN,
                 )
                 .json(&serde_json::json!({ "scalars": { "payment.confirmations_required": "-1" } }))
                 .send()

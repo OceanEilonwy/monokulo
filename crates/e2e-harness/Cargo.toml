@@ -19,7 +19,7 @@ e2e = [
     "dep:engine",
     "dep:monokulo",
     "dep:cli-wallet",
-    "dep:shared",
+    "dep:credentials",
     "dep:axum",
     "dep:http-body-util",
     "dep:monero",
@@ -31,7 +31,7 @@ e2e = [
     "dep:hex",
     "engine/test-support",
     "monokulo/test-support",
-    "shared/test-support",
+    "credentials/test-support",
 ]
 
 [dependencies]
@@ -40,7 +40,8 @@ monokulo = { path = "../monokulo", optional = true }
 # The fast, reliable stagenet test wallet the e2e tests and the harness use
 # to sign and broadcast real payments (see its own crate doc comment).
 cli-wallet = { path = "../cli-wallet", optional = true }
-shared = { path = "../shared", optional = true }
+# The test engine token.
+credentials = { path = "../credentials", optional = true }
 # Defaults less `tower-log` (see crates/engine/Cargo.toml).
 axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing", "macros"], optional = true }
 http-body-util = { version = "0.1.5", optional = true }

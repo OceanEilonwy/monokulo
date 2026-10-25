@@ -271,7 +271,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     worker.abort();
     assert_eq!(headers["authorization"], "Bearer shop-endpoint-secret");
     assert_eq!(headers["x-monokulo-event"], "order.paid");
-    assert!(shared::webhook_sign::verify_signature(
+    assert!(credentials::webhook_sign::verify_signature(
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),

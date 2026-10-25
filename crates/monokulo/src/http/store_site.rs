@@ -53,7 +53,7 @@ fn integration_view(
 /// engine can't say.
 async fn open_orders(
     state: &AppState,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     only: Option<&HashSet<crate::db::OrderId>>,
     clock: &crate::views::time::Clock,
 ) -> Option<OpenOrders> {
@@ -80,7 +80,7 @@ async fn open_orders(
 pub(super) async fn site_view(
     state: &AppState,
     row: &crate::db::StoreConnectionRow,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     clock: &crate::views::time::Clock,
 ) -> SiteView {
     let id = row.id.clone();
@@ -133,7 +133,7 @@ async fn load(
 ) -> Result<
     (
         OwnedStore,
-        shared::auth::RawToken,
+        credentials::auth::RawToken,
         SiteView,
         crate::views::PageChrome,
     ),

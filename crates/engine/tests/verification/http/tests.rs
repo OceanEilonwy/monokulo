@@ -211,7 +211,9 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
 
     let s = store.lock();
     let tenant_row = s
-        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &tenant.secret_token,
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -579,7 +581,9 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
     let tenant = state
         .db
         .lock()
-        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&created.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &created.secret_token,
+        ))
         .unwrap()
         .unwrap();
     assert!(state.custody.wallet_handles.read().contains_key(&tenant.id));
@@ -1497,7 +1501,7 @@ async fn the_options_file_is_saved_to_and_reloaded_through_the_api() {
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/admin/settings/reload")
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1650,7 +1654,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
                 .header("authorization", format!("Bearer {}", tenant.secret_token))
                 .header("content-type", "application/json");
             if let Some(value) = wrong {
-                request = request.header(shared::auth::ENGINE_TOKEN_HEADER, value);
+                request = request.header(credentials::auth::ENGINE_TOKEN_HEADER, value);
             }
             let response = router
                 .clone()
@@ -1670,7 +1674,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         .oneshot(
             Request::builder()
                 .uri("/status")
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1681,7 +1685,7 @@ async fn every_route_refuses_a_request_without_the_engine_token() {
         .oneshot(
             Request::builder()
                 .uri("/api/v1/admin/tenant")
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .header("authorization", format!("Bearer {}", tenant.secret_token))
                 .body(Body::empty())
                 .unwrap(),
@@ -4379,7 +4383,7 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
             Request::builder()
                 .method("DELETE")
                 .uri(format!("/api/v1/admin/proof/{network}/anchor"))
-                .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -4511,7 +4515,9 @@ async fn two_stores_on_one_wallet_never_hand_out_the_same_address() {
     );
     for tenant in [&shop, &market] {
         let row = s
-            .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+            .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+                &tenant.secret_token,
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(row.wallet_id, wallet_id);
@@ -4802,7 +4808,9 @@ async fn new_order(router: &Router, tenant: &TestTenant) -> serde_json::Value {
 fn tenant_row(store: &crate::store::SharedStore, tenant: &TestTenant) -> crate::store::Tenant {
     store
         .lock()
-        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&tenant.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &tenant.secret_token,
+        ))
         .unwrap()
         .unwrap()
 }

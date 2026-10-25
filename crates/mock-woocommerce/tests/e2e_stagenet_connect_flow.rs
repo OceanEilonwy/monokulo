@@ -396,7 +396,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // different channel (parsed straight out of `/finish`'s response) than
     // the receiver's internal verification state.
     assert!(
-        shared::webhook_sign::verify_signature(
+        credentials::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
@@ -405,7 +405,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         "the delivered signature must verify against this store's real signing secret"
     );
     assert!(
-        !shared::webhook_sign::verify_signature(
+        !credentials::webhook_sign::verify_signature(
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,

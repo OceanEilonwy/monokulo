@@ -51,7 +51,7 @@ struct Controls {
 
 /// A connect code for the store, as its dashboard would show one.
 async fn code(State(control): State<Controls>) -> Json<serde_json::Value> {
-    let raw = shared::auth::generate_app_connect_token();
+    let raw = credentials::auth::generate_app_connect_token();
     let hash = raw.hash();
     control
         .db
@@ -118,7 +118,7 @@ async fn main() {
     db.create_user(&user, "dev@example.test", "unused", false, 0)
         .unwrap();
     db.create_session(
-        &shared::auth::RawToken::presented(SESSION).hash(),
+        &credentials::auth::RawToken::presented(SESSION).hash(),
         &user,
         monokulo::now_unix(),
     )

@@ -292,7 +292,7 @@ async fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<Cli
 async fn signed_in_session(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<(crate::db::UserRow, shared::auth::TokenHash)> {
+) -> Option<(crate::db::UserRow, credentials::auth::TokenHash)> {
     headers.get(header::COOKIE)?;
     super::resolve_authed_user(state, headers).await
 }
@@ -949,7 +949,7 @@ mod tests {
             )
             .unwrap();
             db.create_session(
-                &shared::auth::RawToken::presented("session-token").hash(),
+                &credentials::auth::RawToken::presented("session-token").hash(),
                 &engine_protocol::ids::UserId::new("u1"),
                 crate::now_unix(),
             )
@@ -1199,13 +1199,13 @@ mod tests {
             )
             .unwrap();
             db.create_session(
-                &shared::auth::RawToken::presented("admin-token").hash(),
+                &credentials::auth::RawToken::presented("admin-token").hash(),
                 &engine_protocol::ids::UserId::new("admin"),
                 crate::now_unix(),
             )
             .unwrap();
             db.create_session(
-                &shared::auth::RawToken::presented("merchant-token").hash(),
+                &credentials::auth::RawToken::presented("merchant-token").hash(),
                 &engine_protocol::ids::UserId::new("merchant"),
                 crate::now_unix(),
             )

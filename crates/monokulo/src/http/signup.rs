@@ -45,7 +45,7 @@ pub(super) enum CreateAccountError {
 }
 
 /// The actual account-creation logic - `Db::create_user`/
-/// `Db::redeem_invite_and_create_user` plus `shared::password::Hasher::hash`
+/// `Db::redeem_invite_and_create_user` plus `credentials::password::Hasher::hash`
 /// — shared by the sign-up form (`POST /signup`, `http/auth.rs`) and the
 /// first-run admin setup wizard (`http/admin_setup.rs`, the one caller that
 /// ever passes `is_admin: true`), so the two can never drift apart on what
@@ -66,7 +66,7 @@ pub(super) async fn create_account(
     let token_hash = invite_token
         .map(str::trim)
         .filter(|t| !t.is_empty())
-        .map(|token| shared::auth::RawToken::presented(token).hash());
+        .map(|token| credentials::auth::RawToken::presented(token).hash());
     // Whether an invite is needed is settled before the password is
     // hashed: a hash costs tens of milliseconds of CPU, which a request
     // with no invite on an invite-only instance never earns.
@@ -75,12 +75,12 @@ pub(super) async fn create_account(
         return Err(CreateAccountError::InviteRequired);
     }
 
-    // Argon2id (`shared::password`) — deliberately not
-    // `shared::auth`'s SHA-256, which is the wrong tool for a low-entropy,
+    // Argon2id (`credentials::password`) — deliberately not
+    // `credentials::auth`'s SHA-256, which is the wrong tool for a low-entropy,
     // human-chosen password (see that module's own doc comment).
-    // Off the async threads (`shared::password::run`).
+    // Off the async threads (`credentials::password::run`).
     let password = password.to_string();
-    let password_hash = shared::password::run(move |hasher| hasher.hash(&password))
+    let password_hash = credentials::password::run(move |hasher| hasher.hash(&password))
         .await
         .and_then(Result::ok)
         .ok_or(CreateAccountError::Internal)?;

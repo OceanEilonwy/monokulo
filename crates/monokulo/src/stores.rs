@@ -185,7 +185,7 @@ pub fn fill_secret_key_hashes(db: &crate::db::Db, key: &crate::crypto::AtRestKey
             crate::crypto::Binding::StoreSecret(id.as_str()),
             &encrypted,
         ) {
-            Ok(secret) => shared::auth::RawToken::presented(&secret).hash(),
+            Ok(secret) => credentials::auth::RawToken::presented(&secret).hash(),
             Err(e) => {
                 tracing::error!(store.id = %id, error = %e, "a store's secret key could not be decrypted to record its hash");
                 continue;

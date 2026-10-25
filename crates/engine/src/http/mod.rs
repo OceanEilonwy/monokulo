@@ -18,7 +18,7 @@
 //!
 //! **The engine is private**: the only thing meant to reach it is monokulo. Every request
 //! must carry the engine token (`ENGINE_TOKEN`) in
-//! [`shared::auth::ENGINE_TOKEN_HEADER`], checked before any route
+//! [`credentials::auth::ENGINE_TOKEN_HEADER`], checked before any route
 //! ([`engine_token_middleware`]); a store's routes also need that store's
 //! `sk_`. There are no public (`/api/v1/t/{pk}/...`) routes, no CORS and no
 //! per-origin checks; everything a customer's browser, a merchant or a
@@ -122,7 +122,7 @@ pub struct AppState {
     pub log_store: Option<telemetry::store::LogStore>,
     /// The hash of the engine token (`ENGINE_TOKEN`), which
     /// every request must carry ([`engine_token_middleware`]).
-    pub engine_token: Arc<shared::auth::TokenHash>,
+    pub engine_token: Arc<credentials::auth::TokenHash>,
     /// How the activity stream sends a network's record
     /// (`http::activity`): [`crate::activity::StreamTuning::DEFAULT`],
     /// except in tests that set their own.
@@ -132,7 +132,7 @@ pub struct AppState {
 /// The engine token every test state (and `engine-test-support`'s
 /// engines) accepts.
 #[cfg(any(test, feature = "test-support"))]
-pub use shared::auth::TEST_ENGINE_TOKEN;
+pub use credentials::auth::TEST_ENGINE_TOKEN;
 
 #[cfg(test)]
 impl AppState {
@@ -160,7 +160,9 @@ impl AppState {
             rate_limits: Arc::new(ApiRateLimits::new(10_000, Some(10_000))),
             settings: crate::engine_settings::EngineSettings::defaults(),
             log_store: None,
-            engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
+            engine_token: Arc::new(
+                credentials::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash(),
+            ),
             custody: Custody {
                 backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 default_backend: "plain".to_owned(),
@@ -365,7 +367,7 @@ pub(crate) fn router_as_monokulo(state: AppState, max_body_bytes: usize) -> Rout
     async fn with_engine_token(mut request: axum::extract::Request) -> axum::extract::Request {
         request
             .headers_mut()
-            .entry(shared::auth::ENGINE_TOKEN_HEADER)
+            .entry(credentials::auth::ENGINE_TOKEN_HEADER)
             .or_insert(axum::http::HeaderValue::from_static(TEST_ENGINE_TOKEN));
         request
     }
@@ -373,7 +375,7 @@ pub(crate) fn router_as_monokulo(state: AppState, max_body_bytes: usize) -> Rout
 }
 
 /// Refuses, with `401`, any request whose
-/// [`shared::auth::ENGINE_TOKEN_HEADER`] isn't the engine token:
+/// [`credentials::auth::ENGINE_TOKEN_HEADER`] isn't the engine token:
 /// only monokulo, which is given it, may talk to the engine.
 async fn engine_token_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
@@ -383,11 +385,11 @@ async fn engine_token_middleware(
     use subtle::ConstantTimeEq as _;
     let accepted = request
         .headers()
-        .get(shared::auth::ENGINE_TOKEN_HEADER)
+        .get(credentials::auth::ENGINE_TOKEN_HEADER)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|presented| {
             // Both sides hashed, so the comparison is over equal lengths.
-            let presented = shared::auth::RawToken::presented(presented).hash();
+            let presented = credentials::auth::RawToken::presented(presented).hash();
             bool::from(
                 presented
                     .as_str()
@@ -593,7 +595,7 @@ impl FromRequestParts<AppState> for AuthedTenant {
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .ok_or(ApiError::Unauthorized)?;
-        let token = shared::auth::RawToken::presented(
+        let token = credentials::auth::RawToken::presented(
             header_value
                 .strip_prefix("Bearer ")
                 .ok_or(ApiError::Unauthorized)?,

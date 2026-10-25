@@ -7,9 +7,9 @@
 //! uses). Handlers reach it through [`Database`]: read-only connections for
 //! reads, one writing connection for writes, each on its own thread.
 
+use credentials::auth::TokenHash;
 pub use engine_protocol::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use parking_lot::Mutex;
-use shared::auth::TokenHash;
 use shared::xmr_amount::Piconero;
 use sqlite::{Pool, PoolError, Unsigned};
 use std::sync::Arc;
@@ -185,7 +185,7 @@ pub const TEST_ADMIN_EMAIL: &str = "admin@monokulo.test";
 pub const TEST_ADMIN_PASSWORD: &str = "correct horse battery staple admin";
 
 /// [`TEST_ADMIN_PASSWORD`]'s Argon2id hash, computed once and kept here:
-/// hashing happens only on the blocking pool (`shared::password::run`),
+/// hashing happens only on the blocking pool (`credentials::password::run`),
 /// and a synchronous test fixture has no business waiting for it.
 #[cfg(any(test, feature = "test-support"))]
 const TEST_ADMIN_PASSWORD_HASH: &str =
@@ -623,7 +623,7 @@ impl Theme {
 /// session cookie token (see the `sessions` migration's own comment on why) - it
 /// is never the raw token a client actually presents.
 pub struct SessionRow {
-    pub token_hash: shared::auth::TokenHash,
+    pub token_hash: credentials::auth::TokenHash,
     pub user_id: UserId,
     pub created_at: i64,
 }
@@ -1086,7 +1086,7 @@ impl Db {
         &self,
         id: &UserId,
         password_hash: &str,
-        keep: &shared::auth::TokenHash,
+        keep: &credentials::auth::TokenHash,
     ) -> Result<usize> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
@@ -1300,7 +1300,7 @@ impl Db {
     /// see, a raw session token.
     pub fn create_session(
         &self,
-        token_hash: &shared::auth::TokenHash,
+        token_hash: &credentials::auth::TokenHash,
         user_id: &UserId,
         created_at: i64,
     ) -> Result<()> {
@@ -1325,7 +1325,7 @@ impl Db {
     /// removed by [`Db::create_session`], a write.
     pub fn find_session(
         &self,
-        token_hash: &shared::auth::TokenHash,
+        token_hash: &credentials::auth::TokenHash,
         now: i64,
     ) -> Result<Option<SessionRow>> {
         let oldest_live = now.saturating_sub(SESSION_LIFETIME_SECONDS);
@@ -1348,7 +1348,7 @@ impl Db {
     /// Deletes a session by its hashed token (logging out, both the JSON
     /// API's and the dashboard's). Returns whether a row was actually
     /// deleted (`false` if it was already gone).
-    pub fn delete_session(&self, token_hash: &shared::auth::TokenHash) -> Result<bool> {
+    pub fn delete_session(&self, token_hash: &credentials::auth::TokenHash) -> Result<bool> {
         let affected = self
             .conn
             .execute("DELETE FROM sessions WHERE token = ?1", params![token_hash])?;
@@ -2224,11 +2224,11 @@ impl Db {
     }
 
     /// Inserts a new single-use connect token - `token_hash` is
-    /// already hashed by the caller (`shared::auth::hash_secret_token`),
+    /// already hashed by the caller (`credentials::auth::hash_secret_token`),
     /// never the raw token; see `http/connect.rs::confirm_submit`.
     pub fn create_connect_token(
         &self,
-        token_hash: &shared::auth::TokenHash,
+        token_hash: &credentials::auth::TokenHash,
         connection_id: &ConnectionId,
         nonce: &str,
         created_at: i64,
@@ -2265,7 +2265,7 @@ impl Db {
     /// everywhere else in this crate.
     pub fn consume_connect_token(
         &self,
-        token_hash: &shared::auth::TokenHash,
+        token_hash: &credentials::auth::TokenHash,
         now: i64,
         ttl_seconds: i64,
     ) -> Result<Option<ConnectionId>> {
@@ -2935,7 +2935,7 @@ impl Db {
     pub fn create_invite_link(
         &self,
         id: &str,
-        token_hash: &shared::auth::TokenHash,
+        token_hash: &credentials::auth::TokenHash,
         token_encrypted: Option<&str>,
         request_id: Option<&str>,
         created_at: i64,
@@ -2958,7 +2958,7 @@ impl Db {
     /// with the right email.
     pub fn redeem_invite_and_create_user(
         &self,
-        token_hash: &shared::auth::TokenHash,
+        token_hash: &credentials::auth::TokenHash,
         user_id: &UserId,
         email: &str,
         password_hash: &str,
@@ -3090,8 +3090,8 @@ mod tests {
     use super::*;
 
     /// A token's hash, for tests that store and look up tokens directly.
-    fn th(token: &str) -> shared::auth::TokenHash {
-        shared::auth::RawToken::presented(token).hash()
+    fn th(token: &str) -> credentials::auth::TokenHash {
+        credentials::auth::RawToken::presented(token).hash()
     }
 
     fn temp_path() -> String {
@@ -3133,7 +3133,7 @@ mod tests {
     #[tokio::test]
     async fn the_test_admin_hash_matches_the_test_admin_password() {
         let matches =
-            shared::password::run(|h| h.verify(TEST_ADMIN_PASSWORD, TEST_ADMIN_PASSWORD_HASH))
+            credentials::password::run(|h| h.verify(TEST_ADMIN_PASSWORD, TEST_ADMIN_PASSWORD_HASH))
                 .await;
         assert_eq!(matches, Some(true));
     }

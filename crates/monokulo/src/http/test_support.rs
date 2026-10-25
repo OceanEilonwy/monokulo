@@ -119,7 +119,7 @@ pub async fn store_with_keys(
         .db
         .lock()
         .find_session(
-            &shared::auth::RawToken::presented(session_token).hash(),
+            &credentials::auth::RawToken::presented(session_token).hash(),
             crate::now_unix(),
         )
         .unwrap()

@@ -44,7 +44,7 @@ impl World {
             };
             let id = store
                 .lock()
-                .find_tenant_by_secret_token(&shared::auth::RawToken::presented(
+                .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
                     &tenant.secret_token,
                 ))
                 .unwrap()
@@ -85,9 +85,10 @@ impl World {
     ) -> axum::response::Response {
         let mut request = json_request(method, uri, None, body);
         if let Some(value) = engine {
-            request
-                .headers_mut()
-                .insert(shared::auth::ENGINE_TOKEN_HEADER, value.parse().unwrap());
+            request.headers_mut().insert(
+                credentials::auth::ENGINE_TOKEN_HEADER,
+                value.parse().unwrap(),
+            );
         }
         if let Some(value) = auth {
             request
@@ -511,8 +512,8 @@ mod properties {
                 let first_auth=if bearer_first_valid {format!("Bearer {}",w.principals[actor].secret)} else {"Basic invalid".into()};
                 let before=w.snapshot();
                 let mut request=json_request("GET","/api/v1/admin/tenant/orders",None,&serde_json::json!({}));
-                request.headers_mut().append(shared::auth::ENGINE_TOKEN_HEADER,first_engine.parse().unwrap());
-                request.headers_mut().append(shared::auth::ENGINE_TOKEN_HEADER,second_engine.parse().unwrap());
+                request.headers_mut().append(credentials::auth::ENGINE_TOKEN_HEADER,first_engine.parse().unwrap());
+                request.headers_mut().append(credentials::auth::ENGINE_TOKEN_HEADER,second_engine.parse().unwrap());
                 request.headers_mut().append("authorization",first_auth.parse().unwrap());
                 request.headers_mut().append("authorization",format!("Bearer {}",w.principals[other].secret).parse().unwrap());
                 let response=tokio::time::timeout(std::time::Duration::from_secs(5),w.router.clone().oneshot(request)).await.unwrap().unwrap();

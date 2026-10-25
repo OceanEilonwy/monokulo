@@ -1082,6 +1082,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "credentials"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "hex",
+ "hmac 0.13.0",
+ "rand 0.10.2",
+ "rand_core 0.6.4",
+ "rusqlite",
+ "serde",
+ "sha2 0.11.0",
+ "subtle",
+ "tokio",
+]
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1625,6 +1641,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "cli-wallet",
+ "credentials",
  "engine",
  "hex",
  "http-body-util",
@@ -1633,7 +1650,6 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
- "shared",
  "tokio",
  "tower",
 ]
@@ -1767,6 +1783,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "credentials",
  "engine-protocol",
  "futures-util",
  "hex",
@@ -1818,6 +1835,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "credentials",
  "engine",
  "hex",
  "live-settings",
@@ -3404,6 +3422,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "cli-wallet",
+ "credentials",
  "engine",
  "engine-protocol",
  "engine-test-support",
@@ -3690,6 +3709,7 @@ dependencies = [
  "brotli",
  "bytes",
  "clap",
+ "credentials",
  "engine",
  "engine-protocol",
  "engine-test-support",
@@ -5632,12 +5652,10 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
- "argon2",
  "async-trait",
  "axum",
  "bytes",
  "hex",
- "hmac 0.13.0",
  "http",
  "httpdate",
  "moka",
@@ -5645,15 +5663,12 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rand 0.10.2",
- "rand_core 0.6.4",
  "reqwest",
  "reqwest-middleware",
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "sqlite",
- "subtle",
  "sysinfo 0.39.6",
  "telemetry",
  "thiserror 2.0.20",

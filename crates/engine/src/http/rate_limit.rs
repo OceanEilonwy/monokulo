@@ -94,7 +94,7 @@ impl ApiRateLimits {
             .filter(|token| token.starts_with("sk_"));
         match store_token {
             Some(token) => {
-                let key = shared::auth::RawToken::presented(token)
+                let key = credentials::auth::RawToken::presented(token)
                     .hash()
                     .as_str()
                     .to_owned();

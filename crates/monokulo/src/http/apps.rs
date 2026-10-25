@@ -130,7 +130,7 @@ pub async fn connect_submit(
              An admin can set one under Settings.",
         );
     };
-    let raw = shared::auth::generate_app_connect_token();
+    let raw = credentials::auth::generate_app_connect_token();
     let hash = raw.hash();
     let (store_id, device_name, stored_hash) = (
         row.id.clone(),
@@ -171,7 +171,7 @@ pub fn connect_link(public_uri: &str, token: &str) -> String {
 
 /// Where the dashboard checks whether a code was used: by its hash, which
 /// can't connect anything.
-fn status_path(store_id: &ConnectionId, hash: &shared::auth::TokenHash) -> String {
+fn status_path(store_id: &ConnectionId, hash: &credentials::auth::TokenHash) -> String {
     format!("/stores/{store_id}/settings/apps/connect/{}", hash.as_str())
 }
 
@@ -346,9 +346,9 @@ pub async fn redeem(
         .unwrap_or_default();
     let version =
         crate::api::runtime::client::client_version(&headers, slug.as_str()).unwrap_or_default();
-    let key = shared::auth::generate_app_key();
+    let key = credentials::auth::generate_app_key();
     let (token_hash, key_hash) = (
-        shared::auth::RawToken::presented(&req.token).hash(),
+        credentials::auth::RawToken::presented(&req.token).hash(),
         key.hash(),
     );
     let redeemed = state

@@ -83,7 +83,7 @@ pub fn engine_mode(early: &Snapshot, env: &live_settings::Env) -> Result<EngineM
                     ENGINE_TOKEN.env_var
                 ))
             }
-            Some(token) => shared::auth::check_engine_token(&token)
+            Some(token) => credentials::auth::check_engine_token(&token)
                 .map_err(|e| format!("{}: {e}", ENGINE_TOKEN.env_var))?,
         },
         EngineMode::Embedded => {
@@ -196,7 +196,7 @@ settings! {
         env: "MONOKULO_ENGINE_TOKEN",
         default: Secret::default(),
         // Unset is valid: only a remote engine needs it (`engine_mode`).
-        check: |token: &Secret| if token.expose().is_empty() { Ok(()) } else { shared::auth::check_engine_token(token.expose()) },
+        check: |token: &Secret| if token.expose().is_empty() { Ok(()) } else { credentials::auth::check_engine_token(token.expose()) },
         description: "With engine.mode = remote: the engine token, sent with every request to the engine, which refuses anything without it (the engine's ENGINE_TOKEN). At least 32 characters, given at start only. Required for a remote engine, refused for an embedded one, which monokulo gives a token of its own each time it starts.",
         applies: Restart,
         sources: [Env],
@@ -1673,7 +1673,7 @@ pub(crate) fn test_secrets() -> live_settings::Env {
         (CRYPTO_ENCRYPTION_KEY.env_var.to_string(), "07".repeat(32)),
         (
             ENGINE_TOKEN.env_var.to_string(),
-            "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN),
+            "t".repeat(credentials::auth::MIN_ENGINE_TOKEN_LEN),
         ),
     ])
 }
@@ -1903,7 +1903,7 @@ mod tests {
                     .collect::<Vec<_>>(),
             )
         };
-        let token = "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN);
+        let token = "t".repeat(credentials::auth::MIN_ENGINE_TOKEN_LEN);
         let none = env(&[]);
         assert_eq!(
             ENGINE_URL.require(&none).unwrap().as_str(),
@@ -1952,7 +1952,7 @@ mod tests {
     /// neither a URL nor a token, which would otherwise be silently unused.
     #[test]
     fn the_engine_mode_decides_whether_its_url_and_token_are_wanted() {
-        let token = "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN);
+        let token = "t".repeat(credentials::auth::MIN_ENGINE_TOKEN_LEN);
         let with_token =
             live_settings::Env::fixed([(ENGINE_TOKEN.env_var.to_string(), token.clone())]);
         let none = live_settings::Env::fixed(Vec::<(String, String)>::new());

@@ -411,7 +411,7 @@ async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
     assert!(body_text(page).await.contains("no public address yet"));
 
     // A code made while there was one, redeemed after it was removed.
-    let hash = shared::auth::RawToken::presented("ct_test").hash();
+    let hash = credentials::auth::RawToken::presented("ct_test").hash();
     let store_id = engine_protocol::ids::ConnectionId::new(id);
     state
         .db

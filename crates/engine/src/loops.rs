@@ -641,7 +641,7 @@ mod tests {
             rate_limits,
             log_store: None,
             engine_token: Arc::new(
-                shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
+                credentials::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
             ),
             settings: Arc::clone(&settings),
             custody: crate::http::Custody {
@@ -674,7 +674,7 @@ mod tests {
                     .uri("/api/v1/admin/settings")
                     .header("content-type", "application/json")
                     .header(
-                        shared::auth::ENGINE_TOKEN_HEADER,
+                        credentials::auth::ENGINE_TOKEN_HEADER,
                         crate::http::TEST_ENGINE_TOKEN,
                     )
                     .body(Body::from(body.to_string()))

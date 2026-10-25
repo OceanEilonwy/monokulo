@@ -125,7 +125,7 @@ fn env_with_key(key: &str) -> live_settings::Env {
         ),
         (
             crate::settings::ENGINE_TOKEN.env_var.to_string(),
-            "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN),
+            "t".repeat(credentials::auth::MIN_ENGINE_TOKEN_LEN),
         ),
         (
             EXCHANGE_RATE_COINMARKETCAP_API_KEY.env_var.to_string(),

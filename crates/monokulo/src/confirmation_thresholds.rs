@@ -259,7 +259,7 @@ pub async fn resolve_for_order(
     state: &AppState,
     row: &StoreConnectionRow,
     policy: &PolicyGuard,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_currency: &str,
     order_currency_piconero_per_unit: u64,
     xmr_amount_piconero: u64,

@@ -453,7 +453,7 @@ async fn create_order(
     let order = control
         .client
         .create_order(
-            &shared::auth::RawToken::presented(&control.token),
+            &credentials::auth::RawToken::presented(&control.token),
             shared::xmr_amount::Piconero(1_000_000_000),
             None,
             None,
@@ -509,7 +509,7 @@ async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
 
 /// The fixture store's secret key as the store has it now: a disconnected
 /// plugin rotates it, so it's read from the store, not `Controls::token`.
-fn store_secret(control: &Controls) -> Result<shared::auth::RawToken, StatusCode> {
+fn store_secret(control: &Controls) -> Result<credentials::auth::RawToken, StatusCode> {
     let row = control
         .db
         .lock()
@@ -522,7 +522,7 @@ fn store_secret(control: &Controls) -> Result<shared::auth::RawToken, StatusCode
         &row.tenant_secret_token_encrypted,
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    Ok(shared::auth::RawToken::presented(&secret))
+    Ok(credentials::auth::RawToken::presented(&secret))
 }
 
 /// The WooCommerce plugin connected to the fixture store
@@ -1142,7 +1142,7 @@ async fn main() {
     )
     .expect("create fixture user");
     db.create_session(
-        &shared::auth::RawToken::presented(SESSION).hash(),
+        &credentials::auth::RawToken::presented(SESSION).hash(),
         &engine_protocol::ids::UserId::new("coverage-merchant"),
         // Now, not 0: a session expires (`Db::SESSION_LIFETIME_SECONDS`).
         monokulo::now_unix(),
@@ -1157,7 +1157,7 @@ async fn main() {
     )
     .expect("create fixture admin");
     db.create_session(
-        &shared::auth::RawToken::presented(ADMIN_SESSION).hash(),
+        &credentials::auth::RawToken::presented(ADMIN_SESSION).hash(),
         &engine_protocol::ids::UserId::new("coverage-admin"),
         monokulo::now_unix(),
     )

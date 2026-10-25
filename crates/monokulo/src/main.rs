@@ -161,7 +161,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             let engine_token = required(&settings::ENGINE_TOKEN, &env);
             let client = EngineClient::with_cache_limit(
                 engine_url.as_str().to_string(),
-                shared::auth::engine_token(engine_token.expose()),
+                credentials::auth::engine_token(engine_token.expose()),
                 shared::http_cache::DEFAULT_MAX_CACHE_BYTES,
             );
             (client, None)
@@ -436,7 +436,7 @@ mod embedded {
         } else {
             early.get(&DATABASE_PATH)
         };
-        let token = shared::auth::generate_engine_token();
+        let token = credentials::auth::generate_engine_token();
         let config = EngineConfig {
             options,
             env,

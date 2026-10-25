@@ -3,8 +3,8 @@
 //!
 //! ## Why this is its own crate, not `shared`
 //!
-//! `shared` is a *dependency of* `engine` (`shared::auth`,
-//! `shared::password`, `sqlite::migrations` are all
+//! `shared` is a *dependency of* `engine` (`credentials::auth`,
+//! `credentials::password`, `sqlite::migrations` are all
 //! pulled in by the engine crate). A helper that boots a real
 //! `engine` engine instance necessarily needs `engine` itself
 //! as a dependency - even as a dev-dependency, that would make `shared`
@@ -45,14 +45,14 @@ use monero::Network;
 
 /// The engine token every engine this crate spawns accepts: what a
 /// test gives monokulo's `EngineClient` (or sends in
-/// `shared::auth::ENGINE_TOKEN_HEADER`) to reach it.
+/// `credentials::auth::ENGINE_TOKEN_HEADER`) to reach it.
 pub use engine::http::TEST_ENGINE_TOKEN;
 
 /// A plain HTTP client for calling a test engine directly, as monokulo
 /// does: it sends [`TEST_ENGINE_TOKEN`] on every request.
 pub fn engine_http_client() -> reqwest::Client {
     let headers = reqwest::header::HeaderMap::from_iter([(
-        reqwest::header::HeaderName::from_static(shared::auth::ENGINE_TOKEN_HEADER),
+        reqwest::header::HeaderName::from_static(credentials::auth::ENGINE_TOKEN_HEADER),
         reqwest::header::HeaderValue::from_static(TEST_ENGINE_TOKEN),
     )]);
     reqwest::Client::builder()
@@ -981,7 +981,9 @@ impl TestEngineConfig {
             db: engine::store::Database::inline(store.clone()),
             rate_limits,
             log_store: self.log_store.clone(),
-            engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
+            engine_token: Arc::new(
+                credentials::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash(),
+            ),
             settings: engine_settings,
             custody: engine::http::Custody {
                 backends: key_custody.clone(),

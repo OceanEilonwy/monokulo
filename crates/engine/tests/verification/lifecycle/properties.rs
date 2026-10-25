@@ -133,7 +133,7 @@ proptest! {
             let status = scanner_status::new_scanner_status_map();
             let state = crate::http::AppState {
                 db: crate::store::Database::inline(Arc::clone(&store)),rate_limits:limiter,log_store:None,
-                engine_token:Arc::new(shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash()),
+                engine_token:Arc::new(credentials::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash()),
                 settings:Arc::clone(&settings),
                 custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),default_backend:"plain".into(),wallet_handles:Arc::clone(&wallet_handles) },
                 networks:crate::http::Networks { daemons:daemons.clone(),scanner_status:Arc::clone(&status) },
@@ -151,7 +151,7 @@ proptest! {
                         else { serde_json::json!({"host":"127.0.0.1","port":ports[i],"ssl":false,"fallbacks":if fallback {vec![serde_json::json!({"host":"127.0.0.1","port":ports[3]})]} else {vec![]}}) });
                 }
                 let response = router.clone().oneshot(Request::builder().method("POST").uri("/api/v1/admin/settings")
-                    .header("content-type","application/json").header(shared::auth::ENGINE_TOKEN_HEADER,crate::http::TEST_ENGINE_TOKEN)
+                    .header("content-type","application/json").header(credentials::auth::ENGINE_TOKEN_HEADER,crate::http::TEST_ENGINE_TOKEN)
                     .body(Body::from(serde_json::json!({"monero_node":nodes}).to_string())).unwrap()).await.unwrap();
                 assert_eq!(response.status(),StatusCode::OK);
                 tokio::time::timeout(Duration::from_secs(10),async {

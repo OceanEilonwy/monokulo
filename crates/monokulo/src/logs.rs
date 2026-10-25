@@ -388,7 +388,7 @@ mod tests {
             engine: EngineSource::Api {
                 client: EngineClient::embedded(
                     engine.router(),
-                    shared::auth::RawToken::presented("wrong_engine_token_0123456789abcdef"),
+                    credentials::auth::RawToken::presented("wrong_engine_token_0123456789abcdef"),
                     None,
                 ),
             },

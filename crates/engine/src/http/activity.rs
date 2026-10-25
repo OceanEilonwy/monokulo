@@ -286,7 +286,7 @@ mod tests {
     async fn open(state: &AppState, uri: &str, last_event_id: Option<u64>) -> (StatusCode, Reader) {
         let mut request = Request::builder()
             .uri(uri)
-            .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN);
+            .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN);
         if let Some(id) = last_event_id {
             request = request.header("last-event-id", id.to_string());
         }
@@ -481,7 +481,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .uri(format!("{base}?network=stagenet"))
-                    .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+                    .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
                     .header("last-event-id", "soon")
                     .body(Body::empty())
                     .unwrap(),
