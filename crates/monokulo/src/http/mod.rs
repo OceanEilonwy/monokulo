@@ -225,6 +225,9 @@ pub struct AppState {
     /// Sale events for connected apps' event streams (`crate::apps`),
     /// announced by the order API and the order-event subscriber.
     pub apps: Arc<crate::apps::AppEvents>,
+    /// The keys and sessions open streams were opened with: revoking one
+    /// ends its streams (`crate::revocation`).
+    pub revocations: Arc<crate::revocation::Revocations>,
     /// Tor inside monokulo (`crate::tor`): its status and onion address.
     pub tor: crate::tor::Tor,
 }
@@ -303,6 +306,7 @@ impl AppState {
             log_store: None,
             webhooks: Arc::default(),
             apps: Arc::default(),
+            revocations: Arc::default(),
             tor: crate::tor::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
@@ -910,6 +914,30 @@ impl FromRequestParts<AppState> for AuthedAdmin {
         }
         Ok(AuthedAdmin(user, hash))
     }
+}
+
+/// The signed-in session `token_hash`, held for a stream it opens
+/// (`crate::revocation`): the stream ends once the session does (logged
+/// out, ended by a password change, or past its lifetime). An open stream
+/// isn't a request, so nothing else would check the session again. `None`
+/// when it has already ended.
+pub(crate) async fn hold_session(
+    state: &AppState,
+    token_hash: &TokenHash,
+) -> Option<crate::revocation::Hold> {
+    // Held before it's read again, so an end written after the read still
+    // reaches the stream.
+    let held = state.revocations.hold(token_hash);
+    let (hash, now) = (token_hash.clone(), crate::now_unix());
+    let session = state
+        .db
+        .read(move |db| db.find_session(&hash, now))
+        .await
+        .ok()
+        .flatten()?;
+    let left = session.created_at + crate::db::SESSION_LIFETIME_SECONDS - now;
+    let left = std::time::Duration::from_secs(u64::try_from(left).unwrap_or(0));
+    Some(held.expiring_at(tokio::time::Instant::now() + left))
 }
 
 /// The methods the checkout pages' (and the client library's) CORS answer

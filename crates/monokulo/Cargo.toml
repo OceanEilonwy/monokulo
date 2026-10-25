@@ -73,6 +73,8 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 http-body = "1.1.0"
 tower-http = { version = "0.7.1", features = ["cors"] }
 tokio = { version = "1.53.1", features = ["full"] }
+# One cancellation token per credential (`revocation`).
+tokio-util = "0.7.20"
 url = "2.5.8"
 live-settings = { path = "../live-settings" }
 telemetry = { path = "../telemetry", features = ["axum"] }

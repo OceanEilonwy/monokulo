@@ -50,6 +50,9 @@ impl Credential {
 pub struct ApiCaller {
     pub store: std::sync::Arc<StoreConnectionRow>,
     pub credential: Credential,
+    /// The key, held, so a stream it opens ends once the key stops working
+    /// (`crate::revocation`): an app disconnected, a secret key rotated.
+    pub held: crate::revocation::Hold,
 }
 
 /// Request extension: the store a public request is about, found by
@@ -63,7 +66,7 @@ pub enum KeyCheck {
     /// No `Authorization` header at all.
     Absent,
     /// A key this instance knows.
-    Known(ApiCaller),
+    Known(Box<ApiCaller>),
     /// Anything else.
     Invalid,
 }
@@ -115,8 +118,11 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
     let Some(presented) = presented else {
         return KeyCheck::Invalid;
     };
+    let hash = shared::auth::RawToken::presented(&presented).hash();
+    // Before the key is looked up, so a revocation written after the
+    // lookup still reaches it.
+    let held = state.revocations.hold(&hash);
     let found = if presented.starts_with("ak_") {
-        let hash = shared::auth::RawToken::presented(&presented).hash();
         state
             .db
             .read(move |db| {
@@ -127,6 +133,7 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
                 Ok::<_, crate::db::DbError>(store.map(|store| ApiCaller {
                     store: std::sync::Arc::new(store),
                     credential: Credential::App(app),
+                    held,
                 }))
             })
             .await
@@ -139,10 +146,10 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
                 store.map(|store| ApiCaller {
                     store: std::sync::Arc::new(store),
                     credential: Credential::Public,
+                    held,
                 })
             })
     } else {
-        let hash = shared::auth::RawToken::presented(&presented).hash();
         let found = state
             .db
             .read(move |db| db.get_store_connection_by_secret_key_hash(&hash))
@@ -162,15 +169,86 @@ pub async fn check(state: &AppState, headers: &axum::http::HeaderMap) -> KeyChec
                 .map(|store| ApiCaller {
                     store: std::sync::Arc::new(store),
                     credential: Credential::Secret,
+                    held,
                 })
         })
     };
     match found {
-        Ok(Some(caller)) => KeyCheck::Known(caller),
+        Ok(Some(caller)) => KeyCheck::Known(Box::new(caller)),
         Ok(None) => KeyCheck::Invalid,
         Err(e) => {
             tracing::error!(error = %e, "a presented key could not be looked up");
             KeyCheck::Invalid
+        }
+    }
+}
+
+/// Where a store's secret key is read each time it's used, for whatever
+/// outlives a request (an open stream, the live hub's engine connection):
+/// it holds this and the store's id, never the key, so a key replaced
+/// meanwhile (`super::store_site`, disconnecting a plugin) is never used
+/// again.
+#[derive(Clone)]
+pub struct StoreKeys {
+    db: crate::db::Database,
+    encryption_key: crate::crypto::AtRestKey,
+    revocations: std::sync::Arc<crate::revocation::Revocations>,
+}
+
+impl AppState {
+    pub fn store_keys(&self) -> StoreKeys {
+        StoreKeys {
+            db: self.db.clone(),
+            encryption_key: self.encryption_key.clone(),
+            revocations: self.revocations.clone(),
+        }
+    }
+}
+
+impl StoreKeys {
+    /// The store as it is now. `None` once it's gone; `Err` when it
+    /// couldn't be read.
+    pub(crate) async fn row(
+        &self,
+        id: &crate::db::ConnectionId,
+    ) -> Result<Option<StoreConnectionRow>, ()> {
+        let id = id.clone();
+        self.db
+            .read(move |db| db.get_store_connection_by_id(&id))
+            .await
+            .map_err(|e| tracing::error!(error = %e, "a store's row could not be read"))
+    }
+
+    /// The store as it is now, with its secret key.
+    pub(crate) async fn current(
+        &self,
+        id: &crate::db::ConnectionId,
+    ) -> Result<Option<(StoreConnectionRow, shared::auth::RawToken)>, ()> {
+        let Some(row) = self.row(id).await? else {
+            return Ok(None);
+        };
+        let sk = super::decrypt_sk(&self.encryption_key, &row)?;
+        Ok(Some((row, sk)))
+    }
+
+    /// The store's secret key, held (`crate::revocation`): the hold is
+    /// revoked once the key is replaced.
+    pub(crate) async fn held(
+        &self,
+        id: &crate::db::ConnectionId,
+    ) -> Result<Option<(shared::auth::RawToken, crate::revocation::Hold)>, ()> {
+        loop {
+            let Some((_, sk)) = self.current(id).await? else {
+                return Ok(None);
+            };
+            let held = self.revocations.hold(&sk.hash());
+            // Read again with the hold taken: a key replaced in between
+            // was revoked before it was held, so it's read afresh.
+            match self.current(id).await? {
+                Some((_, again)) if again == sk => return Ok(Some((sk, held))),
+                Some(_) => continue,
+                None => return Ok(None),
+            }
         }
     }
 }

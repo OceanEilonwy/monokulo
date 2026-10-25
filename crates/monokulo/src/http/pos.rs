@@ -785,17 +785,13 @@ pub struct PosEventsQuery {
 /// the stream with a new id list whenever the set it watches changes.
 pub async fn order_events(
     State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
+    AuthedUser(user, session): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
     QueryParams(query): QueryParams<PosEventsQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
-        Err(()) => return ApiError::Internal.into_response(),
-    };
-    let sk = match decrypt_sk(&state.encryption_key, &row) {
-        Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
     let mut order_ids: Vec<crate::db::OrderId> = Vec::new();
@@ -821,11 +817,18 @@ pub async fn order_events(
         .into_response();
     }
 
+    let Some(session) = super::hold_session(&state, &session).await else {
+        return ApiError::Unauthorized.into_response();
+    };
+    let keys = state.store_keys();
     let subscriptions = order_ids
         .iter()
         .map(|order_id| {
             (
-                state.engine.client.subscribe_order(&row.id, &sk, order_id),
+                state
+                    .engine
+                    .client
+                    .subscribe_order(&keys, &row.id, order_id),
                 state.db.order_changes().subscribe(&row.id, order_id),
             )
         })
@@ -833,12 +836,15 @@ pub async fn order_events(
     let connection_id = row.id.clone();
     // One engine read per change for every watched order together: the
     // engine rate-limits each store, and a busy counter watches many orders.
-    crate::live::sse(crate::live::batch_snapshot_stream(
+    crate::live::sse(session.bound(crate::live::batch_snapshot_stream(
         subscriptions,
         std::time::Duration::from_secs(60),
         move |ids| {
-            let (state, connection_id, sk) = (state.clone(), connection_id.clone(), sk.clone());
+            let (state, keys, connection_id) = (state.clone(), keys.clone(), connection_id.clone());
             async move {
+                // The store's key as it is now: it may have been replaced
+                // since the stream opened.
+                let (_, sk) = keys.current(&connection_id).await.ok()??;
                 let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
                 // Without its POS row a backgrounded order would be sent as
                 // in the foreground: a failed read waits for the next change.
@@ -885,7 +891,7 @@ pub async fn order_events(
                 Some(snapshots)
             }
         },
-    ))
+    )))
 }
 
 #[cfg(test)]

@@ -419,6 +419,9 @@ pub async fn disconnect_submit(
             )
         })
         .await;
+    // The engine refuses the old key now, written or not: what was opened
+    // with it ends.
+    state.revocations.revoke(&sk.hash());
     if let Err(e) = written {
         // The engine has the new key and this store can't read it: nothing
         // to fall back on.
