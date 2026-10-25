@@ -6,18 +6,21 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use arti_client::config::TorClientConfigBuilder;
-use arti_client::TorClient;
+use arti_client::{TorClient, TorClientConfig};
 use futures_util::StreamExt;
 use safelog::DisplayRedacted;
 use tor_cell::relaycell::msg::{Connected, End, EndReason};
 use tor_hsservice::config::{OnionServiceConfigBuilder, TokenBucketConfig};
 use tor_hsservice::status::State;
-use tor_hsservice::{HsNickname, StreamRequest};
+use tor_hsservice::{HsNickname, OnionServiceConfig, StreamRequest};
 use tor_keymgr::config::CTorServiceKeystoreConfigBuilder;
 use tor_keymgr::KeystoreId;
 use tor_proto::stream::IncomingStreamRequest;
 
-use super::{circuit_peer, Tor, TorConnections, TorListener, TorStatus, Wanted, NICKNAME};
+use super::{
+    circuit_peer, Tor, TorConnections, TorListener, TorStatus, Wanted, CTOR_NICKNAME,
+    HOSTNAME_FILE, NICKNAME,
+};
 use crate::abuse::proxy_protocol::OnionPeer;
 
 /// How long after an error the service starts again.
@@ -85,15 +88,20 @@ async fn run_once(tor: &Tor, wanted: &Wanted, router: axum::Router) -> String {
     }
 }
 
-async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Result<(), String> {
-    let nickname = HsNickname::new(NICKNAME.to_string()).map_err(|e| e.to_string())?;
+/// Arti's settings and the onion service's for `wanted`.
+pub(super) fn configs(wanted: &Wanted) -> Result<(TorClientConfig, OnionServiceConfig), String> {
+    let nickname = match wanted.hidden_service_dir {
+        Some(_) => CTOR_NICKNAME,
+        None => NICKNAME,
+    };
+    let nickname = HsNickname::new(nickname.to_string()).map_err(|e| e.to_string())?;
     let mut config = TorClientConfigBuilder::from_directories(
         wanted.state_dir.join("state"),
         wanted.state_dir.join("cache"),
     );
     if let Some(dir) = &wanted.hidden_service_dir {
-        // The external tor's key, read where it is: Arti finds the
-        // service's key there before making one of its own.
+        // The external tor's key, read where it is, under a nickname Arti's
+        // own key store has nothing for, so this key is the only one found.
         let mut ctor = CTorServiceKeystoreConfigBuilder::default();
         ctor.id(KeystoreId::from_str("ctor").map_err(|e| e.to_string())?)
             .path(dir.clone())
@@ -103,6 +111,56 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
     let config = config
         .build()
         .map_err(|e| format!("Tor's settings were refused: {e}"))?;
+    let service = OnionServiceConfigBuilder::default()
+        .nickname(nickname)
+        .rate_limit_at_intro(Some(TokenBucketConfig::new(INTRO_RATE, INTRO_BURST)))
+        .max_concurrent_streams_per_circuit(MAX_STREAMS_PER_CIRCUIT)
+        .build()
+        .map_err(|e| format!("The onion service's settings were refused: {e}"))?;
+    Ok((config, service))
+}
+
+/// The onion address the service will have with `wanted`, read from its
+/// key without joining the network; `None` while there is no key yet and
+/// Arti will make one. With `tor.hidden_service_dir` there must be a key,
+/// so Arti never makes one in its place, and its address must be the one
+/// in that folder's own `hostname` file, when it has one.
+pub(super) fn address_to_serve(wanted: &Wanted) -> Result<Option<String>, String> {
+    let (config, service) = configs(wanted)?;
+    let address = TorClient::<tor_rtcompat::PreferredRuntime>::create_onion_service(
+        &config, service,
+    )
+    .map(|service| {
+        service
+            .onion_address()
+            .map(|address| address.display_unredacted().to_string())
+    });
+    let Some(dir) = &wanted.hidden_service_dir else {
+        return address.map_err(|e| format!("The onion service's key couldn't be read: {e}"));
+    };
+    let unreadable = |why: String| {
+        format!(
+            "Tor can't read the key in {}{why}: give the folder tor's HiddenServiceDir points at, as a copy only monokulo's user can open (chmod 700).",
+            dir.display()
+        )
+    };
+    let address = match address {
+        Ok(Some(address)) => address,
+        Ok(None) => return Err(unreadable(String::new())),
+        Err(e) => return Err(unreadable(format!(" ({e})"))),
+    };
+    match std::fs::read_to_string(dir.join(HOSTNAME_FILE)) {
+        Ok(hostname) if !hostname.trim().eq_ignore_ascii_case(&address) => Err(format!(
+            "The key in {} is the one for {address}, but its hostname file says {}: give the HiddenServiceDir of the address to serve.",
+            dir.display(),
+            hostname.trim()
+        )),
+        _ => Ok(Some(address)),
+    }
+}
+
+async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Result<(), String> {
+    let (config, service) = configs(wanted)?;
     let client = TorClient::builder()
         .config(config)
         .create_unbootstrapped_async()
@@ -129,12 +187,9 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
     tor.set_client(Some(client.clone()));
     let _client = ClearOnDrop(tor.clone());
 
-    let service = OnionServiceConfigBuilder::default()
-        .nickname(nickname)
-        .rate_limit_at_intro(Some(TokenBucketConfig::new(INTRO_RATE, INTRO_BURST)))
-        .max_concurrent_streams_per_circuit(MAX_STREAMS_PER_CIRCUIT)
-        .build()
-        .map_err(|e| format!("The onion service's settings were refused: {e}"))?;
+    // Checked again just before launching: the folder may have changed
+    // since the settings were saved.
+    let expected = address_to_serve(wanted)?;
     let (running, rend_requests) = client
         .launch_onion_service(service)
         .map_err(|e| format!("The onion service couldn't start: {e}"))?
@@ -144,12 +199,17 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
         .ok_or("The onion service has no address.")?
         .display_unredacted()
         .to_string();
+    if let Some(expected) = expected.filter(|expected| *expected != address) {
+        return Err(format!(
+            "Tor came up at {address}, not at {expected}, the address of its key."
+        ));
+    }
     tor.set_status(TorStatus::Publishing {
         address: address.clone(),
     });
     tracing::info!(tor.address = %address, "tor: onion service started, publishing its address");
     // Where C tor keeps it too, for the operator and the OpenWrt app.
-    let hostname = wanted.state_dir.join(super::HOSTNAME_FILE);
+    let hostname = wanted.state_dir.join(HOSTNAME_FILE);
     if let Err(e) = std::fs::write(&hostname, format!("{address}\n")) {
         tracing::warn!(path = %hostname.display(), error = %e, "tor: couldn't write the onion address to a file");
     }

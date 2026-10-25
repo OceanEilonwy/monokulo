@@ -38,6 +38,12 @@ pub const BUILT_IN: bool = cfg!(feature = "tor");
 /// The one onion service monokulo runs: its name in Arti's key store.
 pub const NICKNAME: &str = "monokulo";
 
+/// Its name when it serves a HiddenServiceDir's key (`tor.hidden_service_dir`):
+/// one Arti never makes a key under. Arti looks in its own key store before
+/// the HiddenServiceDir, so a key it made under [`NICKNAME`] on an earlier
+/// run would otherwise be served instead, at another address.
+pub const CTOR_NICKNAME: &str = "monokulo-ctor";
+
 /// The file in `tor.state_dir` the onion address is written to once known,
 /// as a C tor writes its HiddenServiceDir's `hostname`.
 pub const HOSTNAME_FILE: &str = "hostname";
@@ -308,6 +314,9 @@ impl live_settings::Reloadable for TorReloadable {
         prepare_state_dir(&wanted.state_dir).map_err(|e| FieldError::new(TOR_STATE_DIR.key, e))?;
         if let Some(dir) = &wanted.hidden_service_dir {
             check_hidden_service_dir(dir)
+                .map_err(|e| FieldError::new(TOR_HIDDEN_SERVICE_DIR.key, e))?;
+            #[cfg(feature = "tor")]
+            arti::address_to_serve(&wanted)
                 .map_err(|e| FieldError::new(TOR_HIDDEN_SERVICE_DIR.key, e))?;
         }
         Ok((TorChange::Start(wanted), Vec::new()))
