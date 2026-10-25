@@ -239,7 +239,13 @@ pub async fn attempt_delivery(
     let (status, error, response) = match sent {
         Ok(Ok((status, response))) => (Some(status), None, Some(response)),
         Ok(Err(error)) => (None, Some(error), None),
-        Err(_) => (None, Some(format!("no answer within {timeout:?}")), None),
+        // The same words as reqwest's own timeout, which the outer one
+        // can beat by a timer tick: one failure, one reason.
+        Err(_) => (
+            None,
+            Some(format!("timed out: no answer within {timeout:?}")),
+            None,
+        ),
     };
     let delivered = status.is_some_and(|s| (200..300).contains(&s));
     let error = match (delivered, status, error) {

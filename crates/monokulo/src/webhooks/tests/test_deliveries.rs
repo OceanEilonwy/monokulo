@@ -293,27 +293,19 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
     // refused connection rather than a timeout.
     let patient = shop_with("[webhooks]\nallow_private_urls = true\n").await;
 
-    // Down: nothing listens there any more.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let down = format!("http://{}/hook", listener.local_addr().unwrap());
-    drop(listener);
+    // Down: the port is ours, bound but not listening, so nothing else
+    // can take it and every connection to it is refused.
+    let closed = tokio::net::TcpSocket::new_v4().unwrap();
+    closed.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let down = format!("http://{}/hook", closed.local_addr().unwrap());
     // An error.
     let status = Arc::new(AtomicU16::new(500));
     let failing = endpoint(status.clone(), Received::default()).await;
-    // Too slow.
-    let slow = {
-        let app = axum::Router::new().route(
-            "/hook",
-            axum::routing::post(|| async {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                "late"
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}/hook")
-    };
+    // Too slow: it listens but never accepts, so the connection is made
+    // (by the kernel) and the request sent, and no answer ever comes,
+    // however long a loaded machine takes to notice the timeout.
+    let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let slow = format!("http://{}/hook", silent.local_addr().unwrap());
 
     for (shop, url, answered, error) in [
         (&patient, down.as_str(), None, "could not connect"),
