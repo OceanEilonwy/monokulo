@@ -82,27 +82,27 @@ const BLOCK_COLUMNS: &str = "height, block_hash, timestamp, cumulative_difficult
 
 impl Store {
     /// Turns checking on for `network`: from now its orders settle only on
-    /// proven blocks. Nothing changes if it is on already.
+    /// proven blocks. Nothing changes if it is on already. Turned on again
+    /// after being off, it carries on from the anchor and proven chain it
+    /// kept, as it does after the engine was stopped.
     pub fn enable_proof(&self, network: monero::Network, now: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT OR IGNORE INTO proof_networks (network, enabled_at) VALUES (?1, ?2)",
+            "INSERT INTO proof_networks (network, enabled_at) VALUES (?1, ?2)
+             ON CONFLICT (network) DO UPDATE SET enabled = 1, enabled_at = ?2 WHERE enabled = 0",
             params![SqlNetwork(network), now],
         )?;
         Ok(())
     }
 
-    /// Turns checking off for `network` and forgets its anchor and proven
-    /// chain: turned on again, it anchors afresh.
+    /// Turns checking off for `network`: its orders settle on the nodes'
+    /// word. Its anchor, proven chain and keys are kept for when it is
+    /// turned on again.
     pub fn disable_proof(&self, network: monero::Network) -> Result<()> {
-        self.in_transaction(|s| {
-            for table in ["proof_networks", "proven_blocks", "proof_seeds"] {
-                s.conn.execute(
-                    &format!("DELETE FROM {table} WHERE network = ?1"),
-                    [SqlNetwork(network)],
-                )?;
-            }
-            Ok(())
-        })
+        self.conn.execute(
+            "UPDATE proof_networks SET enabled = 0 WHERE network = ?1",
+            [SqlNetwork(network)],
+        )?;
+        Ok(())
     }
 
     /// Forgets `network`'s anchor and proven chain, keeping checking on:
@@ -131,7 +131,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT enabled_at, anchor_height, anchor_hash, anchor_agreed, anchor_nodes, anchored_at
-                 FROM proof_networks WHERE network = ?1",
+                 FROM proof_networks WHERE network = ?1 AND enabled = 1",
                 [SqlNetwork(network)],
                 |row| {
                     let height: Option<i64> = row.get(1)?;
@@ -171,7 +171,7 @@ impl Store {
             let updated = s.conn.execute(
                 "UPDATE proof_networks SET anchor_height = ?2, anchor_hash = ?3,
                     anchor_agreed = ?4, anchor_nodes = ?5, anchored_at = ?6
-                 WHERE network = ?1",
+                 WHERE network = ?1 AND enabled = 1",
                 params![
                     SqlNetwork(network),
                     sql_height(top.height)?,
@@ -634,7 +634,14 @@ mod tests {
         assert_eq!(store.proof_ceiling(NET).unwrap(), Some(107));
         store.disable_proof(NET).unwrap();
         assert_eq!(store.proof_ceiling(NET).unwrap(), None);
-        assert_eq!(store.proven_tip(NET).unwrap(), None, "forgotten");
+        assert_eq!(store.proof_network(NET).unwrap(), None, "off");
+        assert_eq!(store.proven_tip(NET).unwrap(), Some(block(113, 0)), "kept");
+        // On again: the same anchor and chain, and the ceiling they give.
+        store.enable_proof(NET, 9).unwrap();
+        let state = store.proof_network(NET).unwrap().unwrap();
+        assert_eq!(state.enabled_at, 9);
+        assert_eq!(state.anchor.map(|a| a.height), Some(110));
+        assert_eq!(store.proof_ceiling(NET).unwrap(), Some(107));
     }
 
     /// A payment counts toward settlement only once it is attested in the

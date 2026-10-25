@@ -604,11 +604,13 @@ async fn the_proven_chain_is_pruned_to_what_reorgs_and_rules_need() {
 }
 
 #[tokio::test]
-async fn turning_checking_off_forgets_it_and_lets_every_node_back() {
+async fn turning_checking_off_lets_every_node_back_and_on_again_carries_on() {
     let mut chain = base_chain();
     let mut world = World::new(2, &chain);
     world.round().await;
     let proven = world.proven_tip();
+    let anchor = |world: &World| world.store.lock().proof_network(NET).unwrap()?.anchor;
+    let anchored = anchor(&world).unwrap();
     let mut forged = chain.clone();
     forged.forge(vec![]);
     forged.install(&world.nodes[0], proven.height + 1);
@@ -616,6 +618,7 @@ async fn turning_checking_off_forgets_it_and_lets_every_node_back() {
     chain.install(&world.nodes[1], proven.height + 1);
     world.round().await;
     assert!(world.client.is_excluded(0));
+    let followed = world.proven_tip();
 
     world
         .follower
@@ -624,7 +627,18 @@ async fn turning_checking_off_forgets_it_and_lets_every_node_back() {
     assert_eq!(world.follower.status(), None);
     assert!(!world.client.is_excluded(0));
     assert_eq!(world.store.lock().proof_ceiling(NET).unwrap(), None);
-    assert_eq!(world.store.lock().proven_tip(NET).unwrap(), None);
+    // The anchor and proven chain are kept, for when it is on again.
+    assert_eq!(world.store.lock().proven_tip(NET).unwrap(), Some(followed));
+
+    // The chain grows while it is off; on again, it carries on from the
+    // anchor it had, checking the blocks since.
+    chain.mine_empty(3);
+    chain.install(&world.nodes[1], proven.height + 1);
+    world.round_at(TEST_NOW + 60).await;
+    assert_eq!(anchor(&world), Some(anchored), "not anchored afresh");
+    assert_eq!(world.proven_tip(), chain.tip().proven());
+    assert_eq!(world.verdict(1), NodeVerdict::OnChain);
+    assert_eq!(world.status().state, ProofState::Following);
 }
 
 #[tokio::test]

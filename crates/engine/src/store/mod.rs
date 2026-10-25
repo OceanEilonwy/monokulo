@@ -185,6 +185,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         33,
         include_str!("../../migrations/0033_snp_master_key_check.sql"),
     ),
+    (
+        34,
+        include_str!("../../migrations/0034_proof_kept_when_off.sql"),
+    ),
 ];
 
 /// The engine's writing connections (the shared store and the database

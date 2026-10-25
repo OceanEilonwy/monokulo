@@ -318,23 +318,20 @@ fn suggest(db: &Db, connection_id: &crate::db::ConnectionId, domain: &str, now: 
 }
 
 /// Copies each existing store's own site domain into its domains, waiting
-/// for DNS - once per store (`store_connections.domains_imported`), so a
-/// domain the merchant removes afterwards stays removed. Local to monokulo:
-/// the engine holds no embedding policy, so nothing is read from it.
-pub fn import_existing_domains(db: &Db) {
-    let stores = match db.list_store_connections_awaiting_domain_import() {
-        Ok(stores) => stores,
-        Err(e) => {
-            tracing::error!(error = %e, "could not list stores to import domains for");
-            return;
+/// for DNS: the code step [`crate::db::STORE_DOMAINS_STEP`], run once, so a
+/// domain the merchant removes afterwards stays removed. The stores it
+/// copies for are those made before migration 0020
+/// (`store_connections.domains_imported`); every store made since has its
+/// site's domain added when it is made. Local to monokulo: the engine holds
+/// no embedding policy, so nothing is read from it. Returns whether it ran.
+pub fn import_existing_domains(db: &Db) -> Result<bool, crate::db::DbError> {
+    db.run_backfill_step(crate::db::STORE_DOMAINS_STEP, |db| {
+        for store in db.list_store_connections_awaiting_domain_import()? {
+            suggest_site_domain(db, &store.id, store.site.as_ref(), crate::now_unix());
+            db.mark_store_domains_imported(&store.id)?;
         }
-    };
-    for store in stores {
-        suggest_site_domain(db, &store.id, store.site.as_ref(), crate::now_unix());
-        if let Err(e) = db.mark_store_domains_imported(&store.id) {
-            tracing::warn!(store.id = %store.id, error = %e, "could not mark the store's domains imported");
-        }
-    }
+        Ok(())
+    })
 }
 
 /// What one lookup of a domain's record found.

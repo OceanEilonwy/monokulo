@@ -287,8 +287,11 @@ impl Follower {
         Ok(db.run(Class::Scanner, move |s| f(s, network)).await?)
     }
 
-    /// One round: off, it forgets everything; on, it anchors if it must and
-    /// follows every node's chain as far as the round allows.
+    /// One round: off, it lets every node back and forgets what it held in
+    /// memory, keeping the stored anchor and proven chain; on, it anchors
+    /// if it must and follows every node's chain as far as the round
+    /// allows, from where the stored chain ends (turned on again after a
+    /// while off, that is a catch-up, as after the engine was stopped).
     pub async fn round(
         &mut self,
         db: &Db,

@@ -215,28 +215,17 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     };
 
     monokulo::embed_domains::spawn_rechecks(db.clone(), proofs.clone());
-    if let Err(e) = db
-        .write(|db| {
-            monokulo::embed_domains::import_existing_domains(db);
-            Ok::<_, monokulo::db::DbError>(())
-        })
-        .await
-    {
-        tracing::error!(error = %e, "could not import existing stores' domains");
-    }
-    // Stores made before the API found them by their key (migration 0044).
+    // Changes to existing stores that need the running process, each run
+    // once (`monokulo::db::BACKFILL_STEP`).
     let key = encryption_key.clone();
     if let Err(e) = db
         .write(move |db| {
-            let filled = monokulo::stores::fill_secret_key_hashes(db, &key);
-            if filled > 0 {
-                tracing::info!(stores = filled, "recorded stores' secret key hashes");
-            }
+            monokulo::stores::backfill_at_start(db, &key);
             Ok::<_, monokulo::db::DbError>(())
         })
         .await
     {
-        tracing::error!(error = %e, "could not record stores' secret key hashes");
+        tracing::error!(error = %e, "could not run the start-up backfills");
     }
     // Stores' webhooks: the engine's order events read into deliveries,
     // and the deliveries sent.
