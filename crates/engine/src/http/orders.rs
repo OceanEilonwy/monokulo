@@ -8,10 +8,10 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::key_custody::{KeyCustodyError, SubaddressIndex};
-use crate::store::{NewOrder, Tenant};
+use crate::store::{NewOrder, NextIndex, Tenant};
 
 use super::{
-    forget_wallet_handle, now_unix, parse_network, resolve_wallet_handle, ApiError, AppState,
+    forget_wallet_handle, now_unix, parse_network, resolve_wallet_handle_held, ApiError, AppState,
     AuthedTenant, UNKNOWN_WALLET_RETRIES,
 };
 
@@ -108,7 +108,12 @@ async fn create_order_for_tenant(
         )));
     }
 
-    let mut handle = resolve_wallet_handle(&state, &tenant).await?;
+    // The store's lock, shared, from resolving its keys to claiming the
+    // index: its wallet can't change in between (a change waits for the
+    // order), so the address, the index and the order row are all on the
+    // one wallet the store's keys scan.
+    let _using = state.custody.wallet_handles.using(&tenant.id).await;
+    let mut live = resolve_wallet_handle_held(&state, &tenant).await?;
     let mut retries = 0;
     // tenant.network was validated against a configured node at tenant-creation
     // time - a parse failure here means the stored value is corrupt, not that the
@@ -134,10 +139,20 @@ async fn create_order_for_tenant(
     let mut created = None;
     for _ in 0..8 {
         let id = tenant.id.clone();
-        let minor_index = state
+        let NextIndex {
+            wallet_id,
+            minor_index,
+        } = state
             .db
             .write(move |s| s.peek_next_minor_index(&id))
             .await?;
+        // Keys of another wallet than the index's would make an address
+        // nothing scans for this order: the handle is the row's again first.
+        if live.wallet_id != wallet_id {
+            forget_wallet_handle(&state, &tenant.id, &live);
+            live = resolve_wallet_handle_held(&state, &tenant).await?;
+            continue;
+        }
         let index = SubaddressIndex {
             major: 0,
             minor: minor_index,
@@ -146,18 +161,23 @@ async fn create_order_for_tenant(
             match state
                 .custody
                 .backends
-                .derive_subaddress(handle, index, network)
+                .derive_subaddress(live.handle, index, network)
                 .await
             {
                 Ok(address) => break address,
                 Err(KeyCustodyError::UnknownWallet) if retries < UNKNOWN_WALLET_RETRIES => {
                     retries += 1;
-                    forget_wallet_handle(&state, &tenant.id, handle);
-                    handle = resolve_wallet_handle(&state, &tenant).await?;
+                    forget_wallet_handle(&state, &tenant.id, &live);
+                    live = resolve_wallet_handle_held(&state, &tenant).await?;
                 }
                 Err(e) => return Err(e.into()),
             }
         };
+        // The handle may have been registered again meanwhile, from the
+        // row as it is now: its address is only good for its own wallet.
+        if live.wallet_id != wallet_id {
+            continue;
+        }
         let new_order = NewOrder {
             idempotency_key: req.idempotency_key.clone(),
             confirmations_required_override: req.confirmations_required,
@@ -172,7 +192,9 @@ async fn create_order_for_tenant(
         };
         let order = state
             .db
-            .write(move |s| s.create_order_claiming_minor_index(minor_index, &new_order))
+            .write(move |s| {
+                s.create_order_claiming_minor_index(&wallet_id, minor_index, &new_order)
+            })
             .await?;
         if let Some(order) = order {
             created = Some(order);

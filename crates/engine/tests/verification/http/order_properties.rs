@@ -279,7 +279,7 @@ mod properties {
                     let payload = body(Some(format!("key-{key}")),base+u64::from(key),key,Some(u64::from(key)));
                     if kind == 4 { w.restart(); }
                     if kind == 5 {
-                        let handle = w.state.custody.wallet_handles.read().get(&w.ids[tenant]).copied();
+                        let handle = w.state.custody.wallet_handles.read().get(&w.ids[tenant]).map(|live| live.handle);
                         if let Some(handle) = handle { w.custody.inner.remove_wallet(handle).await.unwrap(); }
                     }
                     if kind == 6 {
@@ -393,9 +393,10 @@ mod properties {
                 let w=World::new(1,false).await; let next=u32::MAX-offset;
                 w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=?1",[i64::from(next)]).unwrap();
                 let new=crate::store::NewOrder { tenant_id:w.ids[0].clone(),minor_index:if mismatch {next.saturating_sub(1)} else {next},address:"derived".to_owned(),xmr_amount_piconero:1,idempotency_key:Some("boundary".to_owned()),merchant_order_id:None,description:None,confirmations_required_override:None,created_at:1,expires_at:2 };
-                let result=w.store.lock().create_order_claiming_minor_index(next,&new);
+                let wallet=w.store.lock().wallet_of(&w.ids[0]).unwrap().unwrap();
+                let result=w.store.lock().create_order_claiming_minor_index(&wallet,next,&new);
                 if mismatch || next==u32::MAX {
-                    assert!(result.is_err()); assert_eq!(w.store.lock().peek_next_minor_index(&w.ids[0]).unwrap(),next);
+                    assert!(result.is_err()); assert_eq!(w.store.lock().peek_next_minor_index(&w.ids[0]).unwrap().minor_index,next);
                     assert!(w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap().is_empty());
                 } else { assert!(result.unwrap().is_some());assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,next+1); }
             });
@@ -422,15 +423,34 @@ mod properties {
             });
         }
         #[test]
-        fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000) {
+        fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000, change in any::<bool>()) {
             runtime().block_on(async {
-                let w=World::new(1,false).await;w.custody.mode.store(2,Ordering::Relaxed);
+                let w=World::new(1,false).await;
+                // The wallet the store changes to, its counter ahead of the store's.
+                let other_view=valid_scalar_bytes(41);
+                let other=monero::ViewPair { view:PrivateKey::from_slice(&other_view).unwrap(), spend:PublicKey::from_private_key(&PrivateKey::from_slice(&valid_scalar_bytes(42)).unwrap()) };
+                let at=|minor| monero::cryptonote::subaddress::get_subaddress(&other,crate::key_custody::SubaddressIndex{major:0,minor},Some(Network::Mainnet)).to_string();
+                let sealed=w.custody.inner.seal(&crate::key_custody::WalletMaterial::new(other_view,other.spend.to_bytes())).await.unwrap();
+                let wallet=w.store.lock().create_wallet(&crate::store::NewWallet{key_custody_backend:"plain".into(),sealed_key_material:sealed,primary_address:at(0),network:"mainnet".into()},1).unwrap();
+                w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=5 WHERE id=?1",[&wallet.id]).unwrap();
+                w.custody.mode.store(2,Ordering::Relaxed);
                 let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),body(Some("disabled".to_owned()),amount,0,None)));
-                tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap();w.store.lock().disable_tenant(&w.ids[0],1).unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap();
+                if change { w.store.lock().change_tenant_wallet(&w.ids[0],&wallet.id,1).unwrap(); } else { w.store.lock().disable_tenant(&w.ids[0],1).unwrap(); }
                 w.custody.mode.store(0,Ordering::Relaxed);w.custody.release.notify_one();
-                assert!(!task.await.unwrap().0.is_success());
-                assert!(w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap().is_empty());
-                assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,1);
+                let (status,reply)=task.await.unwrap();
+                let orders=w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap();
+                if change {
+                    // Never an old-wallet address on a new-wallet index: the
+                    // order is the new wallet's, at its next index.
+                    assert!(status.is_success(),"{reply}");
+                    assert_eq!(orders.len(),1);
+                    assert_eq!((orders[0].minor_index,orders[0].address.clone()),(5,at(5)));
+                } else {
+                    assert!(!status.is_success());
+                    assert!(orders.is_empty());
+                    assert_eq!(w.store.lock().get_tenant_by_id(&w.ids[0]).unwrap().unwrap().next_minor_index,1);
+                }
             });
         }
     }

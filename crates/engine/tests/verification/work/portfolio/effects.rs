@@ -7,7 +7,6 @@
     )
 )]
 use super::{inputs, Invoice, NETWORK};
-use crate::key_custody::WalletHandle;
 use crate::node_test_support::{AdversarialNode, Behavior, Rpc};
 use crate::store::{db::Class, Db, SharedStore, Store, TenantId};
 use crate::work::{fast_pass, run_round_at, ScanState};
@@ -269,7 +268,7 @@ impl World {
         &self,
         db: &Db,
         custody: &super::FlakyKeyCustody,
-        tenants: &[(TenantId, WalletHandle)],
+        tenants: &[(TenantId, crate::key_custody::LiveWallet)],
         state: &ScanState,
         store: &SharedStore,
         selected: SqlFailure,
@@ -323,7 +322,7 @@ impl World {
             })
             .await
             .unwrap();
-        let control = [(tenant, handle)];
+        let control = crate::scanner::tests::live_tenants(store, [(tenant, handle)]);
         let tx = super::super::portfolio_fixture::transaction(191, &[(&pair, 1, 7)]);
         let id = engine_daemon::fake::tx_id_hex(&tx);
         let previous = self.client.get_mempool_txids().await.unwrap();
@@ -377,7 +376,7 @@ impl World {
         self.nodes[0].behavior.lock().failures = Rpc::Pool.bit();
         custody.fail(handle);
         assert!(
-            crate::scanner::scan_transaction_as(custody, handle, &id, &tx, 0..100)
+            crate::scanner::scan_transaction_as(custody, &control[0].1, &id, &tx, 0..100)
                 .await
                 .is_err()
         );

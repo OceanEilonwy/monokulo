@@ -73,7 +73,10 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
                 rusqlite::params![(2 + index % groups) as i64, tenant],
             )
             .unwrap();
-        tenants.push((tenant, handle));
+        tenants.push((
+            tenant.clone(),
+            LiveWallet::of_store(&store, &tenant, handle),
+        ));
     }
     // The first half made fail: chosen by when they were made, not by their
     // random ids, so the inputs alone decide the run. They sit in the lowest
@@ -85,7 +88,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
     let failing: Vec<_> = tenants
         .iter()
         .take(count.div_ceil(2))
-        .map(|(_, h)| *h)
+        .map(|(_, live)| live.handle)
         .collect();
     tenants.sort_by(|a, b| a.0.cmp(&b.0));
     for handle in &failing {
