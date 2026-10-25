@@ -128,8 +128,10 @@ static BAKED: &[Asset] = &[
     asset!(text "theme.css", ui::assets::TOKENS_CSS, CSS),
     asset!(text "ui.css", ui::assets::COMPONENTS_CSS, CSS),
     asset!(from "styles.css", "src/pages/assets/styles.css", CSS),
-    // The landing page's OpenWrt version picker, and the testing report's
-    // filters and screenshot viewer.
+    // Every page's search and the docs' shell (`shell`), the landing page's
+    // OpenWrt version picker, and the testing report's filters and
+    // screenshot viewer.
+    asset!(from "site.js", "src/pages/assets/site/site.js", JS),
     asset!(from "landing.js", "src/pages/assets/landing/landing.js", JS),
     asset!(from "coverage.js", "src/pages/assets/coverage/coverage.js", JS),
     // The typeface (the `ui` package's) and the icon (monokulo's).
@@ -162,7 +164,8 @@ pub(super) fn url(up: &str, name: &str) -> String {
 }
 
 /// What every page's `<head>` loads: the icon, the typeface, the colours,
-/// the components and the site's own pieces. Every page sets text in every
+/// the components and the site's own pieces, and the site's script, told
+/// which search indexes there are (`shell::INDEXES`). Every page sets text in every
 /// weight (its body, its header, its heading), so each is preloaded: the
 /// browser asks for them with the page rather than once the stylesheets
 /// say they are needed, and a cached copy GitHub Pages wants checked (it
@@ -178,6 +181,7 @@ pub(super) fn head(up: &str) -> Markup {
         link rel="stylesheet" href=(url(up, "ui.css"));
         link rel="stylesheet" href=(url(up, "styles.css"));
         script type="module" src=(url(up, "ui-islands.js")) {}
+        script defer src=(url(up, "site.js")) data-search=(super::shell::INDEXES.join(" ")) {}
     }
 }
 
@@ -234,6 +238,7 @@ mod tests {
                 "ui.css",
                 "styles.css",
                 "ui-islands.js",
+                "site.js",
             ]
         );
     }

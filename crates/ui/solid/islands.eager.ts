@@ -19,6 +19,7 @@ import { attachSetting } from './Setting';
 import { attachSaveBar } from './SaveBar';
 import { attachToast } from './Toast';
 import { attachMenu } from './Menu';
+import { attachNavMenu } from './NavMenu';
 import { attachStatusDot } from './StatusDot';
 
 /** Each interactive component's attach, by the name its island gives,
@@ -41,5 +42,6 @@ export const islands: Record<string, () => Promise<Attach>> = {
   SaveBar: () => Promise.resolve(attachSaveBar),
   Toast: () => Promise.resolve(attachToast),
   Menu: () => Promise.resolve(attachMenu),
+  NavMenu: () => Promise.resolve(attachNavMenu),
   StatusDot: () => Promise.resolve(attachStatusDot),
 };

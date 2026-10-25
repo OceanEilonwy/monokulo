@@ -1,8 +1,10 @@
 //! `cargo xtask pages docs`: the guides for adding Monokulo to a site, from
 //! the Markdown in `xtask/src/pages/docs/`, beside the landing page and the
 //! coverage report. Each page is rendered with maud around pulldown-cmark's
-//! HTML, with the same header and a tab per page; a fenced `diff` block
-//! becomes the walkthrough's added and kept lines.
+//! HTML, in the shell the docs and the API reference share (`shell`): the
+//! map of every page down the left, grouped as `PAGES` groups them, and the
+//! page's sections beside it. A fenced `diff` block becomes the
+//! walkthrough's added and kept lines.
 //!
 //! Every page is a folder at the site's top level (docs.monokulo.com):
 //! `/guide/` is the front page, `/webhooks/`, `/plugins/` and the rest
@@ -17,9 +19,13 @@
 //! OpenAPI document at `api/v1/openapi.json`, and the link relations and
 //! problem types its responses name under `rels/` and `problems/`. No docs
 //! page is published in those folders (`API_OUTPUT` in the tests).
+//!
+//! Search finds every page and each of its sections, from the index the
+//! build writes at `search/docs.json`.
 
+use super::shell::{self, icon, Group as MapGroup, Link, Mark};
 use super::site_assets;
-use super::site_header::{self, Section, GITHUB_URL, SITE_URL};
+use super::site_header::{Section, GITHUB_URL, SITE_URL};
 use crate::support::{at, Exit};
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -28,77 +34,144 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// A group of the docs' map, in the order the map shows them. A group with
+/// no page and no link isn't shown.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Group {
+    GetStarted,
+    TakePayments,
+    Integrations,
+    Reference,
+}
+
+impl Group {
+    const ALL: [Group; 4] = [
+        Group::GetStarted,
+        Group::TakePayments,
+        Group::Integrations,
+        Group::Reference,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            Group::GetStarted => "Get started",
+            Group::TakePayments => "Take payments",
+            Group::Integrations => "Integrations",
+            Group::Reference => "Reference",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Group::GetStarted => icon::FLAG,
+            Group::TakePayments => icon::COIN,
+            Group::Integrations => icon::PLUG,
+            Group::Reference => icon::BOOK,
+        }
+    }
+}
+
 /// One page of the docs: its Markdown file in `xtask/src/pages/docs/`, the
-/// folder it is published as at the site's top level, its tab's label, the
-/// part of the site the header marks, and the folder it was published as
-/// before the docs moved to their own domain (`docs/…`), which keeps a
-/// redirect to it; none for a page added since.
+/// folder it is published as at the site's top level, its name in the map,
+/// the map's group it is in, the part of the site the header marks, and the
+/// folder it was published as before the docs moved to their own domain
+/// (`docs/…`), which keeps a redirect to it; none for a page added since.
 pub(super) struct Page {
     pub(super) source: &'static str,
     pub(super) dir: &'static str,
-    pub(super) tab: &'static str,
+    pub(super) label: &'static str,
+    pub(super) group: Group,
     pub(super) section: Section,
     pub(super) old: Option<&'static str>,
 }
 
-/// The docs, in the order of their tabs.
+/// The docs, in the map's order, which is also Previous and Next's: each
+/// group's pages together, the groups in `Group::ALL`'s order. The first is
+/// where the bar's Docs and Get started go.
 pub(super) const PAGES: [Page; 8] = [
     Page {
         source: "index.md",
         dir: "guide",
-        tab: "Key steps",
+        label: "Accept your first payment",
+        group: Group::GetStarted,
         section: Section::Docs,
         old: Some("docs"),
     },
     Page {
         source: "walkthrough-geomart.md",
         dir: "walkthrough-geomart",
-        tab: "Walkthrough: Geomart",
+        label: "Walkthrough: Geomart",
+        group: Group::GetStarted,
         section: Section::Docs,
         old: Some("docs/walkthrough-geomart"),
     },
     Page {
         source: "js-library.md",
         dir: "js-library",
-        tab: "JS library",
+        label: "JS library",
+        group: Group::TakePayments,
         section: Section::Docs,
         old: Some("docs/js-library"),
     },
     Page {
         source: "paid.md",
         dir: "paid",
-        tab: "When is it paid?",
+        label: "When is it paid?",
+        group: Group::TakePayments,
         section: Section::Docs,
         old: Some("docs/paid"),
     },
     Page {
         source: "webhooks.md",
         dir: "webhooks",
-        tab: "Webhooks",
+        label: "Webhooks",
+        group: Group::TakePayments,
         section: Section::Docs,
         old: Some("docs/webhooks"),
     },
     Page {
         source: "plugins.md",
         dir: "plugins",
-        tab: "Shop plugins",
+        label: "Shop plugins",
+        group: Group::Integrations,
         section: Section::Docs,
         old: Some("docs/plugins"),
     },
     Page {
         source: "apps.md",
         dir: "apps",
-        tab: "Connected apps",
+        label: "Connected apps",
+        group: Group::Integrations,
         section: Section::Docs,
         old: Some("docs/apps"),
     },
     Page {
         source: "api.md",
         dir: "api",
-        tab: "HTTP API",
+        label: "API reference",
+        group: Group::Reference,
         section: Section::Api,
         old: None,
     },
+];
+
+/// The map's links that aren't docs pages, after their group's pages: the
+/// API reference's own, which its build writes (`api_reference`). Each is
+/// (group, label, link from the site's root, whether it's a file rather
+/// than a page).
+const LINKS: [(Group, &str, &str, bool); 2] = [
+    (
+        Group::Reference,
+        "Problems",
+        "api/reference/#problems",
+        false,
+    ),
+    (
+        Group::Reference,
+        "OpenAPI document",
+        "api/v1/openapi.json",
+        true,
+    ),
 ];
 
 /// The sample shop's files, from `examples/geomart/` to `geomart/`, each
@@ -134,6 +207,7 @@ pub(super) fn write(root: &Path, site: &Path) -> io::Result<()> {
         }
         fs::write(&path, contents).map_err(|e| at(&path, e))
     };
+    let mut found = Vec::new();
     for page in &PAGES {
         let source = root.join("xtask/src/pages/docs").join(page.source);
         let markdown = fs::read_to_string(&source).map_err(|e| at(&source, e))?;
@@ -141,7 +215,9 @@ pub(super) fn write(root: &Path, site: &Path) -> io::Result<()> {
             site.join(page.dir).join("index.html"),
             render(page, &markdown).0,
         )?;
+        found.extend(index(page, &markdown));
     }
+    shell::write_index(site, "docs", &found)?;
     for (old, new) in redirects() {
         put(site.join(&old), redirect(&old, &new).0)?;
     }
@@ -207,37 +283,94 @@ fn redirect(old: &str, new: &str) -> Markup {
     }
 }
 
-/// A page: the header, the tabs, and its Markdown. Every page is a folder
-/// at the site's top level, so the site's root is `../` from each.
-pub(super) fn render(page: &Page, markdown: &str) -> Markup {
-    let title = markdown
+/// The docs' map, from a page `up` from the site's root, `current` marked.
+pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
+    Group::ALL
+        .into_iter()
+        .map(|group| {
+            let pages = PAGES.iter().filter(|p| p.group == group).map(|p| Link {
+                label: html! { (p.label) },
+                href: format!("{up}{}/", p.dir),
+                current: Mark::page_if(current == Some(p.dir)),
+                file: false,
+            });
+            let links = LINKS
+                .iter()
+                .filter(|(g, ..)| *g == group)
+                .map(|(_, label, href, file)| Link {
+                    label: html! { (label) },
+                    href: format!("{up}{href}"),
+                    current: None,
+                    file: *file,
+                });
+            MapGroup {
+                title: group.title().to_owned(),
+                icon: group.icon(),
+                links: pages.chain(links).collect(),
+            }
+        })
+        .filter(|group| !group.links.is_empty())
+        .collect()
+}
+
+/// A page's title: its Markdown's `# ` heading, or its name in the map.
+fn title<'a>(page: &'a Page, markdown: &'a str) -> &'a str {
+    markdown
         .lines()
         .find_map(|line| line.strip_prefix("# "))
-        .unwrap_or(page.tab);
-    html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (title) " · Monokulo docs" }
-                meta name="description" content="How to add Monokulo, self-hosted Monero payments, to your own website.";
-                (site_assets::head("../"))
-            }
-            body {
-                (site_header::render(page.section, "../", GITHUB_URL))
-                main.docs-page {
-                    (ui::TabLinks::new("Docs", PAGES.iter().map(|other| ui::TabLink {
-                        href: format!("../{}/", other.dir),
-                        label: other.tab.into(),
-                        current: other.dir == page.dir,
-                        count: None,
-                    }).collect::<Vec<_>>()))
-                    article { (markdown_html(markdown)) }
-                }
-            }
-        }
-    }
+        .unwrap_or(page.label)
+}
+
+/// A page, in the shell, with Previous and Next in the map's order. Every
+/// page is a folder at the site's top level, so the site's root is `../`
+/// from each.
+pub(super) fn render(page: &Page, markdown: &str) -> Markup {
+    let up = "../";
+    let at = PAGES.iter().position(|p| p.dir == page.dir);
+    let neighbour = |i: Option<usize>| {
+        i.and_then(|i| PAGES.get(i))
+            .map(|p| (p.label.to_owned(), format!("{up}{}/", p.dir)))
+    };
+    let article = html! {
+        p.crumbs { span { "Docs" } span { (page.group.title()) } }
+        (markdown_html(markdown))
+    };
+    shell::render(shell::Page {
+        up,
+        section: page.section,
+        title: format!("{} · Monokulo docs", title(page, markdown)),
+        description: "How to add Monokulo, self-hosted Monero payments, to your own website.",
+        map_label: "Docs",
+        map: map(up, Some(page.dir)),
+        article,
+        previous: neighbour(at.and_then(|i| i.checked_sub(1))),
+        next: neighbour(at.map(|i| i + 1)),
+        edit: Some(format!(
+            "{GITHUB_URL}/edit/main/xtask/src/pages/docs/{}",
+            page.source
+        )),
+    })
+}
+
+/// What search finds on a page: the page, and each of its sections.
+fn index(page: &Page, markdown: &str) -> Vec<shell::Entry> {
+    let guide = shell::Entry {
+        title: page.label.to_owned(),
+        sub: format!("{} · {}", page.group.title(), title(page, markdown)),
+        kind: "Guide",
+        href: format!("{}/", page.dir),
+        method: None,
+    };
+    let sections = shell::sections(&markdown_html(markdown).0)
+        .into_iter()
+        .map(|section| shell::Entry {
+            title: section.plain(),
+            sub: page.label.to_owned(),
+            kind: "Section",
+            href: format!("{}/#{}", page.dir, section.id),
+            method: None,
+        });
+    std::iter::once(guide).chain(sections).collect()
 }
 
 /// `text` as an anchor: `Step 6 · Verify, test, go live` is `step-6`
@@ -350,7 +483,11 @@ mod tests {
         write(root, site).unwrap();
         for page in &PAGES {
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
-            assert!(html.contains("<article>"), "{}", page.source);
+            assert!(
+                html.contains(r#"<article class="prose">"#),
+                "{}",
+                page.source
+            );
         }
         let walkthrough = fs::read_to_string(site.join("walkthrough-geomart/index.html")).unwrap();
         assert!(
@@ -377,7 +514,7 @@ mod tests {
         // write nothing where the generated reference goes.
         let api = fs::read_to_string(site.join("api/index.html")).unwrap();
         assert!(
-            api.contains(r#"<a href="../api/" aria-current="page">API</a>"#),
+            api.contains(r#"<a href="../api/" aria-current="page">API reference</a>"#),
             "{api}"
         );
         for dir in API_OUTPUT {
@@ -388,6 +525,163 @@ mod tests {
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
             let linked = site_assets::assert_links_published(&html, &site.join("assets"));
             assert!(linked.contains(&"styles.css"), "{}", page.source);
+            assert!(linked.contains(&"site.js"), "{}", page.source);
+        }
+    }
+
+    /// The links in a page's map, in order: (link, whether it's marked as
+    /// the page).
+    fn map_links(html: &str) -> Vec<(String, bool)> {
+        let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
+        let map = map.split("</nav>").next().unwrap();
+        let groups = map.split_once(r#"<div class="map-group">"#).unwrap().1;
+        let groups = groups.split(r#"<div class="map-foot">"#).next().unwrap();
+        let link = regex::Regex::new(r#"<a href="([^"]+)"( aria-current="page")?"#).unwrap();
+        link.captures_iter(groups)
+            .map(|c| (c[1].to_owned(), c.get(2).is_some()))
+            .collect()
+    }
+
+    /// Every page's map lists every page, in `PAGES`' order, grouped as
+    /// `PAGES` says, and marks the page itself; Previous and Next go to the
+    /// pages either side; "On this page" lists the page's sections, which
+    /// are every `h2` it has.
+    #[test]
+    fn every_page_is_in_the_map_and_lists_its_sections() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scratch = Scratch::new("docs-shell");
+        let site = scratch.path();
+        write(root, site).unwrap();
+        let h2 = regex::Regex::new(r"<h2[ >]").unwrap();
+        let toc_link = regex::Regex::new(r##"<li><a href="#([^"]+)">"##).unwrap();
+        for (i, page) in PAGES.iter().enumerate() {
+            let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
+            let links = map_links(&html);
+            let pages: Vec<&(String, bool)> = links
+                .iter()
+                .filter(|(href, _)| PAGES.iter().any(|p| *href == format!("../{}/", p.dir)))
+                .collect();
+            assert_eq!(pages.len(), PAGES.len(), "{}: {links:?}", page.dir);
+            for (listed, other) in pages.iter().zip(&PAGES) {
+                assert_eq!(listed.0, format!("../{}/", other.dir), "{}", page.dir);
+                assert_eq!(
+                    listed.1,
+                    other.dir == page.dir,
+                    "{}: {}",
+                    page.dir,
+                    other.dir
+                );
+            }
+            // The map's groups in their order, each page under its own.
+            let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
+            let map = map.split(r#"<div class="map-foot">"#).next().unwrap();
+            let groups: Vec<(&str, &str)> = map
+                .split(r#"<div class="map-group">"#)
+                .skip(1)
+                .map(|group| {
+                    let heading = group.split("</svg>").nth(1).unwrap();
+                    (heading.split("</p>").next().unwrap(), group)
+                })
+                .collect();
+            let titles: Vec<&str> = groups.iter().map(|(title, _)| *title).collect();
+            let expected: Vec<&str> = Group::ALL
+                .iter()
+                .filter(|g| {
+                    PAGES.iter().any(|p| p.group == **g) || LINKS.iter().any(|l| l.0 == **g)
+                })
+                .map(|g| g.title())
+                .collect();
+            assert_eq!(titles, expected, "{}", page.dir);
+            for other in &PAGES {
+                let (_, group) = groups
+                    .iter()
+                    .find(|(t, _)| *t == other.group.title())
+                    .unwrap();
+                assert!(
+                    group.contains(&format!(r#"href="../{}/""#, other.dir)),
+                    "{}: {}",
+                    page.dir,
+                    other.dir
+                );
+            }
+            // Previous and Next.
+            let pager = html
+                .split(r#"<nav class="pager""#)
+                .nth(1)
+                .unwrap_or_default();
+            if let Some(before) = i.checked_sub(1).map(|i| &PAGES[i]) {
+                assert!(
+                    pager.contains(&format!(r#"class="previous" href="../{}/""#, before.dir)),
+                    "{}",
+                    page.dir
+                );
+            }
+            match PAGES.get(i + 1) {
+                Some(after) => assert!(
+                    pager.contains(&format!(r#"class="next" href="../{}/""#, after.dir)),
+                    "{}",
+                    page.dir
+                ),
+                None => assert!(!pager.contains(r#"class="next""#), "{}", page.dir),
+            }
+            // On this page: every h2 of the article, by its id, in order.
+            let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();
+            let article = article.split(r#"<nav class="pager""#).next().unwrap();
+            let sections = shell::sections(article);
+            assert_eq!(
+                h2.find_iter(article).count(),
+                sections.len(),
+                "{}: an h2 without an id",
+                page.dir
+            );
+            let toc = html
+                .split(r#"<aside class="toc""#)
+                .nth(1)
+                .unwrap_or_default();
+            let listed: Vec<&str> = toc_link
+                .captures_iter(toc)
+                .map(|c| c.get(1).unwrap().as_str())
+                .collect();
+            let ids: Vec<&str> = sections.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(listed, ids, "{}", page.dir);
+            assert!(
+                toc.contains(&format!("/edit/main/xtask/src/pages/docs/{}", page.source)),
+                "{}",
+                page.dir
+            );
+        }
+    }
+
+    /// Search finds every page and every section of each, at its address.
+    #[test]
+    fn the_search_index_lists_every_page_and_section() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scratch = Scratch::new("docs-search");
+        let site = scratch.path();
+        write(root, site).unwrap();
+        let index: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(site.join("search/docs.json")).unwrap())
+                .unwrap();
+        let has =
+            |kind: &str, href: &str| index.iter().any(|e| e["kind"] == kind && e["href"] == href);
+        for page in &PAGES {
+            assert!(has("Guide", &format!("{}/", page.dir)), "{}", page.dir);
+            let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
+            let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();
+            let sections = shell::sections(article.split("</article>").next().unwrap());
+            for section in sections {
+                let href = format!("{}/#{}", page.dir, section.id);
+                assert!(has("Section", &href), "{href}");
+                // Its words as the page shows them, unescaped.
+                let entry = index.iter().find(|e| e["href"] == href).unwrap();
+                assert_eq!(entry["title"], section.plain(), "{href}");
+            }
+        }
+        // Every address it gives is a published page.
+        for entry in &index {
+            let href = entry["href"].as_str().unwrap();
+            let path = href.split('#').next().unwrap();
+            assert!(site.join(path).join("index.html").is_file(), "{href}");
         }
     }
 

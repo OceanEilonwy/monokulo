@@ -22,6 +22,7 @@ mod landing;
 mod model;
 mod render;
 mod serve;
+mod shell;
 mod site_assets;
 pub(crate) mod site_header;
 #[cfg(test)]

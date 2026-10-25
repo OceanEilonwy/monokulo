@@ -75,4 +75,11 @@ pub mod icons {
     pub const SHARE: &str = include_str!("../web/icons/share.svg").trim_ascii();
     pub const WALLET: &str = include_str!("../web/icons/wallet.svg").trim_ascii();
     pub const EXTERNAL: &str = include_str!("../web/icons/external.svg").trim_ascii();
+    // The project site's bar: its Resources menu and its search.
+    pub const PACKAGE: &str = include_str!("../web/icons/package.svg").trim_ascii();
+    pub const FLASK: &str = include_str!("../web/icons/flask.svg").trim_ascii();
+    pub const PALETTE: &str = include_str!("../web/icons/palette.svg").trim_ascii();
+    pub const BUG: &str = include_str!("../web/icons/bug.svg").trim_ascii();
+    pub const SEARCH: &str = include_str!("../web/icons/search.svg").trim_ascii();
+    pub const MENU: &str = include_str!("../web/icons/menu.svg").trim_ascii();
 }
