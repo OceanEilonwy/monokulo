@@ -40,9 +40,9 @@ pub struct RpcDaemonClient {
     client: reqwest::Client,
     base_url: String,
     /// Why this node is never asked anything: it is on an onion address,
-    /// which only the system's DNS would be asked for. Such a node is
-    /// refused when saved; one already set is kept, so the engine starts,
-    /// and every request to it fails with this.
+    /// which only the system's DNS would be asked for. The node setting's
+    /// check refuses such a node, when saved and at boot; this is the
+    /// backstop, and every request to one fails with it.
     unsupported: Option<String>,
     /// Largest response body accepted (task 7.6). A node that sends more is
     /// treated as failing rather than being allowed to exhaust memory.

@@ -436,27 +436,8 @@ async fn changes_from(
         }
     }
     let current_nodes = settings.nodes.load();
-    // A node sent as a plain setting is held to the node form's rule too:
-    // a new or changed one on an onion address is refused.
-    let onion: Vec<live_settings::FieldError> = req
-        .scalars
-        .iter()
-        .filter_map(|(key, raw)| {
-            let (network, setting) = NETWORKS.iter().find(|(_, s)| s.key == key)?;
-            let node: crate::settings::MoneroNodeSetting = serde_json::from_str(raw).ok()?;
-            if current_nodes.nodes.get(network) == Some(&node) {
-                return None;
-            }
-            let onion = node.onion_node()?;
-            Some(live_settings::FieldError::new(
-                setting.key,
-                crate::settings::onion_node_message(&onion.host, onion.port),
-            ))
-        })
-        .collect();
-    if !onion.is_empty() {
-        return Err(Refusal::Fields(onion));
-    }
+    // A node sent as a plain setting isn't probed: the registry's own
+    // check (`settings::check_node`) refuses one on an onion address.
     let mut changes: live_settings::Changes =
         req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
     let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
