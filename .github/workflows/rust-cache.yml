@@ -4,7 +4,7 @@ name: rust cache
 # keyed on the compiler, as nothing one nightly builds is any use to the
 # next, so until a main push saves a new one every scheduled job (the
 # property exploration, the interleavings, the tooling, Pages) built every
-# dependency again. This builds what the Rust tests job (platform.yml)
+# dependency again. This builds what the rust build job (platform.yml)
 # builds, once a day after the nightly comes out; a day a main push already
 # saved one restores it and saves nothing.
 
@@ -29,7 +29,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # The Rust tests job's Build the tests step on Linux, so the cache
+      # The rust build job's Build the tests step, so the cache
       # holds the same build.
       - name: Build the tests
         run: |

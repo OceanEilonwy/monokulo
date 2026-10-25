@@ -34,21 +34,124 @@ jobs:
   # on macOS or Windows) under its name unevaluated. The caller's job name
   # says which run it is: linux, macos, windows, coverage.
   #
-  # The Rust cache: the Rust tests job builds the whole workspace's tests
-  # (its Build the tests step) and saves the cache; the Linux suites that
-  # build less of it (browser, engine progress, scale) restore
-  # that one and save nothing, so the repository keeps one Linux cache
-  # instead of one a suite. Cargo resolves a dependency's features per
-  # build, so they still compile the few crates a narrower build resolves
-  # differently. A coverage run keeps a cache a suite, as its builds differ.
-  # rust-cache.yml builds the Linux one again on each new nightly.
+  # The Rust cache: the job that builds the whole workspace's tests (rust
+  # build on Linux, rust tests elsewhere) saves the cache; with coverage,
+  # the Linux suites, which build less of it, restore that one and save
+  # nothing, so the repository keeps one Linux cache instead of one a
+  # suite. Cargo resolves a dependency's features per build, so they still
+  # compile the few crates a narrower build resolves differently. A
+  # coverage run's Rust tests are instrumented, so they keep a cache of
+  # their own; its browser and progress suites build what the plain
+  # run's do and restore the dev cache like them. rust-cache.yml builds
+  # the Linux one again on each new nightly.
+
+  # Linux without coverage builds the workspace once, here, for the suites
+  # that used to build it each for itself: the Rust tests, browser, engine
+  # progress and scale jobs each compiled engine (792, 418, 174 and
+  # 205 s of a pull request's run). It archives the tests for the rust
+  # tests and engine scale jobs, as Windows does for its partition jobs,
+  # and passes on the binaries the browser and engine progress tests run,
+  # which this build makes too (Cargo builds a package's binaries for its
+  # integration tests, and examples to check they compile), and xtask. The
+  # binaries come from the tests' feature resolution rather than
+  # the narrower builds those suites made (real-stack.js BUILD_ARGS, -p
+  # engine): a few dependencies have more features turned on (reqwest's
+  # blocking client, for one), but the workspace's own crates have the same
+  # ones.
+  build:
+    name: rust build
+    if: inputs.platform == 'linux' && !inputs.coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dev
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # Everything the suites need, apart from the runs, as the rust tests job builds it on the other
+      # platforms. The scale tests' archive holds only the engine library's
+      # tests, a fraction of the whole one to download and extract. The
+      # binaries go in a tar file of their own, which keeps them executable
+      # (an artifact doesn't).
+      - name: Build the tests
+        run: |
+          cargo nextest archive --workspace --locked --features monokulo/snp \
+            --archive-file target/rust-tests.tar.zst
+          cargo nextest archive --workspace --locked --features monokulo/snp \
+            -E 'package(engine) & kind(lib)' --archive-file target/engine-tests.tar.zst
+          cargo build -p xtask --locked
+          tar --zstd -cf target/rust-binaries.tar.zst -C target \
+            debug/monokulo debug/monokulo-engine debug/fake-monerod debug/examples/coverage_fixture \
+            debug/stress_fixture debug/xtask
+          ls -l target/*.tar.zst
+          if test -n "${RUSTC_WRAPPER:-}"; then sccache --show-stats; fi
+      # Each an artifact of its own, so a job downloads only what it runs.
+      # Already compressed, and only this run's jobs read them.
+      - name: Upload the binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-binaries-linux-${{ github.sha }}
+          path: target/rust-binaries.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+      - name: Upload the engine library's tests
+        uses: actions/upload-artifact@v7
+        with:
+          name: engine-tests-linux-${{ github.sha }}
+          path: target/engine-tests.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+      - name: Upload the tests
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-tests-linux-${{ github.sha }}
+          path: target/rust-tests.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+
+  # Linux's doctests (without coverage), in a job of their own beside the
+  # rust build job: the jobs that need that build wait for all of it, and
+  # run after it they took 374 s, as they build the libraries again with
+  # the features their narrower set of packages resolves. Here that build
+  # runs at the same time as the other.
+  doctests:
+    name: rust doctests
+    if: inputs.platform == 'linux' && !inputs.coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dev
+          save: 'false'
+      # As the rust tests job runs them on the other platforms.
+      - name: Run the doctests
+        run: cargo test --workspace --locked --exclude xtask --doc --features monokulo/snp
+
   rust:
     name: rust tests
+    # On Linux without coverage, after the rust build job, whose tests it
+    # runs; skipped, it leaves this job to build its own. Without the
+    # archive, its download fails.
+    needs: build
+    if: ${{ !cancelled() }}
     runs-on: ${{ format('{0}-latest', inputs.platform == 'linux' && 'ubuntu' || inputs.platform) }}
     # Enough for a cold cache on every platform: Windows took 58 minutes and
     # macOS 31 (22 of them building). A limit that stops a cold run while it
     # saves its cache leaves every later run cold too.
     timeout-minutes: 90
+    env:
+      PREBUILT: ${{ inputs.platform == 'linux' && !inputs.coverage }}
     steps:
       - uses: actions/checkout@v7
       # The engine's property tests make, reopen and delete thousands of
@@ -86,26 +189,44 @@ jobs:
           # An instrumented build shares nothing with a plain one.
           cache-key: ${{ inputs.coverage && 'coverage' || '' }}
           shared-key: ${{ !inputs.coverage && 'dev' || '' }}
+          # With the rust build job's tests, the toolchain they were built
+          # with; nothing is compiled here. The npm dependencies all the
+          # same: xtask's pages tests build the ui islands.
+          cache: ${{ env.PREBUILT != 'true' }}
       - uses: taiki-e/install-action@v2
         with:
           tool: ${{ inputs.coverage && 'cargo-llvm-cov,cargo-nextest' || 'cargo-nextest' }}
+      - uses: actions/download-artifact@v8
+        if: env.PREBUILT == 'true'
+        with:
+          # The tests and the binaries, not the engine library's tests.
+          pattern: rust-*-linux-${{ github.sha }}
+          merge-multiple: true
+          path: target-ci
+      # xtask, for Summarize.
+      - name: Unpack the binaries
+        if: env.PREBUILT == 'true'
+        run: |
+          mkdir -p target
+          tar --zstd -xf target-ci/rust-binaries.tar.zst -C target
+          echo XTASK=target/debug/xtask >> "$GITHUB_ENV"
       # Everything the tests need compiled, apart from the run, so the build
       # and the tests have times of their own in the log. A coverage run
-      # builds instrumented tests in `cargo xtask coverage rust` instead.
-      # The doctests name the same packages as the tests, so Cargo resolves
-      # the same features and finds the libraries they link built here; and
-      # xtask, for Summarize. On Windows the tests are archived for the rust
-      # tests partition jobs, which run a third of them each.
+      # builds instrumented tests in `cargo xtask coverage rust` instead, and
+      # Linux's come from the rust build job. The doctests name the same
+      # packages as the tests, so Cargo resolves the same features and finds
+      # the libraries they link built here; and xtask, for Summarize. On
+      # Windows the tests are archived for the rust tests partition jobs,
+      # which run a third of them each.
       - name: Build the tests
-        if: ${{ !inputs.coverage }}
+        if: ${{ !inputs.coverage && env.PREBUILT != 'true' }}
         shell: bash
         run: |
           if test '${{ runner.os }}' = Windows; then
             cargo nextest archive --workspace --locked --features monokulo/snp --exclude xtask \
               --archive-file target/rust-tests.tar.zst
           else
-            cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp \
-              ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+            cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp --exclude xtask
           fi
           cargo build -p xtask --locked
           if test -n "${RUSTC_WRAPPER:-}"; then sccache --show-stats; fi
@@ -141,17 +262,21 @@ jobs:
         run: |
           if ${{ inputs.coverage }}; then
             cargo xtask coverage rust
+          elif ${{ env.PREBUILT }}; then
+            # Extracted into this checkout's target folder, as the partition
+            # jobs extract theirs. On Linux, xtask's own tests too: the
+            # tooling CI and the Pages build run on Linux.
+            cargo nextest run --archive-file target-ci/rust-tests.tar.zst --workspace-remap . --extract-to . --extract-overwrite \
+              --profile ci
           else
-            # On Linux, xtask's own tests too: the tooling CI and the Pages
-            # build run on Linux.
-            cargo nextest run --workspace --locked --profile ci --features monokulo/snp \
-              ${{ inputs.platform != 'linux' && '--exclude xtask' || '' }}
+            cargo nextest run --workspace --locked --profile ci --features monokulo/snp --exclude xtask
           fi
       # A coverage run leaves them to the plain Linux job beside it: it has
-      # no plain build for them, and building one took 450 to 721 s.
+      # no plain build for them, and building one took 450 to 721 s. The
+      # rust doctests job runs Linux's.
       - name: Run the doctests
         id: doctests
-        if: ${{ !inputs.coverage }}
+        if: ${{ !inputs.coverage && env.PREBUILT != 'true' }}
         continue-on-error: true
         # nextest does not run doctests. xtask has none; naming it made the
         # step build it again (171 s against 110 on Linux).
@@ -164,10 +289,13 @@ jobs:
         run: |
           slow=0
           if test '${{ runner.os }}' != Windows; then
-            cargo xtask test-summary ${{ github.event_name == 'pull_request' && !inputs.coverage && '--fail-slow' || '' }} 'Rust tests (${{ runner.os }})' \
+            ${XTASK:-cargo xtask} test-summary ${{ github.event_name == 'pull_request' && !inputs.coverage && '--fail-slow' || '' }} 'Rust tests (${{ runner.os }})' \
               rust=${{ inputs.coverage && 'target/coverage/rust/junit.xml' || 'target/nextest/ci/junit.xml' }} >> "$GITHUB_STEP_SUMMARY" || slow=$?
           fi
-          echo "Doctests: ${{ steps.doctests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          # The rust doctests job runs Linux's.
+          if test '${{ env.PREBUILT }}' != true; then
+            echo "Doctests: ${{ steps.doctests.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit "$slow"
       - name: Upload Rust coverage
         if: always() && inputs.coverage
@@ -257,16 +385,22 @@ jobs:
 
   browser:
     name: browser tests
-    if: inputs.platform == 'linux'
+    # Without coverage, it runs the binaries the rust build job built; with
+    # it, the instrumented ones `cargo xtask coverage browser` builds.
+    needs: build
+    if: ${{ !cancelled() && inputs.platform == 'linux' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Only coverage builds Rust here (the plain run downloads the rust
+      # build job's binaries). It instruments only the pages' scripts, so
+      # its Rust build is the plain run's and restores the dev cache.
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: ${{ inputs.coverage && 'coverage' || '' }}
-          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
-          save: ${{ inputs.coverage }}
+          cache: ${{ inputs.coverage }}
+          shared-key: dev
+          save: 'false'
           npm-lockfiles: |
             e2e/browser/package-lock.json
             package-lock.json
@@ -275,9 +409,11 @@ jobs:
       # Chromium runs every browser test (coverage-browser.config.js). The
       # key names the browser, so a cache saved with others isn't restored.
       # Its system libraries aren't cached: they are installed either way.
-      - name: Cache Playwright's browsers
+      # Only main saves it, as with the Rust cache: a pull request that
+      # missed it saved a 270 MB copy of its own that no other run reads.
+      - name: Restore Playwright's browsers
         id: browsers
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
@@ -289,11 +425,34 @@ jobs:
           else
             npx playwright install --with-deps chromium
           fi
-      # Every binary the tests run, with the one command the run's global
-      # setup and the fixture specs repeat (real-stack.js BUILD_ARGS), so
-      # theirs find nothing to do and the test step times only the tests;
-      # and xtask, which runs the coverage collector and Summarize.
+      - name: Save Playwright's browsers
+        if: steps.browsers.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browsers.outputs.cache-primary-key }}
+      - uses: actions/download-artifact@v8
+        if: ${{ !inputs.coverage }}
+        with:
+          name: rust-binaries-linux-${{ github.sha }}
+          path: target-ci
+      # Every binary the tests run, and xtask, for Summarize. The tests
+      # don't build them again (E2E_PREBUILT_BINARIES, real-stack.js):
+      # Cargo, which goes by modification times, would find them stale.
+      - name: Unpack the binaries
+        if: ${{ !inputs.coverage }}
+        run: |
+          mkdir -p target
+          tar --zstd -xf target-ci/rust-binaries.tar.zst -C target
+          echo XTASK=target/debug/xtask >> "$GITHUB_ENV"
+          echo E2E_PREBUILT_BINARIES=1 >> "$GITHUB_ENV"
+      # With coverage, every binary the tests run, with the one command the
+      # run's global setup and the fixture specs repeat (real-stack.js
+      # BUILD_ARGS), so theirs find nothing to do and the test step times
+      # only the tests; and xtask, which runs the coverage collector and
+      # Summarize.
       - name: Build the binaries
+        if: ${{ inputs.coverage }}
         run: |
           node -e "require('./e2e/browser/real-stack').buildBinaries()"
           cargo build -p xtask --locked
@@ -313,7 +472,7 @@ jobs:
       - name: Summarize
         if: always()
         run: |
-          cargo xtask test-summary ${{ github.event_name == 'pull_request' && !inputs.coverage && '--fail-slow' || '' }} 'Browser tests' \
+          ${XTASK:-cargo xtask} test-summary ${{ github.event_name == 'pull_request' && !inputs.coverage && '--fail-slow' || '' }} 'Browser tests' \
             browser=target/coverage/browser/junit.xml >> "$GITHUB_STEP_SUMMARY"
       - name: Upload browser coverage
         if: always() && inputs.coverage
@@ -342,21 +501,46 @@ jobs:
     # The engine's one-CPU scanner capacity sweep and fault recovery. With
     # coverage, its report joins the coverage artifact.
     name: engine progress tests
-    if: inputs.platform == 'linux'
+    # Without coverage, it runs the fixture the rust build job built, with
+    # the workspace unoptimised as every CI build has it (setup-rust). The
+    # dependencies, optimised either way, are most of what it measures: so
+    # built, on a runner here its ticks took 49, 60 and 80 ms at 32, 64 and
+    # 128 tenants, its slowest HTTP answer 4.5 ms and its latest timer
+    # 3.5 ms, far inside the 250 and 100 ms it passes or fails on
+    # (xtask/stress/scenario_v3.json).
+    needs: build
+    if: ${{ !cancelled() && inputs.platform == 'linux' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Only coverage builds Rust here (the plain run downloads the rust
+      # build job's binaries); its run is the plain run, so it restores
+      # the dev cache.
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: ${{ inputs.coverage && 'coverage' || '' }}
-          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
-          save: ${{ inputs.coverage }}
+          cache: ${{ inputs.coverage }}
+          shared-key: dev
+          save: 'false'
           pos-app: 'false'
+      - uses: actions/download-artifact@v8
+        if: ${{ !inputs.coverage }}
+        with:
+          name: rust-binaries-linux-${{ github.sha }}
+          path: target-ci
+      # The fixture, and xtask to run it; neither is built again
+      # (STRESS_FIXTURE_PREBUILT, xtask/src/stress.rs).
+      - name: Unpack the binaries
+        if: ${{ !inputs.coverage }}
+        run: |
+          mkdir -p target
+          tar --zstd -xf target-ci/rust-binaries.tar.zst -C target debug/stress_fixture debug/xtask
+          echo XTASK=target/debug/xtask >> "$GITHUB_ENV"
+          echo STRESS_FIXTURE_PREBUILT=1 >> "$GITHUB_ENV"
       - name: Measure engine scanner progress on one CPU
         id: stress
         continue-on-error: true
-        run: cargo xtask stress ci
+        run: ${XTASK:-cargo xtask} stress ci
       - name: Upload stress report
         if: always()
         uses: actions/upload-artifact@v7
@@ -377,8 +561,10 @@ jobs:
     # a time (`cargo xtask engine scale`), at 32 cases and a seed per run.
     name: engine scale tests
     # Instrumenting it would add nothing: Coverage runs on main after the
-    # plain Linux run already ran it.
-    if: inputs.platform == 'linux' && !inputs.coverage
+    # plain Linux run already ran it. The engine's tests come from the rust
+    # build job.
+    needs: build
+    if: ${{ !cancelled() && inputs.platform == 'linux' && !inputs.coverage }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -386,22 +572,32 @@ jobs:
       PROPTEST_RNG_SEED: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v7
+      # The toolchain the tests were built with; nothing is compiled here.
       - uses: ./.github/actions/setup-rust
         with:
-          shared-key: dev
-          save: 'false'
+          cache: 'false'
           pos-app: 'false'
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
-      # What `cargo xtask engine scale` runs, built as it builds it, so the
-      # step after it times only the scenarios.
-      - name: Build the scale tests
+      - uses: actions/download-artifact@v8
+        with:
+          name: engine-tests-linux-${{ github.sha }}
+          path: target-ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: rust-binaries-linux-${{ github.sha }}
+          path: target-ci
+      - name: Unpack xtask
         run: |
-          cargo build -p xtask --locked
-          cargo nextest run --no-run -p engine --lib --locked --profile ci
+          mkdir -p target
+          tar --zstd -xf target-ci/rust-binaries.tar.zst -C target debug/xtask
+      # From the engine library's archive, which the rust build job built
+      # with the workspace's features, as the rust tests run them.
       - name: Run the scale scenarios
-        run: cargo xtask engine scale
+        env:
+          ENGINE_SCALE_ARCHIVE: target-ci/engine-tests.tar.zst
+        run: target/debug/xtask engine scale
       - name: Preserve replay settings, failures and reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -416,7 +612,7 @@ jobs:
     # skipped). With coverage, also the one artifact and index from the
     # collectors, checked as `cargo xtask coverage all` checks a local run.
     name: summary
-    needs: [rust, rust-partitions, browser, stress, scale]
+    needs: [build, doctests, rust, rust-partitions, browser, stress, scale]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
