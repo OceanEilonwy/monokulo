@@ -262,8 +262,8 @@ const RUST_BUILD: [&str; 7] = [
     "monokulo/snp",
 ];
 
-/// The workspace's crates unoptimised, so lines map to source (CI
-/// optimises them otherwise); dependencies stay optimised.
+/// The workspace's crates unoptimised, so lines map to source, whatever
+/// `CARGO_PROFILE_DEV_OPT_LEVEL` the shell sets; dependencies stay optimised.
 fn rust_build_env() -> [(&'static str, String); 1] {
     [("CARGO_PROFILE_DEV_OPT_LEVEL", "0".to_string())]
 }

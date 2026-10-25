@@ -35,7 +35,8 @@ pub(crate) const HELP: &str = "\
                       PROPTEST_RNG_SEED as set), then target/engine-exploration/properties/report.json\n\
         engine scale [default|zmq]\n\
                       The scale tests: generated cases and every large fixture, one test at a time\n\
-                      (target/engine-scale)";
+                      (target/engine-scale; ENGINE_SCALE_ARCHIVE runs them from that nextest archive\n\
+                      of the default build instead of building them)";
 
 /// An engine build the explorations run against: the default features, or
 /// with the ZMQ node feed. Each run records which, and the reports are
@@ -1210,7 +1211,20 @@ pub(crate) fn properties(root: &Path, args: &[&str], tools: &Tools) -> io::Resul
 /// fixture. One test at a time in separate processes, so the scale suite
 /// doesn't measure its own competition. Returns the tests' exit code; the
 /// `JUnit` report nextest leaves is part of the evidence, so it must exist.
+///
+/// With `ENGINE_SCALE_ARCHIVE`, the engine's tests come from that nextest
+/// archive, extracted into this checkout's target folder as the Windows
+/// partition jobs extract theirs, rather than from a build: CI's scale job
+/// runs them from the archive its Rust build job made. The archive's build
+/// is the one it was made with, so it names none.
 pub(crate) fn scale(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exit> {
+    let archive = tools.var("ENGINE_SCALE_ARCHIVE").filter(|a| !a.is_empty());
+    if archive.is_some() && !args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ENGINE_SCALE_ARCHIVE runs the build the archive holds: name no build",
+        ));
+    }
     let build = build_of(args, "scale")?;
     let mut tools = tools.clone();
     let cases = tools.var("PROPTEST_CASES").unwrap_or_else(|| "32".into());
@@ -1229,13 +1243,25 @@ pub(crate) fn scale(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exi
             tools.output(root, "rustc", &["--version"])?
         ),
     )?;
-    let mut command = tools.spec("cargo", root).args([
-        "nextest",
-        "run",
-        "-p",
-        "engine",
-        "--lib",
-        "--locked",
+    let mut command = tools.spec("cargo", root).args(["nextest", "run"]);
+    let tests = if let Some(archive) = &archive {
+        // An archive takes no -p or --lib, and may hold other packages' tests.
+        let root = root.display().to_string();
+        command = command.args([
+            "--archive-file",
+            archive,
+            "--workspace-remap",
+            &root,
+            "--extract-to",
+            &root,
+            "--extract-overwrite",
+        ]);
+        "package(engine) & kind(lib) & test(::scale::)"
+    } else {
+        command = command.args(["-p", "engine", "--lib", "--locked"]);
+        "test(::scale::)"
+    };
+    command = command.args([
         "--profile",
         "ci",
         "--run-ignored",
@@ -1246,7 +1272,7 @@ pub(crate) fn scale(root: &Path, args: &[&str], tools: &Tools) -> io::Result<Exi
     if build == Build::Zmq {
         command = command.args(["--features", "zmq"]);
     }
-    let command = command.args(["-E", "test(::scale::)"]);
+    let command = command.args(["-E", tests]);
     let exit = tools.tee(&command, &output.join("tests.log"))?;
     let target = tools
         .var("CARGO_TARGET_DIR")
@@ -1815,6 +1841,111 @@ mod tests {
             let error = fuzz(repo.scratch.path(), &["status", "1"], &tools).unwrap_err();
             assert!(error.to_string().contains("git rev-parse"), "{error}");
             assert!(!repo.scratch.join("target").exists());
+        }
+    }
+
+    mod scale_runs {
+        use super::*;
+        use std::sync::Mutex;
+
+        /// Answers every program, keeping each cargo command line, and
+        /// leaves the JUnit report nextest writes in the target folder.
+        #[derive(Default)]
+        struct Nextest(Mutex<Vec<Vec<String>>>);
+
+        impl Runner for Nextest {
+            fn run(&self, spec: &Spec, sink: Sink, _limit: Option<Duration>) -> io::Result<Done> {
+                if spec.program == "cargo" {
+                    self.0.lock().unwrap().push(spec.args.clone());
+                    let junit = spec.dir.as_ref().unwrap().join("target/nextest/ci");
+                    fs::create_dir_all(&junit)?;
+                    fs::write(junit.join("junit.xml"), "<testsuites/>")?;
+                    if let Sink::Tee(log) = sink {
+                        fs::write(log, "")?;
+                    }
+                }
+                Ok(Done {
+                    exit: Some(Exit::SUCCESS),
+                    stdout: "fixture".into(),
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        /// A scale run in a scratch checkout, and the nextest command it ran.
+        fn scale_run(archive: Option<&str>, args: &[&str]) -> (Scratch, io::Result<Vec<String>>) {
+            let scratch = Scratch::new("exploration-scale");
+            let runner = Arc::new(Nextest::default());
+            let mut tools = Tools {
+                runner: runner.clone(),
+                ..Tools::default()
+            };
+            // Set either way, so the environment the tests run in can't choose.
+            tools
+                .vars
+                .insert("ENGINE_SCALE_ARCHIVE".into(), archive.unwrap_or("").into());
+            tools
+                .vars
+                .insert("CARGO_TARGET_DIR".into(), "target".into());
+            let result = scale(scratch.path(), args, &tools).map(|exit| {
+                assert_eq!(exit, Exit::SUCCESS);
+                runner.0.lock().unwrap().pop().unwrap()
+            });
+            (scratch, result)
+        }
+
+        #[test]
+        fn without_an_archive_the_scale_tests_build_only_the_engine_library() {
+            let (scratch, args) = scale_run(None, &[]);
+            let args = args.unwrap();
+            assert_eq!(
+                &args[..6],
+                ["nextest", "run", "-p", "engine", "--lib", "--locked"]
+            );
+            assert_eq!(args.last().unwrap(), "test(::scale::)");
+            assert!(scratch
+                .join("target/engine-scale/default/junit.xml")
+                .is_file());
+        }
+
+        #[test]
+        fn an_archive_runs_the_engine_library_scale_tests_extracted_into_target() {
+            let (scratch, args) = scale_run(Some("target-ci/rust-tests.tar.zst"), &[]);
+            let args = args.unwrap();
+            let root = scratch.path().display().to_string();
+            assert_eq!(
+                &args[..9],
+                [
+                    "nextest",
+                    "run",
+                    "--archive-file",
+                    "target-ci/rust-tests.tar.zst",
+                    "--workspace-remap",
+                    &root,
+                    "--extract-to",
+                    &root,
+                    "--extract-overwrite"
+                ]
+            );
+            assert!(!args.iter().any(|a| a == "-p" || a == "--lib"), "{args:?}");
+            assert_eq!(
+                args.last().unwrap(),
+                "package(engine) & kind(lib) & test(::scale::)"
+            );
+            for one in ["--run-ignored", "--test-threads"] {
+                assert!(args.iter().any(|a| a == one), "{one}: {args:?}");
+            }
+            assert!(scratch
+                .join("target/engine-scale/default/junit.xml")
+                .is_file());
+        }
+
+        #[test]
+        fn an_archive_with_a_named_build_is_refused_before_anything_runs() {
+            let (scratch, result) = scale_run(Some("rust-tests.tar.zst"), &["zmq"]);
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(!scratch.join("target").exists());
         }
     }
 }

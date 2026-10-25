@@ -355,6 +355,26 @@ pub(crate) fn target_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| root().join("target"))
 }
 
+/// The build of the fixture binary, or none with `STRESS_FIXTURE_PREBUILT=1`
+/// (`prebuilt`): the one already in the target folder runs, as CI's engine
+/// progress job runs the one its Rust build job built, which Cargo, going
+/// by modification times, would build again.
+fn fixture_build(prebuilt: Option<&str>) -> Option<Command> {
+    if prebuilt == Some("1") {
+        return None;
+    }
+    let mut build = Command::new("cargo");
+    build.args([
+        "build",
+        "-p",
+        "engine",
+        "--bin",
+        "stress_fixture",
+        "--locked",
+    ]);
+    Some(build)
+}
+
 /// The fixture binary, run pinned to `cpu` on Linux, with its output limited
 /// to a bounded log and its JSON result parsed (`Null` when it produced none).
 fn run_fixture(
@@ -470,19 +490,11 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
     let raw_scenario = fs::read(root().join(scenario_file))?;
     let scenario: Value = serde_json::from_slice(&raw_scenario)?;
     let checksum = hex::encode(Sha256::digest(&raw_scenario));
-    let built = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "engine",
-            "--bin",
-            "stress_fixture",
-            "--locked",
-        ])
-        .current_dir(root())
-        .status()?;
-    if !built.success() {
-        return Err(io::Error::other("stress fixture build failed"));
+    if let Some(mut build) = fixture_build(std::env::var("STRESS_FIXTURE_PREBUILT").ok().as_deref())
+    {
+        if !build.current_dir(root()).status()?.success() {
+            return Err(io::Error::other("stress fixture build failed"));
+        }
     }
     let mut hardware = profile(&output);
     hardware["sqlite_version"] = json!(command(
@@ -746,4 +758,30 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
     }
     Ok(faults.iter().all(|f| f["status"] == "recovered")
         && results.iter().all(|r| r["status"] != "failed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_fixture_is_built_unless_it_is_prebuilt() {
+        let build = fixture_build(None).unwrap();
+        assert_eq!(build.get_program(), "cargo");
+        let args: Vec<_> = build.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "build",
+                "-p",
+                "engine",
+                "--bin",
+                "stress_fixture",
+                "--locked"
+            ]
+        );
+        // Only 1 says so; anything else still builds.
+        assert!(fixture_build(Some("0")).is_some());
+        assert!(fixture_build(Some("1")).is_none());
+    }
 }
