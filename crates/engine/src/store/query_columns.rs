@@ -7,6 +7,9 @@ use shared::sqlite_query::{
 
 pub const COLUMNS: Classification = Classification {
     columns: &[
+        ("code_migrations", "kind", Visible),
+        ("code_migrations", "id", Visible),
+        ("code_migrations", "applied_at_utc", Visible),
         ("order_events", "seq", Visible),
         ("order_events", "event_id", Visible),
         ("order_events", "tenant_id", Visible),
