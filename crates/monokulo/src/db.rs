@@ -175,6 +175,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0046_encrypted_settings.sql"),
     ),
     (47, include_str!("../migrations/0047_order_requests.sql")),
+    (
+        48,
+        include_str!("../migrations/0048_retire_http_cache_max_mb.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

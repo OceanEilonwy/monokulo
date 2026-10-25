@@ -98,7 +98,6 @@ async fn state_with(base: &str, env: live_settings::Env) -> AppState {
             crate::db::Database::inline(db.clone()),
             crate::http::TEST_ENCRYPTION_KEY,
         ),
-        engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),
         None,

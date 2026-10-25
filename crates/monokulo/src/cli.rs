@@ -51,6 +51,7 @@ pub fn command() -> Command {
         .long_about(LONG_ABOUT)
         .after_help(EXAMPLES);
     let command = live_settings::cli::with_settings(command, crate::settings::ALL, OPTIONS_FILE);
+    let command = live_settings::cli::with_retired(command, crate::settings::RETIRED);
     #[cfg(feature = "embedded-engine")]
     let command = live_settings::cli::with_nested_settings(
         command,
@@ -77,6 +78,9 @@ pub struct Args {
     /// The embedded engine's settings given as `--engine-…` options, by
     /// the engine's own keys.
     pub engine: HashMap<String, String>,
+    /// A warning for each retired setting given as an option, to log at
+    /// start (`settings::RETIRED`).
+    pub retired: Vec<String>,
 }
 
 /// Parses the full argument list, argv[0] included, into the settings it
@@ -92,6 +96,7 @@ where
     Ok(Args {
         start: start(&matches),
         engine: engine_values(&matches),
+        retired: live_settings::cli::retired_given(&matches, crate::settings::RETIRED),
     })
 }
 

@@ -12,7 +12,7 @@ pub mod coinmarketcap;
 pub mod dns;
 pub mod exchange_rate;
 pub mod haveno;
-pub mod http_cache;
+pub mod http_client;
 pub mod ids;
 pub mod log;
 pub mod migrations;

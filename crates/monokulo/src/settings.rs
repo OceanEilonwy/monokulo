@@ -40,7 +40,6 @@ use live_settings::{
 
 use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
 use crate::db::Database;
-use crate::engine_client::EngineClient;
 use crate::exchange_rate_config::{ExchangeRateConfig, ExchangeRateProviders};
 
 choice_value! {
@@ -65,6 +64,11 @@ pub const ENGINE_TABLE: &str = "engine";
 /// Settings renamed since an earlier release, old key and new. An options
 /// file still holding an old key stops monokulo, naming the new key.
 pub const RENAMED: &[(&str, &str)] = &[("public_url", "public_uri")];
+
+/// Settings removed since an earlier release, with when. An options file
+/// or command line still giving one is read without it, and monokulo
+/// warns once at start that the line can go.
+pub const RETIRED: &[(&str, &str)] = &[("http_cache.max_mb", "2026-10-25")];
 
 /// Why `[engine.*]` tables are refused with a remote engine.
 pub const ENGINE_TABLE_HINT: &str = "the engine's own settings go here only when it runs inside monokulo (engine.mode = \"embedded\"); a remote engine keeps them in its own options file";
@@ -265,13 +269,6 @@ settings! {
         check: range(0, 86_400),
         description: "Seconds a fetched exchange rate is reused before asking its provider again.",
         example: "30",
-    },
-    HTTP_CACHE_MAX_MB: u64 {
-        key: "http_cache.max_mb",
-        default: 16,
-        check: range(1, 4096),
-        description: "Megabytes of memory for monokulo's cache of engine responses.",
-        example: "16",
     },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
@@ -659,25 +656,6 @@ impl Section for ServerConfig {
     }
 }
 
-/// The engine connection's one setting: the size of the cache of its
-/// responses (task 3.2).
-#[derive(Debug, Clone, PartialEq)]
-pub struct EngineConnection {
-    pub http_cache_bytes: u64,
-}
-
-impl Section for EngineConnection {
-    const NAME: &'static str = "engine connection";
-    fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&HTTP_CACHE_MAX_MB]
-    }
-    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        Ok(EngineConnection {
-            http_cache_bytes: snapshot.get(&HTTP_CACHE_MAX_MB) * 1024 * 1024,
-        })
-    }
-}
-
 /// Read on each request that needs them ([`MonokuloSettings::signup_mode`],
 /// [`MonokuloSettings::public_uri`]); a save or reload applies at once.
 #[derive(Debug, Clone, PartialEq)]
@@ -972,7 +950,6 @@ impl Section for ExchangeRateConfig {
     const NAME: &'static str = "exchange rates";
     fn keys() -> &'static [&'static dyn AnySetting] {
         &[
-            &HTTP_CACHE_MAX_MB,
             &EXCHANGE_RATE_COINGECKO_ENABLED,
             &EXCHANGE_RATE_COINGECKO_BASE_URL,
             &EXCHANGE_RATE_COINMARKETCAP_ENABLED,
@@ -1002,7 +979,6 @@ impl Section for ExchangeRateConfig {
                 .as_str()
                 .to_string(),
             cache_seconds: snapshot.get(&EXCHANGE_RATE_CACHE_SECONDS),
-            http_cache_bytes: snapshot.get(&HTTP_CACHE_MAX_MB) * 1024 * 1024,
         })
     }
 }
@@ -1251,34 +1227,6 @@ impl live_settings::SettingsStore for DbSettings {
             .write(move |db| db.write_settings_and_secrets(&plain, &encrypted))
             .await
             .map_err(live_settings::StoreError::new)
-    }
-}
-
-/// Gives the engine client a saved cache size (task 3.2).
-pub struct EngineConnectionReloadable {
-    pub engine_client: EngineClient,
-}
-
-#[live_settings::async_trait]
-impl live_settings::Reloadable for EngineConnectionReloadable {
-    type Config = EngineConnection;
-    type Prepared = EngineConnection;
-
-    async fn prepare(
-        &self,
-        new: &EngineConnection,
-        _old: &EngineConnection,
-    ) -> Result<(EngineConnection, Vec<Warning>), FieldError> {
-        Ok((new.clone(), Vec::new()))
-    }
-
-    async fn install(&self, connection: EngineConnection) {
-        self.engine_client
-            .set_cache_limit(connection.http_cache_bytes);
-    }
-
-    fn boot_policy(&self) -> live_settings::BootPolicy {
-        live_settings::BootPolicy::StartDegraded
     }
 }
 
@@ -1600,7 +1548,6 @@ impl MonokuloSettings {
     /// missing secret, stops it with every problem named.
     pub async fn load(
         store: DbSettings,
-        engine_client: EngineClient,
         exchange_rates: Arc<ExchangeRateProviders>,
         abuse: Arc<AbuseProtection>,
         onion: Option<OnionServing>,
@@ -1611,7 +1558,6 @@ impl MonokuloSettings {
         // runtime switches, each key in its own place.
         let layered = live_settings::LayeredStore::new(options, Arc::new(store), ALL);
         let mut builder = Registry::builder_with_env(Arc::new(layered), ALL, env).await;
-        builder.reloadable(EngineConnectionReloadable { engine_client });
         builder.reloadable(ExchangeRatesReloadable {
             providers: exchange_rates,
         });
@@ -1839,7 +1785,6 @@ mod tests {
         let resolved =
             live_settings::read_sync_with_env::<ExchangeRateConfig>(Ok(file.clone()), &none);
         assert_eq!(resolved.cache_seconds, 3);
-        assert_eq!(resolved.http_cache_bytes, 16 * 1024 * 1024);
         let given =
             none.with_cli([(EXCHANGE_RATE_CACHE_SECONDS.key.to_string(), "9".to_string())].into());
         let resolved = live_settings::read_sync_with_env::<ExchangeRateConfig>(Ok(file), &given);
@@ -1884,7 +1829,6 @@ mod tests {
                 haveno_enabled: false,
                 haveno_base_url: "https://haveno.markets".to_string(),
                 cache_seconds: 30,
-                http_cache_bytes: 16 * 1024 * 1024,
             }
         );
     }
@@ -1990,7 +1934,6 @@ mod tests {
     #[test]
     fn every_section_builds_from_the_defaults_and_every_setting_is_in_one() {
         let snapshot = Snapshot::defaults();
-        assert!(EngineConnection::from_snapshot(&snapshot).is_ok());
         assert!(PerRequest::from_snapshot(&snapshot).is_ok());
         assert!(ExchangeRateConfig::from_snapshot(&snapshot).is_ok());
         assert!(AbuseConfig::from_snapshot(&snapshot).is_ok());
@@ -2004,10 +1947,7 @@ mod tests {
             WebhookConfig::from_snapshot(&snapshot).unwrap(),
             WebhookConfig::default()
         );
-        // http_cache.max_mb is read by two (the engine client and the
-        // exchange-rate providers).
         let covered: std::collections::BTreeSet<&str> = [
-            EngineConnection::keys(),
             PerRequest::keys(),
             CliLinks::keys(),
             SnpEntryPolicy::keys(),
@@ -2041,7 +1981,6 @@ mod tests {
                         Database::inline(Db::open_in_memory().unwrap().into_shared()),
                         crate::http::TEST_ENCRYPTION_KEY,
                     ),
-                    EngineClient::for_tests("http://127.0.0.1:1"),
                     Arc::new(ExchangeRateProviders::xmr_only()),
                     Default::default(),
                     None,
@@ -2075,17 +2014,14 @@ mod tests {
         onion: Option<OnionReloadable>,
     ) -> (
         Arc<MonokuloSettings>,
-        EngineClient,
         Arc<ExchangeRateProviders>,
         Arc<AbuseProtection>,
     ) {
         let db = Database::inline(Db::open_in_memory().unwrap().into_shared());
-        let engine = EngineClient::for_tests("http://127.0.0.1:1");
         let rates = Arc::new(ExchangeRateProviders::xmr_only());
         let abuse: Arc<AbuseProtection> = Default::default();
         let settings = MonokuloSettings::load(
             DbSettings::new(db, crate::http::TEST_ENCRYPTION_KEY),
-            engine.clone(),
             rates.clone(),
             abuse.clone(),
             onion.map(|listener| OnionServing {
@@ -2097,7 +2033,7 @@ mod tests {
         )
         .await
         .unwrap();
-        (settings, engine, rates, abuse)
+        (settings, rates, abuse)
     }
 
     fn change(key: &str, value: &str) -> live_settings::Changes {
@@ -2135,7 +2071,7 @@ mod tests {
 
     #[tokio::test]
     async fn saved_settings_reach_the_engine_client_exchange_rates_and_abuse_protection() {
-        let (settings, _engine, rates, abuse) = loaded(None).await;
+        let (settings, rates, abuse) = loaded(None).await;
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
         assert_eq!(

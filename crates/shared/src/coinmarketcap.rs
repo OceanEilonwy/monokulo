@@ -191,9 +191,7 @@ pub struct CoinMarketCapRateProvider {
     /// succeeds.
     key_problem: parking_lot::Mutex<Option<String>>,
     client: reqwest_middleware::ClientWithMiddleware,
-    cache: std::sync::Arc<
-        tokio::sync::Mutex<std::collections::HashMap<String, (u64, std::time::Instant)>>,
-    >,
+    rates: crate::exchange_rate::RateCache,
 }
 
 impl CoinMarketCapRateProvider {
@@ -206,22 +204,9 @@ impl CoinMarketCapRateProvider {
             base_url: base_url.into(),
             api_key: None,
             key_problem: parking_lot::Mutex::new(None),
-            client: crate::http_cache::build_client(
-                concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-                crate::http_cache::DEFAULT_MAX_CACHE_BYTES,
-            ),
-            cache: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            client: crate::exchange_rate::rates_client(),
+            rates: crate::exchange_rate::RateCache::default(),
         }
-    }
-
-    /// This provider with a response cache of at most `bytes` (monokulo's
-    /// `http_cache.max_mb`).
-    pub fn with_cache_limit(mut self, bytes: u64) -> Self {
-        self.client = crate::http_cache::build_client(
-            concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-            bytes,
-        );
-        self
     }
 
     /// This provider asking with `key` (keyed base and header), or
@@ -327,42 +312,17 @@ impl CoinMarketCapRateProvider {
     }
 
     /// Cached rate lookup with the same semantics as
-    /// `CoingeckoRateProvider::piconero_per_unit_cached`: fresh within
-    /// `max_age`, otherwise one live fetch; a failed fetch never refreshes
-    /// or wipes the cache, and answers with the earlier rate while it is
-    /// still usable (an `Err` only without one); a fetch with no usable
-    /// price leaves any earlier cached value untouched.
+    /// `CoingeckoRateProvider::piconero_per_unit_cached`
+    /// (`exchange_rate::RateCache::get`).
     pub async fn piconero_per_unit_cached(
         &self,
         currency: &str,
         max_age: std::time::Duration,
     ) -> Result<Option<u64>, ExchangeRateError> {
         let key = currency.to_uppercase();
-        let mut cache = self.cache.lock().await;
-        let stale = match cache.get(&key) {
-            Some((_, fetched_at)) => fetched_at.elapsed() >= max_age,
-            None => true,
-        };
-        if stale {
-            match self.fetch_rate(&key).await {
-                Ok(Some(rate)) => {
-                    cache.insert(key.clone(), (rate, std::time::Instant::now()));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    return crate::exchange_rate::cached_or(
-                        cache.get(&key),
-                        max_age,
-                        "coinmarketcap",
-                        &key,
-                        error,
-                    )
-                }
-            }
-        }
-        Ok(cache.get(&key).and_then(|(rate, fetched_at)| {
-            crate::exchange_rate::still_usable(*rate, *fetched_at, max_age, "coinmarketcap", &key)
-        }))
+        self.rates
+            .get("coinmarketcap", &key, max_age, self.fetch_rate(&key))
+            .await
     }
 }
 

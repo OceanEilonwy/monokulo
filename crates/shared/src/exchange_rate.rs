@@ -72,8 +72,8 @@ impl XmrIdentityProvider {
 pub enum ExchangeRateError {
     #[error("request to the rate provider failed: {0}")]
     Request(#[from] reqwest::Error),
-    /// From the shared HTTP-cache-aware transport's own middleware layer
-    /// (`shared::http_cache`) - distinct from `Request` above only in *which*
+    /// From the shared transport's middleware layer
+    /// (`shared::http_client`) - distinct from `Request` above only in *which*
     /// crate's `Result` the `?` operator was unwrapping at the call site; both
     /// ultimately mean "the request to the rate provider failed."
     #[error("request to the rate provider failed: {0}")]
@@ -138,30 +138,98 @@ fn parse_retry_after(value: &str) -> Option<std::time::Duration> {
     )
 }
 
-/// What a lookup whose refresh failed with `error` answers: the rate
-/// cached before it while [`still_usable`], else the error. A provider
-/// that is down or rate limited for a while doesn't stop orders until the
-/// last rate it gave is too old to price one.
-pub(crate) fn cached_or(
-    cached: Option<&(u64, std::time::Instant)>,
-    max_age: std::time::Duration,
-    provider: &str,
-    currency: &str,
-    error: ExchangeRateError,
-) -> Result<Option<u64>, ExchangeRateError> {
-    match cached.and_then(|(rate, fetched_at)| {
-        still_usable(*rate, *fetched_at, max_age, provider, currency)
-    }) {
-        Some(rate) => {
-            tracing::warn!(
-                provider,
-                currency,
-                %error,
-                "the rate provider failed - using the last rate it gave"
-            );
-            Ok(Some(rate))
+/// The client every rate provider fetches with. It has no response cache:
+/// a provider's [`RateCache`] judges a price's age from when it was really
+/// fetched, which a cache in between would hide.
+pub(crate) fn rates_client() -> reqwest_middleware::ClientWithMiddleware {
+    crate::http_client::build_client(concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")))
+}
+
+/// A provider's per-currency rates, each fetched live at most once per
+/// `max_age`.
+///
+/// Each currency has its own `tokio::sync::Mutex`, held across the fetch:
+/// callers that all find one currency stale at once wait for a single
+/// refresh rather than each sending their own, and a lookup for another
+/// currency never waits on it.
+#[derive(Debug, Default)]
+pub(crate) struct RateCache {
+    entries: parking_lot::Mutex<
+        std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<RateEntry>>>,
+    >,
+}
+
+#[derive(Debug, Default)]
+struct RateEntry {
+    /// The last price the provider gave, and when it was fetched.
+    rate: Option<(u64, std::time::Instant)>,
+    /// When the provider last answered at all, with a price or without
+    /// one. An answer with no price counts: a currency the provider never
+    /// quotes costs one request per `max_age`, not one per lookup.
+    answered_at: Option<std::time::Instant>,
+}
+
+impl RateCache {
+    /// The rate for `currency` (already uppercased): the cached answer
+    /// within `max_age`, otherwise `fetch`'s.
+    ///
+    /// A failed fetch (unreachable, rate limited, a bad answer) falls back
+    /// to the rate cached before it while that is [`still_usable`]; only
+    /// with no usable rate is it an `Err`, and the next lookup tries again.
+    /// A fetch that succeeds with no usable price leaves the last price in
+    /// place (a transient bad value in one response must not make an
+    /// already-priced currency suddenly unpriced); only a new price
+    /// replaces it.
+    pub(crate) async fn get<F>(
+        &self,
+        provider: &str,
+        currency: &str,
+        max_age: std::time::Duration,
+        fetch: F,
+    ) -> Result<Option<u64>, ExchangeRateError>
+    where
+        F: std::future::Future<Output = Result<Option<u64>, ExchangeRateError>>,
+    {
+        let entry = self
+            .entries
+            .lock()
+            .entry(currency.to_owned())
+            .or_default()
+            .clone();
+        let mut entry = entry.lock().await;
+        let stale = entry
+            .answered_at
+            .is_none_or(|answered_at| answered_at.elapsed() >= max_age);
+        if stale {
+            match fetch.await {
+                Ok(fetched) => {
+                    let now = std::time::Instant::now();
+                    entry.answered_at = Some(now);
+                    if let Some(rate) = fetched {
+                        entry.rate = Some((rate, now));
+                    }
+                }
+                Err(error) => {
+                    return match entry.rate.and_then(|(rate, fetched_at)| {
+                        still_usable(rate, fetched_at, max_age, provider, currency)
+                    }) {
+                        Some(rate) => {
+                            tracing::warn!(
+                                provider,
+                                currency,
+                                %error,
+                                "the rate provider failed - using the last rate it gave"
+                            );
+                            Ok(Some(rate))
+                        }
+                        None => Err(error),
+                    };
+                }
+            }
         }
-        None => Err(error),
+        Ok(entry.rate.and_then(|(rate, fetched_at)| {
+            still_usable(rate, fetched_at, max_age, provider, currency)
+        }))
     }
 }
 
@@ -272,33 +340,18 @@ pub(crate) fn piconero_per_unit_from_price(
 /// the caller-supplied `max_age` has elapsed) anyone actually asks -
 /// no request in flight, no network call, ever, until something needs one.
 ///
-/// The cache is a `tokio::sync::Mutex`, not `parking_lot::RwLock`: a lookup
-/// can genuinely hold the lock *across* an `.await` (the HTTP round trip a
-/// stale cache triggers) - a `parking_lot::RwLock` guard held across an await
-/// point doesn't compile (it's not `Send`), and would be the wrong tool
-/// even if it did. Holding the lock for the whole check-then-maybe-refresh
-/// sequence is deliberate, not an oversight: it serializes concurrent
-/// callers that all observe a stale cache at once onto a single real
-/// refresh, rather than each firing its own redundant request at Coingecko.
+/// Rates are cached per currency in a `RateCache`; the supported-currency
+/// list has its own `tokio::sync::Mutex`, held across its fetch so
+/// concurrent callers that find it stale wait for one refresh.
 #[derive(Debug)]
 pub struct CoingeckoRateProvider {
     base_url: String,
     client: reqwest_middleware::ClientWithMiddleware,
-    cache: std::sync::Arc<tokio::sync::Mutex<CoingeckoCache>>,
-}
-
-#[derive(Debug, Default)]
-struct CoingeckoCache {
-    /// Currency ticker (uppercase, e.g. `"USD"`) -> (piconero per unit, when
-    /// it was fetched). Populated lazily, one currency at a time, the first
-    /// time (or first time after `max_age` has elapsed) anyone actually
-    /// asks for it - there is no pre-configured whitelist to batch-fetch
-    /// any more.
-    rates: std::collections::HashMap<String, (u64, std::time::Instant)>,
+    rates: RateCache,
     /// The full list Coingecko itself reports supporting, plus when it was
     /// last fetched - its own independent cache entry/TTL, refreshed lazily
     /// by `supported_currencies_cached`, never eagerly.
-    supported_currencies: Option<(Vec<String>, std::time::Instant)>,
+    supported_currencies: tokio::sync::Mutex<Option<(Vec<String>, std::time::Instant)>>,
 }
 
 impl CoingeckoRateProvider {
@@ -318,33 +371,13 @@ impl CoingeckoRateProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
         CoingeckoRateProvider {
             base_url: base_url.into(),
-            // Goes through the same shared, byte-bounded HTTP-cache-aware
-            // transport every other outbound call in this workspace now uses,
-            // safe here specifically
-            // because Coingecko's real responses (checked live against the actual
-            // API) carry no `Cache-Control` header at all, so this changes
-            // nothing about Coingecko's own observed behavior; it just means a
-            // future Coingecko response that *did* start advertising one would be
-            // respected rather than silently ignored. The user agent requirement
-            // itself predates this change - a default (blank) client gets a flat
-            // `403` from the real API without a "descriptive User-Agent" (its own
-            // error message's wording).
-            client: crate::http_cache::build_client(
-                concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-                crate::http_cache::DEFAULT_MAX_CACHE_BYTES,
-            ),
-            cache: std::sync::Arc::new(tokio::sync::Mutex::new(CoingeckoCache::default())),
+            // A default (blank) user agent gets a flat `403` from the real
+            // API without a "descriptive User-Agent" (its own error
+            // message's wording).
+            client: rates_client(),
+            rates: RateCache::default(),
+            supported_currencies: tokio::sync::Mutex::new(None),
         }
-    }
-
-    /// This provider with a response cache of at most `bytes` (monokulo's
-    /// `http_cache.max_mb`).
-    pub fn with_cache_limit(mut self, bytes: u64) -> Self {
-        self.client = crate::http_cache::build_client(
-            concat!("monokulo-rates/", env!("CARGO_PKG_VERSION")),
-            bytes,
-        );
-        self
     }
 
     /// Fetches the current XMR price in exactly one currency. `Ok(None)`
@@ -401,41 +434,17 @@ impl CoingeckoRateProvider {
     /// (`exchange_rate_config`) is what actually decides that value; this
     /// just applies whatever it's given.
     ///
-    /// A failed fetch (unreachable, rate limited, a bad answer) falls back
-    /// to the rate cached before it while that is [`still_usable`]; only
-    /// with no usable rate is it an `Err` ([`cached_or`]). A fetch that
-    /// *succeeds* but comes back with no usable price for this currency
-    /// leaves any previously cached value exactly as it was (a transient
-    /// bad value in one response must not make an already-priced currency
-    /// suddenly unpriced) - only a genuine new price ever overwrites the
-    /// cache entry.
+    /// A failed fetch falls back to the last rate, and an answer with no
+    /// price is cached like a price; `RateCache::get` has the rules.
     pub async fn piconero_per_unit_cached(
         &self,
         currency: &str,
         max_age: std::time::Duration,
     ) -> Result<Option<u64>, ExchangeRateError> {
         let key = currency.to_uppercase();
-        let mut cache = self.cache.lock().await;
-        let stale = match cache.rates.get(&key) {
-            Some((_, fetched_at)) => fetched_at.elapsed() >= max_age,
-            None => true,
-        };
-        if stale {
-            match self.fetch_rate(&key).await {
-                Ok(Some(rate)) => {
-                    cache
-                        .rates
-                        .insert(key.clone(), (rate, std::time::Instant::now()));
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    return cached_or(cache.rates.get(&key), max_age, "coingecko", &key, error)
-                }
-            }
-        }
-        Ok(cache.rates.get(&key).and_then(|(rate, fetched_at)| {
-            still_usable(*rate, *fetched_at, max_age, "coingecko", &key)
-        }))
+        self.rates
+            .get("coingecko", &key, max_age, self.fetch_rate(&key))
+            .await
     }
 
     /// The list of currency tickers Coingecko itself reports supporting
@@ -448,8 +457,8 @@ impl CoingeckoRateProvider {
         &self,
         max_age: std::time::Duration,
     ) -> Result<Vec<String>, ExchangeRateError> {
-        let mut cache = self.cache.lock().await;
-        let stale = match &cache.supported_currencies {
+        let mut supported_currencies = self.supported_currencies.lock().await;
+        let stale = match &*supported_currencies {
             Some((_, fetched_at)) => fetched_at.elapsed() >= max_age,
             None => true,
         };
@@ -464,9 +473,9 @@ impl CoingeckoRateProvider {
                 Ok(list) => {
                     let uppercased: Vec<String> =
                         list.into_iter().map(|c| c.to_uppercase()).collect();
-                    cache.supported_currencies = Some((uppercased, std::time::Instant::now()));
+                    *supported_currencies = Some((uppercased, std::time::Instant::now()));
                 }
-                Err(error) if cache.supported_currencies.is_some() => {
+                Err(error) if supported_currencies.is_some() => {
                     tracing::warn!(
                         provider = "coingecko",
                         %error,
@@ -476,8 +485,7 @@ impl CoingeckoRateProvider {
                 Err(error) => return Err(error),
             }
         }
-        Ok(cache
-            .supported_currencies
+        Ok(supported_currencies
             .as_ref()
             .map(|(list, _)| list.clone())
             .unwrap_or_default())
@@ -1009,9 +1017,8 @@ mod tests {
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
                 .unwrap_err();
-            // A genuine connection failure surfaces through the shared HTTP-
-            // cache-aware transport's own middleware layer (`shared::http_cache`),
-            // not directly as a bare `reqwest::Error` - see `ExchangeRateError::
+            // A genuine connection failure surfaces through the shared
+            // transport's middleware layer (`shared::http_client`), not directly as a bare `reqwest::Error` - see `ExchangeRateError::
             // Middleware`'s own doc comment for why these are still the same
             // failure in substance.
             assert!(
@@ -1194,27 +1201,54 @@ mod tests {
                 1,
                 "a lookup within max_age must not trigger a second fetch"
             );
+
+            // A currency the answer leaves out has no price, and that answer
+            // is kept for max_age too.
+            for _ in 0..2 {
+                let rate = provider
+                    .piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30))
+                    .await
+                    .unwrap();
+                assert_eq!(rate, None);
+            }
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                2,
+                "a currency with no price must cost one fetch per max_age, not one per lookup"
+            );
         }
 
         #[tokio::test]
         async fn piconero_per_unit_cached_refetches_once_max_age_has_elapsed() {
             let calls = std::sync::Arc::new(AtomicUsize::new(0));
             let calls_for_handler = calls.clone();
+            // Each answer is a different price, marked cacheable for an
+            // hour: a remote max-age must never stretch how old a quoted
+            // price can be.
             let url = spawn_server(move |_, _| {
-                calls_for_handler.fetch_add(1, Ordering::SeqCst);
-                json_body(r#"{"monero":{"usd":150.0}}"#)
+                let call = calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                let price = if call == 0 { "150.0" } else { "200.0" };
+                (
+                    [
+                        ("content-type", "application/json"),
+                        ("cache-control", "public, max-age=3600"),
+                    ],
+                    format!(r#"{{"monero":{{"usd":{price}}}}}"#),
+                )
+                    .into_response()
             })
             .await;
             let provider = CoingeckoRateProvider::new(url);
 
-            provider
+            let first = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
                 .await
                 .unwrap();
+            assert_eq!(first, Some(6_666_666_667));
             // A zero max_age means "never fresh" - every call must re-fetch,
             // proving staleness genuinely drives a real second network call,
             // not just a timestamp update with no consequence.
-            provider
+            let second = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::ZERO)
                 .await
                 .unwrap();
@@ -1222,6 +1256,11 @@ mod tests {
                 calls.load(Ordering::SeqCst),
                 2,
                 "a max_age of zero must force a fresh fetch every single call"
+            );
+            assert_eq!(
+                second,
+                Some(5_000_000_000),
+                "the second lookup quotes the new price"
             );
         }
 
@@ -1269,10 +1308,18 @@ mod tests {
             let seed = |age: std::time::Duration| {
                 let provider = &provider;
                 async move {
-                    provider.cache.lock().await.rates.insert(
-                        "USD".to_owned(),
-                        (5, std::time::Instant::now().checked_sub(age).unwrap()),
-                    );
+                    let fetched_at = std::time::Instant::now().checked_sub(age).unwrap();
+                    let entry = provider
+                        .rates
+                        .entries
+                        .lock()
+                        .entry("USD".to_owned())
+                        .or_default()
+                        .clone();
+                    *entry.lock().await = RateEntry {
+                        rate: Some((5, fetched_at)),
+                        answered_at: Some(fetched_at),
+                    };
                 }
             };
             // Stale (older than max_age) but within the ceiling: used.

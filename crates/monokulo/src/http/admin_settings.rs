@@ -1901,7 +1901,6 @@ mod tests {
                 crate::db::Database::inline(db.clone()),
                 crate::http::TEST_ENCRYPTION_KEY,
             ),
-            engine_client.clone(),
             exchange_rate.clone(),
             abuse.clone(),
             None,
@@ -2203,7 +2202,6 @@ mod tests {
             ("exchange_rate.haveno_enabled", "true"),
             ("exchange_rate.haveno_base_url", "http://127.0.0.1:9997"),
             ("exchange_rate.cache_seconds", "77"),
-            ("http_cache.max_mb", "42"),
             ("database.read_connections", "6"),
             ("abuse.soft_per_min", "33"),
             ("abuse.hard_per_min", "330"),
@@ -2888,7 +2886,6 @@ mod tests {
                 "-5",
                 "Enter a whole number from 0 to 86400.",
             ),
-            ("http_cache.max_mb", "1.5", "Enter a whole number"),
             (
                 "abuse.hard_per_min",
                 "0",

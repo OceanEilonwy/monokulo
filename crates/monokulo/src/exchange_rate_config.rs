@@ -93,9 +93,6 @@ pub struct ExchangeRateConfig {
     pub haveno_enabled: bool,
     pub haveno_base_url: String,
     pub cache_seconds: u64,
-    /// The most bytes each provider's response cache holds
-    /// (`http_cache.max_mb`).
-    pub http_cache_bytes: u64,
 }
 
 /// A store's providers name nothing this instance has enabled (a provider the
@@ -301,31 +298,27 @@ impl ExchangeRateProviders {
 
     fn fiat_for(config: &ExchangeRateConfig) -> FiatProviders {
         let coingecko = if config.coingecko_enabled {
-            Some(Arc::new(
-                CoingeckoRateProvider::new(config.coingecko_base_url.clone())
-                    .with_cache_limit(config.http_cache_bytes),
-            ))
+            Some(Arc::new(CoingeckoRateProvider::new(
+                config.coingecko_base_url.clone(),
+            )))
         } else {
             None
         };
         let coinmarketcap = if config.coinmarketcap_enabled {
             Some(Arc::new(
-                CoinMarketCapRateProvider::new(config.coinmarketcap_base_url.clone())
-                    .with_cache_limit(config.http_cache_bytes)
-                    .with_api_key(
-                        Some(config.coinmarketcap_api_key.expose())
-                            .filter(|key| !key.is_empty())
-                            .map(shared::coinmarketcap::ApiKey::new),
-                    ),
+                CoinMarketCapRateProvider::new(config.coinmarketcap_base_url.clone()).with_api_key(
+                    Some(config.coinmarketcap_api_key.expose())
+                        .filter(|key| !key.is_empty())
+                        .map(shared::coinmarketcap::ApiKey::new),
+                ),
             ))
         } else {
             None
         };
         let haveno = if config.haveno_enabled {
-            Some(Arc::new(
-                HavenoRateProvider::new(config.haveno_base_url.clone())
-                    .with_cache_limit(config.http_cache_bytes),
-            ))
+            Some(Arc::new(HavenoRateProvider::new(
+                config.haveno_base_url.clone(),
+            )))
         } else {
             None
         };
