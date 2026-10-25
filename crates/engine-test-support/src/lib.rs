@@ -4,7 +4,7 @@
 //! ## Why this is its own crate, not `shared`
 //!
 //! `shared` is a *dependency of* `engine` (`shared::auth`,
-//! `shared::password`, `shared::migrations` are all
+//! `shared::password`, `sqlite::migrations` are all
 //! pulled in by the engine crate). A helper that boots a real
 //! `engine` engine instance necessarily needs `engine` itself
 //! as a dependency - even as a dev-dependency, that would make `shared`

@@ -10,7 +10,7 @@ edition = "2021"
 # crates' tests and this crate's own integration tests and examples.
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
-test-support = ["shared/test-support", "embedded-engine", "dep:jsonschema"]
+test-support = ["shared/test-support", "sqlite/test-support", "embedded-engine", "dep:jsonschema"]
 default = ["embedded-engine", "tor"]
 # The engine's own router as a transport for `EngineClient`: the engine
 # runs inside monokulo's process.
@@ -61,6 +61,7 @@ shared = { path = "../shared" }
 # What the engine sends, with JSON Schemas for ids and order statuses for
 # the API reference (`api`).
 engine-protocol = { path = "../engine-protocol", features = ["schemars"] }
+sqlite = { path = "../sqlite" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
 subtle = "2.6.1"
 # Abuse protection (`crate::abuse`): HMAC-signed challenges, proof-of-work
@@ -130,6 +131,8 @@ jsonschema = { version = "0.33.0", default-features = false }
 monokulo = { path = ".", features = ["test-support"] }
 # `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
+# The in-thread database pool (`db::Db` in tests).
+sqlite = { path = "../sqlite", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
 # Paused time (`test-util`): a test watching the engine page for a minute
 # runs in an instant.

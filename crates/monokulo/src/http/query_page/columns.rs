@@ -1,6 +1,6 @@
 //! Every column of monokulo's database, and whether the Query page may show it. Generated from the migrations; a column a migration adds fails `every_column_is_classified` (`super::tests`) until it is listed here.
 
-use shared::sqlite_query::{
+use sqlite::query::{
     Classification,
     Exposure::{Secret, Visible},
 };

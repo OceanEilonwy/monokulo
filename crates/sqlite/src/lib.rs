@@ -18,6 +18,13 @@
 //! A job runs to completion once taken, even if its caller stopped waiting:
 //! SQLite work can't be interrupted. A job that panics loses its own answer
 //! (its caller gets [`PoolError::Panicked`]), not the thread.
+//!
+//! Beside the pool: [`migrations`], the migration runner both services'
+//! databases are brought up to date with, and [`query`], the read-only
+//! sandbox the admin Query page runs an admin's SQL in.
+
+pub mod migrations;
+pub mod query;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -258,7 +265,7 @@ mod tests {
 
     fn temp_db() -> String {
         std::env::temp_dir()
-            .join(format!("shared_sqlite_{}.db", uuid::Uuid::new_v4()))
+            .join(format!("sqlite_pool_{}.db", uuid::Uuid::new_v4()))
             .to_string_lossy()
             .into_owned()
     }

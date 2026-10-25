@@ -12,14 +12,11 @@ pub mod exchange_rate;
 pub mod haveno;
 pub mod http_cache;
 pub mod log;
-pub mod migrations;
 pub mod monero_tx;
 pub mod password;
 pub mod rate_limit;
 pub mod resources;
 pub mod shutdown;
-pub mod sqlite;
-pub mod sqlite_query;
 pub mod supervise;
 pub mod time;
 #[cfg(any(test, feature = "test-support"))]

@@ -1788,6 +1788,7 @@ dependencies = [
  "sha2 0.11.0",
  "shared",
  "snp-attest",
+ "sqlite",
  "subtle",
  "telemetry",
  "thiserror 2.0.20",
@@ -3724,6 +3725,7 @@ dependencies = [
  "sha3",
  "shared",
  "short-id",
+ "sqlite",
  "static-assets",
  "subtle",
  "telemetry",
@@ -5650,6 +5652,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sqlite",
  "subtle",
  "sysinfo 0.39.6",
  "telemetry",
@@ -5853,6 +5856,19 @@ checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
 dependencies = [
  "base64ct",
  "der 0.8.2",
+]
+
+[[package]]
+name = "sqlite"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

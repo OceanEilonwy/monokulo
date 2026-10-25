@@ -3,7 +3,7 @@
 
 use rusqlite::{params, OptionalExtension as _};
 use shared::auth::TokenHash;
-use shared::sqlite::Unsigned;
+use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
 

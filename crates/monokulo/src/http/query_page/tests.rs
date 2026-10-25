@@ -45,7 +45,7 @@ async fn send(router: &Router, request: Request<Body>) -> (StatusCode, String) {
 fn every_column_is_classified() {
     let db = crate::db::Db::open_in_memory().unwrap();
     let (missing, stale) =
-        shared::sqlite_query::unclassified(db.conn_for_test(), &columns::COLUMNS).unwrap();
+        sqlite::query::unclassified(db.conn_for_test(), &columns::COLUMNS).unwrap();
     assert!(
         missing.is_empty(),
         "classify these in http/query_page/columns.rs: {missing:?}"

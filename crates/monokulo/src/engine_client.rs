@@ -1145,17 +1145,17 @@ impl EngineClient {
 }
 
 /// The engine's database, read for the admin Query page
-/// (`shared::sqlite_query`).
+/// (`sqlite::query`).
 impl EngineClient {
     /// One read-only statement. A statement the engine refused or that
     /// failed is `Ok` with its [`QueryResponse::Error`]; too many running
     /// at once is an `EngineError` with status `429`.
     ///
-    /// [`QueryResponse::Error`]: shared::sqlite_query::QueryResponse::Error
+    /// [`QueryResponse::Error`]: sqlite::query::QueryResponse::Error
     pub async fn admin_query(
         &self,
-        request: &shared::sqlite_query::QueryRequest,
-    ) -> Result<shared::sqlite_query::QueryResponse, EngineClientError> {
+        request: &sqlite::query::QueryRequest,
+    ) -> Result<sqlite::query::QueryResponse, EngineClientError> {
         self.send(Call::post("/api/v1/admin/query").json(request))
             .await?
             .parsed()
@@ -1164,8 +1164,8 @@ impl EngineClient {
     /// The engine's tables, their columns and rows.
     pub async fn admin_query_schema(
         &self,
-    ) -> Result<Vec<shared::sqlite_query::TableInfo>, EngineClientError> {
-        let response: shared::sqlite_query::SchemaResponse = self
+    ) -> Result<Vec<sqlite::query::TableInfo>, EngineClientError> {
+        let response: sqlite::query::SchemaResponse = self
             .send(Call::get("/api/v1/admin/query/schema"))
             .await?
             .parsed()?;

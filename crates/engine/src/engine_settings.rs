@@ -257,7 +257,7 @@ settings! {
     },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
-        default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
+        default: sqlite::DEFAULT_READ_CONNECTIONS,
         check: range(1, 64),
         description: "Read-only connections the engine opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB.",
         example: "4",

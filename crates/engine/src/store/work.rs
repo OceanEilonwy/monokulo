@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension as _};
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
 
-pub(crate) use shared::sqlite::Unsigned;
+pub(crate) use sqlite::Unsigned;
 
 /// A block height as SQLite stores it. Heights never come near `i64::MAX`;
 /// one that did is refused rather than wrapped negative.

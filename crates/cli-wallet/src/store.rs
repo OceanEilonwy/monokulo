@@ -173,7 +173,7 @@ fn user_version(conn: &Connection, path: &Path) -> Result<u32, WalletError> {
 /// crossing into or out of SQLite, which stores only signed 64-bit
 /// integers. Both directions are checked: a value that doesn't fit, or a
 /// negative one read back, is an error rather than a silent wrap. The same
-/// type as `shared::sqlite::Unsigned`, which engine and monokulo store
+/// type as `sqlite::Unsigned`, which engine and monokulo store
 /// piconero through; copied rather than depended on, since this crate stays
 /// clear of `shared`'s dependencies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

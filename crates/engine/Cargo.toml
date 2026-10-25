@@ -55,6 +55,7 @@ sha2 = "0.11.0"
 subtle = "2.6.1"
 shared = { path = "../shared" }
 engine-protocol = { path = "../engine-protocol" }
+sqlite = { path = "../sqlite" }
 telemetry = { path = "../telemetry", features = ["axum"] }
 tracing = "0.1.44"
 thiserror = "2.0.20"
@@ -79,7 +80,7 @@ snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # The in-thread database pools (`store::Database::inline`) and other helpers
 # for `engine-test-support` and the e2e harness (`crates/e2e-harness`). Only
 # adds code tests call; it never changes what the engine does.
-test-support = ["shared/test-support"]
+test-support = ["shared/test-support", "sqlite/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived. Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
@@ -102,6 +103,8 @@ rustix = { version = "1.1.5", features = ["thread", "process"] }
 snp-attest = { path = "../snp-attest", features = ["test-support"] }
 # `shared`'s test helpers (the test engine token).
 shared = { path = "../shared", features = ["test-support"] }
+# The in-thread database pool (`store::Database::inline`).
+sqlite = { path = "../sqlite", features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "test-util"] }
 # SQLite's authorizer hook (fault injection) for tests.
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "serialize"] }

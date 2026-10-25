@@ -158,8 +158,8 @@ pub(super) fn normalize_email(email: &str) -> Option<String> {
     Some(email)
 }
 
-impl From<shared::sqlite::PoolError> for CreateAccountError {
-    fn from(_: shared::sqlite::PoolError) -> Self {
+impl From<sqlite::PoolError> for CreateAccountError {
+    fn from(_: sqlite::PoolError) -> Self {
         CreateAccountError::Internal
     }
 }

@@ -3,15 +3,15 @@
 //! database file or a connection.
 //!
 //! [`Db`] wraps one `rusqlite::Connection` and holds every query, migrated
-//! on open via `shared::migrations::apply` (the same runner `engine::store`
+//! on open via `sqlite::migrations::apply` (the same runner `engine::store`
 //! uses). Handlers reach it through [`Database`]: read-only connections for
 //! reads, one writing connection for writes, each on its own thread.
 
 pub use engine_protocol::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use parking_lot::Mutex;
 use shared::auth::TokenHash;
-use shared::sqlite::{Pool, PoolError, Unsigned};
 use shared::xmr_amount::Piconero;
+use sqlite::{Pool, PoolError, Unsigned};
 use std::sync::Arc;
 
 use crate::fx_provider_settings::FxProviderSettings;
@@ -41,7 +41,7 @@ pub fn parse_fx_providers(raw: &str) -> Vec<String> {
 }
 
 /// Every migration file, applied in order, exactly once each — tracked in
-/// `schema_migrations` (created by `shared::migrations::apply`), so
+/// `schema_migrations` (created by `sqlite::migrations::apply`), so
 /// re-running this against an already-migrated database file (e.g. every
 /// process restart) is a safe no-op.
 const MIGRATIONS: &[(i64, &str)] = &[
@@ -175,7 +175,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
-    shared::migrations::apply(conn, MIGRATIONS)
+    sqlite::migrations::apply(conn, MIGRATIONS)
 }
 
 /// Known credentials every test fixture seeds via [`Db::seed_test_admin`] -
@@ -232,16 +232,15 @@ impl Db {
         &self.conn
     }
 
-    /// One statement from the admin Query page (`shared::sqlite_query`),
+    /// One statement from the admin Query page (`sqlite::query`),
     /// read-only and with the secret columns read as NULL
     /// (`http::query_page::columns`).
     pub fn admin_query(
         &self,
         sql: &str,
-        limits: shared::sqlite_query::Limits,
-    ) -> std::result::Result<shared::sqlite_query::QueryResult, shared::sqlite_query::QueryError>
-    {
-        shared::sqlite_query::run(
+        limits: sqlite::query::Limits,
+    ) -> std::result::Result<sqlite::query::QueryResult, sqlite::query::QueryError> {
+        sqlite::query::run(
             &self.conn,
             sql,
             limits,
@@ -250,8 +249,8 @@ impl Db {
     }
 
     /// The tables the Query page lists.
-    pub fn admin_query_schema(&self) -> Result<Vec<shared::sqlite_query::TableInfo>> {
-        Ok(shared::sqlite_query::schema(
+    pub fn admin_query_schema(&self) -> Result<Vec<sqlite::query::TableInfo>> {
+        Ok(sqlite::query::schema(
             &self.conn,
             &crate::http::query_page::columns::COLUMNS,
         )?)
@@ -413,7 +412,7 @@ impl Db {
 pub type SharedDb = Arc<Mutex<Db>>;
 
 /// How monokulo reaches its database: a pool of read-only connections and
-/// one writing connection, each on its own thread (`shared::sqlite::Pool`).
+/// one writing connection, each on its own thread (`sqlite::Pool`).
 /// Reads run side by side (WAL) and never wait behind a write; writes run
 /// one at a time, in order. Nothing runs on a Tokio worker thread.
 ///
@@ -996,7 +995,7 @@ impl Db {
     }
 
     /// The writing connection to the database file at `path`: WAL, foreign
-    /// keys and the rest of `shared::sqlite::configure_writer`, then any
+    /// keys and the rest of `sqlite::configure_writer`, then any
     /// pending migrations.
     pub fn open_file(path: &str) -> Result<Self> {
         Self::writer(Connection::open(path)?)
@@ -1005,7 +1004,7 @@ impl Db {
     /// `conn` set up to write: recording the POS orders its commits change
     /// (before migrating, so a migration may change them too).
     fn writer(conn: Connection) -> Result<Self> {
-        shared::sqlite::configure_writer(&conn)?;
+        sqlite::configure_writer(&conn)?;
         let changed_orders = order_changes::record(&conn)?;
         apply_migrations(&conn)?;
         Ok(Db {
@@ -1017,7 +1016,7 @@ impl Db {
     /// A read-only connection to the database file at `path`, for the read
     /// pool.
     pub fn open_reader(path: &str) -> Result<Self> {
-        Ok(Self::reader(shared::sqlite::open_reader(path)?))
+        Ok(Self::reader(sqlite::open_reader(path)?))
     }
 
     /// `conn` for reading only: it records no changes, as it makes none.
@@ -1034,9 +1033,9 @@ impl Db {
     }
 
     /// Runs `f` with this connection refusing writes, as the read pool's
-    /// connections do (`shared::sqlite::read_only`).
+    /// connections do (`sqlite::read_only`).
     pub fn read_only<T>(&self, f: impl FnOnce() -> T) -> T {
-        shared::sqlite::read_only(&self.conn, f)
+        sqlite::read_only(&self.conn, f)
     }
 
     pub fn into_shared(self) -> SharedDb {
@@ -3413,7 +3412,7 @@ mod tests {
     #[test]
     fn a_connection_that_cannot_announce_pos_order_changes_cannot_make_them() {
         let conn = Connection::open_in_memory().unwrap();
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
         // Without foreign keys, no store is needed.
         conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         conn.execute(
@@ -4027,7 +4026,7 @@ mod tests {
     #[test]
     fn migration_0042_names_existing_woocommerce_connections() {
         let conn = Connection::open_in_memory().unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..41]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..41]).unwrap();
         // Only the integrations matter here, not the stores they belong to.
         conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         for (id, kind) in [("int_1", "woocommerce"), ("int_2", "custom")] {
@@ -4039,7 +4038,7 @@ mod tests {
             .unwrap();
         }
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let names: Vec<(String, String)> = conn
             .prepare("SELECT kind, name FROM store_integrations ORDER BY id")
@@ -4064,7 +4063,7 @@ mod tests {
     #[test]
     fn migration_0042_records_plugins_that_connected_before_integrations() {
         let conn = Connection::open_in_memory().unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..41]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..41]).unwrap();
         conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
         for (store, site) in [
             ("s-old", "old.example"),
@@ -4099,7 +4098,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let rows: Vec<(String, String, String, String, i64, i64)> = conn
             .prepare(
@@ -4142,7 +4141,7 @@ mod tests {
     #[test]
     fn migration_0028_gives_existing_stores_the_default_settings() {
         let conn = Connection::open_in_memory().unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..27]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..27]).unwrap();
         conn.execute("INSERT INTO users (id, email, password_hash, created_at_utc) VALUES ('user-1', 'a@example.com', 'hash', 1000)", []).unwrap();
         conn.execute(
             "INSERT INTO store_connections
@@ -4152,7 +4151,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let db = Db::reader(conn);
         let row = db
@@ -4172,7 +4171,7 @@ mod tests {
         // land on "coingecko", not be left pointing at a provider name
         // that no longer means anything.
         let conn = Connection::open_in_memory().unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..7]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..7]).unwrap();
         conn.execute(
             "INSERT INTO users (id, email, password_hash, created_at) VALUES ('user-1', 'a@example.com', 'hash', 1000)",
             [],
@@ -4186,7 +4185,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let db = Db::reader(conn);
         let row = db
@@ -4199,7 +4198,7 @@ mod tests {
     #[test]
     fn migration_0027_turns_the_single_provider_into_a_one_element_list() {
         let conn = Connection::open_in_memory().unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..26]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..26]).unwrap();
         conn.execute(
             "INSERT INTO users (id, email, password_hash, created_at_utc) VALUES ('user-1', 'a@example.com', 'hash', 1000)",
             [],
@@ -4213,7 +4212,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
 
         let db = Db::reader(conn);
         assert_eq!(

@@ -3,7 +3,7 @@
 //! already checked the person is an admin.
 //!
 //! - `POST /api/v1/admin/query`: one read-only statement
-//!   (`shared::sqlite_query::QueryRequest`), on a read connection, with the
+//!   (`sqlite::query::QueryRequest`), on a read connection, with the
 //!   engine's secret columns read as NULL (`store::query_columns`). A
 //!   statement that is refused or fails is still a `200`, carrying why.
 //! - `GET /api/v1/admin/query/schema`: the tables, their columns and rows.
@@ -16,7 +16,7 @@ use std::sync::atomic::AtomicUsize;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Json, Response};
-use shared::sqlite_query::{Limits, QueryRequest, QueryResponse, Running, SchemaResponse};
+use sqlite::query::{Limits, QueryRequest, QueryResponse, Running, SchemaResponse};
 
 use super::ApiError;
 use crate::store::Database;
@@ -62,7 +62,7 @@ pub(super) async fn schema(State(db): State<Database>) -> Response {
 mod tests {
     use axum::body::Body;
     use axum::http::Request;
-    use shared::sqlite_query::{Cell, QueryError};
+    use sqlite::query::{Cell, QueryError};
     use tower::ServiceExt as _;
 
     use super::*;
@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn every_column_is_classified() {
         let store = crate::store::Store::open_in_memory().unwrap();
-        let (missing, stale) = shared::sqlite_query::unclassified(
+        let (missing, stale) = sqlite::query::unclassified(
             store.conn_for_test(),
             &crate::store::query_columns::COLUMNS,
         )

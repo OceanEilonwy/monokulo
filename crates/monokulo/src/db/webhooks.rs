@@ -10,7 +10,7 @@
 
 use engine_protocol::ids::WebhookId;
 use rusqlite::{params, OptionalExtension as _};
-use shared::sqlite::Unsigned;
+use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
 

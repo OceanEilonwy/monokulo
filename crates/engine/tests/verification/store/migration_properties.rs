@@ -225,7 +225,7 @@ fn seed(conn: &Connection, version: usize, amount: i64, payload: &str) {
 fn historic(version: usize, amount: i64, payload: &str) -> Vec<u8> {
     let conn = Connection::open_in_memory().unwrap();
     configure_connection(&conn).unwrap();
-    shared::migrations::apply(&conn, &MIGRATIONS[..version]).unwrap();
+    sqlite::migrations::apply(&conn, &MIGRATIONS[..version]).unwrap();
     seed(&conn, version, amount, payload);
     conn.serialize(rusqlite::MAIN_DB).unwrap().to_vec()
 }
@@ -286,7 +286,7 @@ fn upgrade_from(
             }
         }))
         .unwrap();
-        let result = shared::migrations::apply(&conn, MIGRATIONS);
+        let result = sqlite::migrations::apply(&conn, MIGRATIONS);
         conn.authorizer(
             None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
         )
@@ -416,7 +416,7 @@ fn migration_crash_child() {
         rusqlite::hooks::Authorization::Allow
     }))
     .unwrap();
-    shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+    sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
     crash_checkpoint("migration.after_commit");
 }
 

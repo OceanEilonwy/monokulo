@@ -14,7 +14,7 @@
 //! - `GET /admin/query/export?db=&sql=&format=csv|json`: the
 //!   rows as a download, up to 10,000.
 //!
-//! The statement runs through `shared::sqlite_query` (on one of monokulo's
+//! The statement runs through `sqlite::query` (on one of monokulo's
 //! read connections, or the engine's): it can't change anything, and
 //! secret columns come back hidden. One query per admin, and two in all,
 //! run at once; past that, a 429. Every query is written to the logs as
@@ -30,7 +30,7 @@ use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
-use shared::sqlite_query::{
+use sqlite::query::{
     Cell, Limits, QueryError, QueryRequest, QueryResponse, QueryResult, Running, TableInfo,
 };
 
