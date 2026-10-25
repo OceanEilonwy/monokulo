@@ -633,7 +633,7 @@ async fn turning_checking_off_lets_every_node_back_and_on_again_carries_on() {
     // The chain grows while it is off; on again, it carries on from the
     // anchor it had, checking the blocks since.
     chain.mine_empty(3);
-    chain.install(&world.nodes[1], proven.height + 1);
+    world.nodes[1].install_chain(&chain, proven.height + 1);
     world.round_at(TEST_NOW + 60).await;
     assert_eq!(anchor(&world), Some(anchored), "not anchored afresh");
     assert_eq!(world.proven_tip(), chain.tip().proven());
