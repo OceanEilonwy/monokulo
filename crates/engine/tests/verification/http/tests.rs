@@ -623,7 +623,9 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
     let tenant = state
         .db
         .lock()
-        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(&created.secret_token))
+        .find_tenant_by_secret_token(&credentials::auth::RawToken::presented(
+            &created.secret_token,
+        ))
         .unwrap()
         .unwrap();
     let lost = state

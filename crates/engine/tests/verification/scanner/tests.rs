@@ -5064,10 +5064,13 @@ async fn a_payment_a_node_makes_up_under_a_real_blocks_transaction_id_is_never_c
     // its id (where the body is checked against the id), says the same.
     let (store, key_custody, handle, tenant_id, order_id) = setup().await;
     let store = store.into_shared();
-    let tenants = [(
-        engine_protocol::ids::TenantId::new(tenant_id.clone()),
-        handle,
-    )];
+    let tenants = live_tenants(
+        &store,
+        [(
+            engine_protocol::ids::TenantId::new(tenant_id.clone()),
+            handle,
+        )],
+    );
     let payments = |store: &crate::store::SharedStore| {
         store
             .lock()
