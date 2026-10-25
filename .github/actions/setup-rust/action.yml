@@ -66,13 +66,42 @@ runs:
     - name: Set the dev profile for CI
       shell: bash
       run: |
-        echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
         echo CARGO_PROFILE_DEV_DEBUG=line-tables-only >> "$GITHUB_ENV"
         echo CARGO_TERM_COLOR=always >> "$GITHUB_ENV"
+        if test '${{ runner.os }}' = Linux && test '${{ inputs.shared-key }}' = dev; then
+          # Experiment: the workspace's own crates unoptimised, through
+          # Cranelift; the dependencies stay on LLVM at opt-level 3. Shared
+          # and engine catch panics (std::panic::catch_unwind), which the
+          # rustup Cranelift build can't do (it has no landing pads), and
+          # key-custody instantiates aes's VAES code, which Cranelift
+          # replaces with a trap; those three stay on LLVM. Cargo reads
+          # package overrides only from a config file or --config, not
+          # from the environment, so they go in Cargo's home config.
+          echo CARGO_PROFILE_DEV_OPT_LEVEL=0 >> "$GITHUB_ENV"
+          echo CARGO_UNSTABLE_CODEGEN_BACKEND=true >> "$GITHUB_ENV"
+          echo CARGO_PROFILE_DEV_CODEGEN_BACKEND=cranelift >> "$GITHUB_ENV"
+          mkdir -p "${CARGO_HOME:-$HOME/.cargo}"
+          cat >> "${CARGO_HOME:-$HOME/.cargo}/config.toml" <<'TOML'
+        [profile.dev.package."*"]
+        codegen-backend = "llvm"
+        [profile.dev.package.shared]
+        codegen-backend = "llvm"
+        [profile.dev.package.engine]
+        codegen-backend = "llvm"
+        [profile.dev.package.key-custody]
+        codegen-backend = "llvm"
+        TOML
+        else
+          echo CARGO_PROFILE_DEV_OPT_LEVEL=3 >> "$GITHUB_ENV"
+        fi
     - uses: dtolnay/rust-toolchain@nightly
       with:
         components: ${{ inputs.components }}
         targets: wasm32-unknown-unknown${{ inputs.targets != '' && format(', {0}', inputs.targets) || '' }}
+    - if: runner.os == 'Linux' && inputs.shared-key == 'dev'
+      name: Install the Cranelift codegen backend
+      shell: bash
+      run: rustup component add rustc-codegen-cranelift-preview
     # The Rust cache keeps the dependencies but none of the workspace's own
     # crates (Cargo would rebuild them anyway: a checkout gives every file a
     # new modification time), so every job compiled all of them again, most

@@ -1,0 +1,130 @@
+name: experiment cranelift
+
+# Experiment only, never to merge: how long the workspace's own crates take
+# to build, and their tests to run, at each opt-level on LLVM and at 0 on
+# Cranelift, on one runner with the same dependencies (LLVM, opt-level 3).
+# Each configuration touches the workspace's sources first, so it rebuilds
+# every workspace crate and nothing else, without sccache.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    if: github.head_ref == 'experiment/cranelift-opt0'
+    name: compare on linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install sqlite3
+        run: sudo apt-get update -q && sudo apt-get install -y sqlite3
+      - uses: ./.github/actions/setup-rust
+        with:
+          shared-key: dev
+          save: 'false'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Build and test each configuration
+        shell: bash
+        run: |
+          unset RUSTC_WRAPPER
+          export CARGO_INCREMENTAL=0
+          nproc
+          build() { cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp "$@"; }
+          run() { cargo nextest run --workspace --locked --profile ci --features monokulo/snp "$@"; }
+          clif_all=(--config 'profile.dev.package.shared.codegen-backend="cranelift"'
+            --config 'profile.dev.package.engine.codegen-backend="cranelift"'
+            --config 'profile.dev.package.key-custody.codegen-backend="cranelift"')
+          s=$SECONDS
+          CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_CODEGEN_BACKEND=llvm build > build-warm.log 2>&1 || { tail -50 build-warm.log; exit 1; }
+          echo "| warm (dependencies, workspace at opt3) | $((SECONDS - s)) s | |" > results.md
+          for cfg in opt3 opt1 opt0 clif0 clifH; do
+            case $cfg in
+              opt*) export CARGO_PROFILE_DEV_OPT_LEVEL=${cfg#opt} CARGO_PROFILE_DEV_CODEGEN_BACKEND=llvm; extra=() ;;
+              clif0) export CARGO_PROFILE_DEV_OPT_LEVEL=0 CARGO_PROFILE_DEV_CODEGEN_BACKEND=cranelift; extra=("${clif_all[@]}") ;;
+              clifH) export CARGO_PROFILE_DEV_OPT_LEVEL=0 CARGO_PROFILE_DEV_CODEGEN_BACKEND=cranelift; extra=() ;;
+            esac
+            find crates xtask -name '*.rs' ! -name build.rs -not -path '*/node_modules/*' -exec touch {} +
+            s=$SECONDS
+            b=0; build "${extra[@]}" > "build-$cfg.log" 2>&1 || b=$?
+            bt=$((SECONDS - s))
+            if test $cfg = clif0; then
+              echo "| $cfg | $bt s (rc $b) | not run (panics can't be caught) |" >> results.md
+              continue
+            fi
+            s=$SECONDS
+            t=0; run "${extra[@]}" > "test-$cfg.log" 2>&1 || t=$?
+            tt=$((SECONDS - s))
+            cp target/nextest/ci/junit.xml "junit-$cfg.xml" || true
+            echo "| $cfg | $bt s (rc $b) | $tt s (rc $t) $(grep -E '^ *Summary' "test-$cfg.log" | tail -1) |" >> results.md
+            cat results.md
+          done
+          { echo '| configuration | build | tests |'; echo '| --- | --- | --- |'; cat results.md; } >> "$GITHUB_STEP_SUMMARY"
+          cat results.md
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: experiment-cranelift-linux
+          path: |
+            results.md
+            build-*.log
+            test-*.log
+            junit-*.xml
+          retention-days: 7
+
+  # Does Cranelift build the tests, and do they pass, on macOS and Windows?
+  # The hybrid configuration (shared, engine and key-custody on LLVM).
+  other:
+    if: github.head_ref == 'experiment/cranelift-opt0'
+    name: hybrid on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install sqlite3
+        if: runner.os == 'macOS'
+        run: command -v sqlite3 || brew install sqlite
+      - uses: ./.github/actions/setup-rust
+        with:
+          save: 'false'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Install the Cranelift codegen backend
+        shell: bash
+        run: rustup component add rustc-codegen-cranelift-preview
+      - name: Build the tests
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_DEV_OPT_LEVEL: '0'
+          CARGO_UNSTABLE_CODEGEN_BACKEND: 'true'
+          CARGO_PROFILE_DEV_CODEGEN_BACKEND: cranelift
+        run: |
+          cargo nextest run --no-run --workspace --locked --profile ci --features monokulo/snp --exclude xtask \
+            --config 'profile.dev.package."*".codegen-backend="llvm"' \
+            --config 'profile.dev.package.shared.codegen-backend="llvm"' \
+            --config 'profile.dev.package.engine.codegen-backend="llvm"' \
+            --config 'profile.dev.package.key-custody.codegen-backend="llvm"'
+      - name: Run the tests
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: '0'
+          CARGO_PROFILE_DEV_OPT_LEVEL: '0'
+          CARGO_UNSTABLE_CODEGEN_BACKEND: 'true'
+          CARGO_PROFILE_DEV_CODEGEN_BACKEND: cranelift
+        run: |
+          cargo nextest run --workspace --locked --profile ci --features monokulo/snp --exclude xtask \
+            --config 'profile.dev.package."*".codegen-backend="llvm"' \
+            --config 'profile.dev.package.shared.codegen-backend="llvm"' \
+            --config 'profile.dev.package.engine.codegen-backend="llvm"' \
+            --config 'profile.dev.package.key-custody.codegen-backend="llvm"'
