@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex};
 use clap::{CommandFactory, Parser, Subcommand};
 use cli_wallet::file::{WalletData, WalletFile};
 use cli_wallet::{
-    credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, Network,
-    WalletCtx, SEED_LANGUAGE_NAMES,
+    credentials_from_seed, credentials_from_spend_key_hex, generate_credentials, WalletCtx,
+    WalletNetwork, SEED_LANGUAGE_NAMES,
 };
 
 use commands::{CliError, Command, Session};
@@ -133,11 +133,11 @@ struct PromptLine {
 
 impl Cli {
     /// The network `--stagenet`/`--testnet` asked for, if either.
-    fn requested_network(&self) -> Option<Network> {
+    fn requested_network(&self) -> Option<WalletNetwork> {
         if self.testnet {
-            Some(Network::Testnet)
+            Some(WalletNetwork::Testnet)
         } else if self.stagenet {
-            Some(Network::Stagenet)
+            Some(WalletNetwork::Stagenet)
         } else {
             None
         }
@@ -145,7 +145,7 @@ impl Cli {
 
     /// Settings for wallets on `network`, with the command line's
     /// overrides.
-    fn ctx(&self, network: Network) -> WalletCtx {
+    fn ctx(&self, network: WalletNetwork) -> WalletCtx {
         let mut ctx = WalletCtx::for_network(network);
         if !self.daemon_address.is_empty() {
             ctx.node_urls = self
@@ -202,6 +202,19 @@ fn prompt(question: &str) -> Result<String, CliError> {
     Ok(line.trim().to_string())
 }
 
+/// [`prompt`] for a secret (a seed, a spend key): read without echo when
+/// standard input is a terminal, as `monero-wallet-cli` does, so it stays
+/// out of the screen and its scrollback. Piped input (the e2e scripts')
+/// is read as a plain line.
+fn prompt_secret(question: &str) -> Result<String, CliError> {
+    if !std::io::stdin().is_terminal() {
+        return prompt(question);
+    }
+    let secret = blocking(|| rpassword::prompt_password(question))
+        .map_err(|e| format!("failed to read input: {e}"))?;
+    Ok(secret.trim().to_string())
+}
+
 /// Waits for the user without holding up the runtime: while this worker
 /// thread blocks, its other tasks move to another worker.
 fn blocking<T>(wait: impl FnOnce() -> T) -> T {
@@ -221,17 +234,17 @@ fn create_wallet(cli: &Cli, ctx: &WalletCtx) -> Result<Option<PathBuf>, CliError
         let credentials = if cli.restore_deterministic_wallet {
             let seed = match &cli.electrum_seed {
                 Some(seed) => seed.clone(),
-                None => prompt("Specify Electrum seed: ")?,
+                None => prompt_secret("Specify Electrum seed: ")?,
             };
-            credentials_from_seed(network, &seed)?
+            credentials_from_seed(network.into(), &seed)?
         } else {
-            generate_credentials(network, &cli.mnemonic_language)?
+            generate_credentials(network.into(), &cli.mnemonic_language)?
         };
         (name, credentials)
     } else if let Some(name) = &cli.generate_from_spend_key {
         (
             name,
-            credentials_from_spend_key_hex(network, &prompt("Secret spend key: ")?)?,
+            credentials_from_spend_key_hex(network.into(), &prompt_secret("Secret spend key: ")?)?,
         )
     } else {
         return Ok(None);
@@ -253,7 +266,7 @@ fn create_wallet(cli: &Cli, ctx: &WalletCtx) -> Result<Option<PathBuf>, CliError
 async fn run(mut cli: Cli) -> Result<(), CliError> {
     let requested = cli.requested_network();
     // A new wallet goes on the network asked for, stagenet by default.
-    let ctx = cli.ctx(requested.unwrap_or(Network::Stagenet));
+    let ctx = cli.ctx(requested.unwrap_or(WalletNetwork::Stagenet));
     let created = create_wallet(&cli, &ctx)?;
     let command = match cli.command.take() {
         Some(TopCommand::Completions { shell }) => {
@@ -274,7 +287,7 @@ async fn run(mut cli: Cli) -> Result<(), CliError> {
     // flag asked for one (and then it has to match).
     let ctx = match requested {
         Some(_) => ctx,
-        None => cli.ctx(WalletFile::load(&path)?.data.network()?),
+        None => cli.ctx(WalletFile::load(&path)?.data.network),
     };
     let mut session = Session::open(&ctx, &path, cli.do_not_relay)?;
     match command {

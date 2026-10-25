@@ -24,7 +24,7 @@ use rusqlite::{params, Connection, OpenFlags, Transaction};
 use crate::amount::Unit;
 use crate::file::{OutputRecord, PendingTx, SentDestination, SentRecord, WalletData};
 use crate::meta::{AccountMeta, AddressBookEntry, Settings, WalletMeta};
-use crate::WalletError;
+use crate::{WalletError, WalletNetwork};
 
 /// `PRAGMA user_version` of a wallet file this build reads and writes.
 /// Bumped whenever [`SCHEMA`] changes incompatibly.
@@ -276,6 +276,11 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
         unit,
         skip_transfer_confirmation,
     ) = row;
+    // The schema allows only the networks this wallet works on; this is
+    // where the name becomes one, so no wallet in memory is ever mainnet.
+    let network: WalletNetwork = network.parse().map_err(|e: WalletError| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, e.into())
+    })?;
     let unit = Unit::parse(&unit).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
             8,
@@ -429,8 +434,6 @@ fn read_tables(tx: &Transaction) -> rusqlite::Result<WalletData> {
 /// creating the database (and its tables) if it's new. Its permissions are
 /// set to its owner's alone first: it holds spend keys.
 pub(crate) fn write(path: &Path, data: &WalletData) -> Result<(), WalletError> {
-    // Checked here as well as by the schema, for a clear message.
-    data.network()?;
     let mut conn = open(path, true)?;
     #[cfg(unix)]
     {
@@ -481,7 +484,7 @@ fn write_tables(tx: &Transaction, data: &WalletData, path: &Path) -> Result<(), 
                              skip_transfer_confirmation)
          VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            data.network,
+            data.network.name(),
             data.address,
             data.private_spend_key,
             data.private_view_key,
@@ -632,7 +635,7 @@ pub(crate) fn tables(path: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Network, WalletCredentials};
+    use crate::WalletCredentials;
 
     fn temp_path(test: &str) -> std::path::PathBuf {
         let dir =
@@ -645,7 +648,7 @@ mod tests {
     /// A wallet with something in every table.
     fn full_wallet() -> WalletData {
         let mut data = WalletData::new(
-            Network::Testnet,
+            WalletNetwork::Testnet,
             WalletCredentials {
                 address: "9address".into(),
                 private_spend_key_hex: "11".repeat(32),
@@ -747,7 +750,7 @@ mod tests {
     fn a_wallet_with_nothing_set_stores_just_its_keys() {
         let path = temp_path("bare");
         let data = WalletData::new(
-            Network::Stagenet,
+            WalletNetwork::Stagenet,
             WalletCredentials {
                 address: "5address".into(),
                 private_spend_key_hex: "11".repeat(32),
