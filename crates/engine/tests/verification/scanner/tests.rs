@@ -4937,16 +4937,52 @@ async fn a_payment_a_node_makes_up_under_a_real_blocks_transaction_id_is_never_c
             .unwrap()
     };
 
-    // Block 2 really holds a transaction that pays nobody; the node sends
-    // the fixture's payment under its id.
-    let real = conflicting_tx(1);
-    let lying = FakeDaemonClient::new();
-    lying.push_block("h1", vec![]);
-    lying.push_block("h2", vec![real.clone()]);
-    lying.send_in_blocks_as(&tx_id_hex(&real), fixture_tx());
-    run_scan_tick(&store, &key_custody, &lying, "mainnet", &tenants, 20, 0)
-        .await
-        .unwrap();
+    // Block 2 really holds the fixture's payment; the node sends a made-up
+    // payment of 1 piconero to the same order under its id. Through the
+    // engine's own pinned fallback client, whose cache of fetched blocks
+    // lasts between rounds (a reorg depth of 0 lets it keep block 2).
+    let real = fixture_tx();
+    let txid = tx_id_hex(&real);
+    let node = Arc::new(FakeDaemonClient::new());
+    node.push_block("h1", vec![]);
+    node.push_block("h2", vec![real.clone()]);
+    node.send_in_blocks_as(&txid, payment_tx(1, FIXTURE_SUBADDRESS.minor, 1));
+    let client = FallbackDaemonClient::new(vec![FallbackNode {
+        label: "lying".to_owned(),
+        client: Arc::<FakeDaemonClient>::clone(&node),
+    }]);
+    let db = crate::store::Db::over_shared(Arc::clone(&store));
+    let state = crate::work::ScanState::default();
+    let round = async || {
+        let pinned = client.pin();
+        let inputs = crate::work::RoundInputs {
+            db: &db,
+            custody: &key_custody,
+            daemon: &pinned,
+            network: Network::Mainnet,
+            tenants: &tenants,
+            reorg_check_depth: 0,
+            grace_period_seconds: 0,
+            scan_chunk_memory_budget_mb: crate::engine_settings::EngineSettings::defaults()
+                .scan
+                .load()
+                .scan_chunk_memory_budget_mb,
+            order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
+        };
+        crate::work::run_round(&state, &inputs, state.tuning().round_budget).await
+    };
+    // The first round seeds; the next reaches block 2.
+    let seeded = round().await;
+    let report = if store.lock().max_scanned_height(Network::Mainnet).unwrap() == Some(1) {
+        round().await
+    } else {
+        seeded
+    };
+    assert_eq!(
+        report.outcomes[crate::work::Tier::Blocks],
+        crate::work::TierOutcome::Blocked(crate::work::Wait::NodeUnconfirmedTransaction),
+        "the node is named as the reason blocks stopped"
+    );
     assert!(
         payments(&store).is_empty(),
         "a made-up payment was credited"
@@ -4954,21 +4990,22 @@ async fn a_payment_a_node_makes_up_under_a_real_blocks_transaction_id_is_never_c
     assert_eq!(
         store.lock().max_scanned_height(Network::Mainnet).unwrap(),
         Some(1),
-        "the block isn't passed over either: an honest node scans it again"
+        "the block isn't passed over either"
+    );
+    assert!(
+        client.in_cooldown(0),
+        "the node that couldn't back its body counts as failed"
     );
 
-    // The same block shape from a node sending the paying transaction itself
-    // the same way: fetched again it is what came, and it is credited.
-    let honest = FakeDaemonClient::new();
-    honest.push_block("h1", vec![]);
-    honest.push_block("h2", vec![fixture_tx()]);
-    honest.send_in_blocks_as(&tx_id_hex(&fixture_tx()), fixture_tx());
-    run_scan_tick(&store, &key_custody, &honest, "mainnet", &tenants, 20, 0)
-        .await
-        .unwrap();
+    // The node now sends the transaction itself. The block the made-up body
+    // came in was let go of, so it is fetched again rather than scanned
+    // from what came before: confirmed, and credited for what it pays.
+    node.send_in_blocks_as(&txid, real);
+    round().await.into_status_result().unwrap();
     let credited = payments(&store);
     assert_eq!(credited.len(), 1);
-    assert_eq!(credited[0].txid, tx_id_hex(&fixture_tx()));
+    assert_eq!(credited[0].txid, txid);
+    assert_eq!(credited[0].amount_piconero, FIXTURE_AMOUNT_PICONERO);
     assert_eq!(credited[0].block_height, Some(2));
 }
 

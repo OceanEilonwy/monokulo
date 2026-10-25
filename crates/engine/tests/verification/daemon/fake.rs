@@ -200,10 +200,10 @@ impl FakeDaemonClient {
     }
 
     /// Has every block holding transaction `txid` send `body` under its id
-    /// instead, pruned without the hash of the part left out
-    /// ([`IdBinding::Listed`]), as `get_blocks.bin` sends a block's
-    /// transactions. A lying node can send any body there; fetched by its
-    /// id, the transaction is still the one the block holds.
+    /// instead. Every block transaction comes [`IdBinding::Listed`], as
+    /// monerod's `get_blocks.bin` sends them (pruned, without the hash of
+    /// the part left out), so a lying node can send any body there; fetched
+    /// by its id, the transaction is still the one the block holds.
     pub fn send_in_blocks_as(&self, txid: &str, body: Transaction) {
         self.state.lock().listed.insert(txid.to_owned(), body);
     }
@@ -438,14 +438,8 @@ impl MoneroDaemonClient for FakeDaemonClient {
                     .map(|tx| ScanTx::of(listed(tx).unwrap_or(tx)))
                     .collect(),
                 txids: block.txs.iter().map(tx_id_hex).collect(),
-                bindings: block
-                    .txs
-                    .iter()
-                    .map(|tx| match listed(tx) {
-                        Some(_) => IdBinding::Listed,
-                        None => IdBinding::Computed,
-                    })
-                    .collect(),
+                // As monerod sends them: nothing ties a body to its id.
+                bindings: vec![IdBinding::Listed; block.txs.len()],
                 wire_bytes: block
                     .txs
                     .iter()

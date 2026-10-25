@@ -29,7 +29,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer, PoolOutlook};
+use crate::daemon::{
+    ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer, PoolOutlook, ScanTx,
+};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -550,6 +552,11 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     ) -> Result<Vec<FetchedTx>, DaemonError> {
         self.one(|c| c.get_transactions_with_ids(txids)).await
     }
+    /// The pinned node, which sent the block too: one that can't back a
+    /// body it sent cools down, and the next tick pins another.
+    async fn confirm_listed(&self, txid: &str, tx: &ScanTx) -> Result<(), DaemonError> {
+        self.one(|c| c.confirm_listed(txid, tx)).await
+    }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.one(|c| c.locate_transaction(txid)).await
     }
@@ -717,6 +724,10 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         txids: &[String],
     ) -> Result<Vec<FetchedTx>, DaemonError> {
         self.failover(|c| c.get_transactions_with_ids(txids)).await
+    }
+
+    async fn confirm_listed(&self, txid: &str, tx: &ScanTx) -> Result<(), DaemonError> {
+        self.failover(|c| c.confirm_listed(txid, tx)).await
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
