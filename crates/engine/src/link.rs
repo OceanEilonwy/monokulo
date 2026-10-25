@@ -233,7 +233,7 @@ impl Link {
         self.state
             .lock()
             .in_minute(service_runtime::time::now_unix(), |minute| {
-                minute.failures += 1
+                minute.failures += 1;
             });
     }
 

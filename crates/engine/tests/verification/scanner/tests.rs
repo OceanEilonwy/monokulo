@@ -9417,7 +9417,7 @@ async fn a_pruned_transaction_scans_to_the_same_result_as_the_whole_one() {
     blob.extend(monero::consensus::encode::serialize(
         whole.rct_signatures.sig.as_ref().unwrap(),
     ));
-    let pruned = shared::monero_tx::decode_pruned(&blob).unwrap();
+    let pruned = crate::monero_tx::decode_pruned(&blob).unwrap();
     let txid = tx_id_hex(&whole);
 
     let from_whole = scan_transaction(&key_custody, handle, &whole, 0..3)

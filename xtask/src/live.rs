@@ -1248,18 +1248,18 @@ mod tests {
                 BROWSER_NEEDS.to_string(),
             )]),
             inconclusive: BTreeMap::from([(
-                "shared › live_cmc".to_string(),
+                "pricing › live_cmc".to_string(),
                 "rate-limited (HTTP 429)".to_string(),
             )]),
         };
         let failed = |class: &str, name: &str| case(class, name, TestStatus::Failed);
-        let cases = [failed("pos.spec.js", "pays"), failed("shared", "live_dns")];
+        let cases = [failed("pos.spec.js", "pays"), failed("pricing", "live_dns")];
         let text = markdown(&live, cases.iter());
         assert_eq!(
             annotations(&live, cases.iter()),
             "::error title=Live test failed::pos.spec.js › pays: Funded stagenet test wallets was unreachable - boom\n\
-             ::error title=Live test failed::shared › live_dns: a test failure: its services answered - boom\n\
-             ::warning title=Live test inconclusive::shared › live_cmc: rate-limited (HTTP 429)\n"
+             ::error title=Live test failed::pricing › live_dns: a test failure: its services answered - boom\n\
+             ::warning title=Live test inconclusive::pricing › live_cmc: rate-limited (HTTP 429)\n"
         );
         assert!(
             text.contains(
@@ -1279,12 +1279,12 @@ mod tests {
         );
         assert!(
             text.contains(
-                "- <code>shared › live_dns</code>: a test failure: its services answered"
+                "- <code>pricing › live_dns</code>: a test failure: its services answered"
             ),
             "{text}"
         );
         assert!(
-            text.contains("- ⚠️ <code>shared › live_cmc</code>: rate-limited (HTTP 429)"),
+            text.contains("- ⚠️ <code>pricing › live_cmc</code>: rate-limited (HTTP 429)"),
             "{text}"
         );
     }
@@ -1342,12 +1342,12 @@ mod tests {
         fs::write(
             &path,
             format!(
-                r#"<testsuites><testsuite name="shared">
-<testcase classname="shared" name="coinmarketcap::tests::live_cmc"><system-out>attempt 1: rate-limited
+                r#"<testsuites><testsuite name="pricing">
+<testcase classname="pricing" name="coinmarketcap::tests::live_cmc"><system-out>attempt 1: rate-limited
 {INCONCLUSIVE}still rate-limited (HTTP 429)
 </system-out></testcase>
-<testcase classname="shared" name="live_dns"><system-out>resolved</system-out></testcase>
-<testcase classname="shared" name="live_failed"><failure message="boom"/><system-out>{INCONCLUSIVE}not this one</system-out></testcase>
+<testcase classname="pricing" name="live_dns"><system-out>resolved</system-out></testcase>
+<testcase classname="pricing" name="live_failed"><failure message="boom"/><system-out>{INCONCLUSIVE}not this one</system-out></testcase>
 </testsuite></testsuites>"#
             ),
         )
@@ -1355,7 +1355,7 @@ mod tests {
         assert_eq!(
             inconclusive(&path).unwrap(),
             BTreeMap::from([(
-                "shared › coinmarketcap::tests::live_cmc".to_string(),
+                "pricing › coinmarketcap::tests::live_cmc".to_string(),
                 "still rate-limited (HTTP 429)".to_string()
             )])
         );

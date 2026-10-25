@@ -53,7 +53,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"
-shared = { path = "../shared" }
 engine-protocol = { path = "../engine-protocol" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
@@ -230,7 +229,7 @@ cargo_common_metadata = "allow"         # never published
 multiple_crate_versions = "allow"       # set by the dependency tree, not this crate
 
 # Layout and naming taste that would churn every file for no defect caught.
-absolute_paths = "allow"                # the code names `shared::...` paths in full on purpose
+absolute_paths = "allow"                # the code names other crates' paths (`engine_protocol::...`) in full on purpose
 arbitrary_source_item_ordering = "allow"
 min_ident_chars = "allow"
 single_char_lifetime_names = "allow"

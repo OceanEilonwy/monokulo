@@ -782,13 +782,13 @@ fn decode_tx_blob(
     prunable_hash: Option<&[u8; 32]>,
     claimed: Option<&str>,
 ) -> Result<FetchedTx, String> {
-    let tx = shared::monero_tx::decode_any(blob)
+    let tx = crate::monero_tx::decode_any(blob)
         .map_err(|e| format!("failed to parse a transaction blob: {e}"))?;
-    let computed = if shared::monero_tx::is_pruned(&tx) {
+    let computed = if crate::monero_tx::is_pruned(&tx) {
         // An all-zero hash is a node saying it has none, not a hash.
         prunable_hash
             .filter(|hash| **hash != [0; 32])
-            .and_then(|hash| shared::monero_tx::pruned_txid(&tx, hash))
+            .and_then(|hash| crate::monero_tx::pruned_txid(&tx, hash))
     } else {
         Some(tx.hash())
     }
@@ -1140,7 +1140,7 @@ impl PoolView {
             // fetched (and reported) the same way.
             if self.bodies.len() < POOL_BODIES_MAX {
                 match decode_tx_blob(&blob, None, Some(&txid)) {
-                    Ok(fetched) if !shared::monero_tx::is_pruned(&fetched.tx) => {
+                    Ok(fetched) if !crate::monero_tx::is_pruned(&fetched.tx) => {
                         self.bodies.insert(txid.clone(), fetched.tx);
                     }
                     Ok(_) => {}
@@ -2719,7 +2719,7 @@ mod wire_tests {
             .unwrap();
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0].txid, a);
-        assert!(!shared::monero_tx::is_pruned(&bodies[0].tx));
+        assert!(!crate::monero_tx::is_pruned(&bodies[0].tx));
         assert_eq!(bodies[0].tx.prefix, whole_tx().prefix);
         assert!(node.requests_to("/get_transactions").is_empty());
 
@@ -3036,7 +3036,7 @@ mod wire_tests {
         // Pruned, with the hash of the rest: computed, and checked.
         let fetched = decode_tx_blob(&blob, Some(&prunable), None).unwrap();
         assert_eq!(fetched.txid, txid);
-        assert!(shared::monero_tx::is_pruned(&fetched.tx));
+        assert!(crate::monero_tx::is_pruned(&fetched.tx));
         assert_eq!(
             decode_tx_blob(&blob, Some(&prunable), Some(&txid))
                 .unwrap()
@@ -3142,7 +3142,7 @@ mod wire_tests {
         let fetched = client.get_transactions_with_ids(&asked).await.unwrap();
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].txid, a);
-        assert!(shared::monero_tx::is_pruned(&fetched[0].tx));
+        assert!(crate::monero_tx::is_pruned(&fetched[0].tx));
 
         // The same transaction, found with where it is.
         let (client, node) = scripted().await;
@@ -3966,7 +3966,7 @@ mod live_node_tests {
             assert_eq!(entry.prunable_hash.len(), 64);
             let fetched = entry.fetched().unwrap();
             assert!(pool.contains(&fetched.txid));
-            assert!(shared::monero_tx::is_pruned(&fetched.tx));
+            assert!(crate::monero_tx::is_pruned(&fetched.tx));
         }
     }
 

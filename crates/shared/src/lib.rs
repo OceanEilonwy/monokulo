@@ -1,8 +1,0 @@
-//! `shared`: logic shared between the engine (`engine`) and the
-//! monokulo (accounts, stores, merchant pages): secret-token hashing, HMAC
-//! webhook signing, an argon2 password-hashing helper, a generic SQLite
-//! migration runner, and helpers both sides use
-//! for Monero data (`network`, `monero_tx`). Key custody has a crate of its own
-//! (`key-custody`).
-
-pub mod monero_tx;

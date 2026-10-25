@@ -175,7 +175,7 @@ fn user_version(conn: &Connection, path: &Path) -> Result<u32, WalletError> {
 /// negative one read back, is an error rather than a silent wrap. The same
 /// type as `sqlite::Unsigned`, which engine and monokulo store
 /// piconero through; copied rather than depended on, since this crate stays
-/// clear of `shared`'s dependencies.
+/// clear of the `sqlite` crate's dependencies (its pools need Tokio).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Unsigned<T>(T);
 

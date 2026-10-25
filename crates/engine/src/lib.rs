@@ -34,6 +34,7 @@ pub mod http;
 pub mod key_custody;
 pub mod link;
 pub mod loops;
+pub mod monero_tx;
 pub mod network;
 pub mod node_events;
 #[cfg(any(test, feature = "fuzzing"))]

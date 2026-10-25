@@ -192,7 +192,7 @@ pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
 /// so the monokulo database can reuse it without a second, hand-rolled copy.
 /// This wrapper just supplies the engine's own migration list, which - being
 /// `include_str!("../../migrations/...")` paths relative to this crate - can't live in
-/// `shared` itself.
+/// the `sqlite` crate itself.
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
     sqlite::migrations::apply(conn, MIGRATIONS)
 }

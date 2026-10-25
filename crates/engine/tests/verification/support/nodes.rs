@@ -217,7 +217,7 @@ impl MoneroDaemonClient for AdversarialNode {
                     if let Some(base) = &fetched.tx.rct_signatures.sig {
                         let mut blob = monero::consensus::encode::serialize(&fetched.tx.prefix);
                         blob.extend(monero::consensus::encode::serialize(base));
-                        fetched.tx = shared::monero_tx::decode_pruned(&blob)
+                        fetched.tx = crate::monero_tx::decode_pruned(&blob)
                             .map_err(|e| DaemonError::Request(e.to_string()))?;
                     }
                 }

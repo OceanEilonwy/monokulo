@@ -113,7 +113,7 @@ pub struct ChainBlock {
     pub txs: Vec<ScanTx>,
     /// The id of each of `txs` (lowercase hex), in order. They come with
     /// the block: a pruned transaction can't be hashed to its id
-    /// (`shared::monero_tx`).
+    /// (`crate::monero_tx`).
     pub txids: Vec<String>,
     /// The block's size as it came from the node, in bytes: what block
     /// requests are sized and the block cache is counted by.
