@@ -475,17 +475,23 @@ pub(super) async fn add_created(
         },
     )
     .await;
-    let message = match added {
-        Ok(wallet) => return Ok(wallet),
-        Err(AddWalletError::Invalid(message)) => message,
-        Err(AddWalletError::AlreadyAdded(existing)) => already_added(&existing),
-        Err(AddWalletError::Internal) => "The wallet couldn't be added right now.".to_owned(),
-    };
     // The phrase backed up on that page is registered nowhere: say so
     // plainly, rather than showing a new phrase as if nothing happened.
-    let message = format!(
-        "{message} Nothing was saved, so the recovery phrase you backed up isn't connected to Monokulo. Start again below."
-    );
+    // Unless the account already has it (the same page sent twice): then
+    // it is connected, as that wallet.
+    let nothing_saved = |message: String| {
+        format!(
+            "{message} Nothing was saved, so the recovery phrase you backed up isn't connected to Monokulo. Start again below."
+        )
+    };
+    let message = match added {
+        Ok(wallet) => return Ok(wallet),
+        Err(AddWalletError::Invalid(message)) => nothing_saved(message),
+        Err(AddWalletError::AlreadyAdded(existing)) => already_added(&existing),
+        Err(AddWalletError::Internal) => {
+            nothing_saved("The wallet couldn't be added right now.".to_owned())
+        }
+    };
     Err(Box::new(
         render_choice(
             state,
@@ -864,6 +870,7 @@ async fn retire_state(
                 .payable_until
                 .filter(|_| status.payable_orders > 0)
                 .map(|at| clock.text(at)),
+            catching_up: status.scans_behind > 0,
         },
         Err(e) => {
             tracing::warn!(error = %e, wallet = %wallet.id, "could not ask the engine whether a wallet is in use");
@@ -965,8 +972,9 @@ pub struct RetireForm {
 
 /// `POST /account/wallets/{id}/retire`: the wallet is offered nowhere
 /// again and its keys are deleted.
-/// Refused unless its name was typed, while a store uses it, or while an
-/// order on it can still be paid.
+/// Refused unless its name was typed, while a store uses it, while an
+/// order on it can still be paid, or while the engine is still reading
+/// blocks for it.
 pub async fn retire(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -983,39 +991,92 @@ pub async fn retire(
         let message = format!("Type \u{201c}{}\u{201d} exactly to retire it.", wallet.name);
         return render_retire(&state, &user, wallet, Some(message)).await;
     }
-    // The engine first: it deletes the keys, and refuses while a store of
-    // any account uses them or an order on them can still be paid.
+    // Monokulo's own condition first (`Db::retire_wallet` refuses while a
+    // store here is on it), so the engine never deletes keys monokulo then
+    // won't record as retired.
+    let on_it = current_stores(&state, &user, &wallet).await;
+    if !on_it.is_empty() {
+        let message = if on_it.len() == 1 {
+            format!(
+                "It can't be retired yet: {} takes payments into it.",
+                on_it[0].name
+            )
+        } else {
+            format!(
+                "It can't be retired yet: {} stores take payments into it.",
+                on_it.len()
+            )
+        };
+        return render_retire(&state, &user, wallet, Some(message)).await;
+    }
+    // Then the engine: it deletes the keys, and refuses while a store of
+    // any account uses them, an order on them can still be paid, or a row
+    // scanning them is behind the chain.
     let retired_at = match state
         .engine
         .client
         .retire_wallet(&wallet.engine_wallet_id)
         .await
     {
-        Ok(at) => at,
+        Ok(at) => Some(at),
         Err(crate::engine_client::EngineClientError::EngineError { status, message })
             if status == StatusCode::CONFLICT =>
         {
             let message = format!("It can't be retired yet: {message}.");
             return render_retire(&state, &user, wallet, Some(message)).await;
         }
+        // Already retired there, though not here (an earlier retire whose
+        // record failed): recorded now, from the engine's time.
+        Err(crate::engine_client::EngineClientError::EngineError { status, .. })
+            if status == StatusCode::NOT_FOUND =>
+        {
+            state
+                .engine
+                .client
+                .wallet_status(&wallet.engine_wallet_id)
+                .await
+                .ok()
+                .and_then(|status| status.retired_at)
+        }
         Err(e) => {
             tracing::error!(error = %e, wallet = %wallet.id, "the engine could not retire a wallet");
-            let message =
-                "The wallet couldn't be retired right now. Nothing changed; try again in a minute."
-                    .to_owned();
-            return render_retire(&state, &user, wallet, Some(message)).await;
+            None
         }
     };
+    let Some(retired_at) = retired_at else {
+        let message =
+            "The wallet couldn't be retired right now. Nothing changed; try again in a minute."
+                .to_owned();
+        return render_retire(&state, &user, wallet, Some(message)).await;
+    };
     let (user_id, wallet_id) = (user.id.clone(), wallet.id.clone());
-    if let Err(e) = state
+    match state
         .db
         .write(move |db| db.retire_wallet(&user_id, &wallet_id, retired_at))
         .await
     {
-        tracing::error!(error = %e, wallet = %wallet.id, "the engine retired a wallet but it couldn't be recorded");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        Ok(true) => crate::base::see_other(format!("/account/wallets/{}", wallet.id)),
+        // Another request recorded it first.
+        Ok(false)
+            if load_wallet(&state, &user, wallet.id.as_ref())
+                .await
+                .is_some_and(|w| w.retired_at.is_some()) =>
+        {
+            crate::base::see_other(format!("/account/wallets/{}", wallet.id))
+        }
+        // A store was put on it meanwhile. Its keys are gone from the
+        // engine; retiring again, once the store has moved, records it.
+        Ok(false) => {
+            tracing::error!(wallet = %wallet.id, "the engine retired a wallet but a store here took it meanwhile");
+            let message = "Its keys were deleted, but a store was just put on it: change that store's wallet, then retire it again.".to_owned();
+            render_retire(&state, &user, wallet, Some(message)).await
+        }
+        Err(e) => {
+            tracing::error!(error = %e, wallet = %wallet.id, "the engine retired a wallet but it couldn't be recorded");
+            let message = "Its keys were deleted, but that couldn't be recorded here. Retire it again to finish.".to_owned();
+            render_retire(&state, &user, wallet, Some(message)).await
+        }
     }
-    crate::base::see_other(format!("/account/wallets/{}", wallet.id))
 }
 
 #[derive(Deserialize)]
@@ -1876,11 +1937,33 @@ mod tests {
         assert_eq!(wallets_of(&state, "owner@example.com").len(), 1);
     }
 
-    /// A store made before wallets is matched to the wallet the engine says
-    /// it uses, the first time the wallets page is opened.
+    /// A new order's address on `store`.
+    async fn new_address(state: &AppState, store: &str) -> String {
+        let sk = super::super::orders::decrypt_sk(&state.encryption_key, &store_row(state, store))
+            .unwrap();
+        state
+            .engine
+            .client
+            .create_order(
+                &sk,
+                shared::xmr_amount::Piconero(1_000_000),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .address
+    }
+
+    /// Stores made before wallets are matched to the wallet the engine says
+    /// they use, the first time the wallets page is opened. Two on the same
+    /// keys were each given an engine wallet of their own (engine migration
+    /// 0028): they end on one, which every new address comes from.
     #[tokio::test]
     async fn a_store_made_before_wallets_gets_its_wallet() {
-        let (state, _engine) = real_engine_state().await;
+        let (state, engine) = real_engine_state().await;
         let router = build_router(state.clone());
         let (cookie, _) = sign_up(&router, "legacy@example.com", None).await;
         bring_in(&router, &cookie, "Temporary").await;
@@ -1888,17 +1971,28 @@ mod tests {
             .wallet
             .id
             .to_string();
-        crate::http::test_support::store_made(
-            &crate::http::test_support::set_up_store_on_wallet(
-                &router,
-                &cookie,
-                "Old shop",
-                "old.example.com",
-                &id,
-            )
-            .await,
-        );
-        // As it was before wallets: no wallet on the store, none recorded.
+        let first = connect_store(&router, &cookie, "old.example.com", &id).await;
+        let second = connect_store(&router, &cookie, "older.example.com", &id).await;
+        // As it was before wallets: in the engine the second store on a
+        // wallet of its own, which has handed out addresses the first's
+        // hasn't reached; here no wallet on the stores, none recorded.
+        engine
+            .store()
+            .lock()
+            .execute_raw_for_test(&format!(
+                "INSERT INTO wallets (id, key_custody_backend, sealed_key_material, primary_address,
+                     network, next_minor_index, created_at_utc)
+                 SELECT 'wl_' || id, key_custody_backend, sealed_key_material, primary_address,
+                     network, next_minor_index, created_at_utc
+                 FROM tenants WHERE public_key = '{pk}';
+                 UPDATE tenants SET wallet_id = 'wl_' || id WHERE public_key = '{pk}';",
+                pk = store_row(&state, &second).tenant_public_key
+            ))
+            .unwrap();
+        let mut addresses = vec![
+            new_address(&state, &second).await,
+            new_address(&state, &second).await,
+        ];
         {
             let db = state.db.lock();
             db.conn_for_test()
@@ -1911,7 +2005,28 @@ mod tests {
         assert!(html.contains("Brought in"), "{html}");
         let wallets = wallets_of(&state, "legacy@example.com");
         assert_eq!(wallets.len(), 1);
-        assert_eq!(wallets[0].store_count, 1);
+        assert_eq!(wallets[0].store_count, 2);
+        for store in [&first, &second] {
+            let sk =
+                super::super::orders::decrypt_sk(&state.encryption_key, &store_row(&state, store))
+                    .unwrap();
+            assert_eq!(
+                state.engine.client.get_tenant(&sk).await.unwrap().wallet_id,
+                Some(wallets[0].wallet.engine_wallet_id.clone()),
+                "{store}: the wallet here stands for the engine wallet it is on"
+            );
+        }
+        for store in [&first, &second, &first] {
+            addresses.push(new_address(&state, store).await);
+        }
+        let mut unique = addresses.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            addresses.len(),
+            "an address was handed out twice: {addresses:?}"
+        );
     }
 
     // -- Changing a store's wallet ------------------------------------------
