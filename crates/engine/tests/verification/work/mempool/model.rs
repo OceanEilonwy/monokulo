@@ -1,8 +1,8 @@
 //! Independent ownership and cache-budget models for generated event histories.
 use super::{MempoolState, ScanClaims};
 use crate::key_custody::{LiveWallet, ScanIndices, WalletHandle};
-use crate::scanner::tests::unrecorded;
 use crate::store::TenantId;
+use crate::work::history_fixture::unrecorded;
 use monero::Transaction;
 use std::collections::BTreeMap;
 use std::collections::HashSet;

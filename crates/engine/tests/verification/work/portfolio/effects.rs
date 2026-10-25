@@ -280,7 +280,7 @@ impl World {
             })
             .await
             .unwrap();
-        let control = crate::scanner::tests::live_tenants(store, [(tenant, handle)]);
+        let control = crate::work::history_fixture::live_tenants(store, [(tenant, handle)]);
         let tx = super::super::portfolio_fixture::transaction(191, &[(&pair, 1, 7)]);
         let id = crate::daemon::fake::tx_id_hex(&tx);
         let previous = self.client.get_mempool_txids().await.unwrap();

@@ -13,10 +13,11 @@
         reason = "single-thread exploration awaits borrowed SQLite fixtures in place"
     )
 )]
-use super::history_fixture::{file_store, fixture_tenant, fixture_tx, FlakyKeyCustody, TempDb};
+use super::history_fixture::{
+    file_store, fixture_tenant, fixture_tx, live_tenants, FlakyKeyCustody, TempDb,
+};
 use crate::daemon::KeyImageStatus;
 use crate::key_custody::LiveWallet;
-use crate::scanner::tests::live_tenants;
 use crate::status::OrderStatus;
 use crate::store::{Db, OrderId, SharedStore, TenantId};
 use crate::work::{run_round_at, RoundInputs, RoundReport, ScanState, ScanTuning};
@@ -289,6 +290,7 @@ impl Harness {
     }
 
     /// Adds a store whose keys were registered as `handle`.
+    #[cfg(test)]
     pub(crate) fn register(&mut self, tenant: TenantId, handle: crate::key_custody::WalletHandle) {
         let [live] = live_tenants(self.store(), [(tenant, handle)]);
         self.tenants.push(live);

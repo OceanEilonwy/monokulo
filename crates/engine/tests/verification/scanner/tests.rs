@@ -455,50 +455,12 @@ impl<D: MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D> {
     }
 }
 
+pub(crate) use crate::work::history_fixture::{live_tenants, unrecorded, WalletsOf};
+
 /// The same real fixture transaction and view pair used in
 /// `src/key_custody/plain.rs`'s tests - it pays subaddress 0/1. Reused here so
 /// scanner-level tests exercise real crypto end to end, not a stub that assumes
 /// matching works.
-/// `handle` as the keys of no store's wallet: for scans that are looked at,
-/// not recorded (a store records only what its own wallet's keys found).
-pub(crate) fn unrecorded(handle: WalletHandle) -> LiveWallet {
-    LiveWallet {
-        wallet_id: String::new(),
-        handle,
-    }
-}
-
-/// A store, or a shared one, whose stores' wallets can be read.
-pub(crate) trait WalletsOf {
-    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String;
-}
-
-impl WalletsOf for Store {
-    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
-        self.wallet_of(tenant_id)
-            .unwrap()
-            .expect("the store exists")
-    }
-}
-
-impl WalletsOf for crate::store::SharedStore {
-    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
-        self.lock().wallet(tenant_id)
-    }
-}
-
-/// `tenants` as a round is given them: each handle with the wallet its store
-/// takes payments into now.
-pub(crate) fn live_tenants<const N: usize>(
-    store: &impl WalletsOf,
-    tenants: [(crate::store::TenantId, WalletHandle); N],
-) -> [(crate::store::TenantId, LiveWallet); N] {
-    tenants.map(|(id, handle)| {
-        let wallet_id = store.wallet(&id);
-        (id, LiveWallet { wallet_id, handle })
-    })
-}
-
 /// Scans a whole transaction under the id it hashes to, for what it pays
 /// (`unrecorded`).
 async fn scan_transaction(
