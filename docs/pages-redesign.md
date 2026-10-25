@@ -20,7 +20,7 @@ and there are three content links plus a menu.
 | API | **API reference** | The usual name; it says this is the per-route reference |
 | Testing, Stylebook | **Resources ▾**: Releases, Test reports, Design system, Report an issue, each with an icon | Useful, but not where most readers go first |
 | Source code | **GitHub** (icon and label) on the right, beside search | Where readers look for it |
-| | **Get started →** (the one orange button), on the homepage only | Takes a new reader to the docs' Introduction |
+| | **Get started →** (the one orange button, compact in the bar), on the homepage only | Takes a new reader to the docs' Introduction |
 
 The brand no longer repeats the section ("Monokulo | API" beside an API
 link); the current link is marked instead.
@@ -114,12 +114,14 @@ switches), `tag`, `mk-status-banner`, `settings-dialog`, and `mk-stage` and
 `mk-track` (the progress steps). It needs three additions to `crates/ui`:
 
 - `ProgressSteps` stood upright: a `data-orientation="vertical"` on
-  `mk-track`, with a detail line under each step's name, an icon in each
-  dot, and each step in its order state's colour on a neutral card. The
-  homepage's steps are a new order (the brand's orange, `order-new`),
-  waiting for payment (pending, `scan`), seen (confirming, `eye`) and paid
-  (paid, `check`). The mockup's CSS for it is under "ProgressSteps
-  upright".
+  `mk-track`, with a detail line under each step's name, each heading on
+  its dot's middle, and each step in its order state on a neutral card,
+  drawn as the POS draws it (`StatusIcon`): Awaiting payment (pending, the
+  spinner), Unconfirmed (the empty disc), Confirming (the disc with its
+  wedge) and Paid (the coin), with the POS's own words for each. The
+  site's `ui.css` leaves out `status.css` and the symbols it uses; the
+  mockup inlines both. The mockup's CSS for the steps is under
+  "ProgressSteps upright".
 - Icons for Releases (a package), Design system (a palette) and Report an
   issue (a bug), drawn like the others in `crates/ui/web/icons`. Test
   reports uses the existing `flask.svg`.
