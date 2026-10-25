@@ -23,6 +23,18 @@ audit database (`target/code-audit/audit.db`).
   existing one still starts, with a boot warning and a status-page note
   (it would leak the onion name to the system DNS; monerod over Tor is
   out of scope).
+- **#4 and #161, how block bodies are verified:** only bodies that matched
+  a store are fetched again through `/get_transactions` and checked against
+  their ids (PR 173). Verifying every body from `get_blocks.bin` was the
+  first choice, but real nodes (four checked, including
+  node.hollingworth.xyz) send its `prunable_hash` as all zeros, and a
+  second download of every block's transactions doesn't scale. #161 (a
+  lying node hiding a payment) stays open at medium, documented as trust
+  in the node; issue #177 records the zeroed hash, which the user is
+  raising with the Monero developers.
+- **Merging:** Claude merges each fix PR once CI is green and it has
+  reviewed the diff.
+- **#175's guest-SVN-0 break:** accepted; no instance uses SEV-SNP yet.
 - **Fix order:** critical groups first, then high, then the cross-crate type
   groups, then medium, then low bundles; one pull request per fix group.
 
