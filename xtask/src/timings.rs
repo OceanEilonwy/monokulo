@@ -338,6 +338,37 @@ fn timed(command: &mut Command) -> io::Result<(f64, Option<i32>)> {
     Ok((start.elapsed().as_secs_f64(), status.code()))
 }
 
+/// Runs a build step before a timed run, and stops when it fails: the run
+/// after it would time a failed build, or nothing.
+fn build_first(command: &mut Command) -> io::Result<()> {
+    match timed(command)? {
+        (_, Some(0)) => Ok(()),
+        (_, code) => Err(io::Error::other(format!(
+            "the build before the timed run failed (exit {code:?})"
+        ))),
+    }
+}
+
+/// `command`, timed, and the JUnit report it wrote to `junit`: none when
+/// it wrote none, since one left from an earlier run would otherwise be
+/// recorded as this run's.
+fn timed_report(
+    label: &Label,
+    command: &mut Command,
+    junit: &Path,
+) -> io::Result<Option<(f64, Option<i32>)>> {
+    match fs::remove_file(junit) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(at(junit, e)),
+        _ => {}
+    }
+    let (wall, code) = timed(command)?;
+    if !junit.exists() {
+        eprintln!("{label}: no report written (exit {code:?})");
+        return Ok(None);
+    }
+    Ok(Some((wall, code)))
+}
+
 fn command_line(program: &str, args: &[&str]) -> String {
     std::iter::once(program)
         .chain(args.iter().copied())
@@ -360,17 +391,24 @@ fn run_rust(db: &mut Connection) -> io::Result<()> {
     ];
     let root = root();
     // Build first, so the recorded wall time is the tests' alone.
-    timed(
+    build_first(
         Command::new("cargo")
             .args(ARGS)
             .arg("--no-run")
             .current_dir(&root),
     )?;
-    let (wall, code) = timed(Command::new("cargo").args(ARGS).current_dir(&root))?;
     // nextest keeps its store under the workspace's target/, whatever
     // CARGO_TARGET_DIR says.
     let junit = root.join("target/nextest/ci/junit.xml");
     let label = Label::Rust;
+    let Some((wall, code)) = timed_report(
+        &label,
+        Command::new("cargo").args(ARGS).current_dir(&root),
+        &junit,
+    )?
+    else {
+        return Ok(());
+    };
     let rows = read_report(&label, &junit)?;
     let info = RunInfo {
         command: Some(command_line("cargo", &ARGS)),
@@ -388,7 +426,7 @@ fn run_browser(db: &mut Connection) -> io::Result<()> {
     // Every binary the suites run, with the command the Playwright run's
     // global setup repeats (real-stack.js BUILD_ARGS), so their build stays
     // out of the times.
-    timed(
+    build_first(
         Command::new("node")
             .args(["-e", "require('./e2e/browser/real-stack').buildBinaries()"])
             .current_dir(&root),
@@ -396,22 +434,20 @@ fn run_browser(db: &mut Connection) -> io::Result<()> {
     let browser = root.join("e2e/browser");
     for config in BROWSER_CONFIGS {
         let junit = out.join(format!("browser-{config}.xml"));
-        if junit.exists() {
-            fs::remove_file(&junit).map_err(|e| at(&junit, e))?;
-        }
         let file = format!("{config}.config.js");
         let args = ["test", "-c", file.as_str(), "--reporter=list,junit"];
-        let (wall, code) = timed(
+        let label = Label::Browser(config.to_string());
+        let Some((wall, code)) = timed_report(
+            &label,
             Command::new("./node_modules/.bin/playwright")
                 .args(args)
                 .current_dir(&browser)
                 .env("PLAYWRIGHT_JUNIT_OUTPUT_FILE", &junit),
-        )?;
-        let label = Label::Browser(config.to_string());
-        if !junit.exists() {
-            eprintln!("{label}: no report written (exit {code:?})");
+            &junit,
+        )?
+        else {
             continue;
-        }
+        };
         let rows = read_report(&label, &junit)?;
         let info = RunInfo {
             command: Some(command_line("./node_modules/.bin/playwright", &args)),

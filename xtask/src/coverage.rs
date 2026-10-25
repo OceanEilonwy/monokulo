@@ -262,6 +262,21 @@ const RUST_BUILD: [&str; 7] = [
     "monokulo/snp",
 ];
 
+/// The arguments to cargo of `coverage rust`'s test run, but for where the
+/// HTML report goes (`--output-dir`, a path on this machine), which
+/// `collect_rust` adds and rust.json's command leaves out.
+fn rust_test_args() -> Vec<&'static str> {
+    let mut args = vec!["+nightly", "llvm-cov", "nextest"];
+    args.extend(RUST_BUILD);
+    args.extend(["--html", "--profile", "ci"]);
+    // After `coverage build-rust` (CI's build step) the instrumented tests
+    // are built; cargo-llvm-cov would otherwise clean and build them again.
+    if env::var("COVERAGE_RUST_PREBUILT").as_deref() == Ok("1") {
+        args.push("--no-clean");
+    }
+    args
+}
+
 /// The workspace's crates unoptimised, so lines map to source, whatever
 /// `CARGO_PROFILE_DEV_OPT_LEVEL` the shell sets; dependencies stay optimised.
 fn rust_build_env() -> [(&'static str, String); 1] {
@@ -333,14 +348,8 @@ fn collect_rust(log: &Log) -> io::Result<Exit> {
     // Both reports use the same profile data; the report never reruns tests.
     // nextest (.config/nextest.toml's ci profile) runs the test binaries side
     // by side and leaves the JUnit report.
-    let mut args = vec!["+nightly", "llvm-cov", "nextest"];
-    args.extend(RUST_BUILD);
-    args.extend(["--html", "--output-dir", &output, "--profile", "ci"]);
-    // After `coverage build-rust` (CI's build step) the instrumented tests
-    // are built; cargo-llvm-cov would otherwise clean and build them again.
-    if env::var("COVERAGE_RUST_PREBUILT").as_deref() == Ok("1") {
-        args.push("--no-clean");
-    }
+    let mut args = rust_test_args();
+    args.extend(["--output-dir", &output]);
     let tests = log.run("cargo", &args, None, &rust_build_env())?;
     if junit.is_file() {
         fs::copy(&junit, log.output.join("junit.xml"))?;
@@ -625,12 +634,13 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
         }
     }
     let (revision, source_dirty) = revision()?;
+    let command = format!("cargo {}", rust_test_args().join(" "));
     let manifest = serde_json::json!({
         "component":"rust-workspace", "revision":revision, "source_dirty":source_dirty,
         "tools": {"rustc":version("rustc", &["+nightly", "--version"])?,
             "cargo":version("cargo", &["+nightly", "--version"])?,
             "collector":version("cargo", &["llvm-cov", "--version"])?},
-        "test":{"status":"passed", "command":"cargo +nightly llvm-cov nextest --workspace --locked --branch --html --exclude xtask --profile ci --features monokulo/snp",
+        "test":{"status":"passed", "command":command,
             "exit_code":0,"log":"rust/test.log"},
         "lines": lines, "branches": branches,
         "report":"rust/index.html", "unavailable":[]

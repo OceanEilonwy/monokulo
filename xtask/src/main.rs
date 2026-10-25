@@ -79,8 +79,13 @@ fn main() -> ExitCode {
     {
         ["coverage", command] => coverage::coverage(command),
         ["stress", "rounds"] => rounds::run().map(Exit::passed),
-        ["stress", profile] => stress::run(profile, None).map(Exit::passed),
-        ["stress", profile, driver] => stress::run(profile, Some(driver)).map(Exit::passed),
+        ["stress", "open"] => stress::open(None).map(Exit::passed),
+        ["stress", "open", driver] => stress::open(Some(driver)).map(Exit::passed),
+        ["stress", profile] => {
+            stress::Profile::parse(profile).and_then(|p| stress::run(p, None).map(Exit::passed))
+        }
+        ["stress", profile, driver] => stress::Profile::parse(profile)
+            .and_then(|p| stress::run(p, Some(driver)).map(Exit::passed)),
         ["snp-id-key"] => snp::id_key(&root(), false)
             .map(Exit::passed)
             .map_err(io::Error::other),

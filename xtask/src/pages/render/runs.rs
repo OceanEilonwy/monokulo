@@ -13,8 +13,9 @@ use maud::{html, Markup};
 use std::collections::BTreeMap;
 
 /// The steps a generated history is made of, by the name the engine records
-/// them under, in words.
-const COMMANDS: [(&str, &str); 12] = [
+/// them under, in words. A step the engine records that this list doesn't
+/// name still gets a row, under its recorded name.
+const COMMANDS: [(&str, &str); 15] = [
     ("Arrive", "Payment arrives in the mempool"),
     ("Mine", "Payment mined into a block"),
     ("Extend", "Chain extended by a block"),
@@ -27,7 +28,20 @@ const COMMANDS: [(&str, &str); 12] = [
     ("Deliver", "Order-event log read"),
     ("Restart", "Engine restarted"),
     ("Fault", "Fault injected"),
+    ("Rebuild", "Chain rebuilt from a height"),
+    ("FastPass", "Two fast mempool passes"),
+    ("ReplaceCustody", "Custody handle replaced"),
 ];
+
+/// The prefixes the engine records a step's counts under.
+const STEP_KEYS: [&str; 3] = [
+    "selected-command:",
+    "applied-transition:",
+    "skipped-command:",
+];
+
+/// The one step count the steps box explains in a note of its own.
+const EXTENDED: &str = "applied-transition:ExtendInsteadOfMine";
 
 /// A box of observations: what they are, and each one in words.
 struct Observed {
@@ -42,7 +56,11 @@ const FAULTS: Observed = Observed {
     rows: &[
         ("sql-denial-reached", "Database write refused"),
         ("rpc-timeout-cancelled", "Node request timed out"),
+        ("engine-rpc-timeout-cancelled", "Engine’s node request timed out"),
         ("custody-error-reached", "Key custody failed"),
+        ("component-custody-error-reached", "Custody scan failed"),
+        ("engine-custody-error-reached", "Engine’s key custody failed"),
+        ("engine-fault-payment-recovered", "Payment found again after the faults"),
         ("all-node-outage-preserves-money-and-cursors", "Every node down at once"),
         ("log-read-resumed", "Log read resumed after a cut-off"),
         ("worker-restarted-mid-history", "Scan worker restarted mid-history"),
@@ -140,13 +158,39 @@ fn observed(group: &Observed, obs: &Observations, cases: u64) -> Option<Markup> 
         .rows
         .iter()
         .map(|(key, label)| (*label, seen(obs, key)))
-        .filter(|(_, n)| *n > 0)
         .collect();
+    obs_box(group.title, group.why, &rows, cases)
+}
+
+/// Every observation no box names, under its recorded name, so a new one
+/// shows up rather than being counted and never shown.
+fn unlisted(obs: &Observations, cases: u64) -> Option<Markup> {
+    let listed = |key: &str| {
+        STEP_KEYS.iter().any(|prefix| key.starts_with(prefix))
+            || [&FAULTS, &RULES, &SETUPS]
+                .iter()
+                .any(|group| group.rows.iter().any(|(k, _)| *k == key))
+    };
+    let rows: Vec<(&str, u64)> = obs
+        .iter()
+        .filter(|(key, _)| !listed(key))
+        .map(|(key, n)| (key.as_str(), *n))
+        .collect();
+    obs_box(
+        "Other",
+        "Situations the engine counted that this page has no words for yet.",
+        &rows,
+        cases,
+    )
+}
+
+fn obs_box(title: &str, why: &str, rows: &[(&str, u64)], cases: u64) -> Option<Markup> {
+    let rows: Vec<&(&str, u64)> = rows.iter().filter(|(_, n)| *n > 0).collect();
     let max = rows.iter().map(|(_, n)| *n).max()?;
     Some(html! {
         div {
-            h3 { (group.title) }
-            p.why { (group.why) }
+            h3 { (title) }
+            p.why { (why) }
             (obs_head("Situation"))
             @for (label, n) in &rows { (obs_row(label, *n, max, cases)) }
         }
@@ -155,13 +199,22 @@ fn observed(group: &Observed, obs: &Observations, cases: u64) -> Option<Markup> 
 
 /// The history steps the generator picked, applied and skipped.
 fn commands(obs: &Observations) -> Option<Markup> {
-    struct Step {
-        label: &'static str,
+    struct Step<'a> {
+        label: &'a str,
         picked: u64,
         applied: u64,
         skipped: u64,
     }
-    let steps: Vec<Step> = COMMANDS
+    // The named steps in their order, then any other the engine recorded.
+    let mut names: Vec<(&str, &str)> = COMMANDS.to_vec();
+    for key in obs.keys().filter(|key| *key != EXTENDED) {
+        if let Some(name) = STEP_KEYS.iter().find_map(|prefix| key.strip_prefix(prefix)) {
+            if !names.iter().any(|(n, _)| *n == name) {
+                names.push((name, name));
+            }
+        }
+    }
+    let steps: Vec<Step> = names
         .iter()
         .map(|(name, label)| Step {
             label,
@@ -169,10 +222,13 @@ fn commands(obs: &Observations) -> Option<Markup> {
             applied: seen(obs, &format!("applied-transition:{name}")),
             skipped: seen(obs, &format!("skipped-command:{name}")),
         })
-        .filter(|s| s.picked > 0 || s.applied > 0)
+        .filter(|s| s.picked > 0 || s.applied > 0 || s.skipped > 0)
         .collect();
-    let max = steps.iter().map(|s| s.picked.max(s.applied)).max()?;
-    let extended = seen(obs, "applied-transition:ExtendInsteadOfMine");
+    let max = steps
+        .iter()
+        .map(|s| s.picked.max(s.applied).max(s.skipped))
+        .max()?;
+    let extended = seen(obs, EXTENDED);
     Some(html! {
         div {
             h3 { "Chain events generated" }
@@ -248,7 +304,7 @@ pub(super) fn properties(report: &Report) -> Markup {
         }
         div.two {
             (ui::Panel::new(html! { div.obs { (commands(obs).unwrap_or_default()) (observed(&SETUPS, obs, cases).unwrap_or_default()) } }).look(ui::PanelLook::Tile))
-            (ui::Panel::new(html! { div.obs { (observed(&FAULTS, obs, cases).unwrap_or_default()) (observed(&RULES, obs, cases).unwrap_or_default()) } }).look(ui::PanelLook::Tile))
+            (ui::Panel::new(html! { div.obs { (observed(&FAULTS, obs, cases).unwrap_or_default()) (observed(&RULES, obs, cases).unwrap_or_default()) (unlisted(obs, cases).unwrap_or_default()) } }).look(ui::PanelLook::Tile))
         }
         div.card {
             div.tree {
@@ -385,6 +441,7 @@ pub(super) fn fuzzing(report: &Report) -> Markup {
                                 @for group in [&FAULTS, &RULES, &SETUPS] {
                                     (observed(group, &t.observations, t.cases).unwrap_or_default())
                                 }
+                                (unlisted(&t.observations, t.cases).unwrap_or_default())
                             }
                         }
                     }

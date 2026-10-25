@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,6 +18,70 @@ pub(crate) const HELP: &str = "\
 
 /// The engine the report measures when no driver is named.
 pub const DEFAULT_DRIVER: &str = "scheduler";
+
+/// The sweep `cargo xtask stress` runs: the CI one, the same with larger
+/// tenant counts, or the weekly scale run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Profile {
+    Ci,
+    Full,
+    Scale,
+}
+
+impl Profile {
+    /// The profile `name` names, or an error giving the ones there are.
+    pub fn parse(name: &str) -> io::Result<Self> {
+        match name {
+            "ci" => Ok(Profile::Ci),
+            "full" => Ok(Profile::Full),
+            "scale" => Ok(Profile::Scale),
+            other => Err(io::Error::other(format!(
+                "unknown stress profile `{other}`: cargo xtask stress <ci|full|scale|open> [driver], or cargo xtask stress rounds"
+            ))),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Profile::Ci => "ci",
+            Profile::Full => "full",
+            Profile::Scale => "scale",
+        }
+    }
+
+    /// The report folder's name under `target/coverage`, before any driver.
+    fn family(self) -> &'static str {
+        match self {
+            Profile::Ci | Profile::Full => "stress",
+            Profile::Scale => "stress-scale",
+        }
+    }
+
+    fn scenario_file(self) -> &'static str {
+        match self {
+            Profile::Ci | Profile::Full => "xtask/stress/scenario_v3.json",
+            Profile::Scale => "xtask/stress/scenario_scale_v1.json",
+        }
+    }
+
+    /// The scenario's list of tenant counts to measure.
+    fn points_key(self) -> &'static str {
+        match self {
+            Profile::Ci => "ci_tenant_points",
+            Profile::Full | Profile::Scale => "full_tenant_points",
+        }
+    }
+
+    /// Whether a point fails on slow status replies or a late timer, and
+    /// fault runs are held to their latency bounds. The scale run only
+    /// observes those, since thousands of tenants on one CPU can't meet them.
+    fn strict(self) -> bool {
+        match self {
+            Profile::Ci | Profile::Full => true,
+            Profile::Scale => false,
+        }
+    }
+}
 
 fn read(path: &str) -> String {
     fs::read_to_string(path)
@@ -363,39 +427,59 @@ fn fixture_build(prebuilt: Option<&str>) -> Option<Command> {
     if prebuilt == Some("1") {
         return None;
     }
-    let mut build = Command::new("cargo");
-    build.args([
-        "build",
-        "-p",
-        "engine",
-        "--bin",
-        "stress_fixture",
-        "--locked",
-    ]);
-    Some(build)
+    Some(build_engine_bin(false, "stress_fixture"))
 }
 
-/// The fixture binary, run pinned to `cpu` on Linux, with its output limited
-/// to a bounded log and its JSON result parsed (`Null` when it produced none).
-fn run_fixture(
+/// The cargo build of one of the engine's binaries, in release or debug.
+pub(crate) fn build_engine_bin(release: bool, bin: &str) -> Command {
+    let mut build = Command::new("cargo");
+    build.args(["build", "-p", "engine", "--bin", bin, "--locked"]);
+    if release {
+        build.arg("--release");
+    }
+    build.current_dir(root());
+    build
+}
+
+/// The fixture binary the capacity sweep runs, and reads SQLite's version
+/// from.
+fn fixture_binary() -> PathBuf {
+    target_dir().join("debug/stress_fixture")
+}
+
+/// The CPU a sweep pins its runs to: the first one this process may use.
+/// None off Linux, where runs aren't pinned; an error on Linux when the
+/// affinity can't be read, since an unpinned run isn't a one-CPU figure.
+pub(crate) fn pinned_cpu(hardware: &Value) -> io::Result<Option<u64>> {
+    let cpu = hardware["selected_cpu"].as_u64();
+    if cfg!(target_os = "linux") && cpu.is_none() {
+        return Err(io::Error::other("unable to find allowed CPU affinity"));
+    }
+    Ok(cpu)
+}
+
+/// `binary`, run pinned to `cpu` on Linux, with its output limited to a
+/// bounded log and its JSON result parsed (`Null` when it produced none).
+pub(crate) fn run_pinned(
+    binary: &Path,
     output: &Path,
     name: &str,
     cpu: Option<u64>,
     args: &[String],
 ) -> io::Result<(bool, Option<i32>, Value, String)> {
-    let binary = target_dir().join("debug/stress_fixture");
     if !binary.exists() {
         return Err(io::Error::other(format!(
-            "{} does not exist: build it first (cargo build -p engine --bin stress_fixture)",
+            "{} does not exist: build it first",
             binary.display()
         )));
     }
-    let mut cmd = if cfg!(target_os = "linux") {
-        let mut cmd = Command::new("taskset");
-        cmd.arg("-c").arg(cpu.unwrap_or(0).to_string()).arg(&binary);
-        cmd
-    } else {
-        Command::new(&binary)
+    let mut cmd = match cpu {
+        Some(cpu) if cfg!(target_os = "linux") => {
+            let mut cmd = Command::new("taskset");
+            cmd.arg("-c").arg(cpu.to_string()).arg(binary);
+            cmd
+        }
+        _ => Command::new(binary),
     };
     let run = cmd
         .args(args)
@@ -410,11 +494,11 @@ fn run_fixture(
         )?;
     }
     let fixture: Value = serde_json::from_slice(&run.stdout).unwrap_or(Value::Null);
-    let command = format!(
-        "taskset -c {} stress_fixture {}",
-        cpu.unwrap_or(0),
-        args.join(" ")
-    );
+    let program = binary.file_name().unwrap_or_default().to_string_lossy();
+    let command = match cpu {
+        Some(cpu) => format!("taskset -c {cpu} {program} {}", args.join(" ")),
+        None => format!("{program} {}", args.join(" ")),
+    };
     Ok((run.status.success(), run.status.code(), fixture, command))
 }
 
@@ -442,6 +526,14 @@ fn base_args(scenario: &Value, driver: &str, db: &Path, tenants: u64) -> Vec<Str
     args
 }
 
+/// An empty `output` folder, whatever an earlier run left in it.
+pub(crate) fn fresh_output(output: &Path) -> io::Result<()> {
+    if output.exists() {
+        fs::remove_dir_all(output)?;
+    }
+    fs::create_dir_all(output)
+}
+
 pub(crate) fn fresh_db(output: &Path, name: &str) -> std::path::PathBuf {
     let db = output.join(format!("{name}.db"));
     for suffix in ["", "-wal", "-shm"] {
@@ -450,79 +542,67 @@ pub(crate) fn fresh_db(output: &Path, name: &str) -> std::path::PathBuf {
     db
 }
 
-/// `cargo xtask stress <ci|full|scale|open> [driver]`. The default driver's report
-/// goes to `target/coverage/stress`; another driver's to
+/// Where a sweep's report goes: the default driver's to
+/// `target/coverage/stress` (or `stress-scale`), another driver's to
 /// `target/coverage/stress-<driver>`, so two engines can be compared.
-pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
-    let family = if profile_name == "scale" {
-        "stress-scale"
-    } else {
-        "stress"
-    };
-    let output = match driver {
+fn output_dir(family: &str, driver: Option<&str>) -> PathBuf {
+    match driver {
         None => root().join(format!("target/coverage/{family}")),
         Some(name) => root().join(format!("target/coverage/{family}-{name}")),
-    };
-    let driver = driver.unwrap_or(DEFAULT_DRIVER);
-    if profile_name == "open" {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        return Ok(Command::new(opener)
-            .arg(output.join("index.html"))
-            .status()?
-            .success());
     }
-    if profile_name != "ci" && profile_name != "full" && profile_name != "scale" {
-        return Ok(false);
-    }
-    if output.exists() {
-        fs::remove_dir_all(&output)?;
-    }
-    fs::create_dir_all(&output)?;
-    let scenario_file = if profile_name == "scale" {
-        "xtask/stress/scenario_scale_v1.json"
+}
+
+/// `cargo xtask stress open [driver]`: the sweep's report in a browser.
+pub fn open(driver: Option<&str>) -> io::Result<bool> {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
     } else {
-        "xtask/stress/scenario_v3.json"
+        "xdg-open"
     };
-    let raw_scenario = fs::read(root().join(scenario_file))?;
+    Ok(Command::new(opener)
+        .arg(output_dir(Profile::Ci.family(), driver).join("index.html"))
+        .status()?
+        .success())
+}
+
+/// `cargo xtask stress <ci|full|scale> [driver]`.
+pub fn run(profile: Profile, driver: Option<&str>) -> io::Result<bool> {
+    let output = output_dir(profile.family(), driver);
+    let driver = driver.unwrap_or(DEFAULT_DRIVER);
+    fresh_output(&output)?;
+    let raw_scenario = fs::read(root().join(profile.scenario_file()))?;
     let scenario: Value = serde_json::from_slice(&raw_scenario)?;
     let checksum = hex::encode(Sha256::digest(&raw_scenario));
     if let Some(mut build) = fixture_build(std::env::var("STRESS_FIXTURE_PREBUILT").ok().as_deref())
     {
-        if !build.current_dir(root()).status()?.success() {
+        if !build.status()?.success() {
             return Err(io::Error::other("stress fixture build failed"));
         }
     }
-    let mut hardware = profile(&output);
-    hardware["sqlite_version"] = json!(command(
-        &root().join("target/debug/stress_fixture").to_string_lossy(),
-        &["--version"]
-    ));
+    let binary = fixture_binary();
+    let mut hardware = self::profile(&output);
+    hardware["sqlite_version"] = json!(command(&binary.to_string_lossy(), &["--version"]));
     write_json(&output.join("hardware.json"), &hardware)?;
-    let cpu = hardware["selected_cpu"].as_u64();
-    if cfg!(target_os = "linux") && cpu.is_none() {
-        return Err(io::Error::other("unable to find allowed CPU affinity"));
-    }
-    let points = scenario[if profile_name == "ci" {
-        "ci_tenant_points"
-    } else {
-        "full_tenant_points"
-    }]
-    .as_array()
-    .ok_or_else(|| io::Error::other("scenario has no tenant points"))?;
+    let cpu = pinned_cpu(&hardware)?;
+    let points = scenario[profile.points_key()]
+        .as_array()
+        .ok_or_else(|| io::Error::other("scenario has no tenant points"))?;
     let mut results = Vec::new();
     let mut faults: Vec<Value> = Vec::new();
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
+    // The conditions a point is held to, so the report names only those.
+    let checked: &[&str] = if profile.strict() {
+        &["lag", "tick-budget", "status-replies", "timer-delay"]
+    } else {
+        &["lag", "tick-budget"]
+    };
     let write_run = |results: &[Value], faults: &[Value]| {
         write_json(
             &output.join("run.json"),
-            &json!({"profile":profile_name,"driver":driver,"started_at_utc":started_at,
+            &json!({"profile":profile.name(),"checked":checked,"driver":driver,"started_at_utc":started_at,
                 "scenario":scenario,"scenario_checksum":checksum,"hardware":"hardware.json","results":results,"faults":faults}),
         )
     };
@@ -542,7 +622,8 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             args.push(flag.into());
             args.push(scenario[key].to_string());
         }
-        let (success, exit_code, fixture, command) = run_fixture(&output, &name, cpu, &args)?;
+        let (success, exit_code, fixture, command) =
+            run_pinned(&binary, &output, &name, cpu, &args)?;
         let final_point = fixture["points"].as_array().and_then(|p| p.last());
         let final_lagging = final_point
             .and_then(|p| p["lagging_tenants"].as_u64())
@@ -598,7 +679,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             || min_cursor <= initial_min_cursor
             || progressed_tenants != tenants
             || !background_progress
-            || (profile_name != "scale" && !responsive)
+            || (profile.strict() && !responsive)
         {
             "failed"
         } else if backlog_not_growing
@@ -696,7 +777,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             args.push(flag.into());
             args.push(value);
         }
-        let (success, _, fixture, command) = run_fixture(&output, file, cpu, &args)?;
+        let (success, _, fixture, command) = run_pinned(&binary, &output, file, cpu, &args)?;
         let points = fixture["points"].as_array();
         let min_cursor = points
             .and_then(|p| p.last())
@@ -705,7 +786,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
         let common = success
             && fixture["schema_version"] == scenario["schema_version"]
             && min_cursor >= 2
-            && (profile_name != "scale"
+            && (profile != Profile::Scale
                 || (min_cursor > 2
                     && points
                         .and_then(|p| p.last())
@@ -726,7 +807,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
             ),
             "fault-sqlite-lock" => (
                 common
-                    && (profile_name == "scale"
+                    && (!profile.strict()
                         || fixture["timer_max_delay_us"].as_u64().unwrap_or(u64::MAX)
                             <= scenario["max_timer_delay_ms"].as_u64().unwrap_or(0) * 1000),
                 format!(
@@ -738,7 +819,7 @@ pub fn run(profile_name: &str, driver: Option<&str>) -> io::Result<bool> {
                 common
                     && fixture["custody_scans_completed"].as_u64().unwrap_or(0) > 0
                     && fixture["custody_max_wait_us"].as_u64().unwrap_or(0)
-                        > if profile_name == "scale" { 0 } else { 1000 },
+                        > if profile.strict() { 1000 } else { 0 },
                 format!(
                     "{} scans; max slot wait {} µs",
                     fixture["custody_scans_completed"].as_u64().unwrap_or(0),

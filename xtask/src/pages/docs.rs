@@ -548,9 +548,13 @@ pub(super) fn markdown_html(markdown: &str) -> Markup {
                 for event in parser.by_ref() {
                     match event {
                         Event::End(TagEnd::Heading(_)) => break,
-                        Event::Text(t) | Event::Code(t) => {
+                        Event::Text(t) => {
                             text.push_str(&t);
                             inner.push(Event::Text(t));
+                        }
+                        Event::Code(t) => {
+                            text.push_str(&t);
+                            inner.push(Event::Code(t));
                         }
                         other => inner.push(other),
                     }

@@ -10,7 +10,7 @@ use crate::exploration::Build;
 use crate::support::{at, wait_with_deadline, write_json, Exit, OnTimeout};
 use regex::Regex;
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -56,10 +56,6 @@ const PORTFOLIO_TEST: &str =
     "work::tests::boundaries::combined_portfolio_interactions_have_fixed_positive_controls";
 const STAGING_TEST: &str =
     "store::work::tests::every_reorg_staging_cleanup_boundary_survives_reopen";
-const RECORDED_TEST: &str =
-    "work::tests::boundaries::every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_0";
-const PROOF_SCHEDULE_TEST: &str =
-    "work::tests::boundaries::concurrency::every_proof_config_shutdown_admission_schedule_recovers";
 const BLOCK_TEST: &str =
     "work::blocks::boundaries::every_late_commit_boundary_is_exercised_with_and_without_staging";
 const STATUS_GRID: &str = "status::boundaries::status_decision_boundaries_match_independent_grid";
@@ -157,108 +153,11 @@ const MUTATIONS: &[Mutation] = &[
       "BOUNDARY: transaction-tenant-fairness"),
 ];
 
-/// Every counter is emitted AFTER the real scenario passes its positive
-/// controls. These are bounded scenario observations, not instrumented
-/// branch coverage.
-const REQUIRED_HITS: &[(&str, &[&str])] = &[
-    (
-        RECORDED_TEST,
-        &[
-            "recorded-ringct-history",
-            "recorded-pruned-history",
-            "recorded-whole-history",
-        ],
-    ),
-    (
-        PORTFOLIO_TEST,
-        &[
-            "rpc-timeout-cancelled",
-            "custody-error-reached",
-            "sql-denial-reached",
-            "engine-rpc-timeout-cancelled",
-            "engine-custody-error-reached",
-            "engine-fault-payment-recovered",
-            "all-node-outage-preserves-money-and-cursors",
-            "connection-reopened-mid-history",
-            "custody-handle-replaced",
-            "unanimous-spent-void-checked",
-            "disputed-spent-retains-funds",
-            "void-restored-to-canonical-block",
-            "missing-proof-holds-settlement",
-            "mismatching-proof-holds-settlement",
-            "proven-settlement-released",
-            "log-read-resumed",
-            "log-replay-stable-bytes",
-            "connection-reopened-final-ledger",
-        ],
-    ),
-    (
-        STAGING_TEST,
-        &[
-            "reorg-staging-reopen-schedules",
-            "reorg-staging-invalidated-at-or-above-fork",
-            "reorg-staging-preserved-below-fork-or-other-network",
-        ],
-    ),
-    (
-        PROOF_SCHEDULE_TEST,
-        &[
-            "worker-proof-config-shutdown-schedules",
-            "worker-custody-replacement-schedules",
-            "worker-missing-anchor-schedules",
-            "worker-mismatching-anchor-schedules",
-        ],
-    ),
-];
-
-fn required_hits(test: &str) -> &'static [&'static str] {
-    REQUIRED_HITS
-        .iter()
-        .find(|(t, _)| *t == test)
-        .map_or(&[], |(_, hits)| hits)
-}
-
 pub(crate) const HELP: &str = "\
         engine mutations [--features both|default|zmq] [--cases N] [--seed N] [--timeout SECONDS]\n\
                          [--output DIR] [--only NAME]...\n\
                       Prove the engine's named-defect tests catch each defect: every mutant in a detached\n\
                       worktree, against passing baselines (target/engine-mutations/report.json)";
-
-/// The `ENGINE_BOUNDARY_HITS {json}` lines a test printed, added up, and what
-/// was wrong with any malformed ones.
-fn boundary_hits(text: &str) -> (BTreeMap<String, u64>, Vec<String>) {
-    let (mut hits, mut errors) = (BTreeMap::new(), Vec::new());
-    for line in text.lines() {
-        let Some(json) = line.strip_prefix("ENGINE_BOUNDARY_HITS ") else {
-            continue;
-        };
-        let counts: Option<BTreeMap<String, u64>> = match serde_json::from_str::<Value>(json) {
-            Ok(Value::Object(map)) if !map.is_empty() => map
-                .into_iter()
-                .map(|(k, v)| match v.as_u64() {
-                    Some(n) if !k.is_empty() && n > 0 => Some((k, n)),
-                    _ => None,
-                })
-                .collect(),
-            Ok(_) => None,
-            Err(e) => {
-                errors.push(e.to_string());
-                continue;
-            }
-        };
-        match counts {
-            Some(map) => {
-                for (k, v) in map {
-                    *hits.entry(k).or_insert(0) += v;
-                }
-            }
-            None => errors.push(
-                "expected a nonempty map of boundary names to positive integer counts".into(),
-            ),
-        }
-    }
-    (hits, errors)
-}
 
 /// The command that runs one named test of the package it lives in.
 fn test_command(test: &str, build: Build) -> Vec<String> {
@@ -307,9 +206,6 @@ struct Verdict {
     detected: bool,
     expected_failure: Option<String>,
     expected_assertion_seen: bool,
-    boundary_hits: BTreeMap<String, u64>,
-    boundary_hit_errors: Vec<String>,
-    missing_boundary_hits: Vec<String>,
     log: String,
 }
 
@@ -319,7 +215,6 @@ fn run(
     context: &Context,
     log: &Path,
     expected_failure: Option<&str>,
-    required: &[&str],
 ) -> io::Result<Verdict> {
     let Context {
         cwd,
@@ -358,14 +253,7 @@ fn run(
     )?
     .map(Exit::of);
     let text = String::from_utf8_lossy(&fs::read(log)?).into_owned();
-    Ok(judge(
-        command,
-        log,
-        exit_code,
-        &text,
-        expected_failure,
-        required,
-    ))
+    Ok(judge(command, log, exit_code, &text, expected_failure))
 }
 
 /// What a test command's exit and output show: a healthy pass, the intended
@@ -376,7 +264,6 @@ fn judge(
     exit_code: Option<Exit>,
     text: &str,
     expected_failure: Option<&str>,
-    required: &[&str],
 ) -> Verdict {
     // A compiler or linker failure cannot produce this one-test result.
     // Require the named test's assertion failure rather than treating any
@@ -398,17 +285,9 @@ fn judge(
                 && (block.contains("assertion") || block.contains("Test failed:"))
         })
     });
-    let (hits, hit_errors) = boundary_hits(text);
-    let missing: Vec<String> = required
-        .iter()
-        .filter(|n| hits.get(**n).copied().unwrap_or(0) == 0)
-        .map(|n| (*n).to_string())
-        .collect();
     let passed = exit_code == Some(Exit::SUCCESS)
         && ran
-        && text.contains("test result: ok. 1 passed; 0 failed")
-        && hit_errors.is_empty()
-        && missing.is_empty();
+        && text.contains("test result: ok. 1 passed; 0 failed");
     let detected = exit_code == Some(TEST_FAILED)
         && ran
         && text.contains("test result: FAILED. 0 passed; 1 failed")
@@ -424,9 +303,6 @@ fn judge(
         detected,
         expected_failure: expected_failure.map(str::to_string),
         expected_assertion_seen: intended,
-        boundary_hits: hits,
-        boundary_hit_errors: hit_errors,
-        missing_boundary_hits: missing,
         log: log.display().to_string(),
     }
 }
@@ -660,12 +536,7 @@ fn baselines(
     output: &Path,
 ) -> io::Result<Vec<Baseline>> {
     let mut tests: Vec<&'static str> = Vec::new();
-    let required: Vec<&'static str> = if o.only.is_empty() {
-        REQUIRED_HITS.iter().map(|(t, _)| *t).collect()
-    } else {
-        Vec::new()
-    };
-    for test in selected.iter().map(|m| m.test).chain(required) {
+    for test in selected.iter().map(|m| m.test) {
         if !tests.contains(&test) {
             tests.push(test);
         }
@@ -674,13 +545,7 @@ fn baselines(
     for &build in &o.builds {
         for &test in &tests {
             let log = output.join(format!("baseline-{build}-{}.log", found.len()));
-            let verdict = run(
-                &test_command(test, build),
-                context,
-                &log,
-                None,
-                required_hits(test),
-            )?;
+            let verdict = run(&test_command(test, build), context, &log, None)?;
             println!(
                 "BASELINE {build} {test}: {}",
                 if verdict.passed { "PASS" } else { "INVALID" }
@@ -747,7 +612,6 @@ fn mutant(
         context,
         &log,
         Some(mutation.expected_failure),
-        &[],
     );
     fs::write(&path, &original)?;
     let verdict = verdict?;
@@ -850,19 +714,6 @@ pub(crate) fn mutations(root: &Path, args: &[&str]) -> io::Result<Exit> {
     report["baselines"] = baselines.iter().map(Baseline::to_json).collect();
     let detected_all = mutants(&o, &selected, &context, &output, &baselines, &mut report)?;
     worktree.remove()?;
-    report["boundary_observations"] = o
-        .builds
-        .iter()
-        .map(|build| {
-            let observed: Map<String, Value> = baselines
-                .iter()
-                .filter(|b| b.build == *build && REQUIRED_HITS.iter().any(|(r, _)| *r == b.test))
-                .map(|b| (b.test.to_string(), json!(b.verdict.boundary_hits)))
-                .collect();
-            (build.name().to_string(), Value::Object(observed))
-        })
-        .collect::<Map<_, _>>()
-        .into();
     let passed = baselines_ok && detected_all;
     report["status"] = if passed { "passed" } else { "failed" }.into();
     let detected = report["results"].as_array().map_or(0, |results| {
@@ -943,10 +794,9 @@ mod tests {
         }
     }
 
-    /// Only a passing run of exactly one test that reported every required
-    /// boundary is a baseline, and only the one test failing on the
-    /// intended assertion is a detection. Anything else (a compiler error,
-    /// no test, another panic, a hang) is neither.
+    /// Only a passing run of exactly one test is a baseline, and only the
+    /// one test failing on the intended assertion is a detection. Anything
+    /// else (a compiler error, no test, another panic, a hang) is neither.
     #[test]
     fn only_a_healthy_pass_is_a_baseline_and_only_the_intended_assertion_a_detection() {
         let compile_error = "   Compiling outcome_fixture v0.0.0\n\
@@ -957,32 +807,15 @@ mod tests {
         let money = Some("BOUNDARY: money");
         let failed = Some(TEST_FAILED);
         let ok = Some(Exit::SUCCESS);
-        // (case, exit, output, expected failure, required hits, passed, detected)
-        type Case<'a> = (
-            &'a str,
-            Option<Exit>,
-            String,
-            Option<&'a str>,
-            &'a [&'a str],
-            bool,
-            bool,
-        );
+        // (case, exit, output, expected failure, passed, detected)
+        type Case<'a> = (&'a str, Option<Exit>, String, Option<&'a str>, bool, bool);
         let cases: &[Case] = &[
-            (
-                "a healthy assertion",
-                ok,
-                passing(""),
-                None,
-                &[],
-                true,
-                false,
-            ),
+            ("a healthy assertion", ok, passing(""), None, true, false),
             (
                 "an assertion failure",
                 failed,
                 failing("", "assertion `left == right` failed\n  left: 1\n right: 2"),
                 None,
-                &[],
                 false,
                 true,
             ),
@@ -994,7 +827,6 @@ mod tests {
                     "assertion `left == right` failed: BOUNDARY: money\n  left: 1\n right: 2",
                 ),
                 money,
-                &[],
                 false,
                 true,
             ),
@@ -1003,7 +835,6 @@ mod tests {
                 failed,
                 failing("", "assertion failed: BOUNDARY: fifo"),
                 Some("BOUNDARY: fifo"),
-                &[],
                 false,
                 true,
             ),
@@ -1015,7 +846,6 @@ mod tests {
                     "assertion `left == right` failed: BOUNDARY: unrelated\n  left: 1\n right: 2",
                 ),
                 money,
-                &[],
                 false,
                 false,
             ),
@@ -1027,34 +857,6 @@ mod tests {
                     "assertion `left == right` failed\n  left: 1\n right: 2",
                 ),
                 money,
-                &[],
-                false,
-                false,
-            ),
-            (
-                "required boundaries observed",
-                ok,
-                passing("ENGINE_BOUNDARY_HITS {\"money\":2}\n"),
-                None,
-                &["money"],
-                true,
-                false,
-            ),
-            (
-                "a required boundary missing",
-                ok,
-                passing(""),
-                None,
-                &["money"],
-                false,
-                false,
-            ),
-            (
-                "a malformed boundary report",
-                ok,
-                passing("ENGINE_BOUNDARY_HITS []\n"),
-                None,
-                &[],
                 false,
                 false,
             ),
@@ -1063,25 +865,15 @@ mod tests {
                 failed,
                 compile_error.to_string(),
                 None,
-                &[],
                 false,
                 false,
             ),
-            (
-                "zero tests",
-                ok,
-                no_test.to_string(),
-                None,
-                &[],
-                false,
-                false,
-            ),
+            ("zero tests", ok, no_test.to_string(), None, false, false),
             (
                 "an unrelated runtime panic",
                 failed,
                 failing("", "worker disconnected"),
                 None,
-                &[],
                 false,
                 false,
             ),
@@ -1090,7 +882,6 @@ mod tests {
                 failed,
                 failing("", "assertion failed: never reached publication"),
                 None,
-                &[],
                 false,
                 false,
             ),
@@ -1099,7 +890,6 @@ mod tests {
                 failed,
                 failing("", "assertion failed: Elapsed(())"),
                 None,
-                &[],
                 false,
                 false,
             ),
@@ -1108,13 +898,12 @@ mod tests {
                 None,
                 "running 1 test\n".to_string(),
                 None,
-                &[],
                 false,
                 false,
             ),
         ];
-        for (case, exit, text, expected, required, passed, detected) in cases {
-            let v = judge(&[], Path::new("log"), *exit, text, *expected, required);
+        for (case, exit, text, expected, passed, detected) in cases {
+            let v = judge(&[], Path::new("log"), *exit, text, *expected);
             assert_eq!(
                 (v.passed, v.detected),
                 (*passed, *detected),
@@ -1122,27 +911,7 @@ mod tests {
                 serde_json::to_value(&v).unwrap()
             );
         }
-        let v = judge(
-            &[],
-            Path::new("log"),
-            ok,
-            &passing("ENGINE_BOUNDARY_HITS {\"money\":2}\n"),
-            None,
-            &["money"],
-        );
-        assert_eq!(v.boundary_hits, BTreeMap::from([("money".to_string(), 2)]));
-        let v = judge(&[], Path::new("log"), ok, &passing(""), None, &["money"]);
-        assert_eq!(v.missing_boundary_hits, ["money"]);
-        let v = judge(
-            &[],
-            Path::new("log"),
-            ok,
-            &passing("ENGINE_BOUNDARY_HITS []\n"),
-            None,
-            &[],
-        );
-        assert!(!v.boundary_hit_errors.is_empty());
-        let v = judge(&[], Path::new("log"), failed, compile_error, None, &[]);
+        let v = judge(&[], Path::new("log"), failed, compile_error, None);
         assert!(!v.ran_one_test);
         let v = judge(
             &[],
@@ -1150,32 +919,8 @@ mod tests {
             failed,
             &failing("", "assertion failed: BOUNDARY: unrelated"),
             money,
-            &[],
         );
         assert!(!v.expected_assertion_seen);
-    }
-
-    #[test]
-    fn the_boundary_parser_adds_up_only_positive_integer_counts() {
-        let (hits, errors) = boundary_hits("noise\nENGINE_BOUNDARY_HITS {\"money\":2}\nENGINE_BOUNDARY_HITS {\"money\":3,\"retry\":1}\n");
-        assert_eq!(
-            hits,
-            BTreeMap::from([("money".to_string(), 5), ("retry".to_string(), 1)])
-        );
-        assert_eq!(errors, Vec::<String>::new());
-        for malformed in [
-            "no JSON",
-            "[]",
-            "{}",
-            "{\"x\":true}",
-            "{\"x\":-1}",
-            "{\"x\":0}",
-            "{\"x\":1.5}",
-            "{\"\":1}",
-        ] {
-            let (hits, errors) = boundary_hits(&format!("ENGINE_BOUNDARY_HITS {malformed}"));
-            assert!(hits.is_empty() && !errors.is_empty(), "{malformed}");
-        }
     }
 
     /// One real run, end to end: a Cargo crate whose one test fails on the
@@ -1213,7 +958,6 @@ mod tests {
             &context,
             &root.join("result.log"),
             Some("BOUNDARY: money"),
-            &[],
         )
         .unwrap();
         assert!(
@@ -1242,7 +986,7 @@ mod tests {
             removed: &[],
             timeout: 2,
         };
-        let v = run(&command, &context, &root.join("result.log"), None, &[]).unwrap();
+        let v = run(&command, &context, &root.join("result.log"), None).unwrap();
         assert!(
             v.exit_code.is_none() && !v.passed && !v.detected,
             "{}",

@@ -69,10 +69,17 @@ pub fn engine_http_client() -> reqwest::Client {
 /// it to actually happen.
 const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 
-/// A `MoneroDaemonClient` that does the least possible to let [`run_scan_tick`] run
-/// at all, for callers that only need its status-recompute sweep (confirmation
-/// growth and, especially, expiry) rather than genuine chain
-/// scanning for payment matches.
+/// The node every configured network gets: an empty chain, at height 0 with
+/// one empty genesis block and a deterministic, height-keyed block hash -
+/// never advancing, never disagreeing with itself between calls - so
+/// [`run_scan_tick`]'s reorg reconciliation never has anything to react to,
+/// and a mempool. Its own mempool (the default) stays empty, so it does the
+/// least possible to let `run_scan_tick` run at all, for callers that only
+/// need its status-recompute sweep (confirmation growth and, especially,
+/// expiry) rather than genuine chain scanning for payment matches. With
+/// [`TestEngineConfig::with_admin_lookup_daemon`] it shares the mempool
+/// [`TestEngineHandle::add_mempool_transaction`] fills, so a merchant's
+/// "look up this txid" can find a real transaction.
 ///
 /// This is deliberately *not* `engine::daemon::fake::FakeDaemonClient`: that
 /// type is `#[cfg(test)]`-gated inside `engine` itself, which means it is
@@ -82,15 +89,14 @@ const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 /// see this crate's own module-level doc comment section on why that matters for
 /// the background-loop harness specifically.
 ///
-/// Always reports height 0 and a deterministic, height-keyed block hash - never
-/// advancing, never disagreeing with itself between calls - so `run_scan_tick`'s
-/// reorg-reconciliation logic never has anything to react to. Every block/mempool
-/// query returns empty. None of this matters for `run_scan_tick`'s expiry sweep
+/// None of this matters for `run_scan_tick`'s expiry sweep
 /// (`due_order_ids`/`recompute_and_notify`), which is driven by wall-clock
 /// time and the store alone, not by anything this daemon reports - see
-/// `TestEngineConfig::with_background_loops`'s own doc comment for the full
-/// reasoning on why an inert daemon is sufficient here.
-struct NoopDaemonClient;
+/// `TestEngineConfig::with_background_loops`'s own doc comment.
+#[derive(Default)]
+struct TestDaemonClient {
+    mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
+}
 
 /// The id of a whole transaction.
 fn tx_id_hex(tx: &monero::Transaction) -> String {
@@ -116,58 +122,7 @@ fn empty_blocks(prefix: &str, start_height: u64, count: u64) -> Vec<ChainBlock> 
     }]
 }
 
-#[async_trait::async_trait]
-impl MoneroDaemonClient for NoopDaemonClient {
-    async fn get_height(&self) -> Result<u64, DaemonError> {
-        Ok(0)
-    }
-
-    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
-        Ok(format!("noop-block-{height}"))
-    }
-
-    async fn get_chain_blocks(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<ChainBlock>, DaemonError> {
-        Ok(empty_blocks("noop-block", start_height, count))
-    }
-
-    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
-        Ok(vec![])
-    }
-
-    async fn get_transactions_with_ids(
-        &self,
-        _txids: &[String],
-    ) -> Result<Vec<FetchedTx>, DaemonError> {
-        Ok(vec![])
-    }
-
-    async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
-        Ok(TxLocation::NotFound)
-    }
-
-    async fn is_key_image_spent(
-        &self,
-        key_images: &[String],
-    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
-        Ok(vec![KeyImageStatus::Unspent; key_images.len()])
-    }
-}
-
-/// The node the engine's admin payment lookup asks when
-/// [`TestEngineConfig::with_admin_lookup_daemon`] is used: an empty chain
-/// whose mempool holds whatever [`TestEngineHandle::add_mempool_transaction`]
-/// put there, so a merchant's "look up this txid" can find a real
-/// transaction.
-#[derive(Default)]
-struct LookupDaemonClient {
-    mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
-}
-
-impl LookupDaemonClient {
+impl TestDaemonClient {
     fn find(&self, txid: &str) -> Option<monero::Transaction> {
         self.mempool
             .lock()
@@ -178,13 +133,13 @@ impl LookupDaemonClient {
 }
 
 #[async_trait::async_trait]
-impl MoneroDaemonClient for LookupDaemonClient {
+impl MoneroDaemonClient for TestDaemonClient {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         Ok(0)
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
-        Ok(format!("lookup-block-{height}"))
+        Ok(format!("test-block-{height}"))
     }
 
     async fn get_chain_blocks(
@@ -192,7 +147,7 @@ impl MoneroDaemonClient for LookupDaemonClient {
         start_height: u64,
         count: u64,
     ) -> Result<Vec<ChainBlock>, DaemonError> {
-        Ok(empty_blocks("lookup-block", start_height, count))
+        Ok(empty_blocks("test-block", start_height, count))
     }
 
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -295,7 +250,7 @@ pub struct TestEngineHandle {
     /// How many requests of any kind this engine has received, over HTTP
     /// or through [`TestEngineHandle::router`].
     requests: Arc<std::sync::atomic::AtomicUsize>,
-    /// The admin lookup node's mempool (see [`LookupDaemonClient`]).
+    /// The admin lookup node's mempool (see [`TestDaemonClient`]).
     lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
     /// What the engine's `/status` and activity API report per network.
     scanner_status: engine::scanner_status::ScannerStatusMap,
@@ -676,7 +631,7 @@ impl Drop for TestEngineHandle {
 }
 
 /// Configuration for spawning a test engine: which Monero networks are
-/// configured (`state.configured_networks`). A generalization of the narrower
+/// configured (each one given a node). A generalization of the narrower
 /// `spawn_test_engine_with_networks` - rather than a third near-duplicate spawn function per new
 /// dimension of test setup, [`spawn_test_engine`] and
 /// [`spawn_test_engine_with_networks`] are now both thin wrappers over
@@ -767,16 +722,13 @@ impl TestEngineConfig {
         self
     }
 
-    /// Wires an inert [`NoopDaemonClient`] into `AppState::daemons` (the live
-    /// scanner's own map) for every configured network - opt-in, since most
-    /// callers of this harness never need it (see `spawn`'s own doc comment on
-    /// `daemons` for why an empty map is the honest default). A caller
-    /// driving `POST /api/v1/admin/tenant/payments/lookup`
-    /// through a genuine
-    /// HTTP round trip: that handler looks a daemon up from `daemons`
-    /// unconditionally too. A `NoopDaemonClient` can resolve request-shape
-    /// logic (a malformed txid, a genuinely-absent one) but never simulate a
-    /// real match.
+    /// Gives every configured network's [`TestDaemonClient`] the mempool
+    /// [`TestEngineHandle::add_mempool_transaction`] fills, for a caller
+    /// driving `POST /api/v1/admin/tenant/payments/lookup` through a genuine
+    /// HTTP round trip and wanting it to find a real transaction. Without
+    /// it each network's node keeps an empty mempool of its own: the lookup
+    /// still resolves request-shape logic (a malformed txid, a
+    /// genuinely-absent one) but never finds a match.
     pub fn with_admin_lookup_daemon(mut self) -> Self {
         self.admin_lookup_daemon = true;
         self
@@ -803,41 +755,24 @@ impl TestEngineConfig {
     /// `MoneroDaemonClient` required. Monokulo, subscribed to
     /// `GET /api/v1/admin/order-events`, delivers it to the store's webhooks.
     ///
-    /// Chain scanning for payment *matches* is deliberately not exercised by this
-    /// path: [`NoopDaemonClient`] is inert, and `run_scan_tick` is always called with
-    /// an empty `tenants` list here (see `spawn`), so the active-watchlist
-    /// intersection is empty and no wallet-scanning work ever happens - only the
-    /// unconditional non-terminal-order recompute sweep runs. A caller that also
-    /// needs genuine payment detection needs a real `MoneroDaemonClient` and wallet
-    /// handles, neither of which this harness provides; that is out of scope for
-    /// what this opt-in exists for.
+    /// The loop scans every registered tenant (re-read each tick, as
+    /// production does) against an inert [`TestDaemonClient`] of its own,
+    /// with an empty chain and mempool, so no payment is ever matched: only
+    /// the unconditional non-terminal-order recompute sweep has an effect. A
+    /// caller that needs genuine payment detection drives a real daemon
+    /// itself through [`TestEngineHandle::run_scan_tick_now`] - see that
+    /// method's doc comment for why a second real client ticking in the
+    /// background was the wrong shape (connection contention against the
+    /// same live node).
     ///
-    /// A caller that instead needs genuine payment-*matching* chain scanning against a
-    /// real daemon (the real stagenet connect-flow test) should drive that
-    /// itself via [`TestEngineHandle::run_scan_tick_now`] rather than through this
-    /// method - see that method's own doc comment for why a second, independently-
-    /// ticking real daemon client running concurrently in the background turned out to
-    /// be the wrong shape for that need (real connection contention against the same
-    /// live node). This method's own scan-tick loop always uses the inert
-    /// [`NoopDaemonClient`] (per the "chain scanning... deliberately not exercised"
-    /// paragraph above) regardless of whether `run_scan_tick_now` is also in use -
-    /// the two don't conflict since the `NoopDaemonClient` never touches the network.
-    ///
-    /// CORRECTION (found while debugging the real stagenet test hanging for
-    /// minutes on its very first `run_scan_tick_now` call, regardless of which public
-    /// node it pointed at): the paragraph above is wrong about there being no
-    /// conflict. `run_scan_tick`'s block-scan watermark (`max_scanned_height`/
-    /// `set_scanned_block`) is keyed by `network` alone, in the same `Store` this
-    /// loop's `NoopDaemonClient` tick shares with any real daemon later driven
-    /// through `run_scan_tick_now` for that same network. `NoopDaemonClient::
-    /// get_height` always reports `0`, so this loop's very first tick seeds
-    /// `last_scanned = Some(0)` for the network - and a subsequent real-daemon call
-    /// via `run_scan_tick_now` then computes `scan_range = (1, current_real_height)`
-    /// and tries to fetch every block one at a time from 1 up to the real chain tip
-    /// (millions of blocks on stagenet), which looks exactly like an indefinite hang:
-    /// node-independent, low-CPU (blocked on sequential network round-trips), and
-    /// unaffected by `reorg_check_depth`. A caller driving a real daemon through
-    /// `run_scan_tick_now` leaves this off.
+    /// Don't combine the two. `run_scan_tick`'s block-scan watermark
+    /// (`max_scanned_height`/`set_scanned_block`) is keyed by `network` alone,
+    /// in the store this loop shares with `run_scan_tick_now`. The loop's
+    /// node always reports height `0`, so its first tick seeds
+    /// `last_scanned = Some(0)` for the network, and a later
+    /// `run_scan_tick_now` against a real daemon then fetches every block
+    /// one at a time from 1 up to the real chain tip (millions on stagenet),
+    /// which looks exactly like an indefinite hang.
     pub fn with_background_loops(mut self) -> Self {
         self.background_loops = true;
         self
@@ -907,7 +842,7 @@ impl TestEngineConfig {
         // Held separately (not just inline in `AppState`) so the background scan loop
         // below can clone the same `Arc` and re-read it fresh every tick, exactly like
         // `main.rs`'s own `run_scanner_loop` does against the real production
-        // `AppState::wallet_handles` - see `with_real_daemon`'s doc comment.
+        // `AppState::wallet_handles` - see `with_background_loops`'s doc comment.
         let wallet_handles: Arc<RwLock<HashMap<engine::store::TenantId, WalletHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
@@ -927,38 +862,28 @@ impl TestEngineConfig {
         // Real settings, so the instance-admin settings API works; node
         // settings are saved but not applied (this harness's daemons are
         // fixed fakes) unless `with_live_nodes`.
-        let daemons = engine::engine_settings::Daemons::fixed(if self.admin_lookup_daemon {
+        // A network is "configured" exactly when it has a daemon client
+        // (admin_settings_v2.md task 2.1), so each configured network gets
+        // a fake one: tenants can be created on it, nothing is scanned.
+        let daemons = engine::engine_settings::Daemons::fixed(
             self.networks
                 .iter()
                 .map(|&network| {
+                    let (label, mempool) = if self.admin_lookup_daemon {
+                        ("lookup-test-daemon", lookup_mempool.clone())
+                    } else {
+                        ("noop-test-daemon", Arc::default())
+                    };
                     (
                         network,
                         Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                            label: "lookup-test-daemon".to_string(),
-                            client: Arc::new(LookupDaemonClient {
-                                mempool: lookup_mempool.clone(),
-                            }),
+                            label: label.to_string(),
+                            client: Arc::new(TestDaemonClient { mempool }),
                         }])),
                     )
                 })
-                .collect::<HashMap<_, _>>()
-        } else {
-            // A network is "configured" exactly when it has a daemon client
-            // (admin_settings_v2.md task 2.1), so each configured network gets
-            // an inert one: tenants can be created on it, nothing is scanned.
-            self.networks
-                .iter()
-                .map(|&network| {
-                    (
-                        network,
-                        Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                            label: "noop-test-daemon".to_string(),
-                            client: Arc::new(NoopDaemonClient),
-                        }])),
-                    )
-                })
-                .collect::<HashMap<_, _>>()
-        });
+                .collect::<HashMap<_, _>>(),
+        );
         let engine_settings = engine::engine_settings::EngineSettings::load_full(
             store.clone(),
             self.live_nodes
@@ -990,18 +915,11 @@ impl TestEngineConfig {
                 wallet_handles: wallet_handles.clone(),
                 snp: snp_slot,
             },
-            // This harness's own background scan loop (below) talks to a
-            // bare `NoopDaemonClient` directly, never through
-            // `AppState::daemons` - no caller of this crate exercises the
-            // engine's `/status` page or its admin payment-lookup endpoint by
-            // default, so an empty map here is honest, not a stub standing in
-            // for something real. See [`TestEngineConfig::
-            // with_admin_lookup_daemon`] for the opt-in that wires one in.
             // Fixed fakes unless `with_live_nodes`: this harness's own
-            // background scan loop (below) talks to a bare `NoopDaemonClient`
-            // directly, never through `AppState::daemons` - see
+            // background scan loop (below) talks to a `TestDaemonClient` of
+            // its own directly, never through `AppState::daemons` - see
             // [`TestEngineConfig::with_admin_lookup_daemon`] for the opt-in
-            // that wires a lookup fake in instead.
+            // that gives these the lookup mempool.
             networks: engine::http::Networks {
                 daemons,
                 scanner_status: scanner_status.clone(),
@@ -1045,14 +963,14 @@ impl TestEngineConfig {
             let scan_key_custody = key_custody.clone();
             let scan_wallet_handles = wallet_handles.clone();
             background_tasks.push(tokio::spawn(async move {
-                let daemon = NoopDaemonClient;
+                let daemon = TestDaemonClient::default();
                 loop {
                     // Rebuilt fresh every tick (not a boot-time snapshot) so a tenant
                     // created at runtime - e.g. via a real connect flow through
                     // monokulo - is picked up without needing a restart, exactly
                     // like `main.rs`'s own `run_scanner_loop` re-reads its production
                     // `wallet_handles` registry every round. Harmless either way here -
-                    // `NoopDaemonClient` never finds a payment match regardless of the
+                    // an empty chain never yields a payment match regardless of the
                     // tenant list - but this keeps the loop's own watchlist-building
                     // logic faithful to production, for a caller that later swaps in a
                     // real daemon via `run_scan_tick_now` instead.
@@ -1117,16 +1035,14 @@ pub async fn spawn_test_engine() -> TestEngineHandle {
 /// given list instead of empty, for `monokulo`'s
 /// engine admin-API client: `POST /api/v1/admin/tenants`
 /// (`src/http/admin.rs::create_tenant` at the repo root) rejects any
-/// request for a network not in `state.configured_networks`, so a test that
+/// request for a network the engine has no node for, so a test that
 /// needs a real tenant actually created — not just the route reachable —
 /// needs at least one network configured. `spawn_test_engine` itself is
 /// kept deliberately network-less (see its own doc comment: it's the
 /// common case, and most callers only need dependency-free routes), so this
 /// is a separate, explicit opt-in rather than a behavior change to the
 /// existing function. Equivalent to
-/// `TestEngineConfig::new().with_networks(networks).spawn()`; a test that
-/// also needs a seeded exchange rate (e.g. to create a real order) should
-/// use [`TestEngineConfig`] directly instead.
+/// `TestEngineConfig::new().with_networks(networks).spawn()`.
 pub async fn spawn_test_engine_with_networks(networks: &[Network]) -> TestEngineHandle {
     TestEngineConfig::new()
         .with_networks(networks)

@@ -580,10 +580,6 @@ fn combined_portfolio_interactions_have_fixed_positive_controls() {
                         > 0
                 );
             }
-            println!(
-                "ENGINE_BOUNDARY_HITS {}",
-                serde_json::to_string(&hits).unwrap()
-            );
         }
     }
 }
@@ -649,8 +645,7 @@ fn recorded_ringct_shapes_and_recipient_expectations_are_frozen() {
 }
 
 // Every recorded RingCT variant, split by worker and foreign outputs so
-// the six parts run side by side; each covers whole and pruned histories
-// and prints its own boundary hits.
+// the six parts run side by side; each covers whole and pruned histories.
 #[test]
 fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_0_with_foreign_0() {
     recorded_ringct_histories(0, 0);
@@ -683,7 +678,6 @@ fn every_recorded_ringct_variant_runs_complete_money_histories_on_worker_1_with_
 
 fn recorded_ringct_histories(worker: u8, foreign: u8) {
     use crate::work::portfolio::scenario::reviewed::recorded;
-    let mut hits = std::collections::BTreeMap::<String, u64>::new();
     for pruned in [false, true] {
         for goal in 0..3 {
             let reached =
@@ -701,22 +695,8 @@ fn recorded_ringct_histories(worker: u8, foreign: u8) {
                     "BOUNDARY: recorded-history; {boundary} worker={worker} pruned={pruned} foreign={foreign} goal={goal}"
                 );
             }
-            for boundary in [
-                "recorded-ringct-history",
-                if pruned {
-                    "recorded-pruned-history"
-                } else {
-                    "recorded-whole-history"
-                },
-            ] {
-                *hits.entry(boundary.into()).or_default() += 1;
-            }
         }
     }
-    println!(
-        "ENGINE_BOUNDARY_HITS {}",
-        serde_json::to_string(&hits).unwrap()
-    );
 }
 
 fn persisted_config(config: Config) -> Config {

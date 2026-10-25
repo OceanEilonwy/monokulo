@@ -54,19 +54,76 @@ pub(crate) fn skip_reason(case: roxmltree::Node, skipped: roxmltree::Node) -> Op
         .map(str::to_string)
 }
 
+/// An `#[ignore]`d test, as the source declares it.
+pub(crate) struct Ignored {
+    /// Its file and its module path in the file: `src/a.rs › tests::slow`.
+    pub(crate) name: String,
+    pub(crate) reason: Option<String>,
+    /// The package its file is in, which every nextest binary id that can
+    /// hold it starts with; none for a file outside a package.
+    pub(crate) package: Option<String>,
+}
+
+impl Ignored {
+    /// Its module path in its file.
+    fn path(&self) -> &str {
+        self.name
+            .split_once(" › ")
+            .map_or(self.name.as_str(), |(_, p)| p)
+    }
+
+    /// Whether nextest's binary id `class` is one of its package's.
+    fn in_binary(&self, class: &str) -> bool {
+        self.package.as_deref() == class.split("::").next()
+    }
+
+    /// Whether the case nextest names `name` in binary `class` is this test:
+    /// a binary of its package, and a module path in the binary ending with
+    /// its path in its file.
+    pub(crate) fn is(&self, class: &str, name: &str) -> bool {
+        let path = self.path();
+        self.in_binary(class) && (name == path || name.ends_with(&format!("::{path}")))
+    }
+}
+
+/// The `name` in a Cargo manifest's `[package]` table.
+fn package_name(manifest: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+        } else if in_package {
+            if let Some(("name", value)) = line.split_once('=').map(|(k, v)| (k.trim(), v)) {
+                return Some(value.trim().trim_matches('"').to_string());
+            }
+        }
+    }
+    None
+}
+
+/// The package `file` is in: the nearest manifest above it, under `root`,
+/// that has a `[package]`.
+fn package_of(root: &Path, file: &Path) -> Option<String> {
+    file.ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(root))
+        .find_map(|dir| package_name(&fs::read_to_string(dir.join("Cargo.toml")).ok()?))
+}
+
 /// Every `#[ignore]`d test in the Rust files under `root`, named by its file
-/// and module path, with its reason. nextest's `JUnit` report leaves ignored
+/// and module path, with its reason and package. nextest's `JUnit` report leaves ignored
 /// tests out altogether, and neither its test list nor libtest's says why a
 /// test is ignored, so the reason is read where it is written. Reading the
 /// source needs no build, so it works the same after a plain or a coverage
 /// run on every platform. A file that does not parse is not one a test
 /// binary was built from. `cargo xtask live` reads the same list to check
 /// each one is run daily or says why not.
-pub(crate) fn ignored_tests(root: &Path) -> io::Result<Vec<(String, Option<String>)>> {
+pub(crate) fn ignored_tests(root: &Path) -> io::Result<Vec<Ignored>> {
     struct Tests {
         modules: Vec<String>,
         file: String,
-        found: Vec<(String, Option<String>)>,
+        package: Option<String>,
+        found: Vec<Ignored>,
     }
     impl Visit<'_> for Tests {
         fn visit_item_mod(&mut self, item: &syn::ItemMod) {
@@ -94,7 +151,11 @@ pub(crate) fn ignored_tests(root: &Path) -> io::Result<Vec<(String, Option<Strin
                     .chain([item.sig.ident.to_string()])
                     .collect::<Vec<_>>()
                     .join("::");
-                self.found.push((format!("{} › {path}", self.file), reason));
+                self.found.push(Ignored {
+                    name: format!("{} › {path}", self.file),
+                    reason,
+                    package: self.package.clone(),
+                });
             }
             visit::visit_item_fn(self, item);
         }
@@ -107,6 +168,7 @@ pub(crate) fn ignored_tests(root: &Path) -> io::Result<Vec<(String, Option<Strin
     let mut tests = Tests {
         modules: Vec::new(),
         file: String::new(),
+        package: None,
         found: Vec::new(),
     };
     for path in files_under(root, prune)? {
@@ -125,6 +187,7 @@ pub(crate) fn ignored_tests(root: &Path) -> io::Result<Vec<(String, Option<Strin
             .map(|c| c.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()
             .join("/");
+        tests.package = package_of(root, &path);
         tests.visit_file(&file);
     }
     Ok(tests.found)
@@ -149,13 +212,13 @@ fn message(node: roxmltree::Node) -> String {
 }
 
 /// One suite's counts and wall time, whether cargo-nextest wrote it, and
-/// the name of every case it ran, and the full name and time of each that
-/// was not skipped.
+/// the class and name of every case it ran, and the full name and time of
+/// each that was not skipped.
 struct Suite {
     counts: Counts,
     seconds: f64,
     nextest: bool,
-    names: Vec<String>,
+    cases: Vec<(String, String)>,
     times: Vec<(String, f64)>,
 }
 
@@ -200,8 +263,10 @@ fn read(
     let mut counts = Counts::default();
     let names = cases
         .iter()
-        .filter_map(|case| case.attribute("name"))
-        .map(str::to_string)
+        .filter_map(|case| {
+            let class = case.attribute("classname").unwrap_or("");
+            Some((class.to_string(), case.attribute("name")?.to_string()))
+        })
         .collect();
     let mut times = Vec::new();
     for case in cases {
@@ -245,7 +310,7 @@ fn read(
         counts,
         seconds,
         nextest,
-        names,
+        cases: names,
         times,
     })
 }
@@ -354,6 +419,10 @@ fn report(source: &Path, title: &str, suites: &[&str], limits: bool) -> (String,
     let (mut failures, mut flaky, mut skips) = (Vec::new(), Vec::new(), Vec::new());
     // Each suite's counts and wall time, or why it has none.
     let mut rows: Vec<(String, Result<Suite, String>)> = Vec::new();
+    // The source's ignored tests, read once for every nextest report: each
+    // is the first report's with a binary of its package, so two reports
+    // don't both count it, and a report never lists another package's.
+    let mut ignored: Option<io::Result<Vec<Option<Ignored>>>> = None;
     for suite in suites {
         let (label, path) = suite.split_once('=').unwrap_or((suite, ""));
         let mut row = match fs::read_to_string(path) {
@@ -363,24 +432,28 @@ fn report(source: &Path, title: &str, suites: &[&str], limits: bool) -> (String,
         };
         if let Ok(suite) = &mut row {
             if suite.nextest {
-                match ignored_tests(source) {
-                    Ok(mut ignored) => {
-                        // A run with --run-ignored (the daily live run) ran
-                        // some: the report names each by its module path
-                        // in its binary, which ends with its path in its file.
-                        ignored.retain(|(name, _)| {
-                            let path = name.split_once(" › ").map_or(name.as_str(), |(_, p)| p);
-                            !suite
-                                .names
-                                .iter()
-                                .any(|ran| ran == path || ran.ends_with(&format!("::{path}")))
-                        });
-                        suite.counts.skipped += ignored.len() as u64;
-                        skips.extend(ignored.into_iter().map(|(name, reason)| Skip {
-                            label: label.to_string(),
-                            name,
-                            reason,
-                        }));
+                let read = ignored.get_or_insert_with(|| {
+                    ignored_tests(source).map(|all| all.into_iter().map(Some).collect())
+                });
+                match read {
+                    Ok(unclaimed) => {
+                        for slot in unclaimed.iter_mut() {
+                            let Some(test) = slot.take_if(|test| {
+                                suite.cases.iter().any(|(class, _)| test.in_binary(class))
+                            }) else {
+                                continue;
+                            };
+                            // A run with --run-ignored (the daily live run)
+                            // ran some: those aren't skipped.
+                            if !suite.cases.iter().any(|(class, name)| test.is(class, name)) {
+                                suite.counts.skipped += 1;
+                                skips.push(Skip {
+                                    label: label.to_string(),
+                                    name: test.name,
+                                    reason: test.reason,
+                                });
+                            }
+                        }
                     }
                     Err(e) => row = Err(format!("unreadable source: {e}")),
                 }
@@ -643,6 +716,11 @@ mod tests {
         let source = scratch.join("src");
         fs::create_dir_all(source.join("crates/net/tests")).unwrap();
         fs::write(
+            source.join("crates/net/Cargo.toml"),
+            "[package]\nname = \"net\"\n",
+        )
+        .unwrap();
+        fs::write(
             source.join("crates/net/src.rs"),
             r#"#[test] fn runs() {}
             mod live { mod dns {
@@ -690,6 +768,48 @@ mod tests {
             "{summary}"
         );
         assert!(!summary.contains("resolves</code>"), "{summary}");
+        // Another package's test of the same path is not the one that ran,
+        // and a report lists only its own packages' ignored tests.
+        fs::create_dir_all(source.join("crates/web")).unwrap();
+        fs::write(
+            source.join("crates/web/Cargo.toml"),
+            "[workspace]\n\n[package]\nname = \"web\"\n",
+        )
+        .unwrap();
+        fs::write(
+            source.join("crates/web/src.rs"),
+            r#"mod live { mod dns { #[test] #[ignore = "needs the web"] fn resolves() {} } }"#,
+        )
+        .unwrap();
+        let summary = summarize(&source, "Rust", &[&format!("rust={}", report.display())]);
+        assert!(!summary.contains("resolves</code>"), "{summary}");
+        fs::write(
+            &report,
+            r#"<testsuites name="nextest-run" time="1"><testsuite name="net"><testcase classname="net" name="net::live::dns::resolves"/><testcase classname="web" name="runs"/></testsuite></testsuites>"#,
+        )
+        .unwrap();
+        let summary = summarize(&source, "Rust", &[&format!("rust={}", report.display())]);
+        assert!(
+            summary.contains("| rust | ✅ passed | 2 | 0 | 0 | 2 | 1s |")
+                && summary.contains(
+                    "- <code>crates/web/src.rs › live::dns::resolves</code>: needs the web\n"
+                ),
+            "{summary}"
+        );
+        // Two reports, as two labels, count each ignored test once.
+        let summary = summarize(
+            &source,
+            "Rust",
+            &[
+                &format!("first={}", report.display()),
+                &format!("second={}", report.display()),
+            ],
+        );
+        assert!(
+            summary.contains("| first | ✅ passed | 2 | 0 | 0 | 2 | 1s |")
+                && summary.contains("| second | ✅ passed | 2 | 0 | 0 | 0 | 1s |"),
+            "{summary}"
+        );
         // Only nextest leaves its ignored tests out; another tool's report
         // already says what it skipped.
         fs::write(

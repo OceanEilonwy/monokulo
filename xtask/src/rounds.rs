@@ -9,14 +9,15 @@
 
 use std::{
     fs, io,
-    process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::stress::{fresh_db, profile, target_dir};
+use crate::stress::{
+    build_engine_bin, fresh_db, fresh_output, pinned_cpu, profile, run_pinned, target_dir,
+};
 use crate::support::{escape_html, root, write_json};
 
 pub(crate) const HELP: &str =
@@ -44,32 +45,17 @@ fn number(value: &Value, decimals: usize) -> String {
 
 pub fn run() -> io::Result<bool> {
     let output = root().join("target/coverage/stress-rounds");
-    if output.exists() {
-        fs::remove_dir_all(&output)?;
-    }
-    fs::create_dir_all(&output)?;
+    fresh_output(&output)?;
     let raw = fs::read(root().join("xtask/stress/round_sweep_v2.json"))?;
     let scenario: Value = serde_json::from_slice(&raw)?;
     let checksum = hex::encode(Sha256::digest(&raw));
-    let built = Command::new("cargo")
-        .args([
-            "build",
-            "--release",
-            "-p",
-            "engine",
-            "--bin",
-            "round_sweep",
-            "--locked",
-        ])
-        .current_dir(root())
-        .status()?;
-    if !built.success() {
+    if !build_engine_bin(true, "round_sweep").status()?.success() {
         return Err(io::Error::other("round sweep build failed"));
     }
     let binary = target_dir().join("release/round_sweep");
     let hardware = profile(&output);
     write_json(&output.join("hardware.json"), &hardware)?;
-    let cpu = hardware["selected_cpu"].as_u64().unwrap_or(0);
+    let cpu = pinned_cpu(&hardware)?;
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -111,26 +97,11 @@ pub fn run() -> io::Result<bool> {
                 args.push(value.to_string());
             }
             eprintln!("round sweep: {label}");
-            let mut command = if cfg!(target_os = "linux") {
-                let mut command = Command::new("taskset");
-                command.arg("-c").arg(cpu.to_string()).arg(&binary);
-                command
-            } else {
-                Command::new(&binary)
-            };
-            let run = command
-                .args(&args)
-                .current_dir(root())
-                .stdin(Stdio::null())
-                .output()?;
-            fs::write(output.join(format!("{label}.log")), &run.stderr)?;
-            let point: Value = serde_json::from_slice(&run.stdout).unwrap_or(Value::Null);
-            let success =
-                run.status.success() && point["schema_version"] == scenario["schema_version"];
+            let (ran, _, point, _) = run_pinned(&binary, &output, &label, cpu, &args)?;
+            let success = ran && point["schema_version"] == scenario["schema_version"];
             ok &= success;
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = fs::remove_file(format!("{}{suffix}", db.display()));
-            }
+            // The run's database isn't kept: clear it as the next run would.
+            fresh_db(&output, &label);
             results.push(json!({"scenario": name, "label": label, "ok": success, "point": point}));
             write_json(
                 &output.join("run.json"),

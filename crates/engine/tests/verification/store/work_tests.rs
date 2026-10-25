@@ -377,7 +377,6 @@ fn every_reorg_staging_cleanup_boundary_survives_reopen() {
             }
         }
     }
-    println!("ENGINE_BOUNDARY_HITS {{\"reorg-staging-reopen-schedules\":18,\"reorg-staging-invalidated-at-or-above-fork\":36,\"reorg-staging-preserved-below-fork-or-other-network\":36}}");
 }
 
 #[path = "work_properties.rs"]

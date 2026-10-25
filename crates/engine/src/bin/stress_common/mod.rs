@@ -1,5 +1,6 @@
 //! What the scanner's stress binaries share: the
-//! deterministic wallets and the transaction every scripted block carries.
+//! deterministic wallets, the transaction every scripted block carries, and
+//! how they read their options.
 
 use std::error::Error;
 
@@ -7,6 +8,30 @@ use engine::key_custody::WalletMaterial;
 use monero::consensus::encode::deserialize;
 use monero::{PrivateKey, PublicKey, Transaction};
 use sha2::{Digest as _, Sha256};
+
+/// A `--name VALUE` option whose value parses as a `T`. A binary's clap command
+/// declares each it reads, so a value that doesn't parse, and a flag it
+/// doesn't declare (a misspelt one), stop the run.
+pub(crate) fn option<T>(name: &'static str) -> clap::Arg
+where
+    T: std::str::FromStr + Clone + Send + Sync + 'static,
+    T::Err: Error + Send + Sync + 'static,
+{
+    clap::Arg::new(name)
+        .long(name)
+        .value_parser(|value: &str| value.parse::<T>())
+}
+
+/// Option `name`'s value, given or its default.
+pub(crate) fn value<T: Clone + Send + Sync + 'static>(
+    matches: &clap::ArgMatches,
+    name: &str,
+) -> Result<T, Box<dyn Error>> {
+    Ok(matches
+        .get_one::<T>(name)
+        .cloned()
+        .ok_or_else(|| format!("missing --{name}"))?)
+}
 
 /// The transaction every scripted block holds. It pays tenant 0's
 /// subaddress (0, 1), so every block has a real match to record.

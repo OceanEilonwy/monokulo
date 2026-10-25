@@ -6,7 +6,7 @@ use super::{heading, key_figure, run_pill};
 use crate::pages::format::{
     count, date, float, int, len, maybe_int, ms, ordinal, small_number, whole, NONE,
 };
-use crate::pages::inputs::{Fault, Phase, Stress, StressPoint, Tick};
+use crate::pages::inputs::{Check, Fault, Phase, Stress, StressPoint, Tick};
 use crate::pages::model::Report;
 use maud::{html, Markup};
 
@@ -140,6 +140,22 @@ fn run_figures(run: &Stress, title: Option<&str>) -> Option<Markup> {
     };
     let measured_ticks = run.points.first().and_then(|p| p.fixture.measured_ticks);
     let all_kept_up = rows.iter().all(|r| r.sustainable);
+    // Only the conditions the run says it held its points to.
+    let conditions: Vec<String> = run
+        .checked
+        .iter()
+        .filter_map(|check| match check {
+            Check::Lag => Some(format!(
+                "no store more than {} blocks behind",
+                maybe_int(run.scenario.max_lag_blocks)
+            )),
+            Check::StatusReplies => Some(format!(
+                "status replies under {} ms",
+                maybe_int(run.scenario.max_http_ms)
+            )),
+            Check::TickBudget | Check::TimerDelay | Check::Other => None,
+        })
+        .collect();
     Some(html! {
         @if let Some(title) = title { div.vhead { div { h2.sub { (title) } } } }
         dl.kv {
@@ -176,7 +192,7 @@ fn run_figures(run: &Stress, title: Option<&str>) -> Option<Markup> {
                     }
                 } }
                 p.muted.small.table-note {
-                    "Pass conditions: no store more than " (maybe_int(run.scenario.max_lag_blocks)) " blocks behind, status replies under " (maybe_int(run.scenario.max_http_ms)) " ms. "
+                    @if !conditions.is_empty() { "Pass conditions: " (conditions.join(", ")) ". " }
                     @if all_kept_up {
                         @if rows.len() == 2 { "Both passed." } @else { "All " (count(rows.len())) " passed." }
                     } @else { "Not every point kept up; see the full report." }
