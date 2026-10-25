@@ -1821,7 +1821,7 @@ mod properties {
             let block = |height: u64| {
                 let mut id = [23u8; 32];
                 id[..8].copy_from_slice(&height.to_le_bytes());
-                crate::pow::ProvenBlock {
+                engine_pow::ProvenBlock {
                     height,
                     id,
                     timestamp: 1_700_000_000 + height * 120,

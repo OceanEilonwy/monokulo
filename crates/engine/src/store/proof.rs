@@ -7,7 +7,7 @@ use rusqlite::{params, OptionalExtension as _};
 
 use super::work::sql_height;
 use super::{Result, Store, StoreError};
-use crate::pow::{ProvenBlock, SEEDHASH_EPOCH_BLOCKS};
+use engine_pow::{ProvenBlock, SEEDHASH_EPOCH_BLOCKS};
 
 /// A network's checking state, as stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -333,7 +333,7 @@ impl Store {
     /// Drops proven blocks below `keep_from`, keeping the `RandomX` keys among
     /// them that blocks from `keep_from` on may still need.
     pub fn prune_proven(&self, network: monero::Network, keep_from: u64) -> Result<()> {
-        let oldest_key = crate::pow::seed_height(keep_from);
+        let oldest_key = engine_pow::seed_height(keep_from);
         self.in_transaction(|s| {
             s.conn.execute(
                 "INSERT OR REPLACE INTO proof_seeds (network, height, block_hash)

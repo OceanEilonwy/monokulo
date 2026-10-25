@@ -175,10 +175,10 @@ fn an_outer_timeout_cools_the_pinned_node_and_the_next_money_round_uses_a_fallba
     });
 }
 
-fn proven(height: u64) -> crate::pow::ProvenBlock {
+fn proven(height: u64) -> engine_pow::ProvenBlock {
     let mut id = [31; 32];
     id[..8].copy_from_slice(&height.to_le_bytes());
-    crate::pow::ProvenBlock {
+    engine_pow::ProvenBlock {
         height,
         id,
         timestamp: 1_700_000_000 + height * 120,
@@ -450,7 +450,7 @@ async fn integration_scan(w: &World, fault: Option<usize>) {
 async fn integration_converge(
     w: &mut World,
     follower: &mut crate::proof::Follower,
-    chain: &crate::pow::test_chain::TestChain,
+    chain: &engine_pow::test_chain::TestChain,
     expected: OrderStatus,
 ) {
     for _ in 0..100 {
@@ -527,7 +527,7 @@ fn reconcile_across_forks_and_restarts(
         chain.mine(vec![tx.clone()]);
         chain.mine_empty((required - 1) as usize);
         for node in &w.nodes {
-            chain.install(&node.fake, 0);
+            node.fake.install_chain(&chain, 0);
         }
         integration_converge(&mut w, &mut follower, &chain, OrderStatus::Paid).await;
         let ids = payment_identities(&w.h, std::slice::from_ref(&w.h.order));
@@ -545,9 +545,9 @@ fn reconcile_across_forks_and_restarts(
         forged.mine_empty(required as usize + 4);
         for (i, node) in w.nodes.iter().enumerate() {
             if forged_primary && i == 0 {
-                forged.install(&node.fake, base.tip().height + 1);
+                node.fake.install_chain(&forged, base.tip().height + 1);
             } else {
-                replacement.install(&node.fake, base.tip().height + 1);
+                node.fake.install_chain(&replacement, base.tip().height + 1);
             }
         }
         integration_round(&mut w, &mut follower, Some(0)).await;
@@ -611,7 +611,7 @@ fn reconcile_across_forks_and_restarts(
         paced.blocks_per_round = 1;
         follower = crate::proof::tests::follower_with(pow, NETWORK, paced);
         for node in &w.nodes {
-            replacement.install(&node.fake, base.tip().height + 1);
+            node.fake.install_chain(&replacement, base.tip().height + 1);
             node.fake.set_mempool(vec![]);
         }
         follower

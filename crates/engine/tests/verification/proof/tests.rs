@@ -1,11 +1,11 @@
 //! Proof-of-work checking against fake nodes serving real blocks
-//! (`pow::test_chain`): mined for real at a small difficulty, so a block
+//! (`engine_pow::test_chain`): mined for real at a small difficulty, so a block
 //! with a wrong proof is as easy to make as a right one.
 //!
 //! What the follower does with the hashes (anchoring, reorgs, timeouts,
 //! forks) is tested with the stand-in hash function ([`Pow::StandIn`]),
 //! which costs microseconds a block. `RandomX` itself is hashed in
-//! `pow::hasher`'s reference vector, `pow::tests`' real mainnet blocks,
+//! `engine_pow::hasher`'s reference vector, `engine_pow`'s real mainnet blocks,
 //! [`an_honest_chain_is_anchored_and_followed_across_a_key_change_hashed_with_randomx`]
 //! and the `real_verifier_and_scanner` properties.
 
@@ -15,8 +15,8 @@ use std::time::Duration;
 use super::*;
 use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon_fallback::FallbackNode;
-use crate::pow::test_chain::TestChain;
 use crate::store::SharedStore;
+use engine_pow::test_chain::TestChain;
 
 const NET: monero::Network = monero::Network::Mainnet;
 /// The test chains' window ends here; their blocks after it cross a
@@ -27,7 +27,7 @@ const TOP: u64 = 977 * 2048 + 60;
 /// What a test's chains are mined and checked with.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Pow {
-    /// [`crate::pow::hasher::Function::StandIn`]: for tests of the
+    /// [`engine_pow::hasher::Function::StandIn`]: for tests of the
     /// follower's logic.
     StandIn,
     /// Real `RandomX`, two 256 MiB caches (the chains cross a key change)
@@ -130,7 +130,7 @@ impl World {
         let store = Store::open_in_memory().unwrap().into_shared();
         let nodes: Vec<Arc<FakeDaemonClient>> = std::iter::repeat_with(|| {
             let node = Arc::new(FakeDaemonClient::new());
-            chain.install(&node, 0);
+            node.install_chain(chain, 0);
             node
         })
         .take(n)
@@ -212,7 +212,7 @@ async fn an_honest_chain_is_anchored_and_followed(pow: Pow) {
 
     // New blocks, past the key change at 2,000,961.
     chain.mine_empty(5);
-    chain.install(&world.nodes[0], TOP + 13);
+    world.nodes[0].install_chain(&chain, TOP + 13);
     world.round().await;
     assert_eq!(world.proven_tip(), chain.tip().proven());
     assert!(chain.tip().height > 977 * 2048 + 65);
@@ -230,7 +230,7 @@ async fn a_made_up_block_is_caught_and_never_proven() {
     let mut forged = chain.clone();
     forged.forge(vec![]);
     forged.mine_empty(10);
-    forged.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&forged, proven.height + 1);
     world.round().await;
     assert_eq!(world.proven_tip(), proven, "nothing past the made-up block");
     assert_eq!(world.verdict(0), NodeVerdict::Caught);
@@ -248,7 +248,7 @@ async fn a_made_up_block_is_caught_and_never_proven() {
 
     // The node serves the real chain again: followed, and it is back.
     chain.mine_empty(2);
-    chain.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&chain, proven.height + 1);
     world.round().await;
     assert_eq!(world.proven_tip(), chain.tip().proven());
     assert_eq!(world.verdict(0), NodeVerdict::OnChain);
@@ -266,10 +266,10 @@ async fn a_lying_primary_among_three_is_caught_and_excluded() {
     let mut forged = chain.clone();
     forged.forge(vec![]);
     forged.mine_empty(10);
-    forged.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&forged, proven.height + 1);
     chain.mine_empty(3);
     for node in &world.nodes[1..] {
-        chain.install(node, proven.height + 1);
+        node.install_chain(&chain, proven.height + 1);
     }
     world.round().await;
     assert_eq!(world.proven_tip(), chain.tip().proven(), "the honest chain");
@@ -286,7 +286,7 @@ async fn a_lying_primary_among_three_is_caught_and_excluded() {
     // serves the proven one.
     world.round().await;
     assert!(world.client.is_excluded(0));
-    chain.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&chain, proven.height + 1);
     world.round().await;
     assert!(!world.client.is_excluded(0));
 }
@@ -302,13 +302,13 @@ async fn a_heavier_valid_branch_replaces_the_proven_chain_and_a_lighter_one_does
     // with six. Both are valid; node 1's has more work.
     let mut short = chain.clone();
     short.mine_empty(2);
-    short.install(&world.nodes[0], fork.height + 1);
+    world.nodes[0].install_chain(&short, fork.height + 1);
     let mut long = chain.truncated(fork.height - 3);
     for _ in 0..6 {
         let ts = long.tip().timestamp + 31;
         long.push(vec![], ts, true);
     }
-    long.install(&world.nodes[1], fork.height - 2);
+    world.nodes[1].install_chain(&long, fork.height - 2);
     world.round().await;
     assert_eq!(world.proven_tip(), long.tip().proven());
     assert_eq!(world.verdict(1), NodeVerdict::OnChain);
@@ -330,7 +330,7 @@ async fn an_equally_heavy_branch_does_not_replace_the_one_seen_first() {
     let mut world = World::new(1, &chain);
     world.round().await;
     chain.mine_empty(1);
-    chain.install(&world.nodes[0], chain.tip().height);
+    world.nodes[0].install_chain(&chain, chain.tip().height);
     world.round().await;
     let first = world.proven_tip();
     // Another block at the same height, as much work.
@@ -338,7 +338,7 @@ async fn an_equally_heavy_branch_does_not_replace_the_one_seen_first() {
     let ts = rival.tip().timestamp + 7;
     rival.push(vec![], ts, true);
     assert_ne!(rival.tip().id, first.id);
-    rival.install(&world.nodes[0], first.height);
+    world.nodes[0].install_chain(&rival, first.height);
     world.round().await;
     assert_eq!(world.proven_tip(), first);
     assert_eq!(world.verdict(0), NodeVerdict::Lighter);
@@ -355,7 +355,7 @@ async fn a_reorg_deeper_than_can_be_followed_holds_settlement() {
     for i in 0..40 {
         other.push(vec![], resumed + i * 29, true);
     }
-    other.install(&world.nodes[0], TOP - 19);
+    world.nodes[0].install_chain(&other, TOP - 19);
     world.round().await;
     assert_eq!(world.verdict(0), NodeVerdict::Diverged);
     let status = world.status();
@@ -407,7 +407,7 @@ async fn an_anchor_needs_a_majority_of_the_configured_nodes() {
         other.mine_empty(12);
         other
     };
-    other.install(&world.nodes[1], 0);
+    world.nodes[1].install_chain(&other, 0);
     world.round().await;
     let status = world.status();
     assert_eq!(status.state, ProofState::Anchoring);
@@ -508,7 +508,7 @@ async fn a_restart_resumes_from_the_proven_chain_without_anchoring_again() {
         .anchor
         .unwrap();
     chain.mine_empty(3);
-    chain.install(&world.nodes[0], TOP + 13);
+    world.nodes[0].install_chain(&chain, TOP + 13);
     world.follower = follower(NET, tuning());
     world.round_at(TEST_NOW + 100).await;
     let after = world
@@ -538,7 +538,7 @@ async fn a_long_catch_up_is_spread_over_rounds_and_kept_as_it_goes() {
     world.round().await;
     let start = world.proven_tip().height;
     chain.mine_empty(10);
-    chain.install(&world.nodes[0], TOP + 13);
+    world.nodes[0].install_chain(&chain, TOP + 13);
     let mut rounds = 0;
     while world.round().await.backlogged {
         rounds += 1;
@@ -560,7 +560,7 @@ async fn a_block_from_the_future_waits_for_the_clock_and_one_before_the_median_i
     let mut early = chain.clone();
     let three_hours = now as u64 + 3 * 3600;
     early.push(vec![], three_hours, true);
-    early.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&early, proven.height + 1);
     world.round_at(now).await;
     assert_eq!(world.proven_tip(), proven);
     assert_eq!(world.verdict(0), NodeVerdict::Ahead, "not held against it");
@@ -570,7 +570,7 @@ async fn a_block_from_the_future_waits_for_the_clock_and_one_before_the_median_i
 
     let mut stale = early.clone();
     stale.push(vec![], proven.timestamp - 10_000, true);
-    stale.install(&world.nodes[0], early.tip().height + 1);
+    world.nodes[0].install_chain(&stale, early.tip().height + 1);
     world.round_at(now + 3661).await;
     assert_eq!(world.proven_tip(), early.tip().proven());
     assert_eq!(world.verdict(0), NodeVerdict::Caught);
@@ -587,7 +587,7 @@ async fn the_proven_chain_is_pruned_to_what_reorgs_and_rules_need() {
     let mut world = World::new(1, &chain);
     world.round().await;
     chain.mine_empty(30);
-    chain.install(&world.nodes[0], TOP + 13);
+    world.nodes[0].install_chain(&chain, TOP + 13);
     world.round().await;
     let floor = world.store.lock().proven_floor(NET).unwrap().unwrap();
     let tip = world.proven_tip();
@@ -596,7 +596,7 @@ async fn the_proven_chain_is_pruned_to_what_reorgs_and_rules_need() {
         tip.height - 10 - (DIFFICULTY_BLOCKS as u64 - 1)
     );
     // The key the newest blocks need is still there.
-    let key_height = pow::seed_height(tip.height + 1);
+    let key_height = engine_pow::seed_height(tip.height + 1);
     assert_eq!(
         world.store.lock().proof_seed(NET, key_height).unwrap(),
         Some(chain.key(tip.height + 1))
@@ -613,9 +613,9 @@ async fn turning_checking_off_lets_every_node_back_and_on_again_carries_on() {
     let anchored = anchor(&world).unwrap();
     let mut forged = chain.clone();
     forged.forge(vec![]);
-    forged.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&forged, proven.height + 1);
     chain.mine_empty(1);
-    chain.install(&world.nodes[1], proven.height + 1);
+    world.nodes[1].install_chain(&chain, proven.height + 1);
     world.round().await;
     assert!(world.client.is_excluded(0));
     let followed = world.proven_tip();
@@ -668,13 +668,13 @@ async fn a_caught_node_stays_out_for_a_while() {
     let proven = world.proven_tip();
     let mut forged = chain.clone();
     forged.forge(vec![]);
-    forged.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&forged, proven.height + 1);
     chain.mine_empty(1);
-    chain.install(&world.nodes[1], proven.height + 1);
+    world.nodes[1].install_chain(&chain, proven.height + 1);
     world.round().await;
     assert!(world.client.is_excluded(0));
     // It serves the proven chain now: on chain, still left out.
-    chain.install(&world.nodes[0], proven.height + 1);
+    world.nodes[0].install_chain(&chain, proven.height + 1);
     world.round().await;
     assert_eq!(world.verdict(0), NodeVerdict::OnChain);
     assert!(world.client.is_excluded(0), "an hour, not a round");
@@ -743,7 +743,7 @@ async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
     world.round().await;
     let checked = world.status().blocks_checked;
     chain.mine_empty(1);
-    chain.install(&world.nodes[0], TOP + 13);
+    world.nodes[0].install_chain(&chain, TOP + 13);
     let bent = FallbackDaemonClient::new(vec![FallbackNode {
         label: "node0:18081".to_owned(),
         client: Arc::new(BentHashes(Arc::clone(&world.nodes[0]))),
@@ -856,7 +856,7 @@ async fn a_block_below_the_difficulty_floor_is_caught() {
     let mut world = World::new(1, &chain);
     world.round().await;
     chain.mine_empty(1);
-    chain.install(&world.nodes[0], TOP + 13);
+    world.nodes[0].install_chain(&chain, TOP + 13);
     // The engine restarts with a floor above the test chain's difficulty.
     world.follower = follower(
         NET,
@@ -1028,7 +1028,7 @@ mod settlement {
         let mut shop = Shop::new(1, &chain).await;
         chain.mine(vec![fixture_tx()]);
         chain.mine_empty(9);
-        chain.install(&shop.world.nodes[0], TOP + 13);
+        shop.world.nodes[0].install_chain(&chain, TOP + 13);
         shop.scan().await;
         shop.scan().await;
         assert_eq!(
@@ -1052,7 +1052,7 @@ mod settlement {
         let mut forged = chain.clone();
         forged.forge(vec![fixture_tx()]);
         forged.mine_empty(12);
-        forged.install(&shop.world.nodes[0], TOP + 13);
+        shop.world.nodes[0].install_chain(&forged, TOP + 13);
         for _ in 0..3 {
             shop.scan().await;
             shop.world.round().await;
@@ -1071,7 +1071,7 @@ mod settlement {
         let mut forged = chain.clone();
         forged.forge(vec![fixture_tx()]);
         forged.mine_empty(40);
-        forged.install(&shop.world.nodes[0], TOP + 13);
+        shop.world.nodes[0].install_chain(&forged, TOP + 13);
         for _ in 0..10 {
             shop.scan().await;
         }
@@ -1091,7 +1091,7 @@ mod settlement {
             chain.push(vec![], ts, true);
         }
         for node in &shop.world.nodes[1..] {
-            chain.install(node, TOP + 13);
+            node.install_chain(&chain, TOP + 13);
         }
         for _ in 0..10 {
             shop.world.round().await;
@@ -1109,7 +1109,7 @@ mod settlement {
         let mut forged = chain.clone();
         forged.forge(vec![fixture_tx()]);
         forged.mine_empty(12);
-        forged.install(&shop.world.nodes[0], TOP + 13);
+        shop.world.nodes[0].install_chain(&forged, TOP + 13);
         // The primary is scanned first: its made-up payment is recorded.
         shop.scan().await;
         // The honest nodes' chain grows past it, without the payment.
@@ -1118,7 +1118,7 @@ mod settlement {
             chain.push(vec![], ts, true);
         }
         for node in &shop.world.nodes[1..] {
-            chain.install(node, TOP + 13);
+            node.install_chain(&chain, TOP + 13);
         }
         for _ in 0..4 {
             shop.world.round().await;

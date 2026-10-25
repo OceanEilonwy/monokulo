@@ -386,7 +386,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
                 nodes: 3,
                 seeds: vec![],
                 window: (2..=3)
-                    .map(|h| crate::pow::ProvenBlock {
+                    .map(|h| engine_pow::ProvenBlock {
                         height: h,
                         id: if proof_mode == 2 && h == 3 {
                             [42; 32]
@@ -531,7 +531,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
                 nodes: 3,
                 seeds: vec![],
                 window: (2..=4)
-                    .map(|h| crate::pow::ProvenBlock {
+                    .map(|h| engine_pow::ProvenBlock {
                         height: h,
                         id: [h as u8; 32],
                         timestamp: 1000 + h,
