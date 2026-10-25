@@ -1,7 +1,6 @@
 //! The dashboard (`/`).
 
 use axum::extract::State;
-use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 
 use crate::db::UserRow;
@@ -9,7 +8,7 @@ use crate::views;
 use crate::views::home::{HomeOrderRow, HomeStoreRow, HomeViewModel};
 
 use super::orders::health_of_tenant_lookup;
-use super::{resolve_authed_user, AppState};
+use super::{AppState, AuthedUser};
 
 /// `GET /` - the dashboard for a signed-in merchant, the login page for
 /// anyone else.
@@ -22,8 +21,8 @@ use super::{resolve_authed_user, AppState};
 /// flag; a direct link to `/login` or `/signup` still works even
 /// pre-setup, and someone signed in that way still gets
 /// their dashboard here.
-pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if let Some((user, _)) = resolve_authed_user(&state, &headers).await {
+pub async fn home(State(state): State<AppState>, authed: Option<AuthedUser>) -> Response {
+    if let Some(AuthedUser(user, _)) = authed {
         return dashboard(&state, &user).await;
     }
     let setup_complete = state
