@@ -8,7 +8,7 @@ function loadFixture() {
 }
 
 // `xmr_amount` is always monokulo's own fixed-12-decimal display string
-// (`shared::exchange_rate::format_piconero_as_xmr`, e.g. "0.000335000000") -
+// (`pricing::exchange_rate::format_piconero_as_xmr`, e.g. "0.000335000000") -
 // BigInt arithmetic on the split string, never `parseFloat`, so this can
 // never lose or misround the exact integer piconero amount the real payment
 // has to match.

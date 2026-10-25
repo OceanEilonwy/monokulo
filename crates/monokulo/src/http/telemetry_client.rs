@@ -128,7 +128,7 @@ mod tests {
             &engine_protocol::ids::OrderId::new("o1"),
             "XMR",
             "1",
-            shared::xmr_amount::Piconero(1),
+            pricing::xmr_amount::Piconero(1),
             "xmr",
             0,
             "XMR",

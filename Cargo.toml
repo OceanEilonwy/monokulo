@@ -9,6 +9,7 @@ members = [
     "crates/dns-client",
     "crates/service-runtime",
     "crates/rate-limit",
+    "crates/pricing",
     "crates/live-settings",
     "crates/telemetry",
     "crates/monokulo",

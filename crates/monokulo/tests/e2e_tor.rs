@@ -345,7 +345,7 @@ async fn start_monokulo(
     let order = engine_client
         .create_order(
             &tenant.secret_token,
-            shared::xmr_amount::Piconero(1_000_000),
+            pricing::xmr_amount::Piconero(1_000_000),
             None,
             None,
             None,

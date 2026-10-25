@@ -391,7 +391,7 @@ async fn order_detail_data(
                 Some(m) => (
                     format!(
                         "{} XMR per 1 {}",
-                        crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(
+                        crate::views::trim_xmr(&pricing::exchange_rate::format_piconero_as_xmr(
                             m.piconero_per_unit.get()
                         )),
                         m.currency
@@ -424,9 +424,9 @@ async fn order_detail_data(
                     Some(rate) => {
                         format!(
                             "{} XMR per 1 {base_currency}",
-                            crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(
-                                rate.get()
-                            ))
+                            crate::views::trim_xmr(
+                                &pricing::exchange_rate::format_piconero_as_xmr(rate.get())
+                            )
                         )
                     }
                     None => "same as order currency".to_string(),
@@ -1325,7 +1325,7 @@ pub async fn create_order(
         }
     };
     let xmr_amount_piconero =
-        match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
+        match pricing::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
             Ok(amount) => amount,
             Err(e) => {
                 return render_create_order_page(
@@ -1397,7 +1397,7 @@ pub async fn create_order(
         .client
         .create_order(
             &sk,
-            shared::xmr_amount::Piconero(xmr_amount_piconero),
+            pricing::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id,
             description,
             Some(resolution.confirmations_required),
@@ -1436,7 +1436,7 @@ pub async fn create_order(
                         &order_id,
                         &currency,
                         &amount,
-                        shared::xmr_amount::Piconero(piconero_per_unit),
+                        pricing::xmr_amount::Piconero(piconero_per_unit),
                         &provider,
                         crate::now_unix(),
                         &base_currency,

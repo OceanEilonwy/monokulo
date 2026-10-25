@@ -1,0 +1,45 @@
+[package]
+name = "pricing"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "XMR amounts and fiat exchange rates for monokulo: piconero arithmetic, the Coingecko, CoinMarketCap and Haveno rate providers and their HTTP cache"
+
+[dependencies]
+# `http_cache`'s async cache trait.
+async-trait = "0.1.92"
+bytes = "1.12.1"
+http = "1.5.0"
+# A provider's `Retry-After` given as a date (`exchange_rate::checked`).
+httpdate = "1.0.3"
+moka = { version = "0.12.16", features = ["future"] }
+parking_lot = "0.12.5"
+# `exchange_rate::CoingeckoRateProvider`'s real HTTP client - same
+# rustls/json feature set the scanner and monokulo already pin, so
+# moving this module here doesn't change its TLS/JSON behavior at all.
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
+# `xmr_amount::Piconero` is stored as an INTEGER (`ToSql`/`FromSql`),
+# checked like every other unsigned value (`sqlite::Unsigned`).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+sqlite = { path = "../sqlite" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# The trace context on every outbound request (`http_cache`).
+telemetry = { path = "../telemetry" }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+url = "2.5.8"
+zeroize = "1.9.0"
+
+[dev-dependencies]
+# Each provider's tests spin up a real local HTTP server standing in for
+# the provider (`spawn_price_server`) - needs a real router, test-only.
+# Defaults less `tower-log` (see crates/engine/Cargo.toml).
+axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
+# A provider that can't be reached (`service_runtime::unreachable`).
+service-runtime = { path = "../service-runtime", features = ["test-support"] }
+
+[lints]
+workspace = true

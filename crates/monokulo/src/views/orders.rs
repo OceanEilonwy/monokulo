@@ -4,7 +4,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use shared::exchange_rate::format_piconero_as_xmr;
+use pricing::exchange_rate::format_piconero_as_xmr;
 
 use super::{OrderStatus, PageChrome};
 

@@ -75,7 +75,7 @@ impl ScalarRules {
 /// A price: a decimal number in its currency, with at most 12 decimals
 /// in any currency (XMR's own precision). Trailing zeros don't count, so
 /// `12.50000000` is `12.50`.
-// The 12 is `shared::exchange_rate::MAX_AMOUNT_DECIMALS`; a test holds the
+// The 12 is `pricing::exchange_rate::MAX_AMOUNT_DECIMALS`; a test holds the
 // pattern and this text to it.
 #[api::scalar(
     pattern = r"^[0-9]+(\.[0-9]{1,12}0*)?$",
@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn an_amount_takes_as_many_decimals_as_an_order_can_be_priced_with() {
-        let max = shared::exchange_rate::MAX_AMOUNT_DECIMALS as usize;
+        let max = pricing::exchange_rate::MAX_AMOUNT_DECIMALS as usize;
         let significant = format!("1.{}1", "0".repeat(max - 1));
         assert!(Amount::parse(&significant).is_ok());
         assert!(Amount::parse(&format!("{significant}000")).is_ok());

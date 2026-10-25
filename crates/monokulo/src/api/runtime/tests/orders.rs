@@ -25,7 +25,7 @@ const TEST_CURRENCY: &str = "USD";
 const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
 /// Spins up a real local HTTP server standing in for Coingecko - same
-/// no-mocking-library pattern `shared::exchange_rate`'s own tests use.
+/// no-mocking-library pattern `pricing::exchange_rate`'s own tests use.
 /// Returns the base URL a `CoingeckoRateProvider` can be pointed at.
 async fn spawn_mock_coingecko() -> String {
     async fn price() -> axum::response::Response {
@@ -1017,7 +1017,7 @@ async fn creating_a_real_order_records_local_fiat_metadata() {
     assert_eq!(metadata.amount, "10.00");
     assert_eq!(
         metadata.piconero_per_unit,
-        shared::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT)
+        pricing::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT)
     );
 
     // This store's base currency ("XMR", `create_connection`'s own
@@ -1030,7 +1030,7 @@ async fn creating_a_real_order_records_local_fiat_metadata() {
     assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
     assert_eq!(
         metadata.base_currency_piconero_per_unit,
-        Some(shared::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT))
+        Some(pricing::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT))
     );
     assert_eq!(
         metadata.confirmations_required_applied,

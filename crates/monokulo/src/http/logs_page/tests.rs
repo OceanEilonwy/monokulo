@@ -884,7 +884,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
             &crate::db::OrderId::new("o_who"),
             "EUR",
             "12.34",
-            shared::xmr_amount::Piconero(1_000_000),
+            pricing::xmr_amount::Piconero(1_000_000),
             "fixed",
             1000,
             "EUR",

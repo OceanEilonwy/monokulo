@@ -194,7 +194,7 @@ async fn create(
         }
     };
     let xmr_amount_piconero =
-        shared::exchange_rate::compute_order_amount(&currency, &amount, piconero_per_unit)
+        pricing::exchange_rate::compute_order_amount(&currency, &amount, piconero_per_unit)
             .map_err(|e| Problem::InvalidAmount.detail(e.to_string()))?;
     let resolution = crate::confirmation_thresholds::resolve_for_order(
         &state,
@@ -213,7 +213,7 @@ async fn create(
         .client
         .create_order(
             &orders.sk,
-            shared::xmr_amount::Piconero(xmr_amount_piconero),
+            pricing::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id.clone(),
             description.clone(),
             Some(resolution.confirmations_required),
@@ -302,7 +302,7 @@ async fn create(
                 &order_id,
                 &written_currency,
                 &written_amount,
-                shared::xmr_amount::Piconero(piconero_per_unit),
+                pricing::xmr_amount::Piconero(piconero_per_unit),
                 &provider_name,
                 now_unix(),
                 &base_currency,
@@ -388,7 +388,7 @@ async fn create(
             order_id: made.order_id.clone(),
             currency,
             amount,
-            piconero_per_unit: shared::xmr_amount::Piconero(piconero_per_unit),
+            piconero_per_unit: pricing::xmr_amount::Piconero(piconero_per_unit),
             provider: provider.to_string(),
             created_at: now_unix(),
             store_base_currency: Some(resolution.base_currency.clone()),

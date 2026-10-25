@@ -102,7 +102,7 @@ pub struct PosCreateOrderRequest {
     /// real decimal precision (`PosViewModel::base_currency_decimals`)
     /// before it's ever sent here. Re-validated server-side the same way
     /// every other order-creation surface in this crate already is
-    /// (`shared::exchange_rate::compute_order_amount`) - a client-side
+    /// (`pricing::exchange_rate::compute_order_amount`) - a client-side
     /// keypad bug or a hand-crafted request is not trusted to have gotten
     /// this right.
     pub amount: String,
@@ -199,7 +199,7 @@ pub async fn create_order(
                 return Json(PosCreateOrderResponse {
                     order_id: existing,
                     address: detail.order.address,
-                    xmr_amount: shared::exchange_rate::format_piconero_as_xmr(
+                    xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(
                         detail.order.xmr_amount_piconero,
                     ),
                     amount: metadata.amount,
@@ -259,7 +259,7 @@ pub async fn create_order(
         }
     };
     let xmr_amount_piconero =
-        match shared::exchange_rate::compute_order_amount(&currency, amount, piconero_per_unit) {
+        match pricing::exchange_rate::compute_order_amount(&currency, amount, piconero_per_unit) {
             Ok(amount) => amount,
             Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
         };
@@ -291,7 +291,7 @@ pub async fn create_order(
         .client
         .create_order(
             &sk,
-            shared::xmr_amount::Piconero(xmr_amount_piconero),
+            pricing::xmr_amount::Piconero(xmr_amount_piconero),
             merchant_order_id.clone(),
             // The till takes an amount, not a list of items: nothing to
             // describe, so the checkout shows the store's payment
@@ -343,7 +343,7 @@ pub async fn create_order(
                         &order_id,
                         &order_currency,
                         &order_amount,
-                        shared::xmr_amount::Piconero(piconero_per_unit),
+                        pricing::xmr_amount::Piconero(piconero_per_unit),
                         &provider,
                         crate::now_unix(),
                         &base_currency,
@@ -369,7 +369,7 @@ pub async fn create_order(
                 );
             }
             let xmr_amount =
-                shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
+                pricing::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
 
             Json(PosCreateOrderResponse {
                 order_id: order.order_id,
@@ -518,12 +518,12 @@ fn pos_order_view(
         merchant_order_id: order.merchant_order_id.clone(),
         address_short: crate::views::short_address_text(&order.address),
         address: order.address.clone(),
-        xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
+        xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
         amount: metadata
             .as_ref()
             .map(|m| m.amount.clone())
             .unwrap_or_else(|| {
-                shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)
+                pricing::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)
             }),
         currency: metadata
             .as_ref()
@@ -538,8 +538,10 @@ fn pos_order_view(
         cancelled_at: order.cancelled_at,
         created_at: row.created_at,
         expires_at: order.expires_at,
-        received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+        received_xmr: pricing::exchange_rate::format_piconero_as_xmr(
+            order.amount_received_piconero,
+        ),
+        remaining_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             order
                 .xmr_amount_piconero
                 .saturating_sub(order.amount_received_piconero),
@@ -921,8 +923,10 @@ async fn pos_status(
         confirmations_required,
         is_terminal,
         error: derive_payment_error(order),
-        received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+        received_xmr: pricing::exchange_rate::format_piconero_as_xmr(
+            order.amount_received_piconero,
+        ),
+        remaining_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             order
                 .xmr_amount_piconero
                 .saturating_sub(order.amount_received_piconero),
@@ -2249,7 +2253,7 @@ mod tests {
         let order = store.orders(1).await.remove(0);
         store
             .engine
-            .record_order_payment(&order, shared::xmr_amount::Piconero(1), Some(1))
+            .record_order_payment(&order, pricing::xmr_amount::Piconero(1), Some(1))
             .unwrap();
 
         let response = store.act(&order, "cancel").await;
@@ -2282,7 +2286,7 @@ mod tests {
         );
         store
             .engine
-            .record_order_payment(&order, shared::xmr_amount::Piconero(1), Some(1))
+            .record_order_payment(&order, pricing::xmr_amount::Piconero(1), Some(1))
             .unwrap();
         let status = store.status(&order).await;
         assert_eq!(status["status"], "cancelled");

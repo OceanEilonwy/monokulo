@@ -243,7 +243,7 @@ settings! {
         env: "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_API_KEY",
         default: Secret::default(),
         // Unset is valid: CoinMarketCap is then asked without a key.
-        check: |key: &Secret| if key.expose().is_empty() { Ok(()) } else { shared::coinmarketcap::check_api_key_format(key.expose()) },
+        check: |key: &Secret| if key.expose().is_empty() { Ok(()) } else { pricing::coinmarketcap::check_api_key_format(key.expose()) },
         description: "Your CoinMarketCap API key, from the CoinMarketCap developer dashboard. With one, rates come from CoinMarketCap's keyed API under your plan's limits; without one, from its keyless API, which is limited per address and meant for trying it out. Kept encrypted, and never shown again once saved.",
         sources: [Database, Env],
     },

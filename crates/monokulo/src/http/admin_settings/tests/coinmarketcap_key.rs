@@ -36,7 +36,7 @@ where
             let path = request.uri().path().to_string();
             let key = request
                 .headers()
-                .get(shared::coinmarketcap::API_KEY_HEADER)
+                .get(pricing::coinmarketcap::API_KEY_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             record.lock().push((path.clone(), key.clone()));

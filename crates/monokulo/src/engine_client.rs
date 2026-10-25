@@ -2,7 +2,7 @@
 //! two transports:
 //!
 //! - **remote**: over HTTP to a separately running engine
-//!   (`monokulo-engine`), with `reqwest`, through `shared::http_cache`;
+//!   (`monokulo-engine`), with `reqwest`, through `pricing::http_cache`;
 //! - **embedded**: the engine's own router (`engine::run::Engine::router`),
 //!   called in this process. No socket, no port: the same handlers,
 //!   authentication, validation and rate limits run as over HTTP, and only
@@ -80,7 +80,7 @@ fn with_query(path: &str, query: &impl Serialize) -> String {
 /// same connection pool and cache), which is what lets `EngineClient` live
 /// on `AppState`, which axum clones per request.
 ///
-/// Remotely, every call goes through `shared::http_cache`'s byte-bounded,
+/// Remotely, every call goes through `pricing::http_cache`'s byte-bounded,
 /// cache-aware transport - safe as a blanket default because only a response
 /// the engine explicitly marks cacheable (`Cache-Control: max-age=N`) is
 /// ever cached, and no engine endpoint sets that header today. Embedded,
@@ -227,7 +227,7 @@ impl EngineTarget {
             transport: Transport::Remote {
                 base_url,
                 max_cache_bytes,
-                http: shared::http_cache::build_traced_client_with_headers(
+                http: pricing::http_cache::build_traced_client_with_headers(
                     concat!("monokulo/", env!("CARGO_PKG_VERSION")),
                     max_cache_bytes,
                     headers,
@@ -483,7 +483,11 @@ impl EngineClient {
     /// The engine at `base_url`, reached over HTTP with the engine token
     /// `token` (`ENGINE_TOKEN`), which every request carries.
     pub fn new(base_url: impl Into<String>, token: RawToken) -> Self {
-        Self::with_cache_limit(base_url, token, shared::http_cache::DEFAULT_MAX_CACHE_BYTES)
+        Self::with_cache_limit(
+            base_url,
+            token,
+            pricing::http_cache::DEFAULT_MAX_CACHE_BYTES,
+        )
     }
 
     /// The engine running in this process, reached through its own
@@ -991,7 +995,7 @@ impl EngineClient {
     pub async fn create_order(
         &self,
         sk: &RawToken,
-        xmr_amount_piconero: shared::xmr_amount::Piconero,
+        xmr_amount_piconero: pricing::xmr_amount::Piconero,
         merchant_order_id: Option<String>,
         description: Option<String>,
         confirmations_required: Option<u64>,
@@ -1181,8 +1185,8 @@ pub enum EngineClientError {
     #[error("request to engine failed: {0}")]
     Request(#[from] reqwest::Error),
     /// From the shared HTTP-cache-aware transport's own middleware layer
-    /// (`shared::http_cache`) - see `ExchangeRateError::Middleware`'s own doc
-    /// comment (its exact sibling in `shared::exchange_rate`) for why this is a
+    /// (`pricing::http_cache`) - see `ExchangeRateError::Middleware`'s own doc
+    /// comment (its exact sibling in `pricing::exchange_rate`) for why this is a
     /// distinct variant from `Request` above rather than a merge.
     #[error("request to engine failed: {0}")]
     Middleware(#[from] reqwest_middleware::Error),
@@ -1724,7 +1728,7 @@ mod tests {
         let order = client
             .create_order(
                 &created.secret_token,
-                shared::xmr_amount::Piconero(100_000_000_000),
+                pricing::xmr_amount::Piconero(100_000_000_000),
                 None,
                 None,
                 Some(3),
@@ -1766,7 +1770,7 @@ mod tests {
         let order = client
             .create_order(
                 &created.secret_token,
-                shared::xmr_amount::Piconero(100_000_000_000),
+                pricing::xmr_amount::Piconero(100_000_000_000),
                 None,
                 None,
                 None,
@@ -1795,7 +1799,7 @@ mod tests {
 
     /// A hand-rolled server standing in for a real engine response, with a
     /// caller-controlled `Cache-Control` and a real call counter - the same
-    /// technique `shared::http_cache`'s own tests use, applied here to prove
+    /// technique `pricing::http_cache`'s own tests use, applied here to prove
     /// `EngineClient` itself (not the engine) actually respects that
     /// transport: a second call within the cache window must never reach the
     /// server at all.
@@ -2117,7 +2121,7 @@ mod contract_tests {
             updated.confirmations_required
         ));
 
-        let amount = shared::xmr_amount::Piconero(1_000_000_000);
+        let amount = pricing::xmr_amount::Piconero(1_000_000_000);
         let order = client
             .create_order(
                 &sk,
@@ -2385,7 +2389,7 @@ mod contract_tests {
         let order = client
             .create_order(
                 &sk,
-                shared::xmr_amount::Piconero(1_000_000_000),
+                pricing::xmr_amount::Piconero(1_000_000_000),
                 None,
                 None,
                 None,

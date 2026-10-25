@@ -162,7 +162,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             let client = EngineClient::with_cache_limit(
                 engine_url.as_str().to_string(),
                 credentials::auth::engine_token(engine_token.expose()),
-                shared::http_cache::DEFAULT_MAX_CACHE_BYTES,
+                pricing::http_cache::DEFAULT_MAX_CACHE_BYTES,
             );
             (client, None)
         }

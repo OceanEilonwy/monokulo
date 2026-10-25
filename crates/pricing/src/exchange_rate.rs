@@ -73,7 +73,7 @@ pub enum ExchangeRateError {
     #[error("request to the rate provider failed: {0}")]
     Request(#[from] reqwest::Error),
     /// From the shared HTTP-cache-aware transport's own middleware layer
-    /// (`shared::http_cache`) - distinct from `Request` above only in *which*
+    /// (`pricing::http_cache`) - distinct from `Request` above only in *which*
     /// crate's `Result` the `?` operator was unwrapping at the call site; both
     /// ultimately mean "the request to the rate provider failed."
     #[error("request to the rate provider failed: {0}")]
@@ -1010,7 +1010,7 @@ mod tests {
                 .await
                 .unwrap_err();
             // A genuine connection failure surfaces through the shared HTTP-
-            // cache-aware transport's own middleware layer (`shared::http_cache`),
+            // cache-aware transport's own middleware layer (`pricing::http_cache`),
             // not directly as a bare `reqwest::Error` - see `ExchangeRateError::
             // Middleware`'s own doc comment for why these are still the same
             // failure in substance.

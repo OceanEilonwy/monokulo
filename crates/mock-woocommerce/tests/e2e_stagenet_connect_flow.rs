@@ -71,7 +71,7 @@ use support::{node_fixture, require_daemon_reachable, retry};
 /// provider at all) - 335_000_000 piconero (0.000335 XMR), matching
 /// `e2e_stagenet.rs`'s own tiny-payment target, so both real-stagenet tests move the same order
 /// of magnitude of real (worthless, stagenet) XMR. Read as XMR at its
-/// own precision (`shared::exchange_rate::compute_order_amount`), with no
+/// own precision (`pricing::exchange_rate::compute_order_amount`), with no
 /// rate to multiply through.
 const TEST_ORDER_AMOUNT: &str = "0.000335";
 const TEST_CURRENCY: &str = "XMR";

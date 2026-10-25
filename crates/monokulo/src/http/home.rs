@@ -317,7 +317,7 @@ mod tests {
                         &metadata_order,
                         "EUR",
                         "12.34",
-                        shared::xmr_amount::Piconero(1_000_000),
+                        pricing::xmr_amount::Piconero(1_000_000),
                         "fixed",
                         1000,
                         "EUR",

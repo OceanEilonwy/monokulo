@@ -132,7 +132,7 @@ pub fn body_v2(
             .filter(|description| !description.is_empty()),
         amount: metadata.map(|m| m.amount.as_str()),
         currency: metadata.map(|m| m.currency.as_str()),
-        xmr_amount: shared::xmr_amount::format_piconero_as_xmr(event.xmr_amount_piconero),
+        xmr_amount: pricing::xmr_amount::format_piconero_as_xmr(event.xmr_amount_piconero),
         fx_source: fx.map(|m| m.provider.as_str()),
         fx_rate: fx.and_then(|m| fx_rate(m.piconero_per_unit.get())),
         store: StoreRef {
@@ -230,7 +230,7 @@ pub fn fx_rate(piconero_per_unit: u64) -> Option<String> {
 mod tests {
     use super::*;
     use crate::db::{ConnectionId, OrderId};
-    use shared::xmr_amount::Piconero;
+    use pricing::xmr_amount::Piconero;
 
     fn store() -> StoreConnectionRow {
         StoreConnectionRow {

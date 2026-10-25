@@ -794,7 +794,11 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
     };
     let pay = |order: &str, piconero: u64, confirmations: Option<u64>| {
         shop.engine
-            .record_order_payment(order, shared::xmr_amount::Piconero(piconero), confirmations)
+            .record_order_payment(
+                order,
+                pricing::xmr_amount::Piconero(piconero),
+                confirmations,
+            )
             .unwrap();
     };
     let seen = order().await;

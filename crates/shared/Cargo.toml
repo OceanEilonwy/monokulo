@@ -6,41 +6,9 @@ edition = "2021"
 
 [dependencies]
 parking_lot = "0.12.5"
-# `http_cache`'s async cache trait.
-async-trait = "0.1.92"
-bytes = "1.12.1"
 hex = "0.4.3"
-http = "1.5.0"
-# A provider's `Retry-After` given as a date (`exchange_rate::checked`).
-httpdate = "1.0.3"
-moka = { version = "0.12.16", features = ["future"] }
 monero = "0.22.0"
-# `exchange_rate::CoingeckoRateProvider`'s real HTTP client - same
-# rustls/json feature set the scanner and monokulo already pin, so
-# moving this module here doesn't change its TLS/JSON behavior at all.
-reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
-reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
-sqlite = { path = "../sqlite" }
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-thiserror = "2.0.20"
-# `log::throttled!` emits `tracing` events (structured_logging.md 1.2).
-telemetry = { path = "../telemetry" }
 tracing = "0.1.44"
-zeroize = "1.9.0"
-tokio = { version = "1.53.1", features = ["full"] }
-url = "2.5.8"
-uuid = { version = "1.26.0", features = ["v4"] }
-
-[dev-dependencies]
-# A provider that can't be reached (`service_runtime::unreachable`).
-service-runtime = { path = "../service-runtime", features = ["test-support"] }
-# `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
-# server standing in for Coingecko (`spawn_price_server`) - needs a real
-# router, test-only (the runtime itself is now a real dependency above).
-# Defaults less `tower-log` (see crates/engine/Cargo.toml).
-axum = { version = "0.8.9", default-features = false, features = ["form", "http1", "json", "matched-path", "original-uri", "query", "tokio", "tracing"] }
 
 [lints]
 workspace = true

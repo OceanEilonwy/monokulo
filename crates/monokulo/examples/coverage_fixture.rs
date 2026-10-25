@@ -410,7 +410,7 @@ async fn record_payment(
     };
     match control.engine.record_order_payment(
         &id,
-        shared::xmr_amount::Piconero(piconero),
+        pricing::xmr_amount::Piconero(piconero),
         query.confirmations,
     ) {
         Ok(()) => StatusCode::NO_CONTENT,
@@ -454,7 +454,7 @@ async fn create_order(
         .client
         .create_order(
             &credentials::auth::RawToken::presented(&control.token),
-            shared::xmr_amount::Piconero(1_000_000_000),
+            pricing::xmr_amount::Piconero(1_000_000_000),
             None,
             None,
             None,
@@ -859,7 +859,7 @@ async fn plugin_order(
         .client
         .create_order(
             &sk,
-            shared::xmr_amount::Piconero(1_000_000_000),
+            pricing::xmr_amount::Piconero(1_000_000_000),
             Some("wc-1042".into()),
             None,
             None,
@@ -1086,7 +1086,7 @@ fn record_order(
         order_id,
         "XMR",
         "0.001",
-        shared::xmr_amount::Piconero(1_000_000_000_000),
+        pricing::xmr_amount::Piconero(1_000_000_000_000),
         "fixed",
         monokulo::now_unix(),
         "XMR",
@@ -1124,7 +1124,7 @@ async fn main() {
     let order = engine_client
         .create_order(
             &tenant.secret_token,
-            shared::xmr_amount::Piconero(1_000_000_000),
+            pricing::xmr_amount::Piconero(1_000_000_000),
             Some("Fixture order".into()),
             None,
             None,

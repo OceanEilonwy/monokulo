@@ -11,8 +11,8 @@
 //! the file again with `MONOKULO_WRITE_VECTORS=1 cargo nextest run -p
 //! monokulo webhooks::vectors`.
 
+use pricing::xmr_amount::Piconero;
 use serde_json::{json, Value};
-use shared::xmr_amount::Piconero;
 
 use super::body::{body_v2, LinkBases, API_VERSION};
 use crate::db::{ConnectionId, LoggedEvent, OrderCurrencyMetadataRow, OrderId, StoreConnectionRow};

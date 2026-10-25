@@ -147,7 +147,7 @@ pub fn new_store_default(can_price_fiat: bool, accept_language: &str) -> &'stati
 /// minor units): 12 for XMR, 0 for yen-like currencies, 3 or 4 for the few
 /// that use them, and 2 for everything else. Only for showing and typing
 /// amounts; what an order may be priced with is
-/// `shared::exchange_rate::MAX_AMOUNT_DECIMALS` in every currency.
+/// `pricing::exchange_rate::MAX_AMOUNT_DECIMALS` in every currency.
 pub fn minor_units(code: &str) -> u8 {
     const ZERO: &[&str] = &[
         "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG", "RWF", "UGX", "UYI", "VND",
@@ -157,7 +157,7 @@ pub fn minor_units(code: &str) -> u8 {
     const FOUR: &[&str] = &["CLF", "UYW"];
     let is = |list: &[&str]| list.iter().any(|c| c.eq_ignore_ascii_case(code));
     if code.eq_ignore_ascii_case("XMR") {
-        shared::exchange_rate::MAX_AMOUNT_DECIMALS
+        pricing::exchange_rate::MAX_AMOUNT_DECIMALS
     } else if is(ZERO) {
         0
     } else if is(THREE) {

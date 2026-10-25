@@ -878,10 +878,10 @@ async fn check_coinmarketcap_key(
                 .find(|view| view.key == base_key)
                 .map(|view| view.value)
         })?;
-    let key = shared::coinmarketcap::ApiKey::new(key);
-    match shared::coinmarketcap::check_api_key(base_url.trim(), &key).await {
-        shared::coinmarketcap::KeyCheck::Accepted => None,
-        shared::coinmarketcap::KeyCheck::Rejected { status, message } => {
+    let key = pricing::coinmarketcap::ApiKey::new(key);
+    match pricing::coinmarketcap::check_api_key(base_url.trim(), &key).await {
+        pricing::coinmarketcap::KeyCheck::Accepted => None,
+        pricing::coinmarketcap::KeyCheck::Rejected { status, message } => {
             tracing::warn!(status, reason = %message, "CoinMarketCap refused the API key entered on the admin settings page");
             let why = format!("CoinMarketCap refused this key (HTTP {status}: {message}). Check it on your CoinMarketCap developer dashboard.");
             Some(Refusal {
@@ -889,7 +889,7 @@ async fn check_coinmarketcap_key(
                 message: why,
             })
         }
-        shared::coinmarketcap::KeyCheck::Unchecked(reason) => {
+        pricing::coinmarketcap::KeyCheck::Unchecked(reason) => {
             tracing::warn!(reason = %reason, "the new CoinMarketCap API key couldn't be checked now, so it is saved unchecked");
             None
         }

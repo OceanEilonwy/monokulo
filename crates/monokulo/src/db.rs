@@ -10,7 +10,7 @@
 use credentials::auth::TokenHash;
 pub use engine_protocol::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use parking_lot::Mutex;
-use shared::xmr_amount::Piconero;
+use pricing::xmr_amount::Piconero;
 use sqlite::{Pool, PoolError, Unsigned};
 use std::sync::Arc;
 
@@ -3736,7 +3736,7 @@ mod tests {
                 &engine_protocol::ids::OrderId::new("pay_1"),
                 "USD",
                 "25.00",
-                shared::xmr_amount::Piconero(6_700_000_000),
+                pricing::xmr_amount::Piconero(6_700_000_000),
                 "fixed",
                 1000,
                 "XMR",
@@ -3764,7 +3764,7 @@ mod tests {
             assert_eq!(row.amount, "25.00");
             assert_eq!(
                 row.piconero_per_unit,
-                shared::xmr_amount::Piconero(6_700_000_000)
+                pricing::xmr_amount::Piconero(6_700_000_000)
             );
             assert_eq!(row.provider, "fixed");
             assert_eq!(row.created_at, 1000);
@@ -4536,7 +4536,7 @@ mod tests {
             &engine_protocol::ids::OrderId::new("pay_shared"),
             "USD",
             "10.00",
-            shared::xmr_amount::Piconero(1_000_000),
+            pricing::xmr_amount::Piconero(1_000_000),
             "fixed",
             1000,
             "XMR",
@@ -4552,7 +4552,7 @@ mod tests {
             &engine_protocol::ids::OrderId::new("pay_shared"),
             "EUR",
             "20.00",
-            shared::xmr_amount::Piconero(2_000_000),
+            pricing::xmr_amount::Piconero(2_000_000),
             "coingecko",
             2000,
             "XMR",
@@ -4593,7 +4593,7 @@ mod tests {
             &engine_protocol::ids::OrderId::new("pay_a"),
             "USD",
             "10.00",
-            shared::xmr_amount::Piconero(1_000_000),
+            pricing::xmr_amount::Piconero(1_000_000),
             "fixed",
             1000,
             "XMR",
@@ -4609,7 +4609,7 @@ mod tests {
             &engine_protocol::ids::OrderId::new("pay_b"),
             "EUR",
             "20.00",
-            shared::xmr_amount::Piconero(2_000_000),
+            pricing::xmr_amount::Piconero(2_000_000),
             "fixed",
             2000,
             "XMR",

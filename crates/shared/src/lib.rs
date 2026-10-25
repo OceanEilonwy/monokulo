@@ -5,10 +5,5 @@
 //! for Monero data (`network`, `monero_tx`). Key custody has a crate of its own
 //! (`key-custody`).
 
-pub mod coinmarketcap;
-pub mod exchange_rate;
-pub mod haveno;
-pub mod http_cache;
 pub mod log;
 pub mod monero_tx;
-pub mod xmr_amount;

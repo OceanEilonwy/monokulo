@@ -48,7 +48,8 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
     }
     // Amounts without trailing zeros: this is read by the customer.
     let xmr = |piconero: u64| {
-        crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(piconero)).to_string()
+        crate::views::trim_xmr(&pricing::exchange_rate::format_piconero_as_xmr(piconero))
+            .to_string()
     };
     let requested = xmr(order.xmr_amount_piconero);
     let received = xmr(order.amount_received_piconero);
@@ -80,7 +81,7 @@ pub(super) fn payment_uri(order: &crate::engine_client::OrderView) -> String {
         .xmr_amount_piconero
         .saturating_sub(order.amount_received_piconero);
     if matches!(order.status, OrderStatus::Pending | OrderStatus::Partial) && due > 0 {
-        let amount = shared::exchange_rate::format_piconero_as_xmr(due);
+        let amount = pricing::exchange_rate::format_piconero_as_xmr(due);
         format!(
             "monero:{}?tx_amount={}",
             order.address,
@@ -469,14 +470,16 @@ async fn build_checkout_view(
         status: detail.order.status,
         address: detail.order.address.clone(),
         qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
-        amount_due_xmr: shared::exchange_rate::format_piconero_as_xmr(
+        amount_due_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             detail
                 .order
                 .xmr_amount_piconero
                 .saturating_sub(detail.order.amount_received_piconero),
         ),
-        xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
-        amount_received_xmr: shared::exchange_rate::format_piconero_as_xmr(
+        xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(
+            detail.order.xmr_amount_piconero,
+        ),
+        amount_received_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             detail.order.amount_received_piconero,
         ),
         amount,
@@ -507,7 +510,7 @@ async fn build_checkout_view(
             .iter()
             .map(|p| CheckoutPaymentViewModel {
                 txid: p.txid.clone(),
-                amount_xmr: shared::exchange_rate::format_piconero_as_xmr(p.amount_piconero),
+                amount_xmr: pricing::exchange_rate::format_piconero_as_xmr(p.amount_piconero),
                 confirmations: match p.block_height {
                     Some(_) => detail.order.confirmations,
                     None => 0,
