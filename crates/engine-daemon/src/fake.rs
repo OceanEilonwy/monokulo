@@ -1,4 +1,4 @@
-use super::{
+use crate::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, DifficultyHeader, FetchedTx, IdBinding,
     KeyImageStatus, MoneroDaemonClient, PoolOutlook, ScanTx, Transaction, TxLocation,
 };
@@ -82,7 +82,7 @@ pub struct FakeDaemonClient {
     /// Defaults to `false` (see `#[derive(Default)]`) - `new()` immediately sets
     /// it `true`, so every existing test that never touches this stays online as
     /// before. Lets a test simulate this node going unreachable (for exercising
-    /// `daemon_fallback::FallbackDaemonClient` failover) without a second,
+    /// `fallback::FallbackDaemonClient` failover) without a second,
     /// differently-implemented test double - see `set_online`.
     online: std::sync::atomic::AtomicBool,
 }
@@ -380,7 +380,7 @@ impl FakeDaemonClient {
     /// Puts `chain`'s blocks from `from` up into this node (replacing what
     /// it had there and above), with their blobs and difficulties for
     /// proof checking, and the made-up keys below the chain.
-    #[cfg(test)]
+    #[cfg(feature = "test-support")]
     pub fn install_chain(&self, chain: &engine_pow::test_chain::TestChain, from: u64) {
         let blocks: Vec<_> = chain.blocks().iter().filter(|b| b.height >= from).collect();
         self.replace_from(
@@ -442,11 +442,11 @@ impl MoneroDaemonClient for FakeDaemonClient {
         })
     }
 
-    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+    async fn get_info(&self) -> Result<crate::DaemonInfo, DaemonError> {
         self.require_online()?;
-        Ok(crate::daemon::DaemonInfo {
+        Ok(crate::DaemonInfo {
             synchronized: self.state.lock().synchronized,
-            ..crate::daemon::DaemonInfo::unknown()
+            ..crate::DaemonInfo::unknown()
         })
     }
 

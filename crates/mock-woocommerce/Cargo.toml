@@ -23,7 +23,8 @@ uuid = { version = "1.26.0", features = ["v4"] }
 # The tests start a real, network-bound engine (engine-test-support) and a
 # real monokulo (its `http::AppState`/`build_router`) to connect to.
 [dev-dependencies]
-engine = { path = "../engine" }
+# The node client the real-stagenet tests watch the chain with.
+engine-daemon = { path = "../engine-daemon" }
 monokulo = { path = "../monokulo", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
 # The ids the real-stagenet tests look the connection and order up by.

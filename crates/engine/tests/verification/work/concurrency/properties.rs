@@ -1,6 +1,4 @@
 //! Overlap the actual scanner, fast path and HTTP lookup at custody/worker gates.
-use crate::daemon::fake::{tx_id_hex, FakeDaemonClient};
-use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::http::{AppState, TEST_ENGINE_TOKEN};
 use crate::property_support::{
     config, custody_arc, hold_worker, runtime, wait_queued, GateCustody, TempFile,
@@ -13,6 +11,8 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use engine_daemon::fake::{tx_id_hex, FakeDaemonClient};
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
 use proptest::prelude::*;
 use std::{
     future::Future,

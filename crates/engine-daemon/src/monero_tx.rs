@@ -104,8 +104,10 @@ mod tests {
     use monero::consensus::encode::serialize;
 
     fn fixture_tx() -> Transaction {
-        let raw = hex::decode(include_str!("../tests/fixtures/subaddress_tx.hex"))
-            .expect("fixture is valid hex");
+        let raw = hex::decode(include_str!(
+            "../../engine/tests/fixtures/subaddress_tx.hex"
+        ))
+        .expect("fixture is valid hex");
         deserialize(&raw).expect("fixture is a valid monero transaction")
     }
 

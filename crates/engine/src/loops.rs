@@ -105,7 +105,7 @@ pub async fn run_fast_mempool_loop(
         // then its answer from a moment ago won't do.
         if scan_state.node_wakes().pool_or(interval).await {
             if let Some(daemon) = daemons.get(network) {
-                crate::daemon::MoneroDaemonClient::pool_changed(daemon.as_ref());
+                engine_daemon::MoneroDaemonClient::pool_changed(daemon.as_ref());
             }
         }
     }
@@ -154,7 +154,7 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
 /// abandoned by the round around them.
 fn round_deadline(
     poll_interval: Duration,
-    daemon: &dyn crate::daemon::MoneroDaemonClient,
+    daemon: &dyn engine_daemon::MoneroDaemonClient,
     budget: Duration,
     tuning: &crate::work::ScanTuning,
 ) -> Duration {
@@ -534,7 +534,7 @@ pub async fn run_scanner_loop(
 /// the round rather than before it: the round doesn't wait for the answer.
 fn record_node_pool(
     activity: &Arc<crate::activity::Activity>,
-    daemon: &Arc<crate::daemon_fallback::FallbackDaemonClient>,
+    daemon: &Arc<engine_daemon::fallback::FallbackDaemonClient>,
 ) {
     let (activity, daemon) = (Arc::clone(activity), Arc::clone(daemon));
     tokio::spawn(async move {
@@ -555,7 +555,7 @@ async fn record_snapshot(
     scan_state: &crate::work::ScanState,
     db: &Db,
     network: Network,
-    daemon: &crate::daemon_fallback::FallbackDaemonClient,
+    daemon: &engine_daemon::fallback::FallbackDaemonClient,
     scan_chunk_memory_budget_mb: u32,
 ) {
     let nodes = daemon
@@ -597,13 +597,13 @@ async fn record_snapshot(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::daemon::fake::FakeDaemonClient;
-    use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
     use crate::http::rate_limit::ApiRateLimits;
     use crate::key_custody::{CustodyRouter, PlainKeyCustody, WalletMaterial};
     use crate::store::{NewTenant, Store};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use engine_daemon::fake::FakeDaemonClient;
+    use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
     use tower::ServiceExt as _;
 
     /// Waits up to 15s for `condition`.
@@ -804,7 +804,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
                     engine_protocol::activity::Event::NodePool {
                         txs: 0,
                         bytes: Some(0),
-                        penalty_free: crate::daemon::PoolOutlook::FULL_REWARD_ZONE,
+                        penalty_free: engine_daemon::PoolOutlook::FULL_REWARD_ZONE,
                     }
                 )
             })

@@ -8,9 +8,9 @@ use proptest::prelude::*;
 use proptest::test_runner::Config;
 
 use super::{fixture_tenant_shared, fixture_tx, inputs, unrelated_tx, FlakyKeyCustody, TempDb};
-use crate::daemon::fake::tx_id_hex;
 use crate::status::OrderStatus;
 use crate::work::{run_round_at, ScanState, ScanTuning};
+use engine_daemon::fake::tx_id_hex;
 use std::time::Duration;
 
 const NETWORK: monero::Network = monero::Network::Mainnet;

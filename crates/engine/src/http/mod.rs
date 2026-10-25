@@ -55,11 +55,11 @@ use axum::Router;
 use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
-use crate::daemon::DaemonError;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
 use crate::store::{StoreError, Tenant};
+use engine_daemon::DaemonError;
 
 use rate_limit::{admin_rate_limit_middleware, ApiRateLimits};
 
@@ -149,10 +149,10 @@ impl AppState {
     /// [`AppState::for_tests`] around a store the test prepared itself (for
     /// example to load real settings from it first).
     pub fn for_tests_with_store(store: crate::store::SharedStore) -> Self {
-        let mainnet_daemon = Arc::new(crate::daemon_fallback::FallbackDaemonClient::new(vec![
-            crate::daemon_fallback::FallbackNode {
+        let mainnet_daemon = Arc::new(engine_daemon::fallback::FallbackDaemonClient::new(vec![
+            engine_daemon::fallback::FallbackNode {
                 label: "fake-node:18081".to_owned(),
-                client: Arc::new(crate::daemon::fake::FakeDaemonClient::new()),
+                client: Arc::new(engine_daemon::fake::FakeDaemonClient::new()),
             },
         ]));
         Self {

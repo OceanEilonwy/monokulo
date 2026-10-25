@@ -40,13 +40,13 @@ use std::sync::Arc;
 
 use tokio::time::Instant;
 
-use crate::daemon::{BlockOutline, ChainBlock, ChainHeader, IdBinding, ScanTx};
 use crate::key_custody::{ScanIndices, ScanInput, WalletHandle};
 use crate::scanner::{
     record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
 };
 use crate::store::position::CatchUpGroup;
 use crate::store::{BlockCheckpoint, Movement, Store};
+use engine_daemon::{BlockOutline, ChainBlock, ChainHeader, IdBinding, ScanTx};
 
 use engine_protocol::activity::Event;
 
@@ -158,7 +158,7 @@ impl BlockState {
     /// as much again as that unit, within two minutes.
     pub(crate) fn round_budget(
         &self,
-        daemon: &dyn crate::daemon::MoneroDaemonClient,
+        daemon: &dyn engine_daemon::MoneroDaemonClient,
         stores: usize,
         tuning: &super::ScanTuning,
     ) -> std::time::Duration {
@@ -232,7 +232,7 @@ impl BlockState {
         tuning: &super::ScanTuning,
         sizes: &[usize],
         response_cap: u64,
-        link: Option<crate::link::LinkCost>,
+        link: Option<engine_daemon::link::LinkCost>,
     ) {
         let near = sizes.iter().any(|size| {
             crate::scanner::scan_in_pages(
@@ -295,11 +295,11 @@ fn record_fetched(state: &super::ScanState, from: u64, chunk: &[ChainBlock], ahe
 }
 
 async fn fetch_chunk(
-    daemon: &dyn crate::daemon::MoneroDaemonClient,
+    daemon: &dyn engine_daemon::MoneroDaemonClient,
     from: u64,
     count: u64,
 ) -> Result<Vec<ChainBlock>, ScannerError> {
-    let deadline = (daemon.chain_blocks_timeout(count) + crate::daemon_fallback::DEADLINE_MARGIN)
+    let deadline = (daemon.chain_blocks_timeout(count) + engine_daemon::fallback::DEADLINE_MARGIN)
         .max(super::CALL_DEADLINE);
     super::bounded_by(deadline, daemon.get_chain_blocks(from, count)).await
 }
@@ -597,7 +597,7 @@ fn budget_bytes(budget_mb: u32) -> usize {
 /// came from.
 struct Carried {
     cache: BlockCache,
-    node: crate::daemon::NodeKey,
+    node: engine_daemon::NodeKey,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -666,7 +666,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         // A node that fails or doesn't answer stops block scanning where it
         // is, with nothing recorded past it; the next round retries from
         // there. Only this engine's own failures (storage) fail the round.
-        Err(ScannerError::Daemon(error @ crate::daemon::DaemonError::Unconfirmed(_))) => {
+        Err(ScannerError::Daemon(error @ engine_daemon::DaemonError::Unconfirmed(_))) => {
             telemetry::throttled!(
                 format!("blocks-unconfirmed:{}", crate::network::network_str(round.network())),
                 warn,
@@ -1771,7 +1771,7 @@ impl BlockCache {
         chunk: Vec<ChainBlock>,
         keep: u64,
         budget_mb: u32,
-        link: Option<crate::link::LinkCost>,
+        link: Option<engine_daemon::link::LinkCost>,
         state: &BlockState,
         tuning: &super::ScanTuning,
     ) {
@@ -1948,8 +1948,8 @@ async fn confirm_listed(
     bounded(round.inputs.daemon.confirm_listed(txid, tx))
         .await
         .map_err(|error| {
-            if let ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(why)) = error {
-                ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(
+            if let ScannerError::Daemon(engine_daemon::DaemonError::Unconfirmed(why)) = error {
+                ScannerError::Daemon(engine_daemon::DaemonError::Unconfirmed(
                     format!("block {height}: {why} - not taking a payment from it").into(),
                 ))
             } else {
@@ -2057,7 +2057,7 @@ async fn fetch_page(
 ) -> Result<Vec<ScanTx>, ScannerError> {
     let daemon = round.inputs.daemon;
     let bytes = (avg_tx_bytes * txids.len() as f64) as u64;
-    let deadline = (daemon.transfer_timeout(bytes) + crate::daemon_fallback::DEADLINE_MARGIN)
+    let deadline = (daemon.transfer_timeout(bytes) + engine_daemon::fallback::DEADLINE_MARGIN)
         .max(super::CALL_DEADLINE);
     let started = Instant::now();
     let fetched = super::bounded_by(deadline, daemon.get_transactions_with_ids(txids)).await;
@@ -2080,7 +2080,7 @@ async fn fetch_page(
         .iter()
         .map(|txid| {
             by_id.remove(txid).ok_or_else(|| {
-                ScannerError::Daemon(crate::daemon::DaemonError::Request(
+                ScannerError::Daemon(engine_daemon::DaemonError::Request(
                     format!("the node didn't send transaction {txid} of block {height}").into(),
                 ))
             })
@@ -2134,7 +2134,7 @@ async fn known_header(
             .extend(headers.into_iter().map(|header| (header.height, header)));
     }
     round.blocks.headers.get(&height).cloned().ok_or_else(|| {
-        ScannerError::Daemon(crate::daemon::DaemonError::Request(
+        ScannerError::Daemon(engine_daemon::DaemonError::Request(
             format!("the node returned no header at height {height}").into(),
         ))
     })
@@ -2187,7 +2187,7 @@ async fn paged(round: &Round<'_>, header: &ChainHeader) -> Result<Paged, Scanner
     }
     let daemon = round.inputs.daemon;
     let bytes = header.tx_count.unwrap_or(0).saturating_mul(256);
-    let deadline = (daemon.transfer_timeout(bytes) + crate::daemon_fallback::DEADLINE_MARGIN)
+    let deadline = (daemon.transfer_timeout(bytes) + engine_daemon::fallback::DEADLINE_MARGIN)
         .max(super::CALL_DEADLINE);
     let started = Instant::now();
     let outline = super::bounded_by(
@@ -2205,7 +2205,7 @@ async fn paged(round: &Round<'_>, header: &ChainHeader) -> Result<Paged, Scanner
         || outline.prev_hash != header.prev_hash
         || outline.timestamp != header.timestamp
     {
-        return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
+        return Err(ScannerError::Daemon(engine_daemon::DaemonError::Request(
             format!(
                 "block {} changed between its header and its outline",
                 header.height
@@ -2268,7 +2268,7 @@ async fn block(
         state.tuning(),
     );
     round.blocks.cache.get(height).ok_or_else(|| {
-        ScannerError::Daemon(crate::daemon::DaemonError::Request(
+        ScannerError::Daemon(engine_daemon::DaemonError::Request(
             format!("the node returned no block at height {height}").into(),
         ))
     })
@@ -2324,7 +2324,7 @@ mod tests {
     #[test]
     fn a_round_without_a_paged_block_gets_the_base() {
         let state = BlockState::default();
-        let daemon = crate::daemon::fake::FakeDaemonClient::new();
+        let daemon = engine_daemon::fake::FakeDaemonClient::new();
         let tuning = super::super::ScanTuning::DEFAULT;
         assert_eq!(state.round_budget(&daemon, 3, &tuning), tuning.round_budget);
     }
@@ -2342,7 +2342,7 @@ mod tests {
             cap,
             None,
         );
-        state.note_failed(&ScannerError::Daemon(crate::daemon::DaemonError::Request(
+        state.note_failed(&ScannerError::Daemon(engine_daemon::DaemonError::Request(
             "refused".into(),
         )));
         assert!(!state.headers_first());
@@ -2355,7 +2355,7 @@ mod tests {
         assert!(state.headers_first(), "a quarter of the cap");
 
         let state = BlockState::default();
-        state.note_failed(&ScannerError::Daemon(crate::daemon::DaemonError::TooLarge(
+        state.note_failed(&ScannerError::Daemon(engine_daemon::DaemonError::TooLarge(
             "over the cap".into(),
         )));
         assert!(state.headers_first(), "a request refused as too large");
@@ -2431,7 +2431,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap().into_shared();
         let db = crate::store::Db::over_shared(store);
         let custody = crate::key_custody::PlainKeyCustody::default();
-        let daemon = crate::daemon::fake::FakeDaemonClient::new();
+        let daemon = engine_daemon::fake::FakeDaemonClient::new();
         let inputs = super::super::RoundInputs {
             db: &db,
             custody: &custody,
@@ -2444,14 +2444,14 @@ mod tests {
             order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
         };
 
-        carry(&state, crate::daemon::NodeKey::default());
+        carry(&state, engine_daemon::NodeKey::default());
         let round = BlocksRound::resume(&state, &inputs);
         assert_eq!(round.cache.bytes, 1024 * 1024, "two of four fit 1 MB");
         assert!(round.cache.contains(1) && round.cache.contains(2));
         assert!(state.carried.lock().is_none(), "taken, not shared");
         assert_eq!(state.progress.lock().discarded_cache_bytes, 1024 * 1024);
 
-        carry(&state, crate::daemon::NodeKey(7));
+        carry(&state, engine_daemon::NodeKey(7));
         let round = BlocksRound::resume(&state, &inputs);
         assert_eq!(round.cache.bytes, 0, "another node's blocks");
         assert_eq!(state.progress.lock().discarded_cache_bytes, 3 * 1024 * 1024);

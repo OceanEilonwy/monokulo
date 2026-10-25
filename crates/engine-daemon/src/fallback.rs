@@ -29,13 +29,11 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use crate::daemon::{
-    ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer, PoolOutlook, ScanTx,
-};
+use crate::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer, PoolOutlook, ScanTx};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
-use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use crate::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 /// One entry in a [`FallbackDaemonClient`]'s ordered node list.
 ///
@@ -55,10 +53,10 @@ const FIRST_COOLDOWN: Duration = Duration::from_secs(5);
 const MAX_COOLDOWN: Duration = Duration::from_mins(5);
 
 /// Longest one node gets within a call: the client's own request timeout
-/// (`daemon_rpc::REQUEST_TIMEOUT`). A node is never cut off short of what
+/// (`rpc::REQUEST_TIMEOUT`). A node is never cut off short of what
 /// its own client would give it; the shrinking deadline limits how many
 /// nodes a call gets to try instead.
-const MAX_ATTEMPT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
+const MAX_ATTEMPT: Duration = crate::rpc::REQUEST_TIMEOUT;
 /// Longest one call may take across all the nodes it tries.
 ///
 /// A call with every node dead then fails in bounded time rather than one
@@ -118,9 +116,10 @@ tokio::task_local! {
 }
 
 /// Reserve time for subsequent corroboration and durable writes in this caller.
+///
 /// The scope follows the future rather than a global setting, so concurrent
 /// scanner rounds and independent API callers cannot change each other's budget.
-pub(crate) async fn with_corroboration_deadline<T>(
+pub async fn with_corroboration_deadline<T>(
     deadline: Instant,
     calls: u32,
     future: impl std::future::Future<Output = T>,
@@ -459,8 +458,8 @@ fn outline_bytes(tx_count: Option<u64>) -> u64 {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for PinnedDaemon<'_> {
-    fn node(&self) -> Option<crate::daemon::NodeKey> {
-        Some(crate::daemon::NodeKey(self.idx))
+    fn node(&self) -> Option<crate::NodeKey> {
+        Some(crate::NodeKey(self.idx))
     }
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.one(MoneroDaemonClient::get_height).await
@@ -470,7 +469,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     }
     /// From the pinned node, leaving its health as it was: a node that
     /// says what it is but fails to serve blocks must still cool down.
-    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+    async fn get_info(&self) -> Result<crate::DaemonInfo, DaemonError> {
         let Some(node) = self.inner.nodes.get(self.idx) else {
             return Err(FallbackDaemonClient::note_all_failed());
         };
@@ -536,7 +535,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         &self,
         height: u64,
         tx_count: Option<u64>,
-    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+    ) -> Result<crate::BlockOutline, DaemonError> {
         let deadline = self.transfer_timeout(outline_bytes(tx_count));
         self.one_within(deadline, |c| c.get_block_outline(height, tx_count))
             .await
@@ -613,7 +612,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
 #[async_trait::async_trait]
 impl MoneroDaemonClient for FallbackDaemonClient {
     /// Each call goes to whichever node answers first.
-    fn node(&self) -> Option<crate::daemon::NodeKey> {
+    fn node(&self) -> Option<crate::NodeKey> {
         None
     }
 
@@ -635,7 +634,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     }
 
     /// From the node calls go to first, leaving its health as it was.
-    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+    async fn get_info(&self) -> Result<crate::DaemonInfo, DaemonError> {
         self.pin().get_info().await
     }
 
@@ -707,7 +706,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         &self,
         height: u64,
         tx_count: Option<u64>,
-    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+    ) -> Result<crate::BlockOutline, DaemonError> {
         let bytes = outline_bytes(tx_count);
         self.failover_within(
             self.transfer_timeout(bytes),
@@ -918,7 +917,7 @@ mod tests {
     /// A `MoneroDaemonClient` whose every method can be toggled between succeeding
     /// (with a fixed, arbitrary-but-distinguishable value) and failing, plus a call
     /// counter - enough to prove failover order, stickiness, and recovery without
-    /// needing `daemon::fake::FakeDaemonClient`'s much heavier scripted-chain API
+    /// needing `fake::FakeDaemonClient`'s much heavier scripted-chain API
     /// (which has no notion of a node being "down" at all).
     struct FlakyDaemonClient {
         healthy: AtomicBool,

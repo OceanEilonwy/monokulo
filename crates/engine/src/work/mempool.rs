@@ -293,13 +293,13 @@ pub(crate) struct MempoolRound {
     watching: Option<Result<bool, ScannerError>>,
     /// The pool's transaction ids as asked for with the round's tip, when
     /// they were.
-    polled: Option<crate::daemon::PoolAnswer>,
+    polled: Option<engine_daemon::PoolAnswer>,
 }
 
 impl MempoolRound {
     pub(super) fn starting(
         watching: Result<bool, ScannerError>,
-        polled: Option<crate::daemon::PoolAnswer>,
+        polled: Option<engine_daemon::PoolAnswer>,
     ) -> Self {
         Self {
             done: false,
@@ -681,7 +681,7 @@ async fn bodies(
                 // cache is full, so this caller can still scan them.
                 let prepared: Vec<_> = txs
                     .into_iter()
-                    .map(|crate::daemon::FetchedTx { txid, tx }| {
+                    .map(|engine_daemon::FetchedTx { txid, tx }| {
                         let size = monero::consensus::encode::serialize(&tx).len();
                         (txid, Arc::new(tx), size)
                     })

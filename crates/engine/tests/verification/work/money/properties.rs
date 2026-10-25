@@ -1,11 +1,11 @@
 //! Money invariants through real scans, persistence and scheduler rounds.
 use super::{config, runtime, Harness, NETWORK, RETRY_TIME};
-use crate::daemon::fake::tx_id_hex;
-use crate::daemon::KeyImageStatus;
 use crate::scanner::tests::{key_reusing_tx, payment_tx, FIXTURE_AMOUNT_PICONERO};
 use crate::status::OrderStatus;
 use crate::store::{NewOrder, OrderId, Store};
 use crate::work::{fast_pass, run_round_at, RoundInputs, ScanState, ScanTuning};
+use engine_daemon::fake::tx_id_hex;
+use engine_daemon::KeyImageStatus;
 use proptest::prelude::*;
 use std::time::Duration;
 

@@ -33,13 +33,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use engine::daemon::{
-    ChainBlock, ChainHeader, ChainTip, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient,
-    PoolAnswer, ScanTx, TxLocation,
-};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, SubaddressIndex, WalletHandle};
 use engine::store::{Db, NewOrder, NewTenant, Store, TenantId};
 use engine::work::{RoundInputs, ScanState, ScanTuning, Tier};
+use engine_daemon::{
+    ChainBlock, ChainHeader, ChainTip, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient,
+    PoolAnswer, ScanTx, TxLocation,
+};
 use monero::{Network, Transaction};
 use parking_lot::Mutex;
 use serde_json::json;
@@ -107,18 +107,18 @@ impl SweepDaemon {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for SweepDaemon {
-    fn link_cost(&self) -> Option<engine::link::LinkCost> {
-        self.link.rate.map(|rate| engine::link::LinkCost {
+    fn link_cost(&self) -> Option<engine_daemon::link::LinkCost> {
+        self.link.rate.map(|rate| engine_daemon::link::LinkCost {
             rtt_secs: self.link.rtt.as_secs_f64(),
             ttfb_per_block_secs: self.link.ttfb_per_block.as_secs_f64(),
             rate_bytes_per_sec: rate,
         })
     }
     fn chain_blocks_timeout(&self, count: u64) -> Duration {
-        engine::link::timeout_for(self.link.blocks(count, count * self.block_bytes))
+        engine_daemon::link::timeout_for(self.link.blocks(count, count * self.block_bytes))
     }
     fn transfer_timeout(&self, bytes: u64) -> Duration {
-        engine::link::timeout_for(self.link.blocks(0, bytes))
+        engine_daemon::link::timeout_for(self.link.blocks(0, bytes))
     }
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.small().await;
@@ -169,7 +169,7 @@ impl MoneroDaemonClient for SweepDaemon {
                 timestamp: self.tip_time - (self.tip - height) * BLOCK_SECS,
                 txs: vec![self.tx.clone()],
                 txids: vec![self.txid.clone()],
-                bindings: vec![engine::daemon::IdBinding::Computed],
+                bindings: vec![engine_daemon::IdBinding::Computed],
                 wire_bytes: self.block_bytes,
             })
             .collect())

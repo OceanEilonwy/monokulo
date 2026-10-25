@@ -1,8 +1,8 @@
 use super::*;
-use crate::link::{Link, LinkCost, MAX_TIMEOUT, MIN_TIMEOUT};
 use crate::property_support::config;
 use crate::scanner::{next_page, next_scan_chunk};
 use crate::work::ScanTuning;
+use engine_daemon::link::{Link, LinkCost, MAX_TIMEOUT, MIN_TIMEOUT};
 use proptest::prelude::*;
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ fn stopped_and_backwards_clocks_cannot_grow_telemetry_without_bound() {
 
 #[test]
 fn maximum_timeout_and_wall_clock_boundaries_do_not_panic() {
-    assert_eq!(crate::link::timeout_for(Duration::MAX), MAX_TIMEOUT);
+    assert_eq!(engine_daemon::link::timeout_for(Duration::MAX), MAX_TIMEOUT);
     let mut p = ScanProgress::default();
     p.start_block(1, i64::MIN);
     p.finish_block(1, i64::MAX);
@@ -55,7 +55,7 @@ mod properties {
             link.record_blocks(blocks, bytes as usize, Duration::from_secs(secs), Duration::from_nanos(1));
             let timeout = link.timeout_for_blocks(blocks);
             prop_assert!((MIN_TIMEOUT..=MAX_TIMEOUT).contains(&timeout));
-            prop_assert!((MIN_TIMEOUT..=MAX_TIMEOUT).contains(&crate::link::timeout_for(Duration::from_secs(secs))));
+            prop_assert!((MIN_TIMEOUT..=MAX_TIMEOUT).contains(&engine_daemon::link::timeout_for(Duration::from_secs(secs))));
         }
 
         #[test]

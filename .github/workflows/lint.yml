@@ -37,6 +37,10 @@ jobs:
         # test chains: every test build turns them on, through the
         # engine's dev-dependency.
         run: cargo clippy -p engine-pow --lib --locked -- -D warnings
+      - name: Clippy, engine-daemon as production builds it
+        # Its library alone, without the test-support scripted node: every
+        # test build turns it on, through the engine's dev-dependency.
+        run: cargo clippy -p engine-daemon --lib --locked -- -D warnings
       - name: Fuzz workspace's lock file is current
         # fuzz/ is its own workspace, so the clippy run above never sees
         # its Cargo.lock; the nightly fuzz job builds it with --locked.

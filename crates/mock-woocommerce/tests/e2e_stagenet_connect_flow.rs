@@ -61,8 +61,8 @@ use std::time::Duration;
 use monero::Network;
 use serde_json::Value;
 
-use engine::daemon::MoneroDaemonClient;
-use engine::daemon_rpc::RpcDaemonClient;
+use engine_daemon::rpc::RpcDaemonClient;
+use engine_daemon::MoneroDaemonClient;
 
 use mock_woocommerce::{create_order, run_connect_flow_with_wallet, ConnectFlowWallet};
 use support::{node_fixture, require_daemon_reachable, retry};

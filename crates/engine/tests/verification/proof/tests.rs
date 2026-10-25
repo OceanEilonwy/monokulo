@@ -13,9 +13,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use super::*;
-use crate::daemon::fake::FakeDaemonClient;
-use crate::daemon_fallback::FallbackNode;
 use crate::store::SharedStore;
+use engine_daemon::fake::FakeDaemonClient;
+use engine_daemon::fallback::FallbackNode;
 use engine_pow::test_chain::TestChain;
 
 const NET: monero::Network = monero::Network::Mainnet;
@@ -693,7 +693,7 @@ async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
         async fn get_height(&self) -> Result<u64, DaemonError> {
             self.0.get_height().await
         }
-        async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+        async fn get_tip(&self) -> Result<engine_daemon::ChainTip, DaemonError> {
             self.0.get_tip().await
         }
         /// The real id at the deepest followable block and below; made up
@@ -712,7 +712,7 @@ async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
             &self,
             start_height: u64,
             count: u64,
-        ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
             self.0.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -721,19 +721,19 @@ async fn blocks_the_proven_chain_has_are_passed_over_unhashed() {
         async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
             self.0.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
             txid: &str,
-        ) -> Result<crate::daemon::TxLocation, DaemonError> {
+        ) -> Result<engine_daemon::TxLocation, DaemonError> {
             self.0.locate_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
             key_images: &[String],
-        ) -> Result<Vec<crate::daemon::KeyImageStatus>, DaemonError> {
+        ) -> Result<Vec<engine_daemon::KeyImageStatus>, DaemonError> {
             self.0.is_key_image_spent(key_images).await
         }
     }
@@ -769,8 +769,8 @@ async fn a_node_contradicting_itself_is_caught() {
         }
         /// Its tip is the anchor's height, with an id that isn't the
         /// anchor's; asked block by block, it gives the anchor's.
-        async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
-            Ok(crate::daemon::ChainTip {
+        async fn get_tip(&self) -> Result<engine_daemon::ChainTip, DaemonError> {
+            Ok(engine_daemon::ChainTip {
                 height: TOP + 2,
                 hash: Some("cd".repeat(32)),
             })
@@ -782,7 +782,7 @@ async fn a_node_contradicting_itself_is_caught() {
             &self,
             start_height: u64,
             count: u64,
-        ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
             self.0.get_chain_blocks(start_height, count).await
         }
         async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -791,19 +791,19 @@ async fn a_node_contradicting_itself_is_caught() {
         async fn get_transactions_with_ids(
             &self,
             txids: &[String],
-        ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
             self.0.get_transactions_with_ids(txids).await
         }
         async fn locate_transaction(
             &self,
             txid: &str,
-        ) -> Result<crate::daemon::TxLocation, DaemonError> {
+        ) -> Result<engine_daemon::TxLocation, DaemonError> {
             self.0.locate_transaction(txid).await
         }
         async fn is_key_image_spent(
             &self,
             key_images: &[String],
-        ) -> Result<Vec<crate::daemon::KeyImageStatus>, DaemonError> {
+        ) -> Result<Vec<engine_daemon::KeyImageStatus>, DaemonError> {
             self.0.is_key_image_spent(key_images).await
         }
     }

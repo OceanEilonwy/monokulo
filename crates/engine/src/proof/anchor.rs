@@ -24,8 +24,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use futures_util::future::join_all;
 
 use super::{NodeRef, ProofTuning};
-use crate::daemon::DifficultyHeader;
 use crate::store::proof::NewAnchor;
+use engine_daemon::DifficultyHeader;
 use engine_pow::hasher::Hasher;
 use engine_pow::{ProvenBlock, DIFFICULTY_BLOCKS};
 

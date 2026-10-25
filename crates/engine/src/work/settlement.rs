@@ -204,7 +204,7 @@ async fn vanished(round: &Round<'_>, tip: u64, until: Instant) -> Result<(), Sca
             .collect();
         tokio::time::timeout(
             vanished_deadline,
-            crate::daemon_fallback::with_corroboration_deadline(
+            engine_daemon::fallback::with_corroboration_deadline(
                 Instant::now() + vanished_deadline,
                 1,
                 vanished_hints(round.inputs.daemon, &txids, &due),
@@ -245,7 +245,7 @@ async fn vanished(round: &Round<'_>, tip: u64, until: Instant) -> Result<(), Sca
         let payment_id = payment.id;
         let checked = tokio::time::timeout(
             vanished_deadline,
-            crate::daemon_fallback::with_corroboration_deadline(
+            engine_daemon::fallback::with_corroboration_deadline(
                 Instant::now() + vanished_deadline,
                 2,
                 check_vanished_candidates(

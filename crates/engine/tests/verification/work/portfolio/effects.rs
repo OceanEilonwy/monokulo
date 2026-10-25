@@ -7,12 +7,12 @@
     )
 )]
 use super::{inputs, Invoice, NETWORK};
-use crate::daemon::{KeyImageStatus, MoneroDaemonClient as _};
-use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::WalletHandle;
 use crate::node_test_support::{AdversarialNode, Behavior, Rpc};
 use crate::store::{db::Class, Db, SharedStore, Store, TenantId};
 use crate::work::{fast_pass, run_round_at, ScanState};
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::{KeyImageStatus, MoneroDaemonClient as _};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
@@ -325,13 +325,13 @@ impl World {
             .unwrap();
         let control = [(tenant, handle)];
         let tx = super::super::portfolio_fixture::transaction(191, &[(&pair, 1, 7)]);
-        let id = crate::daemon::fake::tx_id_hex(&tx);
+        let id = engine_daemon::fake::tx_id_hex(&tx);
         let previous = self.client.get_mempool_txids().await.unwrap();
         let saved: Vec<_> = self
             .known
             .borrow()
             .iter()
-            .filter(|t| previous.contains(&crate::daemon::fake::tx_id_hex(t)))
+            .filter(|t| previous.contains(&engine_daemon::fake::tx_id_hex(t)))
             .cloned()
             .collect();
         self.set_mempool(vec![tx.clone()]);

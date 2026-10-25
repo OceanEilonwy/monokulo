@@ -72,7 +72,7 @@ pub fn schedule(data: &[u8]) {
 
 pub fn resources(values: [u64; 8]) {
     let tuning = ScanTuning::DEFAULT;
-    let link = Some(crate::link::LinkCost {
+    let link = Some(engine_daemon::link::LinkCost {
         rtt_secs: f64::from_bits(values[3]),
         ttfb_per_block_secs: f64::from_bits(values[4]),
         rate_bytes_per_sec: f64::from_bits(values[5]),
@@ -109,9 +109,9 @@ pub fn resources(values: [u64; 8]) {
         retry.retry_at >= retry.last_failure,
         "retry deadline wrapped backwards"
     );
-    let timeout = crate::link::timeout_for(Duration::from_secs(values[7]));
+    let timeout = engine_daemon::link::timeout_for(Duration::from_secs(values[7]));
     assert!(
-        (crate::link::MIN_TIMEOUT..=crate::link::MAX_TIMEOUT).contains(&timeout),
+        (engine_daemon::link::MIN_TIMEOUT..=engine_daemon::link::MAX_TIMEOUT).contains(&timeout),
         "timeout escaped its limits"
     );
 }

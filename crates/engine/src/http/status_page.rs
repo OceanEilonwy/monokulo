@@ -71,7 +71,7 @@ pub(super) struct NodeStatus {
     pub network: Option<String>,
     /// What the engine has asked this node since the node was configured
     /// (or the engine started), by endpoint, busiest first.
-    pub rpc: Vec<crate::daemon::EndpointStats>,
+    pub rpc: Vec<engine_daemon::EndpointStats>,
     /// What has been measured of the node's link.
     pub link: Option<engine_protocol::scaling::LinkSnapshot>,
 }
@@ -84,7 +84,7 @@ pub(super) struct NodeStatus {
 /// from. Both share one deadline: a node that let `get_info` time out is not
 /// waited on again.
 async fn probe_node(
-    client: &dyn crate::daemon::MoneroDaemonClient,
+    client: &dyn engine_daemon::MoneroDaemonClient,
 ) -> (Option<u64>, Option<String>, Option<String>) {
     let deadline = tokio::time::Instant::now() + STATUS_PROBE_BUDGET;
     let timed_out = || {
@@ -95,7 +95,7 @@ async fn probe_node(
     };
     let (network, height) = match tokio::time::timeout_at(deadline, client.get_info()).await {
         Ok(Ok(info)) => (
-            Some(info.nettype).filter(|nettype| nettype != crate::daemon::DaemonInfo::UNKNOWN),
+            Some(info.nettype).filter(|nettype| nettype != engine_daemon::DaemonInfo::UNKNOWN),
             info.height,
         ),
         Ok(Err(_)) => (None, None),
@@ -684,53 +684,53 @@ mod tests {
     /// A node for `probe_node`: `get_info` says (or doesn't) its height and
     /// network, and every request for the height alone is counted.
     struct ProbedNode {
-        info: Option<crate::daemon::DaemonInfo>,
+        info: Option<engine_daemon::DaemonInfo>,
         height: Option<u64>,
         height_requests: std::sync::atomic::AtomicUsize,
     }
 
     #[async_trait::async_trait]
-    impl crate::daemon::MoneroDaemonClient for ProbedNode {
-        async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, crate::daemon::DaemonError> {
+    impl engine_daemon::MoneroDaemonClient for ProbedNode {
+        async fn get_info(&self) -> Result<engine_daemon::DaemonInfo, engine_daemon::DaemonError> {
             self.info
                 .clone()
-                .ok_or_else(|| crate::daemon::DaemonError::Request("no info".into()))
+                .ok_or_else(|| engine_daemon::DaemonError::Request("no info".into()))
         }
-        async fn get_height(&self) -> Result<u64, crate::daemon::DaemonError> {
+        async fn get_height(&self) -> Result<u64, engine_daemon::DaemonError> {
             self.height_requests
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             self.height
-                .ok_or_else(|| crate::daemon::DaemonError::Request("connection refused".into()))
+                .ok_or_else(|| engine_daemon::DaemonError::Request("connection refused".into()))
         }
-        async fn get_block_hash(&self, _: u64) -> Result<String, crate::daemon::DaemonError> {
+        async fn get_block_hash(&self, _: u64) -> Result<String, engine_daemon::DaemonError> {
             unimplemented!("not probed")
         }
         async fn get_chain_blocks(
             &self,
             _start_height: u64,
             _count: u64,
-        ) -> Result<Vec<crate::daemon::ChainBlock>, crate::daemon::DaemonError> {
+        ) -> Result<Vec<engine_daemon::ChainBlock>, engine_daemon::DaemonError> {
             unimplemented!("not probed")
         }
-        async fn get_mempool_txids(&self) -> Result<Vec<String>, crate::daemon::DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, engine_daemon::DaemonError> {
             unimplemented!("not probed")
         }
         async fn get_transactions_with_ids(
             &self,
             _txids: &[String],
-        ) -> Result<Vec<crate::daemon::FetchedTx>, crate::daemon::DaemonError> {
+        ) -> Result<Vec<engine_daemon::FetchedTx>, engine_daemon::DaemonError> {
             unimplemented!("not probed")
         }
         async fn locate_transaction(
             &self,
             _: &str,
-        ) -> Result<crate::daemon::TxLocation, crate::daemon::DaemonError> {
+        ) -> Result<engine_daemon::TxLocation, engine_daemon::DaemonError> {
             unimplemented!("not probed")
         }
         async fn is_key_image_spent(
             &self,
             _: &[String],
-        ) -> Result<Vec<crate::daemon::KeyImageStatus>, crate::daemon::DaemonError> {
+        ) -> Result<Vec<engine_daemon::KeyImageStatus>, engine_daemon::DaemonError> {
             unimplemented!("not probed")
         }
     }
@@ -741,7 +741,7 @@ mod tests {
     #[tokio::test]
     async fn a_node_is_asked_once_when_its_info_says_its_height() {
         let node = |info: Option<(&str, Option<u64>)>, height| ProbedNode {
-            info: info.map(|(nettype, height)| crate::daemon::DaemonInfo {
+            info: info.map(|(nettype, height)| engine_daemon::DaemonInfo {
                 nettype: nettype.to_owned(),
                 height,
                 synchronized: None,

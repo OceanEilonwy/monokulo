@@ -401,7 +401,11 @@ mod embedded {
             .build_runtime()
             .unwrap_or_else(|e| stop(format!("failed to start the engine's runtime: {e}")));
         if let Some(telemetry) = telemetry::global() {
-            telemetry.host("engine", &["engine"], engine::threads::THREAD_PREFIX);
+            telemetry.host(
+                "engine",
+                &["engine", "engine_daemon"],
+                engine::threads::THREAD_PREFIX,
+            );
         }
         // Its share of the process's CPU, for the admin page.
         service_runtime::resources::sampler().host_threads(engine::threads::THREAD_PREFIX);

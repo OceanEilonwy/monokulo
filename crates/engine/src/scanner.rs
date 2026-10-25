@@ -14,11 +14,11 @@ use engine_protocol::order_event::OrderEventKind;
 use monero::blockdata::transaction::TxOutTarget;
 use monero::Transaction;
 
-use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::key_custody::{
     KeyCustody, KeyCustodyError, MatchedOutput, ScanIndices, ScanInput, WalletHandle,
 };
 use crate::store::{Store, StoreError};
+use engine_daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScannerError {
@@ -57,7 +57,7 @@ pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
     Ok(images)
 }
 
-fn key_images_json_of(tx: &crate::daemon::ScanTx) -> String {
+fn key_images_json_of(tx: &engine_daemon::ScanTx) -> String {
     serde_json::Value::from(
         tx.key_images
             .iter()
@@ -98,7 +98,7 @@ pub struct ScanResult {
 impl ScanResult {
     /// What `tx`, named `txid`, pays. The id comes with the transaction: it
     /// may be pruned, and then can't be hashed to it.
-    fn of(txid: &str, tx: &crate::daemon::ScanTx, mut matches: Vec<MatchedOutput>) -> Self {
+    fn of(txid: &str, tx: &engine_daemon::ScanTx, mut matches: Vec<MatchedOutput>) -> Self {
         let prefix = tx.input.prefix();
         // A locked output is no payment: until its unlock time (a height,
         // or from 500,000,000 up a timestamp) nobody can spend it, and the
@@ -140,7 +140,7 @@ pub async fn scan_transaction_as(
     tx: &Transaction,
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
-    let tx = crate::daemon::ScanTx::of(tx);
+    let tx = engine_daemon::ScanTx::of(tx);
     let matches = key_custody
         .scan_tx_outputs(handle, &tx.input, 0..1, minor_range)
         .await?;
@@ -158,7 +158,7 @@ pub(crate) async fn scan_transaction_in_window(
     tx: &Transaction,
     window: &ScanIndices,
 ) -> Result<ScanResult> {
-    let tx = crate::daemon::ScanTx::of(tx);
+    let tx = engine_daemon::ScanTx::of(tx);
     let found = key_custody
         .scan_txs_for_indices(handle, std::slice::from_ref(&tx.input), window)
         .await?;
@@ -188,7 +188,7 @@ pub(crate) async fn scan_transaction_in_window(
 pub(crate) async fn scan_txs_for_tenants(
     key_custody: &dyn KeyCustody,
     txids: &[String],
-    txs: &[crate::daemon::ScanTx],
+    txs: &[engine_daemon::ScanTx],
     inputs: &[ScanInput],
     tenants: &[(&(crate::store::TenantId, WalletHandle, ScanIndices), usize)],
     tuning: &crate::work::ScanTuning,
@@ -256,7 +256,7 @@ pub(crate) async fn scan_for_tenants(
     tuning: &crate::work::ScanTuning,
     tier: crate::work::Tier,
 ) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
-    let tx = crate::daemon::ScanTx::of(tx);
+    let tx = engine_daemon::ScanTx::of(tx);
     let inputs = [tx.input.clone()];
     let tenants: Vec<_> = tenants.iter().map(|tenant| (*tenant, 0)).collect();
     scan_txs_for_tenants(
@@ -663,7 +663,7 @@ async fn void_if_double_spend_proven(
     };
     // Corroborated, not the bare call: this is the one place a false accusation
     // permanently voids real money, so a `daemon` that knows about more than one
-    // node (`daemon_fallback::FallbackDaemonClient`) cross-checks them here rather
+    // node (`engine_daemon::fallback::FallbackDaemonClient`) cross-checks them here rather
     // than trusting whichever single one happened to answer - see
     // `MoneroDaemonClient::is_key_image_spent_corroborated`'s doc comment.
     let proven = match proven {
@@ -949,7 +949,7 @@ const SCAN_CHUNK_MIN_BLOCKS: u64 = 1;
 /// rather than overshoots it. Self-correcting from the second chunk onward
 /// regardless. The same guess the node's link starts from, so the first
 /// chunk and its timeout agree.
-pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = crate::link::COLD_BYTES_PER_BLOCK;
+pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = engine_daemon::link::COLD_BYTES_PER_BLOCK;
 
 pub use engine_protocol::scaling::{ChunkLimit, ChunkPlan};
 
@@ -962,7 +962,7 @@ pub use engine_protocol::scaling::{ChunkLimit, ChunkPlan};
 pub(crate) fn next_scan_chunk(
     tuning: &crate::work::ScanTuning,
     response_cap_bytes: u64,
-    link: Option<crate::link::LinkCost>,
+    link: Option<engine_daemon::link::LinkCost>,
     avg_bytes_per_block: f64,
     remaining: u64,
 ) -> ChunkPlan {
@@ -992,7 +992,7 @@ pub(crate) fn next_scan_chunk(
 /// Most transactions on one page of a large block: what monerod's
 /// restricted RPC (a public node's) gives in one `/get_transactions`
 /// answer, so a page is one request.
-pub(crate) const PAGE_MAX_TXS: u64 = crate::daemon_rpc::TXS_PER_REQUEST as u64;
+pub(crate) const PAGE_MAX_TXS: u64 = engine_daemon::rpc::TXS_PER_REQUEST as u64;
 
 /// Whether a block of `weight` bytes is scanned in pages rather than
 /// fetched whole: it would overrun one response (the cap from the scan
@@ -1003,7 +1003,7 @@ pub(crate) fn scan_in_pages(
     tuning: &crate::work::ScanTuning,
     weight: Option<u64>,
     response_cap_bytes: u64,
-    link: Option<crate::link::LinkCost>,
+    link: Option<engine_daemon::link::LinkCost>,
 ) -> bool {
     let Some(weight) = weight else {
         return false;
@@ -1023,7 +1023,7 @@ pub(crate) fn scan_in_pages(
 pub(crate) fn next_page(
     tuning: &crate::work::ScanTuning,
     response_cap_bytes: u64,
-    link: Option<crate::link::LinkCost>,
+    link: Option<engine_daemon::link::LinkCost>,
     avg_tx_bytes: f64,
     scan_secs_per_tx: Option<f64>,
     remaining: u64,
@@ -1398,7 +1398,7 @@ mod paging_tests {
             T,
             None,
             cap,
-            Some(crate::link::LinkCost::transfer_only(1.0))
+            Some(engine_daemon::link::LinkCost::transfer_only(1.0))
         ));
         assert!(!scan_in_pages(T, Some(300_000), cap, None));
         assert!(
@@ -1410,7 +1410,7 @@ mod paging_tests {
                 T,
                 Some(4_000_000),
                 cap,
-                Some(crate::link::LinkCost::transfer_only(100_000.0))
+                Some(engine_daemon::link::LinkCost::transfer_only(100_000.0))
             ),
             "40 s at 100 kB/s"
         );
@@ -1419,7 +1419,7 @@ mod paging_tests {
                 T,
                 Some(2_000_000),
                 cap,
-                Some(crate::link::LinkCost::transfer_only(100_000.0))
+                Some(engine_daemon::link::LinkCost::transfer_only(100_000.0))
             ),
             "20 s"
         );
@@ -1448,7 +1448,7 @@ mod paging_tests {
         assert_eq!(
             page(
                 32_000_000,
-                Some(crate::link::LinkCost::transfer_only(10_000.0)),
+                Some(engine_daemon::link::LinkCost::transfer_only(10_000.0)),
                 2_000.0,
                 None,
                 10_000

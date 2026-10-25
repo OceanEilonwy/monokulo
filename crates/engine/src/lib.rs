@@ -20,9 +20,6 @@
 pub mod activity;
 pub mod auth;
 pub mod cli;
-pub mod daemon;
-pub mod daemon_fallback;
-pub mod daemon_rpc;
 pub mod engine_settings;
 #[cfg(any(test, feature = "fuzzing"))]
 #[path = "../tests/verification/support/exploration.rs"]
@@ -32,9 +29,7 @@ pub mod exploration;
 pub(crate) mod exploration_rpc;
 pub mod http;
 pub mod key_custody;
-pub mod link;
 pub mod loops;
-pub mod monero_tx;
 pub mod network;
 pub mod node_events;
 #[cfg(any(test, feature = "fuzzing"))]

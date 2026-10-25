@@ -6,8 +6,8 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStdout, Command, Stdio};
 
-use engine::daemon::{ChainTip, MoneroDaemonClient};
-use engine::daemon_rpc::RpcDaemonClient;
+use engine_daemon::rpc::RpcDaemonClient;
+use engine_daemon::{ChainTip, MoneroDaemonClient};
 
 /// A running `fake-monerod`, stopped when dropped.
 struct Fake {

@@ -13,9 +13,9 @@
 //! from a general-purpose one, built specifically for this kind of real,
 //! repeated, e2e-test use.
 //!
-//! Follows the same pattern as `daemon_rpc::live_node_tests`: excluded from the
-//! default `cargo test` run via `#[ignore]` (it needs live network access, so it
-//! can't be hermetic), run explicitly with:
+//! Follows the same pattern as `engine_daemon::rpc`'s `live_node_tests`:
+//! excluded from the default `cargo test` run via `#[ignore]` (it needs live
+//! network access, so it can't be hermetic), run explicitly with:
 //!
 //! ```sh
 //! cargo test -p e2e-harness --features e2e --test e2e_stagenet -- --ignored --nocapture
@@ -49,15 +49,15 @@ use monero::Network;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use engine::daemon::MoneroDaemonClient;
-use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-use engine::daemon_rpc::RpcDaemonClient;
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router, now_unix, AppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::store::{NewTenant, Store};
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::rpc::RpcDaemonClient;
+use engine_daemon::MoneroDaemonClient;
 /// This test's first subaddress index on the shared stagenet merchant
 /// wallet. Every live test that pays an order starts at its own (`cargo
 /// xtask live` checks they differ), so a payment an earlier test made, still

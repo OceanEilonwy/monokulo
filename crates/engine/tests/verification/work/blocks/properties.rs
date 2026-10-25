@@ -23,7 +23,7 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
         )
         .unwrap();
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let scan = scan_transaction_as(&custody, handle, &txid, &tx, 0..3)
         .await
         .unwrap();

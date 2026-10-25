@@ -130,7 +130,7 @@ impl Area {
     /// test tool.
     fn claims(self, case: &Case, tool: bool) -> bool {
         static PAYMENTS: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"^engine::(scanner|work|status|proof|node_events|daemon|scaling|exploration|loops|chain|mempool)").unwrap()
+            Regex::new(r"^engine::(scanner|work|status|proof|node_events|scaling|exploration|loops|chain|mempool)").unwrap()
         });
         static WEBHOOKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)webhook").unwrap());
         static CHECKOUT: LazyLock<Regex> = LazyLock::new(|| {
@@ -158,7 +158,9 @@ impl Area {
         let (group, krate, suite) = (case.group.as_str(), case.krate.as_str(), case.suite);
         match self {
             Area::Payments => {
-                (krate == "engine" && PAYMENTS.is_match(group)) || krate == "engine-pow"
+                (krate == "engine" && PAYMENTS.is_match(group))
+                    || krate == "engine-pow"
+                    || krate == "engine-daemon"
             }
             Area::Webhooks => WEBHOOKS.is_match(group),
             Area::Checkout => suite == Suite::Browser && CHECKOUT.is_match(group),

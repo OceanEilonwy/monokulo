@@ -778,6 +778,7 @@ dependencies = [
  "axum",
  "clap",
  "credentials",
+ "engine-daemon",
  "engine-pow",
  "engine-protocol",
  "futures-util",
@@ -787,7 +788,6 @@ dependencies = [
  "key-custody",
  "live-settings",
  "monero",
- "monero-epee",
  "parking_lot",
  "rand 0.10.3",
  "rate-limit",
@@ -810,6 +810,30 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "engine-daemon"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "engine-pow",
+ "engine-protocol",
+ "futures-util",
+ "hex",
+ "key-custody",
+ "monero",
+ "monero-epee",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "service-runtime",
+ "telemetry",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

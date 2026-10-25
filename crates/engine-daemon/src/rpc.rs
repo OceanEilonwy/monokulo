@@ -31,10 +31,24 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
-use crate::daemon::{
+use crate::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, DifficultyHeader, EndpointStats,
     FetchedTx, IdBinding, KeyImageStatus, MoneroDaemonClient, PoolAnswer, PoolOutlook, TxLocation,
 };
+
+/// Whether `host` ends in `.onion` (any case, with or without a final dot).
+pub fn is_onion_host(host: &str) -> bool {
+    host.trim_end_matches('.')
+        .to_ascii_lowercase()
+        .ends_with(".onion")
+}
+
+/// What a node on an onion address is told, wherever it turns up.
+pub fn onion_node_message(host: &str, port: u16) -> String {
+    format!(
+        "{host}:{port} is an onion address, which isn't supported: Monokulo connects to Monero nodes over the web only, so an onion name would be looked up in the system's DNS, which would learn it and find nothing. Give the node's web host name or IP address."
+    )
+}
 
 pub struct RpcDaemonClient {
     client: reqwest::Client,
@@ -166,8 +180,7 @@ impl RpcDaemonClient {
             .ok_or_else(|| {
                 DaemonError::Request(format!("not a node address: {host}:{port}").into())
             })?;
-        let unsupported = crate::settings::is_onion_host(&host)
-            .then(|| crate::settings::onion_node_message(&host, port));
+        let unsupported = is_onion_host(&host).then(|| onion_node_message(&host, port));
         Ok(Self {
             client,
             base_url,
@@ -788,7 +801,7 @@ impl BinBlock {
                 )?;
             // Only what the scan reads is kept; the transaction itself is
             // dropped here.
-            txs.push(crate::daemon::ScanTx::of(&tx.tx));
+            txs.push(crate::ScanTx::of(&tx.tx));
             txids.push(txid);
             bindings.push(binding);
         }
@@ -1479,13 +1492,13 @@ struct IsKeyImageSpentResponse {
 
 /// Most transactions asked for in one `/get_transactions` request (a
 /// restricted node refuses more than 100).
-pub(crate) const TXS_PER_REQUEST: usize = 100;
+pub const TXS_PER_REQUEST: usize = 100;
 /// What one transaction adds to a `get_block` answer: its id in the blob, in
 /// the blob's JSON and in the list, as hex text with quotes and commas.
 const OUTLINE_BYTES_PER_TX: usize = 256;
 /// Most headers asked for in one `get_block_headers_range` request (a
 /// restricted node refuses more than 1000).
-pub(crate) const MAX_HEADERS_PER_REQUEST: u64 = 500;
+pub const MAX_HEADERS_PER_REQUEST: u64 = 500;
 /// The names pool-change polls are counted under in
 /// [`RpcDaemonClient::stats`]: the same path as block fetches, different
 /// requests.
@@ -1919,7 +1932,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
         &self,
         height: u64,
         tx_count: Option<u64>,
-    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+    ) -> Result<crate::BlockOutline, DaemonError> {
         #[derive(Deserialize)]
         struct GetBlock {
             blob: String,
@@ -1949,7 +1962,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 ))
             }
         }
-        Ok(crate::daemon::BlockOutline {
+        Ok(crate::BlockOutline {
             height,
             hash: hex::encode(block.id().0),
             prev_hash: if height == 0 {
@@ -2203,7 +2216,7 @@ mod tests {
 
     use super::*;
 
-    const FIXTURE_TX_HEX: &str = include_str!("../tests/fixtures/subaddress_tx.hex");
+    const FIXTURE_TX_HEX: &str = include_str!("../../engine/tests/fixtures/subaddress_tx.hex");
 
     /// A real mainnet block with only its coinbase (from the `monero` crate's
     /// own serialisation test).
@@ -2491,7 +2504,7 @@ mod wire_tests {
     use std::collections::VecDeque;
     use std::sync::Arc;
 
-    const FIXTURE_TX_HEX: &str = include_str!("../tests/fixtures/subaddress_tx.hex");
+    const FIXTURE_TX_HEX: &str = include_str!("../../engine/tests/fixtures/subaddress_tx.hex");
 
     fn whole_tx() -> Transaction {
         deserialize(&hex::decode(FIXTURE_TX_HEX.trim()).unwrap()).unwrap()
@@ -3852,8 +3865,9 @@ mod live_node_tests {
     //! These hit a real public Monero node over the network and are excluded from
     //! the default `cargo test` run (`#[ignore]`) so the main suite stays hermetic
     //! and fast. `cargo xtask live` runs them, with every other `live_` test, once
-    //! a day (live-network.yml); `cargo test --ignored daemon_rpc::` runs just
-    //! these, to verify against real chain data by hand. As with the regtest
+    //! a day (live-network.yml);
+    //! `cargo nextest run -p engine-daemon --run-ignored only live_node_` runs
+    //! just these, to verify against real chain data by hand. As with the regtest
     //! tier, this proves the real RPC wiring and real
     //! transaction parsing against real (and constantly-changing) mainnet data,
     //! which no fixture-based unit test can substitute for - it's a *complement* to
@@ -3988,7 +4002,7 @@ mod live_node_tests {
                     "block {height}, transaction {index}"
                 );
                 // What the scan keeps is what the whole transaction says.
-                assert_eq!(*pruned, crate::daemon::ScanTx::of(whole));
+                assert_eq!(*pruned, crate::ScanTx::of(whole));
                 transactions += 1;
             }
         }
@@ -4154,7 +4168,7 @@ mod live_node_tests {
             .iter()
             .position(|txid| txid == KNOWN_TX)
             .expect("the known txid must be one of this block's own transactions");
-        assert_eq!(crate::daemon::ScanTx::of(&fetched.tx), block.txs[index]);
+        assert_eq!(crate::ScanTx::of(&fetched.tx), block.txs[index]);
     }
 
     #[tokio::test]
@@ -4187,72 +4201,6 @@ mod live_node_tests {
             .await
             .unwrap();
         assert_eq!(statuses, vec![KeyImageStatus::Unspent]);
-    }
-
-    #[tokio::test]
-    #[ignore = "needs a live mainnet node"]
-    async fn live_node_end_to_end_scan_of_live_mempool_never_panics_and_finds_no_false_matches() {
-        // The fullest available proof this pipeline works: real transactions,
-        // fresh off a real node's real mempool, run through the actual
-        // scanner's scan-and-record path (real KeyCustody scan +
-        // real Store) against a wallet that has never received anything. Expect
-        // zero matches (this key owns nothing) - the point is that scanning
-        // diverse, unpredictable real-world transaction shapes never errors or
-        // panics, which a single canned fixture can't prove.
-        use crate::key_custody::{KeyCustody as _, PlainKeyCustody, WalletMaterial};
-        use crate::store::Store;
-        use monero::{PrivateKey, PublicKey};
-
-        let mut view_bytes = [0x42u8; 32];
-        view_bytes[31] &= 0x0f;
-        let view_key = PrivateKey::from_slice(&view_bytes).unwrap();
-        let mut spend_bytes = [0x24u8; 32];
-        spend_bytes[31] &= 0x0f;
-        let spend_key = PrivateKey::from_slice(&spend_bytes).unwrap();
-        let spend_pubkey = PublicKey::from_private_key(&spend_key);
-
-        let key_custody = PlainKeyCustody::default();
-        let handle = key_custody
-            .register_wallet(WalletMaterial::new(
-                view_key.to_bytes(),
-                spend_pubkey.to_bytes(),
-            ))
-            .await
-            .unwrap();
-        let store = Store::open_in_memory().unwrap();
-        let created = store
-            .create_tenant(
-                &crate::store::NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: vec![],
-                    primary_address: "4test".into(),
-                    network: "mainnet".into(),
-                    confirmations_required: None,
-                    order_expiry_seconds: None,
-                },
-                0,
-            )
-            .unwrap();
-
-        // The pool as the scanner reads it: its ids, then the transactions
-        // under those ids, pruned.
-        let c = client();
-        let pool = c.get_mempool_txids().await.unwrap();
-        let txs = c.get_transactions_with_ids(&pool).await.unwrap();
-        assert!(
-            !txs.is_empty(),
-            "test needs a non-empty live mempool to be meaningful"
-        );
-
-        for FetchedTx { txid, tx } in &txs {
-            let scan = crate::scanner::scan_transaction_as(&key_custody, handle, txid, tx, 0..1)
-                .await
-                .unwrap();
-            let touched =
-                crate::scanner::record_scan_match(&store, &created.tenant.id, &scan, 0, None)
-                    .unwrap();
-            assert!(touched.is_empty());
-        }
     }
 
     #[tokio::test]

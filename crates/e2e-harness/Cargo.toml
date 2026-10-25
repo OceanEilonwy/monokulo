@@ -17,6 +17,7 @@ description = "Real-stagenet end-to-end tests and the POS browser suite's backen
 [features]
 e2e = [
     "dep:engine",
+    "dep:engine-daemon",
     "dep:monokulo",
     "dep:cli-wallet",
     "dep:credentials",
@@ -36,6 +37,8 @@ e2e = [
 
 [dependencies]
 engine = { path = "../engine", optional = true }
+# The node client the harness watches the chain with.
+engine-daemon = { path = "../engine-daemon", optional = true }
 monokulo = { path = "../monokulo", optional = true }
 # The fast, reliable stagenet test wallet the e2e tests and the harness use
 # to sign and broadcast real payments (see its own crate doc comment).

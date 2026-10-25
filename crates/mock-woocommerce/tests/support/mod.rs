@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use engine::daemon::MoneroDaemonClient;
+use engine_daemon::MoneroDaemonClient;
 
 /// The fixed public stagenet node - the same one
 /// `crates/e2e-harness/tests/support/mod.rs` uses.

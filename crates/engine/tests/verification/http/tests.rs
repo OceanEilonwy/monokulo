@@ -17,10 +17,10 @@ use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
 use tower::ServiceExt as _;
 
-use crate::daemon::fake::FakeDaemonClient;
-use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
 use crate::store::Store;
+use engine_daemon::fake::FakeDaemonClient;
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
 
 use super::router_as_monokulo as build_router;
 use super::{
@@ -4385,7 +4385,7 @@ async fn status_says_which_network_each_node_is_on() {
         FallbackNode {
             label: format!("127.0.0.1:{}", mainnet.port()),
             client: Arc::new(
-                crate::daemon_rpc::RpcDaemonClient::new("127.0.0.1", mainnet.port(), false, true)
+                engine_daemon::rpc::RpcDaemonClient::new("127.0.0.1", mainnet.port(), false, true)
                     .unwrap(),
             ),
         },

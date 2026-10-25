@@ -19,7 +19,7 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
     let custody = crate::work::history_fixture::FlakyKeyCustody::default();
     let (id, handle, first) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
-    let daemon = crate::daemon::fake::FakeDaemonClient::new();
+    let daemon = engine_daemon::fake::FakeDaemonClient::new();
     for h in 1..=2 {
         daemon.push_block(&format!("scale-{h}"), vec![]);
         store
@@ -103,7 +103,7 @@ async fn large_pool(count: usize) {
     let custody = crate::work::history_fixture::FlakyKeyCustody::default();
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
-    let daemon = crate::daemon::fake::FakeDaemonClient::new();
+    let daemon = engine_daemon::fake::FakeDaemonClient::new();
     daemon.push_block("scale-pool-tip", vec![]);
     let tenants = [(id.clone(), handle)];
     let inputs = RoundInputs {
@@ -120,7 +120,7 @@ async fn large_pool(count: usize) {
     let state = ScanState::default();
     let mut pool: Vec<_> = (0..count - 1).map(foreign).collect();
     let payer = fixture_tx();
-    let payer_id = crate::daemon::fake::tx_id_hex(&payer);
+    let payer_id = engine_daemon::fake::tx_id_hex(&payer);
     pool.push(payer);
     daemon.set_mempool(pool);
     custody.fail(handle);
@@ -274,7 +274,7 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
         original_orders.push(order);
     }
     let db = Db::open(&path.0, &store).unwrap();
-    let daemon = crate::daemon::fake::FakeDaemonClient::new();
+    let daemon = engine_daemon::fake::FakeDaemonClient::new();
     for height in 1..=2 {
         let hash = format!("matrix-{height}");
         daemon.push_block(&hash, vec![]);

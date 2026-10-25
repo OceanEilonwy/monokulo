@@ -1,9 +1,9 @@
 //! Fail individual daemon operations without changing the scripted chain.
-use crate::daemon::{
+use crate::exploration_rpc::Rpc;
+use engine_daemon::{
     fake::FakeDaemonClient, BlockOutline, ChainBlock, ChainHeader, ChainTip, DaemonError,
     FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
 };
-use crate::exploration_rpc::Rpc;
 use std::sync::atomic::{AtomicU16, Ordering};
 
 pub(crate) struct ScriptedDaemon {

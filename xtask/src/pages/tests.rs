@@ -238,8 +238,8 @@ fn live_artifact(root: &Path) {
         &root.join("rust-junit.xml"),
         junit_xml(&[
             (
-                "engine",
-                "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
+                "engine-daemon",
+                "rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
                 1.5,
                 r#"<failure message="connection refused">error sending request</failure>"#,
             ),
@@ -294,7 +294,7 @@ fn live_artifact(root: &Path) {
                 "kept": ["Swept 0.000670000000 XMR from the merchant to the spender"]
             },
             "reasons": {
-                "engine › daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value": "needs a live mainnet node",
+                "engine-daemon › rpc::live_node_tests::live_node_get_height_returns_a_plausible_value": "needs a live mainnet node",
                 "monokulo › embed_domains::tests::live_system_resolver_reads_real_txt_records": "needs live DNS",
                 "pricing › haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies": "needs the live haveno.markets API",
                 "pricing › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "needs the live CoinMarketCap API",
@@ -696,8 +696,8 @@ fn each_input_builds_its_sections_and_a_missing_one_leaves_them_out() {
                 put(
                     &f.scratch.join("live/rust-junit.xml"),
                     junit_xml(&[(
-                        "engine",
-                        "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
+                        "engine-daemon",
+                        "rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
                         1.5,
                         r#"<failure message="connection refused"/>"#,
                     )]),

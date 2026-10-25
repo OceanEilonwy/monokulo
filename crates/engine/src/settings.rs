@@ -44,22 +44,8 @@ impl MoneroNodeSetting {
     pub fn onion_node(&self) -> Option<&Self> {
         std::iter::once(self)
             .chain(&self.fallbacks)
-            .find(|node| is_onion_host(&node.host))
+            .find(|node| engine_daemon::rpc::is_onion_host(&node.host))
     }
-}
-
-/// Whether `host` ends in `.onion` (any case, with or without a final dot).
-pub fn is_onion_host(host: &str) -> bool {
-    host.trim_end_matches('.')
-        .to_ascii_lowercase()
-        .ends_with(".onion")
-}
-
-/// What a node on an onion address is told, wherever it turns up.
-pub fn onion_node_message(host: &str, port: u16) -> String {
-    format!(
-        "{host}:{port} is an onion address, which isn't supported: Monokulo connects to Monero nodes over the web only, so an onion name would be looked up in the system's DNS, which would learn it and find nothing. Give the node's web host name or IP address."
-    )
 }
 
 /// The `check` for a node setting: a fallback's own `fallbacks` would be
@@ -74,7 +60,10 @@ pub fn onion_node_message(host: &str, port: u16) -> String {
 pub fn check_node(node: &Option<live_settings::Json<MoneroNodeSetting>>) -> Result<(), String> {
     let Some(node) = node else { return Ok(()) };
     if let Some(onion) = node.0.onion_node() {
-        return Err(onion_node_message(&onion.host, onion.port));
+        return Err(engine_daemon::rpc::onion_node_message(
+            &onion.host,
+            onion.port,
+        ));
     }
     for fallback in &node.0.fallbacks {
         if !fallback.fallbacks.is_empty() {

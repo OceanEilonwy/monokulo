@@ -12,14 +12,14 @@ use std::sync::Arc;
 use monero::Transaction;
 
 use super::*;
-use crate::daemon::fake::FakeDaemonClient;
-use crate::daemon::{DaemonError, KeyImageStatus, TxLocation};
 use crate::scanner::tests::{
     cursor_of, fixture_tenant, fixture_tenant_shared, fixture_tx, order_status, unrelated_tx,
     FlakyKeyCustody,
 };
 use crate::status::OrderStatus;
 use crate::store::SharedStore;
+use engine_daemon::fake::FakeDaemonClient;
+use engine_daemon::{DaemonError, KeyImageStatus, TxLocation};
 use engine_protocol::activity::{Group, PoolPath};
 use engine_protocol::order_event::OrderEventKind;
 
@@ -30,7 +30,7 @@ struct CountingDaemon<'a> {
     hash_lookups: AtomicU64,
     /// How many times each height was sent whole.
     sent: parking_lot::Mutex<HashMap<u64, u32>>,
-    node: parking_lot::Mutex<Option<crate::daemon::NodeKey>>,
+    node: parking_lot::Mutex<Option<engine_daemon::NodeKey>>,
 }
 
 impl<'a> CountingDaemon<'a> {
@@ -39,7 +39,7 @@ impl<'a> CountingDaemon<'a> {
             inner,
             hash_lookups: AtomicU64::new(0),
             sent: parking_lot::Mutex::default(),
-            node: parking_lot::Mutex::new(Some(crate::daemon::NodeKey::default())),
+            node: parking_lot::Mutex::new(Some(engine_daemon::NodeKey::default())),
         }
     }
     fn take_hash_lookups(&self) -> u64 {
@@ -57,14 +57,14 @@ impl<'a> CountingDaemon<'a> {
         again.sort_unstable();
         again
     }
-    fn set_node(&self, node: Option<crate::daemon::NodeKey>) {
+    fn set_node(&self, node: Option<engine_daemon::NodeKey>) {
         *self.node.lock() = node;
     }
 }
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for CountingDaemon<'_> {
-    fn node(&self) -> Option<crate::daemon::NodeKey> {
+    fn node(&self) -> Option<engine_daemon::NodeKey> {
         *self.node.lock()
     }
     async fn get_height(&self) -> Result<u64, DaemonError> {
@@ -78,7 +78,7 @@ impl MoneroDaemonClient for CountingDaemon<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         let blocks = self.inner.get_chain_blocks(start_height, count).await?;
         let mut sent = self.sent.lock();
         for block in &blocks {
@@ -92,7 +92,7 @@ impl MoneroDaemonClient for CountingDaemon<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -385,7 +385,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     store
         .record_payment_match(
             &engine_protocol::ids::OrderId::new(order.to_string()),
-            &crate::daemon::fake::tx_id_hex(&fixture_tx()),
+            &engine_daemon::fake::tx_id_hex(&fixture_tx()),
             0,
             1,
             "[\"ki\"]",
@@ -828,7 +828,7 @@ impl MoneroDaemonClient for CannotLocate<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -837,7 +837,7 @@ impl MoneroDaemonClient for CannotLocate<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -1112,7 +1112,7 @@ impl MoneroDaemonClient for ReorgsAfterFetch<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.chain_fetches.fetch_add(1, Ordering::Relaxed);
         let blocks = self.inner.get_chain_blocks(start_height, count).await?;
         if self.armed.swap(false, Ordering::Relaxed) {
@@ -1136,7 +1136,7 @@ impl MoneroDaemonClient for ReorgsAfterFetch<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -1534,7 +1534,7 @@ impl MoneroDaemonClient for Lookups<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -1543,7 +1543,7 @@ impl MoneroDaemonClient for Lookups<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         let mut asked = txids.to_vec();
         asked.sort();
         self.body_requests.lock().push(asked);
@@ -1796,7 +1796,7 @@ impl MoneroDaemonClient for SlowBlocks<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.chain_fetches.fetch_add(1, Ordering::Relaxed);
         tokio::time::sleep(self.delay).await;
         self.inner.get_chain_blocks(start_height, count).await
@@ -1805,13 +1805,13 @@ impl MoneroDaemonClient for SlowBlocks<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainHeader>, DaemonError> {
         self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -2437,7 +2437,7 @@ impl MoneroDaemonClient for HashLookupsFail<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.0.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -2446,7 +2446,7 @@ impl MoneroDaemonClient for HashLookupsFail<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.0.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -2561,7 +2561,7 @@ struct TimesOutItself;
 impl MoneroDaemonClient for TimesOutItself {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         tokio::time::sleep(Duration::from_millis(1)).await;
-        tokio::time::sleep(crate::daemon_rpc::REQUEST_TIMEOUT).await;
+        tokio::time::sleep(engine_daemon::rpc::REQUEST_TIMEOUT).await;
         Err(DaemonError::TimedOut(
             "node.example: request timed out".into(),
         ))
@@ -2573,7 +2573,7 @@ impl MoneroDaemonClient for TimesOutItself {
         &self,
         _: u64,
         _: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         unreachable!()
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -2582,7 +2582,7 @@ impl MoneroDaemonClient for TimesOutItself {
     async fn get_transactions_with_ids(
         &self,
         _: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         unreachable!()
     }
     async fn locate_transaction(&self, _: &str) -> Result<TxLocation, DaemonError> {
@@ -2599,8 +2599,8 @@ impl MoneroDaemonClient for TimesOutItself {
 /// and the same hung node pinned again.
 #[tokio::test(start_paused = true)]
 async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
-    let client = crate::daemon_fallback::FallbackDaemonClient::new(vec![
-        crate::daemon_fallback::FallbackNode {
+    let client = engine_daemon::fallback::FallbackDaemonClient::new(vec![
+        engine_daemon::fallback::FallbackNode {
             label: "hung".into(),
             client: Arc::new(TimesOutItself),
         },
@@ -2702,7 +2702,7 @@ async fn blocks_are_kept_only_for_the_node_they_came_from() {
     let next = lowest_cursor(&store) + 1;
     assert!(held.contains(&next), "{held:?}");
 
-    daemon.set_node(Some(crate::daemon::NodeKey(1)));
+    daemon.set_node(Some(engine_daemon::NodeKey(1)));
     run_round(&state, &inputs, Duration::ZERO).await;
     assert!(
         daemon.sent_again().contains(&next),
@@ -2820,7 +2820,7 @@ impl MoneroDaemonClient for OnLocate<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -2829,7 +2829,7 @@ impl MoneroDaemonClient for OnLocate<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -2988,7 +2988,7 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
 #[tokio::test]
 async fn a_candidate_deleted_mid_page_is_skipped() {
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let gone = "cd".repeat(32);
     let (store, fake, orders) = open_reorg_with(&[(&txid, 9), (&gone, 9)]).await;
     fake.reorg_from(9, vec![("b9", vec![tx]), ("b10", vec![])]);
@@ -3031,7 +3031,7 @@ async fn a_candidate_deleted_mid_page_is_skipped() {
 #[tokio::test]
 async fn a_void_restored_meanwhile_still_gets_its_new_height() {
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
     store
         .lock()
@@ -3078,7 +3078,7 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
 #[tokio::test]
 async fn a_reorg_page_with_no_time_left_does_one_candidate() {
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let other = "ef".repeat(32);
     let (store, fake, _) = open_reorg_with(&[(&txid, 9), (&other, 9)]).await;
     fake.reorg_from(9, vec![("b9", vec![tx]), ("b10", vec![])]);
@@ -3157,7 +3157,7 @@ impl MoneroDaemonClient for Hooked<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         (self.on_blocks)(start_height);
         if self.empty_blocks {
             return Ok(Vec::new());
@@ -3170,7 +3170,7 @@ impl MoneroDaemonClient for Hooked<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         if self.no_bodies {
             return Ok(Vec::new());
         }
@@ -3280,7 +3280,7 @@ async fn a_payment_deep_in_a_big_block_is_found_in_one_go_and_a_unit_at_a_time()
         assert_eq!(payments.len(), 1);
         assert_eq!(
             payments[0].txid,
-            crate::daemon::fake::tx_id_hex(&fixture_tx())
+            engine_daemon::fake::tx_id_hex(&fixture_tx())
         );
         assert_eq!(payments[0].block_height, Some(21));
     }
@@ -3321,7 +3321,7 @@ async fn a_payment_whose_amount_cannot_be_read_does_not_stop_the_store_at_its_bl
     assert_eq!(payments.len(), 1, "only the payment that can be read");
     assert_eq!(
         payments[0].txid,
-        crate::daemon::fake::tx_id_hex(&fixture_tx())
+        engine_daemon::fake::tx_id_hex(&fixture_tx())
     );
     assert_eq!(payments[0].block_height, Some(22));
 }
@@ -3832,7 +3832,7 @@ impl MoneroDaemonClient for PoolOnly<'_> {
         &self,
         _start_height: u64,
         _count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         Err(DaemonError::Request("down".into()))
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -3844,7 +3844,7 @@ impl MoneroDaemonClient for PoolOnly<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.0.set_online(true);
         let txs = self.0.get_transactions_with_ids(txids).await;
         self.0.set_online(false);
@@ -4103,8 +4103,8 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
     let mined = fixture_tx();
     let pooled = unrelated_tx(9);
     let (mined_id, pooled_id) = (
-        crate::daemon::fake::tx_id_hex(&mined),
-        crate::daemon::fake::tx_id_hex(&pooled),
+        engine_daemon::fake::tx_id_hex(&mined),
+        engine_daemon::fake::tx_id_hex(&pooled),
     );
     unconfirmed(&store, &orders[0], &mined_id);
     unconfirmed(&store, &orders[1], &pooled_id);
@@ -4624,7 +4624,7 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
 
 async fn work_a_reorg_job_with_a_fault(fault: usize) -> bool {
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
     fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx.clone()])]);
     let custody = FlakyKeyCustody::default();
@@ -4839,15 +4839,15 @@ impl MoneroDaemonClient for Asked<'_> {
         self.note("get_height");
         self.inner.get_height().await
     }
-    async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+    async fn get_tip(&self) -> Result<engine_daemon::ChainTip, DaemonError> {
         self.note("get_tip");
         self.inner.get_tip().await
     }
     async fn get_tip_and_mempool(
         &self,
     ) -> (
-        Result<crate::daemon::ChainTip, DaemonError>,
-        crate::daemon::PoolAnswer,
+        Result<engine_daemon::ChainTip, DaemonError>,
+        engine_daemon::PoolAnswer,
     ) {
         self.note("get_tip_and_mempool");
         self.inner.get_tip_and_mempool().await
@@ -4860,7 +4860,7 @@ impl MoneroDaemonClient for Asked<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.note("get_chain_blocks");
         self.inner.get_chain_blocks(start_height, count).await
     }
@@ -4868,7 +4868,7 @@ impl MoneroDaemonClient for Asked<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainHeader>, DaemonError> {
         self.note("get_chain_headers");
         self.inner.get_chain_headers(start_height, count).await
     }
@@ -4879,7 +4879,7 @@ impl MoneroDaemonClient for Asked<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.note("get_transactions_with_ids");
         self.inner.get_transactions_with_ids(txids).await
     }
@@ -4921,7 +4921,7 @@ impl<'a> ThinLink<'a> {
             inner,
             capacity,
             delay: Duration::ZERO,
-            timeout: crate::link::MIN_TIMEOUT,
+            timeout: engine_daemon::link::MIN_TIMEOUT,
             asked: parking_lot::Mutex::default(),
         }
     }
@@ -4940,7 +4940,7 @@ impl MoneroDaemonClient for ThinLink<'_> {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.inner.get_height().await
     }
-    async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+    async fn get_tip(&self) -> Result<engine_daemon::ChainTip, DaemonError> {
         self.inner.get_tip().await
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
@@ -4950,7 +4950,7 @@ impl MoneroDaemonClient for ThinLink<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         tokio::time::sleep(self.delay).await;
         let arrives = count <= self.capacity;
         self.asked.lock().push((count, arrives));
@@ -4966,7 +4966,7 @@ impl MoneroDaemonClient for ThinLink<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainHeader>, DaemonError> {
         self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -4975,7 +4975,7 @@ impl MoneroDaemonClient for ThinLink<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -5508,7 +5508,7 @@ impl MoneroDaemonClient for PagedNode<'_> {
     async fn get_height(&self) -> Result<u64, DaemonError> {
         self.inner.get_height().await
     }
-    async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+    async fn get_tip(&self) -> Result<engine_daemon::ChainTip, DaemonError> {
         self.inner.get_tip().await
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
@@ -5518,7 +5518,7 @@ impl MoneroDaemonClient for PagedNode<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.chain_fetches.lock().push((start_height, count));
         if (start_height..start_height + count).contains(&self.too_large.load(Ordering::Relaxed)) {
             return Err(DaemonError::TooLarge("over the response cap".into()));
@@ -5529,14 +5529,14 @@ impl MoneroDaemonClient for PagedNode<'_> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::ChainHeader>, DaemonError> {
         self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_block_outline(
         &self,
         height: u64,
         tx_count: Option<u64>,
-    ) -> Result<crate::daemon::BlockOutline, DaemonError> {
+    ) -> Result<engine_daemon::BlockOutline, DaemonError> {
         self.outlines.fetch_add(1, Ordering::Relaxed);
         self.inner.get_block_outline(height, tx_count).await
     }
@@ -5547,7 +5547,7 @@ impl MoneroDaemonClient for PagedNode<'_> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         let page = {
             let mut pages = self.pages.lock();
             pages.push(txids.len());
@@ -5997,7 +5997,7 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     store
         .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 60")
         .unwrap();
-    let txid = crate::daemon::fake::tx_id_hex(&fixture_tx());
+    let txid = engine_daemon::fake::tx_id_hex(&fixture_tx());
     // The credited one, earlier; the fixture's, sharing its key, later.
     store
         .record_payment_match(
