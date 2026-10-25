@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3e35e5bf3e6d4fbd9c3de7ccfd3537c0be1ed36f27c7671f13c83ee8da3a9c22 # a node that says it is synchronized but serves no blocks must still cool down: asking it whether it is synchronized leaves its health alone

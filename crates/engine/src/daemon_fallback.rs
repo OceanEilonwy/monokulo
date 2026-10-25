@@ -466,6 +466,20 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
         self.one(MoneroDaemonClient::get_tip).await
     }
+    /// From the pinned node, leaving its health as it was: a node that
+    /// says what it is but fails to serve blocks must still cool down.
+    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+        let Some(node) = self.inner.nodes.get(self.idx) else {
+            return Err(FallbackDaemonClient::note_all_failed());
+        };
+        tokio::time::timeout(CALL_DEADLINE, node.client.get_info())
+            .await
+            .unwrap_or_else(|_| {
+                Err(DaemonError::TimedOut(format!(
+                    "no answer within the call's {CALL_DEADLINE:?} deadline"
+                )))
+            })
+    }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.one(|c| c.get_block_hash(height)).await
@@ -611,6 +625,11 @@ impl MoneroDaemonClient for FallbackDaemonClient {
 
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
         self.failover(MoneroDaemonClient::get_tip).await
+    }
+
+    /// From the node calls go to first, leaving its health as it was.
+    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+        self.pin().get_info().await
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {

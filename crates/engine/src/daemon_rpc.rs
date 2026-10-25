@@ -1215,6 +1215,13 @@ struct GetInfoResult {
     stagenet: bool,
     #[serde(default)]
     testnet: bool,
+    /// Whether the node has caught up with its peers (monerod: `true`
+    /// once synced, and from the start when it runs offline).
+    #[serde(default)]
+    synchronized: Option<bool>,
+    /// The height its peers have, while it is syncing; `0` once synced.
+    #[serde(default)]
+    target_height: Option<u64>,
     /// Transactions in the pool.
     #[serde(default)]
     tx_pool_size: Option<u64>,
@@ -1652,9 +1659,18 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// same 15s timeout and response cap) as every other call.
     async fn get_info(&self) -> Result<DaemonInfo, DaemonError> {
         let result: GetInfoResult = self.post_json_rpc("get_info", json!({})).await?;
+        // `synchronized` where the node says it; a node that only gives the
+        // height its peers have is synchronized once it has that many blocks.
+        let synchronized = result.synchronized.or_else(|| {
+            result
+                .target_height
+                .zip(result.height)
+                .map(|(target, count)| target <= count)
+        });
         Ok(DaemonInfo {
             nettype: result.nettype(),
             height: result.height.and_then(|count| count.checked_sub(1)),
+            synchronized,
         })
     }
 
@@ -2368,6 +2384,7 @@ mod tests {
         let info = |nettype: &str| DaemonInfo {
             nettype: nettype.to_owned(),
             height: None,
+            synchronized: None,
         };
         assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
         assert_eq!(info("fakechain").network(), None);

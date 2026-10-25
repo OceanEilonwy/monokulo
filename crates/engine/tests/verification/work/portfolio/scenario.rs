@@ -40,10 +40,13 @@ pub(crate) enum Command {
     /// The wallet's custody handle replaced by a new registration.
     ReplaceCustody(u8),
     /// An outage: `after % 16` blocks, then one with `transaction`, mined
-    /// while no round runs, and time running on past every deadline.
+    /// while no round runs, and time running on past every deadline. Of
+    /// the engine, or (`node`) of its nodes, which then fetch the blocks
+    /// from their peers one a round, not synchronized until they have.
     Outage {
         transaction: u8,
         after: u8,
+        node: bool,
     },
 }
 impl Command {
@@ -80,6 +83,7 @@ impl Command {
             Self::Outage {
                 transaction: _,
                 after: _,
+                node: _,
             } => "Outage",
         }
     }
@@ -134,7 +138,8 @@ impl Scenario {
                     14 => Command::ReplaceCustody(a),
                     _ => Command::Outage {
                         transaction: a,
-                        after: b,
+                        after: b % 16,
+                        node: b & 16 != 0,
                     },
                 }
             })
@@ -174,7 +179,11 @@ impl Scenario {
                 } => (12, transaction, (place % 4) | ((slot % 4) << 2)),
                 Command::FastPass => (13, 0, 0),
                 Command::ReplaceCustody(w) => (14, w, 0),
-                Command::Outage { transaction, after } => (15, transaction, after),
+                Command::Outage {
+                    transaction,
+                    after,
+                    node,
+                } => (15, transaction, (after % 16) | (u8::from(node) << 4)),
             };
             bytes.extend([op, a, b, 0]);
         }
@@ -207,8 +216,13 @@ pub(crate) fn strategy() -> impl proptest::strategy::Strategy<Value = Scenario> 
         }),
         Just(Command::FastPass),
         any::<u8>().prop_map(Command::ReplaceCustody),
-        (any::<u8>(), 0u8..16)
-            .prop_map(|(transaction, after)| Command::Outage { transaction, after }),
+        (any::<u8>(), 0u8..16, any::<bool>()).prop_map(|(transaction, after, node)| {
+            Command::Outage {
+                transaction,
+                after,
+                node,
+            }
+        }),
     ];
     (
         prop::collection::vec(any::<u8>(), SETUP_BYTES),
@@ -345,10 +359,11 @@ pub(crate) mod reviewed {
         }
     }
 
-    /// An outage longer than the grace (none): the paying transaction
-    /// mined, on time, a dozen blocks into it, so the first round after
-    /// it reaches the order's deadline before its block.
-    pub(crate) fn outage_longer_than_grace() -> Scenario {
+    /// An outage longer than the grace (none), of the engine or (`node`)
+    /// of its nodes: the paying transaction mined, on time, a dozen blocks
+    /// into it, so the first round after it reaches the order's deadline
+    /// before its block.
+    pub(crate) fn outage_longer_than_grace(node: bool) -> Scenario {
         let mut setup = vec![0; SETUP_BYTES];
         // Bits 2 and 3 of setup byte 3: no grace.
         setup[3] = 3 << 2;
@@ -357,6 +372,7 @@ pub(crate) mod reviewed {
             commands: vec![Outage {
                 transaction: 0,
                 after: 12,
+                node,
             }],
         }
     }
@@ -374,7 +390,11 @@ pub(crate) mod reviewed {
             ("partial-payments".to_owned(), combined(1, 1)),
             (
                 "outage-longer-than-grace".to_owned(),
-                outage_longer_than_grace(),
+                outage_longer_than_grace(false),
+            ),
+            (
+                "node-outage-longer-than-grace".to_owned(),
+                outage_longer_than_grace(true),
             ),
         ];
         for worker in 0..=1 {

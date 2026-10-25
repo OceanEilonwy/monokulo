@@ -48,6 +48,22 @@ pub struct ReorgJob {
     pub created_at: i64,
 }
 
+/// Orders whose expiry is held on a network, and why
+/// ([`Store::expiry_hold`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpiryHold {
+    /// How many: overdue, unpaid, not expired.
+    pub orders: u64,
+    /// The earliest of their deadlines.
+    pub overdue_since: i64,
+    /// Some are scanned by stores behind the node's tip or the network.
+    pub behind_tip: bool,
+    /// Since when the node has said it isn't synchronized.
+    pub node_unsynchronized_since: Option<i64>,
+    /// Since when a reorg has been reconciled.
+    pub reorg_open_since: Option<i64>,
+}
+
 /// What opening a job did, so the caller can log a deeper fork.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpenedReorg {
@@ -82,6 +98,14 @@ pub trait Position {
 /// Positions by name.
 pub mod position {
     use super::Position;
+
+    /// Since when the node has said it isn't synchronized with its peers
+    /// (absent while it is, or hasn't said): orders don't expire meanwhile.
+    pub struct NodeUnsynchronized;
+    impl Position for NodeUnsynchronized {
+        const KEY: &'static str = "node_unsynchronized";
+        type Value = i64;
+    }
 
     /// Last node height observed by settlement, even above the scanned chain.
     pub struct SettlementTip;
@@ -238,6 +262,73 @@ impl Store {
             }
             Ok(())
         })
+    }
+
+    /// Records whether the node is synchronized with its peers, as it last
+    /// said: while it isn't, the time it was first seen so (kept until it
+    /// is again).
+    pub fn observe_node_synchronized(
+        &self,
+        network: monero::Network,
+        synchronized: bool,
+        now: i64,
+    ) -> Result<()> {
+        let since = self.scheduler_position::<position::NodeUnsynchronized>(network)?;
+        match (synchronized, since) {
+            (false, None) => {
+                self.set_scheduler_position::<position::NodeUnsynchronized>(network, &now)?;
+            }
+            (true, Some(_)) => {
+                self.conn.execute(
+                    "DELETE FROM scheduler_positions WHERE network = ?1 AND position = ?2",
+                    params![
+                        shared::network::SqlNetwork(network),
+                        position::NodeUnsynchronized::KEY
+                    ],
+                )?;
+            }
+            (false, Some(_)) | (true, None) => {}
+        }
+        Ok(())
+    }
+
+    /// The orders on `network` whose expiry is being held, `tip` the node's
+    /// height (see [`super::scan_row_behind`]), and why: `None` when none is.
+    pub fn expiry_hold(
+        &self,
+        network: monero::Network,
+        tip: u64,
+        now: i64,
+    ) -> Result<Option<ExpiryHold>> {
+        let (orders, overdue_since, behind_tip): (i64, Option<i64>, Option<i64>) =
+            self.conn.query_row(
+                &format!(
+                    "SELECT COUNT(*), MIN(o.expires_at_utc),
+                            SUM(s.scanned_through_height < MAX(:tip,
+                                COALESCE((SELECT MAX(height) FROM scanned_blocks WHERE network = s.network), 0)))
+                     FROM orders o JOIN tenants s ON s.id = o.scan_tenant_id
+                     WHERE s.network = :network AND o.status IN ('pending', 'partial')
+                       AND o.cancelled_at_utc IS NULL AND o.expires_at_utc < :now AND {}",
+                    super::scan_row_behind("s")
+                ),
+                rusqlite::named_params! {
+                    ":network": shared::network::SqlNetwork(network),
+                    ":tip": sql_height(tip)?,
+                    ":now": now,
+                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        let Some(overdue_since) = overdue_since.filter(|_| orders > 0) else {
+            return Ok(None);
+        };
+        Ok(Some(ExpiryHold {
+            orders: orders.unsigned_abs(),
+            overdue_since,
+            behind_tip: behind_tip.unwrap_or(0) > 0,
+            node_unsynchronized_since: self
+                .scheduler_position::<position::NodeUnsynchronized>(network)?,
+            reorg_open_since: self.reorg_job(network)?.map(|job| job.created_at),
+        }))
     }
 
     fn enqueue_mined_payment_recomputes(&self, network: monero::Network) -> Result<()> {

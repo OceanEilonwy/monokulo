@@ -4896,6 +4896,32 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     assert!(handles.read().contains_key(&watcher.id));
     // A scan row is no store: not counted, never called as.
     assert_eq!(store.lock().count_tenants().unwrap(), 1);
+    // The old wallet's order past its deadline doesn't expire while the
+    // scan row is behind, though the store itself is caught up: the row
+    // scanning the order decides.
+    {
+        let s = store.lock();
+        let before_id = shared::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
+        let now = crate::now_unix();
+        s.execute_raw_for_test(&format!(
+            "INSERT INTO scanned_blocks (network, height, block_hash)
+                 SELECT network, 10, 'h10' FROM tenants WHERE id = '{row}';
+             UPDATE tenants SET scanned_through_height = 10 WHERE id = '{row}';
+             UPDATE tenants SET scanned_through_height = 5 WHERE id = '{watcher}';
+             UPDATE orders SET expires_at_utc = {past} WHERE id = '{before_id}';",
+            row = row.id,
+            watcher = watcher.id,
+            past = now - 10,
+        ))
+        .unwrap();
+        let (_, status) = s.recompute_order_status(&before_id, 10, now).unwrap();
+        assert_eq!(status, crate::status::OrderStatus::Pending);
+        s.execute_raw_for_test(&format!(
+            "UPDATE orders SET expires_at_utc = {} WHERE id = '{before_id}'",
+            now + 3600
+        ))
+        .unwrap();
+    }
 
     let tx = fixture_tx_for_lookup_tests();
     daemon.set_mempool(vec![tx.clone()]);

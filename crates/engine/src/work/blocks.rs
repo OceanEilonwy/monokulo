@@ -58,6 +58,12 @@ use walked::Walked;
 /// forward-dated block can't hide an order that was open when it was mined.
 const BLOCK_TIMESTAMP_DRIFT_SECONDS: i64 = 2 * 60 * 60;
 
+/// How far before now a block's scan window may start, however old the
+/// block says it is: a week of outage is caught up in full, and a block
+/// with a made-up timestamp (consensus only bounds it by the blocks before
+/// it) can't put every order ever closed in scope.
+const BLOCK_SCOPE_LOOKBACK_SECONDS: i64 = 7 * 24 * 60 * 60;
+
 /// Proof that a block was scanned in full for a tenant, with the results.
 ///
 /// Moving a tenant's cursor takes one (`Store::advance_scanned_cursor`), and
@@ -1047,12 +1053,14 @@ struct Plan {
 }
 
 /// Where the scan window of a block mined at `timestamp` starts: the drift
-/// consensus allows before it, and never later than `now`.
+/// consensus allows before it, never later than `now`, and never more than
+/// the lookback before it.
 fn window_start(timestamp: u64, now: i64) -> i64 {
     i64::try_from(timestamp)
         .unwrap_or(i64::MAX)
         .saturating_sub(BLOCK_TIMESTAMP_DRIFT_SECONDS)
         .min(now)
+        .max(now.saturating_sub(BLOCK_SCOPE_LOOKBACK_SECONDS))
 }
 
 /// The tenants among `ids` with something in scope from `since`, their

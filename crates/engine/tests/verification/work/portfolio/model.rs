@@ -37,28 +37,60 @@ pub(super) struct Ledger<'a> {
     pub(super) locations: &'a [Location],
     pub(super) voided: &'a [bool],
     pub(super) once_voided: &'a [bool],
+    /// When each transaction was first in the pool, as of the round that
+    /// first saw it there.
+    pub(super) pool_since: &'a [Option<i64>],
     pub(super) observed: &'a [bool],
 }
-/// Whether the ledger expects output `index` of transaction `txid` among
-/// an invoice's `rows`. Every observed output is, while no order can have
-/// closed longer than the grace ago. Past that, one seen only in the pool
-/// may have come too late to be looked for; one in a block is always
-/// expected (every block's time is before every deadline), however long
-/// an outage kept it from being scanned.
-fn expected(
-    daemon: &World,
+/// One planned output, as the ledger knows its transaction.
+struct Sighting<'t> {
     observed: bool,
     location: Location,
-    rows: &[crate::store::OrderPaymentRow],
-    txid: &str,
+    pool_since: Option<i64>,
+    txid: &'t str,
     index: usize,
+}
+impl Sighting<'_> {
+    /// First seen in the pool by the deadline of `invoice`.
+    fn pooled_on_time(&self, invoice: &Invoice) -> bool {
+        self.pool_since.is_some_and(|at| at <= invoice.expires)
+    }
+}
+/// Whether the ledger expects an output among `invoice`'s `rows`. Every
+/// observed output is, while no order can have closed longer than the
+/// grace ago. Past that, one in a block always is (every block's time is
+/// before every deadline), however long an outage kept it from being
+/// scanned; and one first seen in the pool by the deadline of an invoice
+/// still open then (`open_before`: at the last settle) is. One that came
+/// to the pool later, or to a closed invoice, may have come too late to be
+/// looked for.
+fn expected(
+    daemon: &World,
+    invoice: &Invoice,
+    open_before: bool,
+    rows: &[crate::store::OrderPaymentRow],
+    seen: &Sighting<'_>,
 ) -> bool {
-    observed
+    seen.observed
         && (daemon.now.get() - daemon.grace.get() < daemon.start
-            || matches!(location, Location::Block(_))
+            || matches!(seen.location, Location::Block(_))
+            || (open_before && seen.pooled_on_time(invoice))
             || rows
                 .iter()
-                .any(|p| p.txid == txid && p.output_index == index as i64))
+                .any(|p| p.txid == seen.txid && p.output_index == seen.index as i64))
+}
+/// Whether `invoice` was open at the last settle (or there was none), as
+/// the ledger's `statuses` had it.
+fn open_before(statuses: &BTreeMap<String, OrderStatus>, invoice: &Invoice) -> bool {
+    !statuses.get(invoice.id.as_str()).is_some_and(|s| {
+        matches!(
+            s,
+            OrderStatus::Paid
+                | OrderStatus::Overpaid
+                | OrderStatus::Expired
+                | OrderStatus::Cancelled
+        )
+    })
 }
 impl Ledger<'_> {
     pub(super) fn ready(
@@ -67,6 +99,7 @@ impl Ledger<'_> {
         daemon: &World,
         tenants: &[(TenantId, crate::key_custody::WalletHandle)],
         tip: u64,
+        oracle: &Oracle,
     ) -> bool {
         let Self {
             invoices,
@@ -75,6 +108,7 @@ impl Ledger<'_> {
             locations,
             voided,
             once_voided: _,
+            pool_since,
             observed,
         } = self;
         s.reorg_job(NETWORK).unwrap().is_none()
@@ -88,6 +122,7 @@ impl Ledger<'_> {
             && invoices.iter().all(|invoice| {
                 let rows = s.get_all_payments(&invoice.id).unwrap();
                 let rows = &rows;
+                let open_before = open_before(&oracle.statuses, invoice);
                 let expected = outputs
                     .iter()
                     .enumerate()
@@ -97,11 +132,16 @@ impl Ledger<'_> {
                                 && o.minor == invoice.minor
                                 && expected(
                                     daemon,
-                                    observed[t],
-                                    locations[t],
+                                    invoice,
+                                    open_before,
                                     rows,
-                                    &txids[t],
-                                    o.index,
+                                    &Sighting {
+                                        observed: observed[t],
+                                        location: locations[t],
+                                        pool_since: pool_since[t],
+                                        txid: &txids[t],
+                                        index: o.index,
+                                    },
                                 ))
                             .then_some((
                                 txids[t].clone(),
@@ -148,6 +188,7 @@ impl Ledger<'_> {
             locations,
             voided,
             once_voided,
+            pool_since,
             observed,
         } = self;
         let Oracle {
@@ -159,26 +200,30 @@ impl Ledger<'_> {
         let mut may_expire = std::collections::BTreeSet::new();
         for invoice in *invoices {
             let rows = s.get_all_payments(&invoice.id).unwrap();
+            let open_before = open_before(statuses, invoice);
             let mut expected = BTreeMap::new();
             let mut total = 0u64;
             let mut eligible = 0u64;
             let mut observed_eligible = 0u64;
             let mut mined = false;
-            // A payment that may come after the order's expiry: one not
-            // in a block (from the pool, late), or one restored after a void.
+            // A payment that may come after the order's expiry: one first in
+            // the pool after its deadline, one outside any block that never
+            // was in the pool (a reorg dropped it), or one restored after a
+            // void (only once the void is rechecked). An on-time payment, in
+            // a block or the pool, never may.
             let mut late = false;
             for (t, planned) in outputs.iter().enumerate() {
                 for o in planned {
+                    let seen = Sighting {
+                        observed: observed[t],
+                        location: locations[t],
+                        pool_since: pool_since[t],
+                        txid: &txids[t],
+                        index: o.index,
+                    };
                     if o.wallet != invoice.wallet
                         || o.minor != invoice.minor
-                        || !self::expected(
-                            daemon,
-                            observed[t],
-                            locations[t],
-                            &rows,
-                            &txids[t],
-                            o.index,
-                        )
+                        || !self::expected(daemon, invoice, open_before, &rows, &seen)
                     {
                         continue;
                     }
@@ -216,7 +261,7 @@ impl Ledger<'_> {
                         eligible += o.amount;
                     }
                     mined |= height.is_some();
-                    late |= height.is_none() || once_voided[t];
+                    late |= once_voided[t] || (height.is_none() && !seen.pooled_on_time(invoice));
                 }
             }
             assert_eq!(rows.len(), expected.len());

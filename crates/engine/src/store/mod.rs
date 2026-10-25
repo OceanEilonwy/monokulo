@@ -39,8 +39,8 @@ pub use order_events::{
     DEFAULT_ORDER_EVENT_RETENTION_SECS,
 };
 pub use work::{
-    position, sql_height, ActivityFacts, BlockCheckpoint, Movement, OpenedReorg, Position,
-    ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment, Stores,
+    position, sql_height, ActivityFacts, BlockCheckpoint, ExpiryHold, Movement, OpenedReorg,
+    Position, ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment, Stores,
 };
 
 /// A wrapped SEV-SNP master key:
@@ -691,9 +691,8 @@ struct StatusFacts<'a> {
     /// The order's valid payments as of `current_height`.
     views: &'a [PaymentView],
     confirmations_required: u64,
-    /// The tenant row scanning the order is behind the network or the
-    /// node's tip, or a reorg is replacing blocks it scanned: blocks not
-    /// yet scanned for it could hold a payment.
+    /// The tenant row scanning the order is behind ([`scan_row_behind`]):
+    /// blocks not yet scanned for it could hold a payment.
     tenant_lagging: bool,
     /// A reorg is being reconciled on the order's network, or a counted
     /// payment's height is above every recorded block: the node named it
@@ -762,10 +761,10 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     } else {
         derived
     };
-    // While the row scanning it is behind the network or the node's tip
-    // (after an outage every store is), or a reorg is replacing blocks it
-    // scanned, an order mustn't become expired: its payment may be in a
-    // block not yet scanned for it, and an
+    // While the row scanning it is behind (after an outage of the engine
+    // or its node every store is; also while the node is syncing, or a
+    // reorg replaces blocks it scanned), an order mustn't become expired:
+    // its payment may be in a block not yet scanned for it, and an
     // `order.expired` event can make a shop cancel an order that turns out
     // to be paid. It expires once that row has caught up.
     let expiry_held = derived == OrderStatus::Expired
@@ -862,6 +861,26 @@ fn tenant_in_scope(tenant: &str) -> String {
     format!(
         "(EXISTS (SELECT 1 FROM orders o WHERE o.scan_tenant_id = {tenant} AND {OPEN_ORDERS})
           OR EXISTS (SELECT 1 FROM orders o WHERE o.scan_tenant_id = {tenant} AND o.closed_at_utc >= :since_minus_grace))"
+    )
+}
+
+/// Whether the scan row `scan` (an alias of `tenants`) is behind, so
+/// blocks not yet scanned for its orders could hold their payments: below
+/// the highest block recorded on its network or `:tip` (the node's),
+/// whichever is higher; on a network whose node says it isn't synchronized
+/// with its peers; or past the fork of a reorg being reconciled there. A
+/// disabled row never is. Parameters: `:tip`.
+fn scan_row_behind(scan: &str) -> String {
+    format!(
+        "({scan}.disabled_at_utc IS NULL
+          AND (({scan}.scanned_through_height IS NOT NULL
+                AND {scan}.scanned_through_height < MAX(:tip,
+                    COALESCE((SELECT MAX(height) FROM scanned_blocks WHERE network = {scan}.network), 0)))
+               OR EXISTS (SELECT 1 FROM scheduler_positions
+                          WHERE network = {scan}.network AND position = '{node}')
+               OR EXISTS (SELECT 1 FROM reorg_jobs r
+                          WHERE r.network = {scan}.network AND {scan}.scanned_through_height >= r.fork_height)))",
+        node = position::NodeUnsynchronized::KEY,
     )
 }
 
@@ -2807,12 +2826,9 @@ impl Store {
     /// What a status recompute needs to know about an order: its store's
     /// confirmations requirement and network, and whether the row that
     /// scans it (the store's, or the scan-only row watching an old wallet)
-    /// is behind: below the highest block recorded on the network or the
-    /// `current_height` the recompute counts against (the node's tip),
-    /// whichever is higher, or on a network whose recorded chain a reorg
-    /// is replacing. A block not yet scanned for the order could hold its
-    /// payment. A disabled row is never behind. Small rows, not the tenants
-    /// with their key material.
+    /// is behind ([`scan_row_behind`], with `current_height`, the node's tip
+    /// the recompute counts against). Small rows, not the tenants with their
+    /// key material.
     fn recompute_facts(
         &self,
         order: &Order,
@@ -2820,18 +2836,16 @@ impl Store {
     ) -> Result<(u64, monero::Network, bool)> {
         self.conn
             .query_row(
-                "SELECT t.confirmations_required, t.network,
-                        s.disabled_at_utc IS NULL
-                        AND ((s.scanned_through_height IS NOT NULL
-                              AND s.scanned_through_height < MAX(?3,
-                                  COALESCE((SELECT MAX(height) FROM scanned_blocks WHERE network = t.network), 0)))
-                             OR EXISTS (SELECT 1 FROM reorg_jobs WHERE network = t.network))
-                 FROM tenants t, tenants s WHERE t.id = ?1 AND s.id = ?2",
-                params![
-                    order.tenant_id,
-                    order.scan_tenant_id,
-                    i64::try_from(current_height).unwrap_or(i64::MAX)
-                ],
+                &format!(
+                    "SELECT t.confirmations_required, t.network, {}
+                     FROM tenants t, tenants s WHERE t.id = :store AND s.id = :scan",
+                    scan_row_behind("s")
+                ),
+                rusqlite::named_params! {
+                    ":store": order.tenant_id,
+                    ":scan": order.scan_tenant_id,
+                    ":tip": i64::try_from(current_height).unwrap_or(i64::MAX),
+                },
                 |row| {
                     Ok((
                         row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
