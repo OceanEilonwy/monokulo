@@ -144,5 +144,7 @@ CREATE TABLE IF NOT EXISTS fix_plan (
     test_what  TEXT NOT NULL DEFAULT '',  -- the property it asserts
     rationale  TEXT NOT NULL,   -- why this approach, and why a test earns (or doesn't earn) its place
     effort     TEXT NOT NULL CHECK (effort IN ('S', 'M', 'L')),
-    planned_by TEXT NOT NULL
+    planned_by TEXT NOT NULL,
+    pr         TEXT,            -- the pull request that fixed it
+    fixed_by   TEXT
 );

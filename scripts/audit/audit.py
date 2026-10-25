@@ -17,6 +17,7 @@ Agents (AUDIT_AGENT or --agent names who is asking):
     audit.py note FINDING TEXT    add to a finding already recorded (yours or another's)
     audit.py amend FINDING --lines N-M [--file P]   correct where a finding points
     audit.py fixplan --from FILE  record how findings get fixed and tested
+    audit.py fixed --pr URL ID... mark findings fixed by a pull request
     audit.py purpose PATH TEXT    say in one line what a file is for
     audit.py done --job N --summary TEXT
     audit.py release --job N      give a job back unfinished
@@ -683,6 +684,19 @@ def cmd_fixreport(args):
     print(f"wrote {args.out} ({len(groups)} groups)")
 
 
+def cmd_fixed(args):
+    agent = agent_name(args)
+    conn = connect()
+    with Tx(conn):
+        for fid in args.findings:
+            row = conn.execute("SELECT status FROM review_finding WHERE id = ?", (fid,)).fetchone()
+            if row is None or row["status"] not in ("confirmed", "fixed"):
+                sys.exit(f"finding {fid} is not a confirmed finding")
+            conn.execute("UPDATE review_finding SET status = 'fixed' WHERE id = ?", (fid,))
+            conn.execute("UPDATE fix_plan SET pr = ?, fixed_by = ? WHERE finding_id = ?", (args.pr, agent, fid))
+    print(f"marked {len(args.findings)} findings fixed in {args.pr}")
+
+
 def cmd_purpose(args):
     conn = connect()
     with Tx(conn):
@@ -882,6 +896,11 @@ def main():
     p = sub.add_parser("fixreport", parents=[common])
     p.add_argument("--out", required=True)
     p.set_defaults(run=cmd_fixreport)
+
+    p = sub.add_parser("fixed", parents=[common])
+    p.add_argument("--pr", required=True, help="the pull request that fixes them")
+    p.add_argument("findings", type=int, nargs="+")
+    p.set_defaults(run=cmd_fixed)
 
     p = sub.add_parser("purpose", parents=[common])
     p.add_argument("path")
