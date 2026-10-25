@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use monero::Network;
 use parking_lot::RwLock;
-use shared::supervise::supervise_until;
+use service_runtime::supervise::supervise_until;
 use tracing::Instrument as _;
 
 use crate::engine_settings::{Daemons, EngineSettings};
@@ -46,7 +46,7 @@ pub fn fast_mempool_interval(poll_interval: Duration) -> Duration {
 /// transactions on its own rotation.
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_fast_mempool_loop(
     scan_state: Arc<crate::work::ScanState>,
@@ -355,7 +355,7 @@ pub const REGISTRATION_RETRY_AFTER_LOSS: Duration = Duration::from_secs(5);
 )]
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_scanner_loop(
     scan_state: Arc<crate::work::ScanState>,
@@ -683,7 +683,7 @@ mod tests {
         };
         // A node that hangs up on every request: the loop runs and records
         // failing ticks.
-        let port = shared::unreachable::address().port();
+        let port = service_runtime::unreachable::address().port();
         let node = serde_json::json!({ "host": "127.0.0.1", "port": port, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
         let saved = save(serde_json::json!({ "monero_node": { "stagenet": node } }))
             .await

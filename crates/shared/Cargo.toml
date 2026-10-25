@@ -4,12 +4,6 @@ version.workspace = true
 repository.workspace = true
 edition = "2021"
 
-[features]
-# Test helpers (an address that can't be reached). Enabled only from other crates' [dev-dependencies] and test
-# features (resolver 2 keeps it out of every normal build), never in
-# production.
-test-support = []
-
 [dependencies]
 parking_lot = "0.12.5"
 # `http_cache`'s async cache trait.
@@ -35,17 +29,13 @@ thiserror = "2.0.20"
 telemetry = { path = "../telemetry" }
 tracing = "0.1.44"
 zeroize = "1.9.0"
-# `supervise::supervise`'s own real use of `tokio::spawn`/`tokio::time::sleep`
-# (not test-only - both the scanner's and monokulo's real background
-# loops call this in production).
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
-sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 [dev-dependencies]
-# Paused time, so supervise's restart backoff is tested without waiting it out.
-tokio = { version = "1.53.1", features = ["full", "test-util"] }
+# A provider that can't be reached (`service_runtime::unreachable`).
+service-runtime = { path = "../service-runtime", features = ["test-support"] }
 # `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
 # server standing in for Coingecko (`spawn_price_server`) - needs a real
 # router, test-only (the runtime itself is now a real dependency above).

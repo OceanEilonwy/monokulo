@@ -10,7 +10,7 @@ edition = "2021"
 # crates' tests and this crate's own integration tests and examples.
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
-test-support = ["shared/test-support", "sqlite/test-support", "credentials/test-support", "embedded-engine", "dep:jsonschema"]
+test-support = ["sqlite/test-support", "credentials/test-support", "service-runtime/test-support", "embedded-engine", "dep:jsonschema"]
 default = ["embedded-engine", "tor"]
 # The engine's own router as a transport for `EngineClient`: the engine
 # runs inside monokulo's process.
@@ -63,6 +63,7 @@ shared = { path = "../shared" }
 engine-protocol = { path = "../engine-protocol", features = ["schemars"] }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
+service-runtime = { path = "../service-runtime" }
 # Reads a verified domain's TXT records (`embed_domains::LiveDns`).
 dns-client = { path = "../dns-client" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
@@ -132,8 +133,8 @@ flate2 = "1.1.10"
 jsonschema = { version = "0.33.0", default-features = false }
 # Turns on `test-support` for this crate's own integration tests and examples.
 monokulo = { path = ".", features = ["test-support"] }
-# A node or engine that can't be reached (`shared::unreachable`).
-shared = { path = "../shared", features = ["test-support"] }
+# A node or engine that can't be reached (`service_runtime::unreachable`).
+service-runtime = { path = "../service-runtime", features = ["test-support"] }
 # The test engine token.
 credentials = { path = "../credentials", features = ["test-support"] }
 # The in-thread database pool (`db::Db` in tests).

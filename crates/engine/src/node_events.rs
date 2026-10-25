@@ -209,7 +209,7 @@ mod subscriber {
                 p.connected = false;
                 p.connected_since = None;
                 p.last_error = Some(error.clone());
-                p.last_error_at = Some(shared::time::now_unix());
+                p.last_error_at = Some(service_runtime::time::now_unix());
             });
             shared::throttled!(
                 format!("zmq-failed:{endpoint}"),
@@ -242,7 +242,7 @@ mod subscriber {
         *retry = FIRST_RETRY;
         wakes.publisher(endpoint, |p| {
             p.connected = true;
-            p.connected_since = Some(shared::time::now_unix());
+            p.connected_since = Some(service_runtime::time::now_unix());
             p.connections += 1;
         });
         tracing::info!(network = ?network, endpoint = %endpoint, "listening to the node's ZMQ announcements");
@@ -265,7 +265,7 @@ mod subscriber {
                     Announcement::Pool => p.pool_announcements += 1,
                     Announcement::Chain => p.block_announcements += 1,
                 }
-                p.last_announcement_at = Some(shared::time::now_unix());
+                p.last_announcement_at = Some(service_runtime::time::now_unix());
             });
             match announced {
                 Announcement::Pool => wakes.pool_changed(),

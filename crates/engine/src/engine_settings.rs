@@ -517,7 +517,7 @@ impl Section for ScanConfig {
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         let budget_mb = snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
         let networks = configured_networks(snapshot);
-        if let Some(limit) = shared::resources::memory_limit_bytes() {
+        if let Some(limit) = service_runtime::resources::memory_limit_bytes() {
             if let Some(problem) = scan_budget_problem(budget_mb, networks, limit) {
                 return Err(vec![FieldError::new(
                     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key,
@@ -1345,7 +1345,8 @@ mod tests {
 
     #[test]
     fn a_budget_bigger_than_this_machine_allows_is_refused_with_the_maximum() {
-        let limit = shared::resources::memory_limit_bytes().expect("the test machine's memory");
+        let limit =
+            service_runtime::resources::memory_limit_bytes().expect("the test machine's memory");
         let max = max_scan_budget_mb(limit, 1);
         let snapshot = |budget: u32| {
             Snapshot::new(

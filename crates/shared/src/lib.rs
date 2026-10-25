@@ -12,10 +12,4 @@ pub mod http_cache;
 pub mod log;
 pub mod monero_tx;
 pub mod rate_limit;
-pub mod resources;
-pub mod shutdown;
-pub mod supervise;
-pub mod time;
-#[cfg(any(test, feature = "test-support"))]
-pub mod unreachable;
 pub mod xmr_amount;

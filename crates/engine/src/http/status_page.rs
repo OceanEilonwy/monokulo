@@ -161,7 +161,7 @@ pub(super) struct EngineStatusResponse {
     pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour, and the
     /// machine it runs on.
-    pub resources: shared::resources::ResourceReport,
+    pub resources: service_runtime::resources::ResourceReport,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -332,7 +332,7 @@ pub(super) async fn status_page(
         });
     }
 
-    let loop_restarts = shared::supervise::restart_counts()
+    let loop_restarts = service_runtime::supervise::restart_counts()
         .into_iter()
         .map(|(name, restarts)| LoopRestarts { name, restarts })
         .collect();
@@ -375,7 +375,7 @@ pub(super) async fn status_page(
                 min_guest_svn: trust.min_guest_svn,
                 min_tcb: trust.min_tcb.to_text(),
             }),
-        resources: shared::resources::sampler().report(),
+        resources: service_runtime::resources::sampler().report(),
     }))
 }
 
@@ -438,7 +438,7 @@ fn network_scaling(
         blocks_behind,
         catch_up_secs,
         budget_mb,
-        max_budget_mb: shared::resources::memory_limit_bytes()
+        max_budget_mb: service_runtime::resources::memory_limit_bytes()
             .map(|limit| crate::engine_settings::max_scan_budget_mb(limit, networks)),
         round_deadline_secs,
         round_base_secs: crate::work::ScanTuning::DEFAULT.round_budget.as_secs(),

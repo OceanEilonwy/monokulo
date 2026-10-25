@@ -889,12 +889,13 @@ mod tests {
         );
         assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 2);
 
-        assert!(
-            HavenoRateProvider::new(format!("http://{}", crate::unreachable::address()))
-                .piconero_per_unit_cached("USD", TTL, &policy())
-                .await
-                .is_err()
-        );
+        assert!(HavenoRateProvider::new(format!(
+            "http://{}",
+            service_runtime::unreachable::address()
+        ))
+        .piconero_per_unit_cached("USD", TTL, &policy())
+        .await
+        .is_err());
     }
 
     #[tokio::test]

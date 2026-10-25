@@ -275,7 +275,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
-        shared::time::now_unix()
+        service_runtime::time::now_unix()
     ));
     let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(payload["order_id"], order_id.as_str(), "{payload}");

@@ -161,7 +161,7 @@ impl Link {
 
     /// A small call answered in `elapsed`: a round-trip sample.
     pub fn record_small(&self, elapsed: Duration) {
-        self.record_small_at(elapsed, shared::time::now_unix());
+        self.record_small_at(elapsed, service_runtime::time::now_unix());
     }
 
     fn record_small_at(&self, elapsed: Duration, now_unix: i64) {
@@ -188,7 +188,7 @@ impl Link {
             bytes,
             to_first_byte,
             transfer,
-            shared::time::now_unix(),
+            service_runtime::time::now_unix(),
         );
     }
 
@@ -219,7 +219,7 @@ impl Link {
 
     /// A call that ran out of time: the link is slower than estimated.
     pub fn record_timeout(&self) {
-        self.record_timeout_at(shared::time::now_unix());
+        self.record_timeout_at(service_runtime::time::now_unix());
     }
 
     fn record_timeout_at(&self, now_unix: i64) {
@@ -232,7 +232,9 @@ impl Link {
     pub fn record_failure(&self) {
         self.state
             .lock()
-            .in_minute(shared::time::now_unix(), |minute| minute.failures += 1);
+            .in_minute(service_runtime::time::now_unix(), |minute| {
+                minute.failures += 1
+            });
     }
 
     pub fn bytes_per_block(&self) -> f64 {
@@ -262,7 +264,7 @@ impl Link {
     }
 
     pub fn snapshot(&self) -> LinkSnapshot {
-        self.snapshot_at(shared::time::now_unix())
+        self.snapshot_at(service_runtime::time::now_unix())
     }
 
     fn snapshot_at(&self, now_unix: i64) -> LinkSnapshot {

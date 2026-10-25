@@ -87,7 +87,7 @@ fn main() {
 )]
 async fn run(config: EngineConfig) {
     // CPU and memory every 10 s, for the admin page: the process's, so its host samples it, not the engine.
-    shared::resources::start_sampling();
+    service_runtime::resources::start_sampling();
 
     let engine = match Engine::start(config).await {
         Ok(engine) => engine,
@@ -124,7 +124,7 @@ async fn run(config: EngineConfig) {
         }
     }
     // On SIGTERM or Ctrl-C (task 7.11): stop accepting connections and let
-    // requests in flight finish, for up to shared::shutdown::GRACE, then stop
+    // requests in flight finish, for up to service_runtime::shutdown::GRACE, then stop
     // the engine's loops.
     let server = axum::serve(
         listener,
@@ -132,24 +132,24 @@ async fn run(config: EngineConfig) {
             .router()
             .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shared::shutdown::signal());
+    .with_graceful_shutdown(service_runtime::shutdown::signal());
     let serving = tokio::spawn(async move { server.await });
-    shared::shutdown::signal().await;
-    tracing::info!(grace = ?shared::shutdown::GRACE, "shutting down: finishing requests in flight");
-    match tokio::time::timeout(shared::shutdown::GRACE, serving).await {
+    service_runtime::shutdown::signal().await;
+    tracing::info!(grace = ?service_runtime::shutdown::GRACE, "shutting down: finishing requests in flight");
+    match tokio::time::timeout(service_runtime::shutdown::GRACE, serving).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
         Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
         Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
         Err(_) => {
-            tracing::warn!(grace = ?shared::shutdown::GRACE, "requests still running after the grace period, exiting anyway");
+            tracing::warn!(grace = ?service_runtime::shutdown::GRACE, "requests still running after the grace period, exiting anyway");
         }
     }
-    if engine.shutdown(shared::shutdown::GRACE).await == Stopped::TimedOut {
-        tracing::warn!(grace = ?shared::shutdown::GRACE, "the engine's loops were still stopping after the grace period, exiting anyway");
+    if engine.shutdown(service_runtime::shutdown::GRACE).await == Stopped::TimedOut {
+        tracing::warn!(grace = ?service_runtime::shutdown::GRACE, "the engine's loops were still stopping after the grace period, exiting anyway");
     }
     // The lines above, and any still on their way, stored (and exported)
     // before the process ends.
     if let Some(telemetry) = telemetry::global() {
-        telemetry.flush(shared::shutdown::LOG_FLUSH).await;
+        telemetry.flush(service_runtime::shutdown::LOG_FLUSH).await;
     }
 }

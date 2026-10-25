@@ -1101,7 +1101,7 @@ fn hashing(hasher: &Hasher) -> Hashing {
 /// memory is freed.
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_loop(
     network: monero::Network,

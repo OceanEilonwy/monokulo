@@ -57,6 +57,7 @@ shared = { path = "../shared" }
 engine-protocol = { path = "../engine-protocol" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
+service-runtime = { path = "../service-runtime" }
 telemetry = { path = "../telemetry", features = ["axum"] }
 tracing = "0.1.44"
 thiserror = "2.0.20"
@@ -81,7 +82,7 @@ snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # The in-thread database pools (`store::Database::inline`) and other helpers
 # for `engine-test-support` and the e2e harness (`crates/e2e-harness`). Only
 # adds code tests call; it never changes what the engine does.
-test-support = ["shared/test-support", "sqlite/test-support", "credentials/test-support"]
+test-support = ["sqlite/test-support", "credentials/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived. Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
@@ -102,8 +103,8 @@ rustix = { version = "1.1.5", features = ["thread", "process"] }
 [dev-dependencies]
 # A stand-in security processor for the snp backend's tests.
 snp-attest = { path = "../snp-attest", features = ["test-support"] }
-# A node that can't be reached (`shared::unreachable`).
-shared = { path = "../shared", features = ["test-support"] }
+# A node that can't be reached (`service_runtime::unreachable`).
+service-runtime = { path = "../service-runtime", features = ["test-support"] }
 # The test engine token.
 credentials = { path = "../credentials", features = ["test-support"] }
 # The in-thread database pool (`store::Database::inline`).

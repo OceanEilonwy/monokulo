@@ -258,7 +258,7 @@ impl Engine {
         #[cfg(feature = "snp")]
         if let Some(snp) = snp {
             let handoff_url = snp_boot.handoff_url.map(|url| url.url().to_string());
-            loops.push(shared::supervise::supervise_until(
+            loops.push(service_runtime::supervise::supervise_until(
                 "snp key custody upkeep",
                 stopped.clone(),
                 move || {
@@ -279,7 +279,7 @@ impl Engine {
         // loops' stop signals, which ends them, and a restart starts them
         // again.
         let loops_settings = Arc::clone(&settings);
-        loops.push(shared::supervise::supervise_until(
+        loops.push(service_runtime::supervise::supervise_until(
             "network loop manager",
             stopped,
             move || {

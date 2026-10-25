@@ -473,7 +473,7 @@ pub(super) fn log_attempt(delivery: &DueDelivery, result: &AttemptResult, max_at
 /// seconds, as retries fall due.
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_delivery_loop(
     db: Database,

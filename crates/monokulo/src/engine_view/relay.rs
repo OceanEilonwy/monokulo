@@ -669,7 +669,7 @@ mod tests {
         assert!(unconfigured.is_err(), "the engine scans no mainnet");
         let nowhere = Arc::new(Relay::new(EngineClient::for_tests(format!(
             "http://{}",
-            shared::unreachable::address()
+            service_runtime::unreachable::address()
         ))));
         assert!(nowhere.watch("stagenet").await.is_err());
     }

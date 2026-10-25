@@ -30,7 +30,7 @@ use super::{ApiError, Networks};
 /// for each of `networks` networks.
 fn budget_description(base: &str, networks: usize) -> String {
     let networks = u32::try_from(networks).unwrap_or(u32::MAX).max(1);
-    match shared::resources::memory_limit_bytes() {
+    match service_runtime::resources::memory_limit_bytes() {
         Some(limit) => format!(
             "{base} On this machine: at most {} MB each, across {networks} network{}.",
             crate::engine_settings::max_scan_budget_mb(limit, networks),

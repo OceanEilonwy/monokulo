@@ -1316,7 +1316,7 @@ async fn an_unavailable_or_rateless_provider_falls_through_to_the_next_preferred
     // every request).
     state.exchange_rate = std::sync::Arc::new(
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
-            format!("http://{}", shared::unreachable::address()),
+            format!("http://{}", service_runtime::unreachable::address()),
             spawn_mock_coinmarketcap(Some(4.0)).await,
         ),
     );
@@ -2047,7 +2047,7 @@ async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_rout
     let mut down = state.clone();
     down.engine = crate::http::Engine::new(EngineClient::for_tests(format!(
         "http://{}",
-        shared::unreachable::address()
+        service_runtime::unreachable::address()
     )));
     let router = build_router(down);
     let response = router

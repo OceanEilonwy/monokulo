@@ -86,8 +86,10 @@ async fn state_with(base: &str, env: live_settings::Env) -> AppState {
     let db = Db::open_in_memory().unwrap();
     db.seed_test_admin();
     let db = db.into_shared();
-    let engine_client =
-        EngineClient::for_tests(format!("http://{}", shared::unreachable::address()));
+    let engine_client = EngineClient::for_tests(format!(
+        "http://{}",
+        service_runtime::unreachable::address()
+    ));
     let exchange_rate = test_exchange_rate_provider();
     let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
     let options = live_settings::OptionsFile::in_memory(format!(

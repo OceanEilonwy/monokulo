@@ -1165,7 +1165,7 @@ async fn main() {
     record_baseline(&engine);
     // CPU and memory, as monokulo samples them in production: the engine
     // page's "Machine and links" strip draws them.
-    shared::resources::start_sampling();
+    service_runtime::resources::start_sampling();
     // The store takes payments into the merchant's mainnet wallet, the
     // tenant's own, as setup makes a store.
     let view = engine_client

@@ -956,7 +956,7 @@ async fn record_route_problems(
     let down = recorder.around(build_router(AppState {
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::for_tests(format!(
             "http://{}",
-            shared::unreachable::address()
+            service_runtime::unreachable::address()
         ))),
         ..state.clone()
     }));

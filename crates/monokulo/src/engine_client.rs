@@ -1551,7 +1551,7 @@ pub struct EngineStatusResponse {
     pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour.
     #[serde(default)]
-    pub resources: Option<shared::resources::ResourceReport>,
+    pub resources: Option<service_runtime::resources::ResourceReport>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

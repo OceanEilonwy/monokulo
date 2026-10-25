@@ -1661,7 +1661,7 @@ mod tests {
         let unreachable = build_router(AppState {
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
-                shared::unreachable::address()
+                service_runtime::unreachable::address()
             ))),
             ..state.clone()
         });

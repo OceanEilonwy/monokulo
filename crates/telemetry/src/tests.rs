@@ -612,7 +612,7 @@ fn a_hosted_services_lines_are_named_after_it() {
         .name("engine-worker-1".to_string())
         .spawn(move || {
             tracing::dispatcher::with_default(&on_engine_thread, || {
-                tracing::info!(target: "shared::supervise", "a shared crate, for the engine");
+                tracing::info!(target: "service_runtime::supervise", "a library crate, for the engine");
             });
         })
         .unwrap()
@@ -635,7 +635,7 @@ fn a_hosted_services_lines_are_named_after_it() {
             ("from the engine's crate", "engine"),
             ("from monokulo", "monokulo"),
             ("a crate that only starts the same", "monokulo"),
-            ("a shared crate, for the engine", "engine"),
+            ("a library crate, for the engine", "engine"),
         ]
         .map(|(m, s)| (m.to_string(), s.to_string()))
     );

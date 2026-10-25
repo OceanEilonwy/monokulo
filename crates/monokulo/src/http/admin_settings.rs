@@ -2116,7 +2116,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_settings_page_is_unreachable_without_a_session_at_all() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let response = router
             .oneshot(
@@ -2135,7 +2135,7 @@ mod tests {
     /// isn't the admin account gets `403`, not a redirect or a `401`.
     #[tokio::test]
     async fn a_non_admin_session_is_forbidden_from_the_settings_page() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
 
         let signup = router
@@ -2186,7 +2186,7 @@ mod tests {
     /// every one individually confirmed to have taken effect.
     #[tokio::test]
     async fn every_monokulo_setting_on_the_admin_page_saves_correctly() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2468,7 +2468,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_signup_mode_applies_to_the_next_signup() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         // The sign-up form: a `302` on to setup once the account is made.
@@ -2539,7 +2539,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_public_uri_applies_to_the_next_plugin_connection() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let confirm = "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
@@ -2822,7 +2822,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_secret_is_shown_locked_and_a_form_sending_one_is_refused() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2871,7 +2871,7 @@ mod tests {
     /// is refused with a message naming the setting and what it needs.
     #[tokio::test]
     async fn an_operators_typical_mistakes_are_each_refused_with_what_the_setting_needs() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         for (key, value, expected) in [
@@ -3022,7 +3022,7 @@ mod tests {
 
         // An invalid monokulo setting is rejected and nothing is saved.
         {
-            let state = test_app_state_over_http(shared::unreachable::address()).await;
+            let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
             let router = build_router(state);
             let cookie = admin_session_cookie(&router).await;
 
@@ -3278,7 +3278,7 @@ mod tests {
     /// settings in effect is saved; sent again unchanged, nothing is.
     #[tokio::test]
     async fn a_save_saves_only_the_cards_whose_settings_changed() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let db = state.db.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -3477,7 +3477,7 @@ mod tests {
         // sent anything to the engine would be refused: it goes through, and
         // back to its own tab.
         {
-            let state = test_app_state_over_http(shared::unreachable::address()).await;
+            let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
             let settings = state.settings.clone();
             let router = build_router(state);
             let cookie = admin_session_cookie(&router).await;
@@ -3595,8 +3595,8 @@ mod tests {
         // Addresses that hang up on every request, rather than closed ports,
         // which Windows takes two seconds to refuse each time.
         let (first_node, second_node) = (
-            shared::unreachable::address().to_string(),
-            shared::unreachable::address().to_string(),
+            service_runtime::unreachable::address().to_string(),
+            service_runtime::unreachable::address().to_string(),
         );
         // A store on stagenet, which needs a stagenet node saved first.
         let first = post_settings(

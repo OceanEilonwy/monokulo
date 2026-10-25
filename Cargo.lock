@@ -905,7 +905,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "shared",
+ "service-runtime",
  "thiserror 2.0.20",
  "tokio",
  "wallet-setup",
@@ -1813,6 +1813,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "service-runtime",
  "sha2 0.11.0",
  "shared",
  "snp-attest",
@@ -1855,6 +1856,7 @@ dependencies = [
  "parking_lot",
  "reqwest",
  "serde_json",
+ "service-runtime",
  "shared",
  "snp-attest",
  "telemetry",
@@ -3444,7 +3446,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "shared",
+ "service-runtime",
  "thiserror 2.0.20",
  "tokio",
  "url",
@@ -3753,6 +3755,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+ "service-runtime",
  "sha2 0.11.0",
  "sha3",
  "shared",
@@ -5609,6 +5612,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-runtime"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "sysinfo 0.39.6",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5678,8 +5692,8 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "service-runtime",
  "sqlite",
- "sysinfo 0.39.6",
  "telemetry",
  "thiserror 2.0.20",
  "tokio",

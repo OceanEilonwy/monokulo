@@ -1962,10 +1962,10 @@ async fn the_snp_trust_settings_cannot_be_changed_through_the_settings_api() {
 }
 
 /// Ports on 127.0.0.1 that hang up on every connection
-/// ([`shared::unreachable`]), so a node saved there fails at once, with no
+/// ([`service_runtime::unreachable`]), so a node saved there fails at once, with no
 /// DNS. Not closed ports: Windows takes two seconds to refuse each try.
 fn unreachable_ports<const N: usize>() -> [u16; N] {
-    std::array::from_fn(|_| shared::unreachable::address().port())
+    std::array::from_fn(|_| service_runtime::unreachable::address().port())
 }
 
 fn unreachable_port() -> u16 {

@@ -1750,7 +1750,7 @@ mod tests {
         async fn status_summary_reports_unhealthy_when_a_remote_engine_is_unreachable_over_http() {
             let state = state_with_engine(EngineClient::for_tests(format!(
                 "http://{}",
-                shared::unreachable::address()
+                service_runtime::unreachable::address()
             )));
             let router: Router = build_router(state);
 

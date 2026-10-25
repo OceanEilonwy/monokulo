@@ -231,7 +231,7 @@ async fn webhook_handler(
         &signing_secret,
         &body,
         presented_signature,
-        shared::time::now_unix(),
+        service_runtime::time::now_unix(),
     ) {
         return StatusCode::UNAUTHORIZED;
     }
@@ -1434,7 +1434,7 @@ mod tests {
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ));
         // And a specificity check: an arbitrary wrong secret must not verify the
         // same real bytes/signature - ruling out a `verify_signature` that
@@ -1443,7 +1443,7 @@ mod tests {
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ));
 
         // And the receiver itself refuses what isn't signed with that
@@ -1458,7 +1458,7 @@ mod tests {
         let client = reqwest::Client::new();
         let wrong_signature = credentials::webhook_sign::sign_payload(
             "not-the-real-secret",
-            shared::time::now_unix(),
+            service_runtime::time::now_unix(),
             body.as_bytes(),
         );
         let rejected = client
@@ -1600,7 +1600,7 @@ mod tests {
             &credentials.webhook_signing_secret,
             &paid.raw_body,
             &paid.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ));
 
         // And the order in the API, as the plugin reads it with its key, agrees.

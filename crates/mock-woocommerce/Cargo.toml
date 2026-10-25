@@ -13,7 +13,8 @@ serde_json = "1.0.151"
 # The webhook receiver verifies `X-Monokulo-Signature` with
 # `credentials::webhook_sign::verify_signature`, the same code monokulo signs with.
 credentials = { path = "../credentials" }
-shared = { path = "../shared" }
+# The clock the signature timestamps are checked against.
+service-runtime = { path = "../service-runtime" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"

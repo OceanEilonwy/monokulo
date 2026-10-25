@@ -400,7 +400,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ),
         "the delivered signature must verify against this store's real signing secret"
     );
@@ -409,7 +409,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ),
         "an arbitrary wrong secret must not verify the same real bytes/signature"
     );

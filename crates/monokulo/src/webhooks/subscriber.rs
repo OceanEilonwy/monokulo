@@ -227,7 +227,7 @@ async fn announce_to_apps(db: &Database, apps: &AppEvents, logged: LoggedEvent) 
 /// connection opens).
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_subscriber(
     db: Database,

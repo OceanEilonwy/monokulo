@@ -35,7 +35,7 @@ use axum::response::{Html, IntoResponse, Json, Response};
 use engine_protocol::scaling::{LinkSnapshot, NetworkScaling};
 use futures_util::stream::{self, StreamExt as _};
 use serde::{Deserialize, Serialize};
-use shared::resources::ResourceReport;
+use service_runtime::resources::ResourceReport;
 
 use super::{AppState, AuthedAdmin};
 use crate::engine_client::{EngineClient, EngineStatusResponse};
@@ -138,7 +138,7 @@ struct NodeInUse<'a> {
 /// `/status` reports the same process as monokulo's own sampler, so the
 /// one report is split by thread instead: counted twice, it would double.
 fn resources(client: &EngineClient, status: &EngineStatusResponse) -> Resources {
-    let process = shared::resources::sampler().report();
+    let process = service_runtime::resources::sampler().report();
     if client.is_embedded() {
         Resources {
             engine: Some(process.hosted()),
@@ -176,7 +176,7 @@ pub(crate) fn machine<'a>(
     Machine {
         network,
         at_unix: status.generated_at,
-        now_unix: shared::time::now_unix(),
+        now_unix: service_runtime::time::now_unix(),
         resources: resources(client, status),
         node,
         scaling: reported.and_then(|reported| reported.scaling.as_ref()),
@@ -541,7 +541,7 @@ mod tests {
         let state = AppState {
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
-                shared::unreachable::address()
+                service_runtime::unreachable::address()
             ))),
             ..AppState::for_tests()
         };

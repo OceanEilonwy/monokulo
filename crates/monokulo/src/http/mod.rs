@@ -269,7 +269,7 @@ pub const TEST_ENCRYPTION_KEY: crate::crypto::AtRestKey = crate::crypto::AtRestK
 impl AppState {
     /// A state for tests: an in-memory db with the test admin seeded
     /// (`Db::seed_test_admin`), an engine that hangs up on every request
-    /// (`shared::unreachable`, quick to fail on every system), a fixed
+    /// (`service_runtime::unreachable`, quick to fail on every system), a fixed
     /// encryption key, XMR-only exchange rates, default abuse limits and
     /// settings except that anyone may sign up ([`AppState::test_settings`]),
     /// no DNS and no log store. A test that needs something else
@@ -306,7 +306,7 @@ impl AppState {
             tor: crate::tor::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
-                shared::unreachable::address()
+                service_runtime::unreachable::address()
             ))),
         }
     }

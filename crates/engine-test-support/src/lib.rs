@@ -330,7 +330,7 @@ impl TestEngineHandle {
             bundle,
             &snp_test_trust(),
             &transport::Anchor::Vcek(vcek),
-            shared::time::now_unix(),
+            service_runtime::time::now_unix(),
         )
         .expect("the test engine's bundle checks out");
         let mut keys = hex::decode(view_key_hex).unwrap();
@@ -428,7 +428,7 @@ impl TestEngineHandle {
     /// scan loop does after each round, so the engine's `/status` reports
     /// its scanner healthy (until it goes stale) without a real chain.
     pub fn record_scan_round_ok(&self, network: Network) {
-        let now = shared::time::now_unix();
+        let now = service_runtime::time::now_unix();
         engine::scanner_status::record_tick(
             &self.scanner_status,
             network,
@@ -542,7 +542,7 @@ impl TestEngineHandle {
     pub fn confirm_order_payments(&self, order_id: &str) -> Result<(), engine::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = shared::time::now_unix();
+        let now = service_runtime::time::now_unix();
         for payment in store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))?
             .into_iter()
@@ -587,7 +587,7 @@ impl TestEngineHandle {
         let piconero = piconero.get();
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = shared::time::now_unix();
+        let now = service_runtime::time::now_unix();
         let existing = store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))
             .map(|p| p.len())

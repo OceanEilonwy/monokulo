@@ -153,7 +153,7 @@ impl LogsParams {
 
 const LOGS: &str = "/admin/logs";
 
-use shared::time::now_unix_nanos as now_nanos;
+use service_runtime::time::now_unix_nanos as now_nanos;
 
 /// Where times are shown: the browser's zone when it said one this server
 /// knows, UTC otherwise.
