@@ -876,7 +876,7 @@ def main():
     p.set_defaults(run=cmd_report)
 
     args = parser.parse_args()
-    if getattr(args, "from_file", None):
+    if getattr(args, "from_file", None) and args.command != "fixplan":
         fields = json.loads(Path(args.from_file).read_text())
         for key, value in fields.items():
             key = key.replace("-", "_")
