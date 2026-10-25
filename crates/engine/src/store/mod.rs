@@ -497,6 +497,10 @@ pub struct WalletInUse {
     pub payable_orders: u64,
     /// Unix seconds.
     pub payable_until: Option<i64>,
+    /// Rows scanning it (its stores, and the scan-only rows watching
+    /// orders on it) still behind the chain: blocks not yet read for them
+    /// could hold a payment to an order on it.
+    pub scans_behind: u64,
 }
 
 /// What a store's orders add up to (`Store::order_totals`).
@@ -1493,11 +1497,13 @@ impl Store {
             .optional()?)
     }
 
-    /// What retiring a wallet waits for: enabled stores on it, and orders on
-    /// it that can still be paid (open, or closed less than the grace period
+    /// What retiring a wallet waits for: enabled stores on it, orders on it
+    /// that can still be paid (open, or closed less than the grace period
     /// ago), with the latest time one of those could still be paid, as far
     /// as the engine can tell (an open order's deadline, a closed one's
-    /// close, each plus the grace period).
+    /// close, each plus the grace period), and the rows scanning it that
+    /// haven't caught up with the chain (after an outage, a closed order's
+    /// on-time payment can be in a block not yet read).
     pub fn wallet_in_use(
         &self,
         id: &str,
@@ -1527,18 +1533,39 @@ impl Store {
             },
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        // Behind: below the highest block recorded on the network or the
+        // node's tip as settlement last saw it, whichever is higher, or past
+        // the fork of a reorg being reconciled there. A disabled row isn't
+        // scanned, so it never is.
+        let scans_behind: i64 = self.conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM tenants t
+                 WHERE t.wallet_id = ?1 AND t.disabled_at_utc IS NULL
+                   AND ((t.scanned_through_height IS NOT NULL
+                         AND t.scanned_through_height < MAX(
+                             COALESCE((SELECT MAX(height) FROM scanned_blocks WHERE network = t.network), 0),
+                             COALESCE((SELECT CAST(value AS INTEGER) FROM scheduler_positions
+                                       WHERE network = t.network AND position = '{tip}'), 0)))
+                        OR EXISTS (SELECT 1 FROM reorg_jobs r
+                                   WHERE r.network = t.network AND t.scanned_through_height >= r.fork_height))",
+                tip = <position::SettlementTip as Position>::KEY,
+            ),
+            params![id],
+            |row| row.get(0),
+        )?;
         Ok(WalletInUse {
             stores: stores as u64,
             payable_orders: orders as u64,
             payable_until: until,
+            scans_behind: scans_behind as u64,
         })
     }
 
     /// Retires a wallet: no store can use it again, and its keys are
     /// deleted from every row that held a copy (the wallet's, its disabled
     /// stores', and the scan rows that watched it, which are turned off).
-    /// Refused while an enabled store uses it or an order on it can still
-    /// be paid. The row stays, keys gone: the counter must never be handed
+    /// Refused while an enabled store uses it, an order on it can still be
+    /// paid, or a row scanning it is behind the chain. The row stays, keys gone: the counter must never be handed
     /// out again, and the wallet can be brought back with its keys
     /// (`restore_wallet`). Returns the tenant rows whose live handles the
     /// caller drops from key custody.
@@ -1564,6 +1591,12 @@ impl Store {
                 "{} order(s) on this wallet can still be paid into it",
                 use_.payable_orders
             )));
+        }
+        if use_.scans_behind > 0 {
+            return Err(StoreError::InUse(
+                "blocks not yet scanned for it could still hold a payment to an order on it"
+                    .to_owned(),
+            ));
         }
         let changed = tx.execute(
             "UPDATE wallets SET deleted_at_utc = ?2, sealed_key_material = X''
@@ -1695,6 +1728,17 @@ impl Store {
             "UPDATE orders SET scan_tenant_id = ?2 WHERE scan_tenant_id = ?1",
             params![tenant_id, watcher],
         )?;
+        // The same keys under another wallet (two stores made before
+        // wallets, each given one of its own by migration 0028): its counter
+        // moves past every index this store handed out, so no address is
+        // handed out twice.
+        tx.execute(
+            "UPDATE wallets SET next_minor_index = MAX(wallets.next_minor_index, t.next_minor_index)
+             FROM (SELECT next_minor_index, primary_address, network FROM tenants WHERE id = ?1) AS t
+             WHERE wallets.id = ?2 AND wallets.primary_address = t.primary_address
+               AND wallets.network = t.network",
+            params![tenant_id, wallet_id],
+        )?;
         tx.execute(
             "UPDATE tenants SET wallet_id = w.id, key_custody_backend = w.key_custody_backend,
                 sealed_key_material = w.sealed_key_material, primary_address = w.primary_address,
@@ -1703,6 +1747,7 @@ impl Store {
              WHERE tenants.id = ?1",
             params![tenant_id, wallet_id, now],
         )?;
+        Self::mirror_wallet_counter(&tx, tenant_id)?;
         tx.commit()?;
         Ok(WalletChange {
             watcher,

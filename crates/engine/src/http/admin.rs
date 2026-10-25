@@ -475,6 +475,9 @@ pub(super) struct WalletStatusView {
     /// The latest an order on it could still be paid, as far as the
     /// engine can tell.
     payable_until: Option<i64>,
+    /// Rows scanning it still behind the chain: a block not yet read for
+    /// them could hold a payment to an order on it.
+    scans_behind: u64,
 }
 
 /// `GET /api/v1/admin/wallets/{id}`: the wallet, and what its retirement
@@ -503,6 +506,7 @@ pub(super) async fn get_wallet(
         stores: in_use.stores,
         payable_orders: in_use.payable_orders,
         payable_until: in_use.payable_until,
+        scans_behind: in_use.scans_behind,
     }))
 }
 
@@ -521,8 +525,9 @@ pub(super) struct RetiredView {
 
 /// `POST /api/v1/admin/wallets/{id}/retire`: no store can use the wallet
 /// again, and its keys are deleted, from the database and from key
-/// custody. `409` while a store uses it or an order on it can still be
-/// paid; `404` for an unknown or already retired one.
+/// custody. `409` while a store uses it, an order on it can still be
+/// paid, or a row scanning it is behind the chain; `404` for an unknown or
+/// already retired one.
 pub(super) async fn retire_wallet(
     State(state): State<AppState>,
     Path(id): Path<String>,

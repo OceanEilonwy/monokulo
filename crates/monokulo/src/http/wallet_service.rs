@@ -3,7 +3,7 @@
 //! has. Shared by the "Bring your own wallet" form and the "Create a new
 //! wallet" page.
 
-use crate::db::{EngineWalletId, NewWalletRow, UserRow, WalletId, WalletOrigin, WalletRow};
+use crate::db::{NewWalletRow, UserRow, WalletId, WalletOrigin, WalletRow};
 use crate::engine_client::{CreateWalletRequest, EngineClientError};
 use crate::now_unix;
 
@@ -122,30 +122,23 @@ pub(crate) async fn add_wallet(
         }
     }
 
-    let (user_id, network, address) = (
-        user.id.clone(),
-        created.network.clone(),
-        created.primary_address.clone(),
-    );
-    let existing = state
-        .db
-        .read(move |db| db.find_wallet_by_address(&user_id, &network, &address))
-        .await
-        .map_err(|_| AddWalletError::Internal)?;
-    if let Some(existing) = existing {
-        give_back("the account already has this wallet").await;
-        return Err(AddWalletError::AlreadyAdded(Box::new(existing)));
-    }
-
     let id = WalletId::new(format!("w_{}", uuid::Uuid::new_v4().simple()));
     let user_id = user.id.clone();
     let row_id = id.clone();
     let origin = req.origin;
     let backup = req.backup.clone();
     let app = req.app.clone();
+    // Whether the account has it already, and adding it, in one write: two
+    // submissions of the same wallet at once find the first's row, not a
+    // unique violation taken for the name's.
     let recorded = state
         .db
         .write(move |db| {
+            if let Some(existing) =
+                db.find_wallet_by_address(&user_id, &created.network, &created.primary_address)?
+            {
+                return Ok(Err(existing));
+            }
             let name = match name {
                 Some(name) => name,
                 None => {
@@ -165,11 +158,15 @@ pub(crate) async fn add_wallet(
                 app: app.as_deref(),
                 created_at: now_unix(),
             })?;
-            Ok::<_, crate::db::DbError>(name)
+            Ok::<_, crate::db::DbError>(Ok(name))
         })
         .await;
     match recorded {
-        Ok(_) => {}
+        Ok(Ok(_)) => {}
+        Ok(Err(existing)) => {
+            give_back("the account already has this wallet").await;
+            return Err(AddWalletError::AlreadyAdded(Box::new(existing)));
+        }
         Err(e) if e.is_unique_violation() => {
             give_back("its name was already used").await;
             return Err(AddWalletError::Invalid(
@@ -195,9 +192,14 @@ pub(crate) async fn add_wallet(
 
 /// Gives every store of `user`'s made before wallets the wallet it takes
 /// payments into: the engine says which wallet that is, and it's matched
-/// to one the account already has by address, or added as a brought-in
-/// wallet with a friendly name. A store the engine can't answer for is
-/// left for next time.
+/// to the one here standing for that engine wallet, or added as a
+/// brought-in wallet with a friendly name. Engine migration 0028 gave each
+/// such store an engine wallet of its own, so two of them on the same keys
+/// are on two engine wallets: the second is moved onto the first's in the
+/// engine (as "change the wallet" does) before it's linked, so a wallet
+/// here always stands for one engine wallet and the stores on it. A store
+/// the engine can't answer for, or whose keys are a wallet retired here,
+/// is left for next time.
 pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
     let user_id = user.id.clone();
     let Ok(stores) = state
@@ -218,20 +220,60 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
                 continue;
             }
         };
-        let Some(engine_wallet) = tenant.wallet_id else {
+        let Some(engine_wallet) = tenant.wallet_id.clone() else {
             continue;
+        };
+        let (user_id, on_it, network, address) = (
+            user.id.clone(),
+            engine_wallet.clone(),
+            tenant.network.clone(),
+            tenant.primary_address.clone(),
+        );
+        let matched = state
+            .db
+            .read(move |db| {
+                Ok::<_, crate::db::DbError>(
+                    match db.find_wallet_by_engine_wallet(&user_id, &on_it)? {
+                        Some(wallet) => Some(wallet),
+                        None => db.find_wallet_by_address(&user_id, &network, &address)?,
+                    },
+                )
+            })
+            .await;
+        let wallet = match matched {
+            Ok(None) => None,
+            Ok(Some(wallet)) if wallet.engine_wallet_id == engine_wallet => Some(wallet.id),
+            Ok(Some(wallet)) if wallet.retired_at.is_some() => {
+                tracing::warn!(store = %store.id, wallet = %wallet.id, "a store made before wallets is on keys retired here; left unlinked");
+                continue;
+            }
+            // The same keys under another engine wallet: the store moves
+            // onto this one's, so both are counted on one wallet and take
+            // addresses from its one counter.
+            Ok(Some(wallet)) => {
+                if let Err(e) = state
+                    .engine
+                    .client
+                    .change_wallet(&sk, &wallet.engine_wallet_id)
+                    .await
+                {
+                    tracing::warn!(error = %e, store = %store.id, wallet = %wallet.id, "could not move a store made before wallets onto its wallet");
+                    continue;
+                }
+                Some(wallet.id)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, store = %store.id, "could not look up a store's wallet");
+                continue;
+            }
         };
         let user_id = user.id.clone();
         let connection = store.id.clone();
         let adopted = state
             .db
             .write(move |db| {
-                let wallet = match db.find_wallet_by_address(
-                    &user_id,
-                    &tenant.network,
-                    &tenant.primary_address,
-                )? {
-                    Some(wallet) => wallet.id,
+                let wallet = match wallet {
+                    Some(wallet) => wallet,
                     None => {
                         let taken = db.wallet_names(&user_id)?;
                         let id = WalletId::new(format!("w_{}", uuid::Uuid::new_v4().simple()));
@@ -241,7 +283,7 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
                             name: &crate::wallets::friendly_name(&taken),
                             network: &tenant.network,
                             primary_address: &tenant.primary_address,
-                            engine_wallet_id: &EngineWalletId::new(engine_wallet.as_str()),
+                            engine_wallet_id: &engine_wallet,
                             origin: WalletOrigin::Imported,
                             backup: None,
                             app: None,

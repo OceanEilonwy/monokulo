@@ -5064,7 +5064,8 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
 }
 
 /// The wallet a store left can't be deleted while an order on it can still
-/// be paid; once none can, it can, and the keys watching it go.
+/// be paid, or while the row watching it is behind the chain; once neither
+/// holds, it can, and the keys watching it go.
 #[tokio::test]
 async fn a_wallet_left_with_open_orders_is_only_retired_once_they_closed() {
     let state = AppState::for_tests();
@@ -5107,6 +5108,28 @@ async fn a_wallet_left_with_open_orders_is_only_retired_once_they_closed() {
             order["order_id"].as_str().unwrap()
         ))
         .unwrap();
+    // Right after an outage: the row watching it hasn't read the latest
+    // block, which could hold an on-time payment to that order.
+    let catch_up = |height: u64| {
+        store
+            .lock()
+            .execute_raw_for_test(&format!(
+                "INSERT OR IGNORE INTO scanned_blocks (network, height, block_hash)
+                     SELECT network, 100, 'tip' FROM tenants WHERE id = '{id}';
+                 UPDATE tenants SET scanned_through_height = {height} WHERE id = '{id}'",
+                id = watcher.id
+            ))
+            .unwrap();
+    };
+    catch_up(99);
+    let response = router.clone().oneshot(delete()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    assert!(body_json(response)
+        .await
+        .to_string()
+        .contains("not yet scanned"));
+    assert_eq!(wallet_status(&router, &old_wallet).await["scans_behind"], 1);
+    catch_up(100);
     assert_eq!(
         router.clone().oneshot(delete()).await.unwrap().status(),
         StatusCode::OK

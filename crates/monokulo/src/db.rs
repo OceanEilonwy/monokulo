@@ -179,6 +179,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         48,
         include_str!("../migrations/0048_retire_http_cache_max_mb.sql"),
     ),
+    (
+        49,
+        include_str!("../migrations/0049_wallets_user_engine_wallet.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1840,7 +1844,8 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// The wallet of `user_id`'s with this address, if they already added it.
+    /// The wallet of `user_id`'s with this address, if they already added
+    /// it, retired or not.
     pub fn find_wallet_by_address(
         &self,
         user_id: &UserId,
@@ -1851,6 +1856,24 @@ impl Db {
             .query_row(
                 "SELECT * FROM wallets WHERE user_id = ?1 AND network = ?2 AND primary_address = ?3",
                 params![user_id, network, primary_address],
+                Self::row_to_wallet,
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// The wallet of `user_id`'s in use that stands for `engine_wallet_id`
+    /// in the engine (`wallets_user_engine_wallet`).
+    pub fn find_wallet_by_engine_wallet(
+        &self,
+        user_id: &UserId,
+        engine_wallet_id: &EngineWalletId,
+    ) -> Result<Option<WalletRow>> {
+        self.conn
+            .query_row(
+                "SELECT * FROM wallets
+                 WHERE user_id = ?1 AND engine_wallet_id = ?2 AND retired_at_utc IS NULL",
+                params![user_id, engine_wallet_id],
                 Self::row_to_wallet,
             )
             .optional()
