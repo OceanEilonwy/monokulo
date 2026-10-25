@@ -81,7 +81,23 @@ const BUILD_ARGS = [
   '-p', 'engine-test-support', '--bin', 'fake-monerod',
 ];
 
+// The binaries BUILD_ARGS makes, where cargo leaves them.
+const BINARIES = [BIN('monokulo-engine'), BIN('monokulo'), BIN(path.join('examples', 'coverage_fixture')), BIN('fake-monerod')];
+
+// E2E_PREBUILT_BINARIES=1 runs the binaries already in target/debug instead:
+// CI's browser job downloads them from the job that built the Rust tests,
+// and Cargo, which goes by modification times, would build them again.
+function prebuilt() {
+  return process.env.E2E_PREBUILT_BINARIES === '1';
+}
+
 function buildBinaries() {
+  if (prebuilt()) {
+    const missing = BINARIES.filter((binary) => !fs.existsSync(binary));
+    if (missing.length) throw new Error(`E2E_PREBUILT_BINARIES is set, but these aren't built: ${missing.join(', ')}`);
+    console.log('[real-binaries] running the prebuilt monokulo-engine, monokulo, coverage fixture and fake-monerod in target/debug');
+    return;
+  }
   console.log('[real-binaries] building monokulo-engine, monokulo, the coverage fixture and fake-monerod...');
   execFileSync('cargo', BUILD_ARGS, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
@@ -253,4 +269,4 @@ async function startFakeNode(nettype) {
   return { address, stop };
 }
 
-module.exports = { BUILD_ARGS, buildBinaries, startStack, startFakeNode };
+module.exports = { BUILD_ARGS, buildBinaries, prebuilt, startStack, startFakeNode };

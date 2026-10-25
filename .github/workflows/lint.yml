@@ -56,7 +56,10 @@ jobs:
       - uses: actions/checkout@v7
       # No npm dependencies: what a plugin or app runs to generate its client
       # (xtask/src/pages/docs/api.md) needs Rust only. Without them a build
-      # of monokulo that wanted its browser code would stop.
+      # of monokulo that wanted its browser code would stop. So it builds
+      # monokulo itself rather than take platform.yml's rust build job's:
+      # that build is the one with the browser code, and this one's is what
+      # the job checks.
       - uses: ./.github/actions/setup-rust
         with:
           pos-app: 'false'

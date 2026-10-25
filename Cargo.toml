@@ -43,9 +43,9 @@ all = { level = "deny", priority = -1 }
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
 # Every dependency is optimised, even in dev and test builds; the workspace's
-# own crates stay unoptimised for debugging (CI optimises them too, through
-# CARGO_PROFILE_DEV_OPT_LEVEL in .github/actions/setup-rust; coverage alone
-# builds them unoptimised there, so instrumented lines map to source).
+# own crates stay unoptimised for debugging, and in CI, where they build
+# fastest that way (.github/actions/setup-rust); coverage needs them
+# unoptimised too, so instrumented lines map to source.
 # Tests spend most of their time in dependencies: SQLite, password hashing
 # (Argon2id, about a second a hash unoptimised), Monero output scanning
 # (curve arithmetic and hashing), RandomX proof of work (its C++ is built at
