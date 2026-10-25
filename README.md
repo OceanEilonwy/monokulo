@@ -21,9 +21,9 @@
 
 <p align="center">
   <a href="https://docs.monokulo.com/"><b>Website</b></a> ·
-  <a href="https://docs.monokulo.com/#install"><b>Install</b></a> ·
+  <a href="https://docs.monokulo.com/install-computer/"><b>Install</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main"><b>Downloads</b></a> ·
-  <a href="https://docs.monokulo.com/guide/"><b>Docs</b></a> ·
+  <a href="https://docs.monokulo.com/introduction/"><b>Docs</b></a> ·
   <a href="https://docs.monokulo.com/testing/"><b>How it's tested</b></a> ·
   <a href="https://github.com/OceanEilonwy/monokulo-woocommerce"><b>WooCommerce</b></a>
 </p>
@@ -40,7 +40,7 @@
 
 ## Get started
 
-**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://docs.monokulo.com/#install) or Docker (see the [install guide](https://docs.monokulo.com/#install)).
+**1. Download** the build for your computer from [latest-main](https://github.com/OceanEilonwy/monokulo/releases/tag/latest-main) (Linux, macOS, Windows), or use the [OpenWrt package](https://docs.monokulo.com/install-router/) or Docker (the [Dockerfile](Dockerfile)).
 
 **2. Start it** with an encryption key you keep:
 
@@ -51,7 +51,7 @@ MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo
 
 **3. Open <http://127.0.0.1:8081>**, create your admin account, then add a Monero node and your first store.
 
-Step-by-step instructions for every platform are in the **[install guide](https://docs.monokulo.com/#install)**.
+Step-by-step instructions are in the install guides, **[for a computer](https://docs.monokulo.com/install-computer/)** and **[for a router](https://docs.monokulo.com/install-router/)**.
 
 ## Contributing
 

@@ -1,31 +1,21 @@
 //! `cargo xtask pages landing`: the landing page (GitHub Pages: /) from
-//! maud (`page`), beside the signed apk repositories the OpenWrt workflow
-//! made (`openwrt/<release>/<arch>/` in the site, one per OpenWrt release and
-//! architecture); it publishes the public key as `openwrt/monokulo.pem`.
-//!
-//! The page lists every repository's package files. Its install steps name
-//! one repository, the newest release's (then the first architecture), so
-//! the page's text about the router has to match it.
+//! maud (`page`), about the product. The install guides it links are docs
+//! pages (`install`, built by `pages docs`).
 
 mod page;
 
 use super::site_assets;
-use super::site_header::{GITHUB_URL, SITE_URL};
-use crate::support::{at, files_under, Exit};
+use super::site_header::GITHUB_URL;
+use crate::support::{at, Exit};
 use std::{
     fs, io,
     path::{Path, PathBuf},
 };
 
-const PUBLIC_KEY: &str = "openwrt/keys/monokulo.pem";
-
-/// `cargo xtask pages landing --site DIR [--github-url URL] [--site-url URL]`.
-/// The site's address is where routers fetch the apk repositories from:
-/// docs.monokulo.com unless a fork publishes its own.
-pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
+/// `cargo xtask pages landing --site DIR [--github-url URL]`.
+pub(crate) fn build(_root: &Path, args: &[&str]) -> io::Result<Exit> {
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
-    let (mut site, mut github_url, mut site_url) =
-        (None, GITHUB_URL.to_string(), SITE_URL.to_string());
+    let (mut site, mut github_url) = (None, GITHUB_URL.to_string());
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -34,128 +24,20 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
         match *flag {
             "--site" => site = Some(PathBuf::from(value)),
             "--github-url" => github_url = value.trim_end_matches('/').to_string(),
-            "--site-url" => site_url = value.trim_end_matches('/').to_string(),
             _ => return Err(bad(&format!("unknown option {flag}"))),
         }
     }
     let site = site.ok_or_else(|| bad("pages landing needs --site DIR"))?;
-    write(root, &site, &github_url, &site_url)?;
+    write(&site, &github_url)?;
     eprintln!("landing page in {}", site.display());
     Ok(Exit::SUCCESS)
 }
 
-/// One apk repository in the site: `openwrt/<release>/<arch>/`.
-struct Repo {
-    release: String,
-    arch: String,
-    /// Its address in the site, `openwrt/<release>/<arch>`.
-    path: String,
-    apk: String,
-    size: u64,
-}
-
-impl Repo {
-    /// The package's version and package release, `0.1.0-r42`.
-    fn version(&self) -> &str {
-        self.apk
-            .strip_prefix("monokulo-")
-            .and_then(|v| v.strip_suffix(".apk"))
-            .unwrap_or(&self.apk)
-    }
-
-    /// What the page's dropdown and blocks call this repository.
-    fn id(&self) -> String {
-        format!("{}-{}", self.release, self.arch)
-    }
-
-    fn size(&self) -> String {
-        format!("{} MB", self.size / 1024 / 1024)
-    }
-}
-
-/// The values in order of first appearance, joined: the releases or
-/// architectures the repositories cover.
-fn distinct(values: impl Iterator<Item = String>, separator: &str) -> String {
-    let mut seen: Vec<String> = Vec::new();
-    for value in values {
-        if !seen.contains(&value) {
-            seen.push(value);
-        }
-    }
-    seen.join(separator)
-}
-
-/// Every apk repository (a folder with a `packages.adb`) under
-/// `openwrt/<release>/<arch>/`, the newest release first, then by
-/// architecture.
-fn repos(site: &Path) -> io::Result<Vec<Repo>> {
-    let openwrt = site.join("openwrt");
-    let mut found = Vec::new();
-    for index in files_under(&openwrt, |_| false)? {
-        if index.file_name().is_none_or(|name| name != "packages.adb") {
-            continue;
-        }
-        let dir = index.parent().unwrap_or(&openwrt);
-        let parts: Vec<String> = dir
-            .strip_prefix(&openwrt)
-            .unwrap_or(dir)
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect();
-        let [release, arch] = parts.as_slice() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("{} is not openwrt/<release>/<arch>/", dir.display()),
-            ));
-        };
-        let (apk, size) = fs::read_dir(dir)
-            .map_err(|e| at(dir, e))?
-            .filter_map(Result::ok)
-            .find_map(|entry| {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                (name.starts_with("monokulo-") && name.ends_with(".apk"))
-                    .then(|| (name, entry.metadata().map_or(0, |m| m.len())))
-            })
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no monokulo-*.apk in {}", dir.display()),
-                )
-            })?;
-        found.push(Repo {
-            release: release.clone(),
-            arch: arch.clone(),
-            path: format!("openwrt/{release}/{arch}"),
-            apk,
-            size,
-        });
-    }
-    if found.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "no apk repository (openwrt/<release>/<arch>/packages.adb) in {}",
-                site.display()
-            ),
-        ));
-    }
-    found.sort_by(|a, b| b.release.cmp(&a.release).then(a.arch.cmp(&b.arch)));
-    Ok(found)
-}
-
 /// Writes `index.html`, its assets and `.nojekyll` into `site`.
-fn write(root: &Path, site: &Path, github_url: &str, site_url: &str) -> io::Result<()> {
-    let repos = repos(site)?;
-
-    let key_path = root.join(PUBLIC_KEY);
-    let key = fs::read_to_string(&key_path).map_err(|e| at(&key_path, e))?;
-    let page = page::render(github_url, site_url, key.trim_end(), &repos).0;
-    // The key the page tells routers to trust, beside the repositories.
-    let published_key = site.join("openwrt/monokulo.pem");
-    fs::write(&published_key, &key).map_err(|e| at(&published_key, e))?;
+fn write(site: &Path, github_url: &str) -> io::Result<()> {
+    fs::create_dir_all(site).map_err(|e| at(site, e))?;
     let index_html = site.join("index.html");
-    fs::write(&index_html, page).map_err(|e| at(&index_html, e))?;
-
+    fs::write(&index_html, page::render(github_url).0).map_err(|e| at(&index_html, e))?;
     site_assets::write(site)?;
     // Pages would otherwise run the site through Jekyll.
     let nojekyll = site.join(".nojekyll");
@@ -165,87 +47,134 @@ fn write(root: &Path, site: &Path, github_url: &str, site_url: &str) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pages::{docs, install};
     use crate::support::Scratch;
 
-    fn put(path: &Path, text: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
-    }
-
-    fn checkout(scratch: &Scratch) -> PathBuf {
-        let root = scratch.join("root");
-        put(&root.join(PUBLIC_KEY), "KEY\n");
-        root
-    }
-
-    fn repo(site: &Path, release: &str, arch: &str, apk: &str) {
-        let dir = site.join("openwrt").join(release).join(arch);
-        put(&dir.join(apk), "apk");
-        put(&dir.join("packages.adb"), "index");
-    }
-
-    #[test]
-    fn the_page_installs_from_the_newest_release_and_lists_every_repository() {
-        let scratch = Scratch::new("landing");
-        let root = checkout(&scratch);
+    /// The homepage beside the docs, as the pages workflow builds them.
+    fn built(scratch: &Scratch) -> (PathBuf, String) {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let site = scratch.join("site");
-        repo(
+        install::tests::repo(
             &site,
             "25.12",
             "aarch64_cortex-a53",
-            "monokulo-0.1.0-r42.apk",
+            "monokulo-0.1.0-r1.apk",
         );
-        repo(&site, "26.06", "x86_64", "monokulo-0.2.0-r50.apk");
-        repo(
-            &site,
-            "26.06",
-            "aarch64_cortex-a53",
-            "monokulo-0.2.0-r50.apk",
-        );
-
-        write(&root, &site, "https://github.com/Owner/monokulo", SITE_URL).unwrap();
-
+        write(&site, "https://github.com/Owner/monokulo").unwrap();
+        docs::write(root, &site, "https://docs.monokulo.com").unwrap();
         let page = fs::read_to_string(site.join("index.html")).unwrap();
-        // The install steps name the newest release's repository, and the
-        // footer its version.
-        assert!(page
-            .contains("https://docs.monokulo.com/openwrt/26.06/aarch64_cortex-a53/packages.adb"));
-        assert!(page.contains("Monokulo 0.2.0-r50 · "));
-        // A dropdown option, and the install steps and package files, for
-        // each version, the newest first.
-        let newest = page
-            .find("<option value=\"26.06-aarch64_cortex-a53\">")
-            .unwrap();
-        let oldest = page
-            .find("<option value=\"25.12-aarch64_cortex-a53\">")
-            .unwrap();
-        assert!(newest < oldest);
-        for id in ["25.12-aarch64_cortex-a53", "26.06-x86_64"] {
-            assert!(page.contains(&format!("data-target=\"{id}\"")), "{id}");
+        (site, page)
+    }
+
+    /// Every link on the homepage within the site reaches a published page
+    /// or file: the docs (the install guides among them), the API
+    /// reference's front page and the shared assets. The testing report
+    /// and the stylebook are other builds', and the source is the given
+    /// repository's.
+    #[test]
+    fn every_link_reaches_a_published_page() {
+        let scratch = Scratch::new("landing-links");
+        let (site, page) = built(&scratch);
+        let href = regex::Regex::new(r#"(?:href|src)="([^"]+)""#).unwrap();
+        let mut checked = Vec::new();
+        for link in href.captures_iter(&page).map(|c| c[1].to_owned()) {
+            if link.starts_with("https://github.com/Owner/monokulo") || link.starts_with('#') {
+                continue;
+            }
+            let path = link.split('#').next().unwrap();
+            if ["testing/", "stylebook/"].contains(&path) {
+                continue;
+            }
+            assert!(!path.contains("://"), "{link} leaves the site");
+            let file = if path.is_empty() || path == "./" {
+                site.join("index.html")
+            } else if path.ends_with('/') {
+                site.join(path).join("index.html")
+            } else {
+                site.join(path)
+            };
+            assert!(file.is_file(), "{link}: {}", file.display());
+            checked.push(path.to_owned());
         }
-        assert!(page.contains("OpenWrt 26.06 / 25.12 with LuCI"));
-        // The key to paste, whole, with a Copy button named for it.
-        assert!(page.contains("<code>KEY</code></pre>"));
-        assert!(page.contains("&quot;copy_label&quot;:&quot;Copy the signing key&quot;}"));
-        for path in [
-            "openwrt/25.12/aarch64_cortex-a53/monokulo-0.1.0-r42.apk",
-            "openwrt/26.06/aarch64_cortex-a53/packages.adb",
-            "openwrt/26.06/x86_64/monokulo-0.2.0-r50.apk",
-        ] {
-            assert!(page.contains(&format!("href=\"{path}\"")), "{path}");
+        for guide in [page::INSTALL_COMPUTER, page::INSTALL_ROUTER] {
+            assert!(checked.iter().any(|c| c == guide), "{guide}: {checked:?}");
         }
+        let linked = site_assets::assert_links_published(&page, &site.join("assets"));
         assert_eq!(
-            fs::read_to_string(site.join("openwrt/monokulo.pem")).unwrap(),
-            "KEY\n"
+            linked
+                .iter()
+                .filter(|name| name.ends_with(".css"))
+                .collect::<Vec<_>>(),
+            [&"theme.css", &"ui.css", &"styles.css", &"status.css"],
+            "the status symbols' styles after the components'"
         );
         assert!(site.join(".nojekyll").exists());
-        let linked = site_assets::assert_links_published(&page, &site.join("assets"));
-        assert!(linked.contains(&"styles.css") && linked.contains(&"landing.js"));
+    }
 
-        // A site without the apk repository is an error.
-        let empty = scratch.join("empty");
-        fs::create_dir_all(empty.join("openwrt")).unwrap();
-        let error = write(&root, &empty, GITHUB_URL, SITE_URL).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    /// The anchors the install guides had here still lead to them: each is
+    /// a link to its guide's page (what a reader without scripts lands
+    /// on), the page's script sends a reader with one straight there, and
+    /// `#install` is the band that links both.
+    #[test]
+    fn the_old_install_anchors_lead_to_their_guides() {
+        let scratch = Scratch::new("landing-anchors");
+        let (_, page) = built(&scratch);
+        let id = |anchor: &str| {
+            let at = page
+                .find(&format!(r#"id="{anchor}""#))
+                .unwrap_or_else(|| panic!("#{anchor}"));
+            let start = page[..at].rfind('<').unwrap();
+            &page[start..start + page[start..].find('>').unwrap()]
+        };
+        let href = regex::Regex::new(r#"href="([^"]+)""#).unwrap();
+        for (anchor, guide) in page::OLD_ANCHORS {
+            let element = id(anchor);
+            assert!(element.starts_with("<a "), "#{anchor}: {element}");
+            assert_eq!(&href.captures(element).unwrap()[1], guide, "#{anchor}");
+        }
+        let band = id("install");
+        assert!(band.starts_with("<section "), "{band}");
+        let band = page.split(r#"id="install""#).nth(1).unwrap();
+        let band = band.split("</section>").next().unwrap();
+        for (anchor, _) in page::OLD_ANCHORS {
+            assert!(band.contains(&format!(r#"id="{anchor}""#)), "#{anchor}");
+        }
+        // The script's table is the same anchors and guides.
+        let script = page.split("<script>").nth(1).unwrap();
+        let script = script.split("</script>").next().unwrap();
+        let table = regex::Regex::new(r##""#([a-z]+)":"([^"]+)""##).unwrap();
+        let pairs: Vec<(String, String)> = table
+            .captures_iter(script)
+            .map(|c| (c[1].to_owned(), c[2].to_owned()))
+            .collect();
+        let expected: Vec<(String, String)> = page::OLD_ANCHORS
+            .iter()
+            .map(|(a, g)| ((*a).to_owned(), (*g).to_owned()))
+            .collect();
+        assert_eq!(pairs, expected);
+    }
+
+    /// Every status symbol the order's life draws is defined on the page,
+    /// once, and each of the POS's four states before it's paid shows.
+    #[test]
+    fn the_order_life_draws_with_symbols_the_page_defines() {
+        let scratch = Scratch::new("landing-symbols");
+        let (_, page) = built(&scratch);
+        let used = regex::Regex::new(r##"<use href="#([^"]+)""##).unwrap();
+        let used: Vec<String> = used.captures_iter(&page).map(|c| c[1].to_owned()).collect();
+        assert!(!used.is_empty());
+        for symbol in &used {
+            assert_eq!(
+                page.matches(&format!(r#"id="{symbol}""#)).count(),
+                1,
+                "{symbol}"
+            );
+        }
+        let states = regex::Regex::new(r#"<li class="step-done state-([a-z-]+)""#).unwrap();
+        let states: Vec<&str> = states
+            .captures_iter(&page)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        assert_eq!(states, ["pending", "unconfirmed", "confirming", "paid"]);
     }
 }

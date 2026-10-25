@@ -410,11 +410,6 @@ pub(crate) fn small() -> String {
     drawing(Kind::Small, &INLINE, "monokulo-lens-small", "")
 }
 
-/// The full mark's drawing, for a page rendered with it inline.
-pub(crate) fn full() -> String {
-    drawing(Kind::Full, &INLINE, "monokulo-lens-full", "")
-}
-
 /// What each file the mark is written to holds.
 fn render(path: &str) -> String {
     match path {

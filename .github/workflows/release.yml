@@ -267,7 +267,7 @@ jobs:
             MONOKULO_GIT_COMMIT=${{ github.sha }}
 
   openwrt:
-    # The OpenWrt package, its repository and landing page (openwrt.yml);
+    # The OpenWrt package, its repository and install page (openwrt.yml);
     # on main, the site is deployed to GitHub Pages too.
     name: openwrt
     needs: [lint, coverage]
