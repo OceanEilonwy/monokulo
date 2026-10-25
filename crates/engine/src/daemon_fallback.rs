@@ -477,9 +477,9 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         tokio::time::timeout(CALL_DEADLINE, node.client.get_info())
             .await
             .unwrap_or_else(|_| {
-                Err(DaemonError::TimedOut(format!(
-                    "no answer within the call's {CALL_DEADLINE:?} deadline"
-                )))
+                Err(DaemonError::TimedOut(
+                    format!("no answer within the call's {CALL_DEADLINE:?} deadline").into(),
+                ))
             })
     }
 

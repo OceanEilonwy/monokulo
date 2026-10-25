@@ -55,7 +55,6 @@ zeroize = "1.9.0"
 # (not test-only - both the scanner's and monokulo's real background
 # loops call this in production).
 tokio = { version = "1.53.1", features = ["full"] }
-uuid = { version = "1.26.0", features = ["v4"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 [dev-dependencies]
@@ -69,6 +68,8 @@ axum = { version = "0.8.9", default-features = false, features = ["form", "http1
 # `dns::parse` reads other people's name servers' answers: arbitrary bytes
 # must give a message or an error, never a panic.
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+# Unique temporary database files for the sqlite tests.
+uuid = { version = "1.26.0", features = ["v4"] }
 
 [lints]
 workspace = true
