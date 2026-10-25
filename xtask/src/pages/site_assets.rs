@@ -135,6 +135,7 @@ static BAKED: &[Asset] = &[
     // OpenWrt version picker, and the testing report's filters and
     // screenshot viewer.
     asset!(from "site.js", "src/pages/assets/site/site.js", JS),
+    asset!(from "api.js", "src/pages/assets/api/api.js", JS),
     asset!(from "coverage.js", "src/pages/assets/coverage/coverage.js", JS),
     // The typeface (the `ui` package's) and the icon (monokulo's).
     asset!(bytes "manrope-500.woff2", ui::assets::MANROPE_500, WOFF2),

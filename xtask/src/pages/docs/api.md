@@ -2,8 +2,9 @@
 
 Monokulo's HTTP API lets a shop's server, a shop plugin, a connected app
 or a page with the [JS library](../js-library/) make orders and follow
-them: `/api/v1` on your Monokulo's own address. The
-[reference](reference/) lists every resource, and the
+them: `/api/v1` on your Monokulo's own address. Below this introduction
+is every resource and route, with real recorded answers and Try it, which
+sends a request to your own Monokulo from this page; the
 [OpenAPI document](v1/openapi.json) has the same for tools.
 
 ## Keys
@@ -74,7 +75,7 @@ each field's rules.
   called: a client that came in over the onion address stays on it.
 - Onion links are the exception: see [Tor](#tor).
 - Monokulo's own relations are written `mk:<name>`; the `mk` curie points at
-  each one's page, [`/rels/{name}/`](reference/).
+  each one's page, `/rels/{name}/` (each resource below links its own).
 - Making something answers `201 Created` with its `Location`.
 - An order links its payer's page, `mk:checkout`, and, for the store's
   secret key only, its page on the merchant's dashboard,
@@ -150,8 +151,8 @@ sale, the checkout's own scripts); only pages for people answer with HTML:
 ```
 
 `type` is the problem's page, which says what it means and what to do;
-`detail` says what went wrong this time. Every problem is listed in the
-[reference](reference/). A busy browser (a request with the public key, or
+`detail` says what went wrong this time. Every problem is listed
+[below](#problems). A busy browser (a request with the public key, or
 no key) may be asked to solve a small proof of work (`challenge-required`);
 the JS library does it by itself. A server never is: a request with the
 store's secret key or an app's key, both handshakes and every log report
@@ -179,9 +180,8 @@ currency none of them quotes, since its confirmations are decided in that
 currency. `rates-unavailable` is only ever for a currency the store's
 providers do quote but can't right now. An order in XMR needs no rate.
 
-Every route lists, in the [reference](reference/) and the [OpenAPI
-document](v1/openapi.json), each problem it may answer, by status, with an
-example of each.
+Every route lists, below and in the [OpenAPI document](v1/openapi.json),
+each problem it may answer, by status, with an example of each.
 
 ## Event streams
 
@@ -205,8 +205,9 @@ build the order's URL:
 }
 ```
 
-Each stream's page in the [reference](reference/) lists its events and
-their data; the OpenAPI document has them as `x-events` on the
+Each stream's page ([`mk:events`](../rels/events/),
+[`mk:order-events`](../rels/order-events/)) lists its events and their
+data; the OpenAPI document has them as `x-events` on the
 `text/event-stream` answer (OpenAPI 3.1 has no schema for a stream's
 events), with a recorded stream as its example.
 

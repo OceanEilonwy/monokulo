@@ -47,10 +47,11 @@ fn write(site: &Path, github_url: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pages::{docs, install};
+    use crate::pages::{api_reference, docs, install};
     use crate::support::Scratch;
 
-    /// The homepage beside the docs, as the pages workflow builds them.
+    /// The homepage beside the docs and the API reference, as the pages
+    /// workflow builds them.
     fn built(scratch: &Scratch) -> (PathBuf, String) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let site = scratch.join("site");
@@ -62,6 +63,8 @@ mod tests {
         );
         write(&site, "https://github.com/Owner/monokulo").unwrap();
         docs::write(root, &site, "https://docs.monokulo.com", GITHUB_URL).unwrap();
+        // The API's part, from its fixture: the explorer the homepage links.
+        api_reference::write(&root.join("xtask/src/pages/api_fixture"), &site).unwrap();
         let page = fs::read_to_string(site.join("index.html")).unwrap();
         (site, page)
     }
