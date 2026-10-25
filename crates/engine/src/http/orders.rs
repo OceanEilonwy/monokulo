@@ -147,9 +147,20 @@ async fn create_order_for_tenant(
             .write(move |s| s.peek_next_minor_index(&id))
             .await?;
         // Keys of another wallet than the index's would make an address
-        // nothing scans for this order: the handle is the row's again first.
+        // nothing scans for this order. Under the store's lock its wallet
+        // can't change, so this is only a change made around the lock: the
+        // old keys leave custody (they are registered under the store's id,
+        // which the new wallet's registration needs) and the row's are
+        // registered instead.
         if live.wallet_id != wallet_id {
             forget_wallet_handle(&state, &tenant.id, &live);
+            crate::key_custody::remove_wallet_logged(
+                state.custody.backends.as_ref(),
+                live.handle,
+                Some(tenant.id.as_str()),
+                "creating an order, the store's keys were of a wallet it has left",
+            )
+            .await;
             live = resolve_wallet_handle_held(&state, &tenant).await?;
             continue;
         }
