@@ -207,3 +207,56 @@ button.menu-item { border: 0; background: none; font: inherit; cursor: pointer; 
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
+/* A bar as wide as the window (the project site's docs, whose map runs
+   down its left edge): the row from edge to edge, at the page's gutter. */
+.site-nav[data-width="window"] .wrap { max-width: none; padding: 0 var(--space-lg); }
+/* A bar with actions (`SiteNav`'s `actions`: the project site's search, its
+   GitHub link and its call to action): they stay in the bar on a phone,
+   left of the hamburger; on a wider screen the links sit beside the brand,
+   as tabs, and the actions take the bar's right end. */
+.site-nav-actions { display: flex; align-items: center; gap: var(--space-sm); }
+.site-nav-actions + .nav-toggle-checkbox + .nav-toggle-label { margin-left: var(--space-md); }
+@media (min-width: 641px) {
+  .site-nav-row:has(> .site-nav-actions) > .site-nav-brand { margin-right: var(--space-md); }
+  .site-nav-row > .site-nav-actions { order: 2; margin-left: auto; padding-left: var(--space-md); }
+  .site-nav-row:has(> .site-nav-actions) :is(.site-nav-links > a, .nav-menu-button) {
+    margin: 0 2px 0 0;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .site-nav-row:has(> .site-nav-actions) :is(.site-nav-links > a:hover, .site-nav-links > a[aria-current="page"], .nav-menu-button:hover, .nav-menu[open] > .nav-menu-button) {
+    background: var(--surface-sunken);
+    color: var(--chrome-ink);
+    text-decoration: none;
+  }
+  .site-nav-row:has(> .site-nav-actions) .site-nav-links > .nav-menu { margin-left: 0; }
+}
+
+/* A menu of links in the bar (`NavMenu`, the project site's Resources): its
+   name with a chevron, and under it a card of links, each an icon in a
+   tile, a title and a line. */
+.nav-menu { position: relative; }
+.site-nav-links > .nav-menu { margin-left: 1.2em; }
+.nav-menu-button { list-style: none; display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: var(--chrome-ink); }
+.nav-menu-button::-webkit-details-marker { display: none; }
+.nav-menu-button::after { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: translateY(-2px) rotate(45deg); }
+.nav-menu[open] > .nav-menu-button::after { transform: translateY(1px) rotate(-135deg); }
+.nav-menu-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.nav-menu-list { position: absolute; top: calc(100% + 6px); left: 0; z-index: 25; display: flex; flex-direction: column; width: 23.5rem; max-width: calc(100vw - 2rem); padding: var(--space-sm); background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: 0 12px 32px var(--popup-shadow); }
+.nav-menu-link { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-md); align-items: start; padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); color: var(--ink); text-decoration: none; }
+.nav-menu-link:hover { background: var(--tint-hover); color: var(--ink); text-decoration: none; }
+.nav-menu-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--radius-sm); background: var(--tint-highlight); color: var(--accent-text); }
+.nav-menu-icon svg { width: 18px; height: 18px; }
+.nav-menu-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+.nav-menu-title { font-weight: 800; color: var(--ink); }
+.nav-menu-line { font-size: var(--text-sm); font-weight: 600; color: var(--muted); }
+/* In a phone's folded list: a row like the links', its card open in place. */
+@media (max-width: 640px) {
+  .site-nav-links > .nav-menu { margin-left: 0; border-bottom: 1px solid var(--line); }
+  .site-nav-links .nav-menu-button { min-height: 44px; }
+  .site-nav-links .nav-menu-list { position: static; width: auto; max-width: none; padding: 0 0 var(--space-sm); border: 0; border-radius: 0; box-shadow: none; background: none; }
+  .site-nav-links .nav-menu-link { padding-left: 0; padding-right: 0; }
+}

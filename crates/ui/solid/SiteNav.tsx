@@ -7,9 +7,16 @@ import type { PageWidth } from './types';
 /**
  * The site's bar: the brand on the left, then the links, the status
  * dot and the account menu. On a phone the links fold into a menu
- * behind a hamburger, a checkbox and its label: no JavaScript.
+ * behind a hamburger, a checkbox and its label: no JavaScript. A bar
+ * with `actions` (the project site's) keeps its links beside the
+ * brand and the actions at its right end.
  */
 export interface SiteNavProps {
+  /**
+   * Before the brand: the button that opens the page's own map on a
+   * narrow screen (the docs').
+   */
+  lead?: JSX.Element;
   /**
    * The brand: the logo and the name.
    */
@@ -28,6 +35,11 @@ export interface SiteNavProps {
    */
   status?: JSX.Element;
   /**
+   * At the bar's right end, in sight on a phone too: search, a link
+   * out, the page's one call to action.
+   */
+  actions?: JSX.Element;
+  /**
    * The width of the page under it, which its row lines up with.
    * @default "normal"
    */
@@ -43,12 +55,21 @@ export interface SiteNavProps {
 /**
  * The site's bar: the brand on the left, then the links, the status
  * dot and the account menu. On a phone the links fold into a menu
- * behind a hamburger, a checkbox and its label: no JavaScript.
+ * behind a hamburger, a checkbox and its label: no JavaScript. A bar
+ * with `actions` (the project site's) keeps its links beside the
+ * brand and the actions at its right end.
  */
 export function SiteNav(props: SiteNavProps): JSX.Element {
   return (
     <nav class="site-nav" data-width={(props.width ?? "normal") !== "normal" ? `${(props.width ?? "normal")}` : undefined}>
       <div class="wrap site-nav-row">
+        {props.lead != null ? (
+          <>
+            {props.lead}
+          </>
+        ) : (
+          null
+        )}
         <a href={(props.home ?? "/")} class="site-nav-brand">
           {props.brand}
         </a>
@@ -56,6 +77,13 @@ export function SiteNav(props: SiteNavProps): JSX.Element {
           <>
             {props.status}
           </>
+        ) : (
+          null
+        )}
+        {props.actions != null ? (
+          <div class="site-nav-actions">
+            {props.actions}
+          </div>
         ) : (
           null
         )}

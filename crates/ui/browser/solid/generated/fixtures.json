@@ -4935,6 +4935,36 @@
     "title": "A form's button"
   },
   {
+    "component": "NavMenu",
+    "html": "<details class=\"nav-menu\" data-mk=\"1\" data-island=\"NavMenu\" data-props=\"{}\"><summary class=\"nav-menu-button\">Resources</summary><div class=\"nav-menu-list\"><a class=\"nav-menu-link\" href=\"#component-nav-menu\"><span class=\"nav-menu-icon\">↓</span><span class=\"nav-menu-text\"><span class=\"nav-menu-title\">Releases</span><span class=\"nav-menu-line\">Downloads and what changed in each</span></span></a><a class=\"nav-menu-link\" href=\"#component-nav-menu\"><span class=\"nav-menu-icon\">!</span><span class=\"nav-menu-text\"><span class=\"nav-menu-title\">Report an issue</span><span class=\"nav-menu-line\">Bugs and feature requests on GitHub</span></span></a></div></details>",
+    "props": {
+      "label": "Resources",
+      "links": [
+        {
+          "href": "#component-nav-menu",
+          "icon": {
+            "$slot": [
+              "↓"
+            ]
+          },
+          "line": "Downloads and what changed in each",
+          "title": "Releases"
+        },
+        {
+          "href": "#component-nav-menu",
+          "icon": {
+            "$slot": [
+              "!"
+            ]
+          },
+          "line": "Bugs and feature requests on GitHub",
+          "title": "Report an issue"
+        }
+      ]
+    },
+    "title": "The project site's Resources"
+  },
+  {
     "component": "ThemeToggle",
     "html": "<form method=\"post\" action=\"#component-theme-toggle\" class=\"nav-theme-form\"><input type=\"hidden\" name=\"next\" value=\"/\"><div class=\"theme-toggle theme-toggle-system\" role=\"group\" aria-label=\"Theme\"><span class=\"theme-toggle-track\"><button type=\"submit\" name=\"theme\" value=\"system\" class=\"theme-toggle-option theme-toggle-option-system\" aria-label=\"System theme\" aria-pressed=\"true\" title=\"System theme\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"13\" rx=\"2\"></rect><line x1=\"12\" y1=\"16\" x2=\"12\" y2=\"21\"></line><line x1=\"8\" y1=\"21\" x2=\"16\" y2=\"21\"></line></svg></button><button type=\"submit\" name=\"theme\" value=\"light\" class=\"theme-toggle-option theme-toggle-option-light\" aria-label=\"Light theme\" aria-pressed=\"false\" title=\"Light theme\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"4\"></circle><line x1=\"12\" y1=\"2\" x2=\"12\" y2=\"4\"></line><line x1=\"12\" y1=\"20\" x2=\"12\" y2=\"22\"></line><line x1=\"4.2\" y1=\"4.2\" x2=\"5.6\" y2=\"5.6\"></line><line x1=\"18.4\" y1=\"18.4\" x2=\"19.8\" y2=\"19.8\"></line><line x1=\"2\" y1=\"12\" x2=\"4\" y2=\"12\"></line><line x1=\"20\" y1=\"12\" x2=\"22\" y2=\"12\"></line><line x1=\"4.2\" y1=\"19.8\" x2=\"5.6\" y2=\"18.4\"></line><line x1=\"18.4\" y1=\"5.6\" x2=\"19.8\" y2=\"4.2\"></line></svg></button><button type=\"submit\" name=\"theme\" value=\"dark\" class=\"theme-toggle-option theme-toggle-option-dark\" aria-label=\"Dark theme\" aria-pressed=\"false\" title=\"Dark theme\"><svg viewBox=\"0 0 24 24\" fill=\"currentColor\" stroke=\"none\" aria-hidden=\"true\"><path d=\"M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z\"></path></svg></button><span class=\"theme-toggle-thumb\"></span></span></div></form>",
     "props": {

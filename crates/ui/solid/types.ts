@@ -93,7 +93,7 @@ export type OrderState = "pending" | "unconfirmed" | "confirming" | "partial" | 
 /**
  * How wide a page's column is.
  */
-export type PageWidth = "normal" | "wide" | "full";
+export type PageWidth = "normal" | "wide" | "full" | "window";
 
 /**
  * A panel's look.
@@ -284,6 +284,22 @@ export interface Fact {
    */
   readonly term: string;
   readonly value: JSX.Element;
+}
+
+/**
+ * A link of a [`NavMenu`].
+ */
+export interface NavMenuLink {
+  readonly href: string;
+  /**
+   * In its tile: an inline SVG (`assets::icons::PACKAGE`).
+   */
+  readonly icon: JSX.Element;
+  readonly title: string;
+  /**
+   * What is there, in a line.
+   */
+  readonly line: string;
 }
 
 /**

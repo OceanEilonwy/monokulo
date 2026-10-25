@@ -68,6 +68,7 @@ export * from './SiteNav';
 export * from './PageHeader';
 export * from './Menu';
 export * from './MenuItem';
+export * from './NavMenu';
 export * from './ThemeToggle';
 export * from './StatusDot';
 export * from './types';
