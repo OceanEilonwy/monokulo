@@ -122,3 +122,11 @@ CREATE TABLE IF NOT EXISTS job (
 CREATE INDEX IF NOT EXISTS job_queue ON job (status, kind, priority);
 CREATE INDEX IF NOT EXISTS finding_file ON review_finding (crate_file_id);
 CREATE INDEX IF NOT EXISTS signal_file ON signal (crate_file_id);
+
+-- Findings with their file path and module, for querying by hand.
+CREATE VIEW IF NOT EXISTS finding_view AS
+    SELECT rf.*, cf.path, coalesce(m.name, 'crosscut: ' || r.title) AS area
+    FROM review_finding rf
+    JOIN crate_file cf ON cf.id = rf.crate_file_id
+    JOIN review r ON r.id = rf.review_id
+    LEFT JOIN module m ON m.id = r.module_id;
