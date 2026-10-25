@@ -932,13 +932,11 @@ mod tests {
         let dns = Arc::new(FakeDns::default());
         let (mut state, _engine) = test_state(dns.clone()).await;
         // A per-client budget of 4 a minute: key requests must not spend it.
-        state.abuse = Arc::new(crate::abuse::AbuseProtection::new(
-            crate::abuse::AbuseConfig {
-                soft_per_min: 4,
-                per_store_key_per_min: 5,
-                ..Default::default()
-            },
-        ));
+        state.abuse = Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
+            soft_per_min: 4,
+            per_store_key_per_min: 5,
+            ..Default::default()
+        }));
         let router = build_router(state.clone());
         let session = session_for(&router, "keys@example.com").await;
         let (id, pk) = create_store_with_key(&router, &state, &session).await;

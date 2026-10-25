@@ -3,12 +3,11 @@
 use std::io;
 use std::net::{IpAddr, Ipv6Addr};
 
-use axum::extract::connect_info::Connected;
-use axum::serve::{IncomingStream, Listener};
+use axum::serve::Listener;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 
-use crate::abuse::proxy_protocol::OnionPeer;
+use abuse::proxy_protocol::{OnionPeer, OnionPeerListener};
 
 /// A visitor's connection, from Arti or from a test.
 pub trait TorStream: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
@@ -60,6 +59,8 @@ pub fn circuit_peer(circuit: u32) -> OnionPeer {
     }
 }
 
+impl OnionPeerListener for TorListener {}
+
 impl Listener for TorListener {
     type Io = Box<dyn TorStream>;
     type Addr = OnionPeer;
@@ -76,11 +77,5 @@ impl Listener for TorListener {
         Ok(OnionPeer {
             source: IpAddr::V6(Ipv6Addr::LOCALHOST),
         })
-    }
-}
-
-impl Connected<IncomingStream<'_, TorListener>> for OnionPeer {
-    fn connect_info(stream: IncomingStream<'_, TorListener>) -> Self {
-        *stream.remote_addr()
     }
 }

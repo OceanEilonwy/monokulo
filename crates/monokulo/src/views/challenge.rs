@@ -6,7 +6,7 @@
 //! With JavaScript, `static/challenge.js` solves the proof-of-work with Web
 //! Crypto and continues by itself. Without it, a `<meta http-equiv=
 //! "refresh">` continues after 10 seconds to a URL carrying a wait token
-//! (`crate::abuse::challenge`), and a plain link does the same by hand.
+//! (`abuse::challenge`), and a plain link does the same by hand.
 
 use maud::{html, Markup};
 

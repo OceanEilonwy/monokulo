@@ -207,8 +207,8 @@ pub struct AppState {
     /// `db::StoreConnectionRow::fx_providers`.
     pub exchange_rate: Arc<crate::exchange_rate_config::ExchangeRateProviders>,
     /// Rate limits, the open-stream cap and (later) challenges, per client
-    /// (`crate::abuse`, `http::abuse`).
-    pub abuse: Arc<crate::abuse::AbuseProtection>,
+    /// (`abuse`, `http::abuse`).
+    pub abuse: Arc<::abuse::AbuseProtection>,
     /// How verified embed domains are proved (`crate::embed_domains`): TXT
     /// lookups for a web domain, an onion shop's file fetched over Tor
     /// inside monokulo - the real ones in the binary, fakes in tests.

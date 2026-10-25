@@ -1,5 +1,5 @@
 /* Solves the "Checking your connection" proof-of-work and continues by
- * itself (abuse protection, crate::abuse::challenge). The page works without
+ * itself (abuse protection, abuse::challenge). The page works without
  * this script: a noscript meta refresh continues after a 10-second wait.
  *
  * The answer is a nonce such that SHA-256(challenge + nonce) starts with

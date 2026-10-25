@@ -1,0 +1,34 @@
+[package]
+name = "abuse"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Abuse protection that works for Tor and clearnet visitors alike: who a request is from, limits over a rolling minute, signed proof-of-work challenges and the onion listener that reads tor's PROXY header"
+
+[features]
+# `challenge::solve`, the browser's proof of work done here, for other
+# crates' tests. Enabled only from [dev-dependencies] and test features
+# (resolver 2 keeps it out of every normal build), never in production.
+test-support = []
+
+[dependencies]
+# The onion listener is an axum `Listener`, and its peer a `Connected`
+# connect info.
+axum = "0.8.9"
+# Challenges are HMAC-signed, their proof of work is a SHA-256 hash, and
+# each process signs with its own random key.
+hex = "0.4.3"
+hmac = "0.13.0"
+rand = "0.10.2"
+sha2 = "0.11.0"
+parking_lot = "0.12.5"
+# An issued challenge is sent as JSON.
+serde = { version = "1.0.229", features = ["derive"] }
+# The clock limits and challenges read (`Clock::System`).
+service-runtime = { path = "../service-runtime" }
+# The onion listener's sockets, its accept task and its header timeout.
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = "0.1.44"
+
+[lints]
+workspace = true

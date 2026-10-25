@@ -340,11 +340,11 @@ impl<S: Send + Sync> FromRequestParts<S> for Client {
 impl ApiParam for Client {}
 
 /// A slot for one more open stream for this client on the store: one
-/// client may hold only so many at once (`crate::abuse::streams`). It holds
+/// client may hold only so many at once (`abuse::streams`). It holds
 /// the request's key too: the stream ends once the key stops working
 /// ([`StreamSlot::bound`]).
 pub struct StreamSlot {
-    permit: Option<crate::abuse::streams::StreamPermit>,
+    permit: Option<abuse::streams::StreamPermit>,
     held: crate::revocation::Hold,
 }
 
@@ -375,7 +375,7 @@ impl FromRequestParts<AppState> for StreamSlot {
         let held = caller.held.clone();
         // The client `http::abuse` identified; absent only when a test
         // drives the router without a connection, which fails open.
-        let permit = match parts.extensions.get::<crate::abuse::ClientIdentity>() {
+        let permit = match parts.extensions.get::<abuse::ClientIdentity>() {
             Some(client) => match state
                 .abuse
                 .streams

@@ -18,7 +18,7 @@ test('real challenge solves in JavaScript and continues to the checkout', async 
 });
 
 // The one real ten second wait in the suite: waiting is the proof
-// (abuse/challenge.rs), so it isn't shortened for a test.
+// (crates/abuse/src/challenge.rs), so it isn't shortened for a test.
 test('real challenge offers a ten second no-JavaScript continuation', async ({ browser, page }) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   try {

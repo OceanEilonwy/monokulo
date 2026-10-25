@@ -7,7 +7,6 @@
 //! `http::AppState`/`http::build_router` the same way the engine's own
 //! `main.rs` wires up `engine::http::{AppState, build_router}`.
 
-pub mod abuse;
 pub mod admin_nodes;
 pub mod api;
 pub mod apps;

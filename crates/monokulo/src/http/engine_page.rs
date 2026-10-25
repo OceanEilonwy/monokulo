@@ -260,7 +260,7 @@ pub async fn events(
     let Some(session) = super::hold_session(&state, &session).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
+    let permit = match extensions.get::<abuse::ClientIdentity>() {
         Some(client) => match state.abuse.streams.try_acquire(client, "engine") {
             Some(permit) => Some(permit),
             None => {

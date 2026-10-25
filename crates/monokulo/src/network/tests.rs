@@ -197,12 +197,10 @@ fn without_a_known_address_a_link_uses_the_host_the_visitor_asked_for() {
 #[test]
 fn https_is_believed_only_from_a_trusted_proxy_and_never_on_tor() {
     let state = AppState {
-        abuse: std::sync::Arc::new(crate::abuse::AbuseProtection::new(
-            crate::abuse::AbuseConfig {
-                trusted_proxies: TrustedProxies::parse("10.0.0.1").unwrap(),
-                ..Default::default()
-            },
-        )),
+        abuse: std::sync::Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
+            trusted_proxies: TrustedProxies::parse("10.0.0.1").unwrap(),
+            ..Default::default()
+        })),
         ..state_with(external_tor())
     };
     let mut headers = HeaderMap::new();

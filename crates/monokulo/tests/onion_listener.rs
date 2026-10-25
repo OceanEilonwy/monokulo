@@ -7,8 +7,8 @@
 
 use std::sync::Arc;
 
-use monokulo::abuse::proxy_protocol::{OnionListener, OnionPeer};
-use monokulo::abuse::{AbuseConfig, AbuseProtection};
+use abuse::proxy_protocol::{OnionListener, OnionPeer};
+use abuse::{AbuseConfig, AbuseProtection};
 use monokulo::db::Db;
 use monokulo::http::{build_router, AppState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

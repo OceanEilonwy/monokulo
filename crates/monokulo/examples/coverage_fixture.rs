@@ -1225,14 +1225,12 @@ async fn main() {
         // Every browser test comes from one address, far faster than a real
         // visitor: generous per-address limits, so no test is sent to the
         // challenge page by accident (the challenge has its own route).
-        abuse: Arc::new(monokulo::abuse::AbuseProtection::new(
-            monokulo::abuse::AbuseConfig {
-                soft_per_min: 10_000,
-                hard_per_min: 20_000,
-                signed_in_per_min: 10_000,
-                ..Default::default()
-            },
-        )),
+        abuse: Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
+            soft_per_min: 10_000,
+            hard_per_min: 20_000,
+            signed_in_per_min: 10_000,
+            ..Default::default()
+        })),
         proofs: monokulo::embed_domains::Proofs {
             dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
             onion: Arc::new(monokulo::embed_domains::UnavailableTor(

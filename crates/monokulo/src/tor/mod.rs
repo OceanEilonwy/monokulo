@@ -29,8 +29,8 @@ use live_settings::{FieldError, Warning};
 
 pub use listener::{circuit_peer, TorConnections, TorListener, TorStream};
 
-use crate::abuse::proxy_protocol::OnionPeer;
 use crate::settings::{TorConfig, TorMode, TOR_HIDDEN_SERVICE_DIR, TOR_STATE_DIR};
+use abuse::proxy_protocol::OnionPeer;
 
 /// Whether this build can run Tor inside monokulo (its `tor` feature).
 pub const BUILT_IN: bool = cfg!(feature = "tor");

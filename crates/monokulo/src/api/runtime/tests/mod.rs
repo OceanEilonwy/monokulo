@@ -43,7 +43,7 @@ async fn make_order(fixture: &Fixture, key: &str) -> Value {
 /// A request that came over Tor (the onion listener's connection info).
 fn over_tor(mut request: Request<Body>) -> Request<Body> {
     request.extensions_mut().insert(axum::extract::ConnectInfo(
-        crate::abuse::proxy_protocol::OnionPeer {
+        abuse::proxy_protocol::OnionPeer {
             source: "fc00:dead:beef:4dad::1".parse().unwrap(),
         },
     ));
@@ -89,7 +89,7 @@ fn hrefs(body: &Value) -> Vec<String> {
 async fn no_machine_route_is_ever_challenged() {
     let engine = engine().await;
     let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
-    fixture.state.abuse.reload(crate::abuse::AbuseConfig {
+    fixture.state.abuse.reload(abuse::AbuseConfig {
         under_attack: true,
         soft_per_min: 1,
         hard_per_min: 10_000,

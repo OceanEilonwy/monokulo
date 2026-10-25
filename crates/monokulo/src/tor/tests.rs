@@ -2,8 +2,8 @@ use live_settings::Reloadable as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
-use crate::abuse::ClientIdentity;
 use crate::http::{build_router, AppState};
+use abuse::ClientIdentity;
 
 /// One HTTP request over a stream handed to a [`TorListener`], as Arti
 /// hands a visitor's stream over, and the raw response.

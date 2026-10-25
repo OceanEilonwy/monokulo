@@ -230,7 +230,7 @@ pub fn leading_zero_bits(hash: &[u8]) -> u32 {
 }
 
 /// Finds a nonce for `challenge` at `difficulty`: the browser's work
-/// (`static/challenge.js`), done here for tests standing in for one. Not in
+/// (monokulo's `static/challenge.js`), done here for tests standing in for one. Not in
 /// the shipped binary.
 #[cfg(any(test, feature = "test-support"))]
 pub fn solve(challenge: &str, difficulty: u32) -> String {
