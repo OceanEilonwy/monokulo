@@ -129,7 +129,7 @@ proptest! {
             let limiter = Arc::new(ApiRateLimits::new(100_000, Some(100_000)));
             let settings = EngineSettings::load_with(Arc::clone(&store),Some(crate::engine_settings::NodesReloadable { daemons: daemons.clone() }),Arc::clone(&limiter),live_settings::Env::fixed(Vec::<(String,String)>::new())).await.unwrap();
             let custody: Arc<dyn KeyCustody> = Arc::new(crate::key_custody::PlainKeyCustody::default());
-            let wallet_handles = Arc::new(RwLock::new(HashMap::new()));
+            let wallet_handles: Arc<WalletHandles> = Arc::default();
             let status = scanner_status::new_scanner_status_map();
             let state = crate::http::AppState {
                 db: crate::store::Database::inline(Arc::clone(&store)),rate_limits:limiter,log_store:None,

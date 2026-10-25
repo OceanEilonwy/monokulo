@@ -15,7 +15,8 @@ use monero::Transaction;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, ScanIndices, ScanInput, WalletHandle,
+    KeyCustody, KeyCustodyError, LiveWallet, MatchedOutput, ScanIndices, ScanInput, WalletHandle,
+    WalletHandles,
 };
 use crate::store::{Store, StoreError};
 
@@ -83,6 +84,9 @@ fn key_images_json_of(tx: &crate::daemon::ScanTx) -> String {
 /// in a test.
 pub struct ScanResult {
     pub matches: Vec<MatchedOutput>,
+    /// The wallet whose keys found `matches`: an index names an order only
+    /// on that wallet.
+    pub wallet_id: String,
     pub txid: String,
     pub key_images_json: String,
     /// The one-time key (hex) of each matched output, by output index: what
@@ -95,9 +99,14 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
-    /// What `tx`, named `txid`, pays. The id comes with the transaction: it
-    /// may be pruned, and then can't be hashed to it.
-    fn of(txid: &str, tx: &crate::daemon::ScanTx, mut matches: Vec<MatchedOutput>) -> Self {
+    /// What `tx`, named `txid`, pays `wallet_id`. The id comes with the
+    /// transaction: it may be pruned, and then can't be hashed to it.
+    fn of(
+        txid: &str,
+        tx: &crate::daemon::ScanTx,
+        wallet_id: &str,
+        mut matches: Vec<MatchedOutput>,
+    ) -> Self {
         let prefix = tx.input.prefix();
         // A locked output is no payment: until its unlock time (a height,
         // or from 500,000,000 up a timestamp) nobody can spend it, and the
@@ -123,6 +132,7 @@ impl ScanResult {
             .collect();
         Self {
             matches,
+            wallet_id: wallet_id.to_owned(),
             txid: txid.to_owned(),
             key_images_json: key_images_json_of(tx),
             output_keys,
@@ -130,20 +140,20 @@ impl ScanResult {
     }
 }
 
-/// Scans `tx` for the wallet behind `handle`. The transaction's id comes
+/// Scans `tx` for the wallet `live` holds. The transaction's id comes
 /// with it.
 pub async fn scan_transaction_as(
     key_custody: &dyn KeyCustody,
-    handle: WalletHandle,
+    live: &LiveWallet,
     txid: &str,
     tx: &Transaction,
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
     let tx = crate::daemon::ScanTx::of(tx);
     let matches = key_custody
-        .scan_tx_outputs(handle, &tx.input, 0..1, minor_range)
+        .scan_tx_outputs(live.handle, &tx.input, 0..1, minor_range)
         .await?;
-    Ok(ScanResult::of(txid, &tx, matches))
+    Ok(ScanResult::of(txid, &tx, &live.wallet_id, matches))
 }
 
 /// `scan_transaction` for a store's scan window (task 7.3): only the indices
@@ -152,17 +162,17 @@ pub async fn scan_transaction_as(
 #[cfg(test)]
 pub(crate) async fn scan_transaction_in_window(
     key_custody: &dyn KeyCustody,
-    handle: WalletHandle,
+    live: &LiveWallet,
     txid: &str,
     tx: &Transaction,
     window: &ScanIndices,
 ) -> Result<ScanResult> {
     let tx = crate::daemon::ScanTx::of(tx);
     let found = key_custody
-        .scan_txs_for_indices(handle, std::slice::from_ref(&tx.input), window)
+        .scan_txs_for_indices(live.handle, std::slice::from_ref(&tx.input), window)
         .await?;
     let matches = found.into_iter().flat_map(|found| found.outputs).collect();
-    Ok(ScanResult::of(txid, &tx, matches))
+    Ok(ScanResult::of(txid, &tx, &live.wallet_id, matches))
 }
 
 /// Scans a run of transactions for many tenants at once:
@@ -189,7 +199,7 @@ pub(crate) async fn scan_txs_for_tenants(
     txids: &[String],
     txs: &[crate::daemon::ScanTx],
     inputs: &[ScanInput],
-    tenants: &[(&(crate::store::TenantId, WalletHandle, ScanIndices), usize)],
+    tenants: &[(&(crate::store::TenantId, LiveWallet, ScanIndices), usize)],
     tuning: &crate::work::ScanTuning,
     tier: crate::work::Tier,
 ) -> Vec<(crate::store::TenantId, Result<Vec<ScanResult>>)> {
@@ -199,14 +209,14 @@ pub(crate) async fn scan_txs_for_tenants(
     // makes the future not `Send`.
     stream::iter(0..tenants.len())
         .map(|i| {
-            let ((tenant_id, handle, window), done) = tenants[i];
+            let ((tenant_id, live, window), done) = tenants[i];
             let done = done.min(inputs.len());
             let span = tracing::debug_span!("scan for store", store.id = %tenant_id);
             tracing::Instrument::instrument(
                 async move {
                     let result = match tokio::time::timeout(
                         deadline,
-                        key_custody.scan_txs_for_indices(*handle, &inputs[done..], window),
+                        key_custody.scan_txs_for_indices(live.handle, &inputs[done..], window),
                     )
                     .await
                     {
@@ -217,7 +227,7 @@ pub(crate) async fn scan_txs_for_tenants(
                                 let at = done + found.tx;
                                 match (txids.get(at), txs.get(at)) {
                                     (Some(txid), Some(tx)) => {
-                                        Ok(ScanResult::of(txid, tx, found.outputs))
+                                        Ok(ScanResult::of(txid, tx, &live.wallet_id, found.outputs))
                                     }
                                     _ => {
                                         Err(ScannerError::KeyCustody(KeyCustodyError::ScanFailed(
@@ -251,7 +261,7 @@ pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     txid: &str,
     tx: &Transaction,
-    tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
+    tenants: &[&(crate::store::TenantId, LiveWallet, ScanIndices)],
     tuning: &crate::work::ScanTuning,
     tier: crate::work::Tier,
 ) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
@@ -273,24 +283,27 @@ pub(crate) async fn scan_for_tenants(
     .collect()
 }
 
-/// Whether a scan that began at `scanned_at` must not be recorded against
-/// the tenant row: it changed wallet since, so the scan may have used the
-/// old wallet's keys, and an index it found may now name a new order on the
-/// new wallet (migration 0029). The scan-only row holding the old keys looks
-/// at the same transactions itself.
+/// Whether a scan must not be recorded against the tenant row: it was made
+/// with another wallet's keys than the one the row takes payments into now
+/// (it changed wallet since the scan's handle was picked), and an index it
+/// found may name a new order on the new wallet (migration 0029). The
+/// scan-only row holding the old keys looks at the same transactions
+/// itself. Read on the same connection as the writes that follow, so a
+/// change can't land in between.
 fn stale_after_wallet_change(
     store: &Store,
     tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
-    scanned_at: i64,
 ) -> Result<bool> {
-    if scan.matches.is_empty() || !store.wallet_changed_since(tenant_id, scanned_at)? {
+    if scan.matches.is_empty()
+        || store.wallet_of(tenant_id)?.as_deref() == Some(scan.wallet_id.as_str())
+    {
         return Ok(false);
     }
     tracing::info!(
         store.id = %tenant_id,
         tx.id = %scan.txid,
-        "a scan from before the store changed wallet found outputs - leaving them to the old wallet's watch"
+        "a scan with the keys of a wallet the store has left found outputs - leaving them to the old wallet's watch"
     );
     Ok(true)
 }
@@ -309,7 +322,7 @@ pub fn record_scan_match(
     block_height: Option<u64>,
 ) -> Result<std::collections::BTreeSet<crate::store::OrderId>> {
     let mut touched = std::collections::BTreeSet::new();
-    if stale_after_wallet_change(store, tenant_id, scan, seen_at)? {
+    if stale_after_wallet_change(store, tenant_id, scan)? {
         return Ok(touched);
     }
     for m in &scan.matches {
@@ -358,7 +371,7 @@ pub(crate) fn stage_block_match(
     scan: &ScanResult,
     seen_at: i64,
 ) -> Result<()> {
-    if stale_after_wallet_change(store, tenant_id, scan, seen_at)? {
+    if stale_after_wallet_change(store, tenant_id, scan)? {
         return Ok(());
     }
     for m in &scan.matches {
@@ -1140,6 +1153,9 @@ pub async fn run_scan_tick(
 
 /// `run_scan_tick` with the scheduler's in-memory state kept by the caller
 /// between rounds. For tests and tools, like `run_scan_tick`.
+///
+/// Each handle is taken to hold the keys of its store's wallet as the
+/// store is now.
 #[expect(
     clippy::too_many_arguments,
     reason = "one round's genuinely independent inputs"
@@ -1158,12 +1174,28 @@ pub async fn run_scan_tick_with(
     let db = crate::store::Db::over_shared(Arc::clone(store));
     let network = crate::network::parse_network(network)
         .map_err(|e| ScannerError::Internal(e.to_string()))?;
+    let tenants = {
+        let store = store.lock();
+        tenants
+            .iter()
+            .map(|(id, handle)| {
+                let wallet_id = store.wallet_of(id)?.unwrap_or_default();
+                Ok((
+                    id.clone(),
+                    LiveWallet {
+                        wallet_id,
+                        handle: *handle,
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?
+    };
     let inputs = crate::work::RoundInputs {
         db: &db,
         custody: key_custody,
         daemon,
         network,
-        tenants,
+        tenants: &tenants,
         reorg_check_depth,
         grace_period_seconds: expired_order_grace_period_seconds,
         scan_chunk_memory_budget_mb,
@@ -1196,7 +1228,7 @@ pub async fn run_scan_tick_with(
 pub async fn register_missing_wallets_checking_state(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
+    wallet_handles: &WalletHandles,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: monero::Network,
 ) -> usize {
@@ -1211,7 +1243,7 @@ pub async fn register_missing_wallets_checking_state(
 pub async fn register_missing_wallets_reporting(
     db: &crate::store::Db,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
+    wallet_handles: &WalletHandles,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: monero::Network,
 ) -> Registration {
@@ -1255,29 +1287,35 @@ pub async fn register_missing_wallets_reporting(
             s.list_active_tenants()
         })
         .await;
-    let on_network: Vec<crate::store::Tenant> = match listed {
-        Ok(tenants) => tenants
-            .into_iter()
-            .filter(|t| t.network == crate::network::network_str(network))
-            .collect(),
-        Err(e) => {
-            tracing::warn!(network = crate::network::network_str(network), error = %e, "listing stores to register their keys failed (retried later)");
-            return Registration {
-                registered: 0,
-                failed: 1,
-            };
-        }
-    };
+    let (on_network, active): (Vec<crate::store::Tenant>, HashSet<crate::store::TenantId>) =
+        match listed {
+            Ok(tenants) => {
+                let active = tenants.iter().map(|t| t.id.clone()).collect();
+                let on_network = tenants
+                    .into_iter()
+                    .filter(|t| t.network == crate::network::network_str(network))
+                    .collect();
+                (on_network, active)
+            }
+            Err(e) => {
+                tracing::warn!(network = crate::network::network_str(network), error = %e, "listing stores to register their keys failed (retried later)");
+                return Registration {
+                    registered: 0,
+                    failed: 1,
+                };
+            }
+        };
     // This network's handles in a backend that was turned off, or that lost
     // its wallets, are dropped: the store is registered again below (if its
     // backend is enabled) or left unserved until it is. Only this network's:
     // another network's loop notices its own lost handles and retries soon.
     {
         let ids: HashSet<&str> = on_network.iter().map(|t| t.id.as_str()).collect();
-        wallet_handles
-            .write()
-            .retain(|id, handle| !ids.contains(id.as_str()) || key_custody.handle_is_live(*handle));
+        wallet_handles.write().retain(|id, live| {
+            !ids.contains(id.as_str()) || key_custody.handle_is_live(live.handle)
+        });
     }
+    forget_disabled_rows(db, key_custody, wallet_handles, &active).await;
     let mut missing: Vec<crate::store::Tenant> = {
         let handles = wallet_handles.read();
         on_network
@@ -1307,10 +1345,36 @@ pub async fn register_missing_wallets_reporting(
     let mut registered = 0;
     let mut failed = deferred;
     let mut first_error: Option<(String, String)> = None;
-    for tenant in missing {
+    for listed in missing {
         if tokio::time::Instant::now() >= pass_end {
             failed += 1;
             continue;
+        }
+        // The row read again under its lock: a wallet change, key move or
+        // deletion since the list is seen, and none lands before the
+        // handle is in the map.
+        let Ok(_using) = tokio::time::timeout_at(pass_end, wallet_handles.using(&listed.id)).await
+        else {
+            failed += 1;
+            continue;
+        };
+        let id = listed.id.clone();
+        let tenant = match db
+            .run(crate::store::db::Class::Scanner, move |s| {
+                s.get_tenant_by_id(&id)
+            })
+            .await
+        {
+            Ok(Some(tenant)) if tenant.disabled_at.is_none() => tenant,
+            Ok(_) => continue, // deleted meanwhile
+            Err(e) => {
+                failed += 1;
+                first_error.get_or_insert_with(|| (listed.id.to_string(), e.to_string()));
+                continue;
+            }
+        };
+        if wallet_handles.read().contains_key(&tenant.id) {
+            continue; // registered meanwhile
         }
         let enabled = key_custody.enabled_backends();
         if !enabled.is_empty() && !enabled.contains(&tenant.key_custody_backend) {
@@ -1327,11 +1391,16 @@ pub async fn register_missing_wallets_reporting(
         .await
         {
             Ok(Ok(handle)) => {
-                let winner = *wallet_handles
+                let live = LiveWallet {
+                    wallet_id: tenant.wallet_id.clone(),
+                    handle,
+                };
+                let winner = wallet_handles
                     .write()
                     .entry(tenant.id.clone())
-                    .or_insert(handle);
-                if winner == handle {
+                    .or_insert_with(|| live.clone())
+                    .clone();
+                if winner == live {
                     registered += 1;
                 } else {
                     crate::key_custody::remove_wallet_logged(
@@ -1372,6 +1441,49 @@ pub async fn register_missing_wallets_reporting(
         );
     }
     Registration { registered, failed }
+}
+
+/// Removes the handles of rows that are disabled, from the map and from
+/// key custody. Every path that registers a row's keys reads the row under
+/// its lock, so none should be left; this is the backstop that takes a
+/// deleted store's keys out of custody if one ever is. A handle whose row
+/// wasn't in `active` (listed a moment ago) is looked at again under the
+/// row's lock: the row may have been created since.
+async fn forget_disabled_rows(
+    db: &crate::store::Db,
+    key_custody: &dyn KeyCustody,
+    wallet_handles: &WalletHandles,
+    active: &HashSet<crate::store::TenantId>,
+) {
+    let unlisted: Vec<crate::store::TenantId> = wallet_handles
+        .read()
+        .keys()
+        .filter(|id| !active.contains(*id))
+        .cloned()
+        .collect();
+    for id in unlisted {
+        let _changing = wallet_handles.changing(&id).await;
+        let lookup = id.clone();
+        let row = db
+            .run(crate::store::db::Class::Scanner, move |s| {
+                s.get_tenant_by_id(&lookup)
+            })
+            .await;
+        // A failed read is looked at again on the next pass.
+        if !matches!(row, Ok(Some(row)) if row.disabled_at.is_some()) {
+            continue;
+        }
+        let removed = wallet_handles.write().remove(&id);
+        if let Some(live) = removed {
+            crate::key_custody::remove_wallet_logged(
+                key_custody,
+                live.handle,
+                Some(id.as_str()),
+                "the store was deleted, its keys were still registered",
+            )
+            .await;
+        }
+    }
 }
 
 /// What one registration pass did: stores registered, and stores whose

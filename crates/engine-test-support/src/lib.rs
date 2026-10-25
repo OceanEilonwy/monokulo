@@ -25,7 +25,6 @@
 //! dev-dependency is never linked into a normal (non-test, non-dev) build of
 //! whatever depends on it, by cargo's own rules.
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -37,7 +36,7 @@ use engine::daemon::{
 use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router, AppState};
-use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
+use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletHandles};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::store::Store;
@@ -287,7 +286,7 @@ pub struct TestEngineHandle {
     /// interval.
     store: engine::store::SharedStore,
     key_custody: Arc<dyn KeyCustody>,
-    wallet_handles: Arc<RwLock<HashMap<engine::store::TenantId, WalletHandle>>>,
+    wallet_handles: Arc<WalletHandles>,
     /// How many tenant admin API requests (`/api/v1/admin/tenant/...`) this
     /// engine has received - the requests its per-token rate limit counts.
     tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
@@ -468,7 +467,7 @@ impl TestEngineHandle {
             .wallet_handles
             .read()
             .iter()
-            .map(|(id, h)| (id.clone(), *h))
+            .map(|(id, live)| (id.clone(), live.handle))
             .collect();
         run_scan_tick(
             &self.store,
@@ -907,8 +906,7 @@ impl TestEngineConfig {
         // below can clone the same `Arc` and re-read it fresh every tick, exactly like
         // `main.rs`'s own `run_scanner_loop` does against the real production
         // `AppState::wallet_handles` - see `with_real_daemon`'s doc comment.
-        let wallet_handles: Arc<RwLock<HashMap<engine::store::TenantId, WalletHandle>>> =
-            Arc::new(RwLock::new(HashMap::new()));
+        let wallet_handles: Arc<WalletHandles> = Arc::default();
 
         let lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>> = Arc::default();
         // The limits the settings drive, and the ones the router uses:
@@ -1058,7 +1056,7 @@ impl TestEngineConfig {
                     let tenants: Vec<(engine::store::TenantId, WalletHandle)> = scan_wallet_handles
                         .read()
                         .iter()
-                        .map(|(id, h)| (id.clone(), *h))
+                        .map(|(id, live)| (id.clone(), live.handle))
                         .collect();
                     for network in &networks {
                         // Errors are deliberately swallowed here, exactly like

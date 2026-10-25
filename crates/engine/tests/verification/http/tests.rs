@@ -570,10 +570,14 @@ async fn tenant_deletion_disables_it_and_admin_routes_stop_working() {
 
 /// A request that authenticated just before its store was deleted finds
 /// no live handle afterwards; it must not register the store's keys again
-/// (nothing would ever remove them), it is simply refused.
+/// (nothing would ever remove them), it is simply refused. One already
+/// registering them when the deletion comes is waited for, and its handle
+/// goes with the store's.
 #[tokio::test]
 async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight() {
-    let state = AppState::for_tests();
+    let custody = Arc::new(crate::property_support::GateCustody::default());
+    let mut state = AppState::for_tests();
+    state.custody.backends = crate::property_support::custody_arc(&custody);
     let router = build_router(state.clone(), 1_000_000);
     let created = create_tenant(&router, 10).await;
     let tenant = state
@@ -591,7 +595,7 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
         .body(Body::empty())
         .unwrap();
     assert_eq!(
-        router.oneshot(delete).await.unwrap().status(),
+        router.clone().oneshot(delete).await.unwrap().status(),
         StatusCode::NO_CONTENT
     );
     assert!(!state.custody.wallet_handles.read().contains_key(&tenant.id));
@@ -605,6 +609,70 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
     assert!(
         !state.custody.wallet_handles.read().contains_key(&tenant.id),
         "no handle came back"
+    );
+
+    // Another store's keys are being registered again (its handle was
+    // lost) when it is deleted.
+    let created = create_tenant(&router, 11).await;
+    let tenant = state
+        .db
+        .lock()
+        .find_tenant_by_secret_token(&shared::auth::RawToken::presented(&created.secret_token))
+        .unwrap()
+        .unwrap();
+    let lost = state
+        .custody
+        .wallet_handles
+        .write()
+        .remove(&tenant.id)
+        .unwrap();
+    custody.inner.remove_wallet(lost.handle).await.unwrap();
+    custody
+        .registration_mode
+        .store(2, std::sync::atomic::Ordering::Relaxed);
+    let resolving = tokio::spawn({
+        let (state, tenant) = (state.clone(), tenant.clone());
+        async move { crate::http::resolve_wallet_handle(&state, &tenant).await }
+    });
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        custody.registration_entered.notified(),
+    )
+    .await
+    .unwrap();
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {}", created.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let mut delete = Box::pin(router.oneshot(delete));
+    let first = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(std::future::Future::poll(delete.as_mut(), cx))
+    })
+    .await;
+    assert!(
+        first.is_pending(),
+        "the deletion waits for the registration"
+    );
+    custody
+        .registration_mode
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    custody.registration_release.notify_one();
+    let registered = resolving.await.unwrap().unwrap();
+    assert_eq!(delete.await.unwrap().status(), StatusCode::NO_CONTENT);
+    assert!(!state.custody.wallet_handles.read().contains_key(&tenant.id));
+    assert!(
+        custody
+            .inner
+            .derive_subaddress(
+                registered.handle,
+                crate::key_custody::SubaddressIndex::default(),
+                Network::Mainnet
+            )
+            .await
+            .is_err(),
+        "the deleted store's keys are out of custody"
     );
 }
 
@@ -3564,7 +3632,7 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
             .status(),
         StatusCode::OK
     );
-    let old_handle = wallet_handles.read().values().copied().next().unwrap();
+    let old_handle = wallet_handles.read().values().next().unwrap().handle;
     let before = own_tenant_view(&router, &tenant.secret_token).await;
 
     let response = router
@@ -3580,7 +3648,7 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
         "keys are never echoed back"
     );
 
-    let new_handle = wallet_handles.read().values().copied().next().unwrap();
+    let new_handle = wallet_handles.read().values().next().unwrap().handle;
     assert!(
         snp.derive_subaddress(
             new_handle,
@@ -3679,7 +3747,7 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
     let wallet_handles = Arc::clone(&state.custody.wallet_handles);
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
-    let handle = wallet_handles.read().values().copied().next().unwrap();
+    let handle = wallet_handles.read().values().next().unwrap().handle;
     plain.remove_wallet(handle).await.unwrap();
 
     assert_eq!(
@@ -3689,7 +3757,7 @@ async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds(
         StatusCode::OK
     );
     assert_ne!(
-        wallet_handles.read().values().copied().next().unwrap(),
+        wallet_handles.read().values().next().unwrap().handle,
         handle
     );
 }
@@ -3903,7 +3971,7 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
             .into_iter()
             .find(|t| t.public_key == tenant.public_key)
             .unwrap();
-        let handle = wallet_handles.read()[&row.id];
+        let handle = wallet_handles.read()[&row.id].handle;
         assert_eq!(
             custody.backend_of(handle).as_deref(),
             Some(row.key_custody_backend.as_str())
@@ -3930,7 +3998,7 @@ fn a_disabled_store_can_not_be_moved() {
         .tenant;
     store.disable_tenant(&tenant.id, 2).unwrap();
     assert!(matches!(
-        store.update_tenant_key_custody(&tenant.id, "snp", &[2]),
+        store.update_tenant_key_custody(&tenant.id, &tenant.wallet_id, "snp", &[2]),
         Err(crate::store::StoreError::NotFound)
     ));
 }
@@ -4925,9 +4993,10 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     );
 }
 
-/// A scan that began before the change may have used the old keys for the
-/// store: what it found isn't recorded against the store, where an index
-/// can now name an order on the new wallet.
+/// A scan with the store's old keys (a round that picked its handle before
+/// the change) isn't recorded against the store, where an index can now
+/// name an order on the new wallet: however late it says it saw the
+/// output, it is told by the wallet its keys are of.
 #[tokio::test]
 async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
@@ -4935,7 +5004,7 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
     let router = build_router(state, 1_000_000);
     let tenant = create_fixture_tenant(&router).await;
     new_order(&router, &tenant).await;
-    let began = crate::now_unix();
+    let old_wallet = tenant_row(&store, &tenant).wallet_id;
     let wallet = create_wallet(&router, 51).await;
     assert_eq!(
         change_wallet(&router, &tenant, wallet["wallet_id"].as_str().unwrap())
@@ -4945,26 +5014,39 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
     );
     let after = new_order(&router, &tenant).await;
     let row = tenant_row(&store, &tenant);
-    let found = crate::scanner::ScanResult {
+    let found = |wallet_id: &str| crate::scanner::ScanResult {
         matches: vec![crate::key_custody::MatchedOutput {
             output_index: 0,
             subaddress_index: crate::key_custody::SubaddressIndex { major: 0, minor: 1 },
             amount_piconero: Some(1),
         }],
+        wallet_id: wallet_id.to_owned(),
         txid: "aa".repeat(32),
         key_images_json: "[]".into(),
         output_keys: HashMap::new(),
     };
+    let seen_after_the_change = crate::now_unix() + 1;
     let locked = store.lock();
-    let before_change =
-        crate::scanner::record_scan_match(&locked, &row.id, &found, began, None).unwrap();
-    assert!(before_change.is_empty());
+    let with_old_keys = crate::scanner::record_scan_match(
+        &locked,
+        &row.id,
+        &found(&old_wallet),
+        seen_after_the_change,
+        None,
+    )
+    .unwrap();
+    assert!(with_old_keys.is_empty());
     let order_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
     assert!(locked.get_all_payments(&order_id).unwrap().is_empty());
-    // A scan begun after the change is the store's own.
-    let current =
-        crate::scanner::record_scan_match(&locked, &row.id, &found, crate::now_unix() + 1, None)
-            .unwrap();
+    // A scan with the new wallet's keys is the store's own.
+    let current = crate::scanner::record_scan_match(
+        &locked,
+        &row.id,
+        &found(&row.wallet_id),
+        seen_after_the_change,
+        None,
+    )
+    .unwrap();
     assert_eq!(current.into_iter().collect::<Vec<_>>(), vec![order_id]);
 }
 

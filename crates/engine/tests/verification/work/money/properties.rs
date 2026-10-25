@@ -149,7 +149,7 @@ async fn converge(
 ) {
     h.daemon.set_online(true);
     h.daemon.fail_calls(0);
-    h.custody.recover(h.tenants[0].1);
+    h.custody.recover(h.tenants[0].1.handle);
     for _ in 0..120 {
         round(h, orders, budget, grace, None).await;
         let done = {
@@ -595,7 +595,7 @@ async fn late_registration_history(
     for _ in 1..tenant_count {
         let (tenant, handle, order) =
             super::fixture_tenant_shared(h.store(), &h.custody, i64::MAX).await;
-        h.tenants.push((tenant, handle));
+        h.register(tenant, handle);
         orders.push(order);
     }
     let all = h.tenants.clone();
@@ -1239,7 +1239,7 @@ mod properties {
             let target = if sufficient { amount } else { amount + 1 };
             configure(&h, target, Some(threshold), expiry);
             let orders = vec![h.order.clone()];
-            h.custody.fail(h.tenants[0].1);
+            h.custody.fail(h.tenants[0].1.handle);
             append(&mut h, vec![payment_tx(1, 1, amount)]);
             h.daemon.set_block_timestamp(3, expiry as u64 - 1);
             for _ in 1..depth {
@@ -1482,7 +1482,7 @@ mod properties {
                         rusqlite::params![tenant],
                     )
                     .unwrap();
-                h.tenants.push((tenant.clone(), handle));
+                h.register(tenant.clone(), handle);
                 if reverse {
                     h.tenants.reverse();
                 }
@@ -1944,7 +1944,7 @@ mod properties {
                     .register_wallet(WalletMaterial::new(view_bytes, pair.spend.to_bytes()))
                     .await
                     .unwrap();
-                h.tenants.push((tenant.clone(), handle));
+                h.register(tenant.clone(), handle);
                 h.store().lock().conn_for_test().execute("UPDATE orders SET xmr_amount_piconero = ?2, confirmations_required_override = ?3 WHERE id = ?1",rusqlite::params![order,amounts[1] as i64,threshold as i64]).unwrap();
                 let first = payment_tx(1, 1, amounts[0]);
                 let second = crate::scanner::tests::payment_tx_for_wallet(2, &pair, &[(1, amounts[1])]);

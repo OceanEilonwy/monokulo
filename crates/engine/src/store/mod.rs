@@ -479,6 +479,14 @@ pub struct WalletChange {
     pub orders_moved: u64,
 }
 
+/// The index a store hands out next, and the wallet it is an index of
+/// (`Store::peek_next_minor_index`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NextIndex {
+    pub wallet_id: String,
+    pub minor_index: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct Tenant {
     pub id: TenantId,
@@ -1643,18 +1651,17 @@ impl Store {
         })
     }
 
-    /// Whether the tenant row changed wallet at or after `since`: a scan
-    /// that began then may have used its old keys (migration 0029).
-    pub fn wallet_changed_since(&self, tenant_id: &TenantId, since: i64) -> Result<bool> {
-        let changed: Option<Option<i64>> = self
+    /// The wallet the tenant row takes payments into now, `None` for no
+    /// such row.
+    pub fn wallet_of(&self, tenant_id: &TenantId) -> Result<Option<String>> {
+        Ok(self
             .conn
             .query_row(
-                "SELECT wallet_changed_at_utc FROM tenants WHERE id = ?1",
+                "SELECT wallet_id FROM tenants WHERE id = ?1",
                 params![tenant_id],
                 |row| row.get(0),
             )
-            .optional()?;
-        Ok(changed.flatten().is_some_and(|at| at >= since))
+            .optional()?)
     }
 
     /// The enabled scan-only rows watching a store's orders on wallets it
@@ -1758,9 +1765,14 @@ impl Store {
     /// sealed keys (task 5.3): the wallet and every enabled store on it, in
     /// one transaction, since they all hold the same keys. Returns the other
     /// enabled stores on the wallet, whose live handles the caller swaps too.
+    ///
+    /// The keys were checked against `expected_wallet`; refused, changing
+    /// nothing, when the store takes payments into another wallet by now,
+    /// whose rows they would otherwise be written onto.
     pub fn update_tenant_key_custody(
         &self,
         tenant_id: &TenantId,
+        expected_wallet: &str,
         backend: &str,
         sealed: &[u8],
     ) -> Result<Vec<TenantId>> {
@@ -1776,6 +1788,11 @@ impl Store {
             )
             .optional()?;
         let wallet_id = wallet_id.ok_or(StoreError::NotFound)?;
+        if wallet_id != expected_wallet {
+            return Err(StoreError::Refused(
+                "the store changed wallet while its keys were being moved".to_owned(),
+            ));
+        }
         tx.execute(
             "UPDATE wallets SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1",
             params![wallet_id, backend, sealed],
@@ -2112,17 +2129,26 @@ impl Store {
         Ok(())
     }
 
-    /// The index `allocate_minor_index` would hand out next, without claiming it.
-    /// Only useful in combination with `create_order_claiming_minor_index` - see
-    /// that method for why order creation can't simply allocate first.
-    pub fn peek_next_minor_index(&self, tenant_id: &TenantId) -> Result<u32> {
-        let next = self.conn.query_row(
-            "SELECT w.next_minor_index FROM tenants t JOIN wallets w ON w.id = t.wallet_id
+    /// The index `allocate_minor_index` would hand out next, without claiming it,
+    /// and the wallet it is on. Only useful in combination with
+    /// `create_order_claiming_minor_index` - see that method for why order
+    /// creation can't simply allocate first.
+    pub fn peek_next_minor_index(&self, tenant_id: &TenantId) -> Result<NextIndex> {
+        let (wallet_id, next) = self.conn.query_row(
+            "SELECT w.id, w.next_minor_index FROM tenants t JOIN wallets w ON w.id = t.wallet_id
              WHERE t.id = ?1",
             params![tenant_id],
-            |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, shared::sqlite::Unsigned<u32>>(1)?,
+                ))
+            },
         )?;
-        Ok(next.0)
+        Ok(NextIndex {
+            wallet_id,
+            minor_index: next.0,
+        })
     }
 
     /// Claims `expected_index` for `tenant_id` and inserts `new` as one atomic unit,
@@ -2145,8 +2171,14 @@ impl Store {
     /// retry on `Ok(None)`; a losing racer costs one extra derivation and burns no
     /// index (the conditional UPDATE leaves the counter untouched when it doesn't
     /// match), so two concurrent creations can never end up sharing an address.
+    ///
+    /// The index is claimed only on `expected_wallet`, the wallet the address
+    /// was derived for, and only while the store still takes payments into
+    /// it: a store that changed wallet in between gets `Ok(None)` too, never
+    /// an order whose address belongs to a wallet its keys don't scan.
     pub fn create_order_claiming_minor_index(
         &self,
+        expected_wallet: &str,
         expected_index: u32,
         new: &NewOrder,
     ) -> Result<Option<Order>> {
@@ -2186,9 +2218,10 @@ impl Store {
         // in turn, so none of them hands out an address another one has.
         let claimed = tx.execute(
             "UPDATE wallets SET next_minor_index = next_minor_index + 1
-             WHERE id = (SELECT wallet_id FROM tenants WHERE id = ?1 AND disabled_at_utc IS NULL)
+             WHERE id = ?3
+               AND id = (SELECT wallet_id FROM tenants WHERE id = ?1 AND disabled_at_utc IS NULL)
                AND next_minor_index = ?2",
-            params![new.tenant_id, expected_index],
+            params![new.tenant_id, expected_index, expected_wallet],
         )?;
         if claimed == 0 {
             return Ok(None);
@@ -4975,9 +5008,13 @@ mod tests {
         let tenant = new_tenant(&store);
         let tenant_id = tenant.tenant.id;
 
-        let first = store.peek_next_minor_index(&tenant_id).unwrap();
+        let NextIndex {
+            wallet_id,
+            minor_index: first,
+        } = store.peek_next_minor_index(&tenant_id).unwrap();
         let order = store
             .create_order_claiming_minor_index(
+                &wallet_id,
                 first,
                 &NewOrder {
                     idempotency_key: None,
@@ -4995,12 +5032,16 @@ mod tests {
             .unwrap()
             .expect("the first claim of a fresh index must succeed");
         assert_eq!(order.minor_index, first);
-        assert_eq!(store.peek_next_minor_index(&tenant_id).unwrap(), first + 1);
+        assert_eq!(
+            store.peek_next_minor_index(&tenant_id).unwrap().minor_index,
+            first + 1
+        );
 
         // A claim of an index the counter has already moved past changes nothing at
         // all - the caller re-derives against the new index rather than burning one.
         let stale = store
             .create_order_claiming_minor_index(
+                &wallet_id,
                 first,
                 &NewOrder {
                     idempotency_key: None,
@@ -5018,15 +5059,16 @@ mod tests {
             .unwrap();
         assert!(stale.is_none());
         assert_eq!(
-            store.peek_next_minor_index(&tenant_id).unwrap(),
+            store.peek_next_minor_index(&tenant_id).unwrap().minor_index,
             first + 1,
             "a losing racer must not burn an index"
         );
 
         // A *failing* insert (this minor_index is already taken, violating
         // UNIQUE(tenant_id, minor_index)) must roll the counter bump back with it.
-        let next = store.peek_next_minor_index(&tenant_id).unwrap();
+        let next = store.peek_next_minor_index(&tenant_id).unwrap().minor_index;
         let failed = store.create_order_claiming_minor_index(
+            &wallet_id,
             next,
             &NewOrder {
                 idempotency_key: None,
@@ -5043,7 +5085,7 @@ mod tests {
         );
         failed.unwrap_err();
         assert_eq!(
-            store.peek_next_minor_index(&tenant_id).unwrap(),
+            store.peek_next_minor_index(&tenant_id).unwrap().minor_index,
             next,
             "a failed order insert must not leave the counter advanced past an order that does not exist"
         );
@@ -5246,7 +5288,7 @@ mod tests {
         let elsewhere = new_tenant(&store);
 
         let others = store
-            .update_tenant_key_custody(&first.tenant.id, "snp", &[2])
+            .update_tenant_key_custody(&first.tenant.id, &first.tenant.wallet_id, "snp", &[2])
             .unwrap();
         assert_eq!(others, vec![second.tenant.id.clone()]);
         for id in [&first.tenant.id, &second.tenant.id] {
@@ -5267,6 +5309,42 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(untouched.key_custody_backend, "plain");
+
+        // Keys checked against the store's old wallet aren't written onto
+        // the one it changed to meanwhile, nor onto the stores on it.
+        let other_wallet = &elsewhere.tenant.wallet_id;
+        store
+            .change_tenant_wallet(&first.tenant.id, other_wallet, 1002)
+            .unwrap();
+        assert!(matches!(
+            store.update_tenant_key_custody(&first.tenant.id, &first.tenant.wallet_id, "snp", &[3]),
+            Err(StoreError::Refused(_))
+        ));
+        for id in [&first.tenant.id, &elsewhere.tenant.id] {
+            let row = store.get_tenant_by_id(id).unwrap().unwrap();
+            assert_eq!(
+                (
+                    row.key_custody_backend.as_str(),
+                    row.sealed_key_material.as_slice()
+                ),
+                ("plain", elsewhere.tenant.sealed_key_material.as_slice())
+            );
+        }
+        let wallet = store.get_wallet(other_wallet).unwrap().unwrap();
+        assert_eq!(
+            (
+                wallet.key_custody_backend.as_str(),
+                wallet.sealed_key_material
+            ),
+            ("plain", elsewhere.tenant.sealed_key_material.clone())
+        );
+        // Checked against the wallet it uses now, they move as before.
+        let others = store
+            .update_tenant_key_custody(&first.tenant.id, other_wallet, "snp", &[3])
+            .unwrap();
+        assert_eq!(others, vec![elsewhere.tenant.id.clone()]);
+        let wallet = store.get_wallet(other_wallet).unwrap().unwrap();
+        assert_eq!(wallet.sealed_key_material, vec![3]);
     }
 
     #[test]
@@ -5279,7 +5357,13 @@ mod tests {
         assert_eq!(store.allocate_minor_index(&first.tenant.id).unwrap(), 1);
         assert_eq!(store.allocate_minor_index(&second.tenant.id).unwrap(), 2);
         assert_eq!(store.allocate_minor_index(&first.tenant.id).unwrap(), 3);
-        assert_eq!(store.peek_next_minor_index(&second.tenant.id).unwrap(), 4);
+        assert_eq!(
+            store
+                .peek_next_minor_index(&second.tenant.id)
+                .unwrap()
+                .minor_index,
+            4
+        );
     }
 
     #[test]

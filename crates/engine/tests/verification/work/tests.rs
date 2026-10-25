@@ -15,8 +15,8 @@ use super::*;
 use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon::{DaemonError, KeyImageStatus, TxLocation};
 use crate::scanner::tests::{
-    cursor_of, fixture_tenant, fixture_tenant_shared, fixture_tx, order_status, unrelated_tx,
-    FlakyKeyCustody,
+    cursor_of, fixture_tenant, fixture_tenant_shared, fixture_tx, live_tenants, order_status,
+    unrelated_tx, FlakyKeyCustody,
 };
 use crate::status::OrderStatus;
 use crate::store::SharedStore;
@@ -109,7 +109,7 @@ fn inputs<'a>(
     db: &'a Db,
     custody: &'a dyn KeyCustody,
     daemon: &'a dyn MoneroDaemonClient,
-    tenants: &'a [(crate::store::TenantId, WalletHandle)],
+    tenants: &'a [(crate::store::TenantId, LiveWallet)],
 ) -> RoundInputs<'a> {
     RoundInputs {
         db,
@@ -191,7 +191,7 @@ async fn upkeep_prunes_order_events_older_than_the_retention() {
     let store = store.into_shared();
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
-    let tenants = [(tenant, handle)];
+    let tenants = live_tenants(&store, [(tenant, handle)]);
     run_round(
         &ScanState::default(),
         &inputs(
@@ -233,7 +233,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let state = ScanState::default();
     run_round(
         &state,
@@ -406,7 +406,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         std::iter::repeat_with(|| ("b", vec![])).take(11).collect(),
     );
     let store = store.into_shared();
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
 
     let state = ScanState::default();
     let db = worker(&store, &path);
@@ -508,10 +508,13 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
-    let tenants = [
-        (failing.clone(), failing_handle),
-        (healthy.clone(), healthy_handle),
-    ];
+    let tenants = live_tenants(
+        &store,
+        [
+            (failing.clone(), failing_handle),
+            (healthy.clone(), healthy_handle),
+        ],
+    );
     let state = ScanState::default();
     run_round(
         &state,
@@ -602,7 +605,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     run_round(
         &ScanState::default(),
         &inputs(
@@ -718,10 +721,13 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     let daemon = FakeDaemonClient::new();
     daemon.push_block("h1", vec![]);
     daemon.push_block("h2", vec![]);
-    let tenants = [
-        (lagging.clone(), lagging_handle),
-        (live.clone(), live_handle),
-    ];
+    let tenants = live_tenants(
+        &store,
+        [
+            (lagging.clone(), lagging_handle),
+            (live.clone(), live_handle),
+        ],
+    );
     let state = ScanState::default();
     run_round(
         &state,
@@ -891,7 +897,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     };
     fake.push_block("new", vec![unrelated_tx(200)]);
     fake.set_mempool(vec![fixture_tx()]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
 
     let report = run_round(
         &ScanState::default(),
@@ -973,7 +979,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let state = ScanState::default();
     let round = |budget| {
         let (store, fake, tenants, state, custody) = (&store, &fake, &tenants, &state, &custody);
@@ -1151,7 +1157,7 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let round = || run_round_on(&store, &custody, &fake, &tenants);
     round().await;
     fake.push_block("a3", vec![fixture_tx()]);
@@ -1216,7 +1222,10 @@ async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
         ))
         .unwrap();
     let store = store.into_shared();
-    let tenants = [(far.clone(), far_handle), (near.clone(), near_handle)];
+    let tenants = live_tenants(
+        &store,
+        [(far.clone(), far_handle), (near.clone(), near_handle)],
+    );
     let state = ScanState::default();
     for _ in 0..2 {
         run_round(
@@ -1252,7 +1261,7 @@ async fn frontier_turn_fixture(
     SharedStore,
     FlakyKeyCustody,
     FakeDaemonClient,
-    Vec<(crate::store::TenantId, WalletHandle)>,
+    Vec<(crate::store::TenantId, LiveWallet)>,
 ) {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
@@ -1274,7 +1283,8 @@ async fn frontier_turn_fixture(
                 "UPDATE tenants SET scanned_through_height = {cursor} WHERE id = '{tenant}'"
             ))
             .unwrap();
-        tenants.push((tenant, handle));
+        let live = LiveWallet::of_store(&store, &tenant, handle);
+        tenants.push((tenant, live));
     }
     (store.into_shared(), custody, fake, tenants)
 }
@@ -1284,7 +1294,7 @@ async fn one_unit_round(
     store: &SharedStore,
     custody: &FlakyKeyCustody,
     fake: &FakeDaemonClient,
-    tenants: &[(crate::store::TenantId, WalletHandle)],
+    tenants: &[(crate::store::TenantId, LiveWallet)],
 ) {
     run_round(
         state,
@@ -1358,7 +1368,7 @@ async fn turns_alternate_while_the_frontier_has_a_store_to_scan() {
 async fn an_empty_frontier_keeps_its_turn_when_catch_up_cannot_move() {
     for registered in [false, true] {
         let (store, custody, fake, tenants) = frontier_turn_fixture(&[5]).await;
-        custody.fail(tenants[0].1);
+        custody.fail(tenants[0].1.handle);
         let registered_tenants = if registered { &*tenants } else { &[] };
         let state = ScanState::default();
         for round in 1..=10u64 {
@@ -1390,7 +1400,7 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     run_round_on(&store, &custody, &fake, &tenants).await;
     for h in 3..=11 {
         fake.push_block(
@@ -1473,7 +1483,7 @@ async fn run_round_on(
     store: &SharedStore,
     custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
-    tenants: &[(crate::store::TenantId, WalletHandle)],
+    tenants: &[(crate::store::TenantId, LiveWallet)],
 ) {
     run_round(
         &ScanState::default(),
@@ -1714,7 +1724,7 @@ async fn a_failed_mempool_body_fetch_retries_every_id_without_starving_other_sli
         .collect();
     let daemon = Lookups::new(&fake);
     daemon.fail_bodies.store(true, Ordering::Relaxed);
-    let tenants = [(tenant, handle)];
+    let tenants = live_tenants(&store, [(tenant, handle)]);
     let state = ScanState::default();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
@@ -1829,7 +1839,7 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     run_round_on(&store, &custody, &fake, &tenants).await;
     let start = cursor_of(&store, tenant.as_str()).unwrap();
     for h in 3..=7 {
@@ -1887,7 +1897,7 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     fake.set_mempool(vec![fixture_tx()]);
     let appended = store.lock().subscribe_order_events();
     let state = ScanState::default();
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let db = Db::over_shared(Arc::clone(&store));
     let report = fast_pass(&state, &inputs(&db, &custody, &fake, &tenants))
         .await
@@ -1977,7 +1987,8 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
     let mut tenants = Vec::new();
     for _ in 0..64 {
         let (tenant, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-        tenants.push((tenant, handle));
+        let live = LiveWallet::of_store(&store, &tenant, handle);
+        tenants.push((tenant, live));
     }
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
@@ -2007,7 +2018,7 @@ async fn the_fast_path_reports_an_unreadable_pool() {
     let fake = FakeDaemonClient::new();
     fake.set_online(false);
     let db = Db::over_shared(Arc::clone(&store));
-    let tenants = [(tenant, handle)];
+    let tenants = live_tenants(&store, [(tenant, handle)]);
     assert_eq!(
         fast_pass(
             &ScanState::default(),
@@ -2048,7 +2059,7 @@ struct Story {
     store: SharedStore,
     custody: FlakyKeyCustody,
     daemon: FakeDaemonClient,
-    tenants: Vec<(crate::store::TenantId, WalletHandle)>,
+    tenants: Vec<(crate::store::TenantId, LiveWallet)>,
     order: crate::store::OrderId,
     state: ScanState,
 }
@@ -2062,11 +2073,12 @@ impl Story {
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
+        let tenants = live_tenants(&store, [(tenant, handle)]).to_vec();
         Self {
             store: store.into_shared(),
             custody,
             daemon,
-            tenants: vec![(tenant, handle)],
+            tenants,
             order,
             state: ScanState::default(),
         }
@@ -2462,7 +2474,7 @@ async fn a_fork_not_yet_opened_stops_the_frontier_instead_of_spinning() {
     for i in 0..4 {
         fake.push_block(&format!("a{i}"), vec![]);
     }
-    let tenants = [(tenant, handle)];
+    let tenants = live_tenants(&store, [(tenant, handle)]);
     let state = ScanState::default();
     let db = Db::over_shared(Arc::clone(&store));
     run_round(
@@ -2625,7 +2637,7 @@ async fn backlog(
     SharedStore,
     FlakyKeyCustody,
     FakeDaemonClient,
-    [(crate::store::TenantId, WalletHandle); 1],
+    [(crate::store::TenantId, LiveWallet); 1],
 ) {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
@@ -2640,7 +2652,8 @@ async fn backlog(
     store
         .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 1")
         .unwrap();
-    (store.into_shared(), custody, fake, [(tenant, handle)])
+    let tenants = live_tenants(&store, [(tenant, handle)]);
+    (store.into_shared(), custody, fake, tenants)
 }
 
 /// A run of blocks fetched ahead outlasts the round that fetched it: later
@@ -3187,7 +3200,7 @@ async fn seeded_network(
     SharedStore,
     FlakyKeyCustody,
     FakeDaemonClient,
-    Vec<(crate::store::TenantId, WalletHandle)>,
+    Vec<(crate::store::TenantId, LiveWallet)>,
     Vec<crate::store::OrderId>,
 ) {
     let store = Store::open_in_memory().unwrap();
@@ -3201,7 +3214,8 @@ async fn seeded_network(
     for _ in 0..tenants {
         let (tenant, handle, order) =
             fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-        handles.push((tenant, handle));
+        let live = LiveWallet::of_store(&store, &tenant, handle);
+        handles.push((tenant, live));
         orders.push(order);
     }
     let store = store.into_shared();
@@ -3446,7 +3460,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
     let (failing_id, failing) = tenants
         .iter()
         .min_by(|a, b| a.0.cmp(&b.0))
-        .cloned()
+        .map(|(id, live)| (id.clone(), live.handle))
         .unwrap();
     custody.fail(failing);
     let mut txs = vec![fixture_tx()];
@@ -3849,7 +3863,7 @@ impl MoneroDaemonClient for PoolOnly<'_> {
 async fn a_failing_store_is_tried_once_per_pass_then_waits() {
     let (_guard, logs) = crate::test_log::capture();
     let (store, custody, fake, tenants, _) = seeded_network(1, 20).await;
-    let handle = tenants[0].1;
+    let handle = tenants[0].1.handle;
     custody.fail(handle);
     fake.set_mempool(vec![unrelated_tx(1), unrelated_tx(2)]);
     let state = ScanState::default();
@@ -4376,7 +4390,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
 #[tokio::test]
 async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_again() {
     let (store, custody, fake, tenants, orders) = seeded_network(2, 20).await;
-    let failing = tenants[1].1;
+    let failing = tenants[1].1.handle;
     custody.fail(failing);
     fake.push_block("b21", vec![unrelated_tx(1), fixture_tx(), unrelated_tx(2)]);
     let db = Db::over_shared(Arc::clone(&store));
@@ -4982,7 +4996,7 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
     let node = ThinLink::new(&fake, 4);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let state = ScanState::default();
     let db = Db::over_shared(Arc::clone(&store));
     let _ = run_round(
@@ -5051,7 +5065,7 @@ async fn a_block_request_gets_the_time_its_link_needs() {
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let state = ScanState::default();
     let db = Db::over_shared(Arc::clone(&store));
     let mut node = ThinLink::new(&fake, 500);
@@ -5211,7 +5225,7 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     // The store and its order arrive; its payment is in the pool.
     let (tenant, handle, order) =
         fixture_tenant_shared(&store, &custody, crate::now_unix() + 3600).await;
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     fake.set_mempool(vec![fixture_tx()]);
     run_round(
         &state,
@@ -5299,7 +5313,7 @@ async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
     assert!(cursor_of(&store, tenant.as_str()) < Some(paid_in));
 
     // Its keys are registered: it catches up on the whole block it missed.
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     run_round(
         &state,
         &inputs(&db, &custody, &node, &tenants),
@@ -6013,7 +6027,7 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
             .collect(),
     );
     let store = store.into_shared();
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let state = ScanState::default();
     let db = Db::over_shared(Arc::clone(&store));
     for _ in 0..20 {

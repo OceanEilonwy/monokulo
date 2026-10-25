@@ -42,7 +42,6 @@
     reason = "an e2e test harness: it fails by panicking and talks over stdout"
 )]
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -65,7 +64,7 @@ use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::daemon_rpc::RpcDaemonClient;
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
-use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
+use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletHandles};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::scanner_status::new_scanner_status_map;
@@ -285,8 +284,7 @@ async fn main() {
         });
     }
     let fallback_daemon = Arc::new(FallbackDaemonClient::new(nodes));
-    let wallet_handles: Arc<RwLock<HashMap<engine::store::TenantId, WalletHandle>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    let wallet_handles: Arc<WalletHandles> = Arc::default();
 
     let engine_state = EngineAppState {
         db: engine::store::Database::inline(Arc::clone(&store)),
@@ -432,7 +430,7 @@ async fn main() {
                 let tenants: Vec<(engine::store::TenantId, WalletHandle)> = wallet_handles
                     .read()
                     .iter()
-                    .map(|(id, h)| (id.clone(), *h))
+                    .map(|(id, live)| (id.clone(), live.handle))
                     .collect();
                 {
                     let _guard = network_lock.lock().await;
@@ -581,7 +579,7 @@ async fn main() {
     {
         let store = store.lock();
         for tenant in store.list_active_tenants().unwrap() {
-            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+            while store.peek_next_minor_index(&tenant.id).unwrap().minor_index < FIRST_MINOR_INDEX {
                 store.allocate_minor_index(&tenant.id).unwrap();
             }
         }

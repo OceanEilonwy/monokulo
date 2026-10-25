@@ -5,7 +5,7 @@ use crate::http::{AppState, TEST_ENGINE_TOKEN};
 use crate::property_support::{
     config, custody_arc, hold_worker, runtime, wait_queued, GateCustody, TempFile,
 };
-use crate::scanner::tests::{fixture_tenant, fixture_tx, FIXTURE_AMOUNT_PICONERO};
+use crate::scanner::tests::{fixture_tenant, fixture_tx, live_tenants, FIXTURE_AMOUNT_PICONERO};
 use crate::status::OrderStatus;
 use crate::store::{db::Class, Database, Db, ReadStorePool, Store};
 use crate::work::{fast_pass, run_round, RoundInputs, ScanState};
@@ -79,10 +79,10 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
     let mut app = AppState::for_tests_with_store(Arc::clone(&store));
     app.db = database;
     app.custody.backends = custody_arc(&custody);
-    app.custody
-        .wallet_handles
-        .write()
-        .insert(tenant.clone(), handle);
+    app.custody.wallet_handles.write().insert(
+        tenant.clone(),
+        crate::key_custody::LiveWallet::of_store(&store.lock(), &tenant, handle),
+    );
     app.networks.daemons =
         crate::engine_settings::Daemons::fixed(std::collections::HashMap::from([(
             monero::Network::Mainnet,
@@ -92,7 +92,7 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
             }])),
         )]));
     let router = crate::http::build_router(app, 1 << 20);
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let state = ScanState::default();
     let input = RoundInputs {
         db: &db,
@@ -347,7 +347,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     daemon.push_block(&hex::encode([1; 32]), vec![]);
     daemon.push_block(&hash2, vec![]);
     let state = ScanState::default();
-    let tenants = [(tenant.clone(), handle)];
+    let tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let input = RoundInputs {
         db: &db,
         custody: custody.as_ref(),
@@ -484,7 +484,7 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     .unwrap();
     // The old generation has no remaining callers or claim guards. Its worker
     // effects have drained. New state must catch up with the replacement handle.
-    let new_tenants = [(tenant.clone(), handle)];
+    let new_tenants = live_tenants(&store, [(tenant.clone(), handle)]);
     let recovery = ScanState::default();
     let recovery_input = RoundInputs {
         tenants: &new_tenants,

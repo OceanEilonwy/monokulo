@@ -18,14 +18,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::RwLock;
-
 #[cfg(feature = "snp")]
 use crate::engine_settings::SnpBootConfig;
 use crate::engine_settings::{Daemons, EngineSettings, ALL, SERVER_TOKEN, STANDALONE_ONLY};
 use crate::http::rate_limit::ApiRateLimits;
 use crate::http::{build_router, AppState};
-use crate::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
+use crate::key_custody::{CustodyRouter, KeyCustody, LiveWallet, WalletHandles};
 #[cfg(feature = "snp")]
 use crate::key_custody::{SnpSlot, StoreWraps};
 use crate::store::{SharedStore, Store, StoreError, TenantId};
@@ -220,7 +218,7 @@ impl Engine {
         let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&custody_router);
         let default_backend = custody_router.default_backend();
         let scanner_status = crate::scanner_status::new_scanner_status_map();
-        let wallet_handles = Arc::new(RwLock::new(
+        let wallet_handles = Arc::new(WalletHandles::from(
             register_all_tenants(&store, &key_custody).await,
         ));
 
@@ -399,7 +397,7 @@ fn warn_about_stranded_stores(store: &SharedStore, custody_router: &CustodyRoute
 async fn register_all_tenants(
     store: &SharedStore,
     key_custody: &Arc<dyn KeyCustody>,
-) -> HashMap<TenantId, WalletHandle> {
+) -> HashMap<TenantId, LiveWallet> {
     let deadline = tokio::time::Instant::now() + REGISTRATION_ALLOWANCE;
     // A database error here must not stop the engine at start: retry with
     // backoff until the store answers, logging each failure.
@@ -438,7 +436,13 @@ async fn register_all_tenants(
         .await
         {
             Ok(Ok(handle)) => {
-                handles.insert(tenant.id, handle);
+                handles.insert(
+                    tenant.id,
+                    LiveWallet {
+                        wallet_id: tenant.wallet_id,
+                        handle,
+                    },
+                );
             }
             Ok(Err(e)) => {
                 tracing::error!(store.id = %tenant.id, error = %e, "failed to register store with key custody");

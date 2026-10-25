@@ -41,7 +41,7 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::daemon::{BlockOutline, ChainBlock, ChainHeader, ScanTx};
-use crate::key_custody::{ScanIndices, ScanInput, WalletHandle};
+use crate::key_custody::{LiveWallet, ScanIndices, ScanInput};
 use crate::scanner::{
     record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
 };
@@ -1181,14 +1181,14 @@ async fn scan_block(
             })
         })
         .await?;
-    let scannable: Vec<(TenantId, WalletHandle, ScanIndices)> = plan
+    let scannable: Vec<(TenantId, LiveWallet, ScanIndices)> = plan
         .members
         .into_iter()
         .filter_map(|(id, window)| {
             round
                 .handles
                 .get(id.as_str())
-                .map(|handle| (id, *handle, ScanIndices::new(window)))
+                .map(|live| (id, (*live).clone(), ScanIndices::new(window)))
         })
         .collect();
     if scannable.is_empty() && group == Group::CatchUp {
@@ -1383,7 +1383,7 @@ impl BlockScan {
     /// Every tenant starts at its checkpoint for this very block, else at
     /// the first transaction.
     fn new(
-        scannable: &[(TenantId, WalletHandle, ScanIndices)],
+        scannable: &[(TenantId, LiveWallet, ScanIndices)],
         checkpoints: &HashMap<TenantId, BlockCheckpoint>,
         hash: &str,
         tx_count: usize,
@@ -1411,10 +1411,10 @@ impl BlockScan {
     /// `start..end`, each with how many of those it is already past.
     fn due<'a>(
         &self,
-        scannable: &'a [(TenantId, WalletHandle, ScanIndices)],
+        scannable: &'a [(TenantId, LiveWallet, ScanIndices)],
         start: usize,
         end: usize,
-    ) -> Vec<(&'a (TenantId, WalletHandle, ScanIndices), usize)> {
+    ) -> Vec<(&'a (TenantId, LiveWallet, ScanIndices), usize)> {
         scannable
             .iter()
             .filter(|(id, _, _)| !self.failed.contains(id))
@@ -1738,7 +1738,7 @@ impl Source {
 struct ScanAt<'s> {
     height: u64,
     until: Option<Instant>,
-    scannable: &'s [(TenantId, WalletHandle, ScanIndices)],
+    scannable: &'s [(TenantId, LiveWallet, ScanIndices)],
 }
 
 /// Scans transactions `offset..offset + txs.len()` of the block for every

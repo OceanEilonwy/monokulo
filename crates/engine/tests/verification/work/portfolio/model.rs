@@ -42,7 +42,7 @@ impl Ledger<'_> {
     pub(super) fn ready(
         &self,
         s: &Store,
-        tenants: &[(TenantId, crate::key_custody::WalletHandle)],
+        tenants: &[(TenantId, crate::key_custody::LiveWallet)],
         tip: u64,
     ) -> bool {
         let Self {
@@ -103,7 +103,7 @@ impl Ledger<'_> {
         &self,
         s: &Store,
         daemon: &World,
-        tenants: &[(TenantId, crate::key_custody::WalletHandle)],
+        tenants: &[(TenantId, crate::key_custody::LiveWallet)],
         tip: u64,
         oracle: &mut Oracle,
     ) {

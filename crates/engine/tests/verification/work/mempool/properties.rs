@@ -1,8 +1,9 @@
 //! Reservations use real scan and database boundaries; cancellation must leave
 //! retryable work, while parallel live callers cannot duplicate custody scans.
 use super::*;
+use crate::key_custody::WalletHandle;
 use crate::property_support::{config, hold_worker, runtime, wait_queued, GateCustody, TempFile};
-use crate::scanner::tests::{fixture_tenant, fixture_tx};
+use crate::scanner::tests::{fixture_tenant, fixture_tx, live_tenants, unrecorded};
 use crate::store::{Db, Store, TenantId};
 use proptest::prelude::*;
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ async fn competing_scans(boundary: u8) {
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
     let daemon = crate::daemon::fake::FakeDaemonClient::new();
-    let tenants = [(id.clone(), handle)];
+    let tenants = live_tenants(&store, [(id.clone(), handle)]);
     let inputs = RoundInputs {
         db: &db,
         custody: &custody,
@@ -29,7 +30,7 @@ async fn competing_scans(boundary: u8) {
     let state = ScanState::default();
     let tx = fixture_tx();
     let txid = crate::daemon::fake::tx_id_hex(&tx);
-    let window = (id.clone(), handle, ScanIndices::range(0..3));
+    let window = (id.clone(), tenants[0].1.clone(), ScanIndices::range(0..3));
     let due = [&window];
     custody.scan_mode.store(2, Ordering::SeqCst);
     let mut first = Box::pin(scan_and_record(&state, &inputs, &tx, &txid, &due, None));
@@ -166,10 +167,10 @@ fn ownership_survives_pool_eviction_and_serializes_changed_windows() {
     let state = MempoolState::default();
     let old = (
         TenantId::new("tenant"),
-        WalletHandle::generate(),
+        unrecorded(WalletHandle::generate()),
         ScanIndices::new([1]),
     );
-    let new = (old.0.clone(), old.1, ScanIndices::new([1, 2]));
+    let new = (old.0.clone(), old.1.clone(), ScanIndices::new([1, 2]));
     let (mut owner, claimed) = state.claim("tx", &[&old]);
     assert_eq!(claimed.len(), 1);
     state.forget();
@@ -188,12 +189,12 @@ fn unrelated_transactions_and_tenants_are_not_serialized() {
     let state = MempoolState::default();
     let a = (
         TenantId::new("a"),
-        WalletHandle::generate(),
+        unrecorded(WalletHandle::generate()),
         ScanIndices::new([1]),
     );
     let b = (
         TenantId::new("b"),
-        WalletHandle::generate(),
+        unrecorded(WalletHandle::generate()),
         ScanIndices::new([1]),
     );
     let (one, _) = state.claim("tx-1", &[&a]);
@@ -210,12 +211,12 @@ fn partially_completed_batches_and_panics_release_only_unfinished_work() {
     let state = MempoolState::default();
     let a = (
         TenantId::new("a"),
-        WalletHandle::generate(),
+        unrecorded(WalletHandle::generate()),
         ScanIndices::new([1]),
     );
     let b = (
         TenantId::new("b"),
-        WalletHandle::generate(),
+        unrecorded(WalletHandle::generate()),
         ScanIndices::new([1]),
     );
     let (mut owner, claimed) = state.claim("tx", &[&a, &b]);
@@ -238,12 +239,12 @@ fn simultaneous_threads_cannot_both_reserve_the_same_scan() {
         let state = MempoolState::default();
         let a = (
             TenantId::new("tenant"),
-            WalletHandle::generate(),
+            unrecorded(WalletHandle::generate()),
             ScanIndices::new([1]),
         );
         let b = (
             a.0.clone(),
-            a.1,
+            a.1.clone(),
             ScanIndices::new(if changed_window { vec![1, 2] } else { vec![1] }),
         );
         let barrier = std::sync::Barrier::new(2);
@@ -287,7 +288,7 @@ async fn entry_point_contention(fast_first: bool, cancel: bool, competitors: usi
     let daemon = crate::daemon::fake::FakeDaemonClient::new();
     daemon.push_block("reservation-tip", vec![]);
     daemon.set_mempool(vec![fixture_tx()]);
-    let tenants = [(id.clone(), handle)];
+    let tenants = live_tenants(&store, [(id.clone(), handle)]);
     let inputs = RoundInputs {
         db: &db,
         custody: &custody,
@@ -383,7 +384,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     let (b, bh, bo) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
     let daemon = crate::daemon::fake::FakeDaemonClient::new();
-    let tenants = [(a.clone(), ah), (b.clone(), bh)];
+    let tenants = live_tenants(&store, [(a.clone(), ah), (b.clone(), bh)]);
     let inputs = RoundInputs {
         db: &db,
         custody: &custody,
@@ -407,13 +408,13 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     let state = ScanState::default();
     let tx = fixture_tx();
     let txid = crate::daemon::fake::tx_id_hex(&tx);
-    let good = (a.clone(), ah, ScanIndices::range(0..3));
+    let good = (a.clone(), tenants[0].1.clone(), ScanIndices::range(0..3));
     let impaired = (
         b.clone(),
         if failure == 0 {
-            WalletHandle::generate()
+            unrecorded(WalletHandle::generate())
         } else {
-            bh
+            tenants[1].1.clone()
         },
         if failure == 2 {
             ScanIndices::new([0])
@@ -462,7 +463,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
             .execute_raw_for_test("DROP TRIGGER batch_fault;")
             .unwrap();
     }
-    let repaired = (b.clone(), bh, ScanIndices::range(0..3));
+    let repaired = (b.clone(), tenants[1].1.clone(), ScanIndices::range(0..3));
     let retry = scan_and_record(&state, &inputs, &tx, &txid, &[&good, &repaired], Some(1)).await;
     assert_eq!(retry.touched, 1);
     assert!(retry.failed.is_empty());
@@ -542,10 +543,10 @@ fn a_completion_for_another_window_cannot_publish_or_release_its_owner() {
     let state = MempoolState::default();
     let old = (
         TenantId::new("tenant"),
-        WalletHandle::generate(),
+        unrecorded(WalletHandle::generate()),
         ScanIndices::new([1]),
     );
-    let newer = (old.0.clone(), old.1, ScanIndices::new([1, 2]));
+    let newer = (old.0.clone(), old.1.clone(), ScanIndices::new([1, 2]));
     let (mut owner, claimed) = state.claim("tx", &[&old]);
     assert_eq!(claimed.len(), 1);
     owner.complete(&old.0, newer.2.generation());
@@ -584,10 +585,10 @@ fn reservation_decision_grid_checks_completed_busy_and_changed_windows() {
         let id = TenantId::new("owner");
         let window = (
             id.clone(),
-            WalletHandle::generate(),
+            unrecorded(WalletHandle::generate()),
             ScanIndices::new([minor]),
         );
-        let changed = (id.clone(), window.1, ScanIndices::new([minor + 1]));
+        let changed = (id.clone(), window.1.clone(), ScanIndices::new([minor + 1]));
         let (mut owner, due) = state.claim("tx", &[&window]);
         assert_eq!(
             due.len(),
@@ -669,7 +670,7 @@ mod properties {
                         if let Some((guard,t,id,_)) = owners[owner].take() { drop(guard); busy.remove(&(t,id)); }
                         let window = ScanIndices::new([window]);
                         let generation = window.generation();
-                        let tuple = (id.clone(),WalletHandle::generate(),window);
+                        let tuple = (id.clone(),unrecorded(WalletHandle::generate()),window);
                         let expected = !busy.contains_key(&key) && done.get(&key)!=Some(&generation);
                         let (guard,claimed) = state.claim(&txid,&[&tuple]);
                         prop_assert_eq!(claimed.len(),usize::from(expected));
@@ -700,15 +701,16 @@ mod properties {
             callers in prop::collection::vec((0u8..4, 1u8..=255, any::<u32>()), 2..9),
         ) {
             let state = MempoolState::default();
-            let handles: [WalletHandle; 8] = std::array::from_fn(|_| WalletHandle::generate());
+            let handles: [LiveWallet; 8] = std::array::from_fn(|_| unrecorded(WalletHandle::generate()));
             let barrier = std::sync::Barrier::new(callers.len() + 1);
             let expected: std::collections::BTreeSet<_> = callers.iter().flat_map(|(tx,mask,_)| (0..8u8).filter(move |i| mask & (1 << i) != 0).map(move |i| (format!("tx-{tx}"), TenantId::new(format!("tenant-{i}"))))).collect();
             std::thread::scope(|scope| {
                 let jobs: Vec<_> = callers.iter().map(|&(tx,mask,window)| {
                     let state = &state;
                     let barrier = &barrier;
+                    let handles = &handles;
                     scope.spawn(move || {
-                        let windows: Vec<_> = (0..8u8).filter(|i| mask & (1 << i) != 0).map(|i| (TenantId::new(format!("tenant-{i}")),handles[usize::from(i)],ScanIndices::new([window]))).collect();
+                        let windows: Vec<_> = (0..8u8).filter(|i| mask & (1 << i) != 0).map(|i| (TenantId::new(format!("tenant-{i}")),handles[usize::from(i)].clone(),ScanIndices::new([window]))).collect();
                         let txid = format!("tx-{tx}");
                         barrier.wait();
                         let (guard,claimed) = state.claim(&txid,&windows.iter().collect::<Vec<_>>());

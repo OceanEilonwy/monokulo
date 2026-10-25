@@ -24,7 +24,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::daemon::MoneroDaemonClient;
-use crate::key_custody::{KeyCustody, WalletHandle};
+use crate::key_custody::{KeyCustody, LiveWallet};
 use crate::scanner::ScannerError;
 use crate::store::db::Class;
 use crate::store::{Db, Store};
@@ -141,7 +141,7 @@ pub struct RoundInputs<'a> {
     pub network: monero::Network,
     /// Tenants with registered keys. A tenant missing here isn't scanned,
     /// and its cursor stays where it is until it is registered.
-    pub tenants: &'a [(crate::store::TenantId, WalletHandle)],
+    pub tenants: &'a [(crate::store::TenantId, LiveWallet)],
     pub reorg_check_depth: u64,
     pub grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
@@ -335,7 +335,7 @@ pub(crate) struct Round<'a> {
     /// The tip block's id, when the node gave it with the height: reorg
     /// detection then costs no lookup while the recorded chain ends there.
     pub tip_hash: Option<String>,
-    pub handles: HashMap<&'a str, WalletHandle>,
+    pub handles: HashMap<&'a str, &'a LiveWallet>,
     /// The mempool's transaction ids, when this round's poll succeeded. The
     /// vanished-payment check only runs on a real answer, never on "we
     /// couldn't look".
@@ -465,7 +465,7 @@ async fn run_round_at(
         handles: inputs
             .tenants
             .iter()
-            .map(|(id, handle)| (id.as_str(), *handle))
+            .map(|(id, live)| (id.as_str(), live))
             .collect(),
         pool_txids: None,
         chain: chain::ChainRound::default(),

@@ -24,9 +24,15 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
         .unwrap();
     let tx = fixture_tx();
     let txid = crate::daemon::fake::tx_id_hex(&tx);
-    let scan = scan_transaction_as(&custody, handle, &txid, &tx, 0..3)
-        .await
-        .unwrap();
+    let scan = scan_transaction_as(
+        &custody,
+        &LiveWallet::of_store(&store, &tenant, handle),
+        &txid,
+        &tx,
+        0..3,
+    )
+    .await
+    .unwrap();
     assert!(
         !scan.matches.is_empty(),
         "real fixture must reach payment publication"

@@ -459,14 +459,62 @@ impl<D: MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D> {
 /// `src/key_custody/plain.rs`'s tests - it pays subaddress 0/1. Reused here so
 /// scanner-level tests exercise real crypto end to end, not a stub that assumes
 /// matching works.
-/// Scans a whole transaction under the id it hashes to.
+/// `handle` as the keys of no store's wallet: for scans that are looked at,
+/// not recorded (a store records only what its own wallet's keys found).
+pub(crate) fn unrecorded(handle: WalletHandle) -> LiveWallet {
+    LiveWallet {
+        wallet_id: String::new(),
+        handle,
+    }
+}
+
+/// A store, or a shared one, whose stores' wallets can be read.
+pub(crate) trait WalletsOf {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String;
+}
+
+impl WalletsOf for Store {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
+        self.wallet_of(tenant_id)
+            .unwrap()
+            .expect("the store exists")
+    }
+}
+
+impl WalletsOf for crate::store::SharedStore {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
+        self.lock().wallet(tenant_id)
+    }
+}
+
+/// `tenants` as a round is given them: each handle with the wallet its store
+/// takes payments into now.
+pub(crate) fn live_tenants<const N: usize>(
+    store: &impl WalletsOf,
+    tenants: [(crate::store::TenantId, WalletHandle); N],
+) -> [(crate::store::TenantId, LiveWallet); N] {
+    tenants.map(|(id, handle)| {
+        let wallet_id = store.wallet(&id);
+        (id, LiveWallet { wallet_id, handle })
+    })
+}
+
+/// Scans a whole transaction under the id it hashes to, for what it pays
+/// (`unrecorded`).
 async fn scan_transaction(
     key_custody: &dyn KeyCustody,
     handle: WalletHandle,
     tx: &Transaction,
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
-    scan_transaction_as(key_custody, handle, &tx_id_hex(tx), tx, minor_range).await
+    scan_transaction_as(
+        key_custody,
+        &unrecorded(handle),
+        &tx_id_hex(tx),
+        tx,
+        minor_range,
+    )
+    .await
 }
 
 /// Scans a whole transaction for one store and records what it pays.
@@ -484,7 +532,8 @@ async fn scan_transaction_for_tenant(
     seen_at: i64,
     block_height: Option<u64>,
 ) -> Result<std::collections::BTreeSet<crate::store::OrderId>> {
-    let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
+    let live = LiveWallet::of_store(store, tenant_id, handle);
+    let scan = scan_transaction_as(key_custody, &live, &tx_id_hex(tx), tx, minor_range).await?;
     record_scan_match(store, tenant_id, &scan, seen_at, block_height)
 }
 
@@ -833,12 +882,12 @@ async fn a_transaction_scanned_for_several_stores_is_described_only_to_the_one_i
     let tenants = [
         (
             crate::store::TenantId::new("unpaid"),
-            unpaid,
+            unrecorded(unpaid),
             ScanIndices::new([1]),
         ),
         (
             crate::store::TenantId::new("paid"),
-            paid,
+            unrecorded(paid),
             ScanIndices::new([1]),
         ),
     ];
@@ -886,7 +935,7 @@ async fn a_run_of_transactions_is_scanned_for_each_store_from_where_it_had_got_t
     let store = |name: &str| {
         (
             crate::store::TenantId::new(name),
-            wallet,
+            unrecorded(wallet),
             ScanIndices::new([1]),
         )
     };
@@ -934,9 +983,14 @@ async fn a_run_of_transactions_is_scanned_for_each_store_from_where_it_had_got_t
 async fn a_block_checkpoint_stages_matches_until_commit_and_a_changed_hash_drops_them() {
     let (store, custody, handle, tenant_id, order_id) = setup().await;
     let window = ScanIndices::new([1]);
+    let live = LiveWallet::of_store(
+        &store,
+        &shared::ids::TenantId::new(tenant_id.clone()),
+        handle,
+    );
     let scan = scan_transaction_in_window(
         &custody,
-        handle,
+        &live,
         &tx_id_hex(&fixture_tx()),
         &fixture_tx(),
         &window,
@@ -6562,6 +6616,10 @@ async fn one_transactions_outputs_are_routed_to_whichever_order_owns_each_index(
                 amount_piconero: Some(100),
             },
         ],
+        wallet_id: store
+            .wallet_of(&shared::ids::TenantId::new(tenant_id.clone()))
+            .unwrap()
+            .unwrap(),
         txid: "tx_paying_two_orders".into(),
         key_images_json: "[]".into(),
         output_keys: HashMap::default(),
@@ -6720,12 +6778,17 @@ async fn an_amount_that_only_decrypts_on_a_later_tick_is_recorded_then_never_unr
     // failing later must leave the recorded payment exactly as it is, since a
     // payment is only ever removed on affirmative double-spend proof.
     let (store, _key_custody, _handle, tenant_id, order_id) = setup().await;
+    let wallet_id = store
+        .wallet_of(&shared::ids::TenantId::new(tenant_id.clone()))
+        .unwrap()
+        .unwrap();
     let undecryptable = ScanResult {
         matches: vec![MatchedOutput {
             output_index: 0,
             subaddress_index: SubaddressIndex { major: 0, minor: 1 },
             amount_piconero: None,
         }],
+        wallet_id: wallet_id.clone(),
         txid: "tx_flaky_amount".into(),
         key_images_json: "[]".into(),
         output_keys: HashMap::default(),
@@ -6736,6 +6799,7 @@ async fn an_amount_that_only_decrypts_on_a_later_tick_is_recorded_then_never_unr
             subaddress_index: SubaddressIndex { major: 0, minor: 1 },
             amount_piconero: Some(4_242),
         }],
+        wallet_id,
         txid: "tx_flaky_amount".into(),
         key_images_json: "[]".into(),
         output_keys: HashMap::default(),
@@ -8559,7 +8623,7 @@ async fn keys_that_failed_to_register_are_registered_by_the_retry() {
         .unwrap()
         .tenant;
     let store = store.into_shared();
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     assert_eq!(
         register_missing_wallets_checking_state(
             &store,
@@ -8753,7 +8817,7 @@ async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its
             custody: &custody,
             daemon: &daemon,
             network: Network::Mainnet,
-            tenants: &tenants,
+            tenants: &live_tenants(&store, tenants.clone()),
             reorg_check_depth: 20,
             grace_period_seconds: 3600,
             scan_chunk_memory_budget_mb: crate::engine_settings::EngineSettings::defaults()
@@ -8984,7 +9048,13 @@ async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_
                 .unwrap()
                 .unwrap()
                 .next_minor_index;
-            let scan = scan_transaction(&custody, a_handle, &fixture_tx(), 0..next)
+            let a_live = LiveWallet::of_store(
+                &store.lock(),
+                &shared::ids::TenantId::new(a.to_string()),
+                a_handle,
+            );
+            let tx = fixture_tx();
+            let scan = scan_transaction_as(&custody, &a_live, &tx_id_hex(&tx), &tx, 0..next)
                 .await
                 .unwrap();
             record_scan_match(
@@ -9189,7 +9259,7 @@ async fn a_pruned_transaction_scans_to_the_same_result_as_the_whole_one() {
     let from_whole = scan_transaction(&key_custody, handle, &whole, 0..3)
         .await
         .unwrap();
-    let from_pruned = scan_transaction_as(&key_custody, handle, &txid, &pruned, 0..3)
+    let from_pruned = scan_transaction_as(&key_custody, &unrecorded(handle), &txid, &pruned, 0..3)
         .await
         .unwrap();
     assert_eq!(from_whole.matches.len(), 1);
@@ -9339,7 +9409,7 @@ async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_onc
         );
     }
     let store = store.into_shared();
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     let handled_epoch = AtomicU64::new(0);
     assert_eq!(
         register_missing_wallets_checking_state(
@@ -9352,7 +9422,7 @@ async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_onc
         .await,
         3
     );
-    let before: Vec<WalletHandle> = ids.iter().map(|id| handles.read()[id]).collect();
+    let before: Vec<WalletHandle> = ids.iter().map(|id| handles.read()[id].handle).collect();
     assert_eq!(
         register_missing_wallets_checking_state(
             &store,
@@ -9379,7 +9449,7 @@ async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_onc
         3
     );
     for (id, old) in ids.iter().zip(before) {
-        assert_ne!(handles.read()[id], old, "a fresh handle");
+        assert_ne!(handles.read()[id].handle, old, "a fresh handle");
     }
     // A second network's loop noticing the same epoch doesn't clear again.
     assert_eq!(
@@ -9429,7 +9499,7 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         ids.insert(backend, tenant.id);
     }
     let store = store.into_shared();
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     let handled_epoch = AtomicU64::new(0);
     assert_eq!(
         register_missing_wallets_checking_state(
@@ -9442,7 +9512,7 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         .await,
         2
     );
-    let plain_handle = handles.read()[&ids["plain"]];
+    let plain_handle = handles.read()[&ids["plain"]].handle;
 
     // The snp backend is turned off: its store drops out, quietly,
     // and the other store keeps its handle.
@@ -9462,7 +9532,7 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         0
     );
     assert!(!handles.read().contains_key(&ids["snp"]));
-    assert_eq!(handles.read()[&ids["plain"]], plain_handle);
+    assert_eq!(handles.read()[&ids["plain"]].handle, plain_handle);
 
     // Turned back on: the store is registered again from its sealed keys.
     router.replace(both, "plain");
@@ -9477,13 +9547,13 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         .await,
         1
     );
-    let snp_handle = handles.read()[&ids["snp"]];
+    let snp_handle = handles.read()[&ids["snp"]].handle;
     router
         .derive_subaddress(snp_handle, SubaddressIndex::default(), Network::Mainnet)
         .await
         .unwrap();
     assert_eq!(
-        handles.read()[&ids["plain"]],
+        handles.read()[&ids["plain"]].handle,
         plain_handle,
         "never disturbed"
     );
@@ -9520,7 +9590,7 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
         .unwrap()
         .tenant;
     let store = store.into_shared();
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     let handled_epoch = AtomicU64::new(0);
     assert_eq!(
         register_missing_wallets_checking_state(
@@ -9536,15 +9606,19 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
 
     // The backend loses the store without saying so (no epoch change):
     // the next scan call finds out, and the next tick registers it again.
-    let handle = handles.read()[&tenant.id];
+    let handle = handles.read()[&tenant.id].handle;
     snp.remove_wallet(handle).await.unwrap();
     let tx = unrelated_tx(1);
     let window = ScanIndices::range(0..1);
-    assert!(
-        scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
-            .await
-            .is_err()
-    );
+    assert!(scan_transaction_in_window(
+        &router,
+        &unrecorded(handle),
+        &tx_id_hex(&tx),
+        &tx,
+        &window
+    )
+    .await
+    .is_err());
     assert_eq!(
         register_missing_wallets_checking_state(
             &store,
@@ -9556,8 +9630,8 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
         .await,
         1
     );
-    let handle = handles.read()[&tenant.id];
-    scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+    let handle = handles.read()[&tenant.id].handle;
+    scan_transaction_in_window(&router, &unrecorded(handle), &tx_id_hex(&tx), &tx, &window)
         .await
         .unwrap();
 
@@ -9582,12 +9656,12 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
         .await,
         1
     );
-    let handle = handles.read()[&tenant.id];
+    let handle = handles.read()[&tenant.id].handle;
     new_snp
         .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
         .await
         .unwrap();
-    scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+    scan_transaction_in_window(&router, &unrecorded(handle), &tx_id_hex(&tx), &tx, &window)
         .await
         .unwrap();
 }
@@ -9626,7 +9700,7 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
         ids.insert(network, tenant.id);
     }
     let store = store.into_shared();
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     for network in ["mainnet", "stagenet"] {
         assert_eq!(
             register_missing_wallets_checking_state(
@@ -9662,7 +9736,7 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
             failed: 0
         }
     );
-    let stale = handles.read()[&ids["stagenet"]];
+    let stale = handles.read()[&ids["stagenet"]].handle;
     assert!(
         !router.handle_is_live(stale),
         "still there, so stagenet's loop sees it lost and retries soon"
@@ -9672,7 +9746,7 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
             .await,
         1
     );
-    assert!(router.handle_is_live(handles.read()[&ids["stagenet"]]));
+    assert!(router.handle_is_live(handles.read()[&ids["stagenet"]].handle));
 }
 
 // -- Scale (task 7.12). Ignored by default: run with
@@ -9776,6 +9850,7 @@ async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
             subaddress_index: SubaddressIndex { major: 0, minor: 1 },
             amount_piconero: None,
         }],
+        wallet_id: store.wallet(&shared::ids::TenantId::new(tenant_id.clone())),
         txid: "ab".repeat(32),
         key_images_json: "[]".into(),
         output_keys: HashMap::default(),
@@ -10241,7 +10316,7 @@ async fn registration_carries_on_when_the_state_check_fails_or_hangs() {
         let (_guard, logs) = crate::test_log::capture();
         let custody = ScriptedCustody::new(check, Behaviour::Answer);
         let (store, _) = stores_with_keys(&custody, 2).await;
-        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handles = WalletHandles::default();
         let epoch = AtomicU64::new(0);
         let db = crate::store::Db::over_shared(Arc::clone(&store));
         let pass = register_missing_wallets_reporting(
@@ -10274,7 +10349,7 @@ async fn registration_that_cannot_list_stores_is_retried() {
     let (_guard, logs) = crate::test_log::capture();
     let custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
     let (store, _) = stores_with_keys(&custody, 1).await;
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     let db = crate::store::Db::over_shared(Arc::clone(&store));
     store.lock().fail_nth_access(Some(0));
     let pass =
@@ -10313,7 +10388,7 @@ async fn registrations_fail(register: Behaviour) {
         let (_guard, logs) = crate::test_log::capture();
         let custody = ScriptedCustody::new(Behaviour::Answer, register);
         let (store, _) = stores_with_keys(&custody, 3).await;
-        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handles = WalletHandles::default();
         let db = crate::store::Db::over_shared(Arc::clone(&store));
         let started = tokio::time::Instant::now();
         let pass =
@@ -10348,19 +10423,26 @@ async fn registrations_fail(register: Behaviour) {
 async fn a_registration_that_loses_the_race_is_removed() {
     let mut custody = ScriptedCustody::new(Behaviour::Answer, Behaviour::Answer);
     let (store, ids) = stores_with_keys(&custody, 1).await;
-    let handles = Arc::new(parking_lot::RwLock::new(HashMap::new()));
-    let sealed = store
+    let handles = Arc::new(WalletHandles::default());
+    let row = store
         .lock()
         .get_tenant_by_id(&shared::ids::TenantId::new(ids[0].to_string()))
         .unwrap()
-        .unwrap()
-        .sealed_key_material;
-    let earlier = custody.inner.unseal_and_register(&sealed).await.unwrap();
+        .unwrap();
+    let earlier = custody
+        .inner
+        .unseal_and_register(&row.sealed_key_material)
+        .await
+        .unwrap();
     let racing = Arc::clone(&handles);
     custody.on_register = Box::new(move |id| {
-        racing
-            .write()
-            .insert(crate::store::TenantId::new(id), earlier);
+        racing.write().insert(
+            crate::store::TenantId::new(id),
+            LiveWallet {
+                wallet_id: row.wallet_id.clone(),
+                handle: earlier,
+            },
+        );
     });
     let db = crate::store::Db::over_shared(Arc::clone(&store));
     let pass =
@@ -10372,7 +10454,11 @@ async fn a_registration_that_loses_the_race_is_removed() {
             failed: 0
         }
     );
-    assert_eq!(handles.read()[&ids[0]], earlier, "the first handle in wins");
+    assert_eq!(
+        handles.read()[&ids[0]].handle,
+        earlier,
+        "the first handle in wins"
+    );
 }
 
 /// A match against an index no order has is nothing to stage; a staging
@@ -10380,12 +10466,14 @@ async fn a_registration_that_loses_the_race_is_removed() {
 #[tokio::test]
 async fn staging_skips_unknown_indices_and_reports_write_failures() {
     let (store, _custody, _handle, tenant_id, order_id) = setup().await;
+    let wallet_id = store.wallet(&shared::ids::TenantId::new(tenant_id.clone()));
     let matched = |minor| ScanResult {
         matches: vec![MatchedOutput {
             output_index: 0,
             subaddress_index: SubaddressIndex { major: 0, minor },
             amount_piconero: Some(5),
         }],
+        wallet_id: wallet_id.clone(),
         txid: "cd".repeat(32),
         key_images_json: "[]".into(),
         output_keys: HashMap::default(),
@@ -10573,7 +10661,7 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
         ids.insert(backend, tenant.id);
     }
     let store = store.into_shared();
-    let handles = parking_lot::RwLock::new(HashMap::new());
+    let handles = WalletHandles::default();
     let handled_epoch = AtomicU64::new(0);
     assert_eq!(
         register_missing_wallets_checking_state(
@@ -10586,7 +10674,10 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
         .await,
         2
     );
-    let (plain_handle, snp_handle) = (handles.read()[&ids["plain"]], handles.read()[&ids["snp"]]);
+    let (plain_handle, snp_handle) = (
+        handles.read()[&ids["plain"]].handle,
+        handles.read()[&ids["snp"]].handle,
+    );
 
     forgetful.epoch.store(1, Ordering::SeqCst);
     assert_eq!(
@@ -10600,8 +10691,16 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
         .await,
         1
     );
-    assert_eq!(handles.read()[&ids["plain"]], plain_handle, "untouched");
-    assert_ne!(handles.read()[&ids["snp"]], snp_handle, "registered again");
+    assert_eq!(
+        handles.read()[&ids["plain"]].handle,
+        plain_handle,
+        "untouched"
+    );
+    assert_ne!(
+        handles.read()[&ids["snp"]].handle,
+        snp_handle,
+        "registered again"
+    );
     assert_eq!(handled_epoch.load(Ordering::SeqCst), 1);
 }
 

@@ -48,7 +48,10 @@ async fn poll_recovery(mode: u8, burst: usize) {
     Arc::get_mut(&mut settings).unwrap().scan = live_settings::Live::new(scan);
     let wakes = Arc::new(NodeWakes::default());
     let state = Arc::new(crate::work::ScanState::default().with_wakes(Arc::clone(&wakes)));
-    let handles = Arc::new(parking_lot::RwLock::new([(tenant, handle)].into()));
+    let live = crate::key_custody::LiveWallet::of_store(&store.lock(), &tenant, handle);
+    let handles = Arc::new(crate::key_custody::WalletHandles::from(
+        std::collections::HashMap::from([(tenant, live)]),
+    ));
     let mut task = Task(tokio::spawn(crate::loops::run_fast_mempool_loop(
         state,
         Db::over_shared(Arc::clone(&store)),

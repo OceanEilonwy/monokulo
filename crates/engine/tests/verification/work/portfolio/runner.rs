@@ -162,7 +162,13 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     )
                     .unwrap();
                 let tenant = created.tenant.id;
-                tenants.push((tenant.clone(), handle));
+                tenants.push((
+                    tenant.clone(),
+                    crate::key_custody::LiveWallet {
+                        wallet_id: created.tenant.wallet_id,
+                        handle,
+                    },
+                ));
                 for minor in 1..=2 {
                     assert_eq!(store.allocate_minor_index(&tenant).unwrap(), minor);
                     let total = outputs
@@ -602,7 +608,7 @@ async fn fast_passes(
     db: &Db,
     custody: &FlakyKeyCustody,
     daemon: &World,
-    tenants: &[(TenantId, crate::key_custody::WalletHandle)],
+    tenants: &[(TenantId, crate::key_custody::LiveWallet)],
 ) {
     let input = inputs(db, custody, daemon, tenants);
     fast_pass(state, &input).await.unwrap();
@@ -611,28 +617,31 @@ async fn fast_passes(
 /// Replaces `wallet`'s custody handle while its tenant keeps its durable identity.
 async fn replace_custody(
     custody: &FlakyKeyCustody,
-    tenants: &mut [(TenantId, crate::key_custody::WalletHandle)],
+    tenants: &mut [(TenantId, crate::key_custody::LiveWallet)],
     pairs: &[monero::ViewPair],
     wallet: usize,
     daemon: &World,
 ) {
-    custody.remove_wallet(tenants[wallet].1).await.unwrap();
-    let old_handle = tenants[wallet].1;
-    tenants[wallet].1 = custody
+    custody
+        .remove_wallet(tenants[wallet].1.handle)
+        .await
+        .unwrap();
+    let old_handle = tenants[wallet].1.handle;
+    tenants[wallet].1.handle = custody
         .register_wallet(WalletMaterial::new(
             pairs[wallet].view.to_bytes(),
             pairs[wallet].spend.to_bytes(),
         ))
         .await
         .unwrap();
-    assert_ne!(tenants[wallet].1, old_handle);
+    assert_ne!(tenants[wallet].1.handle, old_handle);
     daemon.hit("custody-handle-replaced");
 }
 fn inputs<'a>(
     db: &'a Db,
     custody: &'a FlakyKeyCustody,
     daemon: &'a World,
-    tenants: &'a [(TenantId, crate::key_custody::WalletHandle)],
+    tenants: &'a [(TenantId, crate::key_custody::LiveWallet)],
 ) -> RoundInputs<'a> {
     RoundInputs {
         db,
@@ -651,7 +660,7 @@ struct Effects<'a> {
     backend: &'a backend::Backend,
     custody: &'a FlakyKeyCustody,
     daemon: &'a World,
-    tenants: &'a [(TenantId, crate::key_custody::WalletHandle)],
+    tenants: &'a [(TenantId, crate::key_custody::LiveWallet)],
     state: &'a ScanState,
 }
 impl<'a> Effects<'a> {
@@ -659,7 +668,7 @@ impl<'a> Effects<'a> {
         backend: &'a backend::Backend,
         custody: &'a FlakyKeyCustody,
         daemon: &'a World,
-        tenants: &'a [(TenantId, crate::key_custody::WalletHandle)],
+        tenants: &'a [(TenantId, crate::key_custody::LiveWallet)],
         state: &'a ScanState,
     ) -> Self {
         Self {

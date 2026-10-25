@@ -30,13 +30,12 @@ use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::engine_settings::{Daemons, EngineSettings};
 use engine::http::{build_router, rate_limit::ApiRateLimits, AppState};
 use monero::{Network, Transaction};
-use parking_lot::RwLock;
 
 /// The engine token the fixture's in-process router accepts.
 const FIXTURE_ENGINE_TOKEN: &str = "stress_fixture_engine_token_0123456789abcdef";
 use engine::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanIndices, ScanInput,
-    SubaddressIndex, TxMatches, WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, LiveWallet, MatchedOutput, PlainKeyCustody, ScanIndices,
+    ScanInput, SubaddressIndex, TxMatches, WalletHandle, WalletHandles, WalletMaterial,
 };
 use engine::scanner_status::new_scanner_status_map;
 use engine::store::{Db, NewOrder, NewTenant, ReadStorePool, Store};
@@ -304,7 +303,7 @@ struct Engine {
     db: Db,
     custody: Arc<dyn KeyCustody>,
     daemon: Arc<FixtureDaemon>,
-    handles: Arc<RwLock<HashMap<engine::store::TenantId, WalletHandle>>>,
+    handles: Arc<WalletHandles>,
     memory: Arc<engine::work::ScanState>,
 }
 
@@ -321,11 +320,11 @@ impl Engine {
                     Arc::clone(&self.custody),
                     Arc::clone(&self.daemon),
                 );
-                let tenants: Vec<(engine::store::TenantId, WalletHandle)> = self
+                let tenants: Vec<(engine::store::TenantId, LiveWallet)> = self
                     .handles
                     .read()
                     .iter()
-                    .map(|(id, handle)| (id.clone(), *handle))
+                    .map(|(id, live)| (id.clone(), live.clone()))
                     .collect();
                 let scan = EngineSettings::defaults().scan.load();
                 tokio::spawn(async move {
@@ -452,7 +451,13 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             "UPDATE tenants SET id = ?1 WHERE id = ?2",
             (&id, &created.tenant.id),
         )?;
-        handles.insert(id.clone(), handle);
+        handles.insert(
+            id.clone(),
+            LiveWallet {
+                wallet_id: created.tenant.wallet_id.clone(),
+                handle,
+            },
+        );
         let tenant_orders = if index == 0 {
             orders.max(large_window_orders)
         } else {
@@ -557,7 +562,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             }
         }));
     }
-    let handles = Arc::new(RwLock::new(handles));
+    let handles = Arc::new(WalletHandles::from(handles));
     let app_state = AppState {
         db: engine::store::Database::from_parts(db.clone(), reader_pool.clone(), &store.lock()),
         rate_limits: Arc::new(ApiRateLimits::new(100_000, Some(100_000))),

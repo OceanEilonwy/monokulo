@@ -42,7 +42,7 @@ mod status_page;
 #[path = "../../tests/verification/http/tests.rs"]
 mod tests;
 
-use parking_lot::RwLock;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -56,7 +56,7 @@ use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::daemon::DaemonError;
-use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
+use crate::key_custody::{KeyCustody, KeyCustodyError, LiveWallet, WalletHandles};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
 use crate::store::{StoreError, Tenant};
@@ -73,8 +73,9 @@ pub struct Custody {
     /// derived: nothing about `Arc<dyn KeyCustody>` says which
     /// implementation it is, by design.
     pub default_backend: String,
-    /// Each registered tenant's wallet handle.
-    pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    /// Each registered tenant's wallet handle, and the lock per tenant row
+    /// that whatever reads the row's wallet and acts on it holds.
+    pub wallet_handles: Arc<WalletHandles>,
     /// The `snp` backend's slot, for what only it does (its trust policy,
     /// handing its master key over); `None` where it can't run (tests,
     /// tools).
@@ -610,23 +611,36 @@ impl FromRequestParts<AppState> for AuthedTenant {
 }
 
 /// Ensures a tenant has a live `WalletHandle` in this process, registering it with
-/// `KeyCustody` from its sealed material on first use if it doesn't yet.
+/// `KeyCustody` from its sealed material on first use if it doesn't yet. Holds
+/// the row's lock meanwhile (`WalletHandles`).
 pub async fn resolve_wallet_handle(
     state: &AppState,
     tenant: &Tenant,
-) -> Result<WalletHandle, ApiError> {
-    let known = state.custody.wallet_handles.read().get(&tenant.id).copied();
+) -> Result<LiveWallet, ApiError> {
+    let _using = state.custody.wallet_handles.using(&tenant.id).await;
+    resolve_wallet_handle_held(state, tenant).await
+}
+
+/// [`resolve_wallet_handle`] for a caller that already holds the row's lock,
+/// shared or exclusive, across this and whatever it does with the handle.
+pub(crate) async fn resolve_wallet_handle_held(
+    state: &AppState,
+    tenant: &Tenant,
+) -> Result<LiveWallet, ApiError> {
+    let known = state.custody.wallet_handles.read().get(&tenant.id).cloned();
     match known {
-        Some(handle) if state.custody.backends.handle_is_live(handle) => return Ok(handle),
+        Some(live) if state.custody.backends.handle_is_live(live.handle) => return Ok(live),
         // Its backend lost it (restarted, or was disabled): register again.
-        Some(handle) => forget_wallet_handle(state, &tenant.id, handle),
+        Some(live) => forget_wallet_handle(state, &tenant.id, &live),
         None => {}
     }
     // The row as it is now, not as it was when the request was
-    // authenticated: the store may have just moved to another backend, or
-    // been deleted. A deleted store's keys are never registered again: the
-    // request that authenticated just before the deletion would otherwise
-    // put them back in custody with nothing left to ever remove them.
+    // authenticated: the store may have just moved to another backend or
+    // wallet, or been deleted. A deleted store's keys are never registered
+    // again: the request that authenticated just before the deletion would
+    // otherwise put them back in custody with nothing left to ever remove
+    // them. Read under the row's lock, so neither can land before the
+    // handle is in the map.
     let id = tenant.id.clone();
     let current = state.db.write(move |s| s.get_tenant_by_id(&id)).await?;
     let tenant = match current.as_ref() {
@@ -653,11 +667,18 @@ pub async fn resolve_wallet_handle(
     )
     .await
     .map_err(|elapsed| ApiError::Internal(format!("key custody registration: {elapsed}")))??;
-    let winner = {
-        let mut handles = state.custody.wallet_handles.write();
-        *handles.entry(tenant.id.clone()).or_insert(handle)
+    let live = LiveWallet {
+        wallet_id: tenant.wallet_id.clone(),
+        handle,
     };
-    if winner != handle {
+    let winner = state
+        .custody
+        .wallet_handles
+        .write()
+        .entry(tenant.id.clone())
+        .or_insert_with(|| live.clone())
+        .clone();
+    if winner != live {
         crate::key_custody::remove_wallet_logged(
             state.custody.backends.as_ref(),
             handle,
@@ -669,15 +690,15 @@ pub async fn resolve_wallet_handle(
     Ok(winner)
 }
 
-/// Drops `handle` as `tenant_id`'s live handle, if it still is, so the next
+/// Drops `live` as `tenant_id`'s live handle, if it still is, so the next
 /// `resolve_wallet_handle` registers the store's keys again.
 pub fn forget_wallet_handle(
     state: &AppState,
     tenant_id: &crate::store::TenantId,
-    handle: WalletHandle,
+    live: &LiveWallet,
 ) {
     let mut handles = state.custody.wallet_handles.write();
-    if handles.get(tenant_id) == Some(&handle) {
+    if handles.get(tenant_id) == Some(live) {
         handles.remove(tenant_id);
     }
 }

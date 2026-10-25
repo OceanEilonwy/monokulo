@@ -37,7 +37,7 @@ use engine::daemon::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient,
     PoolAnswer, ScanTx, TxLocation,
 };
-use engine::key_custody::{KeyCustody, PlainKeyCustody, SubaddressIndex, WalletHandle};
+use engine::key_custody::{KeyCustody, LiveWallet, PlainKeyCustody, SubaddressIndex};
 use engine::store::{Db, NewOrder, NewTenant, Store, TenantId};
 use engine::work::{RoundInputs, ScanState, ScanTuning, Tier};
 use monero::{Network, Transaction};
@@ -350,7 +350,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
     let sql = rusqlite::Connection::open(&db_path)?;
     sql.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")?;
     let custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let mut handles: HashMap<TenantId, WalletHandle> = HashMap::with_capacity(tenant_count);
+    let mut handles: HashMap<TenantId, LiveWallet> = HashMap::with_capacity(tenant_count);
     let mut groups: Vec<Group> = (0..group_count)
         .map(|g| Group {
             start: high_water - spacing * g as u64,
@@ -406,7 +406,13 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
             })?;
         }
         groups[group].tenants.push(id.clone());
-        handles.insert(id, handle);
+        handles.insert(
+            id,
+            LiveWallet {
+                wallet_id: created.tenant.wallet_id.clone(),
+                handle,
+            },
+        );
     }
     // The recorded chain, from the lowest group up to the high-water mark.
     for height in lowest..=high_water {
@@ -437,8 +443,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     observer.busy_timeout(Duration::from_secs(5))?;
-    let tenants: Vec<(TenantId, WalletHandle)> =
-        handles.iter().map(|(id, h)| (id.clone(), *h)).collect();
+    let tenants: Vec<(TenantId, LiveWallet)> = handles.into_iter().collect();
     let progress = engine::scaling::new_progress();
     // The swept round length as the engine's own round: every per-call
     // time derived from it (the Blocks share a block request is sized to,
