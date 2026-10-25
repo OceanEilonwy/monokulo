@@ -102,7 +102,7 @@ impl Drop for Attempt<'_> {
         if !self.completed {
             self.client.note_failure(
                 self.idx,
-                &DaemonError::TimedOut("node call cancelled before an answer".to_owned()),
+                &DaemonError::TimedOut("node call cancelled before an answer".into()),
             );
         }
     }
@@ -159,7 +159,7 @@ async fn corroborate<T>(
     match tokio::time::timeout(budget, call).await {
         Ok(answer) => answer,
         Err(_) => Err(DaemonError::TimedOut(
-            "no corroborating answer within the node deadline".to_owned(),
+            "no corroborating answer within the node deadline".into(),
         )),
     }
 }
@@ -304,7 +304,7 @@ impl FallbackDaemonClient {
     /// all is a real (if avoidable) misconfiguration, not a logic bug worth crashing
     /// the process over.
     fn note_all_failed() -> DaemonError {
-        DaemonError::Request("no Monero daemon nodes configured".to_owned())
+        DaemonError::Request("no Monero daemon nodes configured".into())
     }
 
     /// The active node's pool outlook, for the engine page. Purely
@@ -355,45 +355,59 @@ impl FallbackDaemonClient {
     {
         let deadline = Instant::now() + total;
         let mut last_err = None;
-        let order = self.attempt_order();
-        for (tried, &idx) in order.iter().enumerate() {
+        for idx in self.attempt_order() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                last_err = Some(DaemonError::TimedOut(format!(
-                    "no node answered within {total:?}"
-                )));
+                last_err = Some(DaemonError::TimedOut(
+                    format!("no node answered within {total:?}").into(),
+                ));
                 break;
             }
             // A node gets what its own client would give it, within what's
             // left of the call: one that hangs costs the nodes after it
             // their turn in this call, never the call its deadline.
-            let _ = tried;
             let node = self.nodes[idx].client.as_ref();
-            let this_attempt = remaining.min(per_node(node));
-            let mut attempt = Attempt {
-                client: self,
-                idx,
-                completed: false,
-            };
-            let outcome = match tokio::time::timeout(this_attempt, call(node)).await {
-                Ok(outcome) => outcome,
-                Err(_) => Err(DaemonError::TimedOut(format!(
-                    "no answer within {this_attempt:?}"
-                ))),
-            };
-            attempt.completed = true;
-            match outcome {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
+            match self
+                .attempt(idx, remaining.min(per_node(node)), call(node))
+                .await
+            {
+                Ok(v) => return Ok(v),
+                // Every node would say the same to the same request.
+                Err(e) if !e.blames_node() => return Err(e),
+                Err(e) => last_err = Some(e),
             }
         }
         Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
+    /// One node's attempt at a call, within `deadline`, and what it says of
+    /// the node: an answer clears its failures, an error that blames it
+    /// ([`DaemonError::blames_node`]) cools it down, and so does the call
+    /// being dropped before the node answered.
+    async fn attempt<T>(
+        &self,
+        idx: usize,
+        deadline: Duration,
+        call: impl std::future::Future<Output = Result<T, DaemonError>>,
+    ) -> Result<T, DaemonError> {
+        let mut attempt = Attempt {
+            client: self,
+            idx,
+            completed: false,
+        };
+        let outcome = match tokio::time::timeout(deadline, call).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(DaemonError::TimedOut(
+                format!("no answer within {deadline:?}").into(),
+            )),
+        };
+        attempt.completed = true;
+        match &outcome {
+            Ok(_) => self.note_success(idx),
+            Err(e) if e.blames_node() => self.note_failure(idx, e),
+            Err(_) => {}
+        }
+        outcome
     }
 }
 
@@ -431,23 +445,9 @@ impl PinnedDaemon<'_> {
         let Some(node) = self.inner.nodes.get(self.idx) else {
             return Err(FallbackDaemonClient::note_all_failed());
         };
-        let mut attempt = Attempt {
-            client: self.inner,
-            idx: self.idx,
-            completed: false,
-        };
-        let outcome = match tokio::time::timeout(deadline, call(node.client.as_ref())).await {
-            Ok(outcome) => outcome,
-            Err(_) => Err(DaemonError::TimedOut(format!(
-                "no answer within the call's {deadline:?} deadline"
-            ))),
-        };
-        attempt.completed = true;
-        match &outcome {
-            Ok(_) => self.inner.note_success(self.idx),
-            Err(e) => self.inner.note_failure(self.idx, e),
-        }
-        outcome
+        self.inner
+            .attempt(self.idx, deadline, call(node.client.as_ref()))
+            .await
     }
 }
 
@@ -552,7 +552,7 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
         match both {
             Ok((tip, pool)) => (Ok(tip), pool),
             Err(error) => {
-                let pool = Err(DaemonError::Request(error.to_string()));
+                let pool = Err(DaemonError::Request(error.to_string().into()));
                 (Err(error), pool)
             }
         }
@@ -812,7 +812,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             }
         }
         best.map(Some).ok_or_else(|| {
-            DaemonError::Request("no nodes reachable to locate a transaction".to_owned())
+            DaemonError::Request("no nodes reachable to locate a transaction".into())
         })
     }
 
@@ -885,7 +885,7 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         }
         if responses.is_empty() {
             return Err(DaemonError::Request(
-                "no nodes reachable to check key image status".to_owned(),
+                "no nodes reachable to check key image status".into(),
             ));
         }
 
@@ -949,7 +949,7 @@ mod tests {
             if self.healthy.load(Ordering::Relaxed) {
                 Ok(1)
             } else {
-                Err(DaemonError::Request("flaky node is down".to_owned()))
+                Err(DaemonError::Request("flaky node is down".into()))
             }
         }
 
@@ -1147,7 +1147,7 @@ mod tests {
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
             if self.unreachable {
                 return Err(DaemonError::Request(
-                    "key image daemon is unreachable".to_owned(),
+                    "key image daemon is unreachable".into(),
                 ));
             }
             Ok(self.location)
@@ -1158,7 +1158,7 @@ mod tests {
         ) -> Result<Vec<KeyImageStatus>, DaemonError> {
             if self.unreachable {
                 return Err(DaemonError::Request(
-                    "key image daemon is unreachable".to_owned(),
+                    "key image daemon is unreachable".into(),
                 ));
             }
             assert_eq!(

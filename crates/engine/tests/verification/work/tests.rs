@@ -2546,7 +2546,7 @@ async fn a_call_the_node_never_answers_fails_at_the_deadline() {
     let started = Instant::now();
     let result = bounded(never).await;
     assert!(
-        matches!(&result, Err(ScannerError::Daemon(DaemonError::TimedOut(m))) if m.contains("no answer within")),
+        matches!(&result, Err(ScannerError::Daemon(DaemonError::TimedOut(m))) if m.as_str().contains("no answer within")),
         "{result:?}"
     );
     assert_eq!(started.elapsed(), CALL_DEADLINE);
@@ -2608,7 +2608,7 @@ async fn a_hung_node_times_out_by_its_own_clock_and_cools_down() {
     let pinned = client.pin();
     let result = bounded(pinned.get_height()).await;
     assert!(
-        matches!(&result, Err(ScannerError::Daemon(DaemonError::TimedOut(m))) if m.contains("node.example")),
+        matches!(&result, Err(ScannerError::Daemon(DaemonError::TimedOut(m))) if m.as_str().contains("node.example")),
         "{result:?}"
     );
     assert!(
@@ -4948,9 +4948,9 @@ impl MoneroDaemonClient for ThinLink<'_> {
         if arrives {
             self.inner.get_chain_blocks(start_height, count).await
         } else {
-            Err(DaemonError::TimedOut(format!(
-                "{count} blocks didn't arrive"
-            )))
+            Err(DaemonError::TimedOut(
+                format!("{count} blocks didn't arrive").into(),
+            ))
         }
     }
     async fn get_chain_headers(

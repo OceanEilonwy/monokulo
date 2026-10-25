@@ -30,9 +30,9 @@ impl ScriptedDaemon {
     }
     fn check(&self, op: Rpc) -> Result<(), DaemonError> {
         if self.failures.load(Ordering::Relaxed) & op.bit() != 0 {
-            Err(DaemonError::Request(format!(
-                "generated failure of daemon operation {op:?}"
-            )))
+            Err(DaemonError::Request(
+                format!("generated failure of daemon operation {op:?}").into(),
+            ))
         } else {
             Ok(())
         }

@@ -34,6 +34,20 @@ pub(crate) const MAX_FRAME: u64 = 64 << 20;
 /// subscriber waiting forever, never retrying.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long a subscribed connection may go without a message before it is
+/// taken for dead. This side never writes unless pinged, and monerod's
+/// publisher never pings, so a peer that vanished without closing the
+/// connection (a host losing power, a NAT or firewall forgetting the flow)
+/// would otherwise leave `recv` waiting forever. A block comes about every
+/// two minutes on mainnet, and connecting again is cheap and wakes both scan
+/// loops, so a quiet spell that outlasts this costs nothing.
+const IDLE_LIMIT: Duration = Duration::from_mins(10);
+
+/// When the OS starts probing an idle TCP connection, and how often after
+/// that, so a dead peer on TCP is found well inside `IDLE_LIMIT`.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+
 /// A frame's flags (spec 23, "Framing"): more frames of the same message
 /// follow, the size is 8 bytes rather than 1, and the frame is a command.
 const MORE: u8 = 0x01;
@@ -60,6 +74,11 @@ pub(crate) async fn connect(
         let stream = tokio::net::TcpStream::connect(address).await?;
         // Subscriptions are a few small writes, each worth sending at once.
         stream.set_nodelay(true)?;
+        socket2::SockRef::from(&stream).set_tcp_keepalive(
+            &socket2::TcpKeepalive::new()
+                .with_time(KEEPALIVE_IDLE)
+                .with_interval(KEEPALIVE_INTERVAL),
+        )?;
         Box::new(stream)
     } else if let Some(path) = endpoint.strip_prefix("ipc://") {
         ipc(path).await?
@@ -116,9 +135,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Subscriber<S> {
     /// frame, `<topic>:<json>`; the frames after the first of a longer
     /// message are read past without being kept. Commands between messages
     /// are answered (PING) or ignored, as the spec has a peer do with ones
-    /// it does not use. An error, or the end of the stream, ends the
-    /// connection.
+    /// it does not use. An error, the end of the stream, or `IDLE_LIMIT`
+    /// without a message ends the connection.
     pub(crate) async fn recv(&mut self) -> io::Result<Vec<u8>> {
+        match tokio::time::timeout(IDLE_LIMIT, self.message()).await {
+            Ok(received) => received,
+            Err(_elapsed) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("no announcement for {} minutes", IDLE_LIMIT.as_secs() / 60),
+            )),
+        }
+    }
+
+    async fn message(&mut self) -> io::Result<Vec<u8>> {
         loop {
             let (flags, size) = self.header().await?;
             if flags & COMMAND != 0 {

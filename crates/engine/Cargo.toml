@@ -54,6 +54,8 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"
 shared = { path = "../shared" }
+# TCP keepalive on the ZMQ subscriber's socket, which tokio cannot set.
+socket2 = "0.6.5"
 telemetry = { path = "../telemetry", features = ["axum"] }
 tracing = "0.1.44"
 thiserror = "2.0.20"

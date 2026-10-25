@@ -126,7 +126,7 @@ impl RoundReport {
             ) = outcome
             {
                 return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
-                    format!("the {tier:?} tier was blocked: {wait:?}"),
+                    format!("the {tier:?} tier was blocked: {wait:?}").into(),
                 )));
             }
         }
@@ -188,7 +188,7 @@ where
 
 /// What a call that outlasted its deadline failed with.
 fn no_answer(deadline: Duration) -> crate::daemon::DaemonError {
-    crate::daemon::DaemonError::TimedOut(format!("no answer within {deadline:?}"))
+    crate::daemon::DaemonError::TimedOut(format!("no answer within {deadline:?}").into())
 }
 
 /// Retry delays for keys whose work keeps failing (a key-custody backend

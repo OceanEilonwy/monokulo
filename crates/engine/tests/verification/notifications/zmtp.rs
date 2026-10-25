@@ -236,6 +236,16 @@ async fn a_publisher_that_never_answers_times_out() {
     let error = error_of(connect(&endpoint, &[POOL]).await);
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     drop(listener);
+    // Past the handshake, a publisher that goes silent with the connection
+    // left open (its host gone without a FIN) is given up on once the idle
+    // limit passes, not waited for.
+    let (mut subscriber, _theirs) = subscribed().await;
+    let start = tokio::time::Instant::now();
+    let received = tokio::time::timeout(IDLE_LIMIT + Duration::from_secs(1), subscriber.recv())
+        .await
+        .expect("still waiting past the idle limit");
+    assert_eq!(error_of(received).kind(), io::ErrorKind::TimedOut);
+    assert!(start.elapsed() >= IDLE_LIMIT, "{:?}", start.elapsed());
 }
 
 #[tokio::test]

@@ -28,21 +28,21 @@ pub enum TxLocation {
 #[derive(Debug, thiserror::Error)]
 pub enum DaemonError {
     #[error("daemon request failed: {0}")]
-    Request(String),
+    Request(NodeText),
     /// The node didn't answer in time: the link may be slower than
     /// estimated, so a smaller request may well succeed.
     #[error("daemon request timed out: {0}")]
-    TimedOut(String),
+    TimedOut(NodeText),
     /// The answer was larger than the cap: a smaller request may succeed.
     #[error("daemon response too large: {0}")]
-    TooLarge(String),
+    TooLarge(NodeText),
     /// A transaction that came with a block under the id the block lists
     /// ([`IdBinding::Listed`]) isn't what the node sends by that id, or
     /// the node won't send it by its id
     /// ([`MoneroDaemonClient::confirm_listed`]): its blocks can't be
     /// scanned for payments.
     #[error("daemon sent a block transaction it doesn't back by its id: {0}")]
-    Unconfirmed(String),
+    Unconfirmed(NodeText),
 }
 
 impl DaemonError {
@@ -50,6 +50,77 @@ impl DaemonError {
     /// or an answer over the size cap.
     pub fn asks_for_less(&self) -> bool {
         matches!(self, Self::TimedOut(_) | Self::TooLarge(_))
+    }
+
+    /// Whether this says something about the node that gave it, so the node
+    /// is cooled down and the call moves on to the next one. An answer over
+    /// the engine's own size cap says something about the request instead:
+    /// every node would give it, and the scan asks for less next time.
+    pub fn blames_node(&self) -> bool {
+        match self {
+            Self::Request(_) | Self::TimedOut(_) | Self::Unconfirmed(_) => true,
+            Self::TooLarge(_) => false,
+        }
+    }
+}
+
+/// The text of a [`DaemonError`], at most [`NodeText::MAX_BYTES`] long.
+///
+/// Much of it comes from the node (its error value, a status it gave, a
+/// piece of an answer that didn't parse), which a node can make as long as
+/// a whole response; the text goes on into warnings, the log store and
+/// `/status`, so it is cut where it is made, on a char boundary, with an
+/// ellipsis to say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeText(String);
+
+impl NodeText {
+    pub const MAX_BYTES: usize = 1024;
+    const ELLIPSIS: char = '\u{2026}';
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for NodeText {
+    fn from(mut text: String) -> Self {
+        if text.len() > Self::MAX_BYTES {
+            // `String` slicing panics off a char boundary; `char_indices`
+            // finds the nearest safe cut at or before the limit rather than
+            // assuming ASCII.
+            let room = Self::MAX_BYTES - Self::ELLIPSIS.len_utf8();
+            let cut = text
+                .char_indices()
+                .map(|(i, _)| i)
+                .take_while(|&i| i <= room)
+                .last()
+                .unwrap_or(0);
+            text.truncate(cut);
+            text.push(Self::ELLIPSIS);
+            // Not the capacity of the whole text, kept for as long as the
+            // error is.
+            text.shrink_to_fit();
+        }
+        Self(text)
+    }
+}
+
+impl From<&str> for NodeText {
+    fn from(text: &str) -> Self {
+        text.to_owned().into()
+    }
+}
+
+impl From<NodeText> for String {
+    fn from(text: NodeText) -> Self {
+        text.0
+    }
+}
+
+impl std::fmt::Display for NodeText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
 }
 
@@ -431,7 +502,7 @@ pub trait MoneroDaemonClient: Send + Sync {
             .into_iter()
             .next()
             .filter(|block| block.height == height)
-            .ok_or_else(|| DaemonError::Request(format!("no block at height {height}")))?;
+            .ok_or_else(|| DaemonError::Request(format!("no block at height {height}").into()))?;
         Ok(BlockOutline {
             height,
             hash: block.hash,
@@ -460,9 +531,9 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// Nothing in it is taken on trust: its id and its proof of work are
     /// computed from it. `RpcDaemonClient` asks monerod's `get_block`.
     async fn get_block_blob(&self, height: u64) -> Result<Vec<u8>, DaemonError> {
-        Err(DaemonError::Request(format!(
-            "this client can't fetch block {height}'s blob"
-        )))
+        Err(DaemonError::Request(
+            format!("this client can't fetch block {height}'s blob").into(),
+        ))
     }
 
     /// Up to `count` headers from `start_height`, with what the node says
@@ -475,9 +546,9 @@ pub trait MoneroDaemonClient: Send + Sync {
         count: u64,
     ) -> Result<Vec<DifficultyHeader>, DaemonError> {
         let _ = count;
-        Err(DaemonError::Request(format!(
-            "this client can't fetch difficulty headers from {start_height}"
-        )))
+        Err(DaemonError::Request(
+            format!("this client can't fetch difficulty headers from {start_height}").into(),
+        ))
     }
 
     /// Several transactions by txid, each with its id, in any order; ones
@@ -511,14 +582,17 @@ pub trait MoneroDaemonClient: Send + Sync {
         {
             return Ok(());
         }
-        Err(DaemonError::Unconfirmed(format!(
-            "transaction {txid}, fetched by its id, {}",
-            if fetched.is_empty() {
-                "didn't come"
-            } else {
-                "isn't the body that came with its block"
-            }
-        )))
+        Err(DaemonError::Unconfirmed(
+            format!(
+                "transaction {txid}, fetched by its id, {}",
+                if fetched.is_empty() {
+                    "didn't come"
+                } else {
+                    "isn't the body that came with its block"
+                }
+            )
+            .into(),
+        ))
     }
 
     /// A second opinion on a [`Self::locate_transaction`] answer of
@@ -570,7 +644,7 @@ pub trait MoneroDaemonClient: Send + Sync {
             .into_iter()
             .next()
             .ok_or_else(|| {
-                DaemonError::Request(format!("daemon placed {txid} but sent no transaction"))
+                DaemonError::Request(format!("daemon placed {txid} but sent no transaction").into())
             })?;
         Ok(Some((fetched, location)))
     }
