@@ -667,7 +667,10 @@ pub fn build_router(state: AppState) -> Router {
     // The payer's pages, keyed by the order alone, and the machine API:
     // the surfaces a shop, an app or a customer's browser reaches, under
     // the embed policy, the per-client budget and the embed CORS rules.
-    let api_and_checkout = Router::new()
+    // Each gets its own stack so its CORS answer names only the methods it
+    // has: the API's includes `DELETE` (an app disconnecting itself), the
+    // checkout pages' does not.
+    let checkout = Router::new()
         .route(
             crate::api::checkout::Path::TEMPLATE,
             axum::routing::get(checkout::checkout_page),
@@ -676,34 +679,9 @@ pub fn build_router(state: AppState) -> Router {
         .typed_post(checkout::set_refund_address)
         // A nav-bearing, shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
-        .typed_get(checkout::checkout_share_page)
-        .merge(api)
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            embed_domains::embed_policy_middleware,
-        ))
-        // Identifies the client (and a store's secret key), spends its
-        // budget and challenges it past its soft limit before anything else
-        // runs (`http::abuse`).
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            abuse::api_and_checkout_middleware,
-        ))
-        // Outside the rate limit, so a preflight never spends budget and a
-        // `429` still carries the headers a cross-origin caller needs to read it.
-        .layer(embed_cors_layer(&state))
-        // A checkout page, its status and its share page carry a payment
-        // address and amount, and (once given) a refund address: never
-        // kept by a browser or a shared cache.
-        .layer(middleware::map_response(
-            |mut response: Response| async move {
-                response
-                    .headers_mut()
-                    .entry(header::CACHE_CONTROL)
-                    .or_insert(axum::http::HeaderValue::from_static("no-store"));
-                response
-            },
-        ));
+        .typed_get(checkout::checkout_share_page);
+    let api_and_checkout = public_surface(checkout, &state, CHECKOUT_CORS_METHODS)
+        .merge(public_surface(api, &state, API_CORS_METHODS));
 
     // Every other route (the merchant's pages, login, sign-up, the landing and
     // status pages) is counted too - see `http::abuse::site_middleware`.
@@ -934,6 +912,58 @@ impl FromRequestParts<AppState> for AuthedAdmin {
     }
 }
 
+/// The methods the checkout pages' (and the client library's) CORS answer
+/// allows: reading a page or its live stream, and posting a refund address.
+const CHECKOUT_CORS_METHODS: &[axum::http::Method] =
+    &[axum::http::Method::GET, axum::http::Method::POST];
+
+/// The methods the machine API's CORS answer allows: the checkout pages'
+/// and `DELETE`, so a page in a browser - an app disconnecting itself with
+/// its key, or the docs' "Try it" console - can send every request the API
+/// has.
+const API_CORS_METHODS: &[axum::http::Method] = &[
+    axum::http::Method::GET,
+    axum::http::Method::POST,
+    axum::http::Method::DELETE,
+];
+
+/// Wraps one of the public surfaces (the checkout pages or the machine API)
+/// in the embed policy, the per-client budget and the embed CORS rules
+/// allowing `methods`, and keeps its responses out of every cache.
+fn public_surface(
+    router: Router<AppState>,
+    state: &AppState,
+    methods: &[axum::http::Method],
+) -> Router<AppState> {
+    router
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            embed_domains::embed_policy_middleware,
+        ))
+        // Identifies the client (and a store's secret key), spends its
+        // budget and challenges it past its soft limit before anything else
+        // runs (`http::abuse`).
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            abuse::api_and_checkout_middleware,
+        ))
+        // Outside the rate limit, so a preflight never spends budget and a
+        // `429` still carries the headers a cross-origin caller needs to read it.
+        .layer(embed_cors_layer(state, methods))
+        // A checkout page, its status and its share page carry a payment
+        // address and amount, and (once given) a refund address: never
+        // kept by a browser or a shared cache.
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                response
+                    .headers_mut()
+                    .entry(header::CACHE_CONTROL)
+                    .or_insert(axum::http::HeaderValue::from_static("no-store"));
+                response
+            },
+        ))
+}
+
 /// CORS for the public routes a merchant's page uses to embed checkout
 /// (order creation from `monokulo-client.js` with the store's public key,
 /// the order and the checkout's live stream). A store that hasn't
@@ -948,11 +978,14 @@ impl FromRequestParts<AppState> for AuthedAdmin {
 /// credential (credentials are never allowed), and anything they do is
 /// equally possible from a script outside a browser. Private-network
 /// preflights are answered too, so a public page can embed a monokulo that
-/// runs on a local network address.
-fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
+/// runs on a local network address. It allows `methods`.
+fn embed_cors_layer(
+    state: &AppState,
+    methods: &[axum::http::Method],
+) -> tower_http::cors::CorsLayer {
     use tower_http::cors::AllowOrigin;
     let db = state.db.clone();
-    cors_layer_base().allow_origin(AllowOrigin::async_predicate(move |origin, parts| {
+    cors_layer_base(methods).allow_origin(AllowOrigin::async_predicate(move |origin, parts| {
         let db = db.clone();
         // The store's public key, when the request carries one; the order,
         // on a checkout page.
@@ -995,14 +1028,18 @@ fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
 
 /// CORS for the client library itself, for a page that loads it with
 /// `crossorigin` or as a module: any origin, since loading the library
-/// alone does nothing for any store.
+/// alone does nothing for any store. Never `DELETE`: there is nothing here
+/// to delete.
 fn any_origin_cors_layer() -> tower_http::cors::CorsLayer {
-    cors_layer_base().allow_origin(tower_http::cors::Any)
+    cors_layer_base(CHECKOUT_CORS_METHODS).allow_origin(tower_http::cors::Any)
 }
 
-fn cors_layer_base() -> tower_http::cors::CorsLayer {
+/// What every CORS answer shares, allowing `methods`: the headers a caller
+/// may send and read, private-network preflights, and a day's preflight
+/// cache. Credentials are never allowed (none is set here).
+fn cors_layer_base(methods: &[axum::http::Method]) -> tower_http::cors::CorsLayer {
     tower_http::cors::CorsLayer::new()
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_methods(methods.to_vec())
         // `Monokulo-Proof` carries a solved challenge; `Monokulo-Challenge`
         // and `Retry-After` must be readable by the embed library on another
         // site (`http::abuse`).

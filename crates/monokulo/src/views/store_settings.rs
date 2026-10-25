@@ -71,10 +71,11 @@ pub struct StoreSettingsData {
     pub sites: super::store_site::SiteView,
     /// The devices connected to the store (`views::connected_apps`).
     pub apps: super::connected_apps::AppsView,
-    /// The tenant's current confirmation threshold -
-    /// `confirmation_thresholds::FALLBACK_CONFIRMATIONS` when the engine is
-    /// currently unreachable.
-    pub confirmations_required: u64,
+    /// The store's default confirmations, as the engine has them (0:
+    /// unconfirmed payments are accepted). `None` when the engine couldn't
+    /// be read for the page: the card says so and has no field for them,
+    /// so a save can't send back a value the page never read.
+    pub confirmations_required: Option<u64>,
     /// Every provider this instance offers: the store's enabled ones first,
     /// in its order, then the rest.
     pub fx_provider_options: Vec<FxProviderOption>,
@@ -87,12 +88,6 @@ pub struct StoreSettingsData {
     /// add-threshold form hides itself rather than accepting a submission
     /// the server would just reject anyway.
     pub confirmation_thresholds_at_max: bool,
-    /// Whether the Default (fallback) row's own "accept unconfirmed
-    /// payments" checkbox is currently on - no amount to enter: the engine
-    /// enforces the same tier boundaries every other threshold already does,
-    /// so this is implicit in whether a merchant has set a custom threshold
-    /// above whatever amount they don't want 0-conf applied to.
-    pub zero_conf_enabled: bool,
     /// The store's webhooks and their deliveries (`views::webhooks`),
     /// with a just-made webhook's signing secret, shown that once.
     pub webhooks: super::webhooks::WebhooksCard,
@@ -446,9 +441,17 @@ fn settings_card(
     title: &str,
     body: Markup,
 ) -> Markup {
-    let failure = store.refusal(section);
+    // A card can be refused after part of it was written (the default
+    // confirmations, then not the tiers): it says so.
+    let failure = store.refusal(section).map(|message| {
+        if store.was_saved(section) {
+            format!("Partly saved. {message}")
+        } else {
+            message.to_string()
+        }
+    });
     Card::new(section.id(), title)
-        .failed(failure.is_some(), failure)
+        .failed(failure.is_some(), failure.as_deref())
         .saved(store.was_saved(section).then_some(""), false)
         .render(body)
 }
@@ -788,7 +791,9 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
     // from its amount.
     let scale = ui::StepScale::new(
         std::iter::once(ui::ScaleStep {
-            label: format!("{} conf", store.confirmations_required),
+            label: store
+                .confirmations_required
+                .map_or_else(|| "Default".to_string(), |n| format!("{n} conf")),
             from: format!("0 {currency}"),
         })
         .chain(tiers.iter().map(|tier| ui::ScaleStep {
@@ -809,9 +814,11 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
     html! {
         (scale)
         p class="tier-default" {
-            strong { (below) } ": the default, "
-            (confirmations(store.confirmations_required)) " "
-            span class="muted" { "(" (wait(store.confirmations_required)) ")" }
+            strong { (below) } ": the default"
+            @if let Some(default) = store.confirmations_required {
+                ", " (confirmations(default)) " "
+                span class="muted" { "(" (wait(default)) ")" }
+            }
         }
         (editor)
     }
@@ -820,8 +827,6 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
 /// "Confirmation thresholds": the default, accepting unconfirmed payments,
 /// and the tiers by amount (each can be removed, and one added, per save).
 fn confirmations_card(store: &StoreSettingsData) -> Markup {
-    let default = store.confirmations_required.to_string();
-    let zero_conf = store.ticked("zero_conf_enabled", store.zero_conf_enabled);
     settings_card(
         store,
         StoreSection::Confirmations,
@@ -833,28 +838,14 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                  order require more confirmations (or a lower-value one fewer) based on its amount in this store's base \
                  currency.",
             ))
-            (Field::new("Default confirmations", "confirmations-required")
-                .help(Some("confirmations-required-help"), html! { "Blocks a payment waits before an order counts as paid, from 0 to 720." })
-                .render(html! {
-                    (ui::Input::new("confirmations_required")
-                        .id("confirmations-required")
-                        .value(store.shown("confirmations_required", &default))
-                        .described_by("confirmations-required-help")
-                        .required(true)
-                        .attr("data-input", "confirmations")
-                        .attr("size", "3")
-                        .attr("maxlength", "3")
-                        .attr("inputmode", "numeric")
-                        .maybe_attr("data-saved", store.saved_attr(&default)))
-                }))
-            (Field::new("Accept unconfirmed (0-conf) payments", "zero-conf")
-                .help(Some("zero-conf-help"), html! {
-                    "An order under the default can read as paid the moment its transaction reaches this store's node's "
-                    "mempool, before any block confirms it - useful for fast, low-value, in-person sales. This is a real "
-                    "double-spend risk (an attacker who can out-race the transaction to a miner keeps both the goods and the "
-                    "coin). Add a custom threshold to keep larger orders requiring real confirmations."
-                })
-                .render(super::controls::switch("zero_conf_enabled", "zero-conf", zero_conf, Some("zero-conf-help"), store.saved_box(store.zero_conf_enabled).map(|s| s == "on"))))
+            @if let Some(default) = store.confirmations_required {
+                (default_confirmations(store, default))
+            } @else {
+                (ui::Alert::new(
+                    "The default confirmations couldn't be read from the engine just now. Reload the page to see or change them.",
+                    ui::Tone::Warning,
+                ))
+            }
             (Field::group("Confirmations by order amount", "confirmation-tiers")
                 .help(Some("confirmation-tiers-help"), html! {
                     "Bigger orders can wait for more blocks before they count as paid. Each tier asks an order of at "
@@ -865,6 +856,37 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                 .render(confirmation_tiers(store)))
         },
     )
+}
+
+/// The default confirmations, `saved` as the engine has them, and the
+/// switch accepting unconfirmed payments (a default of 0).
+fn default_confirmations(store: &StoreSettingsData, saved: u64) -> Markup {
+    let default = saved.to_string();
+    let zero_conf = store.ticked("zero_conf_enabled", saved == 0);
+    html! {
+        (Field::new("Default confirmations", "confirmations-required")
+            .help(Some("confirmations-required-help"), html! { "Blocks a payment waits before an order counts as paid, from 0 to 720." })
+            .render(html! {
+                (ui::Input::new("confirmations_required")
+                    .id("confirmations-required")
+                    .value(store.shown("confirmations_required", &default))
+                    .described_by("confirmations-required-help")
+                    .required(true)
+                    .attr("data-input", "confirmations")
+                    .attr("size", "3")
+                    .attr("maxlength", "3")
+                    .attr("inputmode", "numeric")
+                    .maybe_attr("data-saved", store.saved_attr(&default)))
+            }))
+        (Field::new("Accept unconfirmed (0-conf) payments", "zero-conf")
+            .help(Some("zero-conf-help"), html! {
+                "An order under the default can read as paid the moment its transaction reaches this store's node's "
+                "mempool, before any block confirms it - useful for fast, low-value, in-person sales. This is a real "
+                "double-spend risk (an attacker who can out-race the transaction to a miner keeps both the goods and the "
+                "coin). Add a custom threshold to keep larger orders requiring real confirmations."
+            })
+            .render(super::controls::switch("zero_conf_enabled", "zero-conf", zero_conf, Some("zero-conf-help"), store.saved_box(saved == 0).map(|s| s == "on"))))
+    }
 }
 
 /// "Exchange rate providers": which providers this store uses, and in what
@@ -1174,7 +1196,7 @@ mod tests {
                 plugin_open_orders: None,
                 site_domain: false,
             },
-            confirmations_required: 10,
+            confirmations_required: Some(10),
             fx_provider_options: vec![FxProviderOption {
                 name: "coingecko".to_string(),
                 selected: true,
@@ -1184,7 +1206,6 @@ mod tests {
             base_currency_options: vec![],
             confirmation_thresholds: vec![],
             confirmation_thresholds_at_max: false,
-            zero_conf_enabled: false,
             webhooks: super::super::webhooks::WebhooksCard {
                 store_id: "conn_1".into(),
                 store_name: "shop.example.com".into(),

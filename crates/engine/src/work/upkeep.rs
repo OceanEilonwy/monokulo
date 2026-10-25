@@ -166,18 +166,29 @@ async fn recheck_voids(round: &Round<'_>, until: tokio::time::Instant) -> Result
     let now = round.now;
     let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
     let page = round
-        .db(move |s, network| -> Result<_, crate::store::StoreError> {
-            let started: i64 = s
-                .scheduler_position::<VoidRecheckPassStarted>(network)?
-                .unwrap_or(i64::MIN);
-            let after: i64 = s.scheduler_position::<VoidRecheck>(network)?.unwrap_or(0);
-            if after == 0 {
+        .db(move |s, network| {
+            s.in_transaction(|s| -> Result<_, crate::store::StoreError> {
+                // A pass part-way through reads on; with nothing left after
+                // it (those voids aged out or were settled since), it's over
+                // and the position is back at the start.
+                let pass = s
+                    .scheduler_position::<VoidRecheck>(network)?
+                    .unwrap_or_default();
+                if let Some(after) = pass.last() {
+                    let page = s.void_recheck_page(network, cutoff, after, VOID_PAGE)?;
+                    if !page.is_empty() {
+                        return Ok(page);
+                    }
+                }
+                let started: i64 = s
+                    .scheduler_position::<VoidRecheckPassStarted>(network)?
+                    .unwrap_or(i64::MIN);
                 if now.saturating_sub(started) < VOID_RECHECK_INTERVAL_SECS {
                     return Ok(Vec::new());
                 }
                 s.set_scheduler_position::<VoidRecheckPassStarted>(network, &now)?;
-            }
-            s.voided_payments_page(network, cutoff, after, VOID_PAGE)
+                s.void_recheck_page(network, cutoff, 0, VOID_PAGE)
+            })
         })
         .await?;
     // The whole page's key images in one round trip (per node); a payment
@@ -220,17 +231,10 @@ async fn recheck_voids(round: &Round<'_>, until: tokio::time::Instant) -> Result
             }
         }
     }
-    // Back to 0 (the pass is over) once nothing follows what was checked.
+    // On past what was checked, or back to the start once nothing follows.
     if let Some(last) = last {
         round
-            .db(move |s, network| -> Result<_, crate::store::StoreError> {
-                let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() {
-                    0
-                } else {
-                    last
-                };
-                s.set_scheduler_position::<VoidRecheck>(network, &next)
-            })
+            .db(move |s, network| s.void_recheck_page(network, cutoff, last, 1))
             .await?;
     }
     match failure {

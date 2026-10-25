@@ -933,16 +933,12 @@ pub(super) async fn render_store_settings_page_with(
         )
         .await;
     }
+    // No stand-in when the engine can't be read: the card has no field for
+    // the default then, so a save can't write back a value never read.
     let confirmations_required = tenant_result
         .as_ref()
-        .map(|t| t.confirmations_required)
-        .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS);
-    // Native 0-conf: the Default row's own checkbox is checked exactly when the
-    // tenant's default confirmations count already is 0 - no separate engine
-    // field to read.
-    let zero_conf_enabled = tenant_result
-        .as_ref()
-        .is_ok_and(|t| t.confirmations_required == 0);
+        .ok()
+        .map(|t| t.confirmations_required);
 
     let fx_provider_options = fx_provider_options(
         &state.exchange_rate.available_providers(),
@@ -1011,7 +1007,6 @@ pub(super) async fn render_store_settings_page_with(
             base_currency_options,
             confirmation_thresholds,
             confirmation_thresholds_at_max,
-            zero_conf_enabled,
             webhooks,
             outcome,
             sent,
@@ -3775,8 +3770,45 @@ mod tests {
                 Some(("old", "50", 20, crate::now_unix())),
             )
             .unwrap();
+        let row = state
+            .db
+            .lock()
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .unwrap()
+            .unwrap();
+        let sk = crate::crypto::decrypt(
+            &state.encryption_key,
+            crate::crypto::Binding::StoreSecret(row.id.as_str()),
+            &row.tenant_secret_token_encrypted,
+        )
+        .unwrap();
+        let sk = shared::auth::RawToken::presented(&sk);
+        state
+            .engine
+            .client
+            .set_confirmations_required(&sk, 30)
+            .await
+            .unwrap();
         // A custom-tier save must not depend on engine availability.
+        let engine = state.engine.client.clone();
         state.engine.client = EngineClient::for_tests("http://127.0.0.1:0");
+        // With the engine unreachable the page has no default to show, so
+        // it has no field a save could send one back from.
+        let page = build_router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/stores/{connection_id}/settings?tab=payments"))
+                    .header("cookie", format!("session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(html.contains("couldn't be read from the engine"), "{html}");
+        assert!(!html.contains(r#"name="confirmations_required""#), "{html}");
+        assert!(!html.contains(r#"name="zero_conf_enabled""#), "{html}");
         let response = build_router(state.clone())
             .oneshot(form_post_request(
                 &format!("/stores/{connection_id}/settings"),
@@ -3800,6 +3832,11 @@ mod tests {
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].unit_amount, "100");
         assert_eq!(thresholds[0].confirmations_required, 30);
+        // The engine back, the store's default is the one it had.
+        assert_eq!(
+            engine.get_tenant(&sk).await.unwrap().confirmations_required,
+            30
+        );
     }
 
     #[tokio::test]

@@ -956,14 +956,15 @@ fn every_store_operation_fails_whole_and_then_works() {
     assert!(sweep(&store, |s| s.reorg_job(monero::Network::Mainnet)).is_none());
 
     // Positions, pages and lookups.
+    let pass: position::VoidPass = "5".parse().unwrap();
     sweep(&store, |s| {
-        s.set_scheduler_position::<position::VoidRecheck>(monero::Network::Mainnet, &5)
+        s.set_scheduler_position::<position::VoidRecheck>(monero::Network::Mainnet, &pass)
     });
     assert_eq!(
         sweep(&store, |s| s.scheduler_position::<position::VoidRecheck>(
             monero::Network::Mainnet
         )),
-        Some(5)
+        Some(pass)
     );
     assert_eq!(
         sweep(&store, |s| s.scanned_blocks_between(

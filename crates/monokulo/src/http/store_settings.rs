@@ -312,14 +312,16 @@ async fn plan(
                 }
             }
         };
+        // When the engine can't be read it isn't known whether this
+        // changes the default, so nothing is saved.
         let current = state
             .engine
             .client
             .get_tenant(sk)
             .await
-            .ok()
-            .map(|t| t.confirmations_required);
-        if current != Some(wanted) {
+            .map_err(|_| (CONFIRMATIONS, default_unread()))?
+            .confirmations_required;
+        if current != wanted {
             plan.default_confirmations = Some(wanted);
         }
     }
@@ -532,8 +534,9 @@ async fn apply(
 
     const CONFIRMATIONS: StoreSection = StoreSection::Confirmations;
     if let Some(n) = plan.default_confirmations {
+        // Saved once the engine has it, whatever comes of the tiers.
         match state.engine.client.set_confirmations_required(sk, n).await {
-            Ok(_) => {}
+            Ok(_) => saved.push(CONFIRMATIONS),
             Err(EngineClientError::EngineError { status, message })
                 if status == reqwest::StatusCode::BAD_REQUEST =>
             {
@@ -542,7 +545,6 @@ async fn apply(
             Err(_) => return Err((CONFIRMATIONS, something_went_wrong())),
         }
     }
-    let changed_thresholds = plan.thresholds.is_some();
     if let Some((deleted, new_threshold)) = plan.thresholds {
         let threshold_id = uuid::Uuid::new_v4().to_string();
         let (store_id, proof) = (row.id.clone(), policy.proof());
@@ -562,6 +564,7 @@ async fn apply(
             })
             .await;
         match written {
+            Ok(true) if !saved.contains(&CONFIRMATIONS) => saved.push(CONFIRMATIONS),
             Ok(true) => {}
             Ok(false) => {
                 return Err((
@@ -581,9 +584,6 @@ async fn apply(
             }
             Err(_) => return Err((CONFIRMATIONS, something_went_wrong())),
         }
-    }
-    if plan.default_confirmations.is_some() || changed_thresholds {
-        saved.push(CONFIRMATIONS);
     }
 
     if let Some((providers, settings)) = plan.fx {
@@ -607,6 +607,11 @@ async fn apply(
         saved.push(StoreSection::Diagnostics);
     }
     Ok(())
+}
+
+fn default_unread() -> String {
+    "The default confirmations couldn't be read from the engine just now, so they weren't saved. Please try again."
+        .to_string()
 }
 
 fn something_went_wrong() -> String {

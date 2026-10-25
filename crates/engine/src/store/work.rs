@@ -134,12 +134,47 @@ pub mod position {
         type Value = i64;
     }
 
-    /// The last voided payment rechecked for a false double-spend (0: no
-    /// pass in progress).
+    /// Where the void recheck pass stands.
     pub struct VoidRecheck;
     impl Position for VoidRecheck {
         const KEY: &'static str = "void_recheck";
-        type Value = i64;
+        type Value = VoidPass;
+    }
+
+    /// A void recheck pass's position: at the start (no pass in progress),
+    /// or past the last voided payment it rechecked, with more to come.
+    /// Stored as that payment's id, 0 for the start.
+    ///
+    /// Only `Store::void_recheck_page` moves a pass on, and it leaves the
+    /// position past a payment only while some void follows it; otherwise
+    /// the pass is over and the position goes back to the start. So a pass
+    /// can't stop part-way with nothing after it, leaving the voids before
+    /// it unchecked.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct VoidPass(i64);
+
+    impl VoidPass {
+        pub(in crate::store) fn after(payment_id: i64) -> Self {
+            Self(payment_id.max(0))
+        }
+
+        /// The last payment rechecked, or `None` at the start.
+        pub fn last(self) -> Option<i64> {
+            (self.0 > 0).then_some(self.0)
+        }
+    }
+
+    impl std::fmt::Display for VoidPass {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.fmt(f)
+        }
+    }
+
+    impl std::str::FromStr for VoidPass {
+        type Err = std::num::ParseIntError;
+        fn from_str(raw: &str) -> Result<Self, Self::Err> {
+            raw.parse().map(Self::after)
+        }
     }
 
     /// When the last full void recheck pass began (unix time).
@@ -685,6 +720,27 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// The recent voids after payment `after` (0 for the first), at most
+    /// `limit`, with the void recheck pass moved to match: past `after`
+    /// while some follow, back to the start once none do (the pass is
+    /// over).
+    pub fn void_recheck_page(
+        &self,
+        network: monero::Network,
+        cutoff: i64,
+        after: i64,
+        limit: usize,
+    ) -> Result<Vec<OrderPaymentRow>> {
+        let page = self.voided_payments_page(network, cutoff, after, limit)?;
+        let pass = if page.is_empty() {
+            position::VoidPass::default()
+        } else {
+            position::VoidPass::after(after)
+        };
+        self.set_scheduler_position::<position::VoidRecheck>(network, &pass)?;
+        Ok(page)
     }
 
     /// A payment by its row id, voided or not.
