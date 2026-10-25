@@ -437,7 +437,12 @@ def cmd_claim(args):
         job_id, held = take(conn, agent)
     if job_id is None:
         left = conn.execute("SELECT count(*) FROM job WHERE status != 'done'").fetchone()[0]
-        print(f"NO JOB for {agent}: {left} jobs not done, none you can take now.")
+        held = conn.execute(
+            "SELECT count(*) FROM job WHERE kind = 'review' AND status = 'claimed'"
+        ).fetchone()[0]
+        why = (f" Crosscut jobs open once the {held} module reviews other agents hold are done; "
+               "try again in a few minutes." if held else "")
+        print(f"NO JOB for {agent}: {left} jobs not done, none you can take now.{why}")
         return
     if held:
         print(f"(you hold job {job_id} already; finish it with `done` or give it back with `release`)\n")
