@@ -258,27 +258,36 @@ impl KeyCustody for SaturatedCustody {
     }
 }
 
-struct Args(Vec<String>);
-
-impl Args {
-    fn value(&self, name: &str) -> Option<&str> {
-        self.0
-            .windows(2)
-            .find(|pair| pair[0] == name)
-            .map(|pair| pair[1].as_str())
-    }
-    fn required<T: std::str::FromStr>(&self, name: &str) -> Result<T, Box<dyn Error>>
-    where
-        T::Err: Error + 'static,
-    {
-        Ok(self
-            .value(name)
-            .ok_or_else(|| format!("missing {name}"))?
-            .parse()?)
-    }
-    fn optional(&self, name: &str) -> Result<u64, Box<dyn Error>> {
-        Ok(self.value(name).map(str::parse).transpose()?.unwrap_or(0))
-    }
+/// The options the fixture takes: the scenario's, which `cargo xtask
+/// stress` always gives, and the faults', 0 (none) unless given.
+fn command() -> clap::Command {
+    use stress_common::option;
+    let required = [
+        "tenants",
+        "orders",
+        "large-window-orders",
+        "warmup",
+        "measured",
+        "drain",
+        "background-readers",
+        "background-http-readers",
+        "background-writers",
+    ];
+    let faults = [
+        "write-lock-until-tick",
+        "rpc-delay-ms",
+        "rpc-fail-until-height",
+        "rpc-fail-every",
+        "custody-slots",
+        "custody-delay-ms",
+    ];
+    clap::Command::new("stress_fixture")
+        .arg(option::<String>("db").required(true))
+        .arg(option::<String>("driver").default_value("scheduler"))
+        .args(required.map(|name| option::<usize>(name).required(true)))
+        .arg(option::<u64>("seed").required(true))
+        .arg(option::<u64>("write-lock-ms").required(true))
+        .args(faults.map(|name| option::<u64>(name).default_value("0")))
 }
 
 /// Which engine code runs each tick. `scheduler` is one scheduler round
@@ -389,29 +398,30 @@ fn progress(conn: &rusqlite::Connection, progressed_through: u64) -> rusqlite::R
 }
 
 async fn fixture() -> Result<(), Box<dyn Error>> {
-    let args = Args(std::env::args().collect());
-    let db_path: String = args.required("--db")?;
-    let driver = Driver::parse(args.value("--driver").unwrap_or("scheduler"))?;
-    let tenants: usize = args.required("--tenants")?;
-    let orders: usize = args.required("--orders")?;
-    let large_window_orders: usize = args.required("--large-window-orders")?;
-    let warmup: usize = args.required("--warmup")?;
-    let measured: usize = args.required("--measured")?;
-    let drain: usize = args.required("--drain")?;
-    let seed: u64 = args.required("--seed")?;
-    let background_readers: usize = args.required("--background-readers")?;
-    let background_http_readers: usize = args.required("--background-http-readers")?;
-    let background_writers: usize = args.required("--background-writers")?;
-    let write_lock_ms: u64 = args.required("--write-lock-ms")?;
-    let write_lock_until_tick = match args.optional("--write-lock-until-tick")? {
+    use stress_common::value;
+    let args = command().try_get_matches()?;
+    let db_path: String = value(&args, "db")?;
+    let driver = Driver::parse(&value::<String>(&args, "driver")?)?;
+    let tenants: usize = value(&args, "tenants")?;
+    let orders: usize = value(&args, "orders")?;
+    let large_window_orders: usize = value(&args, "large-window-orders")?;
+    let warmup: usize = value(&args, "warmup")?;
+    let measured: usize = value(&args, "measured")?;
+    let drain: usize = value(&args, "drain")?;
+    let seed: u64 = value(&args, "seed")?;
+    let background_readers: usize = value(&args, "background-readers")?;
+    let background_http_readers: usize = value(&args, "background-http-readers")?;
+    let background_writers: usize = value(&args, "background-writers")?;
+    let write_lock_ms: u64 = value(&args, "write-lock-ms")?;
+    let write_lock_until_tick = match value(&args, "write-lock-until-tick")? {
         0 => u64::MAX,
         ticks => ticks,
     };
-    let rpc_delay_ms = args.optional("--rpc-delay-ms")?;
-    let rpc_fail_until_height = args.optional("--rpc-fail-until-height")?;
-    let rpc_fail_every = args.optional("--rpc-fail-every")?;
-    let custody_slots = args.optional("--custody-slots")?;
-    let custody_delay_ms = args.optional("--custody-delay-ms")?;
+    let rpc_delay_ms: u64 = value(&args, "rpc-delay-ms")?;
+    let rpc_fail_until_height: u64 = value(&args, "rpc-fail-until-height")?;
+    let rpc_fail_every: u64 = value(&args, "rpc-fail-every")?;
+    let custody_slots: u64 = value(&args, "custody-slots")?;
+    let custody_delay_ms: u64 = value(&args, "custody-delay-ms")?;
 
     // Setup: tenants, keys and orders, with stable ids so every run of a
     // scenario builds the same database.

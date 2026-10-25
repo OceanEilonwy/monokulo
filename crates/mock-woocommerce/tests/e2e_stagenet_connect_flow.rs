@@ -228,7 +228,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
 
     // A real engine, stagenet-configured, with no background scan loop
     // (monokulo, below, delivers the webhook from the engine's order-event
-    // log). That loop's `NoopDaemonClient` always reports height 0 and shares
+    // log). That loop's inert node always reports height 0 and shares
     // this network's scanned-height watermark with the real daemon this test
     // drives via `run_scan_tick_now`, so it would send the real scan back to
     // block 1. See `TestEngineConfig::with_background_loops`'s doc comment.

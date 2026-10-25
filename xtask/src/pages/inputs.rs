@@ -546,11 +546,28 @@ enum HardwareSource {
     File(String),
 }
 
+/// A condition a stress run held its points to, as run.json lists them.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum Check {
+    Lag,
+    TickBudget,
+    StatusReplies,
+    TimerDelay,
+    /// One a newer run names that this build doesn't know.
+    #[serde(other)]
+    Other,
+}
+
 /// The one-CPU stress run (CI) or the weekly scale run.
 #[derive(Deserialize)]
 pub(super) struct Stress {
     #[serde(default)]
     pub(super) scenario: Scenario,
+    /// What a point had to meet to pass; none from a run older than the
+    /// list, so the page claims no condition it can't show was checked.
+    #[serde(default)]
+    pub(super) checked: Vec<Check>,
     #[serde(default, rename = "results")]
     pub(super) points: Vec<StressPoint>,
     #[serde(default)]
@@ -744,7 +761,8 @@ pub(super) fn fuzz(src: &Path, build: Build) -> io::Result<Vec<FuzzTarget>> {
 }
 
 /// The sizes the browser tests photograph a screen at, in the order the
-/// gallery offers them.
+/// gallery offers them, and `Failure`: Playwright's own picture of a test
+/// that failed, which the reporter lists too and the gallery leaves out.
 #[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub(super) enum Shape {
@@ -756,6 +774,7 @@ pub(super) enum Shape {
     MobileLandscape,
     MobilePortrait,
     SmallPortrait,
+    Failure,
 }
 
 impl Shape {
@@ -769,6 +788,7 @@ impl Shape {
             Shape::MobileLandscape => "mobile-landscape",
             Shape::MobilePortrait => "mobile-portrait",
             Shape::SmallPortrait => "small-portrait",
+            Shape::Failure => "failure",
         }
     }
 
@@ -782,6 +802,7 @@ impl Shape {
             Shape::MobileLandscape => "Phone landscape",
             Shape::MobilePortrait => "Phone portrait",
             Shape::SmallPortrait => "Small phone",
+            Shape::Failure => "Failure",
         }
     }
 
@@ -942,7 +963,10 @@ pub(super) fn gallery(src: &Path, out: &Path) -> io::Result<Option<(Gallery, Lin
         return Ok(None);
     }
     let shots: Vec<Shot> = read_json(&manifest)?;
-    let shots: Vec<&Shot> = shots.iter().filter(|s| s.retry == 0).collect();
+    let shots: Vec<&Shot> = shots
+        .iter()
+        .filter(|s| s.retry == 0 && s.shape != Shape::Failure)
+        .collect();
     for dir in ["gallery/full", "gallery/thumb"] {
         let dir = out.join(dir);
         fs::create_dir_all(&dir).map_err(|e| at(&dir, e))?;

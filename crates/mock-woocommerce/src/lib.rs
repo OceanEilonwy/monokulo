@@ -45,9 +45,27 @@ use uuid::Uuid;
 /// key, echoed back by `/finish`) and `webhook_receiver` (this driver's own
 /// long-lived receiver, still running - see [`WebhookReceiver`] - so a caller
 /// can observe whatever real deliveries arrive after the connect flow itself
-/// has finished).
+/// has finished). The [`Credentials`]' fields read through it.
 #[derive(Debug)]
 pub struct ConnectedCredentials {
+    pub credentials: Credentials,
+    pub webhook_signing_secret: String,
+    pub webhook_receiver: WebhookReceiver,
+}
+
+impl std::ops::Deref for ConnectedCredentials {
+    type Target = Credentials;
+
+    fn deref(&self) -> &Credentials {
+        &self.credentials
+    }
+}
+
+/// The store's keys and API address `/finish` hands back: all of what
+/// [`run_connect_flow_without_webhook`] returns, which registers no webhook,
+/// and the part of [`ConnectedCredentials`] that isn't the webhook's.
+#[derive(Debug)]
+pub struct Credentials {
     pub public_key: String,
     pub secret_token: String,
     /// The monokulo address the plugin called `/finish` at: what `api` and
@@ -55,27 +73,6 @@ pub struct ConnectedCredentials {
     pub monokulo_url: String,
     /// The API's root as `/finish` returned it: a path, relative to
     /// `monokulo_url` (`/api/v1`).
-    pub api: String,
-    pub webhook_signing_secret: String,
-    pub webhook_receiver: WebhookReceiver,
-}
-
-impl ConnectedCredentials {
-    /// The API's root, resolved against the address the plugin connected at.
-    pub fn api_url(&self) -> String {
-        resolve(&self.monokulo_url, &self.api)
-    }
-}
-
-/// The credentials [`run_connect_flow_without_webhook`] returns: no webhook
-/// is registered, so there is no signing secret and no receiver.
-#[derive(Debug)]
-pub struct Credentials {
-    pub public_key: String,
-    pub secret_token: String,
-    /// See [`ConnectedCredentials::monokulo_url`].
-    pub monokulo_url: String,
-    /// See [`ConnectedCredentials::api`].
     pub api: String,
 }
 
@@ -107,10 +104,7 @@ fn resolve(base: &str, href: &str) -> String {
 /// channel.
 #[derive(Debug)]
 struct FinishedCredentials {
-    public_key: String,
-    secret_token: String,
-    monokulo_url: String,
-    api: String,
+    credentials: Credentials,
     /// Present when the flow registered a webhook.
     webhook_signing_secret: Option<String>,
 }
@@ -479,12 +473,7 @@ pub async fn run_connect_flow_without_webhook(
     monokulo_base_url: &str,
 ) -> Result<Credentials, ConnectFlowError> {
     let finished = connect(monokulo_base_url, None, ConnectFlowWallet::default(), None).await?;
-    Ok(Credentials {
-        public_key: finished.public_key,
-        secret_token: finished.secret_token,
-        monokulo_url: finished.monokulo_url,
-        api: finished.api,
-    })
+    Ok(finished.credentials)
 }
 
 /// [`run_connect_flow_with_wallet`], with the store's orders expiring after
@@ -513,10 +502,7 @@ async fn run_connect_flow_with(
     )
     .await?;
     Ok(ConnectedCredentials {
-        public_key: finished.public_key,
-        secret_token: finished.secret_token,
-        monokulo_url: finished.monokulo_url,
-        api: finished.api,
+        credentials: finished.credentials,
         webhook_signing_secret: finished
             .webhook_signing_secret
             .ok_or(ConnectFlowError::WebhookNotRegistered)?,
@@ -771,8 +757,17 @@ async fn expect_redirect(
 }
 
 async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), ConnectFlowError> {
+    ensure_success(response, step).await.map(drop)
+}
+
+/// `response` when its status is a success, else the step that got it,
+/// with its status and body.
+async fn ensure_success(
+    response: reqwest::Response,
+    step: &str,
+) -> Result<reqwest::Response, ConnectFlowError> {
     if response.status().is_success() {
-        return Ok(());
+        return Ok(response);
     }
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
@@ -792,7 +787,7 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
 /// order's own `mk:checkout` link, resolved against the URL that answered.
 ///
 /// `api_url` is monokulo's API entry as the plugin resolved it
-/// ([`ConnectedCredentials::api_url`]: `/finish`'s `api` against the
+/// ([`Credentials::api_url`]: `/finish`'s `api` against the
 /// address the plugin connected at). A plugin never talks to the engine.
 pub async fn create_order(
     api_url: &str,
@@ -802,16 +797,10 @@ pub async fn create_order(
 ) -> Result<CreatedOrder, ConnectFlowError> {
     let client = reqwest::Client::new();
     let entry = client.get(api_url).bearer_auth(secret_token).send().await?;
-    if !entry.status().is_success() {
-        let status = entry.status().as_u16();
-        let body = entry.text().await.unwrap_or_default();
-        return Err(ConnectFlowError::UnexpectedResponse {
-            step: "read the API entry".to_string(),
-            status,
-            body,
-        });
-    }
-    let entry: ApiEntry = entry.json().await?;
+    let entry: ApiEntry = ensure_success(entry, "read the API entry")
+        .await?
+        .json()
+        .await?;
     let form = entry
         .templates
         .get("create-order")
@@ -833,18 +822,10 @@ pub async fn create_order(
         }))
         .send()
         .await?;
-
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
-        return Err(ConnectFlowError::UnexpectedResponse {
-            step: "create order".to_string(),
-            status,
-            body,
-        });
-    }
-
-    let parsed: CreateOrderResponseBody = response.json().await?;
+    let parsed: CreateOrderResponseBody = ensure_success(response, "create order")
+        .await?
+        .json()
+        .await?;
     Ok(CreatedOrder {
         order_id: parsed.order_id,
         checkout_url: resolve(&orders_url, &parsed.links.checkout.href),
@@ -866,16 +847,7 @@ pub async fn read_order(
         .bearer_auth(key)
         .send()
         .await?;
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
-        return Err(ConnectFlowError::UnexpectedResponse {
-            step: "read order".to_string(),
-            status,
-            body,
-        });
-    }
-    Ok(response.json().await?)
+    Ok(ensure_success(response, "read order").await?.json().await?)
 }
 
 /// Server-to-server `POST {monokulo_base_url}/plugins/connect/{platform}/finish`,
@@ -902,23 +874,17 @@ async fn call_finish(
         .json(&serde_json::json!({ "token": token, "webhook_url": webhook_url }))
         .send()
         .await?;
-
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default();
-        return Err(ConnectFlowError::UnexpectedResponse {
-            step: "connect finish".to_string(),
-            status,
-            body,
-        });
-    }
-
-    let parsed: FinishResponseBody = response.json().await?;
+    let parsed: FinishResponseBody = ensure_success(response, "connect finish")
+        .await?
+        .json()
+        .await?;
     Ok(FinishedCredentials {
-        public_key: parsed.public_key,
-        secret_token: parsed.secret_token,
-        monokulo_url: monokulo_base_url.to_string(),
-        api: parsed.api,
+        credentials: Credentials {
+            public_key: parsed.public_key,
+            secret_token: parsed.secret_token,
+            monokulo_url: monokulo_base_url.to_string(),
+            api: parsed.api,
+        },
         webhook_signing_secret: parsed.webhook_signing_secret,
     })
 }

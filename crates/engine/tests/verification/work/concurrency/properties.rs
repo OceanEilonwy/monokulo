@@ -584,7 +584,6 @@ fn every_proof_config_shutdown_admission_schedule_recovers() {
             }
         }
     });
-    println!("ENGINE_BOUNDARY_HITS {{\"worker-proof-config-shutdown-schedules\":144,\"worker-custody-replacement-schedules\":72,\"worker-missing-anchor-schedules\":48,\"worker-mismatching-anchor-schedules\":48}}");
 }
 
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {

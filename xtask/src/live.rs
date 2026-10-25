@@ -15,7 +15,7 @@
 //! splits the spender's outputs, so the pair keeps itself funded.
 
 use crate::pages::{junit, Test, TestStatus};
-use crate::summary::ignored_tests;
+use crate::summary::{ignored_tests, Ignored};
 use crate::support::{at, read_json, write_json, Exit};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -772,15 +772,14 @@ fn cases(path: &Path) -> io::Result<Vec<Test>> {
     }
 }
 
-/// Each Rust case's `#[ignore]` reason: the ignored test whose path in its
-/// file ends the case's module path in its binary.
-fn reasons(rust: &[Test], ignored: &[(String, Option<String>)]) -> BTreeMap<String, String> {
+/// Each Rust case's `#[ignore]` reason: the ignored test of the case's
+/// package whose path in its file ends the case's module path in its binary.
+fn reasons(rust: &[Test], ignored: &[Ignored]) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
     for case in rust {
-        let reason = ignored.iter().find_map(|(name, reason)| {
-            let path = name.split_once(" › ").map_or(name.as_str(), |(_, p)| p);
-            (case.name == path || case.name.ends_with(&format!("::{path}")))
-                .then_some(reason.clone())
+        let reason = ignored.iter().find_map(|test| {
+            test.is(&case.class, &case.name)
+                .then(|| test.reason.clone())
                 .flatten()
         });
         if let Some(reason) = reason {
@@ -1037,7 +1036,7 @@ mod tests {
     fn every_ignored_test_says_why_and_runs_daily_or_says_why_not() {
         let ignored = ignored_tests(&root()).unwrap();
         let mut problems = Vec::new();
-        for (name, reason) in &ignored {
+        for Ignored { name, reason, .. } in &ignored {
             if reason.as_deref().is_none_or(|r| r.trim().is_empty()) {
                 problems.push(format!(
                     "give {name} a reason (#[ignore = \"needs ...\"]), for the job summary"
@@ -1060,7 +1059,7 @@ mod tests {
             }
         }
         for (name, _) in NOT_DAILY {
-            if !ignored.iter().any(|(n, _)| n == name) {
+            if !ignored.iter().any(|test| test.name == *name) {
                 problems.push(format!(
                     "NOT_DAILY lists {name}, which is no longer an ignored test"
                 ));
@@ -1191,15 +1190,17 @@ mod tests {
     #[test]
     fn each_case_gets_its_ignore_reason_by_its_path() {
         let ignored = vec![
-            (
-                "crates/engine/src/daemon_rpc.rs › live_node_tests::live_node_get_height"
+            Ignored {
+                name: "crates/engine/src/daemon_rpc.rs › live_node_tests::live_node_get_height"
                     .to_string(),
-                Some("needs a live mainnet node".to_string()),
-            ),
-            (
-                "crates/monokulo/tests/e2e_tor.rs › live_tor_takes_our_torrc".to_string(),
-                Some("needs tor and the live Tor network".to_string()),
-            ),
+                reason: Some("needs a live mainnet node".to_string()),
+                package: Some("engine".to_string()),
+            },
+            Ignored {
+                name: "crates/monokulo/tests/e2e_tor.rs › live_tor_takes_our_torrc".to_string(),
+                reason: Some("needs tor and the live Tor network".to_string()),
+                package: Some("monokulo".to_string()),
+            },
         ];
         let case = |class: &str, name: &str| case(class, name, TestStatus::Passed);
         let found = reasons(

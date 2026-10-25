@@ -151,6 +151,7 @@ fn coverage_artifact(root: &Path) {
     put_json(
         &root.join("stress/run.json"),
         &json!({"profile": "ci", "hardware": "machine.json",
+            "checked": ["lag", "tick-budget", "status-replies", "timer-delay"],
             "scenario": {"poll_interval_ms": 5000, "max_oldest_lag_blocks": 3, "max_http_latency_ms": 250},
             "results": [point(32, 58), point(128, 107)],
             "faults": [{"file": "fault-rpc", "status": "recovered", "tenants": 16, "fixture": {

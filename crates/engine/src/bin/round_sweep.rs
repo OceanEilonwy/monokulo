@@ -235,25 +235,28 @@ impl MoneroDaemonClient for SweepDaemon {
     }
 }
 
-struct Args(Vec<String>);
-
-impl Args {
-    fn value(&self, name: &str) -> Option<&str> {
-        self.0
-            .windows(2)
-            .find(|pair| pair[0] == name)
-            .map(|pair| pair[1].as_str())
-    }
-    fn get<T: std::str::FromStr>(&self, name: &str, default: T) -> Result<T, Box<dyn Error>>
-    where
-        T::Err: Error + 'static,
-    {
-        Ok(self
-            .value(name)
-            .map(str::parse)
-            .transpose()?
-            .unwrap_or(default))
-    }
+/// The options the sweep takes, each with its default but `--db`.
+fn command() -> clap::Command {
+    use stress_common::option;
+    clap::Command::new("round_sweep")
+        .arg(option::<String>("db").required(true))
+        .arg(option::<usize>("tenants").default_value("1"))
+        .arg(option::<usize>("groups").default_value("1"))
+        .arg(option::<u64>("backlog-blocks").default_value("200"))
+        .arg(option::<u64>("round-budget-ms").default_value("10000"))
+        .arg(option::<u64>("link-kbps").default_value("0"))
+        .arg(option::<u64>("rtt-ms").default_value("50"))
+        .arg(option::<u64>("ttfb-us-per-block").default_value("500"))
+        .arg(option::<u64>("block-bytes").default_value("13000"))
+        .arg(option::<u32>("budget-mb").default_value("8"))
+        .arg(option::<usize>("idle-rounds").default_value("5"))
+        .arg(option::<u64>("max-secs").default_value("120"))
+        .arg(option::<u64>("seed").default_value("1"))
+        .arg(
+            clap::Arg::new("trace-requests")
+                .long("trace-requests")
+                .action(clap::ArgAction::SetTrue),
+        )
 }
 
 /// Where each group's tenants start, and the tenants in it.
@@ -315,23 +318,24 @@ fn quantile(sorted: &[u64], q: f64) -> u64 {
 }
 
 async fn sweep() -> Result<(), Box<dyn Error>> {
-    let args = Args(std::env::args().collect());
-    let db_path: String = args.value("--db").ok_or("missing --db")?.to_owned();
-    let tenant_count: usize = args.get("--tenants", 1)?;
-    let group_count: usize = args.get("--groups", 1)?.max(1);
-    let backlog: u64 = args.get("--backlog-blocks", 200)?;
-    let round_budget = Duration::from_millis(args.get("--round-budget-ms", 10_000)?);
-    let link_kbps: u64 = args.get("--link-kbps", 0)?;
+    use stress_common::value;
+    let args = command().try_get_matches()?;
+    let db_path: String = value(&args, "db")?;
+    let tenant_count: usize = value(&args, "tenants")?;
+    let group_count: usize = value::<usize>(&args, "groups")?.max(1);
+    let backlog: u64 = value(&args, "backlog-blocks")?;
+    let round_budget = Duration::from_millis(value(&args, "round-budget-ms")?);
+    let link_kbps: u64 = value(&args, "link-kbps")?;
     let link = LinkModel {
-        rtt: Duration::from_millis(args.get("--rtt-ms", 50)?),
-        ttfb_per_block: Duration::from_micros(args.get("--ttfb-us-per-block", 500)?),
+        rtt: Duration::from_millis(value(&args, "rtt-ms")?),
+        ttfb_per_block: Duration::from_micros(value(&args, "ttfb-us-per-block")?),
         rate: (link_kbps > 0).then(|| link_kbps as f64 * 1000.0 / 8.0),
     };
-    let block_bytes: u64 = args.get("--block-bytes", 13_000)?;
-    let budget_mb: u32 = args.get("--budget-mb", 8)?;
-    let idle_rounds: usize = args.get("--idle-rounds", 5)?;
-    let max_secs = Duration::from_secs(args.get("--max-secs", 120)?);
-    let seed: u64 = args.get("--seed", 1)?;
+    let block_bytes: u64 = value(&args, "block-bytes")?;
+    let budget_mb: u32 = value(&args, "budget-mb")?;
+    let idle_rounds: usize = value(&args, "idle-rounds")?;
+    let max_secs = Duration::from_secs(value(&args, "max-secs")?);
+    let seed: u64 = value(&args, "seed")?;
     if tenant_count < group_count {
         return Err("--tenants must be at least --groups".into());
     }
@@ -430,7 +434,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
         header_requests: AtomicU64::new(0),
         small_requests: AtomicU64::new(0),
         heights_served: Mutex::new(HashSet::new()),
-        trace: args.0.iter().any(|arg| arg == "--trace-requests"),
+        trace: args.get_flag("trace-requests"),
     });
     let db = Db::open(&db_path, &store)?;
     let observer = rusqlite::Connection::open_with_flags(
