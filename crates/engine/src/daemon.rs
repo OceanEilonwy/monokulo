@@ -36,6 +36,13 @@ pub enum DaemonError {
     /// The answer was larger than the cap: a smaller request may succeed.
     #[error("daemon response too large: {0}")]
     TooLarge(String),
+    /// A transaction that came with a block under the id the block lists
+    /// ([`IdBinding::Listed`]) isn't what the node sends by that id, or
+    /// the node won't send it by its id
+    /// ([`MoneroDaemonClient::confirm_listed`]): its blocks can't be
+    /// scanned for payments.
+    #[error("daemon sent a block transaction it doesn't back by its id: {0}")]
+    Unconfirmed(String),
 }
 
 impl DaemonError {
@@ -478,6 +485,34 @@ pub trait MoneroDaemonClient: Send + Sync {
     ) -> Result<Vec<FetchedTx>, DaemonError>;
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
+
+    /// Whether `tx`, the body that came with a block under `txid` as
+    /// [`IdBinding::Listed`], is that transaction: fetched again by its id
+    /// ([`Self::get_transactions_with_ids`], where a body is checked against
+    /// its id), it must be what the scan read.
+    ///
+    /// A node that doesn't send it, or sends another, has failed
+    /// ([`DaemonError::Unconfirmed`]): a client of several nodes moves on
+    /// from it as from any other failure.
+    async fn confirm_listed(&self, txid: &str, tx: &ScanTx) -> Result<(), DaemonError> {
+        let fetched = self
+            .get_transactions_with_ids(std::slice::from_ref(&txid.to_owned()))
+            .await?;
+        if fetched
+            .iter()
+            .any(|fetched| fetched.txid == txid && ScanTx::of(&fetched.tx) == *tx)
+        {
+            return Ok(());
+        }
+        Err(DaemonError::Unconfirmed(format!(
+            "transaction {txid}, fetched by its id, {}",
+            if fetched.is_empty() {
+                "didn't come"
+            } else {
+                "isn't the body that came with its block"
+            }
+        )))
+    }
 
     /// A second opinion on a [`Self::locate_transaction`] answer of
     /// `NotFound`, for the one question where a node's *absence* answer has

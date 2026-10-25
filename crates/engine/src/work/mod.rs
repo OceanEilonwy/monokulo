@@ -119,8 +119,11 @@ impl RoundReport {
             return Err(error);
         }
         for (tier, outcome) in self.outcomes.iter() {
-            if let TierOutcome::Blocked(wait @ (Wait::NodeFailed | Wait::MempoolUnreadable)) =
-                outcome
+            if let TierOutcome::Blocked(
+                wait @ (Wait::NodeFailed
+                | Wait::NodeUnconfirmedTransaction
+                | Wait::MempoolUnreadable),
+            ) = outcome
             {
                 return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
                     format!("the {tier:?} tier was blocked: {wait:?}"),

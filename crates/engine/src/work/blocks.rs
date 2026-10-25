@@ -660,6 +660,16 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         // A node that fails or doesn't answer stops block scanning where it
         // is, with nothing recorded past it; the next round retries from
         // there. Only this engine's own failures (storage) fail the round.
+        Err(ScannerError::Daemon(error @ crate::daemon::DaemonError::Unconfirmed(_))) => {
+            shared::throttled!(
+                format!("blocks-unconfirmed:{}", crate::network::network_str(round.network())),
+                warn,
+                network = crate::network::network_str(round.network()),
+                error = %error,
+                "block scanning stopped: the node sent a block transaction it doesn't back by its id. It is skipped for a while; if every node does this, no payment on this network is being detected"
+            );
+            Progress::Blocked(Wait::NodeUnconfirmedTransaction)
+        }
         Err(ScannerError::Daemon(error)) => {
             shared::throttled!(
                 format!("blocks-node:{}", crate::network::network_str(round.network())),
@@ -1293,7 +1303,13 @@ async fn scan_block(
                     // A body that came with the block and couldn't be
                     // confirmed: the block is fetched again, not scanned
                     // from what came again.
-                    round.blocks.cache.remove(height);
+                    let discarded = round.blocks.cache.remove(height);
+                    round
+                        .state
+                        .blocks
+                        .progress
+                        .lock()
+                        .discarded(discarded, crate::now_unix());
                     return Err(error);
                 }
             }
@@ -1855,35 +1871,33 @@ async fn scan_txs(
 /// nothing ties the body to the id in it, so a node could send a made-up
 /// one paying a store inside a real block. Fetched by its id, a body is
 /// checked against the id with the hash of its pruned part, which a node
-/// can't choose to make another body hash to it (`get_transactions_with_ids`).
-/// What the scan read must be what that body says; anything else is the
-/// node's failure. Payments are rare, so this costs a round trip only for
-/// one.
+/// can't choose to make another body hash to it
+/// (`MoneroDaemonClient::confirm_listed`). What the scan read must be what
+/// that body says; anything else is the node's failure, counted against it
+/// like any other. It costs a round trip for each transaction a scan finds
+/// a payment in, each time it is scanned.
+///
+/// Only bodies that pay are fetched again (monerod sends an all-zero hash
+/// of the pruned part with every block transaction, so none can be checked
+/// from the block alone). A node can still hide a payment by sending, under
+/// its id, a body that pays nobody: for that the node is trusted.
 async fn confirm_listed(
     round: &Round<'_>,
     height: u64,
     txid: &str,
     tx: &ScanTx,
 ) -> Result<(), ScannerError> {
-    let fetched = bounded(
-        round
-            .inputs
-            .daemon
-            .get_transactions_with_ids(std::slice::from_ref(&txid.to_owned())),
-    )
-    .await?;
-    if fetched
-        .iter()
-        .any(|fetched| fetched.txid == txid && ScanTx::of(&fetched.tx) == *tx)
-    {
-        return Ok(());
-    }
-    Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
-        format!(
-            "transaction {txid} of block {height}, fetched by its id, isn't the body that came \
-             with the block - not taking a payment from it"
-        ),
-    )))
+    bounded(round.inputs.daemon.confirm_listed(txid, tx))
+        .await
+        .map_err(|error| {
+            if let ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(why)) = error {
+                ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(format!(
+                    "block {height}: {why} - not taking a payment from it"
+                )))
+            } else {
+                error
+            }
+        })
 }
 
 /// Scans a large block a page of transactions at a time,

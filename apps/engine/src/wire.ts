@@ -14,6 +14,7 @@ export type Wait =
   | 'reorg_being_reconciled'
   | 'rewound_this_round'
   | 'node_failed'
+  | 'node_unconfirmed_transaction'
   | 'node_cannot_serve_tip'
   | 'mempool_unreadable'
   | 'reorg_candidates_retrying'

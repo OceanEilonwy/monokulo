@@ -918,7 +918,7 @@ impl State {
             } => out.mark(tier, true, MarkKind::TierFailed { tier }),
             Span::Unit {
                 pass: _,
-                progress: UnitProgress::Blocked(Wait::NodeFailed),
+                progress: UnitProgress::Blocked(Wait::NodeFailed | Wait::NodeUnconfirmedTransaction),
             } => out.mark(tier, true, MarkKind::NodeFailed { tier }),
             Span::Unit {
                 pass: _,
