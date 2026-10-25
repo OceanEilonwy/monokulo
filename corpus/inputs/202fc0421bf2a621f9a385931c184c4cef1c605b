@@ -1,0 +1,15 @@
+{"host":"l!host","fallbacks":[
+
+
+
+
+
+
+
+
+
+
+
+
+
+{"host":"peer","p:ort":18082,"fallbacks":[{"hos":"eer","port":18081,"fallbacks":[{g":1}]}]}
