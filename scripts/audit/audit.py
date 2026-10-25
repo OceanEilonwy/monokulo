@@ -15,6 +15,7 @@ Agents (AUDIT_AGENT or --agent names who is asking):
     audit.py finding --job N ...  report a finding (makes a verify job)
     audit.py verify --job N ...   settle a verify job's finding
     audit.py note FINDING TEXT    add to a finding already recorded (yours or another's)
+    audit.py amend FINDING --lines N-M [--file P]   correct where a finding points
     audit.py purpose PATH TEXT    say in one line what a file is for
     audit.py done --job N --summary TEXT
     audit.py release --job N      give a job back unfinished
@@ -587,6 +588,31 @@ def cmd_note(args):
     print(f"added to finding {args.finding}")
 
 
+def cmd_amend(args):
+    agent = agent_name(args)
+    conn = connect()
+    start, _, end = str(args.lines).partition("-")
+    if not (start.isdigit() and (end.isdigit() or not end)):
+        sys.exit(f"--lines takes one range, START or START-END, not {args.lines!r}")
+    start, end = int(start), int(end or start)
+    with Tx(conn):
+        row = conn.execute(
+            "SELECT rf.crate_file_id, cf.path FROM review_finding rf JOIN crate_file cf ON cf.id = rf.crate_file_id "
+            "WHERE rf.id = ?", (args.finding,)
+        ).fetchone()
+        if row is None:
+            sys.exit(f"no finding {args.finding}")
+        f = file_id(conn, args.file) if args.file else file_id(conn, row["path"])
+        if not 1 <= start <= end <= f["loc"]:
+            sys.exit(f"lines {args.lines} are outside the file (1-{f['loc']})")
+        conn.execute(
+            "UPDATE review_finding SET crate_file_id = ?, line_start = ?, line_end = ?, "
+            "problem = problem || ? WHERE id = ?",
+            (f["id"], start, end, f"\n\n{agent} moved this to {args.file or row['path']}:{start}-{end}.", args.finding),
+        )
+    print(f"finding {args.finding} now points at lines {start}-{end}")
+
+
 def cmd_purpose(args):
     conn = connect()
     with Tx(conn):
@@ -772,6 +798,12 @@ def main():
     p.add_argument("finding", type=int, nargs="?")
     p.add_argument("text", nargs="?")
     p.set_defaults(run=cmd_note)
+
+    p = sub.add_parser("amend", parents=[common])
+    p.add_argument("finding", type=int)
+    p.add_argument("--lines", required=True)
+    p.add_argument("--file", help="move the finding to another file")
+    p.set_defaults(run=cmd_amend)
 
     p = sub.add_parser("purpose", parents=[common])
     p.add_argument("path")

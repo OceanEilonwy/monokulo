@@ -91,6 +91,8 @@ machine. Use `rg`, `git grep` and reading.
   type-safety change that removes a class of bugs; **low** = cleanups.
 - To add to a finding already recorded (a wider impact, a related place):
   `audit.py note --agent NAME FINDING "text"`.
+- To correct where a finding points (yours, or one you're verifying):
+  `audit.py amend --agent NAME FINDING --lines N-M [--file PATH]`.
 - For a module review, note each target file's purpose in one line:
   `audit.py purpose PATH "what it is for"`. `done` refuses until they're set.
 - Close with `audit.py done --agent NAME --job N --summary "..."`: what you
