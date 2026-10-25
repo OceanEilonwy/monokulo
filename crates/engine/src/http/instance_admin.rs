@@ -274,6 +274,15 @@ async fn nodes_that_cannot_work(
             ));
             continue;
         }
+        // Refused before anything is asked of it: asking would look its
+        // name up in the system's DNS.
+        if let Some(onion) = primary.onion_node() {
+            errors.push(live_settings::FieldError::new(
+                setting.key,
+                crate::settings::onion_node_message(&onion.host, onion.port),
+            ));
+            continue;
+        }
         for node in nodes {
             let key = setting.key;
             let network = *name;
@@ -426,9 +435,30 @@ async fn changes_from(
             return Err(Refusal::Fields(standalone));
         }
     }
+    let current_nodes = settings.nodes.load();
+    // A node sent as a plain setting is held to the node form's rule too:
+    // a new or changed one on an onion address is refused.
+    let onion: Vec<live_settings::FieldError> = req
+        .scalars
+        .iter()
+        .filter_map(|(key, raw)| {
+            let (network, setting) = NETWORKS.iter().find(|(_, s)| s.key == key)?;
+            let node: crate::settings::MoneroNodeSetting = serde_json::from_str(raw).ok()?;
+            if current_nodes.nodes.get(network) == Some(&node) {
+                return None;
+            }
+            let onion = node.onion_node()?;
+            Some(live_settings::FieldError::new(
+                setting.key,
+                crate::settings::onion_node_message(&onion.host, onion.port),
+            ))
+        })
+        .collect();
+    if !onion.is_empty() {
+        return Err(Refusal::Fields(onion));
+    }
     let mut changes: live_settings::Changes =
         req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
-    let current_nodes = settings.nodes.load();
     let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
     if !cannot_work.is_empty() {
         return Err(Refusal::Fields(cannot_work));

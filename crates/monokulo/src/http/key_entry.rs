@@ -28,6 +28,7 @@ use axum::response::{IntoResponse, Response};
 use super::AppState;
 use crate::api::runtime::problem::Problem;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
+use crate::network::NetworkKind;
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
 use shared::ids::UserId;
 
@@ -334,7 +335,15 @@ fn ready_view(
         .key_bundles
         .insert(user, per_user, json.clone());
     let path = format!("/key-custody/bundles/{id}");
-    let public = state.settings.public_uri();
+    // key-custody-cli fetches the bundle itself, straight from the
+    // merchant's machine, so it is given the web address only on the web.
+    // A merchant on Tor saves the bundle as a file instead, fetched by their
+    // browser over Tor: a command naming the web address would tie their
+    // own IP address to the account they keep behind Tor.
+    let public = match crate::base::network() {
+        Some(NetworkKind::Web) => state.network_of(NetworkKind::Web).public_uri(),
+        Some(NetworkKind::Onion) | None => None,
+    };
     let bundle_arg = match &public {
         Some(base) => format!("{base}{path}"),
         None => "key-custody-bundle.json".to_owned(),

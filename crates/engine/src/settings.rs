@@ -38,6 +38,30 @@ fn default_true() -> bool {
     true
 }
 
+impl MoneroNodeSetting {
+    /// The first of this node and its fallbacks on an onion address, which
+    /// the engine doesn't reach: it connects to nodes over the web only.
+    pub fn onion_node(&self) -> Option<&Self> {
+        std::iter::once(self)
+            .chain(&self.fallbacks)
+            .find(|node| is_onion_host(&node.host))
+    }
+}
+
+/// Whether `host` ends in `.onion` (any case, with or without a final dot).
+pub fn is_onion_host(host: &str) -> bool {
+    host.trim_end_matches('.')
+        .to_ascii_lowercase()
+        .ends_with(".onion")
+}
+
+/// What a node on an onion address is told, wherever it turns up.
+pub fn onion_node_message(host: &str, port: u16) -> String {
+    format!(
+        "{host}:{port} is an onion address, which isn't supported: Monokulo connects to Monero nodes over the web only, so an onion name would be looked up in the system's DNS, which would learn it and find nothing. Give the node's web host name or IP address."
+    )
+}
+
 /// The `check` for a node setting: a fallback's own `fallbacks` would be
 /// accepted by the shape and never tried (only the top-level list is), so a
 /// non-empty one is refused rather than saved and ignored.

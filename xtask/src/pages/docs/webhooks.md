@@ -16,6 +16,10 @@ Delete the webhook and add a new one.
 A shop plugin adds its own webhook when it connects, and disconnecting
 it deletes it.
 
+The address must be a web address: Monokulo doesn't send webhooks over
+Tor, so one on an onion address (`http://….onion/…`) is refused, and a
+plugin connecting with one is refused before its code is spent.
+
 **A new webhook gets only the events that happen from the moment it's
 added.** Nothing from before is sent to it: no earlier status changes, not
 even for orders still open.

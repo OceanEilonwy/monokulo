@@ -112,8 +112,14 @@ merchants' browsers and `key-custody-cli` trust.
   give it to them yourself, not through the site.
 
 **Raise `--guest-svn`** with every release that fixes a security problem in the
-image: the engine never hands its master key to a lower version, and
-`key_custody.snp_min_guest_svn` refuses lower versions outright.
+image: the engine never hands its master key to a lower version, nor takes it
+from a version lower than any that has used its database, and
+`key_custody.snp_min_guest_svn` refuses lower versions outright. Each release
+also carries its own floor (`crates/key-custody/src/release_guest_svn_floor.txt`,
+at least 1, so sign at `--guest-svn 1` or later), which no setting lowers: no
+engine starts, takes or hands over the master key, and no client sends keys,
+below it. Raise it to the fixed image's version in the same release, so the
+flawed image is refused everywhere, whatever its host has done to the database.
 
 Launch the guest with the signed block, e.g. with QEMU:
 
@@ -237,7 +243,11 @@ the engine it replaces hands it over.
    running engine's private address (same engine token). It waits for the
    master key, asks for it, and takes it within seconds; the old engine
    checks against AMD's chain that the new one is a trusted image at its own
-   security version or later before handing over.
+   security version or later before handing over, and the new one takes the
+   key only if it is the one the database's wraps hold (a key check is
+   written with each wrap; wraps written before this release have none and
+   aren't compared), so pointing `snp_handoff_url` at another installation's engine
+   leaves it waiting.
 3. Switch monokulo to the new engine, stop the old one, and remove
    `snp_handoff_url`.
 

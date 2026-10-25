@@ -43,9 +43,9 @@ pub use work::{
     ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment, Stores,
 };
 
-/// A wrapped SEV-SNP master key: (measurement, guest SVN, wrapped key).
-/// `(measurement, guest_svn, tcb, wrapped)`.
-pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>, Vec<u8>);
+/// A wrapped SEV-SNP master key:
+/// `(measurement, guest_svn, tcb, wrapped, key_check)`.
+pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>, Vec<u8>, Option<Vec<u8>>);
 
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
@@ -155,6 +155,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (
         32,
         include_str!("../../migrations/0032_cancelled_orders.sql"),
+    ),
+    (
+        33,
+        include_str!("../../migrations/0033_snp_master_key_check.sql"),
     ),
 ];
 
@@ -1796,30 +1800,37 @@ impl Store {
 
     /// Every wrapped SEV-SNP master key (`key_custody::snp`).
     pub fn snp_master_keys(&self) -> Result<Vec<SnpMasterKeyRow>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT measurement, guest_svn, tcb, wrapped FROM snp_master_keys")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT measurement, guest_svn, tcb, wrapped, key_check FROM snp_master_keys",
+        )?;
         let rows = stmt
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Stores the SEV-SNP master key wrapped for the image `measurement` at
-    /// firmware `tcb`, replacing any earlier wrap for it.
+    /// firmware `tcb`, with its key check, replacing any earlier wrap for it.
     pub fn save_snp_master_key(
         &self,
         measurement: &[u8],
         guest_svn: u32,
         tcb: &[u8],
         wrapped: &[u8],
+        key_check: Option<&[u8]>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO snp_master_keys (measurement, guest_svn, tcb, wrapped) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, tcb = ?3, wrapped = ?4",
-            params![measurement, guest_svn, tcb, wrapped],
+            "INSERT INTO snp_master_keys (measurement, guest_svn, tcb, wrapped, key_check) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, tcb = ?3, wrapped = ?4, key_check = ?5",
+            params![measurement, guest_svn, tcb, wrapped, key_check],
         )?;
         Ok(())
     }

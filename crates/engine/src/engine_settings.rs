@@ -151,7 +151,7 @@ settings! {
     KEY_CUSTODY_SNP_MIN_GUEST_SVN: u32 {
         key: "key_custody.snp_min_guest_svn",
         default: 0,
-        description: "The lowest engine image security version (the ID block's guest SVN) trusted with keys: this engine refuses to start below it, and a handoff never goes to an image below it or below the engine handing over. Keep monokulo's key_custody.snp_entry_min_guest_svn the same: its key entry checks its own.",
+        description: "The lowest engine image security version (the ID block's guest SVN) trusted with keys: this engine refuses to start below it, and a handoff never goes to or comes from an image below it (nor goes to one below the engine handing over, nor comes from one below any that has used this database). It only raises this release's built-in floor, which no setting lowers. Keep monokulo's key_custody.snp_entry_min_guest_svn the same: its key entry checks its own.",
         example: "1",
         applies: Restart,
         editable: false,
@@ -1136,6 +1136,7 @@ impl live_settings::Reloadable for NodesReloadable {
     ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.daemons.snapshot();
         let mut map = HashMap::new();
+        let mut warnings = Vec::new();
         for (name, node) in &new.nodes {
             let setting = NETWORKS
                 .iter()
@@ -1144,6 +1145,18 @@ impl live_settings::Reloadable for NodesReloadable {
             let network = crate::network::parse_network(name)
                 .map_err(|e| FieldError::new(setting, e.to_string()))?;
             let unchanged = old.nodes.get(name) == Some(node) && old.strict_tls == new.strict_tls;
+            // One already set (a save refuses a new one) doesn't stop the
+            // engine: it is kept, never asked anything (`RpcDaemonClient`),
+            // and said once here, which boot logs, and on `/status`.
+            if let Some(onion) = node
+                .onion_node()
+                .filter(|_| old.nodes.get(name) != Some(node))
+            {
+                warnings.push(live_settings::Warning::for_key(
+                    setting,
+                    crate::settings::onion_node_message(&onion.host, onion.port),
+                ));
+            }
             let client = match current.get(&network) {
                 Some(existing) if unchanged => Arc::clone(existing),
                 _ => Arc::new(
@@ -1153,7 +1166,7 @@ impl live_settings::Reloadable for NodesReloadable {
             };
             map.insert(network, client);
         }
-        Ok((map, Vec::new()))
+        Ok((map, warnings))
     }
 
     async fn install(&self, prepared: Self::Prepared) {

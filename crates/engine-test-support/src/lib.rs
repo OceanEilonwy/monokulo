@@ -1691,6 +1691,7 @@ mod tests {
                         guest_svn: 1,
                         tcb: snp_attest::guest::TestIdentity::default().tcb,
                         wrapped: vec![0; 60],
+                        key_check: None,
                     }])
                 }
                 fn save(&self, _wrap: &StoredWrap) -> Result<(), String> {

@@ -39,6 +39,11 @@ use crate::daemon::{
 pub struct RpcDaemonClient {
     client: reqwest::Client,
     base_url: String,
+    /// Why this node is never asked anything: it is on an onion address,
+    /// which only the system's DNS would be asked for. Such a node is
+    /// refused when saved; one already set is kept, so the engine starts,
+    /// and every request to it fails with this.
+    unsupported: Option<String>,
     /// Largest response body accepted (task 7.6). A node that sends more is
     /// treated as failing rather than being allowed to exhaust memory.
     max_response_bytes: usize,
@@ -157,9 +162,12 @@ impl RpcDaemonClient {
             .ok()
             .filter(|url| url.host_str().is_some())
             .ok_or_else(|| DaemonError::Request(format!("not a node address: {host}:{port}")))?;
+        let unsupported = crate::settings::is_onion_host(&host)
+            .then(|| crate::settings::onion_node_message(&host, port));
         Ok(Self {
             client,
             base_url,
+            unsupported,
             max_response_bytes: MAX_RESPONSE_BYTES,
             stats: parking_lot::Mutex::default(),
             link: crate::link::Link::default(),
@@ -260,6 +268,9 @@ impl RpcDaemonClient {
         timeout: Duration,
         cap: usize,
     ) -> Result<(Vec<u8>, Timing), DaemonError> {
+        if let Some(why) = &self.unsupported {
+            return Err(DaemonError::Request(why.clone()));
+        }
         let started = Instant::now();
         let sent = body.len() as u64;
         {
