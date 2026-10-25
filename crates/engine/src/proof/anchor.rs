@@ -25,9 +25,9 @@ use futures_util::future::join_all;
 
 use super::{NodeRef, ProofTuning};
 use crate::daemon::DifficultyHeader;
-use crate::pow::hasher::Hasher;
-use crate::pow::{self, ProvenBlock, DIFFICULTY_BLOCKS};
 use crate::store::proof::NewAnchor;
+use engine_pow::hasher::Hasher;
+use engine_pow::{ProvenBlock, DIFFICULTY_BLOCKS};
 
 /// Why no anchor could be taken yet. Every one is retried next round.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -94,7 +94,7 @@ pub async fn take(
     // claiming to be) can't choose the anchor.
     heights.sort_unstable_by(|a, b| b.cmp(a));
     let base = heights[needed - 1];
-    let fork = pow::randomx_fork_height(network);
+    let fork = engine_pow::randomx_fork_height(network);
     let window_len = DIFFICULTY_BLOCKS as u64;
     let anchor = base.saturating_sub(tuning.anchor_depth);
     let start = (anchor + 1).saturating_sub(window_len);
@@ -106,7 +106,7 @@ pub async fn take(
         });
     }
     let key_heights: BTreeSet<u64> = (start..=anchor + 1)
-        .map(pow::seed_height)
+        .map(engine_pow::seed_height)
         .filter(|h| *h < start)
         .collect();
 
@@ -194,7 +194,7 @@ fn id_of(hex_id: &str) -> Result<[u8; 32], AnchorProblem> {
 /// between a quarter and four times `depth` blocks' time old, and the window
 /// spanning between a quarter and four times its blocks' time.
 fn check_dates(window: &[ProvenBlock], depth: u64, now: i64) -> Result<(), AnchorProblem> {
-    let target = pow::DIFFICULTY_TARGET_SECS as u64;
+    let target = engine_pow::DIFFICULTY_TARGET_SECS as u64;
     let (Some(first), Some(last)) = (window.first(), window.last()) else {
         return Err(AnchorProblem::Inconsistent("an empty window".to_owned()));
     };
@@ -279,7 +279,7 @@ fn check_answer(
         })
         .collect::<Result<Vec<_>, AnchorProblem>>()?;
     let after = &rows[rows.len() - 1];
-    let computed = pow::Window::new(window.iter().cloned()).next_difficulty();
+    let computed = engine_pow::Window::new(window.iter().cloned()).next_difficulty();
     if computed != after.difficulty {
         return Err(AnchorProblem::Inconsistent(format!(
             "the window gives block {} difficulty {computed}, the nodes claim {}",
@@ -360,7 +360,7 @@ async fn sample(
     }
     let start = window[0].height;
     let key_of = |height: u64| -> Option<[u8; 32]> {
-        let at = pow::seed_height(height);
+        let at = engine_pow::seed_height(height);
         if at >= start {
             window.get((at - start) as usize).map(|b| b.id)
         } else {
@@ -380,7 +380,7 @@ async fn sample(
                     .bounded(node.client.get_block_blob(window[index].height))
                     .await
                 {
-                    Ok(blob) => match pow::decode(window[index].height, &blob) {
+                    Ok(blob) => match engine_pow::decode(window[index].height, &blob) {
                         Ok(candidate) if candidate.id == window[index].id => return Ok(candidate),
                         Ok(_) => failure = Some("sample blob is not the agreed block".to_owned()),
                         Err(error) => failure = Some(format!("invalid sample blob: {error}")),
@@ -412,7 +412,7 @@ async fn sample(
             .map_err(|e| AnchorProblem::Failed(e.to_string()))?;
         for (index, hash) in indices.into_iter().zip(pow_hashes) {
             let difficulty = answer.rows[index].difficulty;
-            if !pow::check_hash(&hash, difficulty) {
+            if !engine_pow::check_hash(&hash, difficulty) {
                 return Err(AnchorProblem::SampleFailed {
                     height: window[index].height,
                     reason: format!(

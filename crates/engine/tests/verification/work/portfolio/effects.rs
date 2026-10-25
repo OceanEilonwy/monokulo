@@ -189,7 +189,7 @@ impl World {
             .borrow()
             .iter()
             .filter(|(h, _)| **h <= ceiling)
-            .map(|(height, hash)| crate::pow::ProvenBlock {
+            .map(|(height, hash)| engine_pow::ProvenBlock {
                 height: *height,
                 id: if mismatch && *height > 2 {
                     [42; 32]

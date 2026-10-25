@@ -11,7 +11,7 @@ struct FakeBlock {
     txs: Vec<Transaction>,
     timestamp: u64,
     /// Its blob and difficulties, for a block a test made with
-    /// `pow::test_chain`: what proof-of-work checking reads.
+    /// `engine_pow::test_chain`: what proof-of-work checking reads.
     proof: Option<FakeProof>,
 }
 
@@ -282,7 +282,7 @@ impl FakeDaemonClient {
     }
 
     /// Replaces every block from `from` up with `blocks` (real ones, from
-    /// `pow::test_chain`), as [`Self::reorg_from`] does: the node's chain
+    /// `engine_pow::test_chain`), as [`Self::reorg_from`] does: the node's chain
     /// now ends with them. A transaction no longer in a block is gone.
     pub fn replace_from(&self, from: u64, blocks: Vec<ProofBlock>) {
         let mut state = self.state.lock();
@@ -354,6 +354,41 @@ impl FakeDaemonClient {
                 proof: None,
             },
         );
+    }
+
+    /// Puts `chain`'s blocks from `from` up into this node (replacing what
+    /// it had there and above), with their blobs and difficulties for
+    /// proof checking, and the made-up keys below the chain.
+    #[cfg(test)]
+    pub fn install_chain(&self, chain: &engine_pow::test_chain::TestChain, from: u64) {
+        let blocks: Vec<_> = chain.blocks().iter().filter(|b| b.height >= from).collect();
+        self.replace_from(
+            from,
+            blocks
+                .iter()
+                .map(|b| ProofBlock {
+                    height: b.height,
+                    hash: b.id_hex(),
+                    timestamp: b.timestamp,
+                    txs: b.txs.clone(),
+                    blob: b.blob.clone(),
+                    difficulty: b.difficulty,
+                    cumulative_difficulty: b.cumulative_difficulty,
+                })
+                .collect(),
+        );
+        let first = chain.blocks().first().map_or(0, |b| b.height);
+        let mut keys: Vec<u64> = blocks
+            .iter()
+            .map(|b| engine_pow::seed_height(b.height))
+            .collect();
+        keys.dedup();
+        for key_height in keys.into_iter().filter(|h| *h < first) {
+            self.seed_key_block(
+                key_height,
+                &hex::encode(engine_pow::test_chain::made_up_key(key_height)),
+            );
+        }
     }
 
     pub fn drop_from_mempool(&self, tx: &Transaction) {

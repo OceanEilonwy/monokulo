@@ -7,11 +7,26 @@
 //!
 //! Everything here is pure; [`hasher`] computes the `RandomX` hashes on a
 //! thread of its own.
+//!
+//! The engine's proof follower (`engine::proof`) is what applies these rules
+//! to the blocks its nodes send; this crate knows nothing of nodes, stores
+//! or the follower. With `test-support`, [`hasher`] also offers a cheap
+//! stand-in hash function and `test_chain` mines real blocks at small
+//! difficulties, for the engine's tests.
+
+// Engine code must not panic on anything it can recover from: a panic in
+// the follower stops payment detection until the supervisor restarts it.
+// Tests may unwrap freely. Each remaining allow names the invariant that
+// makes it safe.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// Test code is left out of coverage reports (`cargo +nightly llvm-cov`).
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use std::collections::VecDeque;
 
 pub mod hasher;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod test_chain;
 
 /// Seconds a block is meant to take (`DIFFICULTY_TARGET_V2`).

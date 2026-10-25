@@ -139,6 +139,9 @@ monokulo = { path = ".", features = ["test-support"] }
 service-runtime = { path = "../service-runtime", features = ["test-support"] }
 # The test engine token.
 credentials = { path = "../credentials", features = ["test-support"] }
+# Proven blocks, to give an embedded engine's store a proof history
+# (`http::admin_settings` tests).
+engine-pow = { path = "../engine-pow" }
 # The in-thread database pool (`db::Db` in tests).
 sqlite = { path = "../sqlite", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }

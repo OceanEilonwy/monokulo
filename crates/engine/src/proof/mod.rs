@@ -31,11 +31,11 @@ use futures_util::future::join_all;
 
 use crate::daemon::{DaemonError, MoneroDaemonClient};
 use crate::daemon_fallback::FallbackDaemonClient;
-use crate::pow::hasher::Hasher;
-use crate::pow::{self, ProvenBlock, Rejection, Verdict, Window, DIFFICULTY_BLOCKS};
 use crate::store::db::{Class, Db};
 use crate::store::proof::ProvenWrite;
 use crate::store::{Store, StoreError};
+use engine_pow::hasher::Hasher;
+use engine_pow::{ProvenBlock, Rejection, Verdict, Window, DIFFICULTY_BLOCKS};
 
 /// How checking is paced and bounded. [`ProofTuning::DEFAULT`] in
 /// production; tests pass their own, explicitly.
@@ -194,7 +194,7 @@ pub enum ProofError {
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
-    Hash(#[from] pow::hasher::HashError),
+    Hash(#[from] engine_pow::hasher::HashError),
     #[error("{0}")]
     Missing(String),
 }
@@ -215,7 +215,7 @@ pub struct Follower {
     hasher: Option<Hasher>,
     /// What a hasher this follower starts hashes with: `RandomX`, unless a
     /// test injected another ([`Self::with_hasher`]).
-    function: pow::hasher::Function,
+    function: engine_pow::hasher::Function,
     /// Nodes caught or found off the proven chain, by label: excluded until
     /// their tip is on the proven chain again (a caught one, not before
     /// [`ProofTuning::caught_for`]).
@@ -248,7 +248,7 @@ impl Follower {
             network,
             tuning,
             hasher: None,
-            function: pow::hasher::Function::RandomX,
+            function: engine_pow::hasher::Function::RandomX,
             off_chain: HashMap::new(),
             settled: HashMap::new(),
             status: None,
@@ -263,7 +263,7 @@ impl Follower {
     /// thread itself, and with its function after checking is turned off
     /// and on again: tests' followers share the thread that built their
     /// chains, whose keys are then built already, and the follower's logic
-    /// tests hash with the stand-in ([`pow::hasher::Hasher::stand_in`]).
+    /// tests hash with the stand-in ([`engine_pow::hasher::Hasher::stand_in`]).
     #[cfg(test)]
     pub(crate) fn with_hasher(mut self, hasher: Hasher) -> Self {
         self.function = hasher.function();
@@ -691,7 +691,7 @@ impl Follower {
         // A branch below the proven tip gets what it needs to outweigh it.
         let competing = parent_height < ours.height;
         if competing {
-            *budget = (*budget).max(ours.height - parent_height + pow::SEEDHASH_EPOCH_LAG);
+            *budget = (*budget).max(ours.height - parent_height + engine_pow::SEEDHASH_EPOCH_LAG);
         }
         let floor = self.tuning.min_difficulty(self.network);
         let mut heaviest = ours.cumulative_difficulty;
@@ -718,7 +718,7 @@ impl Follower {
             // 65 blocks back, so known before the batch.
             let count = (height - next + 1)
                 .min(*budget)
-                .min(pow::SEEDHASH_EPOCH_LAG);
+                .min(engine_pow::SEEDHASH_EPOCH_LAG);
             let heights: Vec<u64> = (next..next + count).collect();
             next += count;
             let mut blobs = Vec::with_capacity(heights.len());
@@ -742,7 +742,7 @@ impl Follower {
             }
             let mut candidates = Vec::with_capacity(blobs.len());
             for (&h, blob) in heights.iter().zip(&blobs) {
-                match pow::decode(h, blob) {
+                match engine_pow::decode(h, blob) {
                     Ok(candidate) => candidates.push(candidate),
                     Err(rejection) => return Ok(self.rejected(node, height, &rejection)),
                 }
@@ -771,7 +771,7 @@ impl Follower {
             let mut broken: Option<Rejection> = None;
             let mut ahead = window.clone();
             for (i, candidate) in fresh.iter().enumerate() {
-                let difficulty = match pow::check_header(&ahead, candidate) {
+                let difficulty = match engine_pow::check_header(&ahead, candidate) {
                     Ok(difficulty) if difficulty < floor => {
                         broken = Some(Rejection::BelowFloor {
                             height: candidate.height,
@@ -802,7 +802,7 @@ impl Follower {
             // Then the hashes, a request per key.
             let mut keyed: Vec<([u8; 32], Vec<usize>)> = Vec::new();
             for (at, (i, _, _)) in pending.iter().enumerate() {
-                let key_height = pow::seed_height(fresh[*i].height);
+                let key_height = engine_pow::seed_height(fresh[*i].height);
                 let key = match branch.iter().find(|b| b.height == key_height) {
                     Some(block) => block.id,
                     None => self
@@ -829,8 +829,8 @@ impl Follower {
             }
             for ((i, difficulty, block), hash) in pending.into_iter().zip(&pow_hashes) {
                 let candidate = &fresh[i];
-                let checked = pow::accept(&window, candidate, difficulty, hash)
-                    .and_then(|_| pow::check_time(candidate, now_secs));
+                let checked = engine_pow::accept(&window, candidate, difficulty, hash)
+                    .and_then(|_| engine_pow::check_time(candidate, now_secs));
                 if let Err(rejection) = checked {
                     broken = Some(rejection);
                     break;

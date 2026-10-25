@@ -778,6 +778,7 @@ dependencies = [
  "axum",
  "clap",
  "credentials",
+ "engine-pow",
  "engine-protocol",
  "futures-util",
  "hex",
@@ -789,7 +790,6 @@ dependencies = [
  "monero-epee",
  "parking_lot",
  "rand 0.10.3",
- "randomx-rs",
  "rate-limit",
  "reqwest",
  "rusqlite",
@@ -818,6 +818,19 @@ dependencies = [
  "dns-client",
  "engine",
  "libfuzzer-sys",
+]
+
+[[package]]
+name = "engine-pow"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "monero",
+ "randomx-rs",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

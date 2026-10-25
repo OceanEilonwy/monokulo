@@ -32,6 +32,11 @@ jobs:
         # The code an engine built without zmq or snp has in their place
         # (refusing settings that need them), which no test build compiles.
         run: cargo clippy -p engine --all-targets --locked --no-default-features -- -D warnings
+      - name: Clippy, engine-pow as production builds it
+        # Its library alone, without the test-support stand-in hasher and
+        # test chains: every test build turns them on, through the
+        # engine's dev-dependency.
+        run: cargo clippy -p engine-pow --lib --locked -- -D warnings
       - name: Fuzz workspace's lock file is current
         # fuzz/ is its own workspace, so the clippy run above never sees
         # its Cargo.lock; the nightly fuzz job builds it with --locked.

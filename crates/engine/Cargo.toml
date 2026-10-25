@@ -41,10 +41,6 @@ monero = "0.22.0"
 # resulting raw transaction blobs into `monero::Transaction` the same way
 # every other daemon call already does (`monero::consensus::encode::deserialize`).
 monero-epee = "0.2.1"
-# RandomX, to check the proof of work of the blocks payments are counted in:
-# bindings to tevador's C++ library, built with
-# cmake, as Cuprate uses. Light mode only (256 MiB a key).
-randomx-rs = "1.6.0"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 # `serialize`: in-memory stores are copies of one migrated template.
@@ -54,6 +50,9 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"
 engine-protocol = { path = "../engine-protocol" }
+# Monero's proof-of-work rules and the RandomX hasher the proof follower
+# checks blocks with.
+engine-pow = { path = "../engine-pow" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
 service-runtime = { path = "../service-runtime" }
@@ -82,7 +81,7 @@ snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # The in-thread database pools (`store::Database::inline`) and other helpers
 # for `engine-test-support` and the e2e harness (`crates/e2e-harness`). Only
 # adds code tests call; it never changes what the engine does.
-test-support = ["sqlite/test-support", "credentials/test-support"]
+test-support = ["sqlite/test-support", "credentials/test-support", "engine-pow/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived. Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
@@ -101,6 +100,8 @@ default = ["zmq"]
 rustix = { version = "1.1.5", features = ["thread", "process"] }
 
 [dev-dependencies]
+# The stand-in hasher and the mined test chains (`engine_pow::test_chain`).
+engine-pow = { path = "../engine-pow", features = ["test-support"] }
 # A stand-in security processor for the snp backend's tests.
 snp-attest = { path = "../snp-attest", features = ["test-support"] }
 # A node that can't be reached (`service_runtime::unreachable`).
