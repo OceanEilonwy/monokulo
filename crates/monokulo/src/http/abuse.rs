@@ -782,14 +782,11 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
-        // The same proof can't be used again (the client still holds its
-        // pass, so the page itself is served).
+        // The same proof again redeems for the same pass, which ends when
+        // it did (`challenge`'s own tests), so it only redirects again.
         let response = router.clone().oneshot(get(&proof, peer)).await.unwrap();
-        assert_eq!(
-            response.status(),
-            StatusCode::NOT_FOUND,
-            "a replayed proof is not redeemed again"
-        );
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()["location"], page);
     }
 
     #[tokio::test]
