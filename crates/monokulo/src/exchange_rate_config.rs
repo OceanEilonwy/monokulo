@@ -583,8 +583,8 @@ mod tests {
 
     fn test_store(fx_providers: &[&str]) -> StoreConnectionRow {
         StoreConnectionRow {
-            id: shared::ids::ConnectionId::new("conn-1".to_string()),
-            user_id: shared::ids::UserId::new("user-1".to_string()),
+            id: engine_protocol::ids::ConnectionId::new("conn-1".to_string()),
+            user_id: engine_protocol::ids::UserId::new("user-1".to_string()),
             name: "Shop".to_string(),
             site: crate::stores::Site::parse("shop.example.com").ok(),
             tenant_public_key: "pk_test".to_string(),

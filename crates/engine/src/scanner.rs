@@ -591,7 +591,7 @@ pub fn recompute_and_notify(
     order_id: &crate::store::OrderId,
     current_height: u64,
     now: i64,
-) -> Result<Option<shared::activity::Transition>> {
+) -> Result<Option<engine_protocol::activity::Transition>> {
     let result = store
         .in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now));
     #[cfg(test)]
@@ -610,7 +610,7 @@ pub(crate) fn recompute_and_notify_in_tx(
     order_id: &crate::store::OrderId,
     current_height: u64,
     now: i64,
-) -> Result<Option<shared::activity::Transition>> {
+) -> Result<Option<engine_protocol::activity::Transition>> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
     if old_status == new_status {
         return Ok(None);
@@ -623,7 +623,7 @@ pub(crate) fn recompute_and_notify_in_tx(
     )?;
     #[cfg(test)]
     crate::store::crash_checkpoint("recompute.before_commit");
-    Ok(Some(shared::activity::Transition {
+    Ok(Some(engine_protocol::activity::Transition {
         from: old_status,
         to: new_status,
     }))
@@ -955,7 +955,7 @@ const SCAN_CHUNK_MIN_BLOCKS: u64 = 1;
 /// chunk and its timeout agree.
 pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = crate::link::COLD_BYTES_PER_BLOCK;
 
-pub use shared::scaling::{ChunkLimit, ChunkPlan};
+pub use engine_protocol::scaling::{ChunkLimit, ChunkPlan};
 
 /// Pure sizing decision, extracted so it's directly, cheaply unit-testable:
 /// the smaller of what fits the response cap and what the link delivers in

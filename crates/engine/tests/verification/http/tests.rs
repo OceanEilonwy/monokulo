@@ -159,7 +159,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
             .to_owned();
         let order = store
             .lock()
-            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id))
+            .get_order(&tenant_id, &engine_protocol::ids::OrderId::new(order_id))
             .unwrap()
             .unwrap();
         assert_eq!(order.confirmations_required_override, expected, "{body}");
@@ -1012,7 +1012,7 @@ async fn the_admin_cancel_route_cancels_an_unpaid_order_of_the_tenant_behind_the
     };
     let pay = |order: &str, amount: u64, txid: &str| {
         let store = store.lock();
-        let order = shared::ids::OrderId::new(order.to_owned());
+        let order = engine_protocol::ids::OrderId::new(order.to_owned());
         store
             .record_payment_match(
                 &order,
@@ -2348,7 +2348,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
 
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(
         payments.len(),
@@ -2369,7 +2369,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(body["outcome"], "matched");
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(
         payments.len(),
@@ -2552,7 +2552,7 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
     let state = AppState::for_tests();
     let router = build_router(state.clone(), 1_000_000);
     let tenant = create_tenant(&router, 12).await;
-    let order_id = shared::ids::OrderId::new(create_admin_order(&router, &tenant).await);
+    let order_id = engine_protocol::ids::OrderId::new(create_admin_order(&router, &tenant).await);
     let (first, second) = {
         let store = state.db.lock();
         (
@@ -2628,7 +2628,7 @@ async fn the_order_event_stream_says_when_a_reader_missed_events() {
     let state = AppState::for_tests();
     let router = build_router(state.clone(), 1_000_000);
     let tenant = create_tenant(&router, 13).await;
-    let order_id = shared::ids::OrderId::new(create_admin_order(&router, &tenant).await);
+    let order_id = engine_protocol::ids::OrderId::new(create_admin_order(&router, &tenant).await);
     let kept = {
         let store = state.db.lock();
         for at in [10, 20] {
@@ -2780,7 +2780,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
         let store = store.lock();
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(ids[1].clone()),
+                &engine_protocol::ids::OrderId::new(ids[1].clone()),
                 "tx_paid",
                 0,
                 1_000,
@@ -2792,7 +2792,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
             .unwrap();
         crate::scanner::recompute_and_notify(
             &store,
-            &shared::ids::OrderId::new(ids[1].clone()),
+            &engine_protocol::ids::OrderId::new(ids[1].clone()),
             100,
             crate::now_unix(),
         )
@@ -4846,8 +4846,10 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     assert_eq!(watcher.wallet_id, old_wallet);
     {
         let s = store.lock();
-        let before_id = shared::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
-        let after_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
+        let before_id =
+            engine_protocol::ids::OrderId::new(before["order_id"].as_str().unwrap().to_owned());
+        let after_id =
+            engine_protocol::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
         assert_eq!(
             s.find_order_by_minor_index(&watcher.id, 1)
                 .unwrap()
@@ -4886,7 +4888,7 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
     assert_eq!(body["order_ids"], serde_json::json!([before["order_id"]]));
     let s = store.lock();
     let paid = |order: &serde_json::Value| {
-        s.get_all_payments(&shared::ids::OrderId::new(
+        s.get_all_payments(&engine_protocol::ids::OrderId::new(
             order["order_id"].as_str().unwrap().to_owned(),
         ))
         .unwrap()
@@ -4934,7 +4936,8 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
     let before_change =
         crate::scanner::record_scan_match(&locked, &row.id, &found, began, None).unwrap();
     assert!(before_change.is_empty());
-    let order_id = shared::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
+    let order_id =
+        engine_protocol::ids::OrderId::new(after["order_id"].as_str().unwrap().to_owned());
     assert!(locked.get_all_payments(&order_id).unwrap().is_empty());
     // A scan begun after the change is the store's own.
     let current =

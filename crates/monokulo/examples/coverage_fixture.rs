@@ -8,6 +8,11 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use engine_protocol::activity::{
+    Event, Group, Node, PoolPath, Snapshot, StoreGroup, Tier, TierOutcome, Transition,
+    UnitProgress, Wake,
+};
+use engine_protocol::order_status::OrderStatus;
 use engine_test_support::{TestEngineConfig, TestEngineHandle};
 use monokulo::{
     crypto,
@@ -18,11 +23,6 @@ use monokulo::{
     http::{build_router, AppState},
     views,
 };
-use shared::activity::{
-    Event, Group, Node, PoolPath, Snapshot, StoreGroup, Tier, TierOutcome, Transition,
-    UnitProgress, Wake,
-};
-use shared::order_status::OrderStatus;
 
 const ENCRYPTION_KEY: crypto::AtRestKey = crypto::AtRestKey::new([7; 32]);
 const VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
@@ -82,7 +82,7 @@ fn record_baseline(engine: &TestEngineHandle) {
             },
         ],
         cache_budget_bytes: 64 * 1024 * 1024,
-        pool: shared::activity::Pool {
+        pool: engine_protocol::activity::Pool {
             watched: true,
             size: 4,
             txids: vec![
@@ -104,7 +104,7 @@ fn record_baseline(engine: &TestEngineHandle) {
                 cooling_down: false,
             },
         ],
-        database: shared::activity::Database {
+        database: engine_protocol::activity::Database {
             queued: [1, 0],
             capacity: 64,
             completed: 4_210,
@@ -139,7 +139,7 @@ fn record_baseline(engine: &TestEngineHandle) {
 /// Settlement's, then Blocks keeping its fetched blocks in under a
 /// millisecond.
 fn short_round(number: u64) -> Vec<Event> {
-    use shared::activity::Work;
+    use engine_protocol::activity::Work;
     let unit = |tier, start_ms, ms| Event::Unit {
         tier,
         pass: 1,
@@ -187,14 +187,14 @@ fn short_round(number: u64) -> Vec<Event> {
     });
     events.push(Event::Slept {
         ms: 1_000,
-        woken_by: shared::activity::Wake::Interval,
+        woken_by: engine_protocol::activity::Wake::Interval,
     });
     events
 }
 
 /// A round's own events: the chain checked, each tier's unit, its end.
 fn round(number: u64, tip: Option<u64>, backlogged: bool) -> Vec<Event> {
-    use shared::activity::Work;
+    use engine_protocol::activity::Work;
     let mut events = vec![
         Event::RoundStarted {
             round: number,
@@ -395,16 +395,14 @@ async fn record_payment(
         .engine
         .store()
         .lock()
-        .get_order_tenant_id(&shared::ids::OrderId::new(id.to_string()))
+        .get_order_tenant_id(&engine_protocol::ids::OrderId::new(id.to_string()))
     else {
         return StatusCode::NOT_FOUND;
     };
-    let Ok(Some(order)) = control
-        .engine
-        .store()
-        .lock()
-        .get_order(&tenant_id, &shared::ids::OrderId::new(id.to_string()))
-    else {
+    let Ok(Some(order)) = control.engine.store().lock().get_order(
+        &tenant_id,
+        &engine_protocol::ids::OrderId::new(id.to_string()),
+    ) else {
         return StatusCode::NOT_FOUND;
     };
     let Some(piconero) = share(order.xmr_amount_piconero, &query.fraction) else {
@@ -490,22 +488,20 @@ async fn challenge(State(control): State<Controls>) -> axum::response::Html<Stri
 }
 
 async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
-    match control
-        .db
-        .lock()
-        .set_embed_restricted(&shared::ids::ConnectionId::new("coverage-store"), true)
-    {
+    match control.db.lock().set_embed_restricted(
+        &engine_protocol::ids::ConnectionId::new("coverage-store"),
+        true,
+    ) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
-    match control
-        .db
-        .lock()
-        .set_embed_restricted(&shared::ids::ConnectionId::new("coverage-store"), false)
-    {
+    match control.db.lock().set_embed_restricted(
+        &engine_protocol::ids::ConnectionId::new("coverage-store"),
+        false,
+    ) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
@@ -517,7 +513,7 @@ fn store_secret(control: &Controls) -> Result<shared::auth::RawToken, StatusCode
     let row = control
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new("coverage-store"))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("coverage-store"))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
     let secret = crypto::decrypt(
@@ -536,7 +532,7 @@ async fn connect_plugin(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let url = "https://shop.localhost/?wc-api=monokulo";
-    let store = shared::ids::ConnectionId::new("coverage-store");
+    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
     // As connecting again does: the earlier connection's webhook goes.
     let earlier = control
         .db
@@ -548,7 +544,7 @@ async fn connect_plugin(
         let _ = control
             .db
             .lock()
-            .delete_webhook(&store, &shared::ids::WebhookId::new(earlier));
+            .delete_webhook(&store, &engine_protocol::ids::WebhookId::new(earlier));
     }
     let webhook_id = monokulo::webhooks::create(
         &control.db,
@@ -564,7 +560,7 @@ async fn connect_plugin(
     .to_string();
     let now = monokulo::now_unix();
     let db = control.db.lock();
-    let store = shared::ids::ConnectionId::new("coverage-store");
+    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
     let id = db
         .connect_integration(&monokulo::db::NewStoreIntegration {
             store_id: &store,
@@ -592,7 +588,7 @@ async fn seed_webhooks(
     Query(query): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     use monokulo::db::{Attempt, AttemptOutcome, LoggedEvent};
-    let store = shared::ids::ConnectionId::new("coverage-store");
+    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
     fn failed<E>(_: E) -> StatusCode {
         StatusCode::INTERNAL_SERVER_ERROR
     }
@@ -648,7 +644,7 @@ async fn seed_webhooks(
                 event_type: "order.paid".to_string(),
                 created_at: at,
                 tenant_public_key: control.public_key.clone(),
-                order_id: shared::ids::OrderId::new(format!("{seq:032x}")),
+                order_id: engine_protocol::ids::OrderId::new(format!("{seq:032x}")),
                 status: Some("paid".to_string()),
                 txid: None,
                 merchant_order_id: None,
@@ -801,7 +797,7 @@ async fn seed_webhooks(
                 event_type: (*event_type).to_string(),
                 created_at: at - 60 * i64::from(*attempts),
                 tenant_public_key: public_key.clone(),
-                order_id: shared::ids::OrderId::new(*order),
+                order_id: engine_protocol::ids::OrderId::new(*order),
                 status: event_type.strip_prefix("order.").map(str::to_string),
                 txid: None,
                 merchant_order_id: Some("gm-1042".to_string()),
@@ -882,8 +878,10 @@ async fn plugin_order(
 /// checking `following` 3 blocks behind the tip, `lagging` 14 behind, or
 /// `held`. Held until the next story.
 async fn status_story(State(control): State<Controls>, Path(story): Path<String>) -> StatusCode {
+    use engine_protocol::proof::{
+        AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
+    };
     use monokulo::engine_client::NodeStatus;
-    use shared::proof::{AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus};
     let Ok(mut status) = control.client.get_status().await else {
         return StatusCode::BAD_GATEWAY;
     };
@@ -1080,11 +1078,11 @@ async fn seed_wallets(
 /// finds the store. `source` names what made it (`pos`, a plugin).
 fn record_order(
     db: &monokulo::db::Db,
-    order_id: &shared::ids::OrderId,
+    order_id: &engine_protocol::ids::OrderId,
     source: Option<&str>,
 ) -> Result<(), monokulo::db::DbError> {
     db.create_order_currency_metadata(
-        &shared::ids::ConnectionId::new("coverage-store"),
+        &engine_protocol::ids::ConnectionId::new("coverage-store"),
         order_id,
         "XMR",
         "0.001",
@@ -1136,7 +1134,7 @@ async fn main() {
         .expect("create fixture order");
     let db = Db::open_in_memory().expect("open fixture database");
     db.create_user(
-        &shared::ids::UserId::new("coverage-merchant"),
+        &engine_protocol::ids::UserId::new("coverage-merchant"),
         "coverage@example.test",
         "unused",
         false,
@@ -1145,13 +1143,13 @@ async fn main() {
     .expect("create fixture user");
     db.create_session(
         &shared::auth::RawToken::presented(SESSION).hash(),
-        &shared::ids::UserId::new("coverage-merchant"),
+        &engine_protocol::ids::UserId::new("coverage-merchant"),
         // Now, not 0: a session expires (`Db::SESSION_LIFETIME_SECONDS`).
         monokulo::now_unix(),
     )
     .expect("create fixture session");
     db.create_user(
-        &shared::ids::UserId::new("coverage-admin"),
+        &engine_protocol::ids::UserId::new("coverage-admin"),
         "admin@example.test",
         "unused",
         true,
@@ -1160,7 +1158,7 @@ async fn main() {
     .expect("create fixture admin");
     db.create_session(
         &shared::auth::RawToken::presented(ADMIN_SESSION).hash(),
-        &shared::ids::UserId::new("coverage-admin"),
+        &engine_protocol::ids::UserId::new("coverage-admin"),
         monokulo::now_unix(),
     )
     .expect("create fixture admin session");
@@ -1176,7 +1174,7 @@ async fn main() {
         .expect("read fixture tenant");
     db.create_wallet(&monokulo::db::NewWalletRow {
         id: &monokulo::db::WalletId::new("w_cake"),
-        user_id: &shared::ids::UserId::new("coverage-merchant"),
+        user_id: &engine_protocol::ids::UserId::new("coverage-merchant"),
         name: "Cake – shop takings",
         network: &view.network,
         primary_address: &view.primary_address,
@@ -1188,8 +1186,8 @@ async fn main() {
     })
     .expect("create fixture wallet");
     db.create_store_connection_on_wallet(
-        &shared::ids::ConnectionId::new("coverage-store"),
-        &shared::ids::UserId::new("coverage-merchant"),
+        &engine_protocol::ids::ConnectionId::new("coverage-store"),
+        &engine_protocol::ids::UserId::new("coverage-merchant"),
         "shop.localhost",
         monokulo::stores::Site::parse("shop.localhost")
             .ok()
@@ -1206,7 +1204,7 @@ async fn main() {
     )
     .expect("create fixture store");
     db.insert_pos_order(
-        &shared::ids::ConnectionId::new("coverage-store"),
+        &engine_protocol::ids::ConnectionId::new("coverage-store"),
         &order.order_id,
         None,
         Some("Fixture order"),

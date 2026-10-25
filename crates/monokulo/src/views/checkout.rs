@@ -892,14 +892,14 @@ mod tests {
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
         CheckoutViewModel {
-            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
+            order_id: engine_protocol::ids::OrderId::new("pay_abc123".to_string()),
             store_name: "Corner shop".to_string(),
             description: None,
             merchant_reference: None,
             merchant_site: None,
             merchant_icon: true,
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
-            status: if is_terminal { shared::order_status::OrderStatus::Paid } else { shared::order_status::OrderStatus::Pending },
+            status: if is_terminal { engine_protocol::order_status::OrderStatus::Paid } else { engine_protocol::order_status::OrderStatus::Pending },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             qr_code_svg: crate::qr::QrSvg::for_test("<svg></svg>"),
             xmr_amount: "0.500000000000".to_string(),
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn live_fragment_carries_every_changing_region_and_nothing_else() {
         let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Partial;
+        data.status = engine_protocol::order_status::OrderStatus::Partial;
         data.payments = vec![CheckoutPaymentViewModel {
             txid: format!("abcd12{}ef5678", "0".repeat(52)),
             amount_xmr: "0.200000000000".to_string(),
@@ -1106,7 +1106,7 @@ mod tests {
 
         // Part paid: what's left, a new code for it, and the time left.
         let mut data = test_checkout_view_model(false);
-        data.status = shared::order_status::OrderStatus::Partial;
+        data.status = engine_protocol::order_status::OrderStatus::Partial;
         data.amount_received_xmr = "0.200000000000".to_string();
         data.amount_due_xmr = "0.300000000000".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
@@ -1124,13 +1124,13 @@ mod tests {
         assert!(html.contains("Send the remaining amount to"), "{html}");
 
         // Paid in full: no deadline.
-        data.status = shared::order_status::OrderStatus::Confirming;
+        data.status = engine_protocol::order_status::OrderStatus::Confirming;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains(" left to pay</span>"), "{html}");
         assert!(html.contains("Payment address"), "{html}");
 
         // Overpaid: the extra explained, over the order total.
-        data.status = shared::order_status::OrderStatus::Overpaid;
+        data.status = engine_protocol::order_status::OrderStatus::Overpaid;
         data.is_terminal = true;
         data.amount_received_xmr = "0.600000000000".to_string();
         data.payment_error = Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
@@ -1177,14 +1177,14 @@ mod tests {
         assert!(html.contains("Confirm<span"));
 
         data.confirmations_required = 0;
-        data.status = shared::order_status::OrderStatus::Unconfirmed;
+        data.status = engine_protocol::order_status::OrderStatus::Unconfirmed;
         let html = checkout_page(&chrome(), &data).into_string();
         assert_eq!(html.matches("<li class=\"step-").count(), 2, "{html}");
         assert!(!html.contains("Confirm<span"), "{html}");
         // Seen is the last step before Paid, so Paid is where the order is.
         assert!(html.contains(r#"<li class="step-now"><span class="mk-track-dot" aria-hidden="true"></span><span class="mk-track-name">Paid<span class="visually-hidden">, now</span>"#), "{html}");
 
-        data.status = shared::order_status::OrderStatus::Paid;
+        data.status = engine_protocol::order_status::OrderStatus::Paid;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("XMR received. Nothing more to send."),
@@ -1214,7 +1214,7 @@ mod tests {
         assert!(html.contains("A payment was reversed"), "{html}");
         assert!(!html.contains(r#"<div class="qr-wrap is-spent">"#));
         // Otherwise: contact the merchant, and the code fades.
-        data.status = shared::order_status::OrderStatus::Unconfirmed;
+        data.status = engine_protocol::order_status::OrderStatus::Unconfirmed;
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("Payment reversed")

@@ -29,7 +29,7 @@ use super::AppState;
 use crate::api::runtime::problem::Problem;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
-use shared::ids::UserId;
+use engine_protocol::ids::UserId;
 
 /// The backend that takes keys only encrypted to it.
 pub const SNP: &str = "snp";

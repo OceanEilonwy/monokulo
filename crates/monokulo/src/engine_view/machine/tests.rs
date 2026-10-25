@@ -2,7 +2,9 @@
 //! animates and how it reads, and the invariants no sequence breaks.
 
 use super::*;
-use shared::activity::{Pool as SnapshotPool, ReorgJob, ReorgPhase, StoreGroup as SnapshotGroup};
+use engine_protocol::activity::{
+    Pool as SnapshotPool, ReorgJob, ReorgPhase, StoreGroup as SnapshotGroup,
+};
 
 /// Feeds events with rising sequence numbers, 10 ms apart.
 struct Feed {
@@ -1443,9 +1445,9 @@ fn random_run(mut seed: u64, steps: usize) {
                 start_ms: next(100),
                 ms: next(100),
                 what: if next(2) == 0 {
-                    shared::activity::Work::TipRequest
+                    engine_protocol::activity::Work::TipRequest
                 } else {
-                    shared::activity::Work::CacheCarry
+                    engine_protocol::activity::Work::CacheCarry
                 },
             },
             24 => Event::Vanished { looked: next(9) },

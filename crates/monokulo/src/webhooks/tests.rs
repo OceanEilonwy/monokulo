@@ -91,15 +91,15 @@ fn test_db() -> Database {
 /// its own.
 fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
     let db = db.lock();
-    let wallet = shared::ids::WalletId::new(format!("w_{id}"));
-    let user = shared::ids::UserId::new("test-admin");
+    let wallet = engine_protocol::ids::WalletId::new(format!("w_{id}"));
+    let user = engine_protocol::ids::UserId::new("test-admin");
     db.create_wallet(&crate::db::NewWalletRow {
         id: &wallet,
         user_id: &user,
         name: id,
         network: "mainnet",
         primary_address: &format!("4{id}"),
-        engine_wallet_id: &shared::ids::EngineWalletId::new(format!("ew_{id}")),
+        engine_wallet_id: &engine_protocol::ids::EngineWalletId::new(format!("ew_{id}")),
         origin: crate::db::WalletOrigin::Imported,
         backup: None,
         app: None,
@@ -814,7 +814,7 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
         .client
         .cancel_order(
             &shared::auth::RawToken::presented(&shop.sk),
-            &shared::ids::OrderId::new(cancelled),
+            &engine_protocol::ids::OrderId::new(cancelled),
         )
         .await
         .unwrap();

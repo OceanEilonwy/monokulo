@@ -23,9 +23,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine_protocol::activity::ActivityPage;
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
-use shared::activity::ActivityPage;
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::Instant;
 
@@ -424,8 +424,8 @@ impl Relay {
 mod tests {
     use axum::body::Body;
     use axum::response::{IntoResponse as _, Response};
+    use engine_protocol::activity::Event;
     use monero::Network;
-    use shared::activity::Event;
     use tower::ServiceExt as _;
 
     use super::*;
@@ -542,11 +542,13 @@ mod tests {
     async fn viewers_get_the_engine_s_history_then_its_new_events() {
         let engine = engine_test_support::spawn_test_engine().await;
         let activity = engine.activity(Network::Stagenet);
-        activity.record(Event::Snapshot(Box::new(shared::activity::Snapshot {
-            high_water: Some(100),
-            tip: Some(100),
-            ..Default::default()
-        })));
+        activity.record(Event::Snapshot(Box::new(
+            engine_protocol::activity::Snapshot {
+                high_water: Some(100),
+                tip: Some(100),
+                ..Default::default()
+            },
+        )));
         activity.record(Event::Seeded { height: 100 });
         let relay = relay(&engine, LINGER);
         let mut watch = relay.watch("stagenet").await.unwrap();

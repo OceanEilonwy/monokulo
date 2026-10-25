@@ -2,8 +2,8 @@
 //! networks check, each one's anchor, its proven chain and the `RandomX` keys
 //! below it, and the settlement ceiling those give.
 
+use engine_protocol::network::SqlNetwork;
 use rusqlite::{params, OptionalExtension as _};
-use shared::network::SqlNetwork;
 
 use super::work::sql_height;
 use super::{Result, Store, StoreError};

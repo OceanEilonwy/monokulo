@@ -48,7 +48,7 @@ use crate::scanner::{
 use crate::store::position::CatchUpGroup;
 use crate::store::{BlockCheckpoint, Movement, Store};
 
-use shared::activity::Event;
+use engine_protocol::activity::Event;
 
 use super::{bounded, count, Progress, Round, Wait};
 use walked::Walked;
@@ -600,7 +600,7 @@ enum Group {
     CatchUp,
 }
 
-impl From<Group> for shared::activity::Group {
+impl From<Group> for engine_protocol::activity::Group {
     fn from(group: Group) -> Self {
         match group {
             Group::Frontier => Self::Frontier,

@@ -2,7 +2,7 @@
 //! however much was let go of, it answers what stepping every event up to
 //! that moment from the start gives.
 
-use shared::activity::{
+use engine_protocol::activity::{
     ActivityPage, Event, Group, PoolPath, Recorded, Snapshot, StoreGroup, Tier, Tuning,
     UnitProgress, Wake,
 };

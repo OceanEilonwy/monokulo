@@ -44,7 +44,7 @@ pub struct NetworkScanStatus {
     /// What wakes the network's loops early, and what it has done.
     pub wakes: Arc<crate::node_events::NodeWakes>,
     /// Proof-of-work checking, while it is on.
-    pub proof: Option<shared::proof::ProofStatus>,
+    pub proof: Option<engine_protocol::proof::ProofStatus>,
     /// What the scanner has been doing, for the engine page.
     pub activity: Arc<crate::activity::Activity>,
 }

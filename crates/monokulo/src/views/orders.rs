@@ -625,7 +625,7 @@ mod tests {
     #[test]
     fn a_middle_page_links_newer_and_older_keeping_the_search() {
         let data = OrdersViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             orders: Vec::new(),
             search: "wc".to_string(),
@@ -655,7 +655,7 @@ mod tests {
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
         OrderDetailData {
             from_pos: false,
-            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
+            order_id: engine_protocol::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
             show_merchant_order_id: true,
             description: None,
@@ -666,7 +666,7 @@ mod tests {
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 0,
-            status: shared::order_status::OrderStatus::Pending,
+            status: engine_protocol::order_status::OrderStatus::Pending,
             confirmations: 0,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),
@@ -686,7 +686,7 @@ mod tests {
     #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
         let data = OrderDetailViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: Some(test_order_detail_data(Some(1_700_000_000))),
         };
@@ -705,7 +705,7 @@ mod tests {
         // detected.
         {
             let data = OrderDetailViewModel {
-                connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+                connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
                 display_name: "shop.example.com".to_string(),
                 order: Some(test_order_detail_data(None)),
             };
@@ -737,7 +737,7 @@ mod tests {
     /// paid in full, the order reads paid and still shows it was cancelled.
     #[test]
     fn a_payment_after_a_cancellation_shows_after_it_with_what_to_do() {
-        use shared::order_status::OrderStatus;
+        use engine_protocol::order_status::OrderStatus;
         for (status, amount) in [
             (OrderStatus::Cancelled, 100_000_000_000),
             (OrderStatus::Paid, 500_000_000_000),
@@ -777,7 +777,7 @@ mod tests {
             ..payment("aaaa1111", 50_000_000_000, 1100)
         };
         let order = OrderDetailData {
-            status: shared::order_status::OrderStatus::Partial,
+            status: engine_protocol::order_status::OrderStatus::Partial,
             amount_received_piconero: 200_000_000_000,
             payments: vec![reversed, payment("bbbb2222", 200_000_000_000, 1200)],
             ..test_order_detail_data(None)

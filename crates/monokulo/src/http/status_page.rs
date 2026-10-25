@@ -754,8 +754,8 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
 /// the recent window while following, and the
 /// facts behind it. Each node's verdict goes on its own row
 /// ([`build_network_view`]).
-fn proof_view(proof: shared::proof::ProofStatus, now: i64) -> views::status::ProofView {
-    use shared::proof::{NodeVerdict, ProofState};
+fn proof_view(proof: engine_protocol::proof::ProofStatus, now: i64) -> views::status::ProofView {
+    use engine_protocol::proof::{NodeVerdict, ProofState};
     use views::scaling::thousands;
     let plural = |n: u64, one: &'static str, many: &'static str| if n == 1 { one } else { many };
     let mut facts = Vec::new();
@@ -838,7 +838,7 @@ pub async fn take_new_anchor(
     _admin: super::AuthedAdmin,
     axum::extract::Path(network): axum::extract::Path<String>,
 ) -> Response {
-    let Ok(network) = shared::network::parse_network(&network) else {
+    let Ok(network) = engine_protocol::network::parse_network(&network) else {
         return (axum::http::StatusCode::BAD_REQUEST, "No such network.").into_response();
     };
     match state.engine.client.take_new_anchor(network).await {
@@ -852,7 +852,7 @@ pub async fn take_new_anchor(
             format!(
                 "The engine refused ({}): proof-of-work checking may be off on {}.",
                 response.status(),
-                shared::network::network_str(network)
+                engine_protocol::network::network_str(network)
             ),
         )
             .into_response(),
@@ -866,7 +866,7 @@ pub async fn take_new_anchor(
 
 /// A network's announcements as shown to an admin.
 fn announcements_view(
-    announcements: shared::announcements::Announcements,
+    announcements: engine_protocol::announcements::Announcements,
     now: i64,
 ) -> views::status::AnnouncementsView {
     let publishers = announcements
@@ -926,8 +926,8 @@ mod tests {
     use super::*;
 
     /// One healthy network, its block scan reporting `slow`.
-    fn status_with_slow(slow: Option<shared::scaling::SlowBlock>) -> EngineStatusResponse {
-        use shared::scaling::{NetworkScaling, Pace, ScanReport, Trend};
+    fn status_with_slow(slow: Option<engine_protocol::scaling::SlowBlock>) -> EngineStatusResponse {
+        use engine_protocol::scaling::{NetworkScaling, Pace, ScanReport, Trend};
         EngineStatusResponse {
             networks: vec![crate::engine_client::NetworkStatus {
                 network: "mainnet".into(),
@@ -988,8 +988,8 @@ mod tests {
         }
     }
 
-    fn slow_block() -> shared::scaling::SlowBlock {
-        shared::scaling::SlowBlock {
+    fn slow_block() -> engine_protocol::scaling::SlowBlock {
+        engine_protocol::scaling::SlowBlock {
             height: 3_412_001,
             wire_bytes: Some(412_000_000),
             elapsed_secs: 130,
@@ -1010,9 +1010,9 @@ mod tests {
         assert_eq!(build_network_view(network.clone(), 0).headers_first, None);
         let mut network = network;
         if let Some(scaling) = network.scaling.as_mut() {
-            scaling.scan.headers_first = Some(shared::scaling::HeadersFirst {
+            scaling.scan.headers_first = Some(engine_protocol::scaling::HeadersFirst {
                 remaining_secs: 3_000,
-                reason: shared::scaling::HeadersFirstReason::LargeBlock,
+                reason: engine_protocol::scaling::HeadersFirstReason::LargeBlock,
             });
         }
         assert_eq!(
@@ -1453,29 +1453,30 @@ mod tests {
         async fn announcements_are_shown_to_admins_only() {
             let now = crate::now_unix();
             let mut status = super::status_with_slow(None);
-            status.networks[0].announcements = Some(shared::announcements::Announcements {
-                publishers: vec![
-                    shared::announcements::Publisher {
-                        node: "node.example:18089".into(),
-                        endpoint: "tcp://10.0.0.5:18083".into(),
-                        connected: true,
-                        connected_since: Some(now - 600),
-                        connections: 2,
-                        pool_announcements: 41,
-                        block_announcements: 3,
-                        last_announcement_at: Some(now - 150),
-                        last_error: Some("the node closed the connection".into()),
-                        last_error_at: Some(now - 700),
-                    },
-                    shared::announcements::Publisher {
-                        node: "backup.example:18089".into(),
-                        endpoint: "tcp://10.0.0.6:18083".into(),
-                        ..Default::default()
-                    },
-                ],
-                pool_passes_woken: 40,
-                rounds_woken: 3,
-            });
+            status.networks[0].announcements =
+                Some(engine_protocol::announcements::Announcements {
+                    publishers: vec![
+                        engine_protocol::announcements::Publisher {
+                            node: "node.example:18089".into(),
+                            endpoint: "tcp://10.0.0.5:18083".into(),
+                            connected: true,
+                            connected_since: Some(now - 600),
+                            connections: 2,
+                            pool_announcements: 41,
+                            block_announcements: 3,
+                            last_announcement_at: Some(now - 150),
+                            last_error: Some("the node closed the connection".into()),
+                            last_error_at: Some(now - 700),
+                        },
+                        engine_protocol::announcements::Publisher {
+                            node: "backup.example:18089".into(),
+                            endpoint: "tcp://10.0.0.6:18083".into(),
+                            ..Default::default()
+                        },
+                    ],
+                    pool_passes_woken: 40,
+                    rounds_woken: 3,
+                });
             let state = state_with_engine(EngineClient::for_tests("http://127.0.0.1:1"));
             super::super::seed_status_for_tests(&state.engine, status);
 
@@ -1518,7 +1519,7 @@ mod tests {
         /// doesn't.
         #[tokio::test]
         async fn proof_of_work_checking_is_shown_to_admins_only() {
-            use shared::proof::{
+            use engine_protocol::proof::{
                 AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
             };
             let now = crate::now_unix();
@@ -1685,7 +1686,7 @@ mod tests {
                 .await;
             engine
                 .activity(monero::Network::Mainnet)
-                .record(shared::activity::Event::Seeded { height: 100 });
+                .record(engine_protocol::activity::Event::Seeded { height: 100 });
             let client = EngineClient::embedded_for_tests(engine.router());
             // The engine page following the network, and calls without a
             // store's key made beside it.

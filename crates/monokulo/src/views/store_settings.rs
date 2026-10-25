@@ -1155,7 +1155,7 @@ mod tests {
         StoreSettingsData {
             tab: StoreTab::General,
             clock: crate::views::time::Clock::utc(0),
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             site: "shop.example.com".to_string(),
             payment_description: String::new(),

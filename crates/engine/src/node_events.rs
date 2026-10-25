@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use shared::announcements::Announcements;
+use engine_protocol::announcements::Announcements;
 use tokio::sync::Notify;
 
 /// The shortest gap between two passes, however often the node announces:
@@ -37,7 +37,7 @@ pub struct NodeWakes {
     proof: Notify,
     pub(crate) pool_passes_woken: AtomicU64,
     pub(crate) rounds_woken: AtomicU64,
-    publishers: parking_lot::Mutex<Vec<shared::announcements::Publisher>>,
+    publishers: parking_lot::Mutex<Vec<engine_protocol::announcements::Publisher>>,
 }
 
 impl NodeWakes {
@@ -102,7 +102,7 @@ impl NodeWakes {
     fn publisher(
         &self,
         endpoint: &str,
-        update: impl FnOnce(&mut shared::announcements::Publisher),
+        update: impl FnOnce(&mut engine_protocol::announcements::Publisher),
     ) {
         if let Some(publisher) = self
             .publishers
@@ -347,7 +347,7 @@ mod tests {
         wakes
             .publishers
             .lock()
-            .push(shared::announcements::Publisher::default());
+            .push(engine_protocol::announcements::Publisher::default());
         let reported = wakes.announcements().unwrap();
         assert_eq!((reported.pool_passes_woken, reported.rounds_woken), (1, 0));
     }

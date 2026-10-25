@@ -144,7 +144,7 @@ struct Minute {
     failures: u32,
 }
 
-pub use shared::scaling::{LinkPoint, LinkSnapshot};
+pub use engine_protocol::scaling::{LinkPoint, LinkSnapshot};
 
 fn ewma(average: f64, sample: f64) -> f64 {
     (1.0 - ALPHA).mul_add(average, ALPHA * sample)

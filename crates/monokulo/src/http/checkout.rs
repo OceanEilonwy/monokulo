@@ -25,8 +25,8 @@ use axum::extract::{Form, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use axum::Extension;
+use engine_protocol::order_status::OrderStatus;
 use serde::{Deserialize, Serialize};
-use shared::order_status::OrderStatus;
 use std::str::FromStr;
 
 use crate::db::StoreConnectionRow;
@@ -621,10 +621,10 @@ pub async fn set_refund_address(
     // nothing received and no address yet can still have one set.
     let settled = matches!(
         detail.order.status,
-        shared::order_status::OrderStatus::Paid
-            | shared::order_status::OrderStatus::Overpaid
-            | shared::order_status::OrderStatus::Expired
-            | shared::order_status::OrderStatus::Cancelled
+        engine_protocol::order_status::OrderStatus::Paid
+            | engine_protocol::order_status::OrderStatus::Overpaid
+            | engine_protocol::order_status::OrderStatus::Expired
+            | engine_protocol::order_status::OrderStatus::Cancelled
     );
     if settled && detail.order.refund_address.is_some() {
         if wants_json {
@@ -717,7 +717,7 @@ pub async fn set_refund_address(
 
 #[derive(Serialize)]
 pub struct CheckoutStatusResponse {
-    pub status: shared::order_status::OrderStatus,
+    pub status: engine_protocol::order_status::OrderStatus,
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
@@ -1010,13 +1010,13 @@ mod tests {
     #[test]
     fn checkout_amount_messages_use_exact_received_remaining_and_extra_xmr() {
         let mut order = crate::engine_client::OrderView {
-            order_id: shared::ids::OrderId::new("pay_test".to_string()),
+            order_id: engine_protocol::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
             description: None,
             address: "address".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 200_000_000_000,
-            status: shared::order_status::OrderStatus::Partial,
+            status: engine_protocol::order_status::OrderStatus::Partial,
             confirmations: 0,
             double_spend_detected_at: None,
             cancelled_at: None,
@@ -1033,7 +1033,7 @@ mod tests {
             Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below.")
         );
 
-        order.status = shared::order_status::OrderStatus::Overpaid;
+        order.status = engine_protocol::order_status::OrderStatus::Overpaid;
         order.amount_received_piconero = 600_000_000_000;
         assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 
@@ -1569,7 +1569,7 @@ mod tests {
             .store()
             .lock()
             .mark_double_spend_detected(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
                 crate::now_unix()
             )
             .unwrap());
@@ -1690,7 +1690,7 @@ mod tests {
             .store()
             .lock()
             .mark_double_spend_detected(
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
                 crate::now_unix()
             )
             .unwrap());

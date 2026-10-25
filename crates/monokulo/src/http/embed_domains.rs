@@ -811,7 +811,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+                .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
                 .unwrap()
                 .into_iter()
                 .map(|d| d.domain)
@@ -829,19 +829,21 @@ mod tests {
         let existing = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap();
         for domain in existing {
             state
                 .db
                 .lock()
-                .delete_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &domain.id)
+                .delete_store_domain(
+                    &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                    &domain.id,
+                )
                 .unwrap();
         }
-        state
-            .db
-            .lock()
-            .reset_store_domains_imported_for_test(&shared::ids::ConnectionId::new(id.to_string()));
+        state.db.lock().reset_store_domains_imported_for_test(
+            &engine_protocol::ids::ConnectionId::new(id.to_string()),
+        );
         embed_domains::import_existing_domains(&state.db.lock());
         assert_eq!(domains(&state, &id), site_only);
 
@@ -849,14 +851,17 @@ mod tests {
         let site = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
         state
             .db
             .lock()
-            .delete_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &site.id)
+            .delete_store_domain(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &site.id,
+            )
             .unwrap();
         embed_domains::import_existing_domains(&state.db.lock());
         assert!(domains(&state, &id).is_empty());
@@ -907,7 +912,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap();
         crate::crypto::decrypt(
@@ -924,8 +929,8 @@ mod tests {
             .db
             .lock()
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
             )
             .unwrap()
             .unwrap()
@@ -987,7 +992,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -1001,7 +1006,10 @@ mod tests {
         state
             .db
             .lock()
-            .set_embed_restricted(&shared::ids::ConnectionId::new(id.to_string()), true)
+            .set_embed_restricted(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                true,
+            )
             .unwrap();
 
         // From a fresh address (the first one is out of per-IP budget):
@@ -1100,7 +1108,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -1114,7 +1122,10 @@ mod tests {
         state
             .db
             .lock()
-            .set_embed_restricted(&shared::ids::ConnectionId::new(id.to_string()), true)
+            .set_embed_restricted(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                true,
+            )
             .unwrap();
 
         // Restricted, browser-created: a full page gets the plain "open it from the shop" page.
@@ -1260,7 +1271,7 @@ mod tests {
         assert!(state
             .db
             .lock()
-            .client_logging(&shared::ids::ConnectionId::new(id.to_string()))
+            .client_logging(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap());
         assert!(checkout_html()
             .await
@@ -1291,7 +1302,7 @@ mod tests {
         assert!(!state
             .db
             .lock()
-            .client_logging(&shared::ids::ConnectionId::new(id.to_string()))
+            .client_logging(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap());
 
         // Someone else's store: not found.
@@ -1351,14 +1362,14 @@ mod tests {
         assert!(!state
             .db
             .lock()
-            .embed_restricted(&shared::ids::ConnectionId::new(id.to_string()))
+            .embed_restricted(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap());
 
         // Verify the store's own domain, then turn it on.
         let row = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -1495,7 +1506,7 @@ mod tests {
         );
         let warnings = super::store_page_warnings(
             &state,
-            &shared::ids::ConnectionId::new(id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(id.to_string()),
             crate::now_unix(),
         )
         .await;
@@ -1506,14 +1517,14 @@ mod tests {
         let failing_since = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()[0]
             .failing_since
             .unwrap();
         assert!(
             super::store_page_warnings(
                 &state,
-                &shared::ids::ConnectionId::new(id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
                 failing_since + GRACE_SECS
             )
             .await
@@ -1571,7 +1582,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .into_iter()
             .find(|d| d.domain == ONION)
@@ -1638,7 +1649,7 @@ mod tests {
         let suggested = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap();
         assert_eq!(
             suggested
@@ -1683,7 +1694,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+                .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
                 .unwrap()
                 .into_iter()
                 .find(|d| d.domain == "shop.example")
@@ -1795,7 +1806,7 @@ mod tests {
         );
         let warnings = super::store_page_warnings(
             &state,
-            &shared::ids::ConnectionId::new(id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(id.to_string()),
             row.failing_since.unwrap() + GRACE_SECS,
         )
         .await;
@@ -1878,7 +1889,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+                .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
                 .unwrap()
                 .len(),
             1
@@ -1902,7 +1913,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -2029,7 +2040,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+            .list_store_domains(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .pop()
             .unwrap();
@@ -2065,7 +2076,10 @@ mod tests {
         state
             .db
             .lock()
-            .set_embed_restricted(&shared::ids::ConnectionId::new(id.to_string()), true)
+            .set_embed_restricted(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                true,
+            )
             .unwrap();
 
         // A day later the re-check lands in an outage.
@@ -2074,7 +2088,10 @@ mod tests {
         let failing_since = state
             .db
             .lock()
-            .get_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &row.id)
+            .get_store_domain(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &row.id,
+            )
             .unwrap()
             .unwrap()
             .failing_since
@@ -2086,7 +2103,7 @@ mod tests {
         );
         let warnings = super::store_page_warnings(
             &state,
-            &shared::ids::ConnectionId::new(id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(id.to_string()),
             failing_since + GRACE_SECS - 60,
         )
         .await;
@@ -2113,7 +2130,10 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &row.id)
+            .get_store_domain(
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &row.id,
+            )
             .unwrap()
             .unwrap();
         assert!(row.failing_since.is_none());
@@ -2130,7 +2150,7 @@ mod tests {
         let router = build_router(state.clone());
         let session = session_for(&router, "dismiss@example.com").await;
         let id = create_store(&router, &state, &session).await;
-        let store = shared::ids::ConnectionId::new(id.to_string());
+        let store = engine_protocol::ids::ConnectionId::new(id.to_string());
         let domain = state.db.lock().list_store_domains(&store).unwrap()[0].clone();
         let now = crate::now_unix();
         state

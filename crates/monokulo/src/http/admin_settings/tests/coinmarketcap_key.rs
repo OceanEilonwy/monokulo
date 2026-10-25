@@ -137,8 +137,8 @@ fn env_with_key(key: &str) -> live_settings::Env {
 /// A store pricing with CoinMarketCap alone.
 fn cmc_store() -> crate::db::StoreConnectionRow {
     crate::db::StoreConnectionRow {
-        id: shared::ids::ConnectionId::new("conn-1".to_string()),
-        user_id: shared::ids::UserId::new("user-1".to_string()),
+        id: engine_protocol::ids::ConnectionId::new("conn-1".to_string()),
+        user_id: engine_protocol::ids::UserId::new("user-1".to_string()),
         name: "Shop".to_string(),
         site: None,
         tenant_public_key: "pk_test".to_string(),

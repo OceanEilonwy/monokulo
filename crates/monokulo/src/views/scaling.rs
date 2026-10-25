@@ -4,7 +4,7 @@
 //! The engine page's "Machine and links" strip and Scanning panel are its
 //! app's (`apps/engine/src/machine.ts`).
 
-use shared::scaling::{HeadersFirstReason, SlowBlock};
+use engine_protocol::scaling::{HeadersFirstReason, SlowBlock};
 
 /// `bytes` in decimal units, as sizes on a network are given: "412 MB",
 /// "1.8 MB", "13 kB".
@@ -122,7 +122,7 @@ pub fn slow_block_message(network: &str, slow: &SlowBlock, show_node: bool) -> S
 /// Why headers come first and for how long: "for about 50 minutes more: a
 /// block request ran out of time or came back too large, so each block's
 /// size is checked before it is fetched".
-fn headers_first_why(on: &shared::scaling::HeadersFirst) -> String {
+fn headers_first_why(on: &engine_protocol::scaling::HeadersFirst) -> String {
     format!(
         "for about {} more: {}, so each block's size is checked before it is fetched",
         duration_rough(on.remaining_secs),
@@ -139,7 +139,7 @@ fn headers_first_why(on: &shared::scaling::HeadersFirst) -> String {
 
 /// The status page's sentence while a network's blocks are read
 /// header-first.
-pub fn headers_first_sentence(on: &shared::scaling::HeadersFirst) -> String {
+pub fn headers_first_sentence(on: &engine_protocol::scaling::HeadersFirst) -> String {
     format!("Reading block headers first {}.", headers_first_why(on))
 }
 

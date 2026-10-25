@@ -1767,6 +1767,7 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "engine-protocol",
  "futures-util",
  "hex",
  "http-body",
@@ -1797,6 +1798,17 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "engine-protocol"
+version = "0.1.0"
+dependencies = [
+ "monero",
+ "rusqlite",
+ "schemars 1.2.3",
+ "serde",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -3392,6 +3404,7 @@ dependencies = [
  "axum",
  "cli-wallet",
  "engine",
+ "engine-protocol",
  "engine-test-support",
  "hex",
  "monero",
@@ -3677,6 +3690,7 @@ dependencies = [
  "bytes",
  "clap",
  "engine",
+ "engine-protocol",
  "engine-test-support",
  "flate2",
  "futures-util",
@@ -5633,7 +5647,6 @@ dependencies = [
  "reqwest",
  "reqwest-middleware",
  "rusqlite",
- "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.0",

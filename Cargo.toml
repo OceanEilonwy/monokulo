@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/engine",
     "crates/shared",
+    "crates/engine-protocol",
     "crates/live-settings",
     "crates/telemetry",
     "crates/monokulo",

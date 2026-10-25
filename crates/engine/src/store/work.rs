@@ -212,7 +212,7 @@ impl Store {
              JOIN orders o ON o.id = p.order_id
              JOIN tenants t ON t.id = o.tenant_id
              WHERE t.network = ?1 AND p.block_height IS NOT NULL AND p.voided_at_utc IS NULL",
-            [shared::network::SqlNetwork(network)],
+            [engine_protocol::network::SqlNetwork(network)],
         )?;
         Ok(())
     }
@@ -239,7 +239,7 @@ impl Store {
                 "SELECT network, fork_height, phase, candidate_max_id, collect_after_height, collect_after_id,
                         created_at_utc
                  FROM reorg_jobs WHERE network = ?1",
-                [shared::network::SqlNetwork(network)],
+                [engine_protocol::network::SqlNetwork(network)],
                 |row| {
                     Ok(ReorgJob {
                         network: row.get(0)?,
@@ -272,7 +272,7 @@ impl Store {
                         "INSERT INTO reorg_jobs (network, fork_height, phase, candidate_max_id,
                              collect_after_height, collect_after_id, created_at_utc, updated_at_utc)
                          VALUES (?1, ?2, 'collect_confirmed', ?3, ?2, 0, ?4, ?4)",
-                        params![shared::network::SqlNetwork(network), Unsigned(fork_height), max_id, now],
+                        params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height), max_id, now],
                     )?;
                     Ok(OpenedReorg::Created)
                 }
@@ -282,7 +282,7 @@ impl Store {
                         "UPDATE reorg_jobs SET fork_height = ?2, phase = 'collect_confirmed', candidate_max_id = ?3,
                              collect_after_height = ?2, collect_after_id = 0, updated_at_utc = ?4
                          WHERE network = ?1",
-                        params![shared::network::SqlNetwork(network), Unsigned(fork_height), max_id.max(job.candidate_max_id), now],
+                        params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height), max_id.max(job.candidate_max_id), now],
                     )?;
                     Ok(OpenedReorg::Deepened { from: job.fork_height })
                 }
@@ -304,7 +304,7 @@ impl Store {
         self.conn.execute(
             "DELETE FROM scheduler_positions WHERE network = ?1 AND position IN (?2, ?3, ?4)",
             params![
-                shared::network::SqlNetwork(network),
+                engine_protocol::network::SqlNetwork(network),
                 position::ReorgBranchHeight::KEY,
                 position::ReorgBranchHash::KEY,
                 position::ReorgBranchFork::KEY
@@ -346,9 +346,9 @@ impl Store {
                      candidate_max_id = MAX(candidate_max_id, (SELECT COALESCE(MAX(id), 0) FROM order_payments)),
                      collect_after_height = fork_height, collect_after_id = 0, updated_at_utc = ?2
                  WHERE network = ?1",
-                params![shared::network::SqlNetwork(network), now],
+                params![engine_protocol::network::SqlNetwork(network), now],
             )?;
-            s.conn.execute("DELETE FROM reorg_work WHERE network = ?1", [shared::network::SqlNetwork(network)])?;
+            s.conn.execute("DELETE FROM reorg_work WHERE network = ?1", [engine_protocol::network::SqlNetwork(network)])?;
             s.set_scheduler_position::<position::ReorgBranchHeight>(network, &height)?;
             s.set_scheduler_position::<position::ReorgBranchHash>(network, &hash.to_owned())?;
             s.set_scheduler_position::<position::ReorgBranchFork>(network, &job.fork_height)?;
@@ -378,7 +378,7 @@ impl Store {
                            AND (op.block_height > ?3 OR (op.block_height = ?3 AND op.id > ?4))
                            AND op.id <= ?5 AND t.network = ?1
                          ORDER BY op.block_height, op.id LIMIT ?6",
-                        params![shared::network::SqlNetwork(network), Unsigned(job.fork_height), Unsigned(after_height), after_id, job.candidate_max_id, Unsigned(limit)],
+                        params![engine_protocol::network::SqlNetwork(network), Unsigned(job.fork_height), Unsigned(after_height), after_id, job.candidate_max_id, Unsigned(limit)],
                         |row| Ok((row.get(0)?, unsigned(row, 1)?)),
                     )?;
                     let next = match rows.last() {
@@ -395,7 +395,7 @@ impl Store {
                          JOIN orders o ON o.id = op.order_id JOIN tenants t ON t.id = o.tenant_id
                          WHERE op.block_height IS NULL AND op.id > ?2 AND op.id <= ?3 AND t.network = ?1
                          ORDER BY op.id LIMIT ?4",
-                        params![shared::network::SqlNetwork(network), after_id, job.candidate_max_id, Unsigned(limit)],
+                        params![engine_protocol::network::SqlNetwork(network), after_id, job.candidate_max_id, Unsigned(limit)],
                         |row| row.get(0),
                     )?;
                     let next = match ids.last() {
@@ -409,7 +409,7 @@ impl Store {
             for id in ids {
                 s.conn.execute(
                     "INSERT OR IGNORE INTO reorg_work (network, payment_id) VALUES (?1, ?2)",
-                    params![shared::network::SqlNetwork(network), id],
+                    params![engine_protocol::network::SqlNetwork(network), id],
                 )?;
             }
             let (phase, after_height, after_id) = match next {
@@ -420,7 +420,7 @@ impl Store {
             s.conn.execute(
                 "UPDATE reorg_jobs SET phase = ?2, collect_after_height = ?3, collect_after_id = ?4, updated_at_utc = ?5
                  WHERE network = ?1",
-                params![shared::network::SqlNetwork(network), phase, Unsigned(after_height), after_id, now],
+                params![engine_protocol::network::SqlNetwork(network), phase, Unsigned(after_height), after_id, now],
             )?;
             Ok(next)
         })
@@ -438,7 +438,11 @@ impl Store {
              JOIN order_payments op ON op.id = w.payment_id
              WHERE w.network = ?1 AND w.next_attempt_at_utc <= ?2
              ORDER BY w.next_attempt_at_utc, w.payment_id LIMIT ?3",
-            params![shared::network::SqlNetwork(network), now, Unsigned(limit)],
+            params![
+                engine_protocol::network::SqlNetwork(network),
+                now,
+                Unsigned(limit)
+            ],
             |row| {
                 Ok(ReorgCandidate {
                     payment: Self::row_to_payment(row)?,
@@ -453,7 +457,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM reorg_work WHERE network = ?1",
-                [shared::network::SqlNetwork(network)],
+                [engine_protocol::network::SqlNetwork(network)],
                 |row| Ok((unsigned(row, 0)?, row.get(1)?)),
             )
             .map_err(Into::into)
@@ -468,7 +472,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM reorg_work WHERE network = ?1 AND payment_id = ?2",
-            params![shared::network::SqlNetwork(network), payment_id],
+            params![engine_protocol::network::SqlNetwork(network), payment_id],
         )?;
         Ok(())
     }
@@ -484,7 +488,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT attempts FROM reorg_work WHERE network = ?1 AND payment_id = ?2",
-                params![shared::network::SqlNetwork(network), payment_id],
+                params![engine_protocol::network::SqlNetwork(network), payment_id],
                 |row| unsigned(row, 0),
             )
             .optional()?;
@@ -492,7 +496,7 @@ impl Store {
             let attempts = attempts.saturating_add(1);
             self.conn.execute(
                 "UPDATE reorg_work SET attempts = ?3, next_attempt_at_utc = ?4 WHERE network = ?1 AND payment_id = ?2",
-                params![shared::network::SqlNetwork(network), payment_id, attempts, now + reorg_retry_delay(attempts)],
+                params![engine_protocol::network::SqlNetwork(network), payment_id, attempts, now + reorg_retry_delay(attempts)],
             )?;
         }
         Ok(())
@@ -529,13 +533,13 @@ impl Store {
             s.conn.execute(
                 "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
                  (SELECT tenant_id FROM partial_block_progress WHERE network = ?1 AND height >= ?2)",
-                params![shared::network::SqlNetwork(network), Unsigned(fork_height)],
+                params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height)],
             )?;
             s.conn.execute(
                 "DELETE FROM partial_block_progress WHERE network = ?1 AND height >= ?2",
-                params![shared::network::SqlNetwork(network), Unsigned(fork_height)],
+                params![engine_protocol::network::SqlNetwork(network), Unsigned(fork_height)],
             )?;
-            s.conn.execute("DELETE FROM reorg_jobs WHERE network = ?1", [shared::network::SqlNetwork(network)])?;
+            s.conn.execute("DELETE FROM reorg_jobs WHERE network = ?1", [engine_protocol::network::SqlNetwork(network)])?;
             // A replacement branch can be shorter. Even payments whose
             // height stayed unchanged (including those below the fork) then
             // have fewer confirmations. Their next-height schedule only
@@ -562,7 +566,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM reorg_jobs WHERE network = ?1)",
-                [shared::network::SqlNetwork(network)],
+                [engine_protocol::network::SqlNetwork(network)],
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -578,7 +582,7 @@ impl Store {
     ) -> Result<Vec<(u64, String)>> {
         self.rows(
             "SELECT height, block_hash FROM scanned_blocks WHERE network = ?1 AND height BETWEEN ?2 AND ?3 ORDER BY height",
-            params![shared::network::SqlNetwork(network), Unsigned(from), Unsigned(to)],
+            params![engine_protocol::network::SqlNetwork(network), Unsigned(from), Unsigned(to)],
             |row| Ok((unsigned(row, 0)?, row.get::<_, String>(1)?)),
         )
     }
@@ -616,7 +620,11 @@ impl Store {
         for (sql, due) in queries {
             found.push(self.rows(
                 sql,
-                params![shared::network::SqlNetwork(network), due, Unsigned(limit)],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    due,
+                    Unsigned(limit)
+                ],
                 |row| row.get::<_, OrderId>(0),
             )?);
         }
@@ -652,7 +660,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT value FROM scheduler_positions WHERE network = ?1 AND position = ?2",
-                params![shared::network::SqlNetwork(network), P::KEY],
+                params![engine_protocol::network::SqlNetwork(network), P::KEY],
                 |row| row.get(0),
             )
             .optional()?;
@@ -671,7 +679,7 @@ impl Store {
             "INSERT INTO scheduler_positions (network, position, value) VALUES (?1, ?2, ?3)
              ON CONFLICT (network, position) DO UPDATE SET value = excluded.value",
             params![
-                shared::network::SqlNetwork(network),
+                engine_protocol::network::SqlNetwork(network),
                 P::KEY,
                 value.to_string()
             ],
@@ -708,7 +716,7 @@ impl Store {
                AND op.voided_at_utc >= ?2 AND op.id > ?3 AND t.network = ?1
              ORDER BY op.id LIMIT ?4",
             params![
-                shared::network::SqlNetwork(network),
+                engine_protocol::network::SqlNetwork(network),
                 cutoff,
                 after,
                 Unsigned(limit)
@@ -802,7 +810,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-                params![shared::network::SqlNetwork(network), tenant_id],
+                params![engine_protocol::network::SqlNetwork(network), tenant_id],
                 |row| {
                     Ok(BlockCheckpoint {
                         height: unsigned(row, 0)?,
@@ -836,7 +844,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, '', ?5)
              ON CONFLICT (network, tenant_id) DO UPDATE SET
                  height = excluded.height, block_hash = excluded.block_hash, next_tx_index = excluded.next_tx_index",
-            params![shared::network::SqlNetwork(network), tenant_id, Unsigned(checkpoint.height), checkpoint.hash, Unsigned(checkpoint.next_tx)],
+            params![engine_protocol::network::SqlNetwork(network), tenant_id, Unsigned(checkpoint.height), checkpoint.hash, Unsigned(checkpoint.next_tx)],
         )?;
         Ok(())
     }
@@ -856,7 +864,7 @@ impl Store {
             self.rows(
                 "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key
                  FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-                params![shared::network::SqlNetwork(network), tenant_id],
+                params![engine_protocol::network::SqlNetwork(network), tenant_id],
                 |row| {
                     Ok(StagedPayment {
                         order_id: row.get(0)?,
@@ -892,7 +900,7 @@ impl Store {
                AND scanned_through_height < ?2 AND scanned_through_height >= ?3
              ORDER BY scanned_through_height LIMIT ?4",
             params![
-                shared::network::SqlNetwork(network),
+                engine_protocol::network::SqlNetwork(network),
                 Unsigned(below),
                 Unsigned(after.map_or(0, |a| a.saturating_add(1))),
                 Unsigned(limit)
@@ -909,7 +917,10 @@ impl Store {
             "SELECT COUNT(DISTINCT scanned_through_height) FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
                AND scanned_through_height < ?2",
-            params![shared::network::SqlNetwork(network), Unsigned(below)],
+            params![
+                engine_protocol::network::SqlNetwork(network),
+                Unsigned(below)
+            ],
             |row| unsigned(row, 0),
         )?)
     }
@@ -931,7 +942,7 @@ impl Store {
                AND id NOT IN (SELECT value FROM json_each(?3))
              ORDER BY (id <= ?5), id LIMIT ?4",
             params![
-                shared::network::SqlNetwork(network),
+                engine_protocol::network::SqlNetwork(network),
                 Unsigned(cursor),
                 excluding,
                 Unsigned(limit),
@@ -959,7 +970,7 @@ impl Store {
                AND id IN (SELECT value FROM json_each(?4))
              ORDER BY (id <= ?6), id LIMIT ?5",
             params![
-                shared::network::SqlNetwork(network),
+                engine_protocol::network::SqlNetwork(network),
                 Unsigned(cursor),
                 json_array(excluding),
                 json_array(registered),
@@ -994,7 +1005,7 @@ impl Store {
                 super::tenant_in_scope("tenants.id")
             ),
             rusqlite::named_params! {
-                ":network": shared::network::SqlNetwork(network),
+                ":network": engine_protocol::network::SqlNetwork(network),
                 ":cursor": Unsigned(cursor),
                 ":excluding": json_array(excluding),
                 ":registered": json_array(registered),
@@ -1056,7 +1067,7 @@ impl Store {
                 super::tenant_in_scope("tenants.id")
             ),
             rusqlite::named_params! {
-                ":network": shared::network::SqlNetwork(network),
+                ":network": engine_protocol::network::SqlNetwork(network),
                 ":from": Unsigned(from),
                 ":to": Unsigned(to),
                 ":since_minus_grace": since.saturating_sub(grace_period_seconds),
@@ -1089,7 +1100,7 @@ impl Store {
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND scanned_through_height = ?2 - 1 AND id IN (SELECT value FROM json_each(?3))
              RETURNING id",
-            params![shared::network::SqlNetwork(network), Unsigned(height), ids],
+            params![engine_protocol::network::SqlNetwork(network), Unsigned(height), ids],
             |row| row.get::<_, TenantId>(0),
         )?;
         let movement = Movement::of(moved.len());
@@ -1115,7 +1126,7 @@ impl Store {
                 super::tenant_in_scope("t.id")
             ),
             rusqlite::named_params! {
-                ":network": shared::network::SqlNetwork(network),
+                ":network": engine_protocol::network::SqlNetwork(network),
                 ":after": after,
                 ":limit": Unsigned(limit),
                 ":since_minus_grace": now - grace_period_seconds,
@@ -1160,7 +1171,7 @@ impl Store {
         tip: Option<u64>,
         groups: usize,
     ) -> Result<ActivityFacts> {
-        let net = shared::network::SqlNetwork(network);
+        let net = engine_protocol::network::SqlNetwork(network);
         let count = |sql: &str, params: &[&dyn rusqlite::ToSql]| -> Result<u64> {
             Ok(self
                 .conn

@@ -157,7 +157,7 @@ pub fn resolve_confirmations_required(
 ) -> Result<u64, &'static str> {
     let (piconero, piconero_per_unit) = (piconero.get(), piconero_per_unit.get());
     if piconero_per_unit == 0
-        || default_confirmations > shared::order_status::MAX_CONFIRMATIONS_REQUIRED
+        || default_confirmations > engine_protocol::order_status::MAX_CONFIRMATIONS_REQUIRED
     {
         return Err("invalid confirmation policy");
     }
@@ -165,7 +165,8 @@ pub fn resolve_confirmations_required(
     let mut seen = std::collections::HashSet::new();
     for threshold in thresholds {
         let amount = ThresholdAmount::parse(&threshold.unit_amount)?;
-        if threshold.confirmations_required > shared::order_status::MAX_CONFIRMATIONS_REQUIRED
+        if threshold.confirmations_required
+            > engine_protocol::order_status::MAX_CONFIRMATIONS_REQUIRED
             || !seen.insert(amount.0)
         {
             return Err("invalid or duplicate confirmation threshold");
@@ -371,7 +372,7 @@ mod tests {
     fn threshold(unit_amount: &str, confirmations_required: u64) -> ConfirmationThresholdRow {
         ConfirmationThresholdRow {
             id: "thresh".to_string(),
-            connection_id: shared::ids::ConnectionId::new("conn".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn".to_string()),
             unit_amount: unit_amount.to_string(),
             confirmations_required,
             created_at: 0,

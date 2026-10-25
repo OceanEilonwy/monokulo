@@ -9,7 +9,7 @@
 //! outside this function entirely.
 
 /// Shared with monokulo, which reads it from the admin API.
-pub use shared::order_status::OrderStatus;
+pub use engine_protocol::order_status::OrderStatus;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PaymentView {

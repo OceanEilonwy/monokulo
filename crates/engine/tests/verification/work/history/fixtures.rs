@@ -165,8 +165,8 @@ fn fixture_tenant_rows(
         })
         .unwrap();
     (
-        shared::ids::TenantId::new(tenant.tenant.id.into_string()),
-        shared::ids::OrderId::new(order.id.into_string()),
+        engine_protocol::ids::TenantId::new(tenant.tenant.id.into_string()),
+        engine_protocol::ids::OrderId::new(order.id.into_string()),
     )
 }
 

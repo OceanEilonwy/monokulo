@@ -589,7 +589,7 @@ pub async fn finish(
         .and_then(|i| i.webhook_id);
     if let Some(earlier) = earlier {
         let store_id = row.id.clone();
-        let earlier = shared::ids::WebhookId::new(earlier);
+        let earlier = engine_protocol::ids::WebhookId::new(earlier);
         if let Err(e) = state
             .db
             .write(move |db| db.delete_webhook(&store_id, &earlier))
@@ -1948,7 +1948,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.clone()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.clone(),
+            ))
             .unwrap()
             .unwrap();
         let finish_body =

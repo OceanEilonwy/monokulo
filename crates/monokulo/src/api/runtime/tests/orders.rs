@@ -251,7 +251,8 @@ async fn an_orders_description_reaches_the_engine_and_bad_ones_are_refused() {
         .unwrap()
         .unwrap();
     let sk = crate::http::decrypt_sk(&state.encryption_key, &row).unwrap();
-    let order_id = shared::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
+    let order_id =
+        engine_protocol::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
     let detail = state
         .engine
         .client
@@ -277,7 +278,8 @@ async fn an_orders_description_reaches_the_engine_and_bad_ones_are_refused() {
     let created: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(created["description"], serde_json::Value::Null);
     assert_eq!(created["show_merchant_order_id"], false);
-    let order_id = shared::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
+    let order_id =
+        engine_protocol::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
     let metadata = state
         .db
         .lock()
@@ -1006,7 +1008,7 @@ async fn creating_a_real_order_records_local_fiat_metadata() {
         .lock()
         .get_order_currency_metadata(
             &connection_id,
-            &shared::ids::OrderId::new(order_id.to_string()),
+            &engine_protocol::ids::OrderId::new(order_id.to_string()),
         )
         .unwrap();
     let metadata =
@@ -1156,7 +1158,7 @@ async fn order_pricing(state: &AppState, router: &Router, pk: &str) -> (String, 
         .lock()
         .get_order_currency_metadata(
             &connection_id,
-            &shared::ids::OrderId::new(order_id.to_string()),
+            &engine_protocol::ids::OrderId::new(order_id.to_string()),
         )
         .unwrap()
         .unwrap();

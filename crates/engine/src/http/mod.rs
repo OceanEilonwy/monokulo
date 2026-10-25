@@ -568,7 +568,7 @@ pub use crate::network::{network_str, parse_network};
 
 pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
     s.parse()
-        .map_err(|unknown: shared::order_status::UnknownStatus| {
+        .map_err(|unknown: engine_protocol::order_status::UnknownStatus| {
             ApiError::BadRequest(format!("unknown status filter: {}", unknown.0))
         })
 }

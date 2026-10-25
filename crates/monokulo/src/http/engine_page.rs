@@ -32,10 +32,10 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::Event;
 use axum::response::{Html, IntoResponse, Json, Response};
+use engine_protocol::scaling::{LinkSnapshot, NetworkScaling};
 use futures_util::stream::{self, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use shared::resources::ResourceReport;
-use shared::scaling::{LinkSnapshot, NetworkScaling};
 
 use super::{AppState, AuthedAdmin};
 use crate::engine_client::{EngineClient, EngineStatusResponse};
@@ -403,9 +403,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use axum::Router;
+    use engine_protocol::activity::{Event, Snapshot, StoreGroup};
     use http_body_util::BodyExt as _;
     use monero::Network;
-    use shared::activity::{Event, Snapshot, StoreGroup};
     use tower::ServiceExt as _;
 
     use super::*;
@@ -445,7 +445,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         activity.record(Event::Committed {
             height: 3_412_881,
-            group: shared::activity::Group::Frontier,
+            group: engine_protocol::activity::Group::Frontier,
             stores: 41,
             matches: 1,
             idle_moved: 0,

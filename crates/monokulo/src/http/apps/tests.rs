@@ -383,7 +383,7 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
     assert!(state
         .db
         .lock()
-        .list_apps(&shared::ids::ConnectionId::new(id))
+        .list_apps(&engine_protocol::ids::ConnectionId::new(id))
         .unwrap()
         .is_empty());
 }
@@ -412,7 +412,7 @@ async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
 
     // A code made while there was one, redeemed after it was removed.
     let hash = shared::auth::RawToken::presented("ct_test").hash();
-    let store_id = shared::ids::ConnectionId::new(id);
+    let store_id = engine_protocol::ids::ConnectionId::new(id);
     state
         .db
         .lock()

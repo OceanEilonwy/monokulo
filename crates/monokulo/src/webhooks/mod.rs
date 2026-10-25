@@ -20,7 +20,7 @@ pub mod test_delivery;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use shared::ids::WebhookId;
+use engine_protocol::ids::WebhookId;
 
 use crate::db::{ConnectionId, Database, DbError, NewWebhook, WebhookRow};
 

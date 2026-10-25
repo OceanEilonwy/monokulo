@@ -11,8 +11,8 @@
 //! One submodule per page/page-group, mirroring `http/`'s own per-feature
 //! split rather than one flat file.
 
+pub use engine_protocol::order_status::OrderStatus;
 use maud::{html, Markup, PreEscaped, DOCTYPE};
-pub use shared::order_status::OrderStatus;
 
 use crate::assets;
 use crate::db::{Theme, UserRow};

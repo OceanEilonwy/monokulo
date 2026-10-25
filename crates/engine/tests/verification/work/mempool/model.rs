@@ -209,7 +209,7 @@ pub(super) fn explore(data: &[u8]) {
         let listed: Vec<_> = ids
             .iter()
             .take(usize::from(value))
-            .map(|id| shared::activity::short_id(id))
+            .map(|id| engine_protocol::activity::short_id(id))
             .collect();
         assert_eq!(
             state.remembered(usize::from(value)),

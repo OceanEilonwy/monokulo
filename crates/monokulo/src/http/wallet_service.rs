@@ -46,7 +46,7 @@ pub(crate) async fn add_wallet(
     req: AddWallet,
 ) -> Result<WalletRow, AddWalletError> {
     let name = crate::wallets::clean_name(&req.name).map_err(AddWalletError::Invalid)?;
-    if shared::network::parse_network(&req.network).is_err() {
+    if engine_protocol::network::parse_network(&req.network).is_err() {
         return Err(AddWalletError::Invalid(format!(
             "{:?} is not a Monero network",
             req.network

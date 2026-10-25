@@ -104,7 +104,7 @@ mod tests {
     fn db_with_store() -> Db {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("u1"),
+            &engine_protocol::ids::UserId::new("u1"),
             "a@example.com",
             "hash",
             false,
@@ -113,8 +113,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("c1"),
-            &shared::ids::UserId::new("u1"),
+            &engine_protocol::ids::ConnectionId::new("c1"),
+            &engine_protocol::ids::UserId::new("u1"),
             "https://shop.example.com",
             "pk_1",
             "sk_1",
@@ -124,8 +124,8 @@ mod tests {
         .unwrap();
         // An order of the store, so its checkout finds it.
         db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new("c1"),
-            &shared::ids::OrderId::new("o1"),
+            &engine_protocol::ids::ConnectionId::new("c1"),
+            &engine_protocol::ids::OrderId::new("o1"),
             "XMR",
             "1",
             shared::xmr_amount::Piconero(1),
@@ -158,7 +158,7 @@ mod tests {
             !page_may_report(&db, "/stores/unknown/orders"),
             "no store, no reports"
         );
-        db.set_client_logging(&shared::ids::ConnectionId::new("c1"), true)
+        db.set_client_logging(&engine_protocol::ids::ConnectionId::new("c1"), true)
             .unwrap();
         assert!(page_may_report(&db, "/stores/c1/settings"));
         assert!(page_may_report(&db, "/checkout/o1"));

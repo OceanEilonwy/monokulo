@@ -36,7 +36,7 @@
 //! client already has to handle "the connection failed" separately from
 //! "the status says there's a problem".
 
-use shared::order_status::OrderStatus;
+use engine_protocol::order_status::OrderStatus;
 use std::collections::HashMap;
 
 use axum::extract::{Path, State};
@@ -395,7 +395,7 @@ pub async fn create_order(
 
 #[derive(Debug, Serialize)]
 pub struct PosStatusResponse {
-    pub status: shared::order_status::OrderStatus,
+    pub status: engine_protocol::order_status::OrderStatus,
     pub updated_at: i64,
     pub confirmations: u64,
     pub confirmations_required: u64,
@@ -435,7 +435,7 @@ pub struct PosOrderData {
     xmr_amount: String,
     amount: String,
     currency: String,
-    status: shared::order_status::OrderStatus,
+    status: engine_protocol::order_status::OrderStatus,
     updated_at: i64,
     confirmations: u64,
     confirmations_required: u64,
@@ -1472,8 +1472,8 @@ mod tests {
             .db
             .lock()
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
             )
             .unwrap()
             .unwrap();
@@ -1781,7 +1781,7 @@ mod tests {
             .store()
             .lock()
             .mark_double_spend_detected(
-                &shared::ids::OrderId::new(order_ids[1].to_string()),
+                &engine_protocol::ids::OrderId::new(order_ids[1].to_string()),
                 crate::now_unix()
             )
             .unwrap());
@@ -2399,7 +2399,7 @@ mod tests {
         let pk = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap()
             .tenant_public_key;
@@ -2532,7 +2532,7 @@ mod pure_logic_tests {
 
     fn order_with_status(status: &str) -> OrderView {
         OrderView {
-            order_id: shared::ids::OrderId::new("pay_test".to_string()),
+            order_id: engine_protocol::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
             description: None,
             address: "addr".to_string(),

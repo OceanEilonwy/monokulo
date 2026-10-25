@@ -57,7 +57,7 @@ async fn open_orders(
     only: Option<&HashSet<crate::db::OrderId>>,
     clock: &crate::views::time::Clock,
 ) -> Option<OpenOrders> {
-    use shared::order_status::OrderStatus;
+    use engine_protocol::order_status::OrderStatus;
     let orders = state.engine.client.list_orders(sk).await.ok()?;
     let now = crate::now_unix();
     let open: Vec<_> = orders
@@ -408,7 +408,10 @@ pub async fn disconnect_submit(
         .flatten();
     // Already gone (deleted on the Webhooks card, say): nothing to do.
     if let Some(webhook_id) = webhook_id {
-        let (store_id, webhook_id) = (row.id.clone(), shared::ids::WebhookId::new(webhook_id));
+        let (store_id, webhook_id) = (
+            row.id.clone(),
+            engine_protocol::ids::WebhookId::new(webhook_id),
+        );
         if let Err(e) = state
             .db
             .write(move |db| db.delete_webhook(&store_id, &webhook_id))

@@ -289,7 +289,7 @@ async fn fetch_engine_settings(
     networks.sort_by_key(|n| {
         admin_nodes::NETWORKS
             .iter()
-            .position(|known| shared::network::network_str(*known) == n.network)
+            .position(|known| engine_protocol::network::network_str(*known) == n.network)
             .unwrap_or(usize::MAX)
     });
     Ok(EngineSettings {
@@ -475,7 +475,7 @@ async fn build_view_model(
     // with the engine's word on a network at the top of its block.
     if let Some(nodes) = &nodes {
         for network in &mut view.engine_networks {
-            let rows = shared::network::parse_network(&network.network)
+            let rows = engine_protocol::network::parse_network(&network.network)
                 .ok()
                 .and_then(|n| nodes.rows(n));
             if let Some(rows) = rows {
@@ -549,10 +549,9 @@ fn attach_node_status(
             else {
                 continue;
             };
-            let wrong_network = node
-                .network
-                .clone()
-                .filter(|on| shared::network::parse_network(on).is_ok() && *on != network.network);
+            let wrong_network = node.network.clone().filter(|on| {
+                engine_protocol::network::parse_network(on).is_ok() && *on != network.network
+            });
             row.status = Some(NodeStatusView {
                 height: node.height,
                 error: node.error.clone(),
@@ -703,7 +702,7 @@ fn split_tab(
                 tab.bad_networks.push(*network);
             } else {
                 tab.engine.monero_node.insert(
-                    shared::network::network_str(*network).to_string(),
+                    engine_protocol::network::network_str(*network).to_string(),
                     admin_nodes::rows_to_setting(rows),
                 );
             }

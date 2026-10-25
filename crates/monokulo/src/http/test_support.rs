@@ -169,7 +169,7 @@ pub async fn store_with_keys(
     let row = state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.clone()))
         .unwrap()
         .unwrap();
     let secret_key = crate::crypto::decrypt(

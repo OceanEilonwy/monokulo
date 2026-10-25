@@ -24,8 +24,10 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Duration;
 
+use engine_protocol::proof::{
+    AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus,
+};
 use futures_util::future::join_all;
-use shared::proof::{AnchorStatus, Hashing, NodeProof, NodeVerdict, ProofState, ProofStatus};
 
 use crate::daemon::{DaemonError, MoneroDaemonClient};
 use crate::daemon_fallback::FallbackDaemonClient;
@@ -370,7 +372,7 @@ impl Follower {
         } else {
             let name = format!(
                 "engine-randomx-{}",
-                shared::network::network_str(self.network)
+                engine_protocol::network::network_str(self.network)
             );
             let hasher = Hasher::start_with(&name, self.function)?;
             self.hasher = Some(hasher.clone());

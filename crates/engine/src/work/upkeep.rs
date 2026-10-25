@@ -108,7 +108,7 @@ async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
     round
         .state
         .activity()
-        .record(shared::activity::Event::Upkeep { pruned });
+        .record(engine_protocol::activity::Event::Upkeep { pruned });
     Ok(())
 }
 

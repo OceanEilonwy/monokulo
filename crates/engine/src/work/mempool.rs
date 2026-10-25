@@ -40,7 +40,7 @@ use crate::key_custody::{ScanIndices, WalletHandle};
 use crate::scanner::{record_scan_match, scan_for_tenants, ScannerError};
 use crate::store::db::Class;
 
-use shared::activity::{Event, PoolPath};
+use engine_protocol::activity::{Event, PoolPath};
 
 use super::{bounded, count, Progress, Round, RoundInputs, ScanState, Wait};
 
@@ -182,7 +182,7 @@ impl MempoolState {
         let listed = txids
             .into_iter()
             .take(limit)
-            .map(|txid| shared::activity::short_id(&txid))
+            .map(|txid| engine_protocol::activity::short_id(&txid))
             .collect();
         (count, listed)
     }
@@ -418,7 +418,7 @@ fn record_match(state: &ScanState, path: PoolPath, txid: &str, outcome: &ScanOut
     if outcome.touched > 0 {
         state.activity().record(Event::TxMatched {
             path,
-            txid: shared::activity::short_id(txid),
+            txid: engine_protocol::activity::short_id(txid),
         });
     }
     if !outcome.transitions.is_empty() {
@@ -501,7 +501,7 @@ struct ScanOutcome {
     attempted: bool,
     touched: usize,
     /// Orders whose status changed in the same job (the fast path).
-    transitions: Vec<shared::activity::Transition>,
+    transitions: Vec<engine_protocol::activity::Transition>,
     failed: Vec<crate::store::TenantId>,
     store_error: Option<ScannerError>,
 }

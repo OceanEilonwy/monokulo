@@ -64,7 +64,7 @@ pub(super) struct NodeStatus {
     /// (or the engine started), by endpoint, busiest first.
     pub rpc: Vec<crate::daemon::EndpointStats>,
     /// What has been measured of the node's link.
-    pub link: Option<shared::scaling::LinkSnapshot>,
+    pub link: Option<engine_protocol::scaling::LinkSnapshot>,
 }
 
 /// One node's height, the error if it couldn't be read, and its network.
@@ -127,15 +127,15 @@ pub(super) struct NetworkStatus {
     /// How far behind the furthest-behind tenant is, in blocks.
     pub max_blocks_behind: u64,
     /// How the block scan is going and what limits it.
-    pub scaling: shared::scaling::NetworkScaling,
+    pub scaling: engine_protocol::scaling::NetworkScaling,
     /// The nodes' ZMQ announcements; absent while no
     /// node of this network has a `zmq_pub`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub announcements: Option<shared::announcements::Announcements>,
+    pub announcements: Option<engine_protocol::announcements::Announcements>,
     /// Proof-of-work checking; absent while it is
     /// off on this network.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<shared::proof::ProofStatus>,
+    pub proof: Option<engine_protocol::proof::ProofStatus>,
 }
 
 #[derive(Serialize)]
@@ -385,11 +385,11 @@ pub(super) async fn status_page(
 fn network_scaling(
     state: &AppState,
     nodes: &[NodeStatus],
-    scan: shared::scaling::ScanReport,
+    scan: engine_protocol::scaling::ScanReport,
     high_water: u64,
     networks: u32,
-) -> shared::scaling::NetworkScaling {
-    use shared::scaling::{NetworkScaling, SlowBlock, SLOW_BLOCK_SECS};
+) -> engine_protocol::scaling::NetworkScaling {
+    use engine_protocol::scaling::{NetworkScaling, SlowBlock, SLOW_BLOCK_SECS};
     let active = nodes.iter().find(|node| node.is_active);
     let tip = nodes.iter().filter_map(|node| node.height).max();
     let blocks_behind = tip.map_or(0, |tip| tip.saturating_sub(high_water));
@@ -564,11 +564,11 @@ mod tests {
             },
             lagging_tenants: 0,
             max_blocks_behind: 0,
-            scaling: shared::scaling::NetworkScaling {
+            scaling: engine_protocol::scaling::NetworkScaling {
                 scan: crate::scaling::ScanProgress::default().report(0),
                 blocks_behind: 0,
                 catch_up_secs: None,
-                pace: shared::scaling::Pace::CaughtUp,
+                pace: engine_protocol::scaling::Pace::CaughtUp,
                 budget_mb: 8,
                 max_budget_mb: None,
                 round_deadline_secs: 10,

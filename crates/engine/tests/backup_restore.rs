@@ -169,7 +169,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
             let created = writer_store.create_order(&NewOrder {
                 idempotency_key: None,
                 confirmations_required_override: None,
-                tenant_id: shared::ids::TenantId::new(writer_tenant_id.clone()),
+                tenant_id: engine_protocol::ids::TenantId::new(writer_tenant_id.clone()),
                 merchant_order_id: None,
                 minor_index: i,
                 address: format!("sub_{i}"),

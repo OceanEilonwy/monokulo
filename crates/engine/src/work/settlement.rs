@@ -18,7 +18,7 @@ use crate::scanner::{
 };
 use crate::store::position::VanishedPayments;
 
-use shared::activity::Event;
+use engine_protocol::activity::Event;
 
 use super::{Progress, Round, Wait};
 

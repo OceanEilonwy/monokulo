@@ -24,6 +24,8 @@ uuid = { version = "1.26.0", features = ["v4"] }
 engine = { path = "../engine" }
 monokulo = { path = "../monokulo", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
+# The ids the real-stagenet tests look the connection and order up by.
+engine-protocol = { path = "../engine-protocol" }
 monero = "0.22.0"
 # The real-stagenet tests hex-encode the sent transaction's hash.
 hex = "0.4.3"

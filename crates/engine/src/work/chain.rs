@@ -10,7 +10,7 @@ use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
-use shared::activity::Event;
+use engine_protocol::activity::Event;
 
 use super::{bounded, count, Progress, Round, Wait};
 

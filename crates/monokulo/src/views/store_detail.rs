@@ -282,7 +282,7 @@ mod tests {
     fn base_store() -> StoreDetailData {
         StoreDetailData {
             wallet: None,
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "Corner shop".to_string(),
             site: crate::stores::Site::parse("shop.example.com").ok(),
             public_key: "pk_abc123".to_string(),

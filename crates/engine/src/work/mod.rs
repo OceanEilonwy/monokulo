@@ -30,10 +30,10 @@ use crate::store::db::Class;
 use crate::store::{Db, Store};
 
 pub use blocks::ScannedBlock;
+use engine_protocol::activity::{Event, UnitProgress, Work};
+pub use engine_protocol::activity::{Tier, TierOutcome, Wait};
 pub use mempool::{fast_pass, FastReport};
 pub use observe::snapshot;
-use shared::activity::{Event, UnitProgress, Work};
-pub use shared::activity::{Tier, TierOutcome, Wait};
 pub use tuning::{ScanTuning, TierShares, TuningError};
 
 /// One value per tier, indexed by [`Tier`].

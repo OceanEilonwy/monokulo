@@ -58,7 +58,7 @@ async fn code(State(control): State<Controls>) -> Json<serde_json::Value> {
         .write(move |db| {
             db.create_app_connect_token(
                 &hash,
-                &shared::ids::ConnectionId::new(STORE),
+                &engine_protocol::ids::ConnectionId::new(STORE),
                 "",
                 monokulo::now_unix(),
             )
@@ -114,7 +114,7 @@ async fn main() {
         .expect("create the store's tenant");
     let view = client.get_tenant(&tenant.secret_token).await.unwrap();
     let db = Db::open_in_memory().unwrap();
-    let user = shared::ids::UserId::new("dev-merchant");
+    let user = engine_protocol::ids::UserId::new("dev-merchant");
     db.create_user(&user, "dev@example.test", "unused", false, 0)
         .unwrap();
     db.create_session(
@@ -137,7 +137,7 @@ async fn main() {
     })
     .unwrap();
     db.create_store_connection_on_wallet(
-        &shared::ids::ConnectionId::new(STORE),
+        &engine_protocol::ids::ConnectionId::new(STORE),
         &user,
         "The Bean Room",
         None,

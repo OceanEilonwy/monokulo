@@ -1,7 +1,7 @@
 //! `GET /status` - `http::status_page::status_page`.
 
+pub use engine_protocol::proof::{NodeVerdict, ProofState};
 use maud::{html, Markup, PreEscaped};
-pub use shared::proof::{NodeVerdict, ProofState};
 use ui::{
     Alert, Button, ButtonType, Cell, CellPart, Disclosure, Fact, Facts, Hint, LinkButton, Panel,
     Row, Slot, Table, TableLook, Tag, TagTone, Tone,

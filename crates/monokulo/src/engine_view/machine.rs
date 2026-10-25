@@ -16,12 +16,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use serde::Serialize;
-use shared::activity::{
+use engine_protocol::activity::{
     Database, Event, Group, Node, PoolPath, Recorded, Snapshot, Tier, TierOutcome, Transition,
     UnitProgress, Wait, Wake, Work,
 };
-use shared::order_status::OrderStatus;
+use engine_protocol::order_status::OrderStatus;
+use serde::Serialize;
 
 /// Rounds and sleeps kept for the recent-rounds ribbon.
 pub const RIBBON: usize = 90;
@@ -835,8 +835,8 @@ impl State {
             Reorg {
                 fork: job.fork,
                 step: match job.phase {
-                    shared::activity::ReorgPhase::Collect => ReorgStep::Collecting,
-                    shared::activity::ReorgPhase::Process => ReorgStep::Processing,
+                    engine_protocol::activity::ReorgPhase::Collect => ReorgStep::Collecting,
+                    engine_protocol::activity::ReorgPhase::Process => ReorgStep::Processing,
                 },
                 candidates: Some(job.candidates),
                 examined: known.map_or(0, |known| known.examined),

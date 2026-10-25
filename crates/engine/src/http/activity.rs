@@ -3,7 +3,7 @@
 //!
 //! `GET /api/v1/admin/engine/activity/stream?network=stagenet&from=812`:
 //! server-sent events, each an `activity` whose data is one
-//! `shared::activity::ActivityPage` (JSON) and whose `id:` is the sequence
+//! `engine_protocol::activity::ActivityPage` (JSON) and whose `id:` is the sequence
 //! number of the last event in it (none when it has no events).
 //!
 //! - The first message comes at once: the events from sequence number
@@ -31,9 +31,9 @@ use std::sync::Arc;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
+use engine_protocol::activity::{ActivityPage, Tier, Tuning};
 use futures_util::Stream;
 use serde::Deserialize;
-use shared::activity::{ActivityPage, Tier, Tuning};
 use tokio::sync::mpsc;
 
 use super::{ApiError, AppState};
@@ -69,7 +69,7 @@ pub(super) async fn stream(
     tuning
         .validate()
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let network = shared::network::parse_network(&query.network)
+    let network = engine_protocol::network::parse_network(&query.network)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let from = position(&headers, &query)?;
     let activity = state
@@ -173,7 +173,7 @@ fn message(
     let tuning = ScanTuning::DEFAULT;
     let last = page.events.last().map(|e| e.seq);
     let page = ActivityPage {
-        network: shared::network::network_str(network).to_owned(),
+        network: engine_protocol::network::network_str(network).to_owned(),
         epoch: activity.epoch().to_owned(),
         now_ms: crate::activity::now_ms(),
         tuning: Tuning {
@@ -202,8 +202,8 @@ mod tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use engine_protocol::activity::Event;
     use futures_util::StreamExt as _;
-    use shared::activity::Event;
     use tower::ServiceExt as _;
 
     use super::super::{build_router, TEST_ENGINE_TOKEN};

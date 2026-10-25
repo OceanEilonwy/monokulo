@@ -7,9 +7,9 @@
 //! uses). Handlers reach it through [`Database`]: read-only connections for
 //! reads, one writing connection for writes, each on its own thread.
 
+pub use engine_protocol::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use parking_lot::Mutex;
 use shared::auth::TokenHash;
-pub use shared::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use shared::sqlite::{Pool, PoolError, Unsigned};
 use shared::xmr_amount::Piconero;
 use std::sync::Arc;
@@ -3119,8 +3119,8 @@ mod tests {
         let orphan = db
             .write(|db| {
                 db.insert_pos_order(
-                    &shared::ids::ConnectionId::new("no-such-store"),
-                    &shared::ids::OrderId::new("o1"),
+                    &engine_protocol::ids::ConnectionId::new("no-such-store"),
+                    &engine_protocol::ids::OrderId::new("o1"),
                     None,
                     None,
                     1,
@@ -3159,7 +3159,7 @@ mod tests {
     fn pos_orders_are_store_scoped_and_persist_background_state() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("merchant"),
+            &engine_protocol::ids::UserId::new("merchant"),
             "merchant@example.com",
             "hash",
             false,
@@ -3169,8 +3169,8 @@ mod tests {
         for (id, pk) in [("store-a", "pk_a"), ("store-b", "pk_b")] {
             crate::db::test_rows::store_on_wallet(
                 &db,
-                &shared::ids::ConnectionId::new(id.to_string()),
-                &shared::ids::UserId::new("merchant"),
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &engine_protocol::ids::UserId::new("merchant"),
                 &format!("{id}.example"),
                 pk,
                 "encrypted",
@@ -3180,8 +3180,8 @@ mod tests {
             .unwrap();
         }
         db.insert_pos_order(
-            &shared::ids::ConnectionId::new("store-a"),
-            &shared::ids::OrderId::new("order-1"),
+            &engine_protocol::ids::ConnectionId::new("store-a"),
+            &engine_protocol::ids::OrderId::new("order-1"),
             Some("key-1"),
             Some("Mia coffee"),
             10,
@@ -3189,24 +3189,27 @@ mod tests {
         .unwrap();
         assert!(db
             .get_pos_order(
-                &shared::ids::ConnectionId::new("store-b"),
-                &shared::ids::OrderId::new("order-1")
+                &engine_protocol::ids::ConnectionId::new("store-b"),
+                &engine_protocol::ids::OrderId::new("order-1")
             )
             .unwrap()
             .is_none());
         assert_eq!(
-            db.pos_order_by_request_key(&shared::ids::ConnectionId::new("store-a"), "key-1")
-                .unwrap(),
-            Some(shared::ids::OrderId::new("order-1"))
+            db.pos_order_by_request_key(
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                "key-1"
+            )
+            .unwrap(),
+            Some(engine_protocol::ids::OrderId::new("order-1"))
         );
         assert!(db
-            .pos_order_by_request_key(&shared::ids::ConnectionId::new("store-b"), "key-1")
+            .pos_order_by_request_key(&engine_protocol::ids::ConnectionId::new("store-b"), "key-1")
             .unwrap()
             .is_none());
         assert!(db
             .insert_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-2"),
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                &engine_protocol::ids::OrderId::new("order-2"),
                 Some("key-1"),
                 None,
                 11
@@ -3214,40 +3217,45 @@ mod tests {
             .is_err());
         assert!(!db
             .background_pos_order(
-                &shared::ids::ConnectionId::new("store-b"),
-                &shared::ids::OrderId::new("order-1")
+                &engine_protocol::ids::ConnectionId::new("store-b"),
+                &engine_protocol::ids::OrderId::new("order-1")
             )
             .unwrap());
         assert!(db
             .background_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-1")
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                &engine_protocol::ids::OrderId::new("order-1")
             )
             .unwrap());
         assert!(
             db.get_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-1")
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                &engine_protocol::ids::OrderId::new("order-1")
             )
             .unwrap()
             .unwrap()
             .backgrounded
         );
         assert_eq!(
-            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 1, 0, None)
-                .unwrap()
-                .len(),
+            db.list_pos_orders(
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                1,
+                0,
+                None
+            )
+            .unwrap()
+            .len(),
             1
         );
         assert_eq!(
-            db.count_pos_orders(&shared::ids::ConnectionId::new("store-b"), None)
+            db.count_pos_orders(&engine_protocol::ids::ConnectionId::new("store-b"), None)
                 .unwrap(),
             0
         );
         for i in 0..45 {
             db.insert_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new(format!("order-{i:02}")),
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                &engine_protocol::ids::OrderId::new(format!("order-{i:02}")),
                 None,
                 None,
                 100 + i,
@@ -3255,43 +3263,61 @@ mod tests {
             .unwrap();
         }
         assert_eq!(
-            db.count_pos_orders(&shared::ids::ConnectionId::new("store-a"), None)
+            db.count_pos_orders(&engine_protocol::ids::ConnectionId::new("store-a"), None)
                 .unwrap(),
             46
         );
         assert_eq!(
-            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 40, 0, None)
-                .unwrap()
-                .len(),
+            db.list_pos_orders(
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                40,
+                0,
+                None
+            )
+            .unwrap()
+            .len(),
             40
         );
         assert_eq!(
-            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 40, 40, None)
-                .unwrap()
-                .len(),
+            db.list_pos_orders(
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                40,
+                40,
+                None
+            )
+            .unwrap()
+            .len(),
             6
         );
         assert_eq!(
-            db.list_pos_orders(&shared::ids::ConnectionId::new("store-a"), 40, 0, None)
-                .unwrap()[0]
+            db.list_pos_orders(
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                40,
+                0,
+                None
+            )
+            .unwrap()[0]
                 .order_id,
-            shared::ids::OrderId::new("order-44")
+            engine_protocol::ids::OrderId::new("order-44")
         );
         assert_eq!(
-            db.count_pos_orders(&shared::ids::ConnectionId::new("store-a"), Some("mia"))
-                .unwrap(),
+            db.count_pos_orders(
+                &engine_protocol::ids::ConnectionId::new("store-a"),
+                Some("mia")
+            )
+            .unwrap(),
             1
         );
         assert_eq!(
             db.list_pos_orders(
-                &shared::ids::ConnectionId::new("store-a"),
+                &engine_protocol::ids::ConnectionId::new("store-a"),
                 40,
                 0,
                 Some("MIA")
             )
             .unwrap()[0]
                 .order_id,
-            shared::ids::OrderId::new("order-1")
+            engine_protocol::ids::OrderId::new("order-1")
         );
     }
 
@@ -3303,7 +3329,7 @@ mod tests {
     async fn only_committed_changes_to_what_a_pos_orders_stream_shows_wake_it() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("merchant"),
+            &engine_protocol::ids::UserId::new("merchant"),
             "merchant@example.com",
             "hash",
             false,
@@ -3314,7 +3340,7 @@ mod tests {
         crate::db::test_rows::store_on_wallet(
             &db,
             &store,
-            &shared::ids::UserId::new("merchant"),
+            &engine_protocol::ids::UserId::new("merchant"),
             "store.example",
             "pk_store",
             "encrypted",
@@ -3461,7 +3487,7 @@ mod tests {
     fn a_duplicate_email_is_rejected_as_a_unique_violation() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("id-1"),
+            &engine_protocol::ids::UserId::new("id-1"),
             "a@example.com",
             "hash1",
             false,
@@ -3471,7 +3497,7 @@ mod tests {
 
         let err = db
             .create_user(
-                &shared::ids::UserId::new("id-2"),
+                &engine_protocol::ids::UserId::new("id-2"),
                 "a@example.com",
                 "hash2",
                 false,
@@ -3513,7 +3539,7 @@ mod tests {
         {
             let db = Db::open_in_memory().unwrap();
             assert!(db
-                .get_store_connection_by_id(&shared::ids::ConnectionId::new("nonexistent"))
+                .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("nonexistent"))
                 .unwrap()
                 .is_none());
         }
@@ -3524,8 +3550,8 @@ mod tests {
             let connection_id = seed_connection_for_connect_token_tests(&db);
             assert!(db
                 .get_order_currency_metadata(
-                    &shared::ids::ConnectionId::new(connection_id.to_string()),
-                    &shared::ids::OrderId::new("nonexistent")
+                    &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                    &engine_protocol::ids::OrderId::new("nonexistent")
                 )
                 .unwrap()
                 .is_none());
@@ -3536,7 +3562,7 @@ mod tests {
     fn a_created_session_can_be_found_by_its_token_hash_and_resolves_to_its_user() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hash",
             false,
@@ -3545,14 +3571,14 @@ mod tests {
         .unwrap();
         db.create_session(
             &th("hashed-token"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             2000,
         )
         .unwrap();
 
         let session = db.find_session(&th("hashed-token"), 1000).unwrap().unwrap();
         assert_eq!(session.token_hash, th("hashed-token"));
-        assert_eq!(session.user_id, shared::ids::UserId::new("user-1"));
+        assert_eq!(session.user_id, engine_protocol::ids::UserId::new("user-1"));
         assert_eq!(session.created_at, 2000);
 
         let user = db.get_user_by_id(&session.user_id).unwrap().unwrap();
@@ -3563,7 +3589,7 @@ mod tests {
     fn deleting_a_session_removes_it_and_reports_whether_a_row_was_actually_deleted() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hash",
             false,
@@ -3572,7 +3598,7 @@ mod tests {
         .unwrap();
         db.create_session(
             &th("hashed-token"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             2000,
         )
         .unwrap();
@@ -3589,7 +3615,7 @@ mod tests {
     fn each_kind_of_row_reads_back_as_it_was_written() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hash",
             false,
@@ -3598,8 +3624,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-1"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::ConnectionId::new("conn-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
@@ -3609,10 +3635,10 @@ mod tests {
         .unwrap();
 
         let row = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
-        assert_eq!(row.user_id, shared::ids::UserId::new("user-1"));
+        assert_eq!(row.user_id, engine_protocol::ids::UserId::new("user-1"));
         assert_eq!(
             row.site.as_ref().map(crate::stores::Site::as_str),
             Some("https://shop.example.com")
@@ -3631,7 +3657,7 @@ mod tests {
         {
             let db = Db::open_in_memory().unwrap();
             db.create_user(
-                &shared::ids::UserId::new("user-2"),
+                &engine_protocol::ids::UserId::new("user-2"),
                 "b@example.com",
                 "hash",
                 false,
@@ -3640,8 +3666,8 @@ mod tests {
             .unwrap();
             crate::db::test_rows::store_on_wallet(
                 &db,
-                &shared::ids::ConnectionId::new("conn-2"),
-                &shared::ids::UserId::new("user-2"),
+                &engine_protocol::ids::ConnectionId::new("conn-2"),
+                &engine_protocol::ids::UserId::new("user-2"),
                 "https://shop.example.com",
                 "pk_xyz",
                 "sk_xyz",
@@ -3654,15 +3680,15 @@ mod tests {
                 .get_store_connection_by_public_key("pk_xyz")
                 .unwrap()
                 .unwrap();
-            assert_eq!(row.id, shared::ids::ConnectionId::new("conn-2"));
-            assert_eq!(row.user_id, shared::ids::UserId::new("user-2"));
+            assert_eq!(row.id, engine_protocol::ids::ConnectionId::new("conn-2"));
+            assert_eq!(row.user_id, engine_protocol::ids::UserId::new("user-2"));
         }
 
         // Creating a user then reading it back round trips.
         {
             let db = Db::open_in_memory().unwrap();
             db.create_user(
-                &shared::ids::UserId::new("id-1"),
+                &engine_protocol::ids::UserId::new("id-1"),
                 "a@example.com",
                 "hash",
                 false,
@@ -3671,7 +3697,7 @@ mod tests {
             .unwrap();
 
             let row = db.get_user_by_email("a@example.com").unwrap().unwrap();
-            assert_eq!(row.id, shared::ids::UserId::new("id-1"));
+            assert_eq!(row.id, engine_protocol::ids::UserId::new("id-1"));
             assert_eq!(row.email, "a@example.com");
             assert_eq!(row.password_hash, "hash");
             assert_eq!(row.created_at, 1000);
@@ -3685,7 +3711,7 @@ mod tests {
         {
             let db = Db::open_in_memory().unwrap();
             db.create_user(
-                &shared::ids::UserId::new("admin-1"),
+                &engine_protocol::ids::UserId::new("admin-1"),
                 "admin@example.com",
                 "hash",
                 true,
@@ -3696,7 +3722,7 @@ mod tests {
             let by_email = db.get_user_by_email("admin@example.com").unwrap().unwrap();
             assert!(by_email.is_admin);
             let by_id = db
-                .get_user_by_id(&shared::ids::UserId::new("admin-1"))
+                .get_user_by_id(&engine_protocol::ids::UserId::new("admin-1"))
                 .unwrap()
                 .unwrap();
             assert!(by_id.is_admin);
@@ -3707,8 +3733,8 @@ mod tests {
             let db = Db::open_in_memory().unwrap();
             let connection_id = seed_connection_for_connect_token_tests(&db);
             db.create_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new("pay_1"),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::OrderId::new("pay_1"),
                 "USD",
                 "25.00",
                 shared::xmr_amount::Piconero(6_700_000_000),
@@ -3725,16 +3751,16 @@ mod tests {
 
             let row = db
                 .get_order_currency_metadata(
-                    &shared::ids::ConnectionId::new(connection_id.to_string()),
-                    &shared::ids::OrderId::new("pay_1"),
+                    &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                    &engine_protocol::ids::OrderId::new("pay_1"),
                 )
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 row.connection_id,
-                shared::ids::ConnectionId::new(connection_id)
+                engine_protocol::ids::ConnectionId::new(connection_id)
             );
-            assert_eq!(row.order_id, shared::ids::OrderId::new("pay_1"));
+            assert_eq!(row.order_id, engine_protocol::ids::OrderId::new("pay_1"));
             assert_eq!(row.currency, "USD");
             assert_eq!(row.amount, "25.00");
             assert_eq!(
@@ -3754,14 +3780,14 @@ mod tests {
             let connection_id = seed_connection_for_connect_token_tests(&db);
             db.replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some(("thresh-1", "50.00", 20, 1000)),
             )
             .unwrap();
 
             let rows = db
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string(),
                 ))
                 .unwrap();
@@ -3775,7 +3801,7 @@ mod tests {
     fn updating_a_store_connections_fx_providers_only_touches_that_field() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hash",
             false,
@@ -3784,8 +3810,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-1"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::ConnectionId::new("conn-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
@@ -3797,14 +3823,14 @@ mod tests {
         let order = vec!["coinmarketcap".to_string(), "coingecko".to_string()];
         db.update_store_connection_fx(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new("conn-1"),
+            &engine_protocol::ids::ConnectionId::new("conn-1"),
             &order,
             &FxProviderSettings::default(),
         )
         .unwrap();
 
         let row = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -3822,7 +3848,7 @@ mod tests {
     fn db_with_store() -> Db {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hash",
             false,
@@ -3831,8 +3857,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-1"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::ConnectionId::new("conn-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "https://shop.example.com",
             "pk_abc",
             "sk_abc",
@@ -3846,7 +3872,7 @@ mod tests {
     #[test]
     fn a_new_store_has_default_provider_settings() {
         let row = db_with_store()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
@@ -3862,14 +3888,14 @@ mod tests {
         settings.haveno.min_depth_xmr_per_side = 1.5;
         db.update_store_connection_fx(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new("conn-1"),
+            &engine_protocol::ids::ConnectionId::new("conn-1"),
             &["haveno".to_string()],
             &settings,
         )
         .unwrap();
 
         let by_id = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(by_id.fx_provider_settings, settings);
@@ -3883,7 +3909,7 @@ mod tests {
             settings
         );
         assert_eq!(
-            db.list_store_connections_for_user(&shared::ids::UserId::new("user-1"))
+            db.list_store_connections_for_user(&engine_protocol::ids::UserId::new("user-1"))
                 .unwrap()[0]
                 .fx_provider_settings,
             settings
@@ -3894,7 +3920,7 @@ mod tests {
     fn saving_one_stores_settings_leaves_every_other_store_untouched() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-a"),
+            &engine_protocol::ids::UserId::new("user-a"),
             "a@example.com",
             "hash",
             false,
@@ -3902,7 +3928,7 @@ mod tests {
         )
         .unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-b"),
+            &engine_protocol::ids::UserId::new("user-b"),
             "b@example.com",
             "hash",
             false,
@@ -3916,8 +3942,8 @@ mod tests {
         ] {
             crate::db::test_rows::store_on_wallet(
                 &db,
-                &shared::ids::ConnectionId::new(id.to_string()),
-                &shared::ids::UserId::new(user.to_string()),
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &engine_protocol::ids::UserId::new(user.to_string()),
                 &format!("https://{id}.example.com"),
                 pk,
                 "sk",
@@ -3927,11 +3953,11 @@ mod tests {
             .unwrap();
         }
         let before_b = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-b"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-b"))
             .unwrap()
             .unwrap();
         let before_a2 = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-a2"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-a2"))
             .unwrap()
             .unwrap();
 
@@ -3940,14 +3966,14 @@ mod tests {
         settings.haveno.currencies = vec!["USD".to_string()];
         db.update_store_connection_fx(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new("conn-a"),
+            &engine_protocol::ids::ConnectionId::new("conn-a"),
             &["haveno".to_string(), "coingecko".to_string()],
             &settings,
         )
         .unwrap();
 
         let a = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-a"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-a"))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -3959,7 +3985,9 @@ mod tests {
         );
         for (id, before) in [("conn-b", before_b), ("conn-a2", before_a2)] {
             let after = db
-                .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
+                .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                    id.to_string(),
+                ))
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -3988,7 +4016,7 @@ mod tests {
             )
             .unwrap();
         let row = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
@@ -4128,7 +4156,7 @@ mod tests {
 
         let db = Db::reader(conn);
         let row = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
@@ -4162,7 +4190,7 @@ mod tests {
 
         let db = Db::reader(conn);
         let row = db
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_providers, vec!["coingecko"]);
@@ -4189,7 +4217,7 @@ mod tests {
 
         let db = Db::reader(conn);
         assert_eq!(
-            db.get_store_connection_by_id(&shared::ids::ConnectionId::new("conn-1"))
+            db.get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new("conn-1"))
                 .unwrap()
                 .unwrap()
                 .fx_providers,
@@ -4210,7 +4238,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         for user in ["user-1", "user-2"] {
             db.create_user(
-                &shared::ids::UserId::new(user),
+                &engine_protocol::ids::UserId::new(user),
                 &format!("{user}@example.com"),
                 "hash",
                 false,
@@ -4221,8 +4249,8 @@ mod tests {
         let store = |id: &str, user: &str, site: &str| {
             crate::db::test_rows::store_on_wallet(
                 &db,
-                &shared::ids::ConnectionId::new(id),
-                &shared::ids::UserId::new(user),
+                &engine_protocol::ids::ConnectionId::new(id),
+                &engine_protocol::ids::UserId::new(user),
                 site,
                 &format!("pk_{id}"),
                 "sk",
@@ -4259,7 +4287,7 @@ mod tests {
     fn client_logging_is_off_until_the_store_opts_in() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-cl"),
+            &engine_protocol::ids::UserId::new("user-cl"),
             "cl@example.com",
             "hash",
             false,
@@ -4268,8 +4296,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-cl"),
-            &shared::ids::UserId::new("user-cl"),
+            &engine_protocol::ids::ConnectionId::new("conn-cl"),
+            &engine_protocol::ids::UserId::new("user-cl"),
             "https://shop.example.com",
             "pk_cl",
             "sk_cl",
@@ -4278,7 +4306,7 @@ mod tests {
         )
         .unwrap();
         assert!(!db
-            .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
+            .client_logging(&engine_protocol::ids::ConnectionId::new("conn-cl"))
             .unwrap());
         let order = OrderId::new("order_cl");
         db.create_order_currency_metadata(
@@ -4298,14 +4326,14 @@ mod tests {
         )
         .unwrap();
         assert!(!db.client_logging_by_order(&order).unwrap());
-        db.set_client_logging(&shared::ids::ConnectionId::new("conn-cl"), true)
+        db.set_client_logging(&engine_protocol::ids::ConnectionId::new("conn-cl"), true)
             .unwrap();
         assert!(db
-            .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
+            .client_logging(&engine_protocol::ids::ConnectionId::new("conn-cl"))
             .unwrap());
         assert!(db.client_logging_by_order(&order).unwrap());
         assert!(
-            !db.client_logging(&shared::ids::ConnectionId::new("conn-missing"))
+            !db.client_logging(&engine_protocol::ids::ConnectionId::new("conn-missing"))
                 .unwrap(),
             "no store, no logs"
         );
@@ -4316,7 +4344,7 @@ mod tests {
 
     fn seed_connection_for_connect_token_tests(db: &Db) -> String {
         db.create_user(
-            &shared::ids::UserId::new("user-ct"),
+            &engine_protocol::ids::UserId::new("user-ct"),
             "connect-tokens@example.com",
             "hash",
             false,
@@ -4325,8 +4353,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             db,
-            &shared::ids::ConnectionId::new("conn-ct"),
-            &shared::ids::UserId::new("user-ct"),
+            &engine_protocol::ids::ConnectionId::new("conn-ct"),
+            &engine_protocol::ids::UserId::new("user-ct"),
             "https://shop.example.com",
             "pk_ct",
             "sk_ct",
@@ -4343,7 +4371,7 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_connect_token(
             &th("hashed-connect-token"),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "nonce-1",
             2000,
         )
@@ -4354,7 +4382,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             resolved,
-            Some(shared::ids::ConnectionId::new(connection_id))
+            Some(engine_protocol::ids::ConnectionId::new(connection_id))
         );
     }
 
@@ -4368,7 +4396,7 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_connect_token(
             &th("hashed-connect-token"),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "nonce-1",
             2000,
         )
@@ -4379,7 +4407,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             first,
-            Some(shared::ids::ConnectionId::new(connection_id.clone())),
+            Some(engine_protocol::ids::ConnectionId::new(
+                connection_id.clone()
+            )),
             "the first consume must actually succeed"
         );
 
@@ -4395,7 +4425,7 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_connect_token(
             &th("hashed-connect-token"),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "nonce-1",
             1000,
         )
@@ -4429,7 +4459,7 @@ mod tests {
 
         let db = Db::open_file(path_str).unwrap();
         db.create_user(
-            &shared::ids::UserId::new("id-1"),
+            &engine_protocol::ids::UserId::new("id-1"),
             "a@example.com",
             "hash",
             false,
@@ -4443,7 +4473,7 @@ mod tests {
             .get_user_by_email("a@example.com")
             .unwrap()
             .unwrap();
-        assert_eq!(row.id, shared::ids::UserId::new("id-1"));
+        assert_eq!(row.id, engine_protocol::ids::UserId::new("id-1"));
 
         drop(reopened);
         let _ = std::fs::remove_file(&path);
@@ -4483,7 +4513,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_user(
-            &shared::ids::UserId::new("user-2"),
+            &engine_protocol::ids::UserId::new("user-2"),
             "other@example.com",
             "hash",
             false,
@@ -4492,8 +4522,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-2"),
-            &shared::ids::UserId::new("user-2"),
+            &engine_protocol::ids::ConnectionId::new("conn-2"),
+            &engine_protocol::ids::UserId::new("user-2"),
             "https://other.example.com",
             "pk_other",
             "sk_other",
@@ -4503,8 +4533,8 @@ mod tests {
         .unwrap();
 
         db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_shared"),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::OrderId::new("pay_shared"),
             "USD",
             "10.00",
             shared::xmr_amount::Piconero(1_000_000),
@@ -4519,8 +4549,8 @@ mod tests {
         )
         .unwrap();
         db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new("conn-2"),
-            &shared::ids::OrderId::new("pay_shared"),
+            &engine_protocol::ids::ConnectionId::new("conn-2"),
+            &engine_protocol::ids::OrderId::new("pay_shared"),
             "EUR",
             "20.00",
             shared::xmr_amount::Piconero(2_000_000),
@@ -4537,15 +4567,15 @@ mod tests {
 
         let first = db
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new("pay_shared"),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::OrderId::new("pay_shared"),
             )
             .unwrap()
             .unwrap();
         let second = db
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new("conn-2"),
-                &shared::ids::OrderId::new("pay_shared"),
+                &engine_protocol::ids::ConnectionId::new("conn-2"),
+                &engine_protocol::ids::OrderId::new("pay_shared"),
             )
             .unwrap()
             .unwrap();
@@ -4560,8 +4590,8 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_a"),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::OrderId::new("pay_a"),
             "USD",
             "10.00",
             shared::xmr_amount::Piconero(1_000_000),
@@ -4576,8 +4606,8 @@ mod tests {
         )
         .unwrap();
         db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_b"),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::OrderId::new("pay_b"),
             "EUR",
             "20.00",
             shared::xmr_amount::Piconero(2_000_000),
@@ -4594,23 +4624,23 @@ mod tests {
 
         let map = db
             .order_currency_metadata_for(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[
-                    shared::ids::OrderId::new("pay_a"),
-                    shared::ids::OrderId::new("pay_b"),
-                    shared::ids::OrderId::new("pay_unrecorded"),
+                    engine_protocol::ids::OrderId::new("pay_a"),
+                    engine_protocol::ids::OrderId::new("pay_b"),
+                    engine_protocol::ids::OrderId::new("pay_unrecorded"),
                 ],
             )
             .unwrap();
         assert_eq!(map.len(), 2, "an order with nothing recorded is left out");
         assert_eq!(
-            map.get(&shared::ids::OrderId::new("pay_a"))
+            map.get(&engine_protocol::ids::OrderId::new("pay_a"))
                 .unwrap()
                 .currency,
             "USD"
         );
         assert_eq!(
-            map.get(&shared::ids::OrderId::new("pay_b"))
+            map.get(&engine_protocol::ids::OrderId::new("pay_b"))
                 .unwrap()
                 .currency,
             "EUR"
@@ -4623,8 +4653,8 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db
             .order_currency_metadata_for(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &[shared::ids::OrderId::new("pay_a")],
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                &[engine_protocol::ids::OrderId::new("pay_a")],
             )
             .unwrap()
             .is_empty());
@@ -4661,7 +4691,7 @@ mod tests {
                     db.lock()
                         .replace_confirmation_thresholds(
                             crate::confirmation_thresholds::PolicyProof::for_test(),
-                            &shared::ids::ConnectionId::new(connection_id.to_string()),
+                            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                             &[],
                             Some((&format!("id-{i}"), &i.to_string(), 10, 1000)),
                         )
@@ -4679,7 +4709,7 @@ mod tests {
         );
         assert_eq!(
             db.lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
                 .map(|rows| rows.len())
@@ -4694,27 +4724,27 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("original", "50", 20, 1000)),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("taken", "100", 20, 1000)),
         )
         .unwrap();
         let result = db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &["original".to_string()],
             Some(("taken", "200", 10, 1000)),
         );
         assert!(result.is_err());
         assert!(db
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string()
             ))
             .unwrap()
@@ -4729,7 +4759,7 @@ mod tests {
         for i in 0..5 {
             db.replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some((&format!("id-{i}"), &i.to_string(), 10, 1000)),
             )
@@ -4738,13 +4768,13 @@ mod tests {
         assert!(!db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some(("sixth", "50", 20, 1000))
             )
             .unwrap());
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string()
             ))
             .map(|rows| rows.len())
@@ -4754,13 +4784,13 @@ mod tests {
         assert!(db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &["id-0".to_string()],
                 Some(("replacement", "50", 20, 1000))
             )
             .unwrap());
         let rows = db
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap();
@@ -4776,28 +4806,28 @@ mod tests {
         // Lexicographically "10" < "9" - this must not happen here.
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("thresh-a", "9", 15, 1000)),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("thresh-b", "10", 20, 1000)),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("thresh-c", "2.5", 12, 1000)),
         )
         .unwrap();
 
         let rows = db
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap();
@@ -4811,20 +4841,20 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("upper", "9007.199254740981", 20, 1000)),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("lower", "9007.199254740980", 10, 1000)),
         )
         .unwrap();
         let rows = db
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap();
@@ -4840,7 +4870,7 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("thresh-1", "50.00", 20, 1000)),
         )
@@ -4849,7 +4879,7 @@ mod tests {
         let err = db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some(("thresh-2", "50.00", 5, 1000)),
             )
@@ -4860,7 +4890,7 @@ mod tests {
         );
         // Nothing about the original row changed.
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string()
             ))
             .unwrap()[0]
@@ -4874,7 +4904,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id_a = seed_connection_for_connect_token_tests(&db);
         db.create_user(
-            &shared::ids::UserId::new("user-b"),
+            &engine_protocol::ids::UserId::new("user-b"),
             "b@example.com",
             "hash",
             false,
@@ -4883,8 +4913,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-b"),
-            &shared::ids::UserId::new("user-b"),
+            &engine_protocol::ids::ConnectionId::new("conn-b"),
+            &engine_protocol::ids::UserId::new("user-b"),
             "https://b.example.com",
             "pk_b",
             "sk_b",
@@ -4895,21 +4925,21 @@ mod tests {
 
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id_a.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id_a.to_string()),
             &[],
             Some(("thresh-1", "50.00", 20, 1000)),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new("conn-b"),
+            &engine_protocol::ids::ConnectionId::new("conn-b"),
             &[],
             Some(("thresh-2", "50.00", 5, 1000)),
         )
         .unwrap();
 
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id_a.to_string()
             ))
             .unwrap()
@@ -4917,7 +4947,7 @@ mod tests {
             1
         );
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new("conn-b"))
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new("conn-b"))
                 .unwrap()
                 .len(),
             1
@@ -4929,7 +4959,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id_a = seed_connection_for_connect_token_tests(&db);
         db.create_user(
-            &shared::ids::UserId::new("user-b"),
+            &engine_protocol::ids::UserId::new("user-b"),
             "b@example.com",
             "hash",
             false,
@@ -4938,8 +4968,8 @@ mod tests {
         .unwrap();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("conn-b"),
-            &shared::ids::UserId::new("user-b"),
+            &engine_protocol::ids::ConnectionId::new("conn-b"),
+            &engine_protocol::ids::UserId::new("user-b"),
             "https://b.example.com",
             "pk_b",
             "sk_b",
@@ -4949,7 +4979,7 @@ mod tests {
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id_a.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id_a.to_string()),
             &[],
             Some(("thresh-1", "50.00", 20, 1000)),
         )
@@ -4959,13 +4989,13 @@ mod tests {
         assert!(db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new("conn-b"),
+                &engine_protocol::ids::ConnectionId::new("conn-b"),
                 &["thresh-1".to_string()],
                 None,
             )
             .unwrap());
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id_a.to_string()
             ))
             .unwrap()
@@ -4976,13 +5006,13 @@ mod tests {
         assert!(db
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id_a.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id_a.to_string()),
                 &["thresh-1".to_string()],
                 None,
             )
             .unwrap());
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id_a.to_string()
             ))
             .unwrap()
@@ -4997,14 +5027,14 @@ mod tests {
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("thresh-1", "50.00", 20, 1000)),
         )
         .unwrap();
         db.replace_confirmation_thresholds(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             &[],
             Some(("thresh-2", "100.00", 30, 1000)),
         )
@@ -5012,13 +5042,13 @@ mod tests {
 
         db.update_store_connection_base_currency(
             crate::confirmation_thresholds::PolicyProof::for_test(),
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
+            &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
             "EUR",
         )
         .unwrap();
 
         assert_eq!(
-            db.get_store_connection_by_id(&shared::ids::ConnectionId::new(
+            db.get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string()
             ))
             .unwrap()
@@ -5027,7 +5057,7 @@ mod tests {
             "EUR"
         );
         assert_eq!(
-            db.list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            db.list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string()
             ))
             .unwrap()
@@ -5093,7 +5123,7 @@ mod tests {
         assert_eq!(
             db.redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("u1"),
+                &engine_protocol::ids::UserId::new("u1"),
                 "a@example.com",
                 "hash",
                 3000
@@ -5116,7 +5146,7 @@ mod tests {
         // handler should still tolerate cleanly.
         db.redeem_invite_and_create_user(
             &th("hash-1"),
-            &shared::ids::UserId::new("u1"),
+            &engine_protocol::ids::UserId::new("u1"),
             "a@example.com",
             "hash",
             1500,
@@ -5154,7 +5184,7 @@ mod tests {
         assert_eq!(
             db.redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("u1"),
+                &engine_protocol::ids::UserId::new("u1"),
                 "a@example.com",
                 "h",
                 3000
@@ -5165,7 +5195,7 @@ mod tests {
         assert_eq!(
             db.redeem_invite_and_create_user(
                 &th("hash-2"),
-                &shared::ids::UserId::new("u2"),
+                &engine_protocol::ids::UserId::new("u2"),
                 "b@example.com",
                 "h",
                 3000
@@ -5184,7 +5214,7 @@ mod tests {
         let first = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("user-1"),
+                &engine_protocol::ids::UserId::new("user-1"),
                 "first@example.com",
                 "hashed-pw",
                 2000,
@@ -5199,7 +5229,7 @@ mod tests {
         let second = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("user-2"),
+                &engine_protocol::ids::UserId::new("user-2"),
                 "second@example.com",
                 "hashed-pw",
                 3000,
@@ -5220,7 +5250,7 @@ mod tests {
         let result = db
             .redeem_invite_and_create_user(
                 &th("no-such-hash"),
-                &shared::ids::UserId::new("user-1"),
+                &engine_protocol::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hashed-pw",
                 1000,
@@ -5237,7 +5267,7 @@ mod tests {
     fn a_duplicate_email_leaves_the_invite_unclaimed_for_another_try() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("existing"),
+            &engine_protocol::ids::UserId::new("existing"),
             "taken@example.com",
             "hash",
             false,
@@ -5250,7 +5280,7 @@ mod tests {
         let result = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("user-2"),
+                &engine_protocol::ids::UserId::new("user-2"),
                 "taken@example.com",
                 "hashed-pw",
                 2000,
@@ -5262,7 +5292,7 @@ mod tests {
         let retry = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("user-3"),
+                &engine_protocol::ids::UserId::new("user-3"),
                 "retry@example.com",
                 "hashed-pw",
                 3000,
@@ -5278,15 +5308,19 @@ mod tests {
     fn a_session_expires_and_its_row_is_dropped_by_the_next_login() {
         let db = Db::open_in_memory().unwrap();
         db.create_user(
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hash",
             false,
             1000,
         )
         .unwrap();
-        db.create_session(&th("old"), &shared::ids::UserId::new("user-1"), 1000)
-            .unwrap();
+        db.create_session(
+            &th("old"),
+            &engine_protocol::ids::UserId::new("user-1"),
+            1000,
+        )
+        .unwrap();
         assert!(db.find_session(&th("old"), 1000).unwrap().is_some());
         assert!(db
             .find_session(&th("old"), 1000 + SESSION_LIFETIME_SECONDS - 1)
@@ -5298,7 +5332,7 @@ mod tests {
             .is_none());
         db.create_session(
             &th("new"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             1000 + SESSION_LIFETIME_SECONDS + 1,
         )
         .unwrap();
@@ -5317,7 +5351,7 @@ mod tests {
         let late = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("user-1"),
+                &engine_protocol::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hash",
                 1000 + INVITE_LIFETIME_SECONDS + 1,
@@ -5327,7 +5361,7 @@ mod tests {
         let in_time = db
             .redeem_invite_and_create_user(
                 &th("hash-1"),
-                &shared::ids::UserId::new("user-1"),
+                &engine_protocol::ids::UserId::new("user-1"),
                 "a@example.com",
                 "hash",
                 1000 + INVITE_LIFETIME_SECONDS,
@@ -5343,7 +5377,7 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         assert!(db
             .create_admin_and_complete_setup(
-                &shared::ids::UserId::new("admin-1"),
+                &engine_protocol::ids::UserId::new("admin-1"),
                 "admin@example.com",
                 "hash",
                 1000
@@ -5352,7 +5386,7 @@ mod tests {
         assert!(db.is_setup_complete().unwrap());
         assert!(!db
             .create_admin_and_complete_setup(
-                &shared::ids::UserId::new("admin-2"),
+                &engine_protocol::ids::UserId::new("admin-2"),
                 "other@example.com",
                 "hash",
                 1001
@@ -5372,7 +5406,7 @@ mod tests {
 
         db.redeem_invite_and_create_user(
             &th("hash-1"),
-            &shared::ids::UserId::new("user-1"),
+            &engine_protocol::ids::UserId::new("user-1"),
             "a@example.com",
             "hashed-pw",
             2000,

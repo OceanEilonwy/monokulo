@@ -32,7 +32,7 @@ const SENT_AT: i64 = 1_760_020_380;
 fn store() -> StoreConnectionRow {
     StoreConnectionRow {
         id: ConnectionId::new("917701c2-15c7-4bcb-bbc8-72d9ab28e785"),
-        user_id: shared::ids::UserId::new("u_1"),
+        user_id: engine_protocol::ids::UserId::new("u_1"),
         name: "Bakery".into(),
         site: crate::stores::Site::parse("bakery.example").ok(),
         tenant_public_key: "pk_test".into(),

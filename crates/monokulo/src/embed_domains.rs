@@ -857,7 +857,7 @@ mod tests {
     fn row(verified_at: Option<i64>, failing_since: Option<i64>) -> StoreDomainRow {
         StoreDomainRow {
             id: "d1".to_string(),
-            connection_id: shared::ids::ConnectionId::new("c1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("c1".to_string()),
             domain: "shop.example".to_string(),
             token: "abc".to_string(),
             created_at: 0,

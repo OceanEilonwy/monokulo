@@ -10,14 +10,11 @@ edition = "2021"
 # features (resolver 2 keeps it out of every normal build), never in
 # production.
 test-support = []
-# JSON Schemas for ids and order statuses, for monokulo's API (`monokulo::api`).
-schemars = ["dep:schemars"]
 
 [dependencies]
 subtle = "2.6.1"
 parking_lot = "0.12.5"
 argon2 = "0.5"
-schemars = { version = "1.2.3", optional = true }
 # `http_cache`'s async cache trait.
 async-trait = "0.1.92"
 bytes = "1.12.1"

@@ -459,7 +459,8 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             orders
         };
         for order_index in 0..tenant_orders {
-            let minor = store.allocate_minor_index(&shared::ids::TenantId::new(id.to_string()))?;
+            let minor =
+                store.allocate_minor_index(&engine_protocol::ids::TenantId::new(id.to_string()))?;
             let subaddress = custody
                 .derive_subaddress(
                     handle,

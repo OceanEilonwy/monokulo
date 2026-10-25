@@ -21,7 +21,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
-pub use shared::ids::{OrderId, TenantId};
+pub use engine_protocol::ids::{OrderId, TenantId};
 
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
@@ -869,13 +869,14 @@ fn scan_window_orders(tenants: &str) -> String {
 /// conversion error rather than a panic, so one bad row fails the query that
 /// read it, not the whole scan loop.
 fn status_from_str(s: &str) -> rusqlite::Result<OrderStatus> {
-    s.parse().map_err(|e: shared::order_status::UnknownStatus| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            format!("{e} in database").into(),
-        )
-    })
+    s.parse()
+        .map_err(|e: engine_protocol::order_status::UnknownStatus| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("{e} in database").into(),
+            )
+        })
 }
 
 /// The bytes of an in-memory database with every migration applied, built
@@ -1694,9 +1695,10 @@ impl Store {
     pub fn tenant_public_keys_on_network(&self, network: monero::Network) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL AND watches_for IS NULL ORDER BY public_key")?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                row.get::<_, String>(0)
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| row.get::<_, String>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1707,9 +1709,10 @@ impl Store {
             "SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY id",
         )?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                row.get::<_, TenantId>(0)
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| row.get::<_, TenantId>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1740,12 +1743,15 @@ impl Store {
              ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
-                ))
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -2020,7 +2026,11 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(
-                params![shared::network::SqlNetwork(network), after, limit as i64],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    after,
+                    limit as i64
+                ],
                 |row| row.get(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2588,7 +2598,10 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(
-                params![shared::network::SqlNetwork(network), sql_height(height)?],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    sql_height(height)?
+                ],
                 Self::row_to_payment,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2609,7 +2622,10 @@ impl Store {
                  JOIN tenants t ON t.id = o.tenant_id
                  WHERE op.block_height > ?2 AND t.network = ?1
                    AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL))",
-                params![shared::network::SqlNetwork(network), sql_height(height)?],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    sql_height(height)?
+                ],
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -2632,7 +2648,7 @@ impl Store {
         let rows = stmt
             .query_map(
                 params![
-                    shared::network::SqlNetwork(network),
+                    engine_protocol::network::SqlNetwork(network),
                     after_rowid,
                     limit as i64
                 ],
@@ -2790,7 +2806,7 @@ impl Store {
                 |row| {
                     Ok((
                         row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
-                        row.get::<_, shared::network::SqlNetwork>(1)?.0,
+                        row.get::<_, engine_protocol::network::SqlNetwork>(1)?.0,
                         row.get::<_, Option<bool>>(2)?.unwrap_or(false),
                     ))
                 },
@@ -2844,7 +2860,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT MAX(height) FROM scanned_blocks WHERE network = ?1",
-                params![shared::network::SqlNetwork(network)],
+                params![engine_protocol::network::SqlNetwork(network)],
                 |row| row.get::<_, Option<i64>>(0),
             )
             .map(|opt| opt.map(|h| h as u64))
@@ -2874,7 +2890,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT block_hash FROM scanned_blocks WHERE network = ?1 AND height = ?2",
-                params![shared::network::SqlNetwork(network), height as i64],
+                params![engine_protocol::network::SqlNetwork(network), height as i64],
                 |row| row.get(0),
             )
             .optional()
@@ -2890,7 +2906,11 @@ impl Store {
         self.conn.execute(
             "INSERT INTO scanned_blocks (network, height, block_hash) VALUES (?1, ?2, ?3)
              ON CONFLICT(network, height) DO UPDATE SET block_hash = excluded.block_hash",
-            params![shared::network::SqlNetwork(network), height as i64, hash],
+            params![
+                engine_protocol::network::SqlNetwork(network),
+                height as i64,
+                hash
+            ],
         )?;
         Ok(())
     }
@@ -2900,7 +2920,7 @@ impl Store {
             "INSERT OR IGNORE INTO partial_block_matches
              (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![shared::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
+            params![engine_protocol::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
                 shared::sqlite::Unsigned(matched.amount), matched.key_images_json, matched.seen_at, matched.output_key],
         )?;
         Ok(())
@@ -2913,11 +2933,11 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-            params![shared::network::SqlNetwork(network), tenant_id],
+            params![engine_protocol::network::SqlNetwork(network), tenant_id],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-            params![shared::network::SqlNetwork(network), tenant_id],
+            params![engine_protocol::network::SqlNetwork(network), tenant_id],
         )?;
         Ok(())
     }
@@ -2939,7 +2959,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height >= ?2",
-            params![shared::network::SqlNetwork(network), height as i64],
+            params![engine_protocol::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -2965,7 +2985,10 @@ impl Store {
     ) -> Result<u64> {
         let deleted = self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
-            params![shared::network::SqlNetwork(network), min_height as i64],
+            params![
+                engine_protocol::network::SqlNetwork(network),
+                min_height as i64
+            ],
         )?;
         Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
     }
@@ -2982,7 +3005,7 @@ impl Store {
     pub fn anchor_unset_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height IS NULL",
-            params![shared::network::SqlNetwork(network), height as i64],
+            params![engine_protocol::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -2993,11 +3016,11 @@ impl Store {
         match height {
             Some(h) => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height > ?2",
-                params![shared::network::SqlNetwork(network), h as i64],
+                params![engine_protocol::network::SqlNetwork(network), h as i64],
             )?,
             None => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = NULL WHERE network = ?1",
-                params![shared::network::SqlNetwork(network)],
+                params![engine_protocol::network::SqlNetwork(network)],
             )?,
         };
         Ok(())
@@ -3013,12 +3036,15 @@ impl Store {
              ORDER BY scanned_through_height, id",
         )?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                Ok((
-                    row.get::<_, TenantId>(0)?,
-                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
-                ))
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| {
+                    Ok((
+                        row.get::<_, TenantId>(0)?,
+                        row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -3029,17 +3055,17 @@ impl Store {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
-            params![shared::network::SqlNetwork(network), height as i64],
+            params![engine_protocol::network::SqlNetwork(network), height as i64],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [shared::network::SqlNetwork(network)],
+            [engine_protocol::network::SqlNetwork(network)],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [shared::network::SqlNetwork(network)],
+            [engine_protocol::network::SqlNetwork(network)],
         )?;
         Ok(())
     }

@@ -8,8 +8,8 @@
 //! `order_id` is `''` and its `event_seq` `0` (the log starts at 1), so the
 //! table needed no change for it.
 
+use engine_protocol::ids::WebhookId;
 use rusqlite::{params, OptionalExtension as _};
-use shared::ids::WebhookId;
 use shared::sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};

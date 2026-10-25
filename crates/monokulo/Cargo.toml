@@ -57,7 +57,10 @@ reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled", "functions", "hooks"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-shared = { path = "../shared", features = ["schemars"] }
+shared = { path = "../shared" }
+# What the engine sends, with JSON Schemas for ids and order statuses for
+# the API reference (`api`).
+engine-protocol = { path = "../engine-protocol", features = ["schemars"] }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
 subtle = "2.6.1"
 # Abuse protection (`crate::abuse`): HMAC-signed challenges, proof-of-work

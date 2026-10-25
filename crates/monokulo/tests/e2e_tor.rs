@@ -355,7 +355,7 @@ async fn start_monokulo(
         .expect("creating the test order");
     let db = Db::open_in_memory().unwrap();
     db.create_user(
-        &shared::ids::UserId::new("u1"),
+        &engine_protocol::ids::UserId::new("u1"),
         "tor@example.com",
         "x",
         false,
@@ -370,7 +370,7 @@ async fn start_monokulo(
     let wallet = monokulo::db::WalletId::new("w_tor");
     db.create_wallet(&monokulo::db::NewWalletRow {
         id: &wallet,
-        user_id: &shared::ids::UserId::new("u1"),
+        user_id: &engine_protocol::ids::UserId::new("u1"),
         name: "Tor test wallet",
         network: &view.network,
         primary_address: &view.primary_address,
@@ -382,8 +382,8 @@ async fn start_monokulo(
     })
     .unwrap();
     db.create_store_connection_on_wallet(
-        &shared::ids::ConnectionId::new("store-1"),
-        &shared::ids::UserId::new("u1"),
+        &engine_protocol::ids::ConnectionId::new("store-1"),
+        &engine_protocol::ids::UserId::new("u1"),
         "Tor shop",
         monokulo::stores::Site::parse("shop.example").ok().as_ref(),
         &tenant.public_key,

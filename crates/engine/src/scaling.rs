@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-pub use shared::scaling::{
+pub use engine_protocol::scaling::{
     BlockInProgress, ChunkPlan, DoneBlock, HeadersFirst, HeadersFirstReason, ScanReport, Trend,
     SLOW_BLOCK_SECS,
 };
@@ -118,7 +118,7 @@ impl ScanProgress {
     /// transactions through, fetching `page_txs` more.
     pub fn page(&mut self, height: u64, done_txs: u64, total_txs: u64, page_txs: u64) {
         if let Some(block) = self.in_progress.as_mut().filter(|b| b.height == height) {
-            block.pages = Some(shared::scaling::PageProgress {
+            block.pages = Some(engine_protocol::scaling::PageProgress {
                 done_txs,
                 total_txs,
                 page_txs,

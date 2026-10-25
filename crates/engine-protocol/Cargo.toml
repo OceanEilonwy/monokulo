@@ -1,0 +1,21 @@
+[package]
+name = "engine-protocol"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "What the engine and monokulo exchange over the engine's admin API and /status: ids, networks, order statuses, scanner activity and the status report's parts"
+
+[features]
+# JSON Schemas for ids and order statuses, for monokulo's API (`monokulo::api`).
+schemars = ["dep:schemars"]
+
+[dependencies]
+monero = "0.22.0"
+# Ids and network names are stored as TEXT (`ToSql`/`FromSql`).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+schemars = { version = "1.2.3", optional = true }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+
+[lints]
+workspace = true
