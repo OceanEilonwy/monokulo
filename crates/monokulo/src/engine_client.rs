@@ -1057,7 +1057,7 @@ impl EngineClient {
     /// sequence number `from` on (without `from`, or when the engine can't
     /// follow it, everything from the oldest snapshot it keeps), then what
     /// the engine records next, as it records it
-    /// (`crate::engine_view::relay` reads it).
+    /// (`crate::engine_relay` reads it).
     pub async fn open_engine_activity(
         &self,
         network: &str,

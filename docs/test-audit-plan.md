@@ -22,7 +22,7 @@ Audited commit `f7fb5c9be` (origin/main, 2026-10-23). Every number comes from a 
 | **Whole suite** | **2828** | | **~110 s** side by side, 226 s one after another |
 
 - **The fresh run had no failures**, so the `failed` column is 0 everywhere.
-- **Release CI on Windows fails today** in `engine_view::app_fixtures` and `webhooks::vectors`. They look like line-ending failures and are outside this audit.
+- **Release CI on Windows fails today** in `engine-view`'s `app_fixtures` and `webhooks::vectors`. They look like line-ending failures and are outside this audit.
 
 **Research verdicts** for the 2617 tests in scope (property, scale, fuzz and WooCommerce tests were left out, as you asked):
 

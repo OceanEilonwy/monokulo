@@ -20,7 +20,7 @@ pub mod currencies;
 pub mod db;
 pub mod embed_domains;
 pub mod engine_client;
-pub mod engine_view;
+pub mod engine_relay;
 pub mod exchange_rate_config;
 pub mod fx_provider_settings;
 pub mod http;

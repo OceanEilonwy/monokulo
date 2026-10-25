@@ -12,7 +12,7 @@ on:
       - 'xtask/src/logo.rs'
       - 'apps/pos/src/**'
       - 'apps/engine/**'
-      - 'crates/monokulo/src/engine_view/**'
+      - 'crates/engine-view/**'
       - '.github/workflows/ui.yml'
   push:
     branches: [main]
@@ -27,7 +27,7 @@ on:
       - 'xtask/src/logo.rs'
       - 'apps/pos/src/**'
       - 'apps/engine/**'
-      - 'crates/monokulo/src/engine_view/**'
+      - 'crates/engine-view/**'
       - '.github/workflows/ui.yml'
 permissions:
   contents: read

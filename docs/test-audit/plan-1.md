@@ -81,7 +81,7 @@ Time:
 
 Taken across all of `http::`, this trims markup assertions inside kept tests, for example 1576 and 1729. It changes no counts.
 
-**Optional (not counted):** monokulo `engine_view::machine` has 30 tests for an admin page. The random-invariant test 1399 plus about 8 story tests would likely cover the same ground. That is roughly 20 fewer tests and ~2 s. It needs one `without` measurement first.
+**Optional (not counted):** `engine-view`'s `machine` has 30 tests for an admin page. The random-invariant test 1399 plus about 8 story tests would likely cover the same ground. That is roughly 20 fewer tests and ~2 s. It needs one `without` measurement first.
 
 ## 3. Time-target options
 
