@@ -92,7 +92,9 @@ impl AdversarialNode {
                 tokio::time::sleep(Duration::from_millis(u64::from(b.delay_ms))).await;
             }
             if b.failures & op.bit() != 0 {
-                return Err(DaemonError::Request(format!("scripted RPC {op:?} failure")));
+                return Err(DaemonError::Request(
+                    format!("scripted RPC {op:?} failure").into(),
+                ));
             }
             call(b).await
         }
@@ -218,7 +220,7 @@ impl MoneroDaemonClient for AdversarialNode {
                         let mut blob = monero::consensus::encode::serialize(&fetched.tx.prefix);
                         blob.extend(monero::consensus::encode::serialize(base));
                         fetched.tx = shared::monero_tx::decode_pruned(&blob)
-                            .map_err(|e| DaemonError::Request(e.to_string()))?;
+                            .map_err(|e| DaemonError::Request(e.to_string().into()))?;
                     }
                 }
             }

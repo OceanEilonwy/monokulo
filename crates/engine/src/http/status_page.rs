@@ -15,8 +15,9 @@
 //! "the next real call is the health check" philosophy
 //! `daemon_fallback`'s own module doc comment states explicitly - this
 //! reports what's true right now, not a cached belief about what was true
-//! at some earlier point. A per-node timeout keeps one unreachable node
-//! from making the whole response hang. Deliberately unauthenticated (no
+//! at some earlier point. Every node of every network is probed at once,
+//! each under one deadline, so unreachable nodes cost the response that
+//! deadline once, however many there are. Deliberately unauthenticated (no
 //! `sk_`/`pk_` involved) and outside the `/api/v1/...` version prefix:
 //! this reports on the instance as a whole, not any one
 //! tenant, the same way a service's own `/healthz` typically sits outside
@@ -46,7 +47,15 @@ use crate::network::network_str;
 
 use super::{ApiError, AppState};
 
-const NODE_HEIGHT_TIMEOUT: Duration = Duration::from_secs(5);
+/// The longest a node's probe takes, `get_info` and any `get_height` after
+/// it together. Every node is probed at once, so this is also what the
+/// probes add to the response, which has to come well inside the request
+/// timeout to be seen at all.
+const STATUS_PROBE_BUDGET: Duration = Duration::from_secs(5);
+const _: () = assert!(
+    STATUS_PROBE_BUDGET.as_millis() < super::REQUEST_TIMEOUT.as_millis(),
+    "the node probes must leave /status time inside the request timeout"
+);
 
 #[derive(Serialize, Clone)]
 pub(super) struct NodeStatus {
@@ -72,32 +81,33 @@ pub(super) struct NodeStatus {
 /// `get_info` says both the network and the height, so a node is asked once;
 /// only a client whose `get_info` has no height (or a node that failed it) is
 /// asked for the height on its own, which is also where the error shown comes
-/// from.
+/// from. Both share one deadline: a node that let `get_info` time out is not
+/// waited on again.
 async fn probe_node(
     client: &dyn crate::daemon::MoneroDaemonClient,
 ) -> (Option<u64>, Option<String>, Option<String>) {
-    let info = tokio::time::timeout(NODE_HEIGHT_TIMEOUT, client.get_info()).await;
-    let (network, height) = match info {
+    let deadline = tokio::time::Instant::now() + STATUS_PROBE_BUDGET;
+    let timed_out = || {
+        Some(format!(
+            "timed out after {}s",
+            STATUS_PROBE_BUDGET.as_secs()
+        ))
+    };
+    let (network, height) = match tokio::time::timeout_at(deadline, client.get_info()).await {
         Ok(Ok(info)) => (
             Some(info.nettype).filter(|nettype| nettype != crate::daemon::DaemonInfo::UNKNOWN),
             info.height,
         ),
-        _ => (None, None),
+        Ok(Err(_)) => (None, None),
+        Err(_) => return (None, timed_out(), None),
     };
     if height.is_some() {
         return (height, None, network);
     }
-    match tokio::time::timeout(NODE_HEIGHT_TIMEOUT, client.get_height()).await {
+    match tokio::time::timeout_at(deadline, client.get_height()).await {
         Ok(Ok(height)) => (Some(height), None, network),
         Ok(Err(e)) => (None, Some(e.to_string()), network),
-        Err(_) => (
-            None,
-            Some(format!(
-                "timed out after {}s",
-                NODE_HEIGHT_TIMEOUT.as_secs()
-            )),
-            network,
-        ),
+        Err(_) => (None, timed_out(), network),
     }
 }
 
@@ -239,18 +249,20 @@ pub(super) async fn status_page(
     networks.sort_by_key(|(network, _)| network_str(*network));
 
     let configured = u32::try_from(networks.len()).unwrap_or(u32::MAX).max(1);
-    let mut network_views = Vec::with_capacity(networks.len());
-    for (network, daemon) in networks {
-        let current_index = daemon.current_index();
-        // Every node at once: the page waits for the slowest node, not for
-        // each in turn.
-        let probes = futures_util::future::join_all(
+    // Every node of every network at once: the page waits for the slowest
+    // node, not for each in turn.
+    let probes = futures_util::future::join_all(networks.iter().map(|(_, daemon)| {
+        futures_util::future::join_all(
             daemon
                 .nodes()
                 .iter()
                 .map(|node| probe_node(node.client.as_ref())),
         )
-        .await;
+    }))
+    .await;
+    let mut network_views = Vec::with_capacity(networks.len());
+    for ((network, daemon), probes) in networks.into_iter().zip(probes) {
+        let current_index = daemon.current_index();
         let nodes: Vec<NodeStatus> = daemon
             .nodes()
             .iter()

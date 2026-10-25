@@ -30,6 +30,7 @@ pub struct NetworkScanStatus {
     /// `Display` of the `ScannerError` the last tick failed with, if it did -
     /// a plain `String` rather than the real error type since this crosses
     /// into an HTTP view model, the same boundary `ApiError` itself draws.
+    /// Cut as a node's error text is (`NodeText`), since it often is one.
     pub last_error: Option<String>,
     pub tick_count: u64,
     /// How many tenants the scheduler was actually asked to scan on the
@@ -110,7 +111,7 @@ pub fn record_tick(
         }
         Err(e) => {
             entry.last_tick_ok = false;
-            entry.last_error = Some(e.to_string());
+            entry.last_error = Some(crate::daemon::NodeText::from(e.to_string()).into());
         }
     }
 }

@@ -257,9 +257,9 @@ impl MoneroDaemonClient for DaemonFailingBlockHashAt {
     }
     async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
         if height == self.failing_height.load(Ordering::SeqCst) {
-            return Err(DaemonError::Request(format!(
-                "simulated failure reading the hash of block {height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("simulated failure reading the hash of block {height}").into(),
+            ));
         }
         self.inner.get_block_hash(height).await
     }
@@ -270,9 +270,9 @@ impl MoneroDaemonClient for DaemonFailingBlockHashAt {
     ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         let failing = self.failing_height.load(Ordering::SeqCst);
         if start_height == failing {
-            return Err(DaemonError::Request(format!(
-                "simulated failure reading block {start_height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("simulated failure reading block {start_height}").into(),
+            ));
         }
         let below = failing.saturating_sub(start_height);
         self.inner
@@ -395,9 +395,9 @@ impl<D: MoneroDaemonClient> DaemonFailingFrom<D> {
             if self.delay_ms > 0 {
                 tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
             }
-            return Err(DaemonError::Request(format!(
-                "simulated {method:?} failure on call {nth}"
-            )));
+            return Err(DaemonError::Request(
+                format!("simulated {method:?} failure on call {nth}").into(),
+            ));
         }
         Ok(())
     }
@@ -4703,9 +4703,9 @@ impl MoneroDaemonClient for DaemonFailingOneKeyImageCall {
     ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         if n == self.fail_on_call {
-            return Err(DaemonError::Request(format!(
-                "simulated key-image lookup failure on call {n}"
-            )));
+            return Err(DaemonError::Request(
+                format!("simulated key-image lookup failure on call {n}").into(),
+            ));
         }
         self.inner.is_key_image_spent(key_images).await
     }

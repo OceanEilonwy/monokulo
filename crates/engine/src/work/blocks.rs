@@ -1891,9 +1891,9 @@ async fn confirm_listed(
         .await
         .map_err(|error| {
             if let ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(why)) = error {
-                ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(format!(
-                    "block {height}: {why} - not taking a payment from it"
-                )))
+                ScannerError::Daemon(crate::daemon::DaemonError::Unconfirmed(
+                    format!("block {height}: {why} - not taking a payment from it").into(),
+                ))
             } else {
                 error
             }
@@ -2022,9 +2022,9 @@ async fn fetch_page(
         .iter()
         .map(|txid| {
             by_id.remove(txid).ok_or_else(|| {
-                ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-                    "the node didn't send transaction {txid} of block {height}"
-                )))
+                ScannerError::Daemon(crate::daemon::DaemonError::Request(
+                    format!("the node didn't send transaction {txid} of block {height}").into(),
+                ))
             })
         })
         .collect()
@@ -2076,9 +2076,9 @@ async fn known_header(
             .extend(headers.into_iter().map(|header| (header.height, header)));
     }
     round.blocks.headers.get(&height).cloned().ok_or_else(|| {
-        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-            "the node returned no header at height {height}"
-        )))
+        ScannerError::Daemon(crate::daemon::DaemonError::Request(
+            format!("the node returned no header at height {height}").into(),
+        ))
     })
 }
 
@@ -2151,7 +2151,8 @@ async fn paged(round: &Round<'_>, header: &ChainHeader) -> Result<Paged, Scanner
             format!(
                 "block {} changed between its header and its outline",
                 header.height
-            ),
+            )
+            .into(),
         )));
     }
     let weight = header.weight.unwrap_or(0);
@@ -2209,9 +2210,9 @@ async fn block(
         state.tuning(),
     );
     round.blocks.cache.get(height).ok_or_else(|| {
-        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
-            "the node returned no block at height {height}"
-        )))
+        ScannerError::Daemon(crate::daemon::DaemonError::Request(
+            format!("the node returned no block at height {height}").into(),
+        ))
     })
 }
 

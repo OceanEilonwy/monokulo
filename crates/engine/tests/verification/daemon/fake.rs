@@ -118,7 +118,7 @@ impl FakeDaemonClient {
         if self.online.load(std::sync::atomic::Ordering::Relaxed) {
             Ok(())
         } else {
-            Err(DaemonError::Request("fake daemon is offline".to_owned()))
+            Err(DaemonError::Request("fake daemon is offline".into()))
         }
     }
 
@@ -405,7 +405,7 @@ impl MoneroDaemonClient for FakeDaemonClient {
             .blocks
             .get(&height)
             .map(|b| b.hash.clone())
-            .ok_or_else(|| DaemonError::Request(format!("no block at height {height}")))
+            .ok_or_else(|| DaemonError::Request(format!("no block at height {height}").into()))
     }
 
     /// A consistent snapshot: every block and its parent's id under one
@@ -448,9 +448,9 @@ impl MoneroDaemonClient for FakeDaemonClient {
             });
         }
         if out.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "no block at height {start_height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("no block at height {start_height}").into(),
+            ));
         }
         Ok(out)
     }
@@ -488,9 +488,9 @@ impl MoneroDaemonClient for FakeDaemonClient {
             });
         }
         if out.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "no block at height {start_height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("no block at height {start_height}").into(),
+            ));
         }
         Ok(out)
     }
@@ -525,7 +525,7 @@ impl MoneroDaemonClient for FakeDaemonClient {
             .get(&height)
             .and_then(|b| b.proof.as_ref())
             .map(|p| p.blob.clone())
-            .ok_or_else(|| DaemonError::Request(format!("no block blob at height {height}")))
+            .ok_or_else(|| DaemonError::Request(format!("no block blob at height {height}").into()))
     }
 
     async fn get_difficulty_headers(
@@ -557,9 +557,9 @@ impl MoneroDaemonClient for FakeDaemonClient {
             });
         }
         if out.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "no headers from height {start_height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("no headers from height {start_height}").into(),
+            ));
         }
         Ok(out)
     }

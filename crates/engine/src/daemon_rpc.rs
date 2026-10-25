@@ -79,9 +79,9 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// smaller request may succeed where this one ran out of time.
 fn request_error(context: &str, e: &reqwest::Error) -> DaemonError {
     if e.is_timeout() {
-        DaemonError::TimedOut(format!("{context}: {e}"))
+        DaemonError::TimedOut(format!("{context}: {e}").into())
     } else {
-        DaemonError::Request(format!("{context}: {e}"))
+        DaemonError::Request(format!("{context}: {e}").into())
     }
 }
 
@@ -106,9 +106,9 @@ async fn read_capped(
         .content_length()
         .is_some_and(|len| len > cap as u64)
     {
-        return Err(DaemonError::TooLarge(format!(
-            "response from {what} is larger than the {cap}-byte limit"
-        )));
+        return Err(DaemonError::TooLarge(
+            format!("response from {what} is larger than the {cap}-byte limit").into(),
+        ));
     }
     let mut body = Vec::new();
     while let Some(chunk) = response
@@ -117,9 +117,9 @@ async fn read_capped(
         .map_err(|e| request_error(&format!("reading response from {what}"), &e))?
     {
         if body.len() + chunk.len() > cap {
-            return Err(DaemonError::TooLarge(format!(
-                "response from {what} is larger than the {cap}-byte limit"
-            )));
+            return Err(DaemonError::TooLarge(
+                format!("response from {what} is larger than the {cap}-byte limit").into(),
+            ));
         }
         body.extend_from_slice(&chunk);
     }
@@ -149,7 +149,9 @@ impl RpcDaemonClient {
             .danger_accept_invalid_certs(danger_accept_invalid_certs)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .map_err(|e| DaemonError::Request(format!("failed to build HTTP client: {e}")))?;
+            .map_err(|e| {
+                DaemonError::Request(format!("failed to build HTTP client: {e}").into())
+            })?;
         // An IPv6 literal goes in brackets; anything else that isn't a
         // host name or address makes no URL.
         let host = if host.contains(':') && !host.starts_with('[') {
@@ -161,7 +163,9 @@ impl RpcDaemonClient {
         url::Url::parse(&base_url)
             .ok()
             .filter(|url| url.host_str().is_some())
-            .ok_or_else(|| DaemonError::Request(format!("not a node address: {host}:{port}")))?;
+            .ok_or_else(|| {
+                DaemonError::Request(format!("not a node address: {host}:{port}").into())
+            })?;
         let unsupported = crate::settings::is_onion_host(&host)
             .then(|| crate::settings::onion_node_message(&host, port));
         Ok(Self {
@@ -269,7 +273,7 @@ impl RpcDaemonClient {
         cap: usize,
     ) -> Result<(Vec<u8>, Timing), DaemonError> {
         if let Some(why) = &self.unsupported {
-            return Err(DaemonError::Request(why.clone()));
+            return Err(DaemonError::Request(why.clone().into()));
         }
         let started = Instant::now();
         let sent = body.len() as u64;
@@ -328,8 +332,9 @@ impl RpcDaemonClient {
                 self.max_response_bytes,
             )
             .await?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| DaemonError::Request(format!("invalid JSON response from {path}: {e}")))
+        serde_json::from_slice(&bytes).map_err(|e| {
+            DaemonError::Request(format!("invalid JSON response from {path}: {e}").into())
+        })
     }
 
     /// Lowers the response size cap, for tests.
@@ -381,17 +386,18 @@ fn json_rpc_result<T: for<'de> Deserialize<'de>>(
     bytes: &[u8],
 ) -> Result<T, DaemonError> {
     let value: Value = serde_json::from_slice(bytes)
-        .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
+        .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}").into()))?;
     if let Some(err) = value.get("error") {
-        return Err(DaemonError::Request(format!(
-            "daemon RPC error calling {method}: {err}"
-        )));
+        return Err(DaemonError::Request(
+            format!("daemon RPC error calling {method}: {err}").into(),
+        ));
     }
-    let result = value
-        .get("result")
-        .ok_or_else(|| DaemonError::Request(format!("missing 'result' field calling {method}")))?;
-    serde_json::from_value(result.clone())
-        .map_err(|e| DaemonError::Request(format!("failed to parse result of {method}: {e}")))
+    let result = value.get("result").ok_or_else(|| {
+        DaemonError::Request(format!("missing 'result' field calling {method}").into())
+    })?;
+    serde_json::from_value(result.clone()).map_err(|e| {
+        DaemonError::Request(format!("failed to parse result of {method}: {e}").into())
+    })
 }
 
 impl RpcDaemonClient {
@@ -403,13 +409,14 @@ impl RpcDaemonClient {
         let bytes = self
             .post(path, path, body.to_string().into_bytes(), true)
             .await?;
-        let value: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| DaemonError::Request(format!("invalid JSON response from {path}: {e}")))?;
+        let value: Value = serde_json::from_slice(&bytes).map_err(|e| {
+            DaemonError::Request(format!("invalid JSON response from {path}: {e}").into())
+        })?;
         if let Some(status) = value.get("status").and_then(|s| s.as_str()) {
             if status != "OK" {
-                return Err(DaemonError::Request(format!(
-                    "daemon returned status {status} from {path}"
-                )));
+                return Err(DaemonError::Request(
+                    format!("daemon returned status {status} from {path}").into(),
+                ));
             }
         }
         // A field-shape mismatch here means the response was valid JSON but didn't
@@ -417,25 +424,14 @@ impl RpcDaemonClient {
         // shaping a response differently (see `GetTransactionPoolResponse`'s own
         // note), not a network problem. Including a snippet of the actual body in
         // the error is what makes that diagnosable from the error message alone,
-        // rather than needing to reproduce it with a packet capture.
+        // rather than needing to reproduce it with a packet capture. The error's
+        // text is cut to `NodeText::MAX_BYTES`, so only the body's start is kept.
         let full = value.to_string();
         serde_json::from_value(value).map_err(|e| {
-            // `String` slicing panics off a char boundary; `char_indices` finds the
-            // nearest safe cut at or before 500 bytes rather than assuming ASCII.
-            let cut = full
-                .char_indices()
-                .map(|(i, _)| i)
-                .take_while(|&i| i <= 500)
-                .last()
-                .unwrap_or(0);
-            let snippet = if full.len() > cut {
-                format!("{}…", &full[..cut])
-            } else {
-                full
-            };
-            DaemonError::Request(format!(
-                "failed to parse response from {path}: {e}\nresponse body was: {snippet}"
-            ))
+            DaemonError::Request(
+                format!("failed to parse response from {path}: {e}\nresponse body was: {full}")
+                    .into(),
+            )
         })
     }
 
@@ -565,20 +561,29 @@ fn classify_located_transaction(
     });
     match (missed, entry) {
         (true, None) => Ok(TxLocation::NotFound),
-        (true, Some(_)) => Err(DaemonError::Request(format!(
-            "daemon named transaction {txid} both as missed and as found - refusing to read a \
+        (true, Some(_)) => Err(DaemonError::Request(
+            format!(
+                "daemon named transaction {txid} both as missed and as found - refusing to read a \
              contradiction as 'not on the chain', which would void the payment"
-        ))),
+            )
+            .into(),
+        )),
         (false, Some(entry)) => entry.location().ok_or_else(|| {
-            DaemonError::Request(format!(
-                "daemon reported transaction {txid} as confirmed but gave no block_height - \
+            DaemonError::Request(
+                format!(
+                    "daemon reported transaction {txid} as confirmed but gave no block_height - \
                  refusing to read that as 'not on the chain', which would void the payment"
-            ))
+                )
+                .into(),
+            )
         }),
-        (false, None) => Err(DaemonError::Request(format!(
-            "daemon returned neither a transaction nor a miss for {txid} - refusing to read a \
+        (false, None) => Err(DaemonError::Request(
+            format!(
+                "daemon returned neither a transaction nor a miss for {txid} - refusing to read a \
              non-answer as 'not on the chain', which would void the payment"
-        ))),
+            )
+            .into(),
+        )),
     }
 }
 
@@ -736,33 +741,39 @@ impl BinBlock {
     /// its id before it takes a payment from it.
     fn into_chain_block(self, height: u64) -> Result<ChainBlock, DaemonError> {
         let blob = self.block.ok_or_else(|| {
-            DaemonError::Request(format!("get_blocks.bin: block {height} had no block blob"))
+            DaemonError::Request(format!("get_blocks.bin: block {height} had no block blob").into())
         })?;
         let block: monero::Block = deserialize(&blob).map_err(|e| {
-            DaemonError::Request(format!(
-                "get_blocks.bin: block {height} could not be decoded: {e}"
-            ))
+            DaemonError::Request(
+                format!("get_blocks.bin: block {height} could not be decoded: {e}").into(),
+            )
         })?;
         match block.miner_tx.prefix.inputs.first() {
             Some(monero::blockdata::transaction::TxIn::Gen { height: own }) if own.0 == height => {}
             Some(monero::blockdata::transaction::TxIn::Gen { height: own }) => {
-                return Err(DaemonError::Request(format!(
-                    "get_blocks.bin: asked for block {height}, the node sent block {}",
-                    own.0
-                )))
+                return Err(DaemonError::Request(
+                    format!(
+                        "get_blocks.bin: asked for block {height}, the node sent block {}",
+                        own.0
+                    )
+                    .into(),
+                ))
             }
             _ => {
-                return Err(DaemonError::Request(format!(
-                    "get_blocks.bin: block {height} has no coinbase input"
-                )))
+                return Err(DaemonError::Request(
+                    format!("get_blocks.bin: block {height} has no coinbase input").into(),
+                ))
             }
         }
         if block.tx_hashes.len() != self.txs.len() {
-            return Err(DaemonError::Request(format!(
-                "get_blocks.bin: block {height} lists {} transactions but {} came with it",
-                block.tx_hashes.len(),
-                self.txs.len()
-            )));
+            return Err(DaemonError::Request(
+                format!(
+                    "get_blocks.bin: block {height} lists {} transactions but {} came with it",
+                    block.tx_hashes.len(),
+                    self.txs.len()
+                )
+                .into(),
+            ));
         }
         let wire_bytes =
             (blob.len() + self.txs.iter().map(|entry| entry.blob.len()).sum::<usize>()) as u64;
@@ -773,7 +784,7 @@ impl BinBlock {
             let txid = hex::encode(listed.0);
             let (tx, binding) =
                 decode_tx_blob(&entry.blob, entry.prunable_hash.as_ref(), Some(&txid)).map_err(
-                    |e| DaemonError::Request(format!("get_blocks.bin: block {height}: {e}")),
+                    |e| DaemonError::Request(format!("get_blocks.bin: block {height}: {e}").into()),
                 )?;
             // Only what the scan reads is kept; the transaction itself is
             // dropped here.
@@ -848,7 +859,7 @@ fn hash32(bytes: &[u8]) -> Option<[u8; 32]> {
 }
 
 fn epee_err(what: &str, e: monero_epee::EpeeError) -> DaemonError {
-    DaemonError::Request(format!("invalid {what} response: {e:?}"))
+    DaemonError::Request(format!("invalid {what} response: {e:?}").into())
 }
 
 /// Parses a `get_blocks.bin` response into its block entries, in the order
@@ -942,7 +953,7 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
                                     BinTx {
                                         blob: blob.ok_or_else(|| {
                                             DaemonError::Request(
-                                                "get_blocks.bin: a tx entry (object form) had no blob field".to_owned(),
+                                                "get_blocks.bin: a tx entry (object form) had no blob field".into(),
                                             )
                                         })?,
                                         prunable_hash,
@@ -960,7 +971,7 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
                                 | monero_epee::Type::Bool) => {
                                     return Err(DaemonError::Request(format!(
                                         "get_blocks.bin: txs array held an unexpected element type {other:?}"
-                                    )));
+                                    ).into()));
                                 }
                             };
                             txs.push(tx);
@@ -980,21 +991,22 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
     match status {
         Some(s) if s == b"OK" => {}
         Some(s) => {
-            return Err(DaemonError::Request(format!(
-                "get_blocks.bin returned status {:?}",
-                String::from_utf8_lossy(&s)
-            )));
+            return Err(DaemonError::Request(
+                format!(
+                    "get_blocks.bin returned status {:?}",
+                    String::from_utf8_lossy(&s)
+                )
+                .into(),
+            ));
         }
         None => {
             return Err(DaemonError::Request(
-                "get_blocks.bin response had no status field".to_owned(),
+                "get_blocks.bin response had no status field".into(),
             ))
         }
     }
 
-    blocks.ok_or_else(|| {
-        DaemonError::Request("get_blocks.bin response had no blocks field".to_owned())
-    })
+    blocks.ok_or_else(|| DaemonError::Request("get_blocks.bin response had no blocks field".into()))
 }
 
 /// What a node said changed in its pool (`get_blocks.bin` with
@@ -1027,10 +1039,13 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
     fn ids(blob: &[u8]) -> Result<Vec<String>, DaemonError> {
         let (whole, rest) = blob.as_chunks::<32>();
         if !rest.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "invalid pool get_blocks.bin response: a transaction id list of {} bytes",
-                blob.len()
-            )));
+            return Err(DaemonError::Request(
+                format!(
+                    "invalid pool get_blocks.bin response: a transaction id list of {} bytes",
+                    blob.len()
+                )
+                .into(),
+            ));
         }
         Ok(whole.iter().map(hex::encode).collect())
     }
@@ -1088,7 +1103,7 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
                         (Some(txid), None) => changes.added_ids.push(txid),
                         (None, _) => {
                             return Err(DaemonError::Request(
-                                "pool get_blocks.bin: an added transaction had no id".to_owned(),
+                                "pool get_blocks.bin: an added transaction had no id".into(),
                             ))
                         }
                     }
@@ -1306,20 +1321,26 @@ impl BlockHeader {
     fn into_chain_header(self, height: u64) -> Result<ChainHeader, DaemonError> {
         let hash = self.hash.to_ascii_lowercase();
         if !is_txid(&hash) {
-            return Err(DaemonError::Request(format!(
-                "block {height}'s header has an invalid hash: {:?}",
-                self.hash
-            )));
+            return Err(DaemonError::Request(
+                format!(
+                    "block {height}'s header has an invalid hash: {:?}",
+                    self.hash
+                )
+                .into(),
+            ));
         }
         let prev_hash = if height == 0 {
             String::new()
         } else {
             let prev_hash = self.prev_hash.to_ascii_lowercase();
             if !is_txid(&prev_hash) {
-                return Err(DaemonError::Request(format!(
-                    "block {height}'s header has an invalid parent hash: {:?}",
-                    self.prev_hash
-                )));
+                return Err(DaemonError::Request(
+                    format!(
+                        "block {height}'s header has an invalid parent hash: {:?}",
+                        self.prev_hash
+                    )
+                    .into(),
+                ));
             }
             prev_hash
         };
@@ -1400,13 +1421,12 @@ impl TxEntry {
             &self.pruned_as_hex
         };
         if hex_blob.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "transaction {} came with no data",
-                self.tx_hash
-            )));
+            return Err(DaemonError::Request(
+                format!("transaction {} came with no data", self.tx_hash).into(),
+            ));
         }
         let blob = hex::decode(hex_blob)
-            .map_err(|e| DaemonError::Request(format!("invalid tx hex: {e}")))?;
+            .map_err(|e| DaemonError::Request(format!("invalid tx hex: {e}").into()))?;
         let prunable_hash = hex::decode(&self.prunable_hash)
             .ok()
             .and_then(|bytes| hash32(&bytes));
@@ -1416,14 +1436,17 @@ impl TxEntry {
             prunable_hash.as_ref(),
             Some(claimed.as_str()).filter(|claimed| !claimed.is_empty()),
         )
-        .map_err(DaemonError::Request)?
+        .map_err(|e| DaemonError::Request(e.into()))?
         {
             (fetched, IdBinding::Computed) => Ok(fetched),
-            (fetched, IdBinding::Listed) => Err(DaemonError::Request(format!(
-                "transaction {} came pruned without the hash of its pruned part, so it can't \
+            (fetched, IdBinding::Listed) => Err(DaemonError::Request(
+                format!(
+                    "transaction {} came pruned without the hash of its pruned part, so it can't \
                  be checked against its id",
-                fetched.txid
-            ))),
+                    fetched.txid
+                )
+                .into(),
+            )),
         }
     }
 }
@@ -1557,10 +1580,13 @@ impl RpcDaemonClient {
             unanswered => {
                 pool.unanswered += 1;
                 if pool.follows_changes == Some(true) && pool.unanswered < POOL_CHANGES_GIVE_UP {
-                    return Err(DaemonError::Request(match unanswered {
-                        Err(error) => error.to_string(),
-                        _ => "the node did not describe its mempool".to_owned(),
-                    }));
+                    return Err(DaemonError::Request(
+                        match unanswered {
+                            Err(error) => error.to_string(),
+                            _ => "the node did not describe its mempool".to_owned(),
+                        }
+                        .into(),
+                    ));
                 }
                 if pool.follows_changes == Some(true) {
                     tracing::warn!(
@@ -1733,9 +1759,12 @@ impl MoneroDaemonClient for RpcDaemonClient {
             .await?;
         let hash = hash.to_ascii_lowercase();
         if !is_txid(&hash) {
-            return Err(DaemonError::Request(format!(
+            return Err(DaemonError::Request(
+                format!(
                 "on_get_block_hash returned something that is not a block hash for height {height}"
-            )));
+            )
+                .into(),
+            ));
         }
         Ok(hash)
     }
@@ -1781,19 +1810,22 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 // later.
                 if let Some(previous) = out.last() {
                     if block.prev_hash != previous.hash {
-                        return Err(DaemonError::Request(format!(
+                        return Err(DaemonError::Request(
+                            format!(
                             "get_blocks.bin: block {} does not follow block {} in the same answer",
                             block.height, previous.height
-                        )));
+                        )
+                            .into(),
+                        ));
                     }
                 }
                 out.push(block);
             }
         }
         if out.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "get_blocks.bin returned no blocks from height {start_height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("get_blocks.bin returned no blocks from height {start_height}").into(),
+            ));
         }
         Ok(out)
     }
@@ -1830,7 +1862,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                         if header.height.is_some_and(|own| own != height) {
                             return Err(DaemonError::Request(format!(
                                 "get_block_headers_range: asked for block {height}, the node sent another"
-                            )));
+                            ).into()));
                         }
                         out.push(header.into_chain_header(height)?);
                     }
@@ -1851,9 +1883,12 @@ impl MoneroDaemonClient for RpcDaemonClient {
         }
         let header = self.block_header(start_height).await?;
         if header.height.is_some_and(|own| own != start_height) {
-            return Err(DaemonError::Request(format!(
+            return Err(DaemonError::Request(
+                format!(
                 "get_block_header_by_height: asked for block {start_height}, the node sent another"
-            )));
+            )
+                .into(),
+            ));
         }
         Ok(vec![header.into_chain_header(start_height)?])
     }
@@ -1882,20 +1917,20 @@ impl MoneroDaemonClient for RpcDaemonClient {
             .post_json_rpc_within("get_block", json!({ "height": height }), timeout, cap)
             .await?;
         let blob = hex::decode(answer.blob.trim()).map_err(|e| {
-            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}"))
+            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}").into())
         })?;
         drop(answer);
         let block: monero::Block = deserialize(&blob).map_err(|e| {
-            DaemonError::Request(format!(
-                "get_block: block {height} could not be decoded: {e}"
-            ))
+            DaemonError::Request(
+                format!("get_block: block {height} could not be decoded: {e}").into(),
+            )
         })?;
         match block.miner_tx.prefix.inputs.first() {
             Some(monero::blockdata::transaction::TxIn::Gen { height: own }) if own.0 == height => {}
             _ => {
-                return Err(DaemonError::Request(format!(
-                    "get_block: asked for block {height}, the node sent another"
-                )))
+                return Err(DaemonError::Request(
+                    format!("get_block: asked for block {height}, the node sent another").into(),
+                ))
             }
         }
         Ok(crate::daemon::BlockOutline {
@@ -1924,7 +1959,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
             .post_json_rpc("get_block", json!({ "height": height }))
             .await?;
         hex::decode(answer.blob.trim()).map_err(|e| {
-            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}"))
+            DaemonError::Request(format!("get_block: block {height}'s blob isn't hex: {e}").into())
         })
     }
 
@@ -1949,9 +1984,12 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let mut out = Vec::with_capacity(headers.len());
         for (height, header) in (start_height..).zip(headers.into_iter().take(count as usize)) {
             if header.height.is_some_and(|own| own != height) {
-                return Err(DaemonError::Request(format!(
-                    "get_block_headers_range: asked for block {height}, the node sent another"
-                )));
+                return Err(DaemonError::Request(
+                    format!(
+                        "get_block_headers_range: asked for block {height}, the node sent another"
+                    )
+                    .into(),
+                ));
             }
             let wide = |top: u64, low: u64| (u128::from(top) << 64) | u128::from(low);
             let difficulty = wide(header.difficulty_top64, header.difficulty);
@@ -1970,9 +2008,10 @@ impl MoneroDaemonClient for RpcDaemonClient {
             });
         }
         if out.is_empty() {
-            return Err(DaemonError::Request(format!(
-                "get_block_headers_range returned no headers from height {start_height}"
-            )));
+            return Err(DaemonError::Request(
+                format!("get_block_headers_range returned no headers from height {start_height}")
+                    .into(),
+            ));
         }
         Ok(out)
     }
@@ -2020,10 +2059,13 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 match entry.fetched() {
                     Ok(fetched) if wanted.contains(&fetched.txid) => out.push(fetched),
                     Ok(fetched) => {
-                        return Err(DaemonError::Request(format!(
-                            "daemon sent transaction {}, which was not asked for",
-                            fetched.txid
-                        )))
+                        return Err(DaemonError::Request(
+                            format!(
+                                "daemon sent transaction {}, which was not asked for",
+                                fetched.txid
+                            )
+                            .into(),
+                        ))
                     }
                     Err(e) => shared::throttled!(
                         format!("undecodable-tx:{}", self.base_url),
@@ -2086,13 +2128,16 @@ impl MoneroDaemonClient for RpcDaemonClient {
             return Ok(None);
         }
         let fetched = fetched?.ok_or_else(|| {
-            DaemonError::Request(format!("daemon placed {txid} but sent no transaction"))
+            DaemonError::Request(format!("daemon placed {txid} but sent no transaction").into())
         })?;
         if fetched.txid != txid {
-            return Err(DaemonError::Request(format!(
-                "asked for transaction {txid}, the node sent {}",
-                fetched.txid
-            )));
+            return Err(DaemonError::Request(
+                format!(
+                    "asked for transaction {txid}, the node sent {}",
+                    fetched.txid
+                )
+                .into(),
+            ));
         }
         Ok(Some((fetched, location)))
     }
@@ -2113,11 +2158,14 @@ impl MoneroDaemonClient for RpcDaemonClient {
         // response would otherwise silently drop the tail of the request rather than
         // erroring, misreporting "unspent"/"not found" for whatever got dropped.
         if resp.spent_status.len() != key_images.len() {
-            return Err(DaemonError::Request(format!(
-                "daemon returned {} statuses for {} requested key images",
-                resp.spent_status.len(),
-                key_images.len()
-            )));
+            return Err(DaemonError::Request(
+                format!(
+                    "daemon returned {} statuses for {} requested key images",
+                    resp.spent_status.len(),
+                    key_images.len()
+                )
+                .into(),
+            ));
         }
         Ok(resp
             .spent_status
