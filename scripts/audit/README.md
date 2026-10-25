@@ -35,6 +35,9 @@ Give yourself a name and keep it: `--agent a3` on every command. Then loop:
 A claim lasts 90 minutes, and each command on the job extends it. If you
 can't finish, `release` the job so someone else picks it up.
 
+The worktree's HEAD is the audited commit plus commits that touch only
+`scripts/audit/`, so line numbers in the worktree are the audited ones.
+
 **The code is read-only.** Read it from the audit's worktree at the commit
 the brief names. Don't edit, build or run tests: five agents share the
 machine. Use `rg`, `git grep` and reading.
