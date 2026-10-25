@@ -86,11 +86,12 @@ pub(crate) const HELP: &str = "\
                       Build the docs into the site DIR from xtask/src/pages/docs/*.md: /guide/, a folder\n\
                       per page beside it, the Geomart sample shop (examples/geomart/) under\n\
                       /geomart/, and a redirect from each page's old address under /docs/\n\
-        pages api --site DIR\n\
+        pages api --site DIR [--from DIR]\n\
                       Build the HTTP API's reference into the site DIR, generated from the code and\n\
                       from exchanges recorded against a test engine (runs monokulo's api_reference example):\n\
                       the explorer at /api/ (and a redirect to it from /api/reference/), /rels/{rel}/,\n\
-                      /problems/{slug}/ and /api/v1/openapi.json\n\
+                      /problems/{slug}/ and /api/v1/openapi.json; --from builds it from a reference\n\
+                      generated already instead (reference.json and openapi.json in DIR)\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

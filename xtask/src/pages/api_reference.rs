@@ -40,20 +40,29 @@ const OLD_INDEX: &str = "api/reference/index.html";
 
 /// `cargo xtask pages api --site DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
-    let site = match args {
-        ["--site", dir] => PathBuf::from(dir),
+    let (site, from) = match args {
+        ["--site", dir] => (PathBuf::from(dir), None),
+        // A reference generated already (the browser tests' fixture,
+        // `api_fixture/`): no recording.
+        ["--site", dir, "--from", from] => (PathBuf::from(dir), Some(PathBuf::from(from))),
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "pages api needs --site DIR",
+                "pages api needs --site DIR [--from DIR]",
             ))
         }
     };
-    let generated = root.join(GENERATED);
-    let exit = crate::api::generate(root, &generated)?;
-    if !exit.succeeded() {
-        return Ok(exit);
-    }
+    let generated = match from {
+        Some(from) => from,
+        None => {
+            let generated = root.join(GENERATED);
+            let exit = crate::api::generate(root, &generated)?;
+            if !exit.succeeded() {
+                return Ok(exit);
+            }
+            generated
+        }
+    };
     let written = write(&generated, &site)?;
     eprintln!("API reference in {}: {written} page(s)", site.display());
     Ok(Exit::SUCCESS)
@@ -495,131 +504,19 @@ fn problem_page(problem: &Value, reference: &Value, api: &Api) -> Markup {
 mod tests {
     use super::*;
     use crate::support::Scratch;
-    use serde_json::json;
 
-    /// A reference shaped as monokulo writes it: API resources, a page, a
+    /// A fixture of `api_fixture/`, its links pointed at `site`.
+    fn fixture(json: &str, site: &str) -> Value {
+        serde_json::from_str(&json.replace(site_header::SITE_URL, site)).unwrap()
+    }
+
+    /// A reference shaped as monokulo writes it (`api_fixture/`, which the
+    /// browser tests build the explorer from too): API resources, a page, a
     /// stream, an onion link's relation, a handshake and problems.
     /// Monokulo's own recording checks the real one has every resource and
     /// problem; this one checks each gets its page.
     fn reference(site: &str) -> Value {
-        json!({
-            "resources": [
-                {
-                    "rel": "order",
-                    "key": "mk:order",
-                    "template": "/api/v1/orders/{order_id}",
-                    "media_type": "application/prs.hal-forms+json",
-                    "title": "One order.",
-                    "description": "One order.\n\nWhat the payer was asked for.",
-                    "page": format!("{site}/rels/order"),
-                    "methods": [{
-                        "method": "GET", "name": "show", "keys": ["sk", "ak"],
-                        "anyone": false, "doc": "The order.", "form": null, "template": null
-                    }],
-                    "body": {
-                        "type": "object",
-                        "required": ["order_id"],
-                        "properties": {
-                            "order_id": {"type": "string", "description": "Its id."},
-                            "wallet": {"$ref": "#/$defs/Wallet"},
-                            "_links": {"properties": {"self": {"description": "This order."}}}
-                        }
-                    },
-                    "examples": [{
-                        "method": "GET", "route": "/api/v1/orders/{order_id}",
-                        "path": "/api/v1/orders/order_1", "key": "sk", "status": 200,
-                        "response": {"order_id": "order_1"}
-                    }, {
-                        "method": "GET", "route": "/api/v1/orders/{order_id}",
-                        "path": "/api/v1/orders/order_2", "key": "sk", "status": 404,
-                        "response": {"type": format!("{site}/problems/not-found"), "status": 404}
-                    }]
-                },
-                {
-                    "rel": "orders",
-                    "key": "mk:orders",
-                    "template": "/api/v1/orders",
-                    "media_type": "application/prs.hal-forms+json",
-                    "title": "The store's orders.",
-                    "description": "The store's orders.",
-                    "page": format!("{site}/rels/orders"),
-                    "methods": [{
-                        "method": "POST", "name": "create", "keys": ["sk", "pk"],
-                        "anyone": false, "doc": "Makes an order.", "form": "create",
-                        "problems": ["invalid-amount"],
-                        "template": {"properties": [{"name": "amount", "required": true, "prompt": "How much."}]}
-                    }],
-                    "body": null,
-                    "examples": []
-                },
-                {
-                    "rel": "dashboard-order",
-                    "key": "mk:dashboard-order",
-                    "template": "/stores/{id}/orders/{order_id}",
-                    "media_type": "text/html",
-                    "title": "The order's page on the dashboard.",
-                    "description": "The order's page on the dashboard.\n\nFor the merchant.",
-                    "page": format!("{site}/rels/dashboard-order"),
-                    "methods": [],
-                    "offered_to": ["sk", "session"],
-                    "events": [],
-                    "body": null,
-                    "examples": []
-                },
-                {
-                    "rel": "order-events",
-                    "key": "mk:order-events",
-                    "template": "/api/v1/orders/{order_id}/events",
-                    "media_type": "text/event-stream",
-                    "title": "One order's changes.",
-                    "description": "One order's changes.",
-                    "page": format!("{site}/rels/order-events"),
-                    "methods": [{
-                        "method": "GET", "name": "get", "keys": ["sk"],
-                        "anyone": false, "doc": "Follow it.", "form": null, "template": null
-                    }],
-                    "offered_to": null,
-                    "events": [{"name": "order", "doc": "The order as it is now.", "data": {"$ref": "#/$defs/Wallet"}}],
-                    "body": null,
-                    "examples": []
-                }
-            ],
-            "handshakes": [{
-                "method": "POST",
-                "template": "/apps/connect",
-                "title": "Connect an app.",
-                "doc": "Connect an app.",
-                "problems": ["invalid-connect-code"],
-                "examples": [{
-                    "method": "POST", "route": "/apps/connect", "path": "/apps/connect", "status": 401,
-                    "response": {"type": format!("{site}/problems/invalid-connect-code"), "status": 401}
-                }]
-            }],
-            "definitions": {"Wallet": {"type": "object"}},
-            "rels": [{
-                "rel": "onion-order",
-                "key": "mk:onion-order",
-                "template": "http://….onion/api/v1/orders/{order_id}",
-                "media_type": "application/prs.hal-forms+json",
-                "title": "The order on the onion address.",
-                "description": "The order on the onion address.\n\nFor a client on Tor.",
-                "page": format!("{site}/rels/onion-order"),
-                "target": {"rel": "order", "key": "mk:order", "template": "/api/v1/orders/{order_id}"}
-            }],
-            "problems": [{
-                "slug": "not-found",
-                "type": format!("{site}/problems/not-found"),
-                "status": 404,
-                "title": "Not found",
-                "doc": "Nothing is there."
-            }, {
-                "slug": "invalid-connect-code",
-                "type": format!("{site}/problems/invalid-connect-code"),
-                "status": 401,
-                "title": "Connect code not valid",
-                "doc": "The code is spent."
-            }]
-        })
+        fixture(include_str!("api_fixture/reference.json"), site)
     }
 
     /// An OpenAPI document shaped as monokulo writes it, for the same API:
@@ -627,82 +524,7 @@ mod tests {
     /// parameters, a body, a stream and a page, and recorded examples (one
     /// with markup in it, as an answer may have).
     fn openapi(site: &str) -> Value {
-        let problem = |slug: &str, status: u16| {
-            json!({"description": format!("A problem: [`{slug}`]({site}/problems/{slug})."), "content": {
-                "application/problem+json": {"examples": {slug: {"value": {
-                    "type": format!("{site}/problems/{slug}"), "title": "Nope", "status": status, "detail": "<b>no</b>"
-                }}}}
-            }})
-        };
-        json!({
-            "openapi": "3.1.0",
-            "servers": [{"url": "{monokulo}", "variables": {"monokulo": {"default": "https://www.monokulo.com"}}}],
-            "tags": [
-                {"name": "order", "description": "One order.\n\nWhat the payer was asked for.", "externalDocs": {"url": format!("{site}/rels/order")}},
-                {"name": "orders", "description": "The store's orders.", "externalDocs": {"url": format!("{site}/rels/orders")}},
-                {"name": "order-events", "description": "One order's changes.", "externalDocs": {"url": format!("{site}/rels/order-events")}},
-                {"name": "app", "description": "The connected app."},
-                {"name": "pages", "description": "Pages for people."},
-                {"name": "handshakes", "description": "How a plugin gets its key.", "externalDocs": {"url": format!("{site}/plugins/")}}
-            ],
-            "paths": {
-                "/api/v1/orders/{order_id}": {"get": {
-                    "operationId": "order.get", "tags": ["order"], "summary": "Read one order. Any key of the store.",
-                    "description": "Read one order. Any key of the store.\n\nWith every link the key may follow.",
-                    "security": [{"bearer": []}], "x-monokulo-keys": ["pk", "sk", "ak"],
-                    "parameters": [{"in": "path", "name": "order_id", "required": true, "schema": {"type": "string"}}],
-                    "responses": {
-                        "200": {"description": "OK", "content": {"application/prs.hal-forms+json": {"examples": {
-                            "pk": {"summary": "With the public key", "value": {"order_id": "order_1", "note": "<script>alert(1)</script>"}},
-                            "sk": {"summary": "With the secret key", "value": {"order_id": "order_1", "amount": "0.25", "paid": false}}
-                        }}}},
-                        "404": problem("not-found", 404)
-                    }
-                }},
-                "/api/v1/orders": {"post": {
-                    "operationId": "orders.create", "tags": ["orders"], "summary": "Make an order.",
-                    "description": "Make an order.", "security": [{"bearer": []}], "x-monokulo-keys": ["pk", "sk"],
-                    "requestBody": {"content": {"application/json": {
-                        "example": {"amount": "0.25", "currency": "XMR"},
-                        "schema": {"$ref": "#/components/schemas/OrdersInput"}
-                    }}},
-                    "responses": {
-                        "201": {"description": "Created", "content": {"application/prs.hal-forms+json": {"examples": {
-                            "sk": {"summary": "With the secret key", "value": {"order_id": "order_2"}}
-                        }}}},
-                        "400": problem("invalid-amount", 400)
-                    }
-                }},
-                "/api/v1/orders/{order_id}/events": {"get": {
-                    "operationId": "order-events.get", "tags": ["order-events"], "summary": "Follow one order.",
-                    "description": "Follow one order.", "security": [{"bearer": []}], "x-monokulo-keys": ["sk"],
-                    "parameters": [{"in": "path", "name": "order_id", "required": true, "schema": {"type": "string"}}],
-                    "responses": {"200": {"description": "The stream", "content": {"text/event-stream": {
-                        "example": "event: order\ndata: {\"order_id\":\"order_1\"}\n\n", "schema": {"type": "string"}
-                    }}}}
-                }},
-                "/api/v1/app": {"delete": {
-                    "operationId": "app.delete", "tags": ["app"], "summary": "Disconnect this app.",
-                    "description": "Disconnect this app.", "security": [{"bearer": []}], "x-monokulo-keys": ["ak"],
-                    "responses": {"204": {"description": "No Content"}}
-                }},
-                "/stores/{id}/orders/{order_id}": {"get": {
-                    "operationId": "dashboard-order.get", "tags": ["pages"], "summary": "The order's page.",
-                    "description": "The order's page.", "security": [{"session": []}],
-                    "responses": {"200": {"description": "The page.", "content": {"text/html": {"schema": {"type": "string"}}}}}
-                }},
-                "/apps/connect": {"post": {
-                    "operationId": "app-connect.redeem", "tags": ["handshakes"], "summary": "Connect an app.",
-                    "description": "Connect an app.", "security": [{}],
-                    "requestBody": {"content": {"application/json": {"example": {"token": "ct_1"}, "schema": {"type": "object"}}}},
-                    "responses": {"401": problem("invalid-connect-code", 401)}
-                }}
-            },
-            "components": {"schemas": {"OrdersInput": {
-                "type": "object", "required": ["amount"],
-                "properties": {"amount": {"type": "string", "description": "The price."}, "currency": {"type": "string"}}
-            }}}
-        })
+        fixture(include_str!("api_fixture/openapi.json"), site)
     }
 
     fn generated(scratch: &Scratch, reference: &Value) -> PathBuf {
@@ -1046,7 +868,13 @@ mod tests {
             old.contains(r#"<meta http-equiv="refresh" content="0; url=../../api/">"#),
             "{old}"
         );
-        assert!(resolves(&site, OLD_INDEX, "../../api/#problems"));
+        // Its sections are the explorer's.
+        for section in ["resources", "onion-links", "handshakes", "problems"] {
+            assert!(
+                resolves(&site, OLD_INDEX, &format!("../../api/#{section}")),
+                "{section}"
+            );
+        }
     }
 
     /// Every page has the API's map: on the explorer its links are its own

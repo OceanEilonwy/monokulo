@@ -1,0 +1,219 @@
+{
+  "definitions": {
+    "Wallet": {
+      "type": "object"
+    }
+  },
+  "handshakes": [
+    {
+      "doc": "Connect an app.",
+      "examples": [
+        {
+          "method": "POST",
+          "path": "/apps/connect",
+          "response": {
+            "status": 401,
+            "type": "https://docs.monokulo.com/problems/invalid-connect-code"
+          },
+          "route": "/apps/connect",
+          "status": 401
+        }
+      ],
+      "method": "POST",
+      "problems": [
+        "invalid-connect-code"
+      ],
+      "template": "/apps/connect",
+      "title": "Connect an app."
+    }
+  ],
+  "problems": [
+    {
+      "doc": "Nothing is there.",
+      "slug": "not-found",
+      "status": 404,
+      "title": "Not found",
+      "type": "https://docs.monokulo.com/problems/not-found"
+    },
+    {
+      "doc": "The code is spent.",
+      "slug": "invalid-connect-code",
+      "status": 401,
+      "title": "Connect code not valid",
+      "type": "https://docs.monokulo.com/problems/invalid-connect-code"
+    }
+  ],
+  "rels": [
+    {
+      "description": "The order on the onion address.\n\nFor a client on Tor.",
+      "key": "mk:onion-order",
+      "media_type": "application/prs.hal-forms+json",
+      "page": "https://docs.monokulo.com/rels/onion-order",
+      "rel": "onion-order",
+      "target": {
+        "key": "mk:order",
+        "rel": "order",
+        "template": "/api/v1/orders/{order_id}"
+      },
+      "template": "http://….onion/api/v1/orders/{order_id}",
+      "title": "The order on the onion address."
+    }
+  ],
+  "resources": [
+    {
+      "body": {
+        "properties": {
+          "_links": {
+            "properties": {
+              "self": {
+                "description": "This order."
+              }
+            }
+          },
+          "order_id": {
+            "description": "Its id.",
+            "type": "string"
+          },
+          "wallet": {
+            "$ref": "#/$defs/Wallet"
+          }
+        },
+        "required": [
+          "order_id"
+        ],
+        "type": "object"
+      },
+      "description": "One order.\n\nWhat the payer was asked for.",
+      "examples": [
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/orders/order_1",
+          "response": {
+            "order_id": "order_1"
+          },
+          "route": "/api/v1/orders/{order_id}",
+          "status": 200
+        },
+        {
+          "key": "sk",
+          "method": "GET",
+          "path": "/api/v1/orders/order_2",
+          "response": {
+            "status": 404,
+            "type": "https://docs.monokulo.com/problems/not-found"
+          },
+          "route": "/api/v1/orders/{order_id}",
+          "status": 404
+        }
+      ],
+      "key": "mk:order",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "The order.",
+          "form": null,
+          "keys": [
+            "sk",
+            "ak"
+          ],
+          "method": "GET",
+          "name": "show",
+          "template": null
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/order",
+      "rel": "order",
+      "template": "/api/v1/orders/{order_id}",
+      "title": "One order."
+    },
+    {
+      "body": null,
+      "description": "The store's orders.",
+      "examples": [],
+      "key": "mk:orders",
+      "media_type": "application/prs.hal-forms+json",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Makes an order.",
+          "form": "create",
+          "keys": [
+            "sk",
+            "pk"
+          ],
+          "method": "POST",
+          "name": "create",
+          "problems": [
+            "invalid-amount"
+          ],
+          "template": {
+            "properties": [
+              {
+                "name": "amount",
+                "prompt": "How much.",
+                "required": true
+              }
+            ]
+          }
+        }
+      ],
+      "page": "https://docs.monokulo.com/rels/orders",
+      "rel": "orders",
+      "template": "/api/v1/orders",
+      "title": "The store's orders."
+    },
+    {
+      "body": null,
+      "description": "The order's page on the dashboard.\n\nFor the merchant.",
+      "events": [],
+      "examples": [],
+      "key": "mk:dashboard-order",
+      "media_type": "text/html",
+      "methods": [],
+      "offered_to": [
+        "sk",
+        "session"
+      ],
+      "page": "https://docs.monokulo.com/rels/dashboard-order",
+      "rel": "dashboard-order",
+      "template": "/stores/{id}/orders/{order_id}",
+      "title": "The order's page on the dashboard."
+    },
+    {
+      "body": null,
+      "description": "One order's changes.",
+      "events": [
+        {
+          "data": {
+            "$ref": "#/$defs/Wallet"
+          },
+          "doc": "The order as it is now.",
+          "name": "order"
+        }
+      ],
+      "examples": [],
+      "key": "mk:order-events",
+      "media_type": "text/event-stream",
+      "methods": [
+        {
+          "anyone": false,
+          "doc": "Follow it.",
+          "form": null,
+          "keys": [
+            "sk"
+          ],
+          "method": "GET",
+          "name": "get",
+          "template": null
+        }
+      ],
+      "offered_to": null,
+      "page": "https://docs.monokulo.com/rels/order-events",
+      "rel": "order-events",
+      "template": "/api/v1/orders/{order_id}/events",
+      "title": "One order's changes."
+    }
+  ]
+}

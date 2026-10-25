@@ -539,6 +539,9 @@ pub(super) fn page(api: &Api) -> Markup {
     html! {
         (banner(api))
         (intro(api))
+        // Where the resources start, which the old index's `#resources`
+        // links (`api/reference/` now sends its readers here).
+        div id="resources" {}
         @for resource in &api.resources {
             (resource_section(resource))
             @for op in &resource.operations {

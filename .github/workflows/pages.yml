@@ -107,8 +107,9 @@ jobs:
       # sample shop under /geomart/ and the redirects from /docs/.
       - name: Build the docs beside the landing page
         run: cargo xtask pages docs --site target/pages/site
-      # The HTTP API's reference beside the docs' /api/ page, generated here
-      # from the code and from real exchanges: it runs monokulo's
+      # The HTTP API's section: the explorer at /api/ (and a redirect from
+      # /api/reference/), /rels/ and /problems/, generated here from the code and
+      # from real exchanges: it runs monokulo's
       # api_reference example (no tests, no browser code), which records them
       # against a test engine and writes the reference into target/api/.
       # Nothing of it is committed.

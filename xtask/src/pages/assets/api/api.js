@@ -26,9 +26,32 @@
   };
   const server = dialog.dataset.server;
   const KEYS = { sk: "secret", ak: "app", pk: "public" };
-  const conn = { base: store.get("base") || server, key: store.get("key"), checked: null };
   const keyKind = key => (/^(sk|ak|pk)_/.exec(key) || [])[1] || null;
-  const base = () => conn.base.replace(/\/+$/, "");
+
+  // A Monokulo's address as typed, read as an absolute http(s) URL with
+  // nothing but a host and maybe a path: what every request is built from,
+  // so a key only ever goes there. Anything else (no scheme, which a
+  // browser would resolve against this site, a query, a fragment, a user
+  // name) is refused, as { error }.
+  function parseAddress(typed) {
+    let url;
+    try { url = new URL(typed.trim()); } catch { return { error: "Start the address with https:// (or http://)." }; }
+    if (url.protocol !== "https:" && url.protocol !== "http:") return { error: "Start the address with https:// (or http://)." };
+    if (url.username || url.password) return { error: "Leave the user name and password out of the address." };
+    if (url.search || url.hash || typed.includes("?") || typed.includes("#")) return { error: "Leave the ? and # parts out of the address." };
+    return { url, prefix: url.pathname.replace(/\/+$/, "") };
+  }
+  // The request URL for `path` (and `query`) on the parsed address, built
+  // from its origin, never by joining strings.
+  function endpoint(address, path, query) {
+    const url = new URL(address.url.origin);
+    url.pathname = address.prefix + path;
+    if (query && query.size) url.search = query.toString();
+    return url;
+  }
+  const kept = parseAddress(store.get("base"));
+  const conn = { address: kept.url ? kept : parseAddress(server), key: store.get("key"), checked: null };
+  const base = () => conn.address.url.origin + conn.address.prefix;
 
   // An element, its class, attributes and text or children.
   function el(tag, props = {}, ...children) {
@@ -84,11 +107,9 @@
     return mine && keys.includes(mine) ? mine : ["sk", "ak", "pk"].find(k => keys.includes(k));
   }
   function drawAddress() {
-    let url;
-    try { url = new URL(base()); } catch { url = new URL(server); }
     $$("[data-base]").forEach(s => { s.textContent = base(); });
-    $$("[data-host]").forEach(s => { s.textContent = url.host; });
-    $$("[data-prefix]").forEach(s => { s.textContent = url.pathname.replace(/\/+$/, ""); });
+    $$("[data-host]").forEach(s => { s.textContent = conn.address.url.host; });
+    $$("[data-prefix]").forEach(s => { s.textContent = conn.address.prefix; });
     $$(".api-op").forEach(section => {
       const key = preferredKey(section);
       if (key) $$("[data-key]", section).forEach(s => { s.textContent = `${key}_…`; });
@@ -111,12 +132,22 @@
     state.className = `tag tag-${tone}`;
     state.textContent = text;
   }
-  function readConnection() {
-    const typed = address.value.trim();
-    conn.base = typed || server;
+  // Reads the address and key as typed; returns whether the address is one
+  // to send to. One that isn't keeps the last good one in use, is marked
+  // on its field, and isn't kept.
+  function readConnection({ report = false } = {}) {
     conn.key = keyInput.value.trim();
-    store.set("base", typed);
     store.set("key", conn.key);
+    const typed = address.value.trim();
+    const parsed = parseAddress(typed || server);
+    address.setCustomValidity(parsed.error || "");
+    if (parsed.error) {
+      if (report) address.reportValidity();
+      return false;
+    }
+    conn.address = parsed;
+    store.set("base", typed);
+    return true;
   }
   function connectionChanged() {
     readConnection();
@@ -172,12 +203,15 @@
   }
 
   async function checkConnection() {
-    readConnection();
+    if (!readConnection({ report: true })) {
+      setState("error", "Not an address");
+      return;
+    }
     setState("syncing", "Checking…");
     try {
       const headers = { Accept: "application/prs.hal-forms+json" };
       if (conn.key) headers.Authorization = `Bearer ${conn.key}`;
-      const res = await fetch(`${base()}/api/v1`, { headers, credentials: "omit", cache: "no-store" });
+      const res = await fetch(endpoint(conn.address, "/api/v1"), { headers, credentials: "omit", cache: "no-store" });
       const body = await res.json().catch(() => null);
       conn.checked = res.ok;
       if (res.ok) {
@@ -212,9 +246,9 @@
     }
     bar.append(tag(live.pending ? "Live, arriving…" : "Live", live.pending ? "syncing" : "ok"));
     if (live.status != null) bar.append(statusTag(live.status), `${live.ms} ms`);
-    bar.append(live.pending && live.stream
-      ? el("button", { class: "mk-btn", type: "button", "data-size": "compact", "data-stop": true }, "Stop")
-      : el("button", { class: "mk-btn", type: "button", "data-size": "compact", "data-clear": true }, "Show recorded examples"));
+    // While it's on its way: Stop for a stream, nothing for the rest.
+    if (live.pending && live.stream) bar.append(el("button", { class: "mk-btn", type: "button", "data-size": "compact", "data-stop": true }, "Stop"));
+    else if (!live.pending) bar.append(el("button", { class: "mk-btn", type: "button", "data-size": "compact", "data-clear": true }, "Show recorded examples"));
     const parts = [bar];
     if (live.headers) {
       parts.push(el("details", {}, el("summary", {}, "Headers a browser may read"), el("pre", {}, el("code", {}, live.headers.map(([k, v]) => `${k}: ${v}`).join("\n")))));
@@ -247,18 +281,8 @@
 
   async function send(section, form) {
     const op = ops.get(section);
-    readConnection();
     op.typed = Object.fromEntries($$("input, textarea", form).map(i => [i.name, i.value]));
-    let url;
-    try {
-      url = new URL(base());
-      if (!/^https?:$/.test(url.protocol)) throw new Error();
-    } catch {
-      address.setCustomValidity("Your Monokulo's address, like https://pay.example.com");
-      address.reportValidity();
-      address.addEventListener("input", () => address.setCustomValidity(""), { once: true });
-      return;
-    }
+    if (!readConnection({ report: true })) return;
     let path = section.dataset.path;
     for (const input of $$("[data-path-param]", form)) path = path.replace(`{${input.dataset.pathParam}}`, encodeURIComponent(input.value.trim()));
     const query = new URLSearchParams($$("[data-query-param]", form).filter(i => i.value.trim()).map(i => [i.dataset.queryParam, i.value.trim()]));
@@ -280,7 +304,7 @@
     op.live = { pending: true, stream, text: "" };
     drawResponse(section);
     const started = performance.now();
-    const target = `${base()}${path}${query.size ? `?${query}` : ""}`;
+    const target = endpoint(conn.address, path, query);
     try {
       const res = await fetch(target, { method: section.dataset.method, headers, body: body ? body.value : undefined, signal: abort.signal, credentials: "omit", cache: "no-store" });
       op.live = { pending: true, stream, text: "", status: res.status, headers: [...res.headers], ms: Math.round(performance.now() - started) };
@@ -299,7 +323,7 @@
       }
       op.live.pending = false;
     } catch (error) {
-      if (error.name === "AbortError" && op.live.status != null) {
+      if (error.name === "AbortError" && op.live?.status != null) {
         op.live.pending = false; // stopped: what arrived stays
       } else if (error.name !== "AbortError") {
         const kind = keyKind(conn.key);
@@ -330,19 +354,24 @@
     else if (button.matches("[data-copy-snippet]") && section) copy($("[data-snippet][data-shown] pre", section).textContent, button);
     else if (button.matches("#try-it-check")) checkConnection();
     else if (button.matches("#try-it-show")) {
+      // "Show the key", pressed while it shows.
       const shown = keyInput.type === "password";
       keyInput.type = shown ? "text" : "password";
       button.setAttribute("aria-pressed", shown);
-      button.setAttribute("aria-label", shown ? "Hide the key" : "Show the key");
-      button.title = button.getAttribute("aria-label");
     } else {
       const target = section || current;
       if (!target) return;
-      if (button.matches("[data-stop]")) ops.get(target).abort?.abort();
-      else if (button.matches("[data-clear]")) { ops.get(target).live = null; drawResponse(target); }
+      const op = ops.get(target);
+      if (button.matches("[data-stop]")) op.abort?.abort();
+      else if (button.matches("[data-clear]")) {
+        op.abort?.abort();
+        op.live = null;
+        drawResponse(target);
+      }
     }
   });
 
+  address.addEventListener("input", () => address.setCustomValidity(""));
   address.addEventListener("change", connectionChanged);
   keyInput.addEventListener("change", connectionChanged);
   dialog.addEventListener("submit", event => {
