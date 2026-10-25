@@ -841,6 +841,7 @@ def main():
         fields = json.loads(Path(args.from_file).read_text())
         for key, value in fields.items():
             key = key.replace("-", "_")
+            key = {"failure_scenario": "scenario", "regression_test": "test", "agent": "agent"}.get(key, key)
             if not hasattr(args, key):
                 sys.exit(f"{args.from_file}: {args.command} has no field {key!r}")
             setattr(args, key, value)
