@@ -176,8 +176,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (47, include_str!("../migrations/0047_order_requests.sql")),
     (
-        48,
-        include_str!("../migrations/0048_wallets_user_engine_wallet.sql"),
+        49,
+        include_str!("../migrations/0049_wallets_user_engine_wallet.sql"),
     ),
 ];
 
