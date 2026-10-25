@@ -4423,8 +4423,11 @@ async fn round_with_void_recheck_due(
             &i64::MIN,
         )
         .unwrap();
-        s.set_scheduler_position::<crate::store::position::VoidRecheck>(Network::Mainnet, &0)
-            .unwrap();
+        s.set_scheduler_position::<crate::store::position::VoidRecheck>(
+            Network::Mainnet,
+            &crate::store::position::VoidPass::default(),
+        )
+        .unwrap();
     }
     run_scan_tick(
         store,
