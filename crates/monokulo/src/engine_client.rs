@@ -580,18 +580,18 @@ impl EngineClient {
     }
 
     /// Watches one order for changes - see `crate::live::LiveHub::subscribe`.
-    /// `connection_id` keys the shared upstream stream; `sk` must be that
-    /// connection's own secret.
+    /// `connection_id` keys the shared upstream stream, opened with that
+    /// connection's own secret as `keys` reads it.
     pub fn subscribe_order(
         &self,
+        keys: &crate::http::store_key::StoreKeys,
         connection_id: &crate::db::ConnectionId,
-        sk: &RawToken,
         order_id: &shared::ids::OrderId,
     ) -> crate::live::OrderSubscription {
         self.target()
             .live
             .clone()
-            .subscribe(self, connection_id, sk, order_id)
+            .subscribe(self, keys, connection_id, order_id)
     }
 
     #[cfg(test)]

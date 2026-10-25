@@ -1109,22 +1109,23 @@ impl Db {
 
     /// `POST /account/profile`, changing the password: the new password's hash, and every one of
     /// the user's sessions but `keep` (the one changing it) ended, in one
-    /// transaction. Returns how many sessions were ended.
+    /// transaction. Returns the sessions ended, by their hashed tokens, so
+    /// what they have open ends too (`crate::revocation`).
     pub fn change_password(
         &self,
         id: &UserId,
         password_hash: &str,
         keep: &shared::auth::TokenHash,
-    ) -> Result<usize> {
+    ) -> Result<Vec<shared::auth::TokenHash>> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute(
             "UPDATE users SET password_hash = ?2 WHERE id = ?1",
             params![id, password_hash],
         )?;
-        let ended = tx.execute(
-            "DELETE FROM sessions WHERE user_id = ?1 AND token != ?2",
-            params![id, keep],
-        )?;
+        let ended = tx
+            .prepare("DELETE FROM sessions WHERE user_id = ?1 AND token != ?2 RETURNING token")?
+            .query_map(params![id, keep], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         tx.commit()?;
         Ok(ended)
     }

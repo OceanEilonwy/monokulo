@@ -203,13 +203,17 @@ impl Db {
     }
 
     /// Disconnects one of a store's apps: its key stops working at once.
-    /// `false` when the store has no such app.
-    pub fn delete_app(&self, store_id: &ConnectionId, app_id: &str) -> Result<bool> {
-        let deleted = self.conn.execute(
-            "DELETE FROM app_connections WHERE store_id = ?1 AND id = ?2",
-            params![store_id, app_id],
-        )?;
-        Ok(deleted > 0)
+    /// The hash of the key it held, to end what it has open
+    /// (`crate::revocation`); `None` when the store has no such app.
+    pub fn delete_app(&self, store_id: &ConnectionId, app_id: &str) -> Result<Option<TokenHash>> {
+        self.conn
+            .query_row(
+                "DELETE FROM app_connections WHERE store_id = ?1 AND id = ?2 RETURNING key_hash",
+                params![store_id, app_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// An app made an order (or connected) now, with this version.

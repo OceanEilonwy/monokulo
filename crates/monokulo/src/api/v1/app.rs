@@ -48,8 +48,10 @@ async fn delete(app: ConnectedApp, apps: Apps) -> api::Result<NoContent> {
         .write(move |db| db.delete_app(&store_id, &app_id))
         .await
     {
-        Ok(_) => {
-            state.apps.disconnected(&app.id);
+        Ok(key) => {
+            if let Some(key) = key {
+                state.revocations.revoke(&key);
+            }
             tracing::info!(store.id = %app.store_id, app.id = %app.id, "an app disconnected itself");
             Ok(NoContent)
         }

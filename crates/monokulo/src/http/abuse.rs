@@ -205,7 +205,7 @@ pub async fn api_and_checkout_middleware(
                 } else {
                     anonymous
                 };
-                request.extensions_mut().insert(caller);
+                request.extensions_mut().insert(*caller);
                 client
             }
             KeyCheck::Invalid => {

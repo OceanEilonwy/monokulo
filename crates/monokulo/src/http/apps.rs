@@ -220,16 +220,20 @@ pub async fn disconnect_submit(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let (store_id, gone) = (row.id.clone(), app_id.clone());
-    if let Err(e) = state
+    let store_id = row.id.clone();
+    match state
         .db
-        .write(move |db| db.delete_app(&store_id, &gone))
+        .write(move |db| db.delete_app(&store_id, &app_id))
         .await
     {
-        tracing::error!(store.id = %id, error = %e, "an app could not be disconnected");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        // Its open streams end.
+        Ok(Some(key)) => state.revocations.revoke(&key),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(store.id = %id, error = %e, "an app could not be disconnected");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     }
-    state.apps.disconnected(&app_id);
     crate::base::see_other(format!("/stores/{id}/settings?tab=connections#card-apps"))
 }
 

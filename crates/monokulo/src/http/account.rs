@@ -237,7 +237,11 @@ pub async fn save_profile(
     match written {
         Ok(ended) => {
             if let Some(ended) = ended {
-                tracing::info!(sessions.ended = ended, "a password was changed");
+                // What the ended sessions have open ends with them.
+                for session in &ended {
+                    state.revocations.revoke(session);
+                }
+                tracing::info!(sessions.ended = ended.len(), "a password was changed");
             }
             let cards: Vec<&str> = changed.iter().map(|card| card.id()).collect();
             crate::base::see_other(format!("/account?saved={}", cards.join(",")))

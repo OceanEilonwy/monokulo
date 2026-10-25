@@ -498,7 +498,7 @@ async fn order_detail_data(
 /// any more, so the page stops reconnecting (`static/fx-glue.js`).
 pub async fn order_detail_events(
     State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
+    AuthedUser(user, session): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
     on: OnNetwork,
 ) -> Response {
@@ -507,28 +507,35 @@ pub async fn order_detail_events(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state.encryption_key, &row) {
-        Ok(sk) => sk,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    let Some(session) = super::hold_session(&state, &session).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
     };
     let payment_link = payment_link_for(&on, &order_id);
-    let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
-    let row = std::sync::Arc::new(row);
+    let keys = state.store_keys();
+    let subscription = state
+        .engine
+        .client
+        .subscribe_order(&keys, &row.id, &order_id);
     // Times in the viewer's zone, as the page itself shows them.
     let clock = views::time::Clock::for_user(&user);
-    crate::live::live_events(
+    let snapshots = crate::live::snapshot_stream(
         subscription,
         std::time::Duration::from_secs(30),
         move || {
-            let (state, row, sk, order_id, payment_link, clock) = (
+            let (state, keys, store_id, user_id, order_id, payment_link, clock) = (
                 state.clone(),
-                row.clone(),
-                sk.clone(),
+                keys.clone(),
+                row.id.clone(),
+                user.id.clone(),
                 order_id.clone(),
                 payment_link.clone(),
                 clock.clone(),
             );
             async move {
+                // The store's key as it is now: it may have been replaced
+                // since the stream opened.
+                let (row, sk) = keys.current(&store_id).await.ok()??;
+                let row = super::OwnedStore::check(row, &user_id)?;
                 let order = order_detail_data(&state, &row, &sk, &order_id, payment_link)
                     .await
                     .ok()??;
@@ -551,7 +558,8 @@ pub async fn order_detail_events(
                 })
             }
         },
-    )
+    );
+    crate::live::sse(session.bound(snapshots))
 }
 
 /// The link a customer is sent to pay order `order_id`: on the address
