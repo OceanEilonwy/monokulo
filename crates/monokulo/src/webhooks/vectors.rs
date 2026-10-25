@@ -333,6 +333,29 @@ fn the_published_vectors_are_what_monokulo_sends() {
     );
 }
 
+/// Both files the test above writes and compares byte for byte check out
+/// with LF everywhere: a Windows checkout's CRLF would leave the webhooks
+/// page without the marker lines its list of events sits between, and the
+/// vectors file different from what monokulo writes.
+#[test]
+fn the_compared_files_check_out_with_lf() {
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
+    let attributes = std::fs::read_to_string(format!("{root}.gitattributes"))
+        .expect(".gitattributes is readable");
+    for path in [PATH, DOCS] {
+        let path = path
+            .strip_prefix(root)
+            .expect("the file is in the repository");
+        assert!(
+            attributes.lines().any(|line| {
+                let mut words = line.split_whitespace();
+                words.next() == Some(path) && words.any(|word| word == "eol=lf")
+            }),
+            "{path} is compared byte for byte, so .gitattributes must give it `text eol=lf`"
+        );
+    }
+}
+
 /// Each vector checks out the way the docs tell a receiver to check one,
 /// and each refusal doesn't.
 #[test]
