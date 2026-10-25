@@ -2,7 +2,7 @@
 .pos-symbol-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 @keyframes pos-spin { to { transform: rotate(360deg); } }
   /* Every symbol sits centred in the same square box. */
-  .pos-icon { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--state-ink, var(--ink)); line-height: 0; }
+  .pos-icon { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--state-ink); line-height: 0; }
   .pos-icon > svg, .pos-icon > span { grid-area: 1 / 1; }
   .pos-coin-mark { stroke: var(--brand-orange); }
   .pos-icon svg { width: 100%; height: 100%; display: block; overflow: visible; }
@@ -20,8 +20,8 @@
   @media (prefers-reduced-motion: reduce) { .pos-spinner { animation: none; transform: rotate(-35deg); } }
   .pos-disc {
     width: 82%; height: 82%; border-radius: 50%;
-    background: conic-gradient(var(--state-ink, var(--ink)) 0 var(--progress, 0%), color-mix(in srgb, var(--state-border, var(--line-strong)) 35%, var(--state-bg, var(--paper-raised))) var(--progress, 0%) 100%);
-    box-shadow: inset 0 0 0 1.5px var(--state-border, var(--line-strong));
+    background: conic-gradient(var(--state-ink) 0 var(--progress, 0%), color-mix(in srgb, var(--state-border) 35%, var(--state-bg)) var(--progress, 0%) 100%);
+    box-shadow: inset 0 0 0 1.5px var(--state-border);
   }
 
 .pos-icon { --pos-coin-face: var(--paper-raised); }
