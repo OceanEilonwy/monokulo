@@ -1,0 +1,12 @@
+[package]
+name = "rate-limit"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "A fixed-window per-key rate limiter, the one the engine and monokulo both use"
+
+[dependencies]
+parking_lot = "0.12.5"
+
+[lints]
+workspace = true

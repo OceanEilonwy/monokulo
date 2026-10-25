@@ -11,5 +11,4 @@ pub mod haveno;
 pub mod http_cache;
 pub mod log;
 pub mod monero_tx;
-pub mod rate_limit;
 pub mod xmr_amount;

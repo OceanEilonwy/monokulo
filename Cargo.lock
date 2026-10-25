@@ -1808,6 +1808,7 @@ dependencies = [
  "proptest",
  "rand 0.10.2",
  "randomx-rs",
+ "rate-limit",
  "reqwest",
  "rusqlite",
  "rustix",
@@ -3746,6 +3747,7 @@ dependencies = [
  "parking_lot",
  "qrcode",
  "rand 0.10.2",
+ "rate-limit",
  "regex",
  "reqwest",
  "reqwest-middleware",
@@ -4838,6 +4840,13 @@ name = "rangemap"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a611d15b50743feb4c76b7d03edcb0e64f399c26961e4efe6975bc398be6aa3d"
+
+[[package]]
+name = "rate-limit"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+]
 
 [[package]]
 name = "rdrand"

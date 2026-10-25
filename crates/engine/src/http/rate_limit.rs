@@ -19,7 +19,7 @@
 //!   engine inside monokulo, where nothing but monokulo can call it, and on
 //!   for a standalone one, which anything holding the token can reach.
 //!
-//! A fixed-window counter (`shared::rate_limit::RateLimiter`), not a proper
+//! A fixed-window counter (`rate_limit::RateLimiter`), not a proper
 //! token bucket: simpler, and enough for "stop one caller hammering the
 //! engine".
 
@@ -32,7 +32,7 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 use serde_json::json;
 
-use shared::rate_limit::RateLimiter;
+use rate_limit::RateLimiter;
 
 use crate::engine_settings::ApiLimits;
 

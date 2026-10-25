@@ -58,6 +58,7 @@ engine-protocol = { path = "../engine-protocol" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
 service-runtime = { path = "../service-runtime" }
+rate-limit = { path = "../rate-limit" }
 telemetry = { path = "../telemetry", features = ["axum"] }
 tracing = "0.1.44"
 thiserror = "2.0.20"

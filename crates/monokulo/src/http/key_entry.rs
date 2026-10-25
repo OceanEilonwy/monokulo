@@ -52,14 +52,14 @@ const MAX_BUNDLES: usize = 10_000;
 #[derive(Clone)]
 pub struct KeyBundles {
     bundles: Arc<parking_lot::Mutex<HashMap<String, StoredBundle>>>,
-    opened: Arc<shared::rate_limit::RateLimiter<UserId>>,
+    opened: Arc<rate_limit::RateLimiter<UserId>>,
 }
 
 impl Default for KeyBundles {
     fn default() -> Self {
         KeyBundles {
             bundles: Arc::default(),
-            opened: Arc::new(shared::rate_limit::RateLimiter::new(
+            opened: Arc::new(rate_limit::RateLimiter::new(
                 crate::settings::SnpBundleLimits::default().per_user_per_min,
             )),
         }
