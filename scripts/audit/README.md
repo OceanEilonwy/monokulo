@@ -78,6 +78,8 @@ machine. Use `rg`, `git grep` and reading.
   Severity: **critical** = money lost, keys or privacy leaked, remote crash;
   **high** = wrong behaviour a user will hit; **medium** = an edge case, or a
   type-safety change that removes a class of bugs; **low** = cleanups.
+- To add to a finding already recorded (a wider impact, a related place):
+  `audit.py note --agent NAME FINDING "text"`.
 - For a module review, note each target file's purpose in one line:
   `audit.py purpose PATH "what it is for"`. `done` refuses until they're set.
 - Close with `audit.py done --agent NAME --job N --summary "..."`: what you
@@ -108,3 +110,10 @@ audit.py findings --module engine-store
 audit.py report --out target/code-audit/report.md
 audit.py query "SELECT ..."         # read-only SQL
 ```
+
+The tables to query are `review_finding` (findings), `job`, `review`,
+`review_file`, `crate_file`, `module`, `module_file` and `signal`; see
+`schema.sql`.
+
+Run each command written out in full: the worktree's shell refuses loops
+and commands held in variables.

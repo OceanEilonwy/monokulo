@@ -14,6 +14,7 @@ Agents (AUDIT_AGENT or --agent names who is asking):
     audit.py claim                take the next job and print its brief
     audit.py finding --job N ...  report a finding (makes a verify job)
     audit.py verify --job N ...   settle a verify job's finding
+    audit.py note FINDING TEXT    add to a finding already recorded (yours or another's)
     audit.py purpose PATH TEXT    say in one line what a file is for
     audit.py done --job N --summary TEXT
     audit.py release --job N      give a job back unfinished
@@ -523,12 +524,16 @@ def cmd_finding(args):
     agent = agent_name(args)
     conn = connect()
     start, _, end = args.lines.partition("-")
+    if not (start.isdigit() and (end.isdigit() or not end)):
+        sys.exit(f"--lines takes one range, START or START-END, not {args.lines!r}; "
+                 "record separate places as separate findings or name them in --problem")
     start, end = int(start), int(end or start)
     with Tx(conn):
         job = own_job(conn, args.job, agent, ("review", "crosscut"))
         f = file_id(conn, args.file)
         if not 1 <= start <= end <= f["loc"]:
-            sys.exit(f"lines {args.lines} are outside {args.file} (1-{f['loc']})")
+            sys.exit(f"lines {args.lines} are outside {args.file} (1-{f['loc']}); "
+                     "take line numbers from that one file at the audited commit")
         fid = conn.execute(
             "INSERT INTO review_finding (review_id, crate_file_id, line_start, line_end, category, severity, "
             "confidence, title, problem, failure_scenario, recommendation, regression_test, reported_by) "
@@ -559,6 +564,20 @@ def cmd_verify(args):
         conn.execute(f"UPDATE review_finding SET {sets} WHERE id = ?", (*updates.values(), job["finding_id"]))
         conn.execute("UPDATE job SET status = 'done', done_at = datetime('now') WHERE id = ?", (job["id"],))
     print(f"finding {job['finding_id']} is {args.verdict}")
+
+
+def cmd_note(args):
+    agent = agent_name(args)
+    conn = connect()
+    with Tx(conn):
+        row = conn.execute("SELECT problem FROM review_finding WHERE id = ?", (args.finding,)).fetchone()
+        if row is None:
+            sys.exit(f"no finding {args.finding}")
+        conn.execute(
+            "UPDATE review_finding SET problem = ? WHERE id = ?",
+            (f"{row['problem']}\n\nAdded by {agent}: {args.text}", args.finding),
+        )
+    print(f"added to finding {args.finding}")
 
 
 def cmd_purpose(args):
@@ -728,6 +747,11 @@ def main():
     p.add_argument("--duplicate-of", type=int)
     p.add_argument("--severity", choices=SEVERITIES, help="correct the severity")
     p.set_defaults(run=cmd_verify)
+
+    p = sub.add_parser("note", parents=[common])
+    p.add_argument("finding", type=int)
+    p.add_argument("text")
+    p.set_defaults(run=cmd_note)
 
     p = sub.add_parser("purpose", parents=[common])
     p.add_argument("path")
