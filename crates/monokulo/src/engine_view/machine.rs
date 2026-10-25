@@ -763,6 +763,8 @@ pub fn step(state: &mut State, recorded: &Recorded) -> Output {
                 out.mark(Tier::Upkeep, false, MarkKind::Pruned { hashes: *pruned });
             }
         }
+        // A newer engine's kind: nothing here knows how to draw it.
+        Event::Unknown => {}
     }
     state.forget_before(recorded.at_ms - MINUTE_MS);
     Output {

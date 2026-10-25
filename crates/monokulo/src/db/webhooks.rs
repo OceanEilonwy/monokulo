@@ -10,6 +10,7 @@
 
 use rusqlite::{params, OptionalExtension as _};
 use shared::ids::WebhookId;
+use shared::order_event::ReadOrderEventKind;
 use shared::sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
@@ -164,14 +165,13 @@ pub struct LoggedEvent {
     /// Its position in the engine's log.
     pub seq: i64,
     pub event_id: String,
-    /// `order.<status>`, `order.double_spend_detected` or
-    /// `order.double_spend_reversed`.
-    pub event_type: String,
+    /// What happened: a kind a newer engine added is passed on as it is
+    /// named.
+    pub kind: ReadOrderEventKind,
     pub created_at: i64,
     /// The store's public key.
     pub tenant_public_key: String,
     pub order_id: OrderId,
-    pub status: Option<String>,
     pub txid: Option<String>,
     pub merchant_order_id: Option<String>,
     /// What the order is for, as it was created.
@@ -357,7 +357,7 @@ impl Db {
                             webhook.id,
                             event.seq,
                             event.event_id,
-                            event.event_type,
+                            event.kind.as_str(),
                             event.order_id,
                             body,
                             at

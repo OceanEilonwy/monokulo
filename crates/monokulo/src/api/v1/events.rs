@@ -9,7 +9,7 @@ use tokio::sync::broadcast::error::RecvError;
 use super::order;
 use crate::api::runtime::auth;
 use crate::api::{self, prelude::*};
-use crate::apps::SaleEvent;
+use crate::apps::{SaleEvent, SaleKind};
 use crate::http::store_key::Credential;
 use crate::now_unix;
 
@@ -70,7 +70,7 @@ impl Sale {
     fn of(sale: &SaleEvent) -> Self {
         let order_id = OrderId::new(sale.order_id.clone());
         Sale {
-            event: sale.event.to_owned(),
+            event: sale.event.as_str().to_owned(),
             order_id: order_id.clone(),
             amount: sale.amount.clone(),
             currency: sale.currency.clone(),
@@ -95,9 +95,9 @@ impl Events for SaleEvents {
             doc: "First, once the stream is open.",
             data: |g| g.subschema_for::<Ready>().to_value(),
         }];
-        events.extend(SaleEvent::NAMES.iter().map(|&name| StreamEvent {
-            name,
-            doc: sale_doc(name),
+        events.extend(SaleKind::ALL.into_iter().map(|kind| StreamEvent {
+            name: kind.as_str(),
+            doc: sale_doc(kind),
             data: |g| g.subschema_for::<Sale>().to_value(),
         }));
         events.push(StreamEvent {
@@ -109,19 +109,20 @@ impl Events for SaleEvents {
     }
 }
 
-/// What the sale event `name` says happened.
-fn sale_doc(name: &str) -> &'static str {
-    match name {
-        "sale.waiting" => "An app made the order; it waits for the payment.",
-        "sale.seen" => "The payment is in the pool, not yet in a block.",
-        "sale.confirming" => "The payment is in a block, with too few confirmations yet.",
-        "sale.paid" => "Paid in full (or more), with enough confirmations.",
-        "sale.partial" => {
+/// What the sale event `kind` says happened.
+fn sale_doc(kind: SaleKind) -> &'static str {
+    match kind {
+        SaleKind::Waiting => {
+            "An app made the order, or the payment it had no longer counts (it was spent twice); it waits for the payment."
+        }
+        SaleKind::Seen => "The payment is in the pool, not yet in a block.",
+        SaleKind::Confirming => "The payment is in a block, with too few confirmations yet.",
+        SaleKind::Paid => "Paid in full (or more), with enough confirmations.",
+        SaleKind::Partial => {
             "Less than the amount has arrived; the rest can still come before it expires."
         }
-        "sale.expired" => "It expired unpaid.",
-        "sale.double_spend" => "The payment was spent twice: don't hand anything over.",
-        _ => "",
+        SaleKind::Expired => "It expired unpaid.",
+        SaleKind::DoubleSpend => "The payment was spent twice: don't hand anything over.",
     }
 }
 
@@ -165,7 +166,7 @@ async fn get(
                     announced = receiver.recv() => match announced {
                         Ok(announced) if announced.public_key == pk => {
                             let sale = Sale::of(&announced.event);
-                            let event = auth::as_caller(context.clone(), || event(announced.event.event, &sale));
+                            let event = auth::as_caller(context.clone(), || event(announced.event.event.as_str(), &sale));
                             return Some((Ok::<_, Infallible>(event), (receiver, disconnects, pk, app_id, permit, context)));
                         }
                         Ok(_) => {}

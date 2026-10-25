@@ -165,6 +165,8 @@ want the link that early.
 Monokulo posts each change to `webhook_url`, signed. [Webhooks](../webhooks/)
 has the body and how to check it. Mark the shop's order paid on
 `order.paid` and `order.overpaid`; never undo a payment on your own.
+`order.pending` (after `order.double_spend_detected`) says the payment no
+longer counts: put the shop's order back to waiting for payment.
 `order.expired` and `order.cancelled` both mean the order takes no payment
 any more; an order your plugin made is never cancelled (only the POS
 cancels, its own orders), but a receiver that sees `order.cancelled` should

@@ -306,6 +306,12 @@ pub enum Event {
     Vanished { looked: u64 },
     /// The upkeep tier's first unit of a round ran.
     Upkeep { pruned: u64 },
+    /// A kind this build doesn't know: a newer engine's, while the engine
+    /// and monokulo run different builds during an upgrade. Nothing draws
+    /// it, so one new kind doesn't make the whole page unreadable. The
+    /// engine never records it.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Event {
@@ -336,7 +342,8 @@ impl Event {
             Event::Snapshot(_)
             | Event::RoundStarted { .. }
             | Event::RoundFinished { .. }
-            | Event::Slept { .. } => None,
+            | Event::Slept { .. }
+            | Event::Unknown => None,
         }
     }
 }

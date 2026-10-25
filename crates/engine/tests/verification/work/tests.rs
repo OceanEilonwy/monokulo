@@ -21,6 +21,7 @@ use crate::scanner::tests::{
 use crate::status::OrderStatus;
 use crate::store::SharedStore;
 use shared::activity::{Group, PoolPath};
+use shared::order_event::OrderEventKind;
 
 /// A fake node that counts the block-hash lookups made against it and the
 /// blocks it sends, and answers as whichever node a test says it is.
@@ -183,10 +184,20 @@ async fn upkeep_prunes_order_events_older_than_the_retention() {
     let now = crate::now_unix();
     let retention = crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS;
     let old = store
-        .append_order_event(&order, "order.unconfirmed", &[], now - retention - 60)
+        .append_order_event(
+            &order,
+            OrderEventKind::Status(OrderStatus::Unconfirmed),
+            &[],
+            now - retention - 60,
+        )
         .unwrap();
     let kept = store
-        .append_order_event(&order, "order.paid", &[], now - retention + 3600)
+        .append_order_event(
+            &order,
+            OrderEventKind::Status(OrderStatus::Paid),
+            &[],
+            now - retention + 3600,
+        )
         .unwrap();
     let store = store.into_shared();
     let daemon = FakeDaemonClient::new();
