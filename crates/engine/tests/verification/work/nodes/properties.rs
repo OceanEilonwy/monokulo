@@ -1756,7 +1756,7 @@ mod properties {
                 let (tenant, handle, order) =
                     super::super::super::fixture_tenant_shared(w.h.store(), &w.h.custody, i64::MAX)
                         .await;
-                w.h.tenants.push((tenant, handle));
+                w.h.register(tenant, handle);
                 orders.push(order);
             }
             w.h.store()

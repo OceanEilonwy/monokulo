@@ -15,7 +15,8 @@
 )]
 use super::history_fixture::{file_store, fixture_tenant, fixture_tx, FlakyKeyCustody, TempDb};
 use crate::daemon::KeyImageStatus;
-use crate::key_custody::WalletHandle;
+use crate::key_custody::LiveWallet;
+use crate::scanner::tests::live_tenants;
 use crate::status::OrderStatus;
 use crate::store::{Db, OrderId, SharedStore, TenantId};
 use crate::work::{run_round_at, RoundInputs, RoundReport, ScanState, ScanTuning};
@@ -30,7 +31,7 @@ fn inputs<'a>(
     db: &'a Db,
     custody: &'a dyn crate::key_custody::KeyCustody,
     daemon: &'a dyn crate::daemon::MoneroDaemonClient,
-    tenants: &'a [(TenantId, WalletHandle)],
+    tenants: &'a [(TenantId, LiveWallet)],
 ) -> RoundInputs<'a> {
     RoundInputs {
         db,
@@ -153,7 +154,7 @@ pub(crate) struct Harness {
     pub(crate) path: TempDb,
     pub(crate) custody: FlakyKeyCustody,
     pub(crate) daemon: ScriptedDaemon,
-    pub(crate) tenants: Vec<(TenantId, WalletHandle)>,
+    pub(crate) tenants: Vec<(TenantId, LiveWallet)>,
     pub(crate) order: OrderId,
     pub(crate) state: ScanState,
     pub(crate) model: Model,
@@ -171,6 +172,7 @@ impl Harness {
         let (store, path) = file_store();
         let custody = FlakyKeyCustody::default();
         let (tenant, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
+        let tenants = live_tenants(&store, [(tenant, handle)]).to_vec();
         let store = store.into_shared();
         let db = Db::over_shared(Arc::clone(&store));
         let daemon = ScriptedDaemon::new();
@@ -186,7 +188,7 @@ impl Harness {
             path,
             custody,
             daemon,
-            tenants: vec![(tenant, handle)],
+            tenants,
             order,
             state: Self::state(),
             model: Model {
@@ -286,8 +288,14 @@ impl Harness {
         self.registered = self.custody_online;
     }
 
+    /// Adds a store whose keys were registered as `handle`.
+    pub(crate) fn register(&mut self, tenant: TenantId, handle: crate::key_custody::WalletHandle) {
+        let [live] = live_tenants(self.store(), [(tenant, handle)]);
+        self.tenants.push(live);
+    }
+
     /// The stores whose keys this process has registered.
-    pub(crate) fn registered_tenants(&self) -> Vec<(TenantId, WalletHandle)> {
+    pub(crate) fn registered_tenants(&self) -> Vec<(TenantId, LiveWallet)> {
         let skip = usize::from(!self.registered);
         self.tenants[skip..].to_vec()
     }
@@ -472,7 +480,7 @@ impl Harness {
     pub(crate) fn recovered(&mut self) {
         self.daemon.set_online(true);
         self.daemon.fail_calls(0);
-        self.custody.recover(self.tenants[0].1);
+        self.custody.recover(self.tenants[0].1.handle);
         self.node_online = true;
         self.custody_online = true;
         self.registered = true;
@@ -560,10 +568,10 @@ impl Harness {
             }
             Event::CustodyOnline(online) => {
                 if online {
-                    self.custody.recover(self.tenants[0].1);
+                    self.custody.recover(self.tenants[0].1.handle);
                     self.registered = true;
                 } else {
-                    self.custody.fail(self.tenants[0].1);
+                    self.custody.fail(self.tenants[0].1.handle);
                 }
                 self.custody_online = online;
             }

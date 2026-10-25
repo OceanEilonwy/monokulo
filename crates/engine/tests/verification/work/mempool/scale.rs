@@ -29,7 +29,7 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
     store
         .execute_raw_for_test("UPDATE tenants SET scanned_through_height=2")
         .unwrap();
-    let tenants = [(id.clone(), handle)];
+    let tenants = live_tenants(&store, [(id.clone(), handle)]);
     let inputs = RoundInputs {
         db: &db,
         custody: &custody,
@@ -105,7 +105,7 @@ async fn large_pool(count: usize) {
     let db = Db::open(&path.0, &store).unwrap();
     let daemon = crate::daemon::fake::FakeDaemonClient::new();
     daemon.push_block("scale-pool-tip", vec![]);
-    let tenants = [(id.clone(), handle)];
+    let tenants = live_tenants(&store, [(id.clone(), handle)]);
     let inputs = RoundInputs {
         db: &db,
         custody: &custody,
@@ -270,7 +270,7 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
     let mut original_orders = Vec::new();
     for _ in 0..count {
         let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
-        tenants.push((id, handle));
+        tenants.push((id.clone(), LiveWallet::of_store(&store, &id, handle)));
         original_orders.push(order);
     }
     let db = Db::open(&path.0, &store).unwrap();
