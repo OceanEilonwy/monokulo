@@ -41,9 +41,20 @@
 //! key at the same security version or later ([`SnpKeyCustody::answer_handoff`]),
 //! and encrypts the master key to it, attesting the answer with a report of
 //! its own. The new engine takes it only from such an attested answer, from
-//! an engine signed by its own ID key ([`SnpKeyCustody::accept_handoff`]), and
-//! wraps it under its own measurement. So upgrades signed with the same ID key
-//! keep every store's keys, and nothing else can take them or plant one.
+//! an engine signed by its own ID key at a security version no older than
+//! any that has used the database, and only if it is the key the database's
+//! wraps hold, by the key check each wrap keeps
+//! ([`SnpKeyCustody::accept_handoff`]); then it wraps it under its own
+//! measurement. So upgrades signed with the same ID key keep every store's
+//! keys, and only an image signed by that key can take them or plant one.
+//!
+//! Every engine and client also refuses an image below this release's own
+//! security version floor ([`transport::release_min_guest_svn`]), which no
+//! setting lowers. That floor is what holds against the host: the wraps'
+//! security versions and key checks are rows in the host's database, so they
+//! stop a handoff from the wrong engine or an older image only while the host
+//! leaves them be. An image with a known flaw is therefore kept out by
+//! raising the release floor above it.
 //!
 //! Which case applies at start:
 //! - a wrap for this image: unwrap it (waiting instead if it was made on
@@ -86,6 +97,7 @@ use crate::{
 const SEALED_TAG: &[u8; 4] = b"SNP1";
 const SEAL_AAD: &[u8] = b"monokulo snp sealed store keys v1";
 const WRAP_LABEL: &[u8] = b"monokulo snp master key wrap v1";
+const KEY_CHECK_LABEL: &[u8] = b"monokulo snp master key check v1";
 const NONCE_LEN: usize = 12;
 
 /// How long a challenge is accepted after it is issued: a form left open
@@ -102,6 +114,19 @@ pub struct StoredWrap {
     /// The committed TCB (raw `TCB_VERSION`) the wrapping key is bound to.
     pub tcb: [u8; 8],
     pub wrapped: Vec<u8>,
+    /// Which master key is wrapped (an HMAC of a fixed label under it), for
+    /// a successor that can't open the wrap to check a handed-over key
+    /// against. `None` for a wrap made before engines kept one.
+    pub key_check: Option<[u8; 32]>,
+}
+
+/// A value that tells master keys apart without revealing them:
+/// HMAC-SHA256 of a fixed label under the key.
+fn key_check(master: &[u8; 32]) -> [u8; 32] {
+    let mut mac =
+        <hmac::Hmac<sha2::Sha256>>::new_from_slice(master).expect("HMAC takes a key of any length");
+    mac.update(KEY_CHECK_LABEL);
+    mac.finalize().into_bytes().into()
 }
 
 /// Where the wrapped master keys are kept: the engine's database.
@@ -328,6 +353,7 @@ impl SnpKeyCustody {
             guest_svn: self.report.guest_svn,
             tcb,
             wrapped,
+            key_check: Some(key_check(master)),
         })
     }
 
@@ -366,9 +392,9 @@ impl SnpKeyCustody {
             ));
         };
         let master = Zeroizing::new(master);
-        if own.tcb != committed.raw {
-            // Updated firmware: from now on only firmware at least this new
-            // opens it.
+        // Updated firmware: from now on only firmware at least this new opens
+        // it. A wrap made before engines kept a key check gets one.
+        if own.tcb != committed.raw || own.key_check != Some(key_check(&master)) {
             self.store_master(&master)?;
         }
         Ok(Master::Ready(master))
@@ -642,16 +668,27 @@ impl SnpKeyCustody {
     /// Takes the master key from the predecessor's answer, wraps it for this
     /// image and starts serving. The answer must be attested (under
     /// `anchor`) by an engine signed by this engine's own ID key, made for
-    /// this engine's handoff request.
+    /// this engine's handoff request, at a security version no older than
+    /// any that has used this database (an older image may have a known
+    /// flaw, and whoever exploits it would hold the key every store is then
+    /// sealed under). And the key must be the one this database's wraps
+    /// hold, by their key checks: not another installation's.
     pub fn accept_handoff(
         &self,
         answer: &HandoffAnswer,
         anchor: &Anchor,
         now: i64,
     ) -> Result<(), String> {
+        // Held throughout, so two answers can't both replace a waiting state.
+        let mut state = self.master.write();
+        if matches!(&*state, Master::Ready(_)) {
+            return Err("this engine already has its master key".into());
+        }
+        let wraps = self.wraps.load()?;
+        let newest_used = wraps.iter().map(|wrap| wrap.guest_svn).max().unwrap_or(0);
         transport::verify_handoff_answer(
             answer,
-            &self.handoff_policy(self.config.trust.min_guest_svn),
+            &self.handoff_policy(self.config.trust.min_guest_svn.max(newest_used)),
             anchor,
             now,
             &self.receiver.public_key(),
@@ -671,8 +708,20 @@ impl SnpKeyCustody {
             .try_into()
             .map_err(|_| "the handoff didn't carry a master key".to_owned())?;
         let master = Zeroizing::new(master);
+        let check = key_check(&master);
+        if wraps
+            .iter()
+            .filter_map(|wrap| wrap.key_check)
+            .any(|stored| stored != check)
+        {
+            return Err(
+                "the engine that answered holds another master key than this database's: \
+                 key_custody.snp_handoff_url names the wrong engine"
+                    .into(),
+            );
+        }
         self.store_master(&master)?;
-        *self.master.write() = Master::Ready(master);
+        *state = Master::Ready(master);
         Ok(())
     }
 }
@@ -1112,8 +1161,9 @@ mod tests {
     }
 
     /// The old engine hands over only to a trusted image at its own
-    /// security version or later; a handoff answer opens only for the engine
-    /// that asked.
+    /// security version or later, and the new one takes the key only from an
+    /// image no older than the database's and only if it is the database's
+    /// key; a handoff answer opens only for the engine that asked.
     #[tokio::test]
     async fn a_handoff_goes_only_to_a_trusted_image_that_is_not_older() {
         let wraps = Arc::new(MemoryWraps::default());
@@ -1162,10 +1212,45 @@ mod tests {
                 .is_err(),
             "not the engine that asked"
         );
+
+        // On the taking side: an older image (with a master key of its own,
+        // made on an empty database) answering is refused, though it would
+        // hand over to a newer image; so is a newer one whose master key
+        // isn't this database's.
+        let request = newer.backend.handoff_bundle(NOW).unwrap();
+        for (predecessor, refusal) in [
+            (
+                engine(1, identity(7, 1), &Arc::default()).await,
+                "security version",
+            ),
+            (
+                engine(1, identity(8, 3), &Arc::default()).await,
+                "another master key",
+            ),
+        ] {
+            let answer = predecessor
+                .backend
+                .answer_handoff(&request, &Anchor::Vcek(newer.vcek), NOW)
+                .unwrap();
+            let refused = newer
+                .backend
+                .accept_handoff(&answer, &Anchor::Vcek(predecessor.vcek), NOW)
+                .unwrap_err();
+            assert!(refused.contains(refusal), "{refused}");
+            assert!(newer.backend.awaiting_handoff());
+        }
+
         newer
             .backend
             .accept_handoff(&answer, &Anchor::Vcek(old.vcek), NOW)
             .unwrap();
+        assert!(
+            newer
+                .backend
+                .accept_handoff(&answer, &Anchor::Vcek(old.vcek), NOW)
+                .is_err(),
+            "already has its master key"
+        );
     }
 
     /// The database moved to another chip: the wrap doesn't open there, and

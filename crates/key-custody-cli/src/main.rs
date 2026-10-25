@@ -32,7 +32,8 @@ enum Command {
         /// site.
         #[arg(long)]
         trust_id_key: Option<String>,
-        /// Refuse engine images below this security version.
+        /// Refuse engine images below this security version. Images below
+        /// this release's own floor are refused whatever it is.
         #[arg(long, default_value_t = 0)]
         min_guest_svn: u32,
         /// Refuse engines on firmware below this TCB:
