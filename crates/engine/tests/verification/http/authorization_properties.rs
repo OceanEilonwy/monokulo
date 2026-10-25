@@ -165,6 +165,8 @@ fn routes(p: &Principal) -> Vec<Route> {
         ("PUT", "/api/v1/admin/tenant/key-custody".into()),
         ("GET", "/api/v1/admin/tenant/orders".into()),
         ("POST", "/api/v1/admin/tenant/orders".into()),
+        ("GET", "/api/v1/admin/tenant/orders/open".into()),
+        ("GET", "/api/v1/admin/tenant/orders/totals?since=0".into()),
         ("GET", format!("/api/v1/admin/tenant/orders/{}", p.order)),
         (
             "POST",

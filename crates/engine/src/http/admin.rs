@@ -1161,12 +1161,9 @@ pub(super) struct ListOrdersQuery {
     /// screen watching many orders does not spend one rate-limited request
     /// per order.
     ids: Option<String>,
-    /// `open=true`: only orders still open (pending, unconfirmed,
-    /// confirming, partial) - what a point of sale is still waiting on.
-    open: Option<bool>,
     /// Orders whose id or merchant order id contains this, ignoring case.
     search: Option<String>,
-    /// Orders to skip, for paging with `open`/`search`.
+    /// Orders to skip, for paging with `search`.
     offset: Option<u32>,
 }
 
@@ -1210,14 +1207,13 @@ pub(super) async fn list_orders(
     {
         return Err(ApiError::BadRequest("search is too long".into()));
     }
-    let paged = q.open.unwrap_or(false) || search.is_some() || q.offset.is_some();
+    let paged = search.is_some() || q.offset.is_some();
     if paged && (q.status.is_some() || q.cursor.is_some() || q.cursor_id.is_some()) {
         return Err(ApiError::BadRequest(
-            "status and cursor can't be combined with open, search or offset".into(),
+            "status and cursor can't be combined with search or offset".into(),
         ));
     }
-    let (open, offset, cursor, tenant_id) = (
-        q.open.unwrap_or(false),
+    let (offset, cursor, tenant_id) = (
         q.offset.unwrap_or(0),
         q.cursor
             .map(|at| (at, q.cursor_id.clone().unwrap_or_default())),
@@ -1237,7 +1233,7 @@ pub(super) async fn list_orders(
                     orders
                 }
                 None if paged => {
-                    store.list_orders_page(&tenant_id, open, search.as_deref(), limit, offset)?
+                    store.list_orders_page(&tenant_id, search.as_deref(), limit, offset)?
                 }
                 None => store.list_orders(
                     &tenant_id,
@@ -1253,6 +1249,58 @@ pub(super) async fn list_orders(
         })
         .await?;
     Ok(Json(views))
+}
+
+/// `GET /api/v1/admin/tenant/orders/open` - every order of the
+/// authenticated tenant still open (pending, unconfirmed, confirming or
+/// partial), newest first. All of them, never a page: what a point of
+/// sale is still waiting on, and what disconnecting a plugin waits for.
+pub(super) async fn list_open_orders(
+    AuthedTenant(tenant): AuthedTenant,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
+) -> Result<Json<Vec<OrderView>>, ApiError> {
+    let grace = settings.scan.load().expired_order_grace_period_seconds;
+    let now = now_unix();
+    let views = db
+        .read(move |store| {
+            Ok(store
+                .list_open_orders(&tenant.id)?
+                .into_iter()
+                .map(|o| build_order_view(o, now, grace))
+                .collect::<Vec<_>>())
+        })
+        .await?;
+    Ok(Json(views))
+}
+
+#[derive(Deserialize)]
+pub(super) struct OrderTotalsQuery {
+    /// Unix seconds: orders made at or after this are counted.
+    since: i64,
+}
+
+#[derive(Serialize)]
+pub(super) struct OrderTotalsView {
+    received_piconero: u64,
+    orders_since: u64,
+}
+
+/// `GET /api/v1/admin/tenant/orders/totals?since=` - what all the
+/// authenticated tenant's orders received, and how many were made since
+/// `since`, summed over every order.
+pub(super) async fn order_totals(
+    AuthedTenant(tenant): AuthedTenant,
+    State(db): State<Database>,
+    Query(q): Query<OrderTotalsQuery>,
+) -> Result<Json<OrderTotalsView>, ApiError> {
+    let totals = db
+        .read(move |store| store.order_totals(&tenant.id, q.since))
+        .await?;
+    Ok(Json(OrderTotalsView {
+        received_piconero: totals.received_piconero,
+        orders_since: totals.orders_since,
+    }))
 }
 
 #[derive(Serialize)]

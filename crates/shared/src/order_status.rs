@@ -38,6 +38,22 @@ impl OrderStatus {
         OrderStatus::Cancelled,
     ];
 
+    /// Still open: waiting for a payment, part paid, or paid and not yet
+    /// confirmed enough, so a payment can still move it on. The engine's
+    /// open-order queries select exactly these; the rest are closed.
+    pub fn is_open(self) -> bool {
+        match self {
+            OrderStatus::Pending
+            | OrderStatus::Unconfirmed
+            | OrderStatus::Confirming
+            | OrderStatus::Partial => true,
+            OrderStatus::Paid
+            | OrderStatus::Overpaid
+            | OrderStatus::Expired
+            | OrderStatus::Cancelled => false,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             OrderStatus::Pending => "pending",
