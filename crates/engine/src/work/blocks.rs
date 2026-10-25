@@ -48,7 +48,7 @@ use crate::scanner::{
 use crate::store::position::CatchUpGroup;
 use crate::store::{BlockCheckpoint, Movement, Store};
 
-use shared::activity::Event;
+use engine_protocol::activity::Event;
 
 use super::{bounded, count, Progress, Round, Wait};
 use walked::Walked;
@@ -606,7 +606,7 @@ enum Group {
     CatchUp,
 }
 
-impl From<Group> for shared::activity::Group {
+impl From<Group> for engine_protocol::activity::Group {
     fn from(group: Group) -> Self {
         match group {
             Group::Frontier => Self::Frontier,
@@ -667,7 +667,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         // is, with nothing recorded past it; the next round retries from
         // there. Only this engine's own failures (storage) fail the round.
         Err(ScannerError::Daemon(error @ crate::daemon::DaemonError::Unconfirmed(_))) => {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("blocks-unconfirmed:{}", crate::network::network_str(round.network())),
                 warn,
                 network = crate::network::network_str(round.network()),
@@ -677,7 +677,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             Progress::Blocked(Wait::NodeUnconfirmedTransaction)
         }
         Err(ScannerError::Daemon(error)) => {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("blocks-node:{}", crate::network::network_str(round.network())),
                 warn,
                 network = crate::network::network_str(round.network()),
@@ -1908,7 +1908,7 @@ async fn scan_txs(
                 match result {
                     Ok(found) => scan.scanned(tenant_id, offset + end, found),
                     Err(error) => {
-                        shared::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = crate::network::network_str(round.network()),
+                        telemetry::throttled!(format!("block-scan:{tenant_id}"), warn, store.id = %tenant_id, network = crate::network::network_str(round.network()),
                             height, error = %error, "scanning a block failed for this store; it is caught up later");
                         round.state.backoff.failed(&tenant_id);
                         scan.failed(tenant_id);

@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
-use shared::order_event::OrderEventKind;
-use shared::order_status::OrderStatus;
+use engine_protocol::order_event::OrderEventKind;
+use engine_protocol::order_status::OrderStatus;
 use tokio::sync::broadcast;
 
 use crate::db::{AppOrder, LoggedEvent};

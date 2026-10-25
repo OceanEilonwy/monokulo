@@ -30,7 +30,7 @@ use crate::api::runtime::problem::Problem;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
 use crate::network::NetworkKind;
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
-use shared::ids::UserId;
+use engine_protocol::ids::UserId;
 
 /// The backend that takes keys only encrypted to it.
 pub const SNP: &str = "snp";
@@ -53,14 +53,14 @@ const MAX_BUNDLES: usize = 10_000;
 #[derive(Clone)]
 pub struct KeyBundles {
     bundles: Arc<parking_lot::Mutex<HashMap<String, StoredBundle>>>,
-    opened: Arc<shared::rate_limit::RateLimiter<UserId>>,
+    opened: Arc<rate_limit::RateLimiter<UserId>>,
 }
 
 impl Default for KeyBundles {
     fn default() -> Self {
         KeyBundles {
             bundles: Arc::default(),
-            opened: Arc::new(shared::rate_limit::RateLimiter::new(
+            opened: Arc::new(rate_limit::RateLimiter::new(
                 crate::settings::SnpBundleLimits::default().per_user_per_min,
             )),
         }
@@ -134,7 +134,7 @@ pub enum Purpose<'a> {
     /// A new store.
     Create,
     /// Moving the store whose secret is `sk`.
-    Move(&'a shared::auth::RawToken),
+    Move(&'a credentials::auth::RawToken),
 }
 
 /// The encrypted key entry for `user`'s form whose keys may go to `snp`

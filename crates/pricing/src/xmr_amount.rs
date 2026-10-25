@@ -165,7 +165,7 @@ impl rusqlite::ToSql for Piconero {
 
 impl rusqlite::types::FromSql for Piconero {
     fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        crate::sqlite::Unsigned::<u64>::column_result(value).map(|v| Piconero(v.0))
+        sqlite::Unsigned::<u64>::column_result(value).map(|v| Piconero(v.0))
     }
 }
 

@@ -380,7 +380,7 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
         state
             .db
             .lock()
-            .list_apps(&shared::ids::ConnectionId::new(id.clone()))
+            .list_apps(&engine_protocol::ids::ConnectionId::new(id.clone()))
             .unwrap()
             .len(),
         1
@@ -407,7 +407,7 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
     assert!(state
         .db
         .lock()
-        .list_apps(&shared::ids::ConnectionId::new(id))
+        .list_apps(&engine_protocol::ids::ConnectionId::new(id))
         .unwrap()
         .is_empty());
 }
@@ -466,7 +466,7 @@ async fn an_app_on_another_site_disconnects_itself_cross_origin() {
     assert!(state
         .db
         .lock()
-        .list_apps(&shared::ids::ConnectionId::new(id))
+        .list_apps(&engine_protocol::ids::ConnectionId::new(id))
         .unwrap()
         .is_empty());
 }
@@ -494,8 +494,8 @@ async fn redeeming_refuses_clearly_and_spends_nothing_it_cant_use() {
     assert!(body_text(page).await.contains("no public address yet"));
 
     // A code made while there was one, redeemed after it was removed.
-    let hash = shared::auth::RawToken::presented("ct_test").hash();
-    let store_id = shared::ids::ConnectionId::new(id);
+    let hash = credentials::auth::RawToken::presented("ct_test").hash();
+    let store_id = engine_protocol::ids::ConnectionId::new(id);
     state
         .db
         .lock()

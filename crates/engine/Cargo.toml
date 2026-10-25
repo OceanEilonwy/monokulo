@@ -53,9 +53,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 subtle = "2.6.1"
-shared = { path = "../shared" }
 # TCP keepalive on the ZMQ subscriber's socket, which tokio cannot set.
 socket2 = "0.6.5"
+engine-protocol = { path = "../engine-protocol" }
+sqlite = { path = "../sqlite" }
+credentials = { path = "../credentials" }
+service-runtime = { path = "../service-runtime" }
+rate-limit = { path = "../rate-limit" }
 telemetry = { path = "../telemetry", features = ["axum"] }
 tracing = "0.1.44"
 thiserror = "2.0.20"
@@ -80,7 +84,7 @@ snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # The in-thread database pools (`store::Database::inline`) and other helpers
 # for `engine-test-support` and the e2e harness (`crates/e2e-harness`). Only
 # adds code tests call; it never changes what the engine does.
-test-support = ["shared/test-support"]
+test-support = ["sqlite/test-support", "credentials/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived. Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
@@ -101,8 +105,12 @@ rustix = { version = "1.1.5", features = ["thread", "process"] }
 [dev-dependencies]
 # A stand-in security processor for the snp backend's tests.
 snp-attest = { path = "../snp-attest", features = ["test-support"] }
-# `shared`'s test helpers (the test engine token).
-shared = { path = "../shared", features = ["test-support"] }
+# A node that can't be reached (`service_runtime::unreachable`).
+service-runtime = { path = "../service-runtime", features = ["test-support"] }
+# The test engine token.
+credentials = { path = "../credentials", features = ["test-support"] }
+# The in-thread database pool (`store::Database::inline`).
+sqlite = { path = "../sqlite", features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "test-util"] }
 # SQLite's authorizer hook (fault injection) for tests.
 rusqlite = { version = "0.40.2", features = ["bundled", "hooks", "serialize"] }
@@ -223,7 +231,7 @@ cargo_common_metadata = "allow"         # never published
 multiple_crate_versions = "allow"       # set by the dependency tree, not this crate
 
 # Layout and naming taste that would churn every file for no defect caught.
-absolute_paths = "allow"                # the code names `shared::...` paths in full on purpose
+absolute_paths = "allow"                # the code names other crates' paths (`engine_protocol::...`) in full on purpose
 arbitrary_source_item_ordering = "allow"
 min_ident_chars = "allow"
 single_char_lifetime_names = "allow"

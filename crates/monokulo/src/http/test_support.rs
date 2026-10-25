@@ -119,7 +119,7 @@ pub async fn store_with_keys(
         .db
         .lock()
         .find_session(
-            &shared::auth::RawToken::presented(session_token).hash(),
+            &credentials::auth::RawToken::presented(session_token).hash(),
             crate::now_unix(),
         )
         .unwrap()
@@ -169,7 +169,7 @@ pub async fn store_with_keys(
     let row = state
         .db
         .lock()
-        .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.clone()))
+        .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.clone()))
         .unwrap()
         .unwrap();
     let secret_key = crate::crypto::decrypt(

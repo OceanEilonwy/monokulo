@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use shared::announcements::Announcements;
+use engine_protocol::announcements::Announcements;
 use tokio::sync::Notify;
 
 /// The shortest gap between two passes, however often the node announces:
@@ -37,7 +37,7 @@ pub struct NodeWakes {
     proof: Notify,
     pub(crate) pool_passes_woken: AtomicU64,
     pub(crate) rounds_woken: AtomicU64,
-    publishers: parking_lot::Mutex<Vec<shared::announcements::Publisher>>,
+    publishers: parking_lot::Mutex<Vec<engine_protocol::announcements::Publisher>>,
 }
 
 impl NodeWakes {
@@ -102,7 +102,7 @@ impl NodeWakes {
     fn publisher(
         &self,
         endpoint: &str,
-        update: impl FnOnce(&mut shared::announcements::Publisher),
+        update: impl FnOnce(&mut engine_protocol::announcements::Publisher),
     ) {
         if let Some(publisher) = self
             .publishers
@@ -209,9 +209,9 @@ mod subscriber {
                 p.connected = false;
                 p.connected_since = None;
                 p.last_error = Some(error.clone());
-                p.last_error_at = Some(shared::time::now_unix());
+                p.last_error_at = Some(service_runtime::time::now_unix());
             });
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("zmq-failed:{endpoint}"),
                 warn,
                 network = ?network,
@@ -242,7 +242,7 @@ mod subscriber {
         *retry = FIRST_RETRY;
         wakes.publisher(endpoint, |p| {
             p.connected = true;
-            p.connected_since = Some(shared::time::now_unix());
+            p.connected_since = Some(service_runtime::time::now_unix());
             p.connections += 1;
         });
         tracing::info!(network = ?network, endpoint = %endpoint, "listening to the node's ZMQ announcements");
@@ -265,7 +265,7 @@ mod subscriber {
                     Announcement::Pool => p.pool_announcements += 1,
                     Announcement::Chain => p.block_announcements += 1,
                 }
-                p.last_announcement_at = Some(shared::time::now_unix());
+                p.last_announcement_at = Some(service_runtime::time::now_unix());
             });
             match announced {
                 Announcement::Pool => wakes.pool_changed(),
@@ -347,7 +347,7 @@ mod tests {
         wakes
             .publishers
             .lock()
-            .push(shared::announcements::Publisher::default());
+            .push(engine_protocol::announcements::Publisher::default());
         let reported = wakes.announcements().unwrap();
         assert_eq!((reported.pool_passes_woken, reported.rounds_woken), (1, 0));
     }

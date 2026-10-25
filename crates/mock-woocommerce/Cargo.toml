@@ -11,8 +11,10 @@ reqwest = { version = "0.13.4", default-features = false, features = ["rustls", 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The webhook receiver verifies `X-Monokulo-Signature` with
-# `shared::webhook_sign::verify_signature`, the same code monokulo signs with.
-shared = { path = "../shared" }
+# `credentials::webhook_sign::verify_signature`, the same code monokulo signs with.
+credentials = { path = "../credentials" }
+# The clock the signature timestamps are checked against.
+service-runtime = { path = "../service-runtime" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
@@ -24,6 +26,8 @@ uuid = { version = "1.26.0", features = ["v4"] }
 engine = { path = "../engine" }
 monokulo = { path = "../monokulo", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
+# The ids the real-stagenet tests look the connection and order up by.
+engine-protocol = { path = "../engine-protocol" }
 monero = "0.22.0"
 # The real-stagenet tests hex-encode the sent transaction's hash.
 hex = "0.4.3"

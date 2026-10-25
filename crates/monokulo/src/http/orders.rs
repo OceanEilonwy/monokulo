@@ -63,13 +63,13 @@ pub(super) async fn load_owned_connection(
 pub(crate) fn decrypt_sk(
     encryption_key: &crate::crypto::AtRestKey,
     row: &StoreConnectionRow,
-) -> Result<shared::auth::RawToken, ()> {
+) -> Result<credentials::auth::RawToken, ()> {
     crypto::decrypt(
         encryption_key,
         crypto::Binding::StoreSecret(row.id.as_str()),
         &row.tenant_secret_token_encrypted,
     )
-    .map(|sk| shared::auth::RawToken::presented(&sk))
+    .map(|sk| credentials::auth::RawToken::presented(&sk))
     .map_err(|_| ())
 }
 
@@ -78,7 +78,7 @@ pub(crate) fn decrypt_sk(
 async fn build_orders_view_model(
     state: &AppState,
     row: &super::OwnedStore,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     search: &str,
     page: u32,
 ) -> Result<OrdersViewModel, ()> {
@@ -234,7 +234,7 @@ pub struct LookupPaymentForm {
 /// human-readable result message plus the matched order's id, if any.
 async fn perform_payment_lookup(
     state: &AppState,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     txid: &str,
 ) -> Result<(String, Option<String>), ()> {
     match state.engine.client.lookup_payment(sk, txid).await {
@@ -363,7 +363,7 @@ pub async fn order_detail(
 async fn order_detail_data(
     state: &AppState,
     row: &super::OwnedStore,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_id: &crate::db::OrderId,
     payment_link: String,
 ) -> Result<Option<OrderDetailData>, ()> {
@@ -392,7 +392,7 @@ async fn order_detail_data(
                 Some(m) => (
                     format!(
                         "{} XMR per 1 {}",
-                        crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(
+                        crate::views::trim_xmr(&pricing::exchange_rate::format_piconero_as_xmr(
                             m.piconero_per_unit.get()
                         )),
                         m.currency
@@ -425,9 +425,9 @@ async fn order_detail_data(
                     Some(rate) => {
                         format!(
                             "{} XMR per 1 {base_currency}",
-                            crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(
-                                rate.get()
-                            ))
+                            crate::views::trim_xmr(
+                                &pricing::exchange_rate::format_piconero_as_xmr(rate.get())
+                            )
                         )
                     }
                     None => "same as order currency".to_string(),
@@ -2249,7 +2249,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(row.fx_providers, vec!["haveno"]);
@@ -2294,7 +2296,9 @@ mod tests {
         let before = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
 
@@ -2329,7 +2333,7 @@ mod tests {
             let after = state
                 .db
                 .lock()
-                .get_store_connection_by_id(&shared::ids::ConnectionId::new(
+                .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string(),
                 ))
                 .unwrap()
@@ -2381,7 +2385,9 @@ mod tests {
         let haveno = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap()
             .fx_provider_settings
@@ -2436,7 +2442,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -2943,7 +2951,7 @@ mod tests {
         state
             .engine
             .client
-            .get_tenant(&shared::auth::RawToken::presented(&sk))
+            .get_tenant(&credentials::auth::RawToken::presented(&sk))
             .await
             .unwrap()
             .key_custody_backend
@@ -3585,7 +3593,7 @@ mod tests {
             .lock()
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some(("old", "50", 20, crate::now_unix())),
             )
@@ -3593,7 +3601,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(
@@ -3602,7 +3612,7 @@ mod tests {
             &row.tenant_secret_token_encrypted,
         )
         .unwrap();
-        let sk = shared::auth::RawToken::presented(&sk);
+        let sk = credentials::auth::RawToken::presented(&sk);
         state
             .engine
             .client
@@ -3645,7 +3655,7 @@ mod tests {
         let thresholds = state
             .db
             .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap();
@@ -3675,7 +3685,7 @@ mod tests {
             .lock()
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some(("keep", "50", 20, crate::now_unix())),
             )
@@ -3696,7 +3706,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(
@@ -3709,7 +3721,7 @@ mod tests {
             state
                 .engine
                 .client
-                .get_tenant(&shared::auth::RawToken::presented(&sk))
+                .get_tenant(&credentials::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -3718,7 +3730,7 @@ mod tests {
         let thresholds = state
             .db
             .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap();
@@ -3751,7 +3763,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(
@@ -3764,7 +3778,7 @@ mod tests {
             state
                 .engine
                 .client
-                .get_tenant(&shared::auth::RawToken::presented(&sk))
+                .get_tenant(&credentials::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -3789,7 +3803,7 @@ mod tests {
             .lock()
             .replace_confirmation_thresholds(
                 crate::confirmation_thresholds::PolicyProof::for_test(),
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
                 &[],
                 Some((existing_id, "50", 20, crate::now_unix())),
             )
@@ -3813,7 +3827,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(
@@ -3826,7 +3842,7 @@ mod tests {
             state
                 .engine
                 .client
-                .get_tenant(&shared::auth::RawToken::presented(&sk))
+                .get_tenant(&credentials::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
                 .confirmations_required,
@@ -3835,7 +3851,7 @@ mod tests {
         let thresholds = state
             .db
             .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap();
@@ -3945,7 +3961,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
                 .map(|rows| rows.len())
@@ -3965,7 +3981,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
                 .map(|rows| rows.len())
@@ -4006,7 +4022,7 @@ mod tests {
         let threshold_id = state
             .db
             .lock()
-            .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                 connection_id.to_string(),
             ))
             .unwrap()[0]
@@ -4059,7 +4075,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
                 .map(|rows| rows.len())
@@ -4148,7 +4164,7 @@ mod tests {
             let doomed = state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string(),
                 ))
                 .unwrap()[0]
@@ -4169,7 +4185,7 @@ mod tests {
             let amounts: Vec<String> = state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string(),
                 ))
                 .unwrap()
@@ -4229,7 +4245,7 @@ mod tests {
             state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string()
                 ))
                 .map(|rows| rows.len())
@@ -4355,7 +4371,7 @@ mod tests {
             let rows = state
                 .db
                 .lock()
-                .list_confirmation_thresholds(&shared::ids::ConnectionId::new(
+                .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
                     connection_id.to_string(),
                 ))
                 .unwrap();
@@ -4503,7 +4519,10 @@ mod tests {
                 .unwrap()
                 .id;
             let stored = store
-                .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+                .get_order(
+                    &tenant_id,
+                    &engine_protocol::ids::OrderId::new(order_id.to_string()),
+                )
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -4517,8 +4536,8 @@ mod tests {
             .db
             .lock()
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
             )
             .unwrap()
             .unwrap();
@@ -4626,7 +4645,10 @@ mod tests {
             .unwrap()
             .id;
         let stored = store
-            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+            .get_order(
+                &tenant_id,
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -4640,8 +4662,8 @@ mod tests {
             .db
             .lock()
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(connection_id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
             )
             .unwrap()
             .unwrap();
@@ -4746,7 +4768,7 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap();
         let secret = crate::crypto::decrypt(
@@ -5165,7 +5187,7 @@ mod tests {
     fn scan_range_row_shows_a_closed_range_once_no_longer_being_watched() {
         let order = OrderDetailData {
             from_pos: false,
-            order_id: shared::ids::OrderId::new("pay_abc123".to_string()),
+            order_id: engine_protocol::ids::OrderId::new("pay_abc123".to_string()),
             merchant_order_id: None,
             show_merchant_order_id: true,
             description: None,
@@ -5176,7 +5198,7 @@ mod tests {
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 500_000_000_000,
-            status: shared::order_status::OrderStatus::Paid,
+            status: engine_protocol::order_status::OrderStatus::Paid,
             confirmations: 10,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),
@@ -5192,7 +5214,7 @@ mod tests {
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
         };
         let data = OrderDetailViewModel {
-            connection_id: shared::ids::ConnectionId::new("conn_1".to_string()),
+            connection_id: engine_protocol::ids::ConnectionId::new("conn_1".to_string()),
             display_name: "shop.example.com".to_string(),
             order: Some(order),
         };

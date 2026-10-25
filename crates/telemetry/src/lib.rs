@@ -20,6 +20,9 @@
 //! holds a Unix time, and until then the filter logs at `debug`. It ends by
 //! itself, so it can't be left on in production by accident, and a restart
 //! before then keeps it on until the same time.
+//!
+//! An error that repeats every tick is logged with [`throttled!`]
+//! ([`throttle`]): once a minute, with a count of the ones held back.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
@@ -30,6 +33,7 @@ pub mod otlp;
 pub mod query;
 pub mod redact;
 pub mod store;
+pub mod throttle;
 pub mod trace;
 
 use std::io::IsTerminal;

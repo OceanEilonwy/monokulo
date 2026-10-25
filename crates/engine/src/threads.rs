@@ -38,7 +38,7 @@ pub const THREAD_NAME: &str = "engine-worker";
 /// That is its runtime's ([`THREAD_NAME`]), its database worker and readers
 /// (`engine-db…`) and its `RandomX` hashers (`engine-randomx-…`). Inside
 /// monokulo, the engine's log lines (`telemetry::Telemetry::host`) and its
-/// share of the CPU (`shared::resources::Sampler::host_threads`) are told
+/// share of the CPU (`service_runtime::resources::Sampler::host_threads`) are told
 /// apart by it.
 pub const THREAD_PREFIX: &str = "engine-";
 

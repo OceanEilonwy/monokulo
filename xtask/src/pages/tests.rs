@@ -249,13 +249,13 @@ fn live_artifact(root: &Path) {
                 r#"<failure message="got: [&lt;script&gt;]"/>"#,
             ),
             (
-                "shared",
+                "pricing",
                 "haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies",
                 3.0,
                 "",
             ),
             (
-                "shared",
+                "pricing",
                 "coinmarketcap::tests::live_coinmarketcap_api_quotes_usd",
                 31.0,
                 "",
@@ -295,12 +295,12 @@ fn live_artifact(root: &Path) {
             "reasons": {
                 "engine › daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value": "needs a live mainnet node",
                 "monokulo › embed_domains::tests::live_system_resolver_reads_real_txt_records": "needs live DNS",
-                "shared › haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies": "needs the live haveno.markets API",
-                "shared › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "needs the live CoinMarketCap API",
+                "pricing › haveno::tests::live_haveno_markets_api_prices_fiat_under_both_policies": "needs the live haveno.markets API",
+                "pricing › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "needs the live CoinMarketCap API",
                 "pos-stagenet-payments.spec.js › a 0-conf-trusted payment shows shared success and stays reviewable": "needs the live stagenet node and the funded test wallets"
             },
             "inconclusive": {
-                "shared › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "CoinMarketCap's keyless API still rate-limited this address (HTTP 429)"
+                "pricing › coinmarketcap::tests::live_coinmarketcap_api_quotes_usd": "CoinMarketCap's keyless API still rate-limited this address (HTTP 429)"
             }
         }),
     );

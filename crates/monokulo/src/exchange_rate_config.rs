@@ -5,7 +5,7 @@
 //! variables below).
 //!
 //! **Dispatch is by currency first, store second.** An order priced in
-//! `"XMR"` always uses `shared::exchange_rate::XmrIdentityProvider` - a
+//! `"XMR"` always uses `pricing::exchange_rate::XmrIdentityProvider` - a
 //! trivial 1:1 unit conversion, no live rate, no I/O, and (deliberately) no
 //! regard for the store's own provider list at all, since there is nothing
 //! for that setting to mean when the order's own currency already *is*
@@ -16,7 +16,7 @@
 //! the provider that finally answered is recorded on the order (the reason
 //! it is recorded per order). Providers today are `coingecko` and
 //! `coinmarketcap` (both keyless) and `haveno` (RetoSwap's order book via
-//! `haveno.markets`, off by default - see `shared::haveno`). (The "fixed" admin-pegged provider that
+//! `haveno.markets`, off by default - see `pricing::haveno`). (The "fixed" admin-pegged provider that
 //! used to exist has been removed entirely as a product feature: real user
 //! feedback was that a hand-pegged rate doesn't make sense given dynamic
 //! crypto pricing.)
@@ -48,7 +48,7 @@
 //!   on the admin settings page (kept encrypted) or by
 //!   `MONOKULO_EXCHANGE_RATE_COINMARKETCAP_API_KEY`, which locks it. With
 //!   one, CoinMarketCap is asked through its keyed API; without, keyless
-//!   (`shared::coinmarketcap`).
+//!   (`pricing::coinmarketcap`).
 //! - `MONOKULO_EXCHANGE_RATE_CACHE_SECONDS` - how long a Coingecko or
 //!   CoinMarketCap lookup result (a rate *or* the supported-currency list - both use this
 //!   same TTL) is trusted before the next request triggers a fresh live
@@ -72,9 +72,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use shared::coinmarketcap::CoinMarketCapRateProvider;
-use shared::exchange_rate::{CoingeckoRateProvider, ExchangeRateError, XmrIdentityProvider};
-use shared::haveno::HavenoRateProvider;
+use pricing::coinmarketcap::CoinMarketCapRateProvider;
+use pricing::exchange_rate::{CoingeckoRateProvider, ExchangeRateError, XmrIdentityProvider};
+use pricing::haveno::HavenoRateProvider;
 
 use crate::db::StoreConnectionRow;
 
@@ -309,7 +309,7 @@ impl ExchangeRateProviders {
                 CoinMarketCapRateProvider::new(config.coinmarketcap_base_url.clone()).with_api_key(
                     Some(config.coinmarketcap_api_key.expose())
                         .filter(|key| !key.is_empty())
-                        .map(shared::coinmarketcap::ApiKey::new),
+                        .map(pricing::coinmarketcap::ApiKey::new),
                 ),
             ))
         } else {
@@ -577,8 +577,8 @@ mod tests {
 
     fn test_store(fx_providers: &[&str]) -> StoreConnectionRow {
         StoreConnectionRow {
-            id: shared::ids::ConnectionId::new("conn-1".to_string()),
-            user_id: shared::ids::UserId::new("user-1".to_string()),
+            id: engine_protocol::ids::ConnectionId::new("conn-1".to_string()),
+            user_id: engine_protocol::ids::UserId::new("user-1".to_string()),
             name: "Shop".to_string(),
             site: crate::stores::Site::parse("shop.example.com").ok(),
             tenant_public_key: "pk_test".to_string(),

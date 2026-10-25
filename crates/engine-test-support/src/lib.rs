@@ -1,27 +1,26 @@
 //! Test-only helper for standing up a real, network-bound `engine`
 //! engine instance for cross-crate integration tests.
 //!
-//! ## Why this is its own crate, not `shared`
+//! ## Why this is its own crate
 //!
-//! `shared` is a *dependency of* `engine` (`shared::auth`,
-//! `shared::password`, `shared::migrations` are all
-//! pulled in by the engine crate). A helper that boots a real
-//! `engine` engine instance necessarily needs `engine` itself
-//! as a dependency - even as a dev-dependency, that would make `shared`
-//! depend (for its own test/dev build) on a crate that depends on `shared`,
-//! i.e. `scanner -> shared -> scanner`. Cargo rejects dependency
+//! The crates the engine is built on (`credentials`, `sqlite`,
+//! `service-runtime`, ...) are *dependencies of* `engine`. A helper that
+//! boots a real `engine` instance necessarily needs `engine` itself as a
+//! dependency - even as a dev-dependency, putting it in one of them would
+//! make that crate depend (for its own test/dev build) on a crate that
+//! depends on it, i.e. `engine -> sqlite -> engine`. Cargo rejects dependency
 //! cycles like this outright (a dev-dependency edge back onto a crate that is
 //! itself depended on, directly or transitively, still forms a cycle in the
-//! resolved dependency graph), so this genuinely cannot live in `shared`.
+//! resolved dependency graph), so this genuinely cannot live in one of them.
 //!
 //! Instead it lives in its own crate, layered *above* both:
-//! `engine-test-support -> scanner -> shared`.
+//! `engine-test-support -> engine -> sqlite`.
 //!
 //! Any workspace crate that needs a real, bound engine for its own tests
 //! (`mock-woocommerce`, `monokulo`, ...) adds this as a
 //! `[dev-dependencies]` entry. Because it is only ever reached that way, this
 //! crate needs no `#[cfg(test)]`/feature gate of its own to stay out of
-//! release builds the way it would if it lived inside `shared` - a
+//! release builds the way it would if it lived inside a library crate - a
 //! dev-dependency is never linked into a normal (non-test, non-dev) build of
 //! whatever depends on it, by cargo's own rules.
 
@@ -45,14 +44,14 @@ use monero::Network;
 
 /// The engine token every engine this crate spawns accepts: what a
 /// test gives monokulo's `EngineClient` (or sends in
-/// `shared::auth::ENGINE_TOKEN_HEADER`) to reach it.
+/// `credentials::auth::ENGINE_TOKEN_HEADER`) to reach it.
 pub use engine::http::TEST_ENGINE_TOKEN;
 
 /// A plain HTTP client for calling a test engine directly, as monokulo
 /// does: it sends [`TEST_ENGINE_TOKEN`] on every request.
 pub fn engine_http_client() -> reqwest::Client {
     let headers = reqwest::header::HeaderMap::from_iter([(
-        reqwest::header::HeaderName::from_static(shared::auth::ENGINE_TOKEN_HEADER),
+        reqwest::header::HeaderName::from_static(credentials::auth::ENGINE_TOKEN_HEADER),
         reqwest::header::HeaderValue::from_static(TEST_ENGINE_TOKEN),
     )]);
     reqwest::Client::builder()
@@ -331,7 +330,7 @@ impl TestEngineHandle {
             bundle,
             &snp_test_trust(),
             &transport::Anchor::Vcek(vcek),
-            shared::time::now_unix(),
+            service_runtime::time::now_unix(),
         )
         .expect("the test engine's bundle checks out");
         let mut keys = hex::decode(view_key_hex).unwrap();
@@ -429,7 +428,7 @@ impl TestEngineHandle {
     /// scan loop does after each round, so the engine's `/status` reports
     /// its scanner healthy (until it goes stale) without a real chain.
     pub fn record_scan_round_ok(&self, network: Network) {
-        let now = shared::time::now_unix();
+        let now = service_runtime::time::now_unix();
         engine::scanner_status::record_tick(
             &self.scanner_status,
             network,
@@ -534,7 +533,7 @@ impl TestEngineHandle {
                 .ok_or(engine::store::StoreError::NotFound)?
                 .xmr_amount_piconero
         };
-        self.record_order_payment(order_id, shared::xmr_amount::Piconero(amount), Some(101))
+        self.record_order_payment(order_id, pricing::xmr_amount::Piconero(amount), Some(101))
     }
 
     /// Mines every mempool-only payment to `order_id` into a block (height
@@ -543,7 +542,7 @@ impl TestEngineHandle {
     pub fn confirm_order_payments(&self, order_id: &str) -> Result<(), engine::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = shared::time::now_unix();
+        let now = service_runtime::time::now_unix();
         for payment in store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))?
             .into_iter()
@@ -582,13 +581,13 @@ impl TestEngineHandle {
     pub fn record_order_payment(
         &self,
         order_id: &str,
-        piconero: shared::xmr_amount::Piconero,
+        piconero: pricing::xmr_amount::Piconero,
         confirmations: Option<u64>,
     ) -> Result<(), engine::store::StoreError> {
         let piconero = piconero.get();
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock();
-        let now = shared::time::now_unix();
+        let now = service_runtime::time::now_unix();
         let existing = store
             .get_all_payments(&engine::store::OrderId::new(order_id.to_string()))
             .map(|p| p.len())
@@ -982,7 +981,9 @@ impl TestEngineConfig {
             db: engine::store::Database::inline(store.clone()),
             rate_limits,
             log_store: self.log_store.clone(),
-            engine_token: Arc::new(shared::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash()),
+            engine_token: Arc::new(
+                credentials::auth::RawToken::presented(TEST_ENGINE_TOKEN).hash(),
+            ),
             settings: engine_settings,
             custody: engine::http::Custody {
                 backends: key_custody.clone(),

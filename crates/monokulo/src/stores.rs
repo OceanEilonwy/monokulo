@@ -233,7 +233,7 @@ pub fn fill_secret_key_hashes(
                 store: id.clone(),
                 error,
             })?;
-            db.set_secret_key_hash(&id, &shared::auth::RawToken::presented(&secret).hash())?;
+            db.set_secret_key_hash(&id, &credentials::auth::RawToken::presented(&secret).hash())?;
         }
         Ok(())
     })

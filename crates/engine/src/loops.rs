@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use monero::Network;
 use parking_lot::RwLock;
-use shared::supervise::supervise_until;
+use service_runtime::supervise::supervise_until;
 use tracing::Instrument as _;
 
 use crate::engine_settings::{Daemons, EngineSettings};
@@ -46,7 +46,7 @@ pub fn fast_mempool_interval(poll_interval: Duration) -> Duration {
 /// transactions on its own rotation.
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_fast_mempool_loop(
     scan_state: Arc<crate::work::ScanState>,
@@ -93,7 +93,7 @@ pub async fn run_fast_mempool_loop(
                 // The round loop is the safety net, so this is not an
                 // outage; but a pass that keeps hitting its deadline is a
                 // node that keeps hanging, which an operator should see.
-                Err(_) => shared::throttled!(
+                Err(_) => telemetry::throttled!(
                     format!("fast-mempool-deadline:{network:?}"),
                     warn,
                     network = ?network,
@@ -355,7 +355,7 @@ pub const REGISTRATION_RETRY_AFTER_LOSS: Duration = Duration::from_secs(5);
 )]
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_scanner_loop(
     scan_state: Arc<crate::work::ScanState>,
@@ -482,7 +482,7 @@ pub async fn run_scanner_loop(
         };
         let finished_at = now_unix();
         if let Err(e) = &result {
-            shared::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
+            telemetry::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
         }
         // Not for a network whose node setting was cleared during this tick:
         // its status was removed when its loops were stopped.
@@ -518,12 +518,12 @@ pub async fn run_scanner_loop(
             let woken = scan_state.node_wakes().chain_or(scan.poll_interval).await;
             scan_state
                 .activity()
-                .record(shared::activity::Event::Slept {
+                .record(engine_protocol::activity::Event::Slept {
                     ms: crate::work::millis(slept.elapsed()),
                     woken_by: if woken {
-                        shared::activity::Wake::NewBlock
+                        engine_protocol::activity::Wake::NewBlock
                     } else {
-                        shared::activity::Wake::Interval
+                        engine_protocol::activity::Wake::Interval
                     },
                 });
         }
@@ -539,7 +539,7 @@ fn record_node_pool(
     let (activity, daemon) = (Arc::clone(activity), Arc::clone(daemon));
     tokio::spawn(async move {
         if let Some(outlook) = daemon.pool_outlook(crate::activity::NODE_POOL_EVERY).await {
-            activity.record(shared::activity::Event::NodePool {
+            activity.record(engine_protocol::activity::Event::NodePool {
                 txs: outlook.txs,
                 bytes: outlook.bytes,
                 penalty_free: outlook.penalty_free,
@@ -562,7 +562,7 @@ async fn record_snapshot(
         .nodes()
         .iter()
         .enumerate()
-        .map(|(i, node)| shared::activity::Node {
+        .map(|(i, node)| engine_protocol::activity::Node {
             label: node.label.clone(),
             active: i == daemon.current_index(),
             cooling_down: daemon.in_cooldown(i),
@@ -580,8 +580,10 @@ async fn record_snapshot(
     {
         Ok(snapshot) => scan_state
             .activity()
-            .record(shared::activity::Event::Snapshot(Box::new(snapshot))),
-        Err(error) => shared::throttled!(
+            .record(engine_protocol::activity::Event::Snapshot(Box::new(
+                snapshot,
+            ))),
+        Err(error) => telemetry::throttled!(
             format!("activity-snapshot:{network:?}"),
             warn,
             network = ?network,
@@ -659,7 +661,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             rate_limits,
             log_store: None,
             engine_token: Arc::new(
-                shared::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
+                credentials::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash(),
             ),
             settings: Arc::clone(&settings),
             custody: crate::http::Custody {
@@ -692,7 +694,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
                     .uri("/api/v1/admin/settings")
                     .header("content-type", "application/json")
                     .header(
-                        shared::auth::ENGINE_TOKEN_HEADER,
+                        credentials::auth::ENGINE_TOKEN_HEADER,
                         crate::http::TEST_ENGINE_TOKEN,
                     )
                     .body(Body::from(body.to_string()))
@@ -701,7 +703,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
         };
         // A node that hangs up on every request: the loop runs and records
         // failing ticks.
-        let port = shared::unreachable::address().port();
+        let port = service_runtime::unreachable::address().port();
         let node = serde_json::json!({ "host": "127.0.0.1", "port": port, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
         let saved = save(serde_json::json!({ "monero_node": { "stagenet": node } }))
             .await
@@ -805,11 +807,11 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
         // Settled into its hour-long wait.
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(ticks(), 1);
-        let node_pool = |events: &[shared::activity::Recorded]| {
+        let node_pool = |events: &[engine_protocol::activity::Recorded]| {
             events.iter().any(|recorded| {
                 matches!(
                     recorded.event,
-                    shared::activity::Event::NodePool {
+                    engine_protocol::activity::Event::NodePool {
                         txs: 0,
                         bytes: Some(0),
                         penalty_free: crate::daemon::PoolOutlook::FULL_REWARD_ZONE,
@@ -847,14 +849,14 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
         assert!(
             recorded.iter().any(|event| matches!(
                 event,
-                shared::activity::Event::Snapshot(snapshot) if !snapshot.pool.watched
+                engine_protocol::activity::Event::Snapshot(snapshot) if !snapshot.pool.watched
             )),
             "no store has anything to look for in the pool: {recorded:#?}"
         );
         assert!(recorded.iter().any(|event| matches!(
             event,
-            shared::activity::Event::Slept {
-                woken_by: shared::activity::Wake::NewBlock,
+            engine_protocol::activity::Event::Slept {
+                woken_by: engine_protocol::activity::Wake::NewBlock,
                 ms: _,
             }
         )));

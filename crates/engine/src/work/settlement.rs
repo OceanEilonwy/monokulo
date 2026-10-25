@@ -18,7 +18,7 @@ use crate::scanner::{
 };
 use crate::store::position::VanishedPayments;
 
-use shared::activity::Event;
+use engine_protocol::activity::Event;
 
 use super::{Progress, Round, Wait};
 
@@ -136,7 +136,7 @@ async fn report_hold(round: &Round<'_>, tip: u64) -> Result<(), ScannerError> {
         return Ok(());
     };
     let network = crate::network::network_str(round.network());
-    shared::throttled!(
+    telemetry::throttled!(
         format!("expiry-held:{network}"),
         warn,
         network,

@@ -25,7 +25,7 @@ const TEST_CURRENCY: &str = "USD";
 const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
 /// Spins up a real local HTTP server standing in for Coingecko - same
-/// no-mocking-library pattern `shared::exchange_rate`'s own tests use.
+/// no-mocking-library pattern `pricing::exchange_rate`'s own tests use.
 /// Returns the base URL a `CoingeckoRateProvider` can be pointed at.
 async fn spawn_mock_coingecko() -> String {
     async fn price() -> axum::response::Response {
@@ -276,7 +276,8 @@ async fn an_orders_description_reaches_the_engine_and_bad_ones_are_refused() {
         .unwrap()
         .unwrap();
     let sk = crate::http::decrypt_sk(&state.encryption_key, &row).unwrap();
-    let order_id = shared::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
+    let order_id =
+        engine_protocol::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
     let detail = state
         .engine
         .client
@@ -302,7 +303,8 @@ async fn an_orders_description_reaches_the_engine_and_bad_ones_are_refused() {
     let created: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(created["description"], serde_json::Value::Null);
     assert_eq!(created["show_merchant_order_id"], false);
-    let order_id = shared::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
+    let order_id =
+        engine_protocol::ids::OrderId::new(created["order_id"].as_str().unwrap().to_string());
     let metadata = state
         .db
         .lock()
@@ -1031,7 +1033,7 @@ async fn creating_a_real_order_records_local_fiat_metadata() {
         .lock()
         .get_order_currency_metadata(
             &connection_id,
-            &shared::ids::OrderId::new(order_id.to_string()),
+            &engine_protocol::ids::OrderId::new(order_id.to_string()),
         )
         .unwrap();
     let metadata =
@@ -1040,7 +1042,7 @@ async fn creating_a_real_order_records_local_fiat_metadata() {
     assert_eq!(metadata.amount, "10.00");
     assert_eq!(
         metadata.piconero_per_unit,
-        shared::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT)
+        pricing::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT)
     );
 
     // This store's base currency ("XMR", `create_connection`'s own
@@ -1053,7 +1055,7 @@ async fn creating_a_real_order_records_local_fiat_metadata() {
     assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
     assert_eq!(
         metadata.base_currency_piconero_per_unit,
-        Some(shared::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT))
+        Some(pricing::xmr_amount::Piconero(TEST_RATE_PICONERO_PER_UNIT))
     );
     assert_eq!(
         metadata.confirmations_required_applied,
@@ -1181,7 +1183,7 @@ async fn order_pricing(state: &AppState, router: &Router, pk: &str) -> (String, 
         .lock()
         .get_order_currency_metadata(
             &connection_id,
-            &shared::ids::OrderId::new(order_id.to_string()),
+            &engine_protocol::ids::OrderId::new(order_id.to_string()),
         )
         .unwrap()
         .unwrap();
@@ -1339,7 +1341,7 @@ async fn an_unavailable_or_rateless_provider_falls_through_to_the_next_preferred
     // every request).
     state.exchange_rate = std::sync::Arc::new(
         crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
-            format!("http://{}", shared::unreachable::address()),
+            format!("http://{}", service_runtime::unreachable::address()),
             spawn_mock_coinmarketcap(Some(4.0)).await,
         ),
     );
@@ -2070,7 +2072,7 @@ async fn a_rate_limited_provider_or_an_unreachable_engine_is_a_503_on_every_rout
     let mut down = state.clone();
     down.engine = crate::http::Engine::new(EngineClient::for_tests(format!(
         "http://{}",
-        shared::unreachable::address()
+        service_runtime::unreachable::address()
     )));
     let router = build_router(down);
     let response = router

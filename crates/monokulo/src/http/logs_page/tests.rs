@@ -710,7 +710,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         let db = s.state.db.lock();
         crate::db::test_rows::store_on_wallet(
             &db,
-            &shared::ids::ConnectionId::new("c_pos"),
+            &engine_protocol::ids::ConnectionId::new("c_pos"),
             &admin.id,
             "pos-shop.example.com",
             "pk_pos",
@@ -719,7 +719,7 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
             "XMR",
         )
         .unwrap();
-        db.set_client_logging(&shared::ids::ConnectionId::new("c_pos"), true)
+        db.set_client_logging(&engine_protocol::ids::ConnectionId::new("c_pos"), true)
             .unwrap();
     }
     let session = "5b0c7f0e-2a8d-4c61-9e3b-1f2d3c4b5a69";
@@ -867,7 +867,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         .unwrap();
     crate::db::test_rows::store_on_wallet(
         &s.state.db.lock(),
-        &shared::ids::ConnectionId::new("c_who"),
+        &engine_protocol::ids::ConnectionId::new("c_who"),
         &admin.id,
         "who-shop.example.com",
         "pk_who",
@@ -905,11 +905,11 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         .db
         .lock()
         .create_order_currency_metadata(&crate::db::NewOrderRecord {
-            connection_id: &shared::ids::ConnectionId::new("c_who"),
+            connection_id: &engine_protocol::ids::ConnectionId::new("c_who"),
             order_id: &crate::db::OrderId::new("o_who"),
             currency: "EUR",
             amount: "12.34",
-            piconero_per_unit: shared::xmr_amount::Piconero(1_000_000),
+            piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000),
             provider: "fixed",
             created_at: 1000,
             base_currency: "EUR",
@@ -959,11 +959,12 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
         }
     };
     let token = s.cookie.split_once('=').unwrap().1;
-    let session = crate::http::session_log_id(&shared::auth::RawToken::presented(token).hash());
+    let session =
+        crate::http::session_log_id(&credentials::auth::RawToken::presented(token).hash());
     assert_eq!(session.len(), 16);
     assert!(
         !session.contains(token)
-            && !shared::auth::RawToken::presented(token)
+            && !credentials::auth::RawToken::presented(token)
                 .hash()
                 .as_str()
                 .contains(&session),

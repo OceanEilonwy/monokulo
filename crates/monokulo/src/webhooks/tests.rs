@@ -91,15 +91,15 @@ fn test_db() -> Database {
 /// its own.
 fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
     let db = db.lock();
-    let wallet = shared::ids::WalletId::new(format!("w_{id}"));
-    let user = shared::ids::UserId::new("test-admin");
+    let wallet = engine_protocol::ids::WalletId::new(format!("w_{id}"));
+    let user = engine_protocol::ids::UserId::new("test-admin");
     db.create_wallet(&crate::db::NewWalletRow {
         id: &wallet,
         user_id: &user,
         name: id,
         network: "mainnet",
         primary_address: &format!("4{id}"),
-        engine_wallet_id: &shared::ids::EngineWalletId::new(format!("ew_{id}")),
+        engine_wallet_id: &engine_protocol::ids::EngineWalletId::new(format!("ew_{id}")),
         origin: crate::db::WalletOrigin::Imported,
         backup: None,
         app: None,
@@ -116,7 +116,7 @@ fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
             .as_ref(),
         &format!("pk_{id}"),
         "",
-        &shared::auth::RawToken::presented(&format!("sk_{id}")).hash(),
+        &credentials::auth::RawToken::presented(&format!("sk_{id}")).hash(),
         0,
         "EUR",
         &wallet,
@@ -209,7 +209,7 @@ async fn a_delivery_is_signed_with_the_webhooks_secret_and_names_its_event() {
     assert_eq!(picked, 1);
     let (headers, body) = received.requests.lock()[0].clone();
     let signature = headers["x-monokulo-signature"].to_str().unwrap();
-    assert!(shared::webhook_sign::verify_signature(
+    assert!(credentials::webhook_sign::verify_signature(
         &created.signing_secret,
         body.as_bytes(),
         signature,
@@ -799,7 +799,11 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
     };
     let pay = |order: &str, piconero: u64, confirmations: Option<u64>| {
         shop.engine
-            .record_order_payment(order, shared::xmr_amount::Piconero(piconero), confirmations)
+            .record_order_payment(
+                order,
+                pricing::xmr_amount::Piconero(piconero),
+                confirmations,
+            )
             .unwrap();
     };
     let seen = order().await;
@@ -818,8 +822,8 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
         .engine
         .client
         .cancel_order(
-            &shared::auth::RawToken::presented(&shop.sk),
-            &shared::ids::OrderId::new(cancelled),
+            &credentials::auth::RawToken::presented(&shop.sk),
+            &engine_protocol::ids::OrderId::new(cancelled),
         )
         .await
         .unwrap();
@@ -951,8 +955,8 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
         let seq = store
             .append_order_event(
                 &engine::store::OrderId::new(new.as_str().to_owned()),
-                shared::order_event::OrderEventKind::Status(
-                    shared::order_status::OrderStatus::Unconfirmed,
+                engine_protocol::order_event::OrderEventKind::Status(
+                    engine_protocol::order_status::OrderStatus::Unconfirmed,
                 ),
                 &[],
                 crate::now_unix(),
@@ -1002,7 +1006,7 @@ async fn an_engine_event_reaches_the_endpoint_once() {
     }
     assert_eq!(sent.load(Ordering::SeqCst), 1);
     let (headers, body) = received.requests.lock()[0].clone();
-    assert!(shared::webhook_sign::verify_signature(
+    assert!(credentials::webhook_sign::verify_signature(
         &secret,
         body.as_bytes(),
         headers["x-monokulo-signature"].to_str().unwrap(),
@@ -1107,8 +1111,8 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
 #[tokio::test]
 async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
     let shop = shop().await;
-    let key = shared::auth::generate_app_key();
-    let token = shared::auth::RawToken::presented("ct_sub").hash();
+    let key = credentials::auth::generate_app_key();
+    let token = credentials::auth::RawToken::presented("ct_sub").hash();
     {
         let db = shop.state.db.lock();
         db.create_app_connect_token(&token, &shop.store, "Till", crate::now_unix())

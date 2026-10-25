@@ -7,7 +7,7 @@ description = "Typed settings that resolve command line > env > stored > default
 
 [dependencies]
 zeroize = "1.9.0"
-# `Reloadable` is an async trait used behind `dyn`, like `KeyCustody` in `shared`.
+# `Reloadable` is an async trait used behind `dyn`, like `KeyCustody` in `key-custody`.
 async-trait = "0.1.92"
 # `join_all`, so every changed reloadable prepares at the same time without
 # spawning: dropping a save future then drops its unfinished prepares too.

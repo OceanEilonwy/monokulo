@@ -114,7 +114,7 @@ fn main() {
     }
     // The lines above, and any still on their way, stored (and exported)
     // before the process ends.
-    runtime.block_on(telemetry.flush(shared::shutdown::LOG_FLUSH));
+    runtime.block_on(telemetry.flush(service_runtime::shutdown::LOG_FLUSH));
 }
 
 /// What `main` read before the runtime started.
@@ -148,7 +148,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let db_path = monokulo::cli::database_path(&early);
     // CPU and memory every 10 s, for the admin page:
     // the process's, the engine's included when it runs inside.
-    shared::resources::start_sampling();
+    service_runtime::resources::start_sampling();
     // How many readers to open applies on restart.
     let read_connections = early.get(&settings::DATABASE_READ_CONNECTIONS);
     // Read-only connections and one writer, each on its own thread
@@ -172,14 +172,14 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             let engine_token = required(&settings::ENGINE_TOKEN, &env);
             let client = EngineClient::new(
                 engine_url.as_str().to_string(),
-                shared::auth::engine_token(engine_token.expose()),
+                credentials::auth::engine_token(engine_token.expose()),
             );
             (client, None)
         }
     };
 
     // Verified embed domains: looked up from the root servers down
-    // (`shared::dns`), so a record shows the moment it is published.
+    // (`dns_client`), so a record shows the moment it is published.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
         Arc::new(monokulo::embed_domains::LiveDns::new());
     // Onion shops are proved by a file fetched over Tor inside monokulo.
@@ -240,7 +240,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             apps.clone(),
         );
         let addresses = monokulo::webhooks::Addresses::new(monokulo_settings.clone(), tor.clone());
-        shared::supervise::supervise("order-event subscriber", move || {
+        service_runtime::supervise::supervise("order-event subscriber", move || {
             monokulo::webhooks::subscriber::run_subscriber(
                 db.clone(),
                 engine.clone(),
@@ -257,7 +257,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             webhooks.clone(),
             encryption_key.clone(),
         );
-        shared::supervise::supervise("webhook delivery", move || {
+        service_runtime::supervise::supervise("webhook delivery", move || {
             monokulo::webhooks::delivery::run_delivery_loop(
                 db.clone(),
                 key.clone(),
@@ -326,16 +326,16 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(shared::shutdown::signal());
+    .with_graceful_shutdown(service_runtime::shutdown::signal());
     let served = tokio::spawn(async move { server.await });
-    shared::shutdown::signal().await;
-    tracing::info!(grace = ?shared::shutdown::GRACE, "shutting down: finishing requests in flight");
-    match tokio::time::timeout(shared::shutdown::GRACE, served).await {
+    service_runtime::shutdown::signal().await;
+    tracing::info!(grace = ?service_runtime::shutdown::GRACE, "shutting down: finishing requests in flight");
+    match tokio::time::timeout(service_runtime::shutdown::GRACE, served).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
         Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
         Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
         Err(_) => {
-            tracing::warn!(grace = ?shared::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
+            tracing::warn!(grace = ?service_runtime::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
         }
     }
     match embedded {
@@ -404,7 +404,7 @@ mod embedded {
             telemetry.host("engine", &["engine"], engine::threads::THREAD_PREFIX);
         }
         // Its share of the process's CPU, for the admin page.
-        shared::resources::sampler().host_threads(engine::threads::THREAD_PREFIX);
+        service_runtime::resources::sampler().host_threads(engine::threads::THREAD_PREFIX);
         Prepared {
             options,
             env,
@@ -435,7 +435,7 @@ mod embedded {
         } else {
             early.get(&DATABASE_PATH)
         };
-        let token = shared::auth::generate_engine_token();
+        let token = credentials::auth::generate_engine_token();
         let config = EngineConfig {
             options,
             env,
@@ -462,7 +462,7 @@ mod embedded {
         /// Stops the engine's loops, waiting up to the grace period, and
         /// hands back its runtime.
         pub async fn stop(self) -> tokio::runtime::Runtime {
-            let grace = shared::shutdown::GRACE;
+            let grace = service_runtime::shutdown::GRACE;
             match self.runtime.spawn(self.engine.shutdown(grace)).await {
                 Ok(Stopped::Cleanly) => tracing::info!("the engine stopped"),
                 Ok(Stopped::TimedOut) => {

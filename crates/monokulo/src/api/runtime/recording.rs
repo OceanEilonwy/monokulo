@@ -283,7 +283,7 @@ async fn connect_app(router: &axum::Router, id: &str, cookie: &str) -> Value {
 
 /// A connect code for store `id`, as the dashboard mints one for a plugin.
 fn plugin_connect_code(state: &AppState, id: &str) -> String {
-    let raw = shared::auth::generate_connect_token();
+    let raw = credentials::auth::generate_connect_token();
     state
         .db
         .lock()
@@ -956,7 +956,7 @@ async fn record_route_problems(
     let down = recorder.around(build_router(AppState {
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::for_tests(format!(
             "http://{}",
-            shared::unreachable::address()
+            service_runtime::unreachable::address()
         ))),
         ..state.clone()
     }));

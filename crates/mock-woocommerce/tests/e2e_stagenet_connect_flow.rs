@@ -71,7 +71,7 @@ use support::{node_fixture, require_daemon_reachable, retry};
 /// provider at all) - 335_000_000 piconero (0.000335 XMR), matching
 /// `e2e_stagenet.rs`'s own tiny-payment target, so both real-stagenet tests move the same order
 /// of magnitude of real (worthless, stagenet) XMR. Read as XMR at its
-/// own precision (`shared::exchange_rate::compute_order_amount`), with no
+/// own precision (`pricing::exchange_rate::compute_order_amount`), with no
 /// rate to multiply through.
 const TEST_ORDER_AMOUNT: &str = "0.000335";
 const TEST_CURRENCY: &str = "XMR";
@@ -396,20 +396,20 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // different channel (parsed straight out of `/finish`'s response) than
     // the receiver's internal verification state.
     assert!(
-        shared::webhook_sign::verify_signature(
+        credentials::webhook_sign::verify_signature(
             &credentials.webhook_signing_secret,
             &event.raw_body,
             &event.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ),
         "the delivered signature must verify against this store's real signing secret"
     );
     assert!(
-        !shared::webhook_sign::verify_signature(
+        !credentials::webhook_sign::verify_signature(
             "definitely-the-wrong-secret",
             &event.raw_body,
             &event.signature,
-            shared::time::now_unix()
+            service_runtime::time::now_unix()
         ),
         "an arbitrary wrong secret must not verify the same real bytes/signature"
     );

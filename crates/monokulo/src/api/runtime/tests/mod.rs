@@ -461,7 +461,7 @@ async fn links_carry_the_path_monokulo_is_served_under() {
     );
 
     // The plugin's handshake too.
-    let code = shared::auth::generate_connect_token();
+    let code = credentials::auth::generate_connect_token();
     fixture
         .state
         .db

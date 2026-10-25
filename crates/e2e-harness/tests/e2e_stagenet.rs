@@ -95,8 +95,8 @@ async fn oneshot_json(
         .method(method)
         .uri(uri)
         .header(
-            shared::auth::ENGINE_TOKEN_HEADER,
-            shared::auth::TEST_ENGINE_TOKEN,
+            credentials::auth::ENGINE_TOKEN_HEADER,
+            credentials::auth::TEST_ENGINE_TOKEN,
         )
         .header("authorization", format!("Bearer {sk}"));
     let body = match body {
@@ -202,7 +202,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
         settings: engine::engine_settings::EngineSettings::defaults(),
         log_store: None,
         engine_token: Arc::new(
-            shared::auth::RawToken::presented(shared::auth::TEST_ENGINE_TOKEN).hash(),
+            credentials::auth::RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN).hash(),
         ),
         custody: engine::http::Custody {
             backends: Arc::clone(&key_custody),

@@ -320,7 +320,7 @@ async fn run_upstream(
             Err(()) => Err("the store's secret key could not be read".to_owned()),
         };
         if let Err(e) = &opened {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("live-upstream:{connection_id}"),
                 warn,
                 store.id = %connection_id,
@@ -758,14 +758,14 @@ mod tests {
         let a = hub.subscribe(
             &engine,
             &keys,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::ids::OrderId::new("o1"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &engine_protocol::ids::OrderId::new("o1"),
         );
         let b = hub.subscribe(
             &engine,
             &keys,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::ids::OrderId::new("o2"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &engine_protocol::ids::OrderId::new("o2"),
         );
         assert_eq!(hub.upstream_count(), 1);
         drop(a);
@@ -782,20 +782,20 @@ mod tests {
         let mut a = hub.subscribe(
             &engine,
             &keys,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::ids::OrderId::new("o1"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &engine_protocol::ids::OrderId::new("o1"),
         );
         let mut b = hub.subscribe(
             &engine,
             &keys,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::ids::OrderId::new("o2"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &engine_protocol::ids::OrderId::new("o2"),
         );
         a.changed.mark_unchanged();
         b.changed.mark_unchanged();
         hub.wake(
-            &shared::ids::ConnectionId::new("conn"),
-            Some(&shared::ids::OrderId::new("o1")),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            Some(&engine_protocol::ids::OrderId::new("o1")),
         );
         assert!(a.changed.has_changed().unwrap());
         assert!(!b.changed.has_changed().unwrap());
@@ -807,10 +807,10 @@ mod tests {
     #[test]
     fn order_changes_reach_only_the_named_order_and_are_released_with_their_watchers() {
         let changes = OrderChanges::default();
-        let store = shared::ids::ConnectionId::new("conn");
+        let store = engine_protocol::ids::ConnectionId::new("conn");
         let (o1, o2) = (
-            shared::ids::OrderId::new("o1"),
-            shared::ids::OrderId::new("o2"),
+            engine_protocol::ids::OrderId::new("o1"),
+            engine_protocol::ids::OrderId::new("o2"),
         );
         changes.notify(&store, &o1);
         assert!(changes.stores.lock().is_empty());
@@ -818,7 +818,7 @@ mod tests {
         let mut a = changes.subscribe(&store, &o1);
         let mut a_again = changes.subscribe(&store, &o1);
         let b = changes.subscribe(&store, &o2);
-        let elsewhere = changes.subscribe(&shared::ids::ConnectionId::new("other"), &o1);
+        let elsewhere = changes.subscribe(&engine_protocol::ids::ConnectionId::new("other"), &o1);
         changes.notify(&store, &o1);
         assert!(a.changed.has_changed().unwrap());
         assert!(a_again.changed.has_changed().unwrap());

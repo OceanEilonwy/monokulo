@@ -1,14 +1,14 @@
 //! Human-chosen account password hashing for monokulo.
 //!
 //! This is deliberately a *different* algorithm choice from
-//! `shared::auth::RawToken::hash`: that module hashes a machine-generated,
+//! `credentials::auth::RawToken::hash`: that module hashes a machine-generated,
 //! high-entropy `sk_...` token with plain SHA-256, because a slow/memory-hard
 //! hash buys no brute-force resistance for a token an attacker can't
 //! meaningfully guess - it only adds cost. Human-chosen passwords are the
 //! opposite case: low-entropy and guessable, so they genuinely need a
 //! slow, memory-hard hash. Argon2id (via the `argon2` crate's own
 //! recommended API) is that hash. Do not reuse this module for tokens, and
-//! do not reuse `shared::auth` for passwords.
+//! do not reuse `credentials::auth` for passwords.
 
 use std::sync::{Arc, LazyLock};
 

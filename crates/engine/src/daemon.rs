@@ -198,7 +198,7 @@ pub struct ChainBlock {
     pub txs: Vec<ScanTx>,
     /// The id of each of `txs` (lowercase hex), in order. They come with
     /// the block: a pruned transaction can't be hashed to its id
-    /// (`shared::monero_tx`).
+    /// (`crate::monero_tx`).
     pub txids: Vec<String>,
     /// How each of `txs` is tied to its id, in order. A payment is never
     /// taken from an [`IdBinding::Listed`] one as it came: the scan fetches

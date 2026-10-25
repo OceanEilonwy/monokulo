@@ -2,7 +2,7 @@
 //! (`xtask/src/pages/docs/webhook-vectors.json`, published beside the
 //! plugins page): one signed delivery for each event (`webhook.test`
 //! included), built by the same [`super::body::body_v2`] (and
-//! [`super::body::test_body`]) and [`shared::webhook_sign::sign_payload`]
+//! [`super::body::test_body`]) and [`credentials::webhook_sign::sign_payload`]
 //! monokulo sends with, and deliveries a receiver must refuse. The
 //! webhooks page's list of events is made here too, from the same
 //! [`OrderEventKind::ALL`].
@@ -13,10 +13,10 @@
 //! body is meant, write them again with `MONOKULO_WRITE_VECTORS=1 cargo
 //! nextest run -p monokulo webhooks::vectors`.
 
+use engine_protocol::order_event::OrderEventKind;
+use engine_protocol::order_status::OrderStatus;
+use pricing::xmr_amount::Piconero;
 use serde_json::{json, Value};
-use shared::order_event::OrderEventKind;
-use shared::order_status::OrderStatus;
-use shared::xmr_amount::Piconero;
 
 use super::body::{body_v2, LinkBases, API_VERSION};
 use crate::db::{ConnectionId, LoggedEvent, OrderCurrencyMetadataRow, OrderId, StoreConnectionRow};
@@ -36,7 +36,7 @@ const SENT_AT: i64 = 1_760_020_380;
 fn store() -> StoreConnectionRow {
     StoreConnectionRow {
         id: ConnectionId::new("917701c2-15c7-4bcb-bbc8-72d9ab28e785"),
-        user_id: shared::ids::UserId::new("u_1"),
+        user_id: engine_protocol::ids::UserId::new("u_1"),
         name: "Bakery".into(),
         site: crate::stores::Site::parse("bakery.example").ok(),
         tenant_public_key: "pk_test".into(),
@@ -195,7 +195,7 @@ fn delivery(
     json!({
         "name": name,
         "headers": {
-            "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, SENT_AT, body.as_bytes()),
+            "X-Monokulo-Signature": credentials::webhook_sign::sign_payload(SECRET, SENT_AT, body.as_bytes()),
             "X-Monokulo-Event": event.kind.as_str(),
             "X-Monokulo-Event-Id": event.event_id,
         },
@@ -254,7 +254,7 @@ fn vectors() -> Value {
         json!({
             "name": super::body::TEST_EVENT,
             "headers": {
-                "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, SENT_AT, test.as_bytes()),
+                "X-Monokulo-Signature": credentials::webhook_sign::sign_payload(SECRET, SENT_AT, test.as_bytes()),
                 "X-Monokulo-Event": super::body::TEST_EVENT,
                 "X-Monokulo-Event-Id": "evt_0000000000000012",
             },
@@ -265,9 +265,9 @@ fn vectors() -> Value {
     let deliveries: Vec<Value> = deliveries.into_iter().map(|(_, d)| d).collect();
 
     let paid = body_v2(&event(4, PAID), &store(), Some(&eur), &web());
-    let signed = shared::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
+    let signed = credentials::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
     let tampered = paid.replace("12.50", "1.25");
-    let old = SENT_AT - shared::webhook_sign::SIGNATURE_TOLERANCE_SECS - 1;
+    let old = SENT_AT - credentials::webhook_sign::SIGNATURE_TOLERANCE_SECS - 1;
     json!({
         "about": "Webhook deliveries as monokulo sends them, for testing a plugin's receiver. \
                   Check each with your clock at `sent_at` and the webhook's `signing_secret`: \
@@ -286,7 +286,7 @@ fn vectors() -> Value {
             {
                 "why": "Signed with another webhook's secret.",
                 "headers": {
-                    "X-Monokulo-Signature": shared::webhook_sign::sign_payload(
+                    "X-Monokulo-Signature": credentials::webhook_sign::sign_payload(
                         "whsec_1111111111111111111111111111111111111111111111111111111111111111",
                         SENT_AT,
                         paid.as_bytes(),
@@ -297,7 +297,7 @@ fn vectors() -> Value {
             {
                 "why": "Signed more than five minutes before `sent_at`.",
                 "headers": {
-                    "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, old, paid.as_bytes()),
+                    "X-Monokulo-Signature": credentials::webhook_sign::sign_payload(SECRET, old, paid.as_bytes()),
                 },
                 "body": paid,
             },
@@ -362,7 +362,7 @@ fn the_compared_files_check_out_with_lf() {
 fn every_delivery_verifies_and_every_refusal_does_not() {
     let vectors = vectors();
     let verifies = |v: &Value| {
-        shared::webhook_sign::verify_signature(
+        credentials::webhook_sign::verify_signature(
             SECRET,
             v["body"].as_str().unwrap().as_bytes(),
             v["headers"]["X-Monokulo-Signature"].as_str().unwrap(),

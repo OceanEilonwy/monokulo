@@ -2,7 +2,7 @@
 //! two transports:
 //!
 //! - **remote**: over HTTP to a separately running engine
-//!   (`monokulo-engine`), with `reqwest`, through `shared::http_client`;
+//!   (`monokulo-engine`), with `reqwest`, through `pricing::http_client`;
 //! - **embedded**: the engine's own router (`engine::run::Engine::router`),
 //!   called in this process. No socket, no port: the same handlers,
 //!   authentication, validation and rate limits run as over HTTP, and only
@@ -23,7 +23,7 @@
 //!
 //! Every request carries the engine token
 //! (`MONOKULO_ENGINE_TOKEN`, the engine's `ENGINE_TOKEN`) in
-//! `shared::auth::ENGINE_TOKEN_HEADER`: the engine refuses anything
+//! `credentials::auth::ENGINE_TOKEN_HEADER`: the engine refuses anything
 //! without it. A store's routes (`/api/v1/admin/tenant/...`) also need the
 //! store's own `sk_...` secret, sent as `Authorization: Bearer sk_...` — the
 //! exact format `AuthedTenant` (`src/http/mod.rs` at the repo root) parses.
@@ -32,11 +32,11 @@
 use std::pin::Pin;
 
 use bytes::Bytes;
+use credentials::auth::RawToken;
+use engine_protocol::ids::EngineWalletId;
 use futures_util::{Stream, StreamExt as _};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
-use shared::auth::RawToken;
-use shared::ids::EngineWalletId;
 
 /// Longest one engine call may take, the order-event stream excepted. The
 /// engine refuses a request of its own after 30 s; a few seconds more
@@ -211,13 +211,13 @@ impl EngineTarget {
             .expect("an engine token read from the environment is a valid header value");
         value.set_sensitive(true);
         let headers = reqwest::header::HeaderMap::from_iter([(
-            reqwest::header::HeaderName::from_static(shared::auth::ENGINE_TOKEN_HEADER),
+            reqwest::header::HeaderName::from_static(credentials::auth::ENGINE_TOKEN_HEADER),
             value,
         )]);
         EngineTarget {
             transport: Transport::Remote {
                 base_url,
-                http: shared::http_client::build_traced_client_with_headers(
+                http: pricing::http_client::build_traced_client_with_headers(
                     concat!("monokulo/", env!("CARGO_PKG_VERSION")),
                     headers,
                 ),
@@ -413,7 +413,7 @@ impl EngineTarget {
         let mut request = axum::http::Request::builder()
             .method(call.method)
             .uri(call.path)
-            .header(shared::auth::ENGINE_TOKEN_HEADER, self.token.expose())
+            .header(credentials::auth::ENGINE_TOKEN_HEADER, self.token.expose())
             .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
                 std::net::Ipv4Addr::LOCALHOST,
                 0,
@@ -502,12 +502,12 @@ impl EngineClient {
     }
 
     /// [`Self::new`] with the token every test engine accepts
-    /// (`shared::auth::TEST_ENGINE_TOKEN`).
+    /// (`credentials::auth::TEST_ENGINE_TOKEN`).
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_tests(base_url: impl Into<String>) -> Self {
         Self::new(
             base_url,
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
         )
     }
 
@@ -516,7 +516,7 @@ impl EngineClient {
     pub fn embedded_for_tests(router: axum::Router) -> Self {
         Self::embedded(
             router,
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+            RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
             None,
         )
     }
@@ -538,7 +538,7 @@ impl EngineClient {
         &self,
         keys: &crate::http::store_key::StoreKeys,
         connection_id: &crate::db::ConnectionId,
-        order_id: &shared::ids::OrderId,
+        order_id: &engine_protocol::ids::OrderId,
     ) -> crate::live::OrderSubscription {
         self.target()
             .live
@@ -621,7 +621,7 @@ impl EngineClient {
             Method::DELETE,
             format!(
                 "/api/v1/admin/proof/{}/anchor",
-                shared::network::network_str(network)
+                engine_protocol::network::network_str(network)
             ),
         ))
         .await
@@ -893,7 +893,7 @@ impl EngineClient {
     pub async fn get_order_detail(
         &self,
         sk: &RawToken,
-        order_id: &shared::ids::OrderId,
+        order_id: &engine_protocol::ids::OrderId,
     ) -> Result<OrderDetailResponse, EngineClientError> {
         let order_id = path_id(order_id.as_str())?;
         self.send(Call::get(format!("/api/v1/admin/tenant/orders/{order_id}")).store(sk))
@@ -971,7 +971,7 @@ impl EngineClient {
     pub async fn create_order(
         &self,
         sk: &RawToken,
-        xmr_amount_piconero: shared::xmr_amount::Piconero,
+        xmr_amount_piconero: pricing::xmr_amount::Piconero,
         merchant_order_id: Option<String>,
         description: Option<String>,
         confirmations_required: Option<u64>,
@@ -1001,7 +1001,7 @@ impl EngineClient {
     pub async fn set_refund_address(
         &self,
         sk: &RawToken,
-        order_id: &shared::ids::OrderId,
+        order_id: &engine_protocol::ids::OrderId,
         refund_address: &str,
     ) -> Result<(), EngineClientError> {
         let order_id = path_id(order_id.as_str())?;
@@ -1028,7 +1028,7 @@ impl EngineClient {
     pub async fn cancel_order(
         &self,
         sk: &RawToken,
-        order_id: &shared::ids::OrderId,
+        order_id: &engine_protocol::ids::OrderId,
     ) -> Result<(), EngineClientError> {
         let order_id = path_id(order_id.as_str())?;
         self.send(Call::post(format!("/api/v1/admin/tenant/orders/{order_id}/cancel")).store(sk))
@@ -1051,7 +1051,7 @@ impl EngineClient {
 impl EngineClient {
     /// `GET /api/v1/admin/engine/activity/stream` — `network`'s activity
     /// record as never-ending server-sent events, each an `activity` whose
-    /// data is a `shared::activity::ActivityPage`: first the record from
+    /// data is a `engine_protocol::activity::ActivityPage`: first the record from
     /// sequence number `from` on (without `from`, or when the engine can't
     /// follow it, everything from the oldest snapshot it keeps), then what
     /// the engine records next, as it records it
@@ -1125,17 +1125,17 @@ impl EngineClient {
 }
 
 /// The engine's database, read for the admin Query page
-/// (`shared::sqlite_query`).
+/// (`sqlite::query`).
 impl EngineClient {
     /// One read-only statement. A statement the engine refused or that
     /// failed is `Ok` with its [`QueryResponse::Error`]; too many running
     /// at once is an `EngineError` with status `429`.
     ///
-    /// [`QueryResponse::Error`]: shared::sqlite_query::QueryResponse::Error
+    /// [`QueryResponse::Error`]: sqlite::query::QueryResponse::Error
     pub async fn admin_query(
         &self,
-        request: &shared::sqlite_query::QueryRequest,
-    ) -> Result<shared::sqlite_query::QueryResponse, EngineClientError> {
+        request: &sqlite::query::QueryRequest,
+    ) -> Result<sqlite::query::QueryResponse, EngineClientError> {
         self.send(Call::post("/api/v1/admin/query").json(request))
             .await?
             .parsed()
@@ -1144,8 +1144,8 @@ impl EngineClient {
     /// The engine's tables, their columns and rows.
     pub async fn admin_query_schema(
         &self,
-    ) -> Result<Vec<shared::sqlite_query::TableInfo>, EngineClientError> {
-        let response: shared::sqlite_query::SchemaResponse = self
+    ) -> Result<Vec<sqlite::query::TableInfo>, EngineClientError> {
+        let response: sqlite::query::SchemaResponse = self
             .send(Call::get("/api/v1/admin/query/schema"))
             .await?
             .parsed()?;
@@ -1161,8 +1161,8 @@ pub enum EngineClientError {
     #[error("request to engine failed: {0}")]
     Request(#[from] reqwest::Error),
     /// From the shared transport's middleware layer
-    /// (`shared::http_client`) - see `ExchangeRateError::Middleware`'s own doc
-    /// comment (its exact sibling in `shared::exchange_rate`) for why this is a
+    /// (`pricing::http_client`) - see `ExchangeRateError::Middleware`'s own doc
+    /// comment (its exact sibling in `pricing::exchange_rate`) for why this is a
     /// distinct variant from `Request` above rather than a merge.
     #[error("request to engine failed: {0}")]
     Middleware(#[from] reqwest_middleware::Error),
@@ -1330,7 +1330,7 @@ pub struct OrderTotals {
 /// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
 #[derive(Debug, Clone, Deserialize)]
 pub struct OrderView {
-    pub order_id: shared::ids::OrderId,
+    pub order_id: engine_protocol::ids::OrderId,
     pub merchant_order_id: Option<String>,
     /// What the order is for, as it was created; `None` when it was given
     /// none.
@@ -1339,7 +1339,7 @@ pub struct OrderView {
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
-    pub status: shared::order_status::OrderStatus,
+    pub status: engine_protocol::order_status::OrderStatus,
     pub confirmations: u64,
     pub double_spend_detected_at: Option<i64>,
     /// When the merchant cancelled it (the POS's Cancel), if it was.
@@ -1445,7 +1445,7 @@ pub const MAX_CALLER_IDEMPOTENCY_KEY_CHARS: usize = 100;
 /// Mirrors the engine's own `public::CreateOrderResponse`.
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderResponse {
-    pub order_id: shared::ids::OrderId,
+    pub order_id: engine_protocol::ids::OrderId,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub expires_at: i64,
@@ -1478,7 +1478,7 @@ pub struct NodeStatus {
     /// What the engine has measured of the node's link
     /// (its latency and throughput).
     #[serde(default)]
-    pub link: Option<shared::scaling::LinkSnapshot>,
+    pub link: Option<engine_protocol::scaling::LinkSnapshot>,
 }
 
 /// Mirrors the engine's own `ScannerStatusView`.
@@ -1502,15 +1502,15 @@ pub struct NetworkStatus {
     pub scanner: ScannerStatusView,
     /// How the block scan is going and what limits it.
     #[serde(default)]
-    pub scaling: Option<shared::scaling::NetworkScaling>,
+    pub scaling: Option<engine_protocol::scaling::NetworkScaling>,
     /// The nodes' ZMQ announcements; absent while no
     /// node of this network has a `zmq_pub`.
     #[serde(default)]
-    pub announcements: Option<shared::announcements::Announcements>,
+    pub announcements: Option<engine_protocol::announcements::Announcements>,
     /// Proof-of-work checking; absent while it is
     /// off on this network.
     #[serde(default)]
-    pub proof: Option<shared::proof::ProofStatus>,
+    pub proof: Option<engine_protocol::proof::ProofStatus>,
 }
 
 /// Mirrors the engine's own `EngineStatusResponse` — the whole body of
@@ -1536,7 +1536,7 @@ pub struct EngineStatusResponse {
     pub key_custody_snp_trust: Option<SnpTrustStatus>,
     /// The engine process's CPU and memory over the last hour.
     #[serde(default)]
-    pub resources: Option<shared::resources::ResourceReport>,
+    pub resources: Option<service_runtime::resources::ResourceReport>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -1680,7 +1680,7 @@ mod tests {
         let order = client
             .create_order(
                 &created.secret_token,
-                shared::xmr_amount::Piconero(100_000_000_000),
+                pricing::xmr_amount::Piconero(100_000_000_000),
                 None,
                 None,
                 Some(3),
@@ -1700,7 +1700,7 @@ mod tests {
         let stored = store
             .get_order(
                 &tenant_id,
-                &shared::ids::OrderId::new(order.order_id.as_str().to_string()),
+                &engine_protocol::ids::OrderId::new(order.order_id.as_str().to_string()),
             )
             .unwrap()
             .unwrap();
@@ -1722,7 +1722,7 @@ mod tests {
         let order = client
             .create_order(
                 &created.secret_token,
-                shared::xmr_amount::Piconero(100_000_000_000),
+                pricing::xmr_amount::Piconero(100_000_000_000),
                 None,
                 None,
                 None,
@@ -1742,7 +1742,7 @@ mod tests {
         let stored = store
             .get_order(
                 &tenant_id,
-                &shared::ids::OrderId::new(order.order_id.as_str().to_string()),
+                &engine_protocol::ids::OrderId::new(order.order_id.as_str().to_string()),
             )
             .unwrap()
             .unwrap();
@@ -1847,7 +1847,7 @@ mod contract_tests {
                     .unwrap();
                 let client = EngineClient::embedded(
                     engine.router(),
-                    RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
+                    RawToken::presented(credentials::auth::TEST_ENGINE_TOKEN),
                     Some(runtime.handle().clone()),
                 );
                 (client, Some(runtime))
@@ -1870,7 +1870,7 @@ mod contract_tests {
     }
 
     /// The next `activity` message on an engine activity stream.
-    async fn next_activity(stream: &mut EventStream) -> shared::activity::ActivityPage {
+    async fn next_activity(stream: &mut EventStream) -> engine_protocol::activity::ActivityPage {
         let mut parser = crate::live::SseParser::default();
         loop {
             let chunk = tokio::time::timeout(std::time::Duration::from_secs(10), stream.next())
@@ -1957,7 +1957,7 @@ mod contract_tests {
             updated.confirmations_required
         ));
 
-        let amount = shared::xmr_amount::Piconero(1_000_000_000);
+        let amount = pricing::xmr_amount::Piconero(1_000_000_000);
         let order = client
             .create_order(
                 &sk,
@@ -2023,7 +2023,7 @@ mod contract_tests {
             "unknown order: {}",
             outcome(
                 &client
-                    .get_order_detail(&sk, &shared::ids::OrderId::new("order_nope"))
+                    .get_order_detail(&sk, &engine_protocol::ids::OrderId::new("order_nope"))
                     .await
             )
         ));
@@ -2031,7 +2031,7 @@ mod contract_tests {
             "an id that names another route: {}",
             outcome(
                 &client
-                    .get_order_detail(&sk, &shared::ids::OrderId::new("../tenant"))
+                    .get_order_detail(&sk, &engine_protocol::ids::OrderId::new("../tenant"))
                     .await
             )
         ));
@@ -2103,13 +2103,13 @@ mod contract_tests {
         lines.push(format!("logs: {}", outcome(&client.log_attributes().await)));
         engine
             .activity(monero::Network::Mainnet)
-            .record(shared::activity::Event::Snapshot(Box::default()));
+            .record(engine_protocol::activity::Event::Snapshot(Box::default()));
         let mut activity = client.open_engine_activity("mainnet", None).await.unwrap();
         let first = next_activity(&mut activity).await;
         // Pushed as the engine records it, on the stream already open.
         engine
             .activity(monero::Network::Mainnet)
-            .record(shared::activity::Event::ReorgCollected);
+            .record(engine_protocol::activity::Event::ReorgCollected);
         let pushed = next_activity(&mut activity).await;
         drop(activity);
         let mut resumed = client
@@ -2229,7 +2229,7 @@ mod contract_tests {
         let order = client
             .create_order(
                 &sk,
-                shared::xmr_amount::Piconero(1_000_000_000),
+                pricing::xmr_amount::Piconero(1_000_000_000),
                 None,
                 None,
                 None,

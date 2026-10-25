@@ -50,7 +50,7 @@ export interface MachineView {
   at_unix: number;
 }
 
-/** Each process samples itself into slots this long (`shared::resources`). */
+/** Each process samples itself into slots this long (`service_runtime::resources`). */
 export const SLOT_SECS = 10;
 /** An hour of slots: what the charts show. */
 export const SLOTS = 360;
