@@ -11,14 +11,52 @@
     )
 )]
 use crate::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanInput, SubaddressIndex,
-    WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, LiveWallet, MatchedOutput, PlainKeyCustody, ScanInput,
+    SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use crate::store::{NewOrder, NewTenant, Store};
 use monero::consensus::encode::deserialize;
 use monero::{Address, Network, PrivateKey, PublicKey, Transaction};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+/// `handle` as the keys of no store's wallet: for scans that are looked at,
+/// not recorded (a store records only what its own wallet's keys found).
+pub(crate) fn unrecorded(handle: WalletHandle) -> LiveWallet {
+    LiveWallet {
+        wallet_id: String::new(),
+        handle,
+    }
+}
+
+/// A store, or a shared one, whose stores' wallets can be read.
+pub(crate) trait WalletsOf {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String;
+}
+
+impl WalletsOf for Store {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
+        self.wallet_of(tenant_id).unwrap().unwrap()
+    }
+}
+
+impl WalletsOf for crate::store::SharedStore {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
+        self.lock().wallet(tenant_id)
+    }
+}
+
+/// `tenants` as a round is given them: each handle with the wallet its store
+/// takes payments into now.
+pub(crate) fn live_tenants<const N: usize>(
+    store: &impl WalletsOf,
+    tenants: [(crate::store::TenantId, WalletHandle); N],
+) -> [(crate::store::TenantId, LiveWallet); N] {
+    tenants.map(|(id, handle)| {
+        let wallet_id = store.wallet(&id);
+        (id, LiveWallet { wallet_id, handle })
+    })
+}
+
 pub(crate) fn fixture_tx() -> Transaction {
     let raw_tx = hex::decode(include_str!("../../../fixtures/subaddress_tx.hex")).unwrap();
     deserialize(&raw_tx).unwrap()
