@@ -9,9 +9,9 @@
 //! would refuse can be run anywhere.
 //!
 //! What isn't the scanner's to tune stays a plain constant where it is
-//! used: monerod's limits (`daemon_rpc::TXS_PER_REQUEST`), network timeouts
-//! (`daemon_rpc::REQUEST_TIMEOUT`, `work::CALL_DEADLINE`), consensus rules,
-//! and a link's cold-start guesses (`link`).
+//! used: monerod's limits (`engine_daemon::rpc::TXS_PER_REQUEST`), network
+//! timeouts (`engine_daemon::rpc::REQUEST_TIMEOUT`, `work::CALL_DEADLINE`),
+//! consensus rules, and a link's cold-start guesses (`engine_daemon::link`).
 
 use std::time::Duration;
 
@@ -110,7 +110,7 @@ pub struct ScanTuning {
     /// Most tenants scanned at the same time.
     pub scan_concurrency: usize,
     /// Most headers fetched at once for blocks recorded without being
-    /// scanned; one request ([`crate::daemon_rpc::MAX_HEADERS_PER_REQUEST`]).
+    /// scanned; one request ([`engine_daemon::rpc::MAX_HEADERS_PER_REQUEST`]).
     pub headers_per_fetch: u64,
     /// Most blocks one block request asks for, however small blocks have
     /// been (a long run of near-empty blocks): the scan memory budget alone
@@ -247,13 +247,13 @@ impl ScanTuning {
     /// Tor nodes and large budgets all fall below that.
     ///
     /// A request's timeout is three times what the link says it needs, and
-    /// never under 15 s ([`crate::link::timeout_for`]). By default three
+    /// never under 15 s ([`engine_daemon::link::timeout_for`]). By default three
     /// times this target fits within that floor (checked at build time;
     /// a longer round only loses the extra headroom), so a request
     /// sized to it gets nearly four times as long as it should need. If the
     /// rate estimate is out of date, the request runs slow but doesn't
     /// fail. A request sized to it counts every term its timeout counts
-    /// ([`crate::link::LinkCost`]): the round trip, the node's time to first
+    /// ([`engine_daemon::link::LinkCost`]): the round trip, the node's time to first
     /// byte for each block, and the bytes at the link's rate.
     pub const fn target_call_secs(&self) -> f64 {
         self.reserved(Tier::Blocks).as_secs_f64()
@@ -321,7 +321,7 @@ impl ScanTuning {
                 && self.max_round_budget.subsec_nanos() > 0)
         {
             Err(TuningError::RaisedRoundSlow)
-        } else if self.headers_per_fetch > crate::daemon_rpc::MAX_HEADERS_PER_REQUEST {
+        } else if self.headers_per_fetch > engine_daemon::rpc::MAX_HEADERS_PER_REQUEST {
             Err(TuningError::HeadersOverOneRequest)
         } else if self.whole_block_max_secs.is_nan()
             || self.whole_block_max_secs <= 0.0
@@ -364,8 +364,8 @@ const _: () = match ScanTuning::DEFAULT.validate() {
 // four times what it should take. (A longer round, as the round length
 // sweep runs, gets three times instead.)
 const _: () = assert!(
-    ScanTuning::DEFAULT.target_call_secs() * crate::link::SAFETY
-        <= crate::link::MIN_TIMEOUT.as_secs_f64(),
+    ScanTuning::DEFAULT.target_call_secs() * engine_daemon::link::SAFETY
+        <= engine_daemon::link::MIN_TIMEOUT.as_secs_f64(),
     "a block request sized to the default Blocks share must keep the minimum timeout"
 );
 

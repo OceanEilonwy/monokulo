@@ -1078,12 +1078,12 @@ mod tests {
         let picks = Regex::new(pattern).unwrap();
         for name in [
             "live_tor_takes_our_torrc_and_hands_monokulo_a_circuit_identity",
-            "daemon_rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
+            "rpc::live_node_tests::live_node_get_height_returns_a_plausible_value",
         ] {
             assert!(picks.is_match(name), "{name}");
         }
         for name in [
-            "daemon_rpc::live_node_tests::real_node_get_height",
+            "rpc::live_node_tests::real_node_get_height",
             "work::scale::properties::thousands_of_tenants_recover",
             "alive_and_well",
         ] {
@@ -1191,10 +1191,10 @@ mod tests {
     fn each_case_gets_its_ignore_reason_by_its_path() {
         let ignored = vec![
             Ignored {
-                name: "crates/engine/src/daemon_rpc.rs › live_node_tests::live_node_get_height"
+                name: "crates/engine-daemon/src/rpc.rs › live_node_tests::live_node_get_height"
                     .to_string(),
                 reason: Some("needs a live mainnet node".to_string()),
-                package: Some("engine".to_string()),
+                package: Some("engine-daemon".to_string()),
             },
             Ignored {
                 name: "crates/monokulo/tests/e2e_tor.rs › live_tor_takes_our_torrc".to_string(),
@@ -1206,8 +1206,8 @@ mod tests {
         let found = reasons(
             &[
                 case(
-                    "engine",
-                    "daemon_rpc::live_node_tests::live_node_get_height",
+                    "engine-daemon",
+                    "rpc::live_node_tests::live_node_get_height",
                 ),
                 case("monokulo::e2e_tor", "live_tor_takes_our_torrc"),
                 case("engine", "something_else"),
@@ -1218,7 +1218,7 @@ mod tests {
             found.into_iter().collect::<Vec<_>>(),
             [
                 (
-                    "engine › daemon_rpc::live_node_tests::live_node_get_height".to_string(),
+                    "engine-daemon › rpc::live_node_tests::live_node_get_height".to_string(),
                     "needs a live mainnet node".to_string()
                 ),
                 (

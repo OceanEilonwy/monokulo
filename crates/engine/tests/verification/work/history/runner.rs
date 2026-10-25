@@ -14,11 +14,11 @@
     )
 )]
 use super::history_fixture::{file_store, fixture_tenant, fixture_tx, FlakyKeyCustody, TempDb};
-use crate::daemon::KeyImageStatus;
 use crate::key_custody::WalletHandle;
 use crate::status::OrderStatus;
 use crate::store::{Db, OrderId, SharedStore, TenantId};
 use crate::work::{run_round_at, RoundInputs, RoundReport, ScanState, ScanTuning};
+use engine_daemon::KeyImageStatus;
 use std::sync::Arc;
 use std::time::Duration;
 #[path = "daemon.rs"]
@@ -29,7 +29,7 @@ const RETRY_TIME: Duration = Duration::from_secs(61);
 fn inputs<'a>(
     db: &'a Db,
     custody: &'a dyn crate::key_custody::KeyCustody,
-    daemon: &'a dyn crate::daemon::MoneroDaemonClient,
+    daemon: &'a dyn engine_daemon::MoneroDaemonClient,
     tenants: &'a [(TenantId, WalletHandle)],
 ) -> RoundInputs<'a> {
     RoundInputs {

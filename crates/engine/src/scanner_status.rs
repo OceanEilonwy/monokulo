@@ -111,7 +111,7 @@ pub fn record_tick(
         }
         Err(e) => {
             entry.last_tick_ok = false;
-            entry.last_error = Some(crate::daemon::NodeText::from(e.to_string()).into());
+            entry.last_error = Some(engine_daemon::NodeText::from(e.to_string()).into());
         }
     }
 }

@@ -1,8 +1,8 @@
 //! Generated adversarial multi-node tests through the production fallback client.
 use super::*;
-use crate::daemon::{MoneroDaemonClient as _, TxLocation};
-use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::node_test_support::{AdversarialNode, Behavior, Rpc};
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::{MoneroDaemonClient as _, TxLocation};
 use std::sync::Arc;
 
 fn client(nodes: &[Arc<AdversarialNode>]) -> FallbackDaemonClient {
@@ -1064,7 +1064,7 @@ mod properties {
             let result = tokio::time::timeout(Duration::from_secs(31), c.get_height())
                 .await
                 .unwrap();
-            assert!(started.elapsed() <= crate::daemon_fallback::CALL_DEADLINE);
+            assert!(started.elapsed() <= engine_daemon::fallback::CALL_DEADLINE);
             let mut hangs = 0;
             let expected = specs.iter().enumerate().find_map(|(i, s)| {
                 if c.is_excluded(i) || hangs >= 2 {
@@ -1507,7 +1507,7 @@ mod properties {
                         pinned.is_key_image_spent(&["key".to_owned()]).await?;
                     }
                 }
-                Ok::<_, crate::daemon::DaemonError>(())
+                Ok::<_, engine_daemon::DaemonError>(())
             };
             tokio::time::timeout(Duration::from_millis(1), call)
                 .await
@@ -1547,7 +1547,7 @@ mod properties {
                 }
                 std::cmp::Ordering::Equal => assert!(height == 1 || height == 2),
             }
-            assert!(started.elapsed() <= crate::daemon_fallback::CALL_DEADLINE);
+            assert!(started.elapsed() <= engine_daemon::fallback::CALL_DEADLINE);
             nodes[0].behavior.lock().delay_ms = 0;
             tokio::time::advance(Duration::from_secs(301)).await;
             assert_eq!(c.get_height().await.unwrap(), 1);

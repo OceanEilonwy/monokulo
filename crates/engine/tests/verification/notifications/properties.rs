@@ -33,8 +33,8 @@ async fn poll_recovery(mode: u8, burst: usize) {
     let (tenant, handle, order) =
         crate::scanner::tests::fixture_tenant_shared(&store, custody.as_ref(), i64::MAX).await;
     let node = Arc::new(AdversarialNode::new());
-    let daemon = Arc::new(crate::daemon_fallback::FallbackDaemonClient::new(vec![
-        crate::daemon_fallback::FallbackNode {
+    let daemon = Arc::new(engine_daemon::fallback::FallbackDaemonClient::new(vec![
+        engine_daemon::fallback::FallbackNode {
             label: "notification-node".into(),
             client: Arc::<AdversarialNode>::clone(&node),
         },

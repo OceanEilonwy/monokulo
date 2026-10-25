@@ -1,4 +1,4 @@
-//! `cargo xtask record-stagenet-node`: the recording the engine's
+//! `cargo xtask record-stagenet-node`: the recording engine-daemon's
 //! `daemon_rpc_replay` test replays on every change. A proxy on a loopback
 //! port forwards each request to the public stagenet node and keeps the
 //! exchange, and the live test `live_stagenet_node_answers_as_recorded` is
@@ -24,12 +24,12 @@ use std::{
 
 pub(crate) const HELP: &str = "\
         record-stagenet-node\n\
-                      Re-record crates/engine/tests/fixtures/stagenet_node_recording.json from the public\n\
-                      stagenet node, through the live replay test; only needed when the node client's requests change";
+                      Re-record crates/engine-daemon/tests/fixtures/stagenet_node_recording.json\n\
+                      from the public stagenet node, through the live replay test; only needed when the node client's requests change";
 
 /// The node the recording is made from, as the replay test's `NODE` names it.
 const NODE: (&str, u16) = ("node2.monerodevs.org", 38089);
-const FIXTURE: &str = "crates/engine/tests/fixtures/stagenet_node_recording.json";
+const FIXTURE: &str = "crates/engine-daemon/tests/fixtures/stagenet_node_recording.json";
 const TEST: &str = "live_stagenet_node_answers_as_recorded";
 /// A public node can be slow, but one that says nothing for this long has
 /// dropped the request.
@@ -196,7 +196,14 @@ fn proxy(node: (&'static str, u16)) -> io::Result<(u16, Recorded)> {
 pub(crate) fn record(root: &Path) -> io::Result<Exit> {
     let (port, recorded) = proxy(NODE)?;
     let status = Command::new("cargo")
-        .args(["test", "-p", "engine", "--test", "daemon_rpc_replay", "--"])
+        .args([
+            "test",
+            "-p",
+            "engine-daemon",
+            "--test",
+            "daemon_rpc_replay",
+            "--",
+        ])
         .args(["--ignored", "--exact", TEST, "--nocapture"])
         .env(
             "ENGINE_LIVE_STAGENET_NODE",

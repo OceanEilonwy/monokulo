@@ -23,12 +23,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{body::Body, http::Request};
-use engine::daemon::{
-    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
-};
-use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::engine_settings::{Daemons, EngineSettings};
 use engine::http::{build_router, rate_limit::ApiRateLimits, AppState};
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::{
+    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
+};
 use monero::{Network, Transaction};
 use parking_lot::RwLock;
 
@@ -124,7 +124,7 @@ impl MoneroDaemonClient for FixtureDaemon {
                 txs: if height == 0 {
                     vec![]
                 } else {
-                    vec![engine::daemon::ScanTx::of(&self.tx)]
+                    vec![engine_daemon::ScanTx::of(&self.tx)]
                 },
                 txids: if height == 0 {
                     vec![]
@@ -134,7 +134,7 @@ impl MoneroDaemonClient for FixtureDaemon {
                 bindings: if height == 0 {
                     vec![]
                 } else {
-                    vec![engine::daemon::IdBinding::Computed]
+                    vec![engine_daemon::IdBinding::Computed]
                 },
                 wire_bytes: if height == 0 {
                     0

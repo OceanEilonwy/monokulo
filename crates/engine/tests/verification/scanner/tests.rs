@@ -61,7 +61,7 @@
 //!    `a_transaction_a_daemon_invents_cannot_become_a_payment_unless_it_matches_a_wallet`;
 //!    `an_inflated_reported_height_inflates_confirmations_which_is_an_accepted_trust_boundary`;
 //!    `a_daemon_far_behind_the_recorded_high_water_mark_neither_rescans_nor_discards_its_window`.
-//!    The same scenarios composed through the real `daemon_fallback::FallbackDaemonClient`
+//!    The same scenarios composed through the real `engine_daemon::fallback::FallbackDaemonClient`
 //!    rather than a hand-swapped daemon (fallback nodes widen this trust boundary):
 //!    `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`,
 //!    `failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`,
@@ -104,7 +104,7 @@ const T: &crate::work::ScanTuning = &crate::work::ScanTuning::DEFAULT;
 
 /// A transaction's key images, hex, as a payment records them.
 fn key_images_of(tx: &Transaction) -> Vec<String> {
-    crate::daemon::ScanTx::of(tx)
+    engine_daemon::ScanTx::of(tx)
         .key_images
         .iter()
         .map(hex::encode)
@@ -122,10 +122,10 @@ fn stored_key_image_evidence_must_be_parseable_and_nonempty() {
         vec![image]
     );
 }
-use crate::daemon::fake::{tx_id_hex, FakeDaemonClient};
-use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::{Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
 use crate::store::{NewOrder, NewTenant};
+use engine_daemon::fake::{tx_id_hex, FakeDaemonClient};
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
 use monero::{Address, PrivateKey, PublicKey};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -207,7 +207,7 @@ impl MoneroDaemonClient for DaemonFailingLocate {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
@@ -216,7 +216,7 @@ impl MoneroDaemonClient for DaemonFailingLocate {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(
@@ -267,7 +267,7 @@ impl MoneroDaemonClient for DaemonFailingBlockHashAt {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         let failing = self.failing_height.load(Ordering::SeqCst);
         if start_height == failing {
             return Err(DaemonError::Request(
@@ -288,7 +288,7 @@ impl MoneroDaemonClient for DaemonFailingBlockHashAt {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
@@ -411,7 +411,7 @@ impl<D: MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainHeader>, DaemonError> {
         self.inner.get_chain_headers(start_height, count).await
     }
     async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
@@ -426,7 +426,7 @@ impl<D: MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D> {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.gate(DaemonCall::ChainBlocks).await?;
         self.inner.get_chain_blocks(start_height, count).await
     }
@@ -439,7 +439,7 @@ impl<D: MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D> {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
@@ -525,7 +525,7 @@ pub(crate) async fn check_for_reorg_and_reconcile(
     now: i64,
 ) -> Result<ReconcileReport> {
     use crate::work::chain::{Chain, JobStep};
-    let crate::daemon::ChainTip {
+    let engine_daemon::ChainTip {
         height: tip,
         hash: tip_hash,
     } = daemon.get_tip().await?;
@@ -899,7 +899,7 @@ async fn a_run_of_transactions_is_scanned_for_each_store_from_where_it_had_got_t
     };
     let (fresh, resumed, finished) = (store("fresh"), store("resumed"), store("finished"));
 
-    let kept: Vec<crate::daemon::ScanTx> = txs.iter().map(crate::daemon::ScanTx::of).collect();
+    let kept: Vec<engine_daemon::ScanTx> = txs.iter().map(engine_daemon::ScanTx::of).collect();
     let results = scan_txs_for_tenants(
         &custody,
         &txids,
@@ -4795,7 +4795,7 @@ impl MoneroDaemonClient for DaemonFailingOneKeyImageCall {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
@@ -4804,7 +4804,7 @@ impl MoneroDaemonClient for DaemonFailingOneKeyImageCall {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
@@ -5735,7 +5735,7 @@ fn a_slow_link_asks_for_what_it_delivers_in_a_target_call() {
         next_scan_chunk(
             T,
             cap,
-            Some(crate::link::LinkCost::transfer_only(250_000.0)),
+            Some(engine_daemon::link::LinkCost::transfer_only(250_000.0)),
             50_000.0,
             u64::MAX
         ),
@@ -5749,7 +5749,7 @@ fn a_slow_link_asks_for_what_it_delivers_in_a_target_call() {
         next_scan_chunk(
             T,
             cap,
-            Some(crate::link::LinkCost::transfer_only(1e9)),
+            Some(engine_daemon::link::LinkCost::transfer_only(1e9)),
             50_000.0,
             u64::MAX
         ),
@@ -5763,7 +5763,7 @@ fn a_slow_link_asks_for_what_it_delivers_in_a_target_call() {
         next_scan_chunk(
             T,
             cap,
-            Some(crate::link::LinkCost::transfer_only(1_000.0)),
+            Some(engine_daemon::link::LinkCost::transfer_only(1_000.0)),
             50_000.0,
             u64::MAX
         )
@@ -5779,7 +5779,7 @@ fn a_slow_link_asks_for_what_it_delivers_in_a_target_call() {
 #[test]
 fn a_chunk_counts_the_round_trip_and_the_nodes_work_per_block() {
     let cap = 64 * 1024 * 1024;
-    let link = crate::link::LinkCost {
+    let link = engine_daemon::link::LinkCost {
         rtt_secs: 0.8,
         ttfb_per_block_secs: 0.01,
         rate_bytes_per_sec: 250_000.0,
@@ -5799,7 +5799,7 @@ fn a_chunk_counts_the_round_trip_and_the_nodes_work_per_block() {
     let one_more = link.secs(plan.blocks + 1, (plan.blocks + 1) as f64 * 13_000.0);
     assert!(one_more > T.target_call_secs(), "{one_more}");
 
-    let distant = crate::link::LinkCost {
+    let distant = engine_daemon::link::LinkCost {
         rtt_secs: 6.0,
         ..link
     };
@@ -5812,7 +5812,7 @@ fn a_chunk_counts_the_round_trip_and_the_nodes_work_per_block() {
         next_page(T, cap, Some(link), 2_000.0, None, 1_000).blocks,
         100
     );
-    let slow = crate::link::LinkCost {
+    let slow = engine_daemon::link::LinkCost {
         rate_bytes_per_sec: 10_000.0,
         ..link
     };
@@ -6037,7 +6037,7 @@ async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_differe
     // against whatever daemon is answering *now*, with no notion of which one
     // supplied them. So a node serving a different history is bit-for-bit an
     // honest reorg, re-derived, re-located and rescanned by the same code.
-    // Here through `daemon_fallback::FallbackDaemonClient`, the code path
+    // Here through `engine_daemon::fallback::FallbackDaemonClient`, the code path
     // production runs, which decides *when* to move to another node: a real
     // failover, triggered by the primary going unreachable (not swapped by the
     // test), landing on a fallback with a genuinely divergent chain, then a
@@ -8982,7 +8982,7 @@ impl MoneroDaemonClient for YieldingDaemon {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         tokio::task::yield_now().await;
         self.0.get_chain_blocks(start_height, count).await
     }
@@ -8993,7 +8993,7 @@ impl MoneroDaemonClient for YieldingDaemon {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         tokio::task::yield_now().await;
         self.0.get_transactions_with_ids(txids).await
     }
@@ -9517,7 +9517,7 @@ async fn a_pruned_transaction_scans_to_the_same_result_as_the_whole_one() {
     blob.extend(monero::consensus::encode::serialize(
         whole.rct_signatures.sig.as_ref().unwrap(),
     ));
-    let pruned = crate::monero_tx::decode_pruned(&blob).unwrap();
+    let pruned = engine_daemon::monero_tx::decode_pruned(&blob).unwrap();
     let txid = tx_id_hex(&whole);
 
     let from_whole = scan_transaction(&key_custody, handle, &whole, 0..3)
@@ -10257,7 +10257,7 @@ impl MoneroDaemonClient for UnvoidsWhileAsked {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
@@ -10266,7 +10266,7 @@ impl MoneroDaemonClient for UnvoidsWhileAsked {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.inner.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
@@ -10830,7 +10830,7 @@ impl MoneroDaemonClient for ShortAnswers {
         &self,
         start_height: u64,
         count: u64,
-    ) -> std::result::Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::ChainBlock>, DaemonError> {
         self.0.get_chain_blocks(start_height, count).await
     }
     async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
@@ -10839,7 +10839,7 @@ impl MoneroDaemonClient for ShortAnswers {
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
-    ) -> std::result::Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+    ) -> std::result::Result<Vec<engine_daemon::FetchedTx>, DaemonError> {
         self.0.get_transactions_with_ids(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
@@ -10962,4 +10962,91 @@ async fn the_entry_points_refuse_an_unknown_network() {
         check_for_reorg_and_reconcile(&store, &daemon, "moonnet", 20, 0).await,
         Err(ScannerError::Internal(_))
     ));
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod live_node_tests {
+    //! The scan of a real node's pool, `#[ignore]`d like the client's own
+    //! live tests (`engine_daemon::rpc`'s `live_node_tests`), which ask the
+    //! same node: `cargo xtask live` runs it once a day.
+
+    use super::*;
+    use engine_daemon::rpc::RpcDaemonClient;
+    use engine_daemon::FetchedTx;
+
+    /// The test node, or the mainnet node named by `ENGINE_LIVE_TEST_NODE`
+    /// (`host:port`, TLS) when the usual one is down or behind: the node
+    /// `engine_daemon::rpc`'s live tests ask.
+    fn client() -> RpcDaemonClient {
+        let named = std::env::var("ENGINE_LIVE_TEST_NODE").ok();
+        let (host, port) = match named.as_deref().and_then(|node| node.rsplit_once(':')) {
+            Some((host, port)) => (host, port.parse().expect("a port number")),
+            None => ("node.hollingworth.xyz", 443),
+        };
+        RpcDaemonClient::new(host, port, true, true).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a live mainnet node"]
+    async fn live_node_end_to_end_scan_of_live_mempool_never_panics_and_finds_no_false_matches() {
+        // The fullest available proof this pipeline works: real transactions,
+        // fresh off a real node's real mempool, run through the actual
+        // scanner's scan-and-record path (real KeyCustody scan +
+        // real Store) against a wallet that has never received anything. Expect
+        // zero matches (this key owns nothing) - the point is that scanning
+        // diverse, unpredictable real-world transaction shapes never errors or
+        // panics, which a single canned fixture can't prove.
+        use crate::key_custody::{KeyCustody as _, PlainKeyCustody, WalletMaterial};
+        use crate::store::Store;
+        use monero::{PrivateKey, PublicKey};
+
+        let mut view_bytes = [0x42u8; 32];
+        view_bytes[31] &= 0x0f;
+        let view_key = PrivateKey::from_slice(&view_bytes).unwrap();
+        let mut spend_bytes = [0x24u8; 32];
+        spend_bytes[31] &= 0x0f;
+        let spend_key = PrivateKey::from_slice(&spend_bytes).unwrap();
+        let spend_pubkey = PublicKey::from_private_key(&spend_key);
+
+        let key_custody = PlainKeyCustody::default();
+        let handle = key_custody
+            .register_wallet(WalletMaterial::new(
+                view_key.to_bytes(),
+                spend_pubkey.to_bytes(),
+            ))
+            .await
+            .unwrap();
+        let store = Store::open_in_memory().unwrap();
+        let created = store
+            .create_tenant(
+                &NewTenant {
+                    key_custody_backend: "plain".into(),
+                    sealed_key_material: vec![],
+                    primary_address: "4test".into(),
+                    network: "mainnet".into(),
+                    confirmations_required: None,
+                    order_expiry_seconds: None,
+                },
+                0,
+            )
+            .unwrap();
+
+        // The pool as the scanner reads it: its ids, then the transactions
+        // under those ids, pruned.
+        let c = client();
+        let pool = c.get_mempool_txids().await.unwrap();
+        let txs = c.get_transactions_with_ids(&pool).await.unwrap();
+        assert!(
+            !txs.is_empty(),
+            "test needs a non-empty live mempool to be meaningful"
+        );
+
+        for FetchedTx { txid, tx } in &txs {
+            let scan = scan_transaction_as(&key_custody, handle, txid, tx, 0..1)
+                .await
+                .unwrap();
+            let touched = record_scan_match(&store, &created.tenant.id, &scan, 0, None).unwrap();
+            assert!(touched.is_empty());
+        }
+    }
 }

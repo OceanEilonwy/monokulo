@@ -2,7 +2,7 @@
 //! scanner's own client, its JSON and binary (`get_blocks.bin`, epee) wire
 //! formats, and the blocks, transactions and key images a real node returned,
 //! replayed from `tests/fixtures/stagenet_node_recording.json` without a
-//! network. The live tests in `src/daemon_rpc.rs` need a mainnet node and are
+//! network. The live tests in `src/rpc.rs` need a mainnet node and are
 //! `#[ignore]`d, so without this nothing in CI talks to a node-shaped server.
 //!
 //! `live_stagenet_node_answers_as_recorded` makes the same calls and checks
@@ -31,8 +31,8 @@ use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::Router;
-use engine::daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient as _, ScanTx, TxLocation};
-use engine::daemon_rpc::RpcDaemonClient;
+use engine_daemon::rpc::RpcDaemonClient;
+use engine_daemon::{ChainHeader, KeyImageStatus, MoneroDaemonClient as _, ScanTx, TxLocation};
 use monero::consensus::serialize;
 use monero::cryptonote::hash::Hashable as _;
 use serde::Deserialize;
@@ -263,7 +263,7 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
     let (found, location) = client.find_transaction(KNOWN_TX).await.unwrap().unwrap();
     assert_eq!(location, TxLocation::InBlock(KNOWN_TX_HEIGHT));
     assert_eq!(found.txid, KNOWN_TX);
-    assert!(engine::monero_tx::is_pruned(&found.tx));
+    assert!(engine_daemon::monero_tx::is_pruned(&found.tx));
     assert_eq!(ScanTx::of(&found.tx), *known);
     assert!(client.find_transaction(ABSENT_TX).await.unwrap().is_none());
     // Fetched by id: the one the node has, pruned; the other left out.

@@ -29,11 +29,11 @@ use engine_protocol::proof::{
 };
 use futures_util::future::join_all;
 
-use crate::daemon::{DaemonError, MoneroDaemonClient};
-use crate::daemon_fallback::FallbackDaemonClient;
 use crate::store::db::{Class, Db};
 use crate::store::proof::ProvenWrite;
 use crate::store::{Store, StoreError};
+use engine_daemon::fallback::FallbackDaemonClient;
+use engine_daemon::{DaemonError, MoneroDaemonClient};
 use engine_pow::hasher::Hasher;
 use engine_pow::{ProvenBlock, Rejection, Verdict, Window, DIFFICULTY_BLOCKS};
 

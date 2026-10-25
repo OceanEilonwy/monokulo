@@ -23,11 +23,11 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::daemon::MoneroDaemonClient;
 use crate::key_custody::{KeyCustody, WalletHandle};
 use crate::scanner::ScannerError;
 use crate::store::db::Class;
 use crate::store::{Db, Store};
+use engine_daemon::MoneroDaemonClient;
 
 pub use blocks::ScannedBlock;
 use engine_protocol::activity::{Event, UnitProgress, Work};
@@ -125,7 +125,7 @@ impl RoundReport {
                 | Wait::MempoolUnreadable),
             ) = outcome
             {
-                return Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
+                return Err(ScannerError::Daemon(engine_daemon::DaemonError::Request(
                     format!("the {tier:?} tier was blocked: {wait:?}").into(),
                 )));
             }
@@ -160,7 +160,7 @@ pub struct RoundInputs<'a> {
 /// node's own error (naming the node) came back and its failure was
 /// recorded: the hung node would be pinned again next round.
 pub(crate) const CALL_DEADLINE: Duration =
-    crate::daemon_rpc::REQUEST_TIMEOUT.saturating_add(crate::daemon_fallback::DEADLINE_MARGIN);
+    engine_daemon::rpc::REQUEST_TIMEOUT.saturating_add(engine_daemon::fallback::DEADLINE_MARGIN);
 
 /// A daemon (or other) call with [`CALL_DEADLINE`].
 pub(crate) async fn bounded<T, E>(
@@ -187,8 +187,8 @@ where
 }
 
 /// What a call that outlasted its deadline failed with.
-fn no_answer(deadline: Duration) -> crate::daemon::DaemonError {
-    crate::daemon::DaemonError::TimedOut(format!("no answer within {deadline:?}").into())
+fn no_answer(deadline: Duration) -> engine_daemon::DaemonError {
+    engine_daemon::DaemonError::TimedOut(format!("no answer within {deadline:?}").into())
 }
 
 /// Retry delays for keys whose work keeps failing (a key-custody backend

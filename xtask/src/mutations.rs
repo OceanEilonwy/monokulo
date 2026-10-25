@@ -121,7 +121,7 @@ const MUTATIONS: &[Mutation] = &[
     m("accept-stale-round-completion", "crates/engine/src/work/scheduler.rs",
       "if self.pending != Some(effect) {", "if false && self.pending != Some(effect) {",
       "work::scheduler::boundaries::properties::late_completions_from_another_round_are_rejected", "BOUNDARY: stale-round-completion"),
-    m("trust-one-spent-vote", "crates/engine/src/daemon_fallback.rs",
+    m("trust-one-spent-vote", "crates/engine-daemon/src/fallback.rs",
       "let status = if votes.iter().all(|vote| *vote == votes[0]) {", "let status = if true {", PORTFOLIO_TEST,
       "BOUNDARY: independent-void-ledger"),
     m("accept-wrong-scan-window", "crates/engine/src/work/mempool.rs",

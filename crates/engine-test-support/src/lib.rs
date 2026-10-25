@@ -30,16 +30,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use engine::daemon::{
-    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
-};
-use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router, AppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::store::Store;
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::{
+    ChainBlock, DaemonError, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
+};
 use monero::Network;
 
 /// The engine token every engine this crate spawns accepts: what a
@@ -80,7 +80,7 @@ const BACKGROUND_LOOP_INTERVAL: Duration = Duration::from_millis(150);
 /// [`TestEngineHandle::add_mempool_transaction`] fills, so a merchant's
 /// "look up this txid" can find a real transaction.
 ///
-/// This is deliberately *not* `engine::daemon::fake::FakeDaemonClient`: that
+/// This is deliberately *not* `engine_daemon::fake::FakeDaemonClient`: that
 /// type is `#[cfg(test)]`-gated inside `engine` itself, which means it is
 /// only compiled during the engine crate's *own* test builds - a dev-dependency such
 /// as this crate never sees it, cycle or not. Implementing the (ungated, public)

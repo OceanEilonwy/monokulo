@@ -4,7 +4,6 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::daemon::MoneroDaemonClient as _;
 use crate::engine_settings::EngineSettings;
 #[cfg(feature = "snp")]
 use crate::key_custody::transport::HandoffAnswer;
@@ -14,6 +13,7 @@ use crate::key_custody::{
 };
 use crate::status::OrderStatus;
 use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch};
+use engine_daemon::MoneroDaemonClient as _;
 
 use super::{
     network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle, ApiError,
@@ -1511,11 +1511,11 @@ pub(super) async fn lookup_payment(
     // (all a scan reads), which is why its id is passed along with it.
     let found = daemon.find_transaction(&txid).await?;
     let (tx, block_height) = match found {
-        None | Some((_, crate::daemon::TxLocation::NotFound)) => {
+        None | Some((_, engine_daemon::TxLocation::NotFound)) => {
             return Ok(Json(PaymentLookupView::NotFoundOnChain))
         }
-        Some((fetched, crate::daemon::TxLocation::InPool)) => (fetched.tx, None),
-        Some((fetched, crate::daemon::TxLocation::InBlock(h))) => (fetched.tx, Some(h)),
+        Some((fetched, engine_daemon::TxLocation::InPool)) => (fetched.tx, None),
+        Some((fetched, engine_daemon::TxLocation::InBlock(h))) => (fetched.tx, Some(h)),
     };
     let now = now_unix();
     // The block's own list of transactions, so that under proof-of-work

@@ -30,17 +30,6 @@ key-custody = { path = "../key-custody", default-features = false, features = ["
 # security processor device and AMD certificate fetching.
 snp-attest = { path = "../snp-attest", default-features = false }
 monero = "0.22.0"
-# `RpcDaemonClient::get_blocks_range`'s real `get_blocks.bin` batching (see
-# `daemon_rpc.rs`'s own doc comment) - a small, standalone epee-binary-protocol
-# decoder, not the whole `monero-daemon-rpc` client this workspace already uses
-# in `cli-wallet` (that crate's own `Transaction`/`Block` types come from
-# `monero-oxide`, a different Monero crate family from the `monero` 0.22.0
-# (monero-rs) types this crate decodes everything else into - reusing its
-# client would mean converting between two independent type systems for every
-# call). `monero-epee` decodes the wire format only; this file still turns the
-# resulting raw transaction blobs into `monero::Transaction` the same way
-# every other daemon call already does (`monero::consensus::encode::deserialize`).
-monero-epee = "0.2.1"
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 # `serialize`: in-memory stores are copies of one migrated template.
@@ -55,6 +44,9 @@ engine-protocol = { path = "../engine-protocol" }
 # Monero's proof-of-work rules and the RandomX hasher the proof follower
 # checks blocks with.
 engine-pow = { path = "../engine-pow" }
+# The node client: the `MoneroDaemonClient` trait, the RPC and fallback
+# clients and their link measurements.
+engine-daemon = { path = "../engine-daemon" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
 service-runtime = { path = "../service-runtime" }
@@ -73,7 +65,7 @@ clap = "4.6.7"
 
 [features]
 # Exploration entry points and fault/clock helpers; never enabled in production.
-fuzzing = ["tokio/test-util", "rusqlite/hooks"]
+fuzzing = ["tokio/test-util", "rusqlite/hooks", "engine-daemon/test-support"]
 # The `snp` key custody backend, for an engine inside an AMD SEV-SNP
 # confidential VM (`key_custody::snp`, `deploy/sev-snp/README.md`): the
 # `/dev/sev-guest` device, AMD's key distribution service and the master key
@@ -83,7 +75,7 @@ snp = ["key-custody/snp", "snp-attest/guest", "snp-attest/kds"]
 # The in-thread database pools (`store::Database::inline`) and other helpers
 # for `engine-test-support` and the e2e harness (`crates/e2e-harness`). Only
 # adds code tests call; it never changes what the engine does.
-test-support = ["sqlite/test-support", "credentials/test-support", "engine-pow/test-support"]
+test-support = ["sqlite/test-support", "credentials/test-support", "engine-pow/test-support", "engine-daemon/test-support"]
 # Wakes the scan loops when a node configured with `zmq_pub` says a block or
 # a pool transaction arrived. Polling stays on as the
 # safety net. Without this feature a node setting naming `zmq_pub` is
@@ -104,6 +96,8 @@ rustix = { version = "1.1.5", features = ["thread", "process"] }
 [dev-dependencies]
 # The stand-in hasher and the mined test chains (`engine_pow::test_chain`).
 engine-pow = { path = "../engine-pow", features = ["test-support"] }
+# The scripted node (`engine_daemon::fake`).
+engine-daemon = { path = "../engine-daemon", features = ["test-support"] }
 # A stand-in security processor for the snp backend's tests.
 snp-attest = { path = "../snp-attest", features = ["test-support"] }
 # A node that can't be reached (`service_runtime::unreachable`).

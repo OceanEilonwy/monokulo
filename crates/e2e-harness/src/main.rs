@@ -60,9 +60,6 @@ use serde_json::json;
 use tokio::sync::Mutex as AsyncMutex;
 use tower::ServiceExt as _;
 
-use engine::daemon::{MoneroDaemonClient, TxLocation};
-use engine::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-use engine::daemon_rpc::RpcDaemonClient;
 use engine::http::rate_limit::ApiRateLimits;
 use engine::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
 use engine::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
@@ -70,6 +67,9 @@ use engine::network::network_str;
 use engine::scanner::run_scan_tick;
 use engine::scanner_status::new_scanner_status_map;
 use engine::store::Store;
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::rpc::RpcDaemonClient;
+use engine_daemon::{MoneroDaemonClient, TxLocation};
 
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;

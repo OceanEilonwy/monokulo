@@ -13,7 +13,7 @@ async fn competing_scans(boundary: u8) {
     let custody = GateCustody::default();
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
-    let daemon = crate::daemon::fake::FakeDaemonClient::new();
+    let daemon = engine_daemon::fake::FakeDaemonClient::new();
     let tenants = [(id.clone(), handle)];
     let inputs = RoundInputs {
         db: &db,
@@ -28,7 +28,7 @@ async fn competing_scans(boundary: u8) {
     };
     let state = ScanState::default();
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let window = (id.clone(), handle, ScanIndices::range(0..3));
     let due = [&window];
     custody.scan_mode.store(2, Ordering::SeqCst);
@@ -284,7 +284,7 @@ async fn entry_point_contention(fast_first: bool, cancel: bool, competitors: usi
     let custody = GateCustody::default();
     let (id, handle, order) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
-    let daemon = crate::daemon::fake::FakeDaemonClient::new();
+    let daemon = engine_daemon::fake::FakeDaemonClient::new();
     daemon.push_block("reservation-tip", vec![]);
     daemon.set_mempool(vec![fixture_tx()]);
     let tenants = [(id.clone(), handle)];
@@ -382,7 +382,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     let (a, ah, ao) = fixture_tenant(&store, &custody, i64::MAX).await;
     let (b, bh, bo) = fixture_tenant(&store, &custody, i64::MAX).await;
     let db = Db::open(&path.0, &store).unwrap();
-    let daemon = crate::daemon::fake::FakeDaemonClient::new();
+    let daemon = engine_daemon::fake::FakeDaemonClient::new();
     let tenants = [(a.clone(), ah), (b.clone(), bh)];
     let inputs = RoundInputs {
         db: &db,
@@ -406,7 +406,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
     }
     let state = ScanState::default();
     let tx = fixture_tx();
-    let txid = crate::daemon::fake::tx_id_hex(&tx);
+    let txid = engine_daemon::fake::tx_id_hex(&tx);
     let good = (a.clone(), ah, ScanIndices::range(0..3));
     let impaired = (
         b.clone(),

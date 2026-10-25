@@ -56,8 +56,8 @@ use std::time::Duration;
 use monero::Network;
 use serde_json::{json, Value};
 
-use engine::daemon::{MoneroDaemonClient, TxLocation};
-use engine::daemon_rpc::RpcDaemonClient;
+use engine_daemon::rpc::RpcDaemonClient;
+use engine_daemon::{MoneroDaemonClient, TxLocation};
 use support::{node_fixture, require_daemon_reachable, retry};
 
 /// This test's own order amount - genuinely tiny (real stagenet XMR is

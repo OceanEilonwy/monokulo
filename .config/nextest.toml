@@ -55,7 +55,8 @@ test-group = 'stagenet'
 # above the threshold test's own 45-minute wait for its block.
 slow-timeout = { period = "300s", terminate-after = 12 }
 
-# The live_node tests (daemon_rpc) all ask one node, which drops connections
+# The live_node tests (engine-daemon's rpc, and the engine scanner's scan
+# of a live pool) all ask one node, which drops connections
 # past its per-address limit (monerod's rpc-max-connections-per-public-ip);
 # fourteen started at once lost one to "error sending request". Each takes
 # about a second, so they take turns too.

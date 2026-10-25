@@ -5,10 +5,10 @@ use std::collections::HashSet;
 
 use tokio::time::Instant;
 
-use crate::daemon::{KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
+use engine_daemon::{KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 use engine_protocol::activity::Event;
 

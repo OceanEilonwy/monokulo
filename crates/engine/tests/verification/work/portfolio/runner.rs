@@ -15,7 +15,7 @@ use super::history_fixture::FlakyKeyCustody;
 use super::portfolio_fixture::{pair, transaction};
 use super::verification_backend as backend;
 use super::{fast_pass, run_round_at, RoundInputs, ScanState};
-use crate::daemon::fake::tx_id_hex;
+use engine_daemon::fake::tx_id_hex;
 #[path = "effects.rs"]
 mod effects;
 #[path = "scenario.rs"]

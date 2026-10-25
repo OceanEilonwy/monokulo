@@ -241,8 +241,8 @@ async fn nodes_that_cannot_work(
     submitted: &BTreeMap<String, Option<serde_json::Value>>,
     current: &crate::engine_settings::NodeConfig,
 ) -> Vec<live_settings::FieldError> {
-    use crate::daemon::MoneroDaemonClient as _;
     use crate::settings::MoneroNodeSetting;
+    use engine_daemon::MoneroDaemonClient as _;
 
     let mut errors = Vec::new();
     let mut probes = Vec::new();
@@ -279,7 +279,7 @@ async fn nodes_that_cannot_work(
         if let Some(onion) = primary.onion_node() {
             errors.push(live_settings::FieldError::new(
                 setting.key,
-                crate::settings::onion_node_message(&onion.host, onion.port),
+                engine_daemon::rpc::onion_node_message(&onion.host, onion.port),
             ));
             continue;
         }
@@ -287,7 +287,7 @@ async fn nodes_that_cannot_work(
             let key = setting.key;
             let network = *name;
             probes.push(async move {
-                let client = crate::daemon_rpc::RpcDaemonClient::new(
+                let client = engine_daemon::rpc::RpcDaemonClient::new(
                     &node.host,
                     node.port,
                     node.ssl,

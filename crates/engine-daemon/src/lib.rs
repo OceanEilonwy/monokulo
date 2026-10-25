@@ -1,11 +1,35 @@
 //! `MoneroDaemonClient`: the calls the chain scanner makes to `monerod`.
 //!
-//! A trait, so reorg/double-spend logic (`src/scanner.rs`) can be tested
-//! against a deterministic scripted fake instead of a live node.
+//! A trait, so reorg/double-spend logic (the engine's `scanner`) can be
+//! tested against a deterministic scripted fake instead of a live node.
 //!
 //! The trait holds what the engine asks of a node and nothing else: the real
-//! implementation is `daemon_rpc::RpcDaemonClient`, behind
-//! `daemon_fallback::FallbackDaemonClient`; the scripted fake is here.
+//! implementation is [`rpc::RpcDaemonClient`], behind
+//! [`fallback::FallbackDaemonClient`]; [`link`] measures each node's link and
+//! [`monero_tx`] reads the pruned transactions nodes send. With
+//! `test-support`, `fake` is a scripted node for the engine's tests.
+
+// Engine code must not panic on anything it can recover from: a panic in a
+// loop stops payment detection until the supervisor restarts it. Tests may
+// unwrap freely. Each remaining allow names the invariant that makes it safe.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// A test fails by panicking: its fakes answer `unimplemented!` for calls the
+// test never makes, and `unreachable!` marks a shape the fixture can't take.
+#![cfg_attr(
+    test,
+    expect(
+        clippy::unimplemented,
+        clippy::unreachable,
+        reason = "test code: it fails by panicking"
+    )
+)]
+// Test code is left out of coverage reports (`cargo +nightly llvm-cov`).
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
+pub mod fallback;
+pub mod link;
+pub mod monero_tx;
+pub mod rpc;
 
 use monero::Transaction;
 
@@ -244,14 +268,14 @@ pub enum IdBinding {
 /// decoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanTx {
-    pub input: crate::key_custody::ScanInput,
+    pub input: key_custody::ScanInput,
     pub key_images: Vec<[u8; 32]>,
 }
 
 impl ScanTx {
     pub fn of(tx: &Transaction) -> Self {
         Self {
-            input: crate::key_custody::ScanInput::of(tx),
+            input: key_custody::ScanInput::of(tx),
             key_images: tx
                 .prefix
                 .inputs
@@ -385,14 +409,14 @@ pub trait MoneroDaemonClient: Send + Sync {
 
     /// What this client has measured of its node's link,
     /// if it measures one.
-    fn link(&self) -> Option<crate::link::LinkSnapshot> {
+    fn link(&self) -> Option<link::LinkSnapshot> {
         None
     }
 
     /// What a request to the node costs, as measured (round trip, the
     /// node's own work per block, transfer rate), for sizing requests;
     /// `None` when this client doesn't measure.
-    fn link_cost(&self) -> Option<crate::link::LinkCost> {
+    fn link_cost(&self) -> Option<link::LinkCost> {
         None
     }
 
@@ -400,14 +424,14 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// take: what the link's measurements say it needs, with room to spare.
     /// A client that doesn't measure gets the fixed floor.
     fn chain_blocks_timeout(&self, _count: u64) -> std::time::Duration {
-        crate::link::MIN_TIMEOUT
+        link::MIN_TIMEOUT
     }
 
     /// How long an answer of about `bytes` bytes may take, by the same
     /// measure as [`Self::chain_blocks_timeout`]: for a large block's
     /// outline and its pages of transactions.
     fn transfer_timeout(&self, _bytes: u64) -> std::time::Duration {
-        crate::link::MIN_TIMEOUT
+        link::MIN_TIMEOUT
     }
 
     /// The node announced a change to its pool: the
@@ -601,7 +625,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// whose inputs are spent, is voided as double-spent. Its own inputs are
     /// spent on every honest node too (its own transaction spent them), so
     /// the key-image check corroborates nothing about the absence. A client
-    /// that knows more than one node (`daemon_fallback::FallbackDaemonClient`)
+    /// that knows more than one node (`fallback::FallbackDaemonClient`)
     /// asks every node and answers `NotFound` only when all that answered
     /// agree. The default, for a single node, has no second opinion to give
     /// (`None`): asking the same node again would cost a round trip for the
@@ -655,7 +679,7 @@ pub trait MoneroDaemonClient: Send + Sync {
     ) -> Result<Vec<KeyImageStatus>, DaemonError>;
 
     /// Like `is_key_image_spent`, but for a client that knows about more than one
-    /// node (see `daemon_fallback::FallbackDaemonClient::is_key_image_spent_corroborated`)
+    /// node (see `fallback::FallbackDaemonClient::is_key_image_spent_corroborated`)
     /// - corroborates the answer across all of them before ever affirming
     /// `SpentInBlockchain`, since a false positive here permanently voids a real
     /// payment. The default here, inherited by every
@@ -676,7 +700,6 @@ pub trait MoneroDaemonClient: Send + Sync {
 /// live or regtest `monerod`. That matters
 /// (reorgs are rare in production, so bugs here are exactly the kind that go
 /// unnoticed for a long time otherwise).
-#[cfg(any(test, feature = "fuzzing"))]
+#[cfg(any(test, feature = "test-support"))]
 #[cfg_attr(coverage_nightly, coverage(off))]
-#[path = "../tests/verification/daemon/fake.rs"]
 pub mod fake;

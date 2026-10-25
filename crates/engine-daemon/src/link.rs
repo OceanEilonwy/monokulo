@@ -37,10 +37,10 @@ pub const MIN_RATE_SAMPLE_BYTES: usize = 256 * 1024;
 /// timeout would always be the ceiling anyway.
 const MIN_RATE_BYTES_PER_SEC: f64 = 1_000.0;
 /// A call may take this many times what it is expected to take.
-pub(crate) const SAFETY: f64 = 3.0;
+pub const SAFETY: f64 = 3.0;
 /// The shortest timeout any call gets: the client's request timeout for
 /// small calls, so a measured link never gets less than an unmeasured one.
-pub const MIN_TIMEOUT: Duration = crate::daemon_rpc::REQUEST_TIMEOUT;
+pub const MIN_TIMEOUT: Duration = crate::rpc::REQUEST_TIMEOUT;
 /// The longest timeout any call gets.
 pub const MAX_TIMEOUT: Duration = Duration::from_mins(10);
 /// Minutes of history kept, for the admin page's charts.
@@ -61,8 +61,8 @@ pub struct LinkCost {
 
 impl LinkCost {
     /// A link that costs only its bytes: no round trip, no work per block.
-    #[cfg(test)]
-    pub(crate) fn transfer_only(rate_bytes_per_sec: f64) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn transfer_only(rate_bytes_per_sec: f64) -> Self {
         Self {
             rtt_secs: 0.0,
             ttfb_per_block_secs: 0.0,

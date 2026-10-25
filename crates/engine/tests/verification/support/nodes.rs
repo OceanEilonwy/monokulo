@@ -1,5 +1,5 @@
 //! Adversarial RPC behavior shared by scanner and verifier tests, without parsing.
-use crate::daemon::{
+use engine_daemon::{
     fake::FakeDaemonClient, BlockOutline, ChainBlock, ChainHeader, ChainTip, DaemonError,
     DifficultyHeader, FetchedTx, KeyImageStatus, MoneroDaemonClient, TxLocation,
 };
@@ -125,7 +125,7 @@ impl MoneroDaemonClient for AdversarialNode {
         .await
     }
     /// Asked with the tip (`get_info` says the node's height too).
-    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+    async fn get_info(&self) -> Result<engine_daemon::DaemonInfo, DaemonError> {
         self.call(Rpc::Tip, async |_b| self.fake.get_info().await)
             .await
     }
@@ -224,7 +224,7 @@ impl MoneroDaemonClient for AdversarialNode {
                     if let Some(base) = &fetched.tx.rct_signatures.sig {
                         let mut blob = monero::consensus::encode::serialize(&fetched.tx.prefix);
                         blob.extend(monero::consensus::encode::serialize(base));
-                        fetched.tx = crate::monero_tx::decode_pruned(&blob)
+                        fetched.tx = engine_daemon::monero_tx::decode_pruned(&blob)
                             .map_err(|e| DaemonError::Request(e.to_string().into()))?;
                     }
                 }

@@ -16,6 +16,8 @@ snp-attest = { path = "../snp-attest", features = ["test-support"] }
 p384 = { version = "0.14.0", features = ["ecdsa"] }
 monero = "0.22.0"
 engine = { path = "../engine", features = ["test-support"] }
+# The node client the stand-in nodes are reached through.
+engine-daemon = { path = "../engine-daemon" }
 service-runtime = { path = "../service-runtime" }
 # Piconero amounts for the orders the tests record.
 pricing = { path = "../pricing" }

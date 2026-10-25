@@ -20,10 +20,10 @@ use live_settings::{
     Section, Snapshot,
 };
 
-use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-use crate::daemon_rpc::RpcDaemonClient;
 use crate::settings::MoneroNodeSetting;
 use crate::store::SharedStore;
+use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
+use engine_daemon::rpc::RpcDaemonClient;
 
 choice_value! {
     /// Where tenants' view keys are held.
