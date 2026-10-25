@@ -745,7 +745,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-pending\" aria-hidden=\"true\"><span class=\"pos-spinner\"></span></span>",
+    "html": "<span class=\"pos-icon pos-icon-pending state-pending\" aria-hidden=\"true\"><span class=\"pos-spinner\"></span></span>",
     "props": {
       "state": "pending"
     },
@@ -753,7 +753,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-unconfirmed\" aria-hidden=\"true\"><span class=\"pos-disc\"></span></span>",
+    "html": "<span class=\"pos-icon pos-icon-unconfirmed state-unconfirmed\" aria-hidden=\"true\"><span class=\"pos-disc\"></span></span>",
     "props": {
       "state": "unconfirmed"
     },
@@ -761,7 +761,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-confirming\" aria-hidden=\"true\"><span class=\"pos-disc\" style=\"--progress: 60%;\"></span></span>",
+    "html": "<span class=\"pos-icon pos-icon-confirming state-confirming\" aria-hidden=\"true\"><span class=\"pos-disc\" style=\"--progress: 60%;\"></span></span>",
     "props": {
       "progress": 60,
       "state": "confirming"
@@ -770,7 +770,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-partial\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin-partial\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-partial state-partial\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin-partial\"></use></svg></span>",
     "props": {
       "state": "partial"
     },
@@ -778,7 +778,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-paid\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-paid state-paid\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin\"></use></svg></span>",
     "props": {
       "state": "paid"
     },
@@ -786,7 +786,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-overpaid\" aria-hidden=\"true\"><svg viewBox=\"0 0 44 32\"><use href=\"#pos-coins-overpaid\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-overpaid state-overpaid\" aria-hidden=\"true\"><svg viewBox=\"0 0 44 32\"><use href=\"#pos-coins-overpaid\"></use></svg></span>",
     "props": {
       "state": "overpaid"
     },
@@ -794,7 +794,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-expired\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-expired\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-expired state-expired\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-expired\"></use></svg></span>",
     "props": {
       "state": "expired"
     },
@@ -802,7 +802,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-double-spend\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-double-spend\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-double-spend state-double-spend\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-double-spend\"></use></svg></span>",
     "props": {
       "state": "double-spend"
     },
@@ -810,7 +810,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-offline\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-offline\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-offline state-offline\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-offline\"></use></svg></span>",
     "props": {
       "state": "offline"
     },
@@ -818,7 +818,7 @@
   },
   {
     "component": "StatusIcon",
-    "html": "<span class=\"pos-icon pos-icon-cancelled\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-cancelled\"></use></svg></span>",
+    "html": "<span class=\"pos-icon pos-icon-cancelled state-cancelled\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-cancelled\"></use></svg></span>",
     "props": {
       "state": "cancelled"
     },
@@ -4193,7 +4193,7 @@
   },
   {
     "component": "ProgressSteps",
-    "html": "<div class=\"mk-stage\"><ol class=\"mk-track\" data-orientation=\"vertical\" aria-label=\"An order, start to finish\"><li class=\"step-done state-pending\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-pending\" aria-hidden=\"true\"><span class=\"pos-spinner\"></span></span></span><span class=\"mk-track-name\">Awaiting payment<span class=\"visually-hidden\">, done</span><small>Your page asks Monokulo for an order, and the customer scans its QR code in the checkout.</small></span></li><li class=\"step-done state-unconfirmed\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-unconfirmed\" aria-hidden=\"true\"><span class=\"pos-disc\"></span></span></span><span class=\"mk-track-name\">Unconfirmed<span class=\"visually-hidden\">, done</span><small>Seen in about a second, as the payment reaches the network.</small></span></li><li class=\"step-done state-confirming\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-confirming\" aria-hidden=\"true\"><span class=\"pos-disc\" style=\"--progress: 60%;\"></span></span></span><span class=\"mk-track-name\">Confirming<span class=\"visually-hidden\">, done</span><small>Confirmed as blocks arrive, straight to your own wallet.</small></span></li><li class=\"step-done state-paid\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-paid\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin\"></use></svg></span></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, done</span><small>Your server hears order.paid, signed, so you ship on Monokulo's word, not the browser's.</small></span></li></ol></div>",
+    "html": "<div class=\"mk-stage\"><ol class=\"mk-track\" data-orientation=\"vertical\" aria-label=\"An order, start to finish\"><li class=\"step-done state-pending\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-pending state-pending\" aria-hidden=\"true\"><span class=\"pos-spinner\"></span></span></span><span class=\"mk-track-name\">Awaiting payment<span class=\"visually-hidden\">, done</span><small>Your page asks Monokulo for an order, and the customer scans its QR code in the checkout.</small></span></li><li class=\"step-done state-unconfirmed\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-unconfirmed state-unconfirmed\" aria-hidden=\"true\"><span class=\"pos-disc\"></span></span></span><span class=\"mk-track-name\">Unconfirmed<span class=\"visually-hidden\">, done</span><small>Seen in about a second, as the payment reaches the network.</small></span></li><li class=\"step-done state-confirming\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-confirming state-confirming\" aria-hidden=\"true\"><span class=\"pos-disc\" style=\"--progress: 60%;\"></span></span></span><span class=\"mk-track-name\">Confirming<span class=\"visually-hidden\">, done</span><small>Confirmed as blocks arrive, straight to your own wallet.</small></span></li><li class=\"step-done state-paid\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-paid state-paid\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin\"></use></svg></span></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, done</span><small>Your server hears order.paid, signed, so you ship on Monokulo's word, not the browser's.</small></span></li></ol></div>",
     "props": {
       "compact": false,
       "label": "An order, start to finish",
@@ -4324,6 +4324,47 @@
       "vertical": true
     },
     "title": "Upright, with the line under it"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-confirming\" data-size=\"compact\"><ol class=\"mk-track\" data-orientation=\"vertical\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span><small>0.42 XMR to the order's address.</small></span></li><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, now</span><small>3 of 10 confirmations.</small></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Confirming.</strong> Payment seen; 3 of 10 confirmations.</p></div>",
+    "props": {
+      "compact": true,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Payment seen; 3 of 10 confirmations."
+        ]
+      },
+      "state": "confirming",
+      "steps": [
+        {
+          "detail": {
+            "$slot": [
+              "0.42 XMR to the order's address."
+            ]
+          },
+          "label": "Send",
+          "progress": "done"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "3 of 10 confirmations."
+            ]
+          },
+          "label": "Confirm",
+          "progress": "now"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Confirming",
+      "vertical": true
+    },
+    "title": "Upright and small"
   },
   {
     "component": "Countdown",

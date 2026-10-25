@@ -338,15 +338,16 @@ component! {
     /// (part of one, or two), and a symbol for an order that stopped. The
     /// coins and symbols are `<use>`s of `assets::STATUS_SYMBOLS`, which a
     /// page includes once; `assets::STATUS_CSS` draws them in the state's
-    /// ink. A picture of what the words near it say, so screen readers
-    /// skip it.
+    /// ink. It carries its state's colours itself (`state-*`), so it needs
+    /// nothing around it. A picture of what the words near it say, so
+    /// screen readers skip it.
     pub struct StatusIcon {
         state: OrderState,
         /// How far a confirming order is, in percent: the wedge.
         progress: Option<u32>,
     }
     html {
-        span class={ "pos-icon pos-icon-" (state) } aria-hidden="true" {
+        span class={ "pos-icon pos-icon-" (state) " state-" (state) } aria-hidden="true" {
             @if state == OrderState::Pending { span class="pos-spinner" {} }
             @else if state == OrderState::Unconfirmed { span class="pos-disc" {} }
             @else if state == OrderState::Confirming {

@@ -1,36 +1,60 @@
 //! What a page outside the POS needs to show an order's status as the POS
 //! draws it, and the API reference's status chips.
 
-use ui::{assets, HttpOutcome, HttpStatusTag, OrderState, StatusIcon};
+use std::collections::BTreeSet;
+use ui::ir::{Attr, Node};
+use ui::{assets, Component, HttpOutcome, HttpStatusTag, OrderState, StatusIcon};
 
-/// Every state's icon points only at symbols `STATUS_SYMBOLS` defines, so
-/// a page that includes them once draws every coin and mark; and the
-/// stylesheet a page opts into is the one that draws them.
-#[test]
-fn every_symbol_an_icon_uses_is_in_the_symbols_a_page_includes() {
-    for state in [
-        OrderState::Pending,
-        OrderState::Unconfirmed,
-        OrderState::Confirming,
-        OrderState::Partial,
-        OrderState::Paid,
-        OrderState::Overpaid,
-        OrderState::Expired,
-        OrderState::Cancelled,
-        OrderState::DoubleSpend,
-        OrderState::Offline,
-        OrderState::Unknown,
-    ] {
-        let html = StatusIcon::new(state).render().into_string();
-        for rest in html.split("href=\"#").skip(1) {
-            let id = &rest[..rest.find('"').expect("the id's end")];
-            assert!(
-                assets::STATUS_SYMBOLS.contains(&format!("id=\"{id}\"")),
-                "{state}: #{id} isn't in STATUS_SYMBOLS"
-            );
+/// The symbols a template points at: every `href="#..."` it can render,
+/// read from its description, whichever branch renders it.
+fn symbols_used(nodes: &[Node], used: &mut BTreeSet<&'static str>) {
+    for node in nodes {
+        match node {
+            Node::Element(element) => {
+                for attr in &element.attrs {
+                    if let Attr::Static("href", target) = attr {
+                        used.insert(target.trim_start_matches('#'));
+                    }
+                }
+                symbols_used(element.children.as_deref().unwrap_or_default(), used);
+            }
+            Node::If {
+                then, otherwise, ..
+            }
+            | Node::IfLet {
+                then, otherwise, ..
+            } => {
+                symbols_used(then, used);
+                symbols_used(otherwise, used);
+            }
+            Node::For { body, .. } => symbols_used(body, used),
+            Node::Enhanced { body, fallback, .. } => {
+                symbols_used(body, used);
+                symbols_used(fallback, used);
+            }
+            Node::Text(_) | Node::Value(_) => {}
         }
     }
-    assert!(assets::STATUS_CSS.contains(".pos-icon"));
+}
+
+/// Every symbol the icon can point at is one `STATUS_SYMBOLS` defines, so
+/// a page that includes them once draws every coin and mark.
+#[test]
+fn every_symbol_an_icon_uses_is_in_the_symbols_a_page_includes() {
+    let mut used = BTreeSet::new();
+    symbols_used(&StatusIcon::info().template, &mut used);
+    let defined: BTreeSet<&str> = assets::STATUS_SYMBOLS
+        .split("id=\"")
+        .skip(1)
+        .map(|rest| &rest[..rest.find('"').expect("the id's end")])
+        .collect();
+    // Partial, paid, overpaid, expired, double spend, offline, cancelled.
+    assert_eq!(used.len(), 7, "{used:?}");
+    assert_eq!(
+        used.difference(&defined).collect::<Vec<_>>(),
+        Vec::<&&str>::new(),
+        "symbols the icon uses that STATUS_SYMBOLS doesn't define"
+    );
 }
 
 /// A confirming order's wedge is its percent; without one, the disc is
@@ -42,13 +66,13 @@ fn a_confirming_icon_fills_its_wedge_by_its_progress() {
             .progress(60u32)
             .render()
             .into_string(),
-        r#"<span class="pos-icon pos-icon-confirming" aria-hidden="true"><span class="pos-disc" style="--progress: 60%;"></span></span>"#
+        r#"<span class="pos-icon pos-icon-confirming state-confirming" aria-hidden="true"><span class="pos-disc" style="--progress: 60%;"></span></span>"#
     );
     assert_eq!(
         StatusIcon::new(OrderState::Confirming)
             .render()
             .into_string(),
-        r#"<span class="pos-icon pos-icon-confirming" aria-hidden="true"><span class="pos-disc"></span></span>"#
+        r#"<span class="pos-icon pos-icon-confirming state-confirming" aria-hidden="true"><span class="pos-disc"></span></span>"#
     );
 }
 

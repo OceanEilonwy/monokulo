@@ -303,8 +303,9 @@ export interface ProgressStep {
   readonly label: string;
   readonly progress: StepProgress;
   /**
-   * Under the name, in smaller type: what happens at this step. For
-   * upright steps; across, there's no room.
+   * Under the name, in smaller type: what happens at this step. Shown
+   * only when the steps stand upright (`vertical`); across, it isn't
+   * rendered.
    */
   readonly detail?: JSX.Element;
   /**

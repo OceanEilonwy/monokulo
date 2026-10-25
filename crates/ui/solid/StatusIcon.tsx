@@ -11,8 +11,9 @@ import type { OrderState } from './types';
  * (part of one, or two), and a symbol for an order that stopped. The
  * coins and symbols are `<use>`s of `assets::STATUS_SYMBOLS`, which a
  * page includes once; `assets::STATUS_CSS` draws them in the state's
- * ink. A picture of what the words near it say, so screen readers
- * skip it.
+ * ink. It carries its state's colours itself (`state-*`), so it needs
+ * nothing around it. A picture of what the words near it say, so
+ * screen readers skip it.
  */
 export interface StatusIconProps {
   state: OrderState;
@@ -29,12 +30,13 @@ export interface StatusIconProps {
  * (part of one, or two), and a symbol for an order that stopped. The
  * coins and symbols are `<use>`s of `assets::STATUS_SYMBOLS`, which a
  * page includes once; `assets::STATUS_CSS` draws them in the state's
- * ink. A picture of what the words near it say, so screen readers
- * skip it.
+ * ink. It carries its state's colours itself (`state-*`), so it needs
+ * nothing around it. A picture of what the words near it say, so
+ * screen readers skip it.
  */
 export function StatusIcon(props: StatusIconProps): JSX.Element {
   return (
-    <span class={`pos-icon pos-icon-${props.state}`} aria-hidden="true">
+    <span class={`pos-icon pos-icon-${props.state} state-${props.state}`} aria-hidden="true">
       {props.state === "pending" ? (
         <span class="pos-spinner"></span>
       ) : (

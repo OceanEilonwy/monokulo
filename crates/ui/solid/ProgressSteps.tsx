@@ -122,10 +122,16 @@ export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
                     )}
                   </>
                 )}
-                {step.detail != null ? (
-                  <small>
-                    {step.detail}
-                  </small>
+                {(props.vertical ?? false) ? (
+                  <>
+                    {step.detail != null ? (
+                      <small>
+                        {step.detail}
+                      </small>
+                    ) : (
+                      null
+                    )}
+                  </>
                 ) : (
                   null
                 )}

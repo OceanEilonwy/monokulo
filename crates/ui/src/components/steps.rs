@@ -129,8 +129,9 @@ pub enum StepProgress {
 pub struct ProgressStep {
     pub label: String,
     pub progress: StepProgress,
-    /// Under the name, in smaller type: what happens at this step. For
-    /// upright steps; across, there's no room.
+    /// Under the name, in smaller type: what happens at this step. Shown
+    /// only when the steps stand upright (`vertical`); across, it isn't
+    /// rendered.
     pub detail: Option<Slot>,
     /// The step's own colours, an order's state: its dot in the state's
     /// tint, edge and ink, on a card of none.
@@ -223,7 +224,7 @@ component! {
                             @else if step.progress == StepProgress::Part { span class="visually-hidden" { ", partly done" } }
                             @else if step.progress == StepProgress::Fail { span class="visually-hidden" { ", stopped" } }
                             @else { span class="visually-hidden" { ", to come" } }
-                            @if let Some(detail) = step.detail { small { (detail) } }
+                            @if vertical { @if let Some(detail) = step.detail { small { (detail) } } }
                         }
                     }
                 }
@@ -363,6 +364,21 @@ pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
                 OrderState::Confirming,
             )
             .vertical(true),
+        ),
+        (
+            "Upright and small",
+            payment(
+                vec![
+                    step("Send", Done).detail("0.42 XMR to the order's address."),
+                    step("Confirm", Now).detail("3 of 10 confirmations."),
+                    step("Paid", Todo),
+                ],
+                "Confirming",
+                "Payment seen; 3 of 10 confirmations.",
+                OrderState::Confirming,
+            )
+            .vertical(true)
+            .compact(true),
         ),
     ]
 }

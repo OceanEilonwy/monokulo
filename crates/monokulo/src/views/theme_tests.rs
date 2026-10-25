@@ -547,7 +547,7 @@ fn text_and_controls_are_legible_in_both_themes() {
         ("--network-test-edge", "--paper", 3.0),
         ("--network-test-edge", "--paper-raised", 3.0),
         // The API reference's method and status chips: the word on its
-        // tint, the edge on the card.
+        // tint, the edge on the page and on the card.
         ("--http-ink", "--http-get-bg", 4.5),
         ("--http-ink", "--http-post-bg", 4.5),
         ("--http-ink", "--http-delete-bg", 4.5),
@@ -555,6 +555,13 @@ fn text_and_controls_are_legible_in_both_themes() {
         ("--http-ink", "--http-client-error-bg", 4.5),
         ("--http-ink", "--http-server-error-bg", 4.5),
         ("--http-ink", "--http-other-bg", 4.5),
+        ("--http-get-edge", "--paper", 3.0),
+        ("--http-post-edge", "--paper", 3.0),
+        ("--http-delete-edge", "--paper", 3.0),
+        ("--http-ok-edge", "--paper", 3.0),
+        ("--http-client-error-edge", "--paper", 3.0),
+        ("--http-server-error-edge", "--paper", 3.0),
+        ("--http-other-edge", "--paper", 3.0),
         ("--http-get-edge", "--paper-raised", 3.0),
         ("--http-post-edge", "--paper-raised", 3.0),
         ("--http-delete-edge", "--paper-raised", 3.0),
