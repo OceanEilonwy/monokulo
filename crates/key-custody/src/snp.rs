@@ -30,7 +30,9 @@
 //! firmware was rolled back to an older (perhaps broken) version can't
 //! derive it, whatever the engine's settings say. When the firmware is
 //! updated, the next start opens the wrap at the TCB it was made at and
-//! wraps the key again at the new one, replacing it. This release's own
+//! wraps the key again at the new one, replacing it: a migration step of the
+//! database's ([`WrapStore::save_as_step`]), one per image and firmware
+//! version, recorded when it runs and not run again. This release's own
 //! firmware floor ([`transport::release_tcb_floor`]) is checked at start, so
 //! nothing is wrapped below it.
 //!
@@ -136,6 +138,10 @@ pub trait WrapStore: Send + Sync {
     fn load(&self) -> Result<Vec<StoredWrap>, String>;
     /// Stores `wrap`, replacing the one for its image if there is one.
     fn save(&self, wrap: &StoredWrap) -> Result<(), String>;
+    /// Stores `wrap` as `save` does, as the database's migration step `step`
+    /// (a rewrap at updated firmware): recorded with when it ran, together
+    /// with the write, and not run again. Returns whether it ran.
+    fn save_as_step(&self, step: &str, wrap: &StoredWrap) -> Result<bool, String>;
 }
 
 /// Where the AMD certificates for this engine's own report come from: AMD's
@@ -345,18 +351,34 @@ impl SnpKeyCustody {
         aad
     }
 
-    /// Wraps `master` for this image at the platform's committed TCB and
-    /// stores it, replacing any earlier wrap for this image.
-    fn store_master(&self, master: &[u8; 32]) -> Result<(), String> {
+    /// `master` wrapped for this image at the platform's committed TCB.
+    fn wrap_master(&self, master: &[u8; 32]) -> Result<StoredWrap, String> {
         let tcb = self.report.committed_tcb.raw;
         let wrapped = encrypt(&*self.wrapping_key(tcb)?, &self.wrap_aad(tcb), master);
-        self.wraps.save(&StoredWrap {
+        Ok(StoredWrap {
             measurement: self.report.measurement,
             guest_svn: self.report.guest_svn,
             tcb,
             wrapped,
             key_check: Some(key_check(master)),
         })
+    }
+
+    /// Wraps `master` for this image at the platform's committed TCB and
+    /// stores it, replacing any earlier wrap for this image.
+    fn store_master(&self, master: &[u8; 32]) -> Result<(), String> {
+        self.wraps.save(&self.wrap_master(master)?)
+    }
+
+    /// The database migration step that wraps the master key again for
+    /// this image at the committed TCB: one per image and firmware version
+    /// the machine moves to.
+    fn rewrap_step(&self) -> String {
+        format!(
+            "{}@{}",
+            hex::encode(self.report.measurement),
+            hex::encode(self.report.committed_tcb.raw)
+        )
     }
 
     /// Opens this image's own wrap, made at TCB `own.tcb`: refused (waiting)
@@ -394,10 +416,23 @@ impl SnpKeyCustody {
             ));
         };
         let master = Zeroizing::new(master);
-        if own.tcb != committed.raw {
-            // Updated firmware: from now on only firmware at least this new
-            // opens it.
-            self.store_master(&master)?;
+        // Updated firmware: from now on only firmware at least this new
+        // opens it. The rewrap is a migration step of the database's, run
+        // here because only the unwrapped key can make it. One that already
+        // ran with an older wrap left behind means the wrap was put back
+        // from before it: refused, rather than opened at the older firmware.
+        if own.tcb != committed.raw
+            && !self
+                .wraps
+                .save_as_step(&self.rewrap_step(), &self.wrap_master(&master)?)?
+        {
+            return Ok(Master::Waiting(format!(
+                "the master key for this engine image was wrapped again on firmware {}, but the \
+                 stored wrap is from firmware {}: it was put back from before. Restore the whole \
+                 database, not only its wraps",
+                committed.to_text(),
+                bound.to_text()
+            )));
         }
         Ok(Master::Ready(master))
     }
@@ -851,8 +886,10 @@ mod tests {
 
     const NOW: i64 = 1_790_899_200;
 
+    /// The wraps, and the migration steps that have run, as the engine's
+    /// database keeps them.
     #[derive(Default)]
-    struct MemoryWraps(Mutex<Vec<StoredWrap>>);
+    struct MemoryWraps(Mutex<Vec<StoredWrap>>, Mutex<Vec<String>>);
 
     impl WrapStore for MemoryWraps {
         fn load(&self) -> Result<Vec<StoredWrap>, String> {
@@ -863,6 +900,15 @@ mod tests {
             wraps.retain(|w| w.measurement != wrap.measurement);
             wraps.push(wrap.clone());
             Ok(())
+        }
+        fn save_as_step(&self, step: &str, wrap: &StoredWrap) -> Result<bool, String> {
+            let mut steps = self.1.lock();
+            if steps.iter().any(|s| s == step) {
+                return Ok(false);
+            }
+            self.save(wrap)?;
+            steps.push(step.to_owned());
+            Ok(true)
         }
     }
 
@@ -1123,6 +1169,14 @@ mod tests {
         let stored = wraps.load().unwrap();
         assert_eq!(stored.len(), 1, "the older wrap is replaced");
         assert_eq!(stored[0].tcb, new);
+        // As the database's migration step for this image and firmware,
+        // which the next start on the same firmware doesn't run again.
+        let step = format!("{}@{}", hex::encode([1u8; 48]), hex::encode(new));
+        assert_eq!(*wraps.1.lock(), std::slice::from_ref(&step));
+        let again = engine(1, on_firmware(identity(1, 1), new), &wraps).await;
+        assert_eq!(again.backend.status().waiting, None);
+        assert_eq!(*wraps.1.lock(), [step]);
+        assert_eq!(wraps.load().unwrap(), stored);
 
         let rolled_back = engine(1, on_firmware(identity(1, 1), old), &wraps).await;
         let waiting = rolled_back.backend.status().waiting.unwrap();

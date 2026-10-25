@@ -90,7 +90,7 @@ pub(super) fn links(root: &str) -> [(Section, String, &'static str); 3] {
 }
 
 /// The docs' first page, where Docs and Get started go.
-fn docs_front(root: &str) -> String {
+pub(super) fn docs_front(root: &str) -> String {
     format!("{root}{}/", super::docs::PAGES[0].dir)
 }
 
@@ -178,7 +178,7 @@ mod tests {
             let home = if root.is_empty() { "./" } else { root };
             for href in [
                 home.to_owned(),
-                format!("{root}guide/"),
+                format!("{root}introduction/"),
                 format!("{root}api/"),
                 format!("{root}testing/"),
                 format!("{root}stylebook/"),

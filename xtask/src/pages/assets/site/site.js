@@ -10,6 +10,9 @@
 //   page" (on the API explorer, which has none, in the map, kept in
 //   sight), the current page kept in sight in the map, and the map's menu
 //   (a checkbox, on a narrow screen) closed by Escape or a link chosen.
+// - On the router's install page: one OpenWrt version at a time, picked
+//   from the dropdown it shows. Without a script every version's blocks
+//   show, each under its own label.
 (() => {
   const script = document.currentScript;
   // The script is in the site's assets/, one folder below its root.
@@ -212,5 +215,17 @@
     };
     addEventListener("scroll", () => { if (!queued) { queued = true; requestAnimationFrame(spy); } }, { passive: true });
     spy();
+  }
+
+  /* ---------- the OpenWrt version ---------- */
+  const pick = document.getElementById("openwrt-target");
+  if (pick) {
+    const show = () => {
+      for (const el of document.querySelectorAll(".target")) el.hidden = el.dataset.target !== pick.value;
+      for (const el of document.querySelectorAll(".target-label")) el.hidden = true;
+    };
+    pick.addEventListener("change", show);
+    pick.closest(".target-pick").hidden = false;
+    show();
   }
 })();

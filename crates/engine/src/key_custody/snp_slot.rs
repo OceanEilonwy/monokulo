@@ -48,6 +48,20 @@ impl WrapStore for StoreWraps {
             )
             .map_err(|e| e.to_string())
     }
+
+    fn save_as_step(&self, step: &str, wrap: &StoredWrap) -> Result<bool, String> {
+        self.0
+            .lock()
+            .rewrap_snp_master_key(
+                step,
+                &wrap.measurement,
+                wrap.guest_svn,
+                &wrap.tcb,
+                &wrap.wrapped,
+                wrap.key_check.as_ref().map(<[u8; 32]>::as_slice),
+            )
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// The `snp` backend, started once (its settings apply at a restart) the

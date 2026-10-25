@@ -2,7 +2,7 @@
 # one signed .apk, and a signed apk repository holding it, for each OpenWrt
 # release and CPU architecture in the build matrix below (today one: 25.12 on
 # the GL.iNet Flint 2, mediatek/filogic, aarch64_cortex-a53). The build is
-# scripts/build-openwrt.sh; the landing page with install instructions is
+# scripts/build-openwrt.sh; the docs page with install instructions is
 # built by pages.yml.
 #
 # release.yml runs it on main and version tags, after every test passed; a

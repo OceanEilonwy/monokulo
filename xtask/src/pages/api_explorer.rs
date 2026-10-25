@@ -671,7 +671,7 @@ fn who(op: &Operation) -> Markup {
             @if op.anyone() { (ui::Tag::new("No key")) }
             @for (name, prefix, word, _) in KEYS {
                 @if keys.contains(&name) {
-                    (ui::Tag::new(ui::Slot::from(html! { code { (prefix) } " " (word) })))
+                    (ui::Tag::new(ui::Slot::from(html! { span.api-prefix { (prefix) } " " (word) })))
                 }
             }
             @if op.session() { (ui::Tag::new("Signed-in merchant")) }
