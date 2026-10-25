@@ -978,9 +978,7 @@ fn public_surface(
 /// credential (credentials are never allowed), and anything they do is
 /// equally possible from a script outside a browser. Private-network
 /// preflights are answered too, so a public page can embed a monokulo that
-/// runs on a local network address. It allows `methods`, which is
-/// `API_CORS_METHODS` on the API (`DELETE` included) and
-/// `CHECKOUT_CORS_METHODS` on the checkout pages.
+/// runs on a local network address. It allows `methods`.
 fn embed_cors_layer(
     state: &AppState,
     methods: &[axum::http::Method],

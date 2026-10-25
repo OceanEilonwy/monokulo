@@ -1755,6 +1755,22 @@ async fn the_api_preflight_allows_delete_and_the_checkout_and_library_ones_do_no
     }
 }
 
+/// The API's CORS answer is written out by hand, so a handler added with a
+/// method it doesn't name would work everywhere but in a browser on another
+/// site. Every method in the API's catalog is one it allows.
+#[test]
+fn the_api_cors_answer_allows_every_method_the_api_has() {
+    for handler in crate::api::runtime::catalog::handlers() {
+        let method = axum::http::Method::from_bytes(handler.method.as_bytes()).unwrap();
+        assert!(
+            super::API_CORS_METHODS.contains(&method),
+            "{} {} is not in API_CORS_METHODS",
+            handler.method,
+            handler.template
+        );
+    }
+}
+
 // -- Alerts for stores that can't be scanned (admin_settings_v2.md task 3.7) --
 
 /// A store row becomes an `OwnedStore` only for its own owner.
