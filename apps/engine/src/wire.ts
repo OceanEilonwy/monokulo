@@ -1,7 +1,8 @@
 // What monokulo sends the engine page (crates/monokulo/src/http/engine_page.rs),
 // as its JSON is written: the state machine's state and marks
-// (engine_view::machine), the frames around them (engine_view::history), and
-// the figures behind the "Machine and links" strip (the `machine` event).
+// (crates/engine-view, engine_view::machine), the frames around them
+// (engine_view::history), and the figures behind the "Machine and links"
+// strip (the `machine` event).
 // Field names and shapes follow the Rust types' serde forms; the app writes
 // every word from these (present.ts, machine.ts).
 

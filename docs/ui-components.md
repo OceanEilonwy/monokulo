@@ -122,18 +122,17 @@ independent install and lockfile.
   helpers emit the documented HTML; they do not define alternative controls.
 - `apps/pos`: Solid state, order workflows and terminal layout.
   It composes shared controls. The POS still requires JavaScript.
-- `apps/engine`: the engine page's live view, an app that requires
-  JavaScript, like the POS. Monokulo renders only its shell (the header and
-  network picker, `views::engine`) and sends data: the state machine's
-  states, effects and marks (`engine_view`) and the machine's figures. The
-  app writes every word (`present.ts`, `machine.ts`) and draws it in Solid
-  views of signals the stream and the playback loop set, reusing the shared
-  components (Select, HelpTip, Disclosure, Alert, Table, Checkbox); what is
-  placed by measured pixels, and the timeline's canvas, stay as code around
-  the measuring. Its unit tests (`npm run test:engine`) check the words
-  against states the Rust machine writes (`test/fixtures.json`). Its build
-  also makes monokulo's islands script, so the engine page shares their
-  copy of Solid.
+- `apps/engine`: the engine page's live view, an app that requires JavaScript,
+  like the POS. Monokulo renders only its shell (the header and network
+  picker, `views::engine`) and sends data: the state machine's states, effects
+  and marks (`crates/engine-view`) and the machine's figures. The app writes
+  every word (`present.ts`, `machine.ts`) and draws it in Solid views of
+  signals the stream and the playback loop set, reusing the shared components
+  (Select, HelpTip, Disclosure, Alert, Table, Checkbox); what is placed by
+  measured pixels, and the timeline's canvas, stay as code around the
+  measuring. Its unit tests (`npm run test:engine`) check the words against
+  states the Rust machine writes (`test/fixtures.json`). Its build also makes
+  monokulo's islands script, so the engine page shares their copy of Solid.
 - `e2e/browser`: checks that components integrate with real workflows.
 
 ## Build and serving

@@ -60,6 +60,8 @@ serde_json = "1.0.151"
 # What the engine sends, with JSON Schemas for ids and order statuses for
 # the API reference (`api`).
 engine-protocol = { path = "../engine-protocol", features = ["schemars"] }
+# The engine page's state machine and history (`engine_relay`, `http::engine_page`).
+engine-view = { path = "../engine-view" }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
 service-runtime = { path = "../service-runtime" }
