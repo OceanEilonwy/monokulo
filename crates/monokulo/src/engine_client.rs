@@ -849,30 +849,58 @@ impl EngineClient {
             .parsed()
     }
 
-    /// `GET /api/v1/admin/tenant/orders` — lists `sk`'s tenant's
-    /// orders, with no paging or filtering.
+    /// `GET /api/v1/admin/tenant/orders` — the newest 50 of `sk`'s
+    /// tenant's orders (the engine's default page). Not all of them: a
+    /// count or a sum over every order is [`Self::order_totals`], and the
+    /// open ones are [`Self::list_open_orders`].
     pub async fn list_orders(&self, sk: &RawToken) -> Result<Vec<OrderView>, EngineClientError> {
         self.send(Call::get("/api/v1/admin/tenant/orders").store(sk))
             .await?
             .parsed()
     }
 
-    /// `GET /api/v1/admin/tenant/orders?open=&search=&limit=&offset=`
-    /// — a page of `sk`'s tenant's orders, newest first: only still-open
-    /// ones when `open`, only those whose id or merchant order id contains
-    /// `search`. At most 200 per page.
+    /// `GET /api/v1/admin/tenant/orders/open` — every one of `sk`'s
+    /// tenant's orders still open (pending, unconfirmed, confirming or
+    /// partial), newest first: all of them, never a page.
+    pub async fn list_open_orders(
+        &self,
+        sk: &RawToken,
+    ) -> Result<Vec<OrderView>, EngineClientError> {
+        self.send(Call::get("/api/v1/admin/tenant/orders/open").store(sk))
+            .await?
+            .parsed()
+    }
+
+    /// `GET /api/v1/admin/tenant/orders/totals?since=` — what all of
+    /// `sk`'s tenant's orders received, and how many were made at or after
+    /// `since` (Unix seconds), summed by the engine over every order.
+    pub async fn order_totals(
+        &self,
+        sk: &RawToken,
+        since: i64,
+    ) -> Result<OrderTotals, EngineClientError> {
+        self.send(
+            Call::get(with_query(
+                "/api/v1/admin/tenant/orders/totals",
+                &[("since", since.to_string())],
+            ))
+            .store(sk),
+        )
+        .await?
+        .parsed()
+    }
+
+    /// `GET /api/v1/admin/tenant/orders?search=&limit=&offset=` — a page
+    /// of `sk`'s tenant's orders, newest first: only those whose id or
+    /// merchant order id contains `search`. At most 200 per page.
     pub async fn list_orders_page(
         &self,
         sk: &RawToken,
-        open: bool,
         search: Option<&str>,
         limit: u32,
         offset: u32,
     ) -> Result<Vec<OrderView>, EngineClientError> {
         let mut params = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
-        if open {
-            params.push(("open", "true".to_string()));
-        }
         if let Some(search) = search {
             params.push(("search", search.to_string()));
         }
@@ -1334,6 +1362,14 @@ pub struct WalletChangeAnswer {
     pub tenant: TenantView,
     /// The store's orders on the wallet it left, still watched there.
     pub orders_on_previous_wallet: u64,
+}
+
+/// What a store's orders add up to ([`EngineClient::order_totals`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub struct OrderTotals {
+    pub received_piconero: u64,
+    /// Orders made at or after the time asked about.
+    pub orders_since: u64,
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
@@ -2148,19 +2184,23 @@ mod contract_tests {
 
         let all = client.list_orders(&sk).await.unwrap();
         let page = client
-            .list_orders_page(&sk, true, Some("m-1"), 10, 0)
+            .list_orders_page(&sk, Some("m-1"), 10, 0)
             .await
             .unwrap();
+        let open = client.list_open_orders(&sk).await.unwrap();
+        let totals = client.order_totals(&sk, 0).await.unwrap();
         let unknown = crate::db::OrderId::new("order_unknown");
         let by_ids = client
             .list_orders_by_ids(&sk, &[order.order_id.clone(), unknown])
             .await
             .unwrap();
         lines.push(format!(
-            "listed {}, page {}, by ids {}",
+            "listed {}, page {}, open {}, by ids {}, totals {:?}",
             all.len(),
             page.len(),
-            by_ids.len()
+            open.len(),
+            by_ids.len(),
+            totals
         ));
 
         client
@@ -2339,7 +2379,7 @@ mod contract_tests {
             "retiring it once unused: ok",
             "confirmations now 3",
             "the same idempotency key gives the same order: true",
-            "listed 1, page 1, by ids 1",
+            "listed 1, page 1, open 1, by ids 1, totals OrderTotals { received_piconero: 0, orders_since: 1 }",
             "detail: Some(\"m-1\") Pending refund Some(\"4refund\"), 0 payments",
             "unknown order: 404 Not Found",
             "an id that names another route: 404 Not Found: not a valid id",

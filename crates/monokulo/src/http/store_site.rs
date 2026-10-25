@@ -7,10 +7,10 @@
 //!   The old site's domain is dropped and the new one's waits to be
 //!   verified.
 //! - `GET`/`POST /stores/{id}/settings/plugins/{integration}/disconnect`:
-//!   refused while an order the plugin made can still be paid. Removes the
-//!   plugin's webhook and gives the store a new secret key in the engine,
-//!   so the plugin's stops working, then marks it disconnected; the
-//!   website unlocks.
+//!   refused while an order the plugin made can still be paid. Gives the
+//!   store a new secret key in the engine, so the plugin's stops working,
+//!   then removes the plugin's webhook and marks it disconnected in one
+//!   write; the website unlocks.
 
 use std::collections::HashSet;
 
@@ -48,22 +48,20 @@ fn integration_view(
     }
 }
 
-/// The store's orders that can still be paid (waiting, or part paid, and
-/// not yet expired), of those in `only` when given; `None` when the
-/// engine can't say.
-async fn open_orders(
-    state: &AppState,
-    sk: &shared::auth::RawToken,
+/// Of the store's orders that can still be paid (`listed`, the engine's
+/// open orders, `None` when it couldn't say), those in `only` when given.
+/// That is every order the engine holds open: waiting or part paid, and
+/// also paid but still confirming, which goes on to paid whatever its
+/// deadline. `until` is the latest deadline not yet passed.
+fn open_orders(
+    listed: Option<&[crate::engine_client::OrderView]>,
     only: Option<&HashSet<crate::db::OrderId>>,
     clock: &crate::views::time::Clock,
 ) -> Option<OpenOrders> {
-    use shared::order_status::OrderStatus;
-    let orders = state.engine.client.list_orders(sk).await.ok()?;
+    let orders = listed?;
     let now = crate::now_unix();
     let open: Vec<_> = orders
         .iter()
-        .filter(|o| matches!(o.status, OrderStatus::Pending | OrderStatus::Partial))
-        .filter(|o| o.expires_at > now)
         .filter(|o| only.is_none_or(|ids| ids.contains(&o.order_id)))
         .collect();
     Some(OpenOrders {
@@ -71,6 +69,7 @@ async fn open_orders(
         until: open
             .iter()
             .map(|o| o.expires_at)
+            .filter(|at| *at > now)
             .max()
             .map(|at| clock.text(at)),
     })
@@ -103,9 +102,10 @@ pub(super) async fn site_view(
         .as_ref()
         .and_then(|site| crate::embed_domains::domain_of_site(site.as_str()))
         .is_some_and(|domain| domains.iter().any(|d| d.domain == domain));
-    let open = open_orders(state, sk, None, clock).await;
+    let listed = state.engine.client.list_open_orders(sk).await.ok();
+    let open = open_orders(listed.as_deref(), None, clock);
     let plugin_open = match active {
-        Some(_) => open_orders(state, sk, Some(&from_plugin), clock).await,
+        Some(_) => open_orders(listed.as_deref(), Some(&from_plugin), clock),
         None => None,
     };
     SiteView {
@@ -349,8 +349,8 @@ pub async fn disconnect_form(
 
 /// `POST …/settings/plugins/{integration}/disconnect`: once no order
 /// the plugin made can still be paid and the store's name was typed,
-/// removes its webhook, gives the store a new secret key (the plugin's
-/// stops working) and marks it disconnected.
+/// gives the store a new secret key (the plugin's stops working), then
+/// removes its webhook and marks it disconnected.
 pub async fn disconnect_submit(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -391,33 +391,8 @@ pub async fn disconnect_submit(
             row.name
         ));
     }
-    // Its webhook first.
-    let (store_id, integration_id) = (row.id.clone(), integration.clone());
-    let webhook_id = state
-        .db
-        .read(move |db| {
-            Ok::<_, crate::db::DbError>(
-                db.list_integrations(&store_id)?
-                    .into_iter()
-                    .find(|i| i.id == integration_id)
-                    .and_then(|i| i.webhook_id),
-            )
-        })
-        .await
-        .ok()
-        .flatten();
-    // Already gone (deleted on the Webhooks card, say): nothing to do.
-    if let Some(webhook_id) = webhook_id {
-        let (store_id, webhook_id) = (row.id.clone(), shared::ids::WebhookId::new(webhook_id));
-        if let Err(e) = state
-            .db
-            .write(move |db| db.delete_webhook(&store_id, &webhook_id))
-            .await
-        {
-            tracing::error!(store.id = %id, error = %e, "the plugin's webhook could not be removed");
-            return refuse(something_went_wrong());
-        }
-    }
+    // The engine's new key first: until it has one, nothing here changes,
+    // so a refusal's "Nothing changed" is true.
     let new_sk = match state.engine.client.rotate_secret(&sk).await {
         Ok(new_sk) => new_sk,
         Err(e) => {
@@ -435,8 +410,13 @@ pub async fn disconnect_submit(
     let written = state
         .db
         .write(move |db| {
-            db.set_store_secret(&store_id, &encrypted, &new_hash)?;
-            db.disconnect_integration(&store_id, &integration_id, crate::now_unix())
+            db.disconnect_integration(
+                &store_id,
+                &integration_id,
+                &encrypted,
+                &new_hash,
+                crate::now_unix(),
+            )
         })
         .await;
     if let Err(e) = written {

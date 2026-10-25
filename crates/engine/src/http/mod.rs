@@ -250,6 +250,14 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             get(admin::list_orders).post(orders::create_order_for_admin),
         )
         .route(
+            "/api/v1/admin/tenant/orders/open",
+            get(admin::list_open_orders),
+        )
+        .route(
+            "/api/v1/admin/tenant/orders/totals",
+            get(admin::order_totals),
+        )
+        .route(
             "/api/v1/admin/tenant/orders/{order_id}",
             get(admin::get_order_detail),
         )

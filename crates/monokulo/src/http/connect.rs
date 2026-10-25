@@ -1602,6 +1602,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(order.status(), StatusCode::CREATED);
+        let order_id = body_json(order).await["order_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert_eq!(rows[0].version, "0.4.1");
         assert!(rows[0].last_seen_at.is_some());
@@ -1621,6 +1625,40 @@ mod tests {
         assert!(state.db.lock().list_integrations(&id).unwrap()[0]
             .disconnected_at
             .is_none());
+
+        // Paid, but only seen in the mempool: it goes on to paid whatever
+        // its deadline, and the shop must hear of it, so disconnecting
+        // still waits and changes nothing.
+        engine
+            .record_order_payment(
+                &order_id,
+                shared::xmr_amount::Piconero(1_000_000_000_000),
+                None,
+            )
+            .unwrap();
+        let refused = router
+            .clone()
+            .oneshot(form_request(
+                &disconnect,
+                Some(&cookie),
+                &[("confirm", "Shop")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let refused = body_text(refused).await;
+        assert!(
+            refused.contains("1 order from shop.example.com can still be paid"),
+            "{refused}"
+        );
+        assert!(state.db.lock().list_integrations(&id).unwrap()[0]
+            .disconnected_at
+            .is_none());
+        assert_eq!(state.db.lock().list_webhooks(&id).unwrap().len(), 1);
+        assert!(
+            engine_client.get_tenant(&new_sk).await.is_ok(),
+            "the key is unchanged"
+        );
     }
 
     /// With the engine out of reach, disconnecting can't tell whether an

@@ -590,10 +590,6 @@ pub struct PosListQuery {
     state: Option<String>,
 }
 
-/// Most open orders one engine page holds; the terminal reads pages until
-/// a short one.
-const OPEN_ORDERS_PAGE: u32 = 200;
-
 /// Every POS order of this store that is still open: the engine's open
 /// orders (web orders included; a cancelled one is closed) narrowed to the
 /// POS's own.
@@ -602,19 +598,7 @@ async fn active_pos_orders(
     connection_id: &crate::db::ConnectionId,
     sk: &shared::auth::RawToken,
 ) -> Result<Vec<PosOrderData>, EngineClientError> {
-    let mut open = Vec::new();
-    loop {
-        let page = state
-            .engine
-            .client
-            .list_orders_page(sk, true, None, OPEN_ORDERS_PAGE, open.len() as u32)
-            .await?;
-        let short = (page.len() as u32) < OPEN_ORDERS_PAGE;
-        open.extend(page);
-        if short {
-            break;
-        }
-    }
+    let open = state.engine.client.list_open_orders(sk).await?;
     let ids: Vec<crate::db::OrderId> = open.iter().map(|order| order.order_id.clone()).collect();
     let store_id = connection_id.clone();
     let rows = state

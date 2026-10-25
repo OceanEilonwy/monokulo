@@ -31,7 +31,7 @@ async fn list(orders: Orders, page: Page) -> api::Result<Body> {
     let views = match state
         .engine
         .client
-        .list_orders_page(&orders.sk, false, None, limit, offset)
+        .list_orders_page(&orders.sk, None, limit, offset)
         .await
     {
         Ok(views) => views,

@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 
-use crate::db::{AppOrder, LoggedEvent};
+use crate::db::{AppId, AppOrder, DeletedApp, LoggedEvent};
 
 /// How long a connect code can be redeemed after the dashboard showed it.
 pub const CONNECT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
@@ -110,7 +110,7 @@ pub struct StoreSaleEvent {
 pub struct AppEvents {
     sender: broadcast::Sender<Arc<StoreSaleEvent>>,
     /// Apps just disconnected, by id: their open streams end.
-    disconnected: broadcast::Sender<String>,
+    disconnected: broadcast::Sender<AppId>,
 }
 
 impl Default for AppEvents {
@@ -141,12 +141,12 @@ impl AppEvents {
         self.sender.subscribe()
     }
 
-    /// Ends the open streams of the app with `app_id`: its key no longer works.
-    pub fn disconnected(&self, app_id: &str) {
-        let _ = self.disconnected.send(app_id.to_owned());
+    /// Ends the open streams of the app just deleted: its key no longer works.
+    pub fn disconnected(&self, app: &DeletedApp) {
+        let _ = self.disconnected.send(app.app_id().clone());
     }
 
-    pub fn subscribe_disconnects(&self) -> broadcast::Receiver<String> {
+    pub fn subscribe_disconnects(&self) -> broadcast::Receiver<AppId> {
         self.disconnected.subscribe()
     }
 }

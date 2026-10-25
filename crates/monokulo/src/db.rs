@@ -21,7 +21,7 @@ use crate::stores::Site;
 mod apps;
 mod order_changes;
 mod webhooks;
-pub use apps::{AppConnection, AppOrder, NewApp};
+pub use apps::{AppConnection, AppId, AppOrder, DeletedApp, NewApp};
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
     Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewTestDelivery,
@@ -1572,35 +1572,42 @@ impl Db {
         Ok(())
     }
 
-    /// Marks an integration disconnected. `false` when it wasn't this
-    /// store's, or was disconnected already.
+    /// Disconnects an integration once the engine has rotated the store's
+    /// secret key, in one transaction: records the new key, encrypted at
+    /// rest, and its hash (what the API finds the store by), removes the
+    /// integration's webhook if it still has one, and marks it
+    /// disconnected. `false` when it wasn't this store's, or was
+    /// disconnected already; the new key is recorded either way, since the
+    /// engine already holds it.
     pub fn disconnect_integration(
         &self,
         store_id: &ConnectionId,
         id: &str,
+        tenant_secret_token_encrypted: &str,
+        secret_key_hash: &TokenHash,
         at: i64,
     ) -> Result<bool> {
-        let changed = self.conn.execute(
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        tx.execute(
+            "UPDATE store_connections SET tenant_secret_token_encrypted = ?2, secret_key_hash = ?3 WHERE id = ?1",
+            params![store_id, tenant_secret_token_encrypted, secret_key_hash],
+        )?;
+        tx.execute(
+            "DELETE FROM webhooks WHERE store_id = ?1 AND id = (
+                 SELECT webhook_id FROM store_integrations
+                  WHERE id = ?2 AND store_id = ?1 AND disconnected_at_utc IS NULL)",
+            params![store_id, id],
+        )?;
+        let changed = tx.execute(
             "UPDATE store_integrations SET disconnected_at_utc = ?3
              WHERE id = ?2 AND store_id = ?1 AND disconnected_at_utc IS NULL",
             params![store_id, id, at],
         )?;
+        tx.commit()?;
         Ok(changed == 1)
-    }
-
-    /// The store's secret key, encrypted at rest, and its hash (what the
-    /// API finds the store by), after the engine rotated it.
-    pub fn set_store_secret(
-        &self,
-        id: &ConnectionId,
-        tenant_secret_token_encrypted: &str,
-        secret_key_hash: &TokenHash,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE store_connections SET tenant_secret_token_encrypted = ?2, secret_key_hash = ?3 WHERE id = ?1",
-            params![id, tenant_secret_token_encrypted, secret_key_hash],
-        )?;
-        Ok(())
     }
 
     /// The hash of the store's secret key (migration 0044), which the API

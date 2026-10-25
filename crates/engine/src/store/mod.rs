@@ -470,6 +470,14 @@ pub struct WalletInUse {
     pub payable_until: Option<i64>,
 }
 
+/// What a store's orders add up to (`Store::order_totals`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OrderTotals {
+    pub received_piconero: u64,
+    /// Orders made at or after the time asked about.
+    pub orders_since: u64,
+}
+
 /// What changing a store's wallet did (`Store::change_tenant_wallet`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WalletChange {
@@ -588,15 +596,10 @@ impl Order {
     /// or closed within the last `grace_period_seconds`. The same window
     /// `scan_window_orders` selects, on a row already read.
     pub fn in_scan_window(&self, now: i64, grace_period_seconds: i64) -> bool {
-        matches!(
-            self.status,
-            OrderStatus::Pending
-                | OrderStatus::Unconfirmed
-                | OrderStatus::Confirming
-                | OrderStatus::Partial
-        ) || self
-            .closed_at
-            .is_some_and(|closed_at| closed_at >= now - grace_period_seconds)
+        self.status.is_open()
+            || self
+                .closed_at
+                .is_some_and(|closed_at| closed_at >= now - grace_period_seconds)
     }
 }
 
@@ -669,10 +672,7 @@ fn status_to_str(s: OrderStatus) -> &'static str {
 /// Paid, overpaid, expired and cancelled orders are closed: nothing more is
 /// expected.
 fn is_terminal(s: OrderStatus) -> bool {
-    matches!(
-        s,
-        OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired | OrderStatus::Cancelled
-    )
+    !s.is_open()
 }
 
 /// A status that tells a merchant to ship: the one kind of transition that
@@ -843,8 +843,16 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
 /// closed no earlier than `now` minus the grace period - [`Order::
 /// in_scan_window`] on a row already read), for orders aliased `o` of one
 /// tenant (`orders_tenant_status_idx`). The two halves are queried apart,
-/// each from its own index: an OR would defeat both.
-const OPEN_ORDERS: &str = "o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')";
+/// each from its own index: an OR would defeat both. The statuses are
+/// [`OrderStatus::is_open`]'s, so the queries and the type can't disagree.
+static OPEN_ORDERS: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let open: Vec<String> = OrderStatus::ALL
+        .into_iter()
+        .filter(|status| status.is_open())
+        .map(|status| format!("'{}'", status_to_str(status)))
+        .collect();
+    format!("o.status IN ({})", open.join(", "))
+});
 
 /// Whether the tenant row whose id is the SQL expression `tenant` has an
 /// order in its scan window: two `EXISTS`, each answered from an index.
@@ -853,8 +861,9 @@ const OPEN_ORDERS: &str = "o.status IN ('pending', 'unconfirmed', 'confirming', 
 /// keys (migration 0029). Parameters: `:since_minus_grace`.
 fn tenant_in_scope(tenant: &str) -> String {
     format!(
-        "(EXISTS (SELECT 1 FROM orders o WHERE o.scan_tenant_id = {tenant} AND {OPEN_ORDERS})
-          OR EXISTS (SELECT 1 FROM orders o WHERE o.scan_tenant_id = {tenant} AND o.closed_at_utc >= :since_minus_grace))"
+        "(EXISTS (SELECT 1 FROM orders o WHERE o.scan_tenant_id = {tenant} AND {open})
+          OR EXISTS (SELECT 1 FROM orders o WHERE o.scan_tenant_id = {tenant} AND o.closed_at_utc >= :since_minus_grace))",
+        open = *OPEN_ORDERS
     )
 }
 
@@ -863,8 +872,9 @@ fn tenant_in_scope(tenant: &str) -> String {
 /// indexed halves. Parameters: `:since_minus_grace`.
 fn scan_window_orders(tenants: &str) -> String {
     format!(
-        "SELECT o.id FROM orders o WHERE {tenants} AND {OPEN_ORDERS}
-         UNION SELECT o.id FROM orders o WHERE {tenants} AND o.closed_at_utc >= :since_minus_grace"
+        "SELECT o.id FROM orders o WHERE {tenants} AND {open}
+         UNION SELECT o.id FROM orders o WHERE {tenants} AND o.closed_at_utc >= :since_minus_grace",
+        open = *OPEN_ORDERS
     )
 }
 
@@ -1448,10 +1458,11 @@ impl Store {
             &format!(
                 "SELECT COUNT(*), MAX(until) FROM (
                     SELECT o.expires_at_utc + :grace AS until FROM orders o
-                     WHERE o.wallet_id = :wallet AND {OPEN_ORDERS}
+                     WHERE o.wallet_id = :wallet AND {open}
                     UNION ALL
                     SELECT o.closed_at_utc + :grace FROM orders o
-                     WHERE o.wallet_id = :wallet AND o.closed_at_utc >= :since_minus_grace)"
+                     WHERE o.wallet_id = :wallet AND o.closed_at_utc >= :since_minus_grace)",
+                open = *OPEN_ORDERS
             ),
             rusqlite::named_params! {
                 ":wallet": id,
@@ -1975,14 +1986,12 @@ impl Store {
         Ok(rows)
     }
 
-    /// A page of `tenant_id`'s orders, newest first: only those still open
-    /// (pending, unconfirmed, confirming or partial) when `open_only`, only
-    /// those whose id or merchant order id contains `search` (ignoring case)
-    /// when given, skipping the first `offset`.
+    /// A page of `tenant_id`'s orders, newest first: only those whose id or
+    /// merchant order id contains `search` (ignoring case) when given,
+    /// skipping the first `offset`.
     pub fn list_orders_page(
         &self,
         tenant_id: &TenantId,
-        open_only: bool,
         search: Option<&str>,
         limit: u32,
         offset: u32,
@@ -1990,28 +1999,49 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM orders
              WHERE tenant_id = ?1
-               AND (?2 = 0 OR status IN (?3, ?4, ?5, ?6))
-               AND (?7 IS NULL OR instr(lower(id), lower(?7)) > 0 OR instr(lower(coalesce(merchant_order_id, '')), lower(?7)) > 0)
+               AND (?2 IS NULL OR instr(lower(id), lower(?2)) > 0 OR instr(lower(coalesce(merchant_order_id, '')), lower(?2)) > 0)
              ORDER BY created_at_utc DESC, id DESC
-             LIMIT ?8 OFFSET ?9",
+             LIMIT ?3 OFFSET ?4",
         )?;
         let rows = stmt
             .query_map(
-                params![
-                    tenant_id,
-                    open_only,
-                    status_to_str(OrderStatus::Pending),
-                    status_to_str(OrderStatus::Unconfirmed),
-                    status_to_str(OrderStatus::Confirming),
-                    status_to_str(OrderStatus::Partial),
-                    search,
-                    limit,
-                    offset,
-                ],
+                params![tenant_id, search, limit, offset],
                 Self::row_to_order,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Every one of `tenant_id`'s orders still open ([`OrderStatus::
+    /// is_open`]), newest first: all of them, not a page, so a caller
+    /// deciding that none is left can trust an empty answer. Few at any
+    /// time, since an open order expires or is paid.
+    pub fn list_open_orders(&self, tenant_id: &TenantId) -> Result<Vec<Order>> {
+        let mut stmt = self.conn.prepare_cached(&format!(
+            "SELECT * FROM orders o WHERE o.tenant_id = ?1 AND {open}
+             ORDER BY o.created_at_utc DESC, o.id DESC",
+            open = *OPEN_ORDERS
+        ))?;
+        let rows = stmt
+            .query_map(params![tenant_id], Self::row_to_order)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// What all of `tenant_id`'s orders received, and how many were made
+    /// at or after `since`: sums over every row, for a dashboard's figures.
+    pub fn order_totals(&self, tenant_id: &TenantId, since: i64) -> Result<OrderTotals> {
+        let (received, made_since): (i64, i64) = self.conn.query_row(
+            "SELECT COALESCE(SUM(amount_received_piconero), 0),
+                    COALESCE(SUM(created_at_utc >= ?2), 0)
+             FROM orders WHERE tenant_id = ?1",
+            params![tenant_id, since],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(OrderTotals {
+            received_piconero: received as u64,
+            orders_since: made_since as u64,
+        })
     }
 
     /// Payment changes whose status/event transaction has not committed yet

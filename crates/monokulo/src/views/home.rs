@@ -25,10 +25,10 @@ pub struct HomeStoreRow {
     /// The wallet it takes payments into: its name and network. `None`
     /// for a store not yet matched to one of the account's wallets.
     pub wallet: Option<(String, String)>,
-    /// XMR detected across its latest orders (the engine lists 50).
+    /// XMR detected across all its orders.
     pub received_xmr: String,
-    /// Its orders made in the last 24 hours, of those.
-    pub orders_last_day: usize,
+    /// Its orders made in the last 24 hours.
+    pub orders_last_day: u64,
     /// When its latest order was made, if it has one.
     pub last_order_at: Option<i64>,
 }
@@ -68,9 +68,7 @@ pub fn page(chrome: &PageChrome, data: &HomeViewModel) -> Markup {
         @if data.has_stores {
             (ui::Panel::new(html! {
                 strong { "Total received (detected):" }
-                // The engine lists a store's latest orders, not all
-                // of them: the figure says so rather than claim a total.
-                " " (data.total_received_xmr) " XMR across each connected store's latest 50 orders"
+                " " (data.total_received_xmr) " XMR across every connected store's orders"
             }))
 
             h2 { "Your stores" }

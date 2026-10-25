@@ -127,3 +127,7 @@ id!(
     /// which stores on that wallet are created from.
     EngineWalletId
 );
+id!(
+    /// An app connected to a store (monokulo's `app_connections.id`).
+    AppId
+);

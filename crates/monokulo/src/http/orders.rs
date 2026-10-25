@@ -87,7 +87,7 @@ async fn build_orders_view_model(
     let mut orders = state
         .engine
         .client
-        .list_orders_page(sk, false, term, ORDERS_PER_PAGE + 1, page * ORDERS_PER_PAGE)
+        .list_orders_page(sk, term, ORDERS_PER_PAGE + 1, page * ORDERS_PER_PAGE)
         .await
         .map_err(|_| ())?;
     let has_more = orders.len() > ORDERS_PER_PAGE as usize;
@@ -630,12 +630,7 @@ async fn render_store_detail_page(
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
     // health tag above is what actually communicates the problem.
-    let recent_orders = match state
-        .engine
-        .client
-        .list_orders_page(&sk, false, None, 10, 0)
-        .await
-    {
+    let recent_orders = match state.engine.client.list_orders_page(&sk, None, 10, 0).await {
         Ok(orders) => order_rows(state, &row, orders).await,
         Err(_) => Vec::new(),
     };
@@ -1643,7 +1638,7 @@ pub async fn change_store_wallet(
         let open_orders = state
             .engine
             .client
-            .list_orders_page(&sk, true, None, 200, 0)
+            .list_open_orders(&sk)
             .await
             .ok()
             .map(|orders| orders.len());

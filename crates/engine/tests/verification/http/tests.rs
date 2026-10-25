@@ -1073,7 +1073,7 @@ async fn the_admin_cancel_route_cancels_an_unpaid_order_of_the_tenant_behind_the
     let open = body_json(
         send(
             "GET",
-            "/api/v1/admin/tenant/orders?open=true".into(),
+            "/api/v1/admin/tenant/orders/open".into(),
             Some(a.secret_token.clone()),
         )
         .await,
@@ -2755,7 +2755,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
 }
 
 #[tokio::test]
-async fn listing_orders_can_page_search_and_keep_to_open_orders() {
+async fn listing_orders_can_page_search_and_list_every_open_order() {
     let state = AppState::for_tests();
     let store = Arc::clone(state.db.shared_store_for_test());
     let router = build_router(state, 1_000_000);
@@ -2800,7 +2800,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
     }
     let list = |query: &str| {
         let router = router.clone();
-        let uri = format!("/api/v1/admin/tenant/orders?{query}");
+        let uri = format!("/api/v1/admin/tenant/orders{query}");
         let token = tenant.secret_token.clone();
         async move {
             let response = router
@@ -2829,37 +2829,33 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
         v
     };
     assert_eq!(
-        sorted(list("open=true").await),
+        sorted(list("/open").await),
         vec!["Table 1", "Table 3", "wc-1042"]
     );
-    let tables = list("search=table").await;
+    let tables = list("?search=table").await;
     assert_eq!(
         sorted(tables.clone()),
         vec!["Table 1", "Table 2", "Table 3"]
     );
     assert_eq!(
-        list(&format!("search={}", &ids[2][6..14])).await,
+        list(&format!("?search={}", &ids[2][6..14])).await,
         vec!["wc-1042"],
         "by order id"
     );
-    assert_eq!(list("search=table&limit=2").await, tables[..2].to_vec());
+    assert_eq!(list("?search=table&limit=2").await, tables[..2].to_vec());
     assert_eq!(
-        list("search=table&limit=2&offset=2").await,
+        list("?search=table&limit=2&offset=2").await,
         tables[2..].to_vec()
     );
-    assert_eq!(list("search=nothing").await, Vec::<String>::new());
+    assert_eq!(list("?search=nothing").await, Vec::<String>::new());
     // A blank search is no search: the plain list, status filter honoured.
     assert_eq!(
-        sorted(list("search=%20%20&status=paid").await),
+        sorted(list("?search=%20%20&status=paid").await),
         vec!["Table 2"]
     );
     // The two shapes of listing don't mix: a parameter of the other shape
     // is refused, never quietly ignored.
-    for query in [
-        "open=true&status=paid",
-        "search=table&cursor=1",
-        "offset=1&cursor_id=x",
-    ] {
+    for query in ["search=table&cursor=1", "offset=1&cursor_id=x"] {
         let response = router
             .clone()
             .oneshot(json_request(
