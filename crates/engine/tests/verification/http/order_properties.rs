@@ -423,9 +423,13 @@ mod properties {
             });
         }
         #[test]
-        fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000, change in any::<bool>()) {
+        fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000, action in 0u8..3) {
             runtime().block_on(async {
-                let w=World::new(1,false).await;
+                // 0: the store is disabled; 1: its wallet is changed in the
+                // database, around the store's lock; 2: changed over the API,
+                // which waits for the order. Restarted first, so the store's
+                // keys are registered under its id, as at boot.
+                let mut w=World::new(1,false).await; w.restart();
                 // The wallet the store changes to, its counter ahead of the store's.
                 let other_view=valid_scalar_bytes(41);
                 let other=monero::ViewPair { view:PrivateKey::from_slice(&other_view).unwrap(), spend:PublicKey::from_private_key(&PrivateKey::from_slice(&valid_scalar_bytes(42)).unwrap()) };
@@ -436,16 +440,27 @@ mod properties {
                 w.custody.mode.store(2,Ordering::Relaxed);
                 let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),body(Some("disabled".to_owned()),amount,0,None)));
                 tokio::time::timeout(std::time::Duration::from_secs(5),w.custody.entered.notified()).await.unwrap();
-                if change { w.store.lock().change_tenant_wallet(&w.ids[0],&wallet.id,1).unwrap(); } else { w.store.lock().disable_tenant(&w.ids[0],1).unwrap(); }
+                let changing=(action==2).then(|| tokio::spawn(w.router.clone().oneshot(json_request("PUT","/api/v1/admin/tenant/wallet",Some(&w.tenants[0].secret_token),&serde_json::json!({"wallet_id":wallet.id})))));
+                match action { 0=>w.store.lock().disable_tenant(&w.ids[0],1).unwrap(), 1=>{w.store.lock().change_tenant_wallet(&w.ids[0],&wallet.id,1).unwrap();}, _=>{} }
                 w.custody.mode.store(0,Ordering::Relaxed);w.custody.release.notify_one();
                 let (status,reply)=task.await.unwrap();
+                if let Some(changing)=changing { assert_eq!(changing.await.unwrap().unwrap().status(),StatusCode::OK); }
                 let orders=w.store.lock().list_orders(&w.ids[0],None,10,None).unwrap();
-                if change {
+                if action==1 {
                     // Never an old-wallet address on a new-wallet index: the
                     // order is the new wallet's, at its next index.
                     assert!(status.is_success(),"{reply}");
                     assert_eq!(orders.len(),1);
                     assert_eq!((orders[0].minor_index,orders[0].address.clone()),(5,at(5)));
+                } else if action==2 {
+                    // The change waited for the order: it is the old
+                    // wallet's, at the old wallet's index, and watched there.
+                    assert!(status.is_success(),"{reply}");
+                    assert_eq!(orders.len(),1);
+                    assert_eq!(orders[0].minor_index,1);
+                    assert_eq!(orders[0].address,reply["address"].as_str().unwrap());
+                    let old=monero::ViewPair { view:PrivateKey::from_slice(&valid_scalar_bytes(1)).unwrap(), spend:PublicKey::from_private_key(&PrivateKey::from_slice(&valid_scalar_bytes(2)).unwrap()) };
+                    assert_eq!(orders[0].address,monero::cryptonote::subaddress::get_subaddress(&old,crate::key_custody::SubaddressIndex{major:0,minor:1},Some(Network::Mainnet)).to_string());
                 } else {
                     assert!(!status.is_success());
                     assert!(orders.is_empty());

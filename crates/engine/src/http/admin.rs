@@ -534,11 +534,12 @@ pub(super) async fn retire_wallet(
 ) -> Result<Json<RetiredView>, ApiError> {
     let grace = grace_period(&state);
     let now = now_unix();
+    let retired = id.clone();
     let holders = state
         .db
         .write(move |s| s.retire_wallet(&id, now, grace))
         .await?;
-    forget_handles(&state.custody, holders, "retiring a wallet").await;
+    forget_handles(&state.custody, holders, Some(&retired), "retiring a wallet").await;
     Ok(Json(RetiredView { retired_at: now }))
 }
 
@@ -808,10 +809,13 @@ async fn switch_key_custody_to_completion(
     drop(changing);
     // The other stores on the wallet moved with it: drop their live
     // handles in the old backend, and their next use registers them again
-    // from their rows, now in the new one (`resolve_wallet_handle`).
+    // from their rows, now in the new one (`resolve_wallet_handle`). Only
+    // their handles for this wallet: one that changed wallet since keeps
+    // its new wallet's.
     forget_handles(
         &state.custody,
         others,
+        Some(&tenant.wallet_id),
         "moved a wallet's keys, removing another store's from the old backend",
     )
     .await;
@@ -992,21 +996,30 @@ pub(super) async fn delete_own_tenant(
     db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
     drop(changing);
     let ids = std::iter::once(tenant.id).chain(watchers.into_iter().map(|w| w.id));
-    forget_handles(&custody, ids, "deleting a store").await;
+    forget_handles(&custody, ids, None, "deleting a store").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Drops tenant rows' live handles and removes their keys from key custody,
 /// each under its row's lock (`WalletHandles`): a registration that read the
-/// row before the caller changed it has put its handle in by then.
+/// row before the caller changed it has put its handle in by then. With
+/// `of_wallet`, only a handle for that wallet: a row that moved to another
+/// wallet meanwhile keeps the handle it has for it.
 async fn forget_handles(
     custody: &Custody,
     ids: impl IntoIterator<Item = crate::store::TenantId>,
+    of_wallet: Option<&str>,
     why: &str,
 ) {
     for id in ids {
         let _changing = custody.wallet_handles.changing(&id).await;
-        let removed = custody.wallet_handles.write().remove(&id);
+        let removed = {
+            let mut handles = custody.wallet_handles.write();
+            let theirs = handles
+                .get(&id)
+                .is_some_and(|live| of_wallet.is_none_or(|wallet| live.wallet_id == wallet));
+            theirs.then(|| handles.remove(&id)).flatten()
+        };
         if let Some(live) = removed {
             remove_wallet_logged(
                 custody.backends.as_ref(),
@@ -1103,6 +1116,9 @@ pub(super) async fn change_wallet(
         .read(move |s| Ok((s.get_tenant_by_id(&id)?, s.get_tenant_by_id(&watcher_id)?)))
         .await?;
     let refetched = refetched.ok_or(ApiError::NotFound)?;
+    // The scan row's lock, shared, while the store's is still held: the
+    // one place two rows' locks are held at once. No cycle: a scan row's
+    // lock is only ever taken alone or, here, after its own store's.
     if let Some(watcher) = watcher {
         if let Err(e) = resolve_wallet_handle(&state, &watcher).await {
             tracing::warn!(store.id = %tenant.id, error = ?e, "registering the old wallet's keys for a store's orders failed; the scanner retries");
