@@ -75,12 +75,19 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
             .unwrap();
         tenants.push((tenant, handle));
     }
-    tenants.sort_by(|a, b| a.0.cmp(&b.0));
+    // The first half made fail: chosen by when they were made, not by their
+    // random ids, so the inputs alone decide the run. They sit in the lowest
+    // groups (every group once there are more of them than groups), which
+    // the catch-up rotation serves first, so the outage reaches custody
+    // before it ends. Half chosen by id could all sit in groups the rotation
+    // hasn't reached by then, as 8 tenants in 8 groups with an outage of 2
+    // rounds sometimes did.
     let failing: Vec<_> = tenants
         .iter()
         .take(count.div_ceil(2))
         .map(|(_, h)| *h)
         .collect();
+    tenants.sort_by(|a, b| a.0.cmp(&b.0));
     for handle in &failing {
         custody.fail(*handle);
     }
