@@ -4928,7 +4928,7 @@ async fn an_order_from_before_a_wallet_change_is_still_paid_and_a_new_order_with
         ))
         .unwrap();
         let (_, status) = s.recompute_order_status(&before_id, 10, now).unwrap();
-        assert_eq!(status, crate::status::OrderStatus::Pending);
+        assert_eq!(status, OrderStatus::Pending);
         s.execute_raw_for_test(&format!(
             "UPDATE orders SET expires_at_utc = {} WHERE id = '{before_id}'",
             now + 3600
