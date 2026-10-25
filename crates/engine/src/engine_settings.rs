@@ -151,7 +151,7 @@ settings! {
     KEY_CUSTODY_SNP_MIN_GUEST_SVN: u32 {
         key: "key_custody.snp_min_guest_svn",
         default: 0,
-        description: "The lowest engine image security version (the ID block's guest SVN) trusted with keys: this engine refuses to start below it, and a handoff never goes to an image below it or below the engine handing over. Keep monokulo's key_custody.snp_entry_min_guest_svn the same: its key entry checks its own.",
+        description: "The lowest engine image security version (the ID block's guest SVN) trusted with keys: this engine refuses to start below it, and a handoff never goes to or comes from an image below it (nor goes to one below the engine handing over, nor comes from one below any that has used this database). It only raises this release's built-in floor, which no setting lowers. Keep monokulo's key_custody.snp_entry_min_guest_svn the same: its key entry checks its own.",
         example: "1",
         applies: Restart,
         editable: false,
