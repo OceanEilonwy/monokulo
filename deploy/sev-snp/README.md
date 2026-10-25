@@ -244,8 +244,9 @@ the engine it replaces hands it over.
    master key, asks for it, and takes it within seconds; the old engine
    checks against AMD's chain that the new one is a trusted image at its own
    security version or later before handing over, and the new one takes the
-   key only if it is the one the database's wraps hold (each keeps a key
-   check), so pointing `snp_handoff_url` at another installation's engine
+   key only if it is the one the database's wraps hold (a key check is
+   written with each wrap; wraps written before this release have none and
+   aren't compared), so pointing `snp_handoff_url` at another installation's engine
    leaves it waiting.
 3. Switch monokulo to the new engine, stop the old one, and remove
    `snp_handoff_url`.

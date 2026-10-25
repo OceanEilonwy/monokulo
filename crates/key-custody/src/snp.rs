@@ -43,7 +43,8 @@
 //! its own. The new engine takes it only from such an attested answer, from
 //! an engine signed by its own ID key at a security version no older than
 //! any that has used the database, and only if it is the key the database's
-//! wraps hold, by the key check each wrap keeps
+//! wraps hold, by the key check written with each wrap (a wrap last written
+//! before engines kept one has none to compare)
 //! ([`SnpKeyCustody::accept_handoff`]); then it wraps it under its own
 //! measurement. So upgrades signed with the same ID key keep every store's
 //! keys, and only an image signed by that key can take them or plant one.
@@ -116,7 +117,8 @@ pub struct StoredWrap {
     pub wrapped: Vec<u8>,
     /// Which master key is wrapped (an HMAC of a fixed label under it), for
     /// a successor that can't open the wrap to check a handed-over key
-    /// against. `None` for a wrap made before engines kept one.
+    /// against. Written whenever the wrap is; `None` for a wrap last written
+    /// before engines kept one, which leaves nothing to compare.
     pub key_check: Option<[u8; 32]>,
 }
 
@@ -392,9 +394,9 @@ impl SnpKeyCustody {
             ));
         };
         let master = Zeroizing::new(master);
-        // Updated firmware: from now on only firmware at least this new opens
-        // it. A wrap made before engines kept a key check gets one.
-        if own.tcb != committed.raw || own.key_check != Some(key_check(&master)) {
+        if own.tcb != committed.raw {
+            // Updated firmware: from now on only firmware at least this new
+            // opens it.
             self.store_master(&master)?;
         }
         Ok(Master::Ready(master))
