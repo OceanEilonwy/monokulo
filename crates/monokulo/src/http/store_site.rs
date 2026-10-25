@@ -276,28 +276,36 @@ pub async fn website_submit(
     let written = state
         .db
         .write(move |db| {
-            db.set_store_name_and_site(&store_id, &name, site.as_ref())?;
+            let now = crate::now_unix();
             // The old site's domain goes; the new one's waits to be verified.
-            if let Some(old) = crate::embed_domains::domain_of_site(old_site.as_str()) {
-                for domain in db
+            // Not while it is the one domain a restricted store's checkout
+            // can be shown on: the new one isn't verified yet.
+            let old_domains = match crate::embed_domains::domain_of_site(old_site.as_str()) {
+                Some(old) => db
                     .list_store_domains(&store_id)?
                     .into_iter()
                     .filter(|d| d.domain == old)
-                {
-                    db.delete_store_domain(&store_id, &domain.id)?;
+                    .collect(),
+                None => Vec::new(),
+            };
+            for domain in &old_domains {
+                if crate::embed_domains::would_leave_restricted_store_without_domain(
+                    db, &store_id, &domain.id, now,
+                )? {
+                    return Ok(false);
                 }
             }
-            crate::embed_domains::suggest_site_domain(
-                db,
-                &store_id,
-                site.as_ref(),
-                crate::now_unix(),
-            );
-            Ok::<_, crate::db::DbError>(())
+            db.set_store_name_and_site(&store_id, &name, site.as_ref())?;
+            for domain in &old_domains {
+                db.delete_store_domain(&store_id, &domain.id)?;
+            }
+            crate::embed_domains::suggest_site_domain(db, &store_id, site.as_ref(), now);
+            Ok::<_, crate::db::DbError>(true)
         })
         .await;
     match written {
-        Ok(()) => {
+        Ok(false) => refuse(crate::embed_domains::LAST_DOMAIN_MESSAGE.to_string()),
+        Ok(true) => {
             tracing::info!(
                 store.id = %id,
                 from = %current,

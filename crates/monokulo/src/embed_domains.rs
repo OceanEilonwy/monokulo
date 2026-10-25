@@ -297,6 +297,34 @@ pub fn verified_site(
         .then(|| site.clone())
 }
 
+/// What a merchant is told when removing a domain is refused by
+/// [`would_leave_restricted_store_without_domain`].
+pub const LAST_DOMAIN_MESSAGE: &str = "This is your last verified domain. Turn off \"Only my verified domains can show this checkout\" first - otherwise no website could show your checkout.";
+
+/// Whether removing `domain_id` would leave a store that restricts its
+/// checkout to its verified domains with none that counts, so no website
+/// could show its checkout. Every path that removes a store's domain (the
+/// Domains card, changing or removing the website) asks this inside the
+/// write that removes it.
+pub fn would_leave_restricted_store_without_domain(
+    db: &Db,
+    connection_id: &crate::db::ConnectionId,
+    domain_id: &str,
+    now: i64,
+) -> Result<bool, crate::db::DbError> {
+    if !db.embed_restricted(connection_id)? {
+        return Ok(false);
+    }
+    let domains = db.list_store_domains(connection_id)?;
+    let mut counting = domains
+        .iter()
+        .filter(|domain| DomainState::of(domain, now).counts());
+    Ok(matches!(
+        (counting.next(), counting.next()),
+        (Some(only), None) if only.id == domain_id
+    ))
+}
+
 /// Adds the site's domain to a store as a domain waiting for DNS, so the
 /// merchant only has to publish the record. Skipped quietly when the site
 /// has no verifiable domain, or the store already has it or is full.

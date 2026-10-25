@@ -577,13 +577,9 @@ pub async fn delete_domain(
     let deleted = state
         .db
         .write(move |db| {
-            let restricted = db.embed_restricted(&store_id).unwrap_or(false);
-            let domains = db.list_store_domains(&store_id).unwrap_or_default();
-            let counting: Vec<&StoreDomainRow> = domains
-                .iter()
-                .filter(|domain| DomainState::of(domain, now).counts())
-                .collect();
-            if restricted && counting.len() == 1 && counting[0].id == domain_id {
+            if embed_domains::would_leave_restricted_store_without_domain(
+                db, &store_id, &domain_id, now,
+            )? {
                 Ok(None)
             } else {
                 db.delete_store_domain(&store_id, &domain_id).map(Some)
@@ -594,12 +590,11 @@ pub async fn delete_domain(
         Ok(Some(true)) => saved(&id, SECTION),
         Ok(Some(false)) => StatusCode::NOT_FOUND.into_response(),
         Ok(None) => {
-            let error = "This is your last verified domain. Turn off \"Only my verified domains can show this checkout\" first - otherwise no website could show your checkout.";
             render_store_settings_page(
                 &state,
                 row,
                 &user,
-                Some(error.to_string()),
+                Some(embed_domains::LAST_DOMAIN_MESSAGE.to_string()),
                 None,
                 Some(SECTION),
             )
