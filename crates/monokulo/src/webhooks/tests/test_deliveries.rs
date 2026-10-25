@@ -287,6 +287,11 @@ async fn the_api_form_sends_a_signed_test_and_answers_how_it_went() {
 async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
     let shop =
         shop_with("[webhooks]\nallow_private_urls = true\ndelivery_timeout_ms = 300\n").await;
+    // Windows answers a connection to a closed local port only after
+    // retrying it for about 2 seconds, so the receiver that's down is
+    // tried from a shop with the default timeout, where that's still a
+    // refused connection rather than a timeout.
+    let patient = shop_with("[webhooks]\nallow_private_urls = true\n").await;
 
     // Down: nothing listens there any more.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -310,10 +315,10 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
         format!("http://{addr}/hook")
     };
 
-    for (url, answered, error) in [
-        (down.as_str(), None, "could not connect"),
-        (failing.as_str(), Some(500u16), "answered 500"),
-        (slow.as_str(), None, "timed out"),
+    for (shop, url, answered, error) in [
+        (&patient, down.as_str(), None, "could not connect"),
+        (&shop, failing.as_str(), Some(500u16), "answered 500"),
+        (&shop, slow.as_str(), None, "timed out"),
     ] {
         let (webhook, _) = add_webhook(&shop.state.db, &shop.store, url).await;
         let answer = shop
