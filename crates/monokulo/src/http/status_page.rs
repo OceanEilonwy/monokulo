@@ -1691,9 +1691,9 @@ mod tests {
             // The engine page following the network, and calls without a
             // store's key made beside it.
             let relay = std::sync::Arc::new(
-                crate::engine_view::relay::Relay::with_timing(
+                crate::engine_relay::Relay::with_timing(
                     client.clone(),
-                    crate::engine_view::relay::Timing::DEFAULT,
+                    crate::engine_relay::Timing::DEFAULT,
                 )
                 .unwrap(),
             );

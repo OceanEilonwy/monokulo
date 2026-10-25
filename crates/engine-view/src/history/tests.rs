@@ -8,7 +8,7 @@ use engine_protocol::activity::{
 };
 
 use super::*;
-use crate::engine_view::machine::{step, State};
+use crate::machine::{step, State};
 
 const TUNING: Tuning = Tuning {
     round_ms: 10_000,

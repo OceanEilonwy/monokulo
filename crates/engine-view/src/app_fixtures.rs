@@ -3,7 +3,8 @@
 //! machine and written as monokulo sends it, beside every kind of mark. The
 //! app's tests check what it writes for them (`apps/engine/test/*.test.ts`);
 //! this checks the file is what the machine gives today, so the two sides
-//! can't drift apart. `MONOKULO_UPDATE_FIXTURES=1` writes it again.
+//! can't drift apart. `MONOKULO_UPDATE_FIXTURES=1 cargo nextest run -p
+//! engine-view app_fixtures` writes it again.
 
 use std::collections::BTreeMap;
 
@@ -444,7 +445,7 @@ fn the_app_s_fixtures_are_what_the_machine_gives() {
     let kept = std::fs::read_to_string(&path).unwrap_or_default();
     assert!(
         kept == written,
-        "{} is out of date: run this test again with MONOKULO_UPDATE_FIXTURES=1 and check the app's tests",
+        "{} is out of date: run `MONOKULO_UPDATE_FIXTURES=1 cargo nextest run -p engine-view app_fixtures` and check the app's tests",
         path.display()
     );
 }

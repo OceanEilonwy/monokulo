@@ -116,4 +116,4 @@ Total ≈ 16 days of work.
 3. T5: fewer screenshot shapes or themes per stage in the coverage gallery?
 4. `shared::dns::Resolver::with_addresses`, a test-only seam: keep it, or move it behind `test-support`?
 5. Firefox and WebKit: are 3 smoke tests each enough for the counter tablets?
-6. Windows release: two tests fail there today (`engine_view::app_fixtures`, `webhooks::vectors`; looks like line endings). Fix them first, separately?
+6. Windows release: two tests fail there today (`engine-view`'s `app_fixtures`, `webhooks::vectors`; looks like line endings). Fix them first, separately?

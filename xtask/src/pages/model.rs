@@ -137,7 +137,7 @@ impl Area {
             Regex::new(r"^(checkout|pos|refund|live-view|merchant-client)").unwrap()
         });
         static DASHBOARD: LazyLock<Regex> = LazyLock::new(|| {
-            Regex::new(r"^monokulo::(http|views|admin|settings|options_file|confirmation|engine_view|engine_client|currencies|setup|stores|db)").unwrap()
+            Regex::new(r"^monokulo::(http|views|admin|settings|options_file|confirmation|engine_relay|engine_client|currencies|setup|stores|db)").unwrap()
         });
         static DASHBOARD_BROWSER: LazyLock<Regex> = LazyLock::new(|| {
             Regex::new(r"^(admin|settings|node-settings|site-themes|store-key)").unwrap()
@@ -162,6 +162,7 @@ impl Area {
             Area::Checkout => suite == Suite::Browser && CHECKOUT.is_match(group),
             Area::Dashboard => {
                 (krate == "monokulo" && DASHBOARD.is_match(group))
+                    || krate == "engine-view"
                     || krate == "live-settings"
                     || (suite == Suite::Browser && DASHBOARD_BROWSER.is_match(group))
             }

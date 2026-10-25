@@ -1,6 +1,6 @@
 // What the page says for states the machine reaches: each scenario's state as
-// monokulo sends it (fixtures.json, checked against the machine by monokulo's
-// engine_view::app_fixtures).
+// monokulo sends it (fixtures.json, checked against the machine by the
+// engine-view crate's app_fixtures test).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

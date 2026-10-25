@@ -29,9 +29,9 @@ use parking_lot::Mutex;
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::Instant;
 
-use super::history::{Frame, History, Update};
 use crate::engine_client::{EngineClient, EngineClientError, EventStream};
 use crate::live::{SseEvent, SseParser};
+use engine_view::history::{Frame, History, Update};
 
 /// How long a network is still followed after its last viewer left.
 pub const LINGER: Duration = Duration::from_secs(60);
@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(marks.len(), 1);
         assert_eq!(
             marks[0].what,
-            crate::engine_view::machine::MarkKind::Seeded { height: 100 }
+            engine_view::machine::MarkKind::Seeded { height: 100 }
         );
         let requests = engine.request_count();
 

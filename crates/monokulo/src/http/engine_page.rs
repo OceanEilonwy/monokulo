@@ -39,15 +39,15 @@ use service_runtime::resources::ResourceReport;
 
 use super::{AppState, AuthedAdmin};
 use crate::engine_client::{EngineClient, EngineStatusResponse};
-use crate::engine_view::history::Frame;
-use crate::engine_view::machine::Mark;
-use crate::engine_view::relay::Message;
+use crate::engine_relay::Message;
 use crate::views;
+use engine_view::history::Frame;
+use engine_view::machine::Mark;
 
 /// The `machine` event comes at most this often: it is built from
 /// monokulo's cached `/status` (itself at most one engine request every
 /// ten seconds), not from each frame, so a busy scan costs it nothing more.
-/// Monokulo runs this; the relay's [`Timing`](crate::engine_view::relay::Timing)
+/// Monokulo runs this; the relay's [`Timing`](crate::engine_relay::Timing)
 /// carries it, so a test can pass another explicitly.
 pub const MACHINE_EVERY: Duration = Duration::from_secs(5);
 
@@ -410,7 +410,7 @@ mod tests {
 
     use super::*;
     use crate::engine_client::EngineClient;
-    use crate::engine_view::relay::{Relay, Timing};
+    use crate::engine_relay::{Relay, Timing};
     use crate::http::test_support::{
         admin_session_cookie, body_json, body_text, signed_up_and_logged_in_session_token,
     };

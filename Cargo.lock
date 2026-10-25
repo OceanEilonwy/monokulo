@@ -1866,6 +1866,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-view"
+version = "0.1.0"
+dependencies = [
+ "engine-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "enum-ordinalize"
 version = "3.1.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3728,6 +3738,7 @@ dependencies = [
  "engine",
  "engine-protocol",
  "engine-test-support",
+ "engine-view",
  "flate2",
  "futures-util",
  "hex",

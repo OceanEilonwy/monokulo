@@ -166,7 +166,7 @@ pub struct Engine {
     pub status_cache: status_page::StatusCache,
     /// The engine page's link to the engine's activity: one poller per
     /// watched network.
-    pub activity: Arc<crate::engine_view::relay::Relay>,
+    pub activity: Arc<crate::engine_relay::Relay>,
     /// Bundles handed out with key entry forms, for `key-custody-cli`
     /// (`key_entry`).
     pub key_bundles: key_entry::KeyBundles,
@@ -176,7 +176,7 @@ impl Engine {
     /// The engine at `client`, with nothing cached yet.
     pub fn new(client: EngineClient) -> Self {
         Engine {
-            activity: Arc::new(crate::engine_view::relay::Relay::new(client.clone())),
+            activity: Arc::new(crate::engine_relay::Relay::new(client.clone())),
             client,
             status_cache: status_page::new_status_cache(),
             key_bundles: key_entry::KeyBundles::default(),

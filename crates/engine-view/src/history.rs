@@ -5,8 +5,8 @@
 //! frame is data: the state, the tuning its rounds are drawn to, the
 //! effects and the marks; the page's app (`apps/engine`) writes every word.
 //!
-//! No I/O: the relay (`engine_view::relay`) feeds it the pages the engine
-//! streams.
+//! No I/O: monokulo's relay (`monokulo::engine_relay`) feeds it the pages
+//! the engine streams.
 
 use std::collections::VecDeque;
 
