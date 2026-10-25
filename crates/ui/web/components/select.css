@@ -96,6 +96,18 @@
 .tag-network[data-size="icon"] { padding: var(--pill-pad-y); border-radius: 50%; }
 .tag-network[data-size="icon"] > .tag-network-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
+/* An HTTP method and a response's status code (HttpMethodTag,
+   HttpStatusTag), in the API reference: small heavy monospace in a square
+   chip, the methods all one width so the paths beside them line up. */
+.mk-http-method, .mk-http-status { display: inline-block; flex: none; border: 1px solid var(--http-edge); border-radius: 4px; background: var(--http-bg); color: var(--http-ink); font: 800 var(--text-2xs)/1 var(--font-mono); letter-spacing: .04em; white-space: nowrap; }
+.mk-http-method { --http-bg: var(--http-get-bg); --http-edge: var(--http-get-edge); min-width: 3.4em; padding: var(--space-xs); text-align: center; }
+.mk-http-method[data-method="post"] { --http-bg: var(--http-post-bg); --http-edge: var(--http-post-edge); }
+.mk-http-method[data-method="delete"] { --http-bg: var(--http-delete-bg); --http-edge: var(--http-delete-edge); }
+.mk-http-status { --http-bg: var(--http-other-bg); --http-edge: var(--http-other-edge); padding: var(--space-xs) var(--space-sm); font-size: var(--text-xs); letter-spacing: normal; }
+.mk-http-status[data-outcome="ok"] { --http-bg: var(--http-ok-bg); --http-edge: var(--http-ok-edge); }
+.mk-http-status[data-outcome="client-error"] { --http-bg: var(--http-client-error-bg); --http-edge: var(--http-client-error-edge); }
+.mk-http-status[data-outcome="server-error"] { --http-bg: var(--http-server-error-bg); --http-edge: var(--http-server-error-edge); }
+
 /* `views::state_badge`: the short words replace the long ones on a phone;
    the long ones stay for screen readers. */
 .tag .label-short { display: none; }

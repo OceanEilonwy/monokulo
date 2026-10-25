@@ -75,6 +75,16 @@ export type HeadingLevel = "h2" | "h3" | "h4";
 export type HealthState = "ok" | "slow" | "busy" | "error" | "unknown";
 
 /**
+ * An HTTP request's method.
+ */
+export type HttpMethod = "get" | "post" | "delete";
+
+/**
+ * What kind of answer an HTTP status code is.
+ */
+export type HttpOutcome = "ok" | "client-error" | "server-error" | "other";
+
+/**
  * The kind of text an input takes: phones show the matching keyboard.
  */
 export type InputType = "text" | "email" | "password" | "number" | "url" | "search" | "tel" | "datetime-local";
@@ -292,6 +302,21 @@ export interface Fact {
 export interface ProgressStep {
   readonly label: string;
   readonly progress: StepProgress;
+  /**
+   * Under the name, in smaller type: what happens at this step. For
+   * upright steps; across, there's no room.
+   */
+  readonly detail?: JSX.Element;
+  /**
+   * The step's own colours, an order's state: its dot in the state's
+   * tint, edge and ink, on a card of none.
+   */
+  readonly state?: OrderState;
+  /**
+   * In the dot, in place of the tick or the cross: the state's symbol
+   * ([`crate::StatusIcon`]).
+   */
+  readonly icon?: JSX.Element;
 }
 
 /**

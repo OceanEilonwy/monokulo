@@ -124,39 +124,91 @@ pub enum StepProgress {
 }
 
 /// One step of [`ProgressSteps`].
-#[derive(Clone, Debug, PartialEq, Eq, UiRecord)]
+#[derive(Clone, Debug, UiRecord)]
+#[ui(new(label, progress))]
 pub struct ProgressStep {
     pub label: String,
     pub progress: StepProgress,
+    /// Under the name, in smaller type: what happens at this step. For
+    /// upright steps; across, there's no room.
+    pub detail: Option<Slot>,
+    /// The step's own colours, an order's state: its dot in the state's
+    /// tint, edge and ink, on a card of none.
+    pub state: Option<crate::OrderState>,
+    /// In the dot, in place of the tick or the cross: the state's symbol
+    /// ([`crate::StatusIcon`]).
+    pub icon: Option<Slot>,
+}
+
+impl ProgressStep {
+    pub fn new(label: impl Into<String>, progress: StepProgress) -> ProgressStep {
+        ProgressStep {
+            label: label.into(),
+            progress,
+            detail: None,
+            state: None,
+            icon: None,
+        }
+    }
+
+    /// Sets `detail`.
+    #[must_use]
+    pub fn detail(mut self, detail: impl Into<Slot>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Sets `state`.
+    #[must_use]
+    pub fn state(mut self, state: crate::OrderState) -> Self {
+        self.state = Some(state);
+        self
+    }
+
+    /// Sets `icon`.
+    #[must_use]
+    pub fn icon(mut self, icon: impl Into<Slot>) -> Self {
+        self.icon = Some(icon.into());
+        self
+    }
 }
 
 component! {
     /// Where something is in a short, fixed sequence (a payment: Send,
     /// Confirm, Paid), with a line saying what that means and what to do:
     /// the same place and shape in every state, so nothing moves as it
-    /// changes. The colours follow `state`; the words say it all.
+    /// changes. The colours follow `state`; the words say it all. Stood
+    /// upright (`vertical`), each step can say more under its name and
+    /// carry its own state and symbol: an order's life, start to finish.
     pub struct ProgressSteps {
         /// What the steps are of ("Payment progress").
         label: String,
         steps: Vec<ProgressStep>,
-        /// The headline of the line under the steps ("Waiting for payment").
-        title: String,
+        /// The headline of the line under the steps ("Waiting for payment");
+        /// without one, there's no line.
+        title: Option<String>,
         /// The rest of the line.
-        message: Slot,
+        message: Option<Slot>,
         /// The colours: an order's state.
         state: Option<crate::OrderState>,
         /// The POS's size: smaller type, the same shape.
         #[default(false)]
         compact: bool,
+        /// Top to bottom, each step's name beside its dot, rather than
+        /// across.
+        #[default(false)]
+        vertical: bool,
         rest: Attrs,
     }
     html {
         div class=join["mk-stage", { "state-" (state) } if state] data-size="compact" if compact ..rest {
-            ol class="mk-track" aria-label=(label) {
+            ol class="mk-track" data-orientation="vertical" if vertical aria-label=(label) {
                 @for step in steps {
-                    li class={ "step-" (step.progress) } {
+                    li class=join[{ "step-" (step.progress) }, { "state-" (step.state) } if step.state] {
                         span class="mk-track-dot" aria-hidden="true" {
-                            @if step.progress == StepProgress::Done {
+                            @if let Some(icon) = step.icon {
+                                (icon)
+                            } @else if step.progress == StepProgress::Done {
                                 svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"
                                     stroke-linecap="round" stroke-linejoin="round" { path d="m4.5 12.5 5 5 10-11" {} }
                             } @else if step.progress == StepProgress::Fail {
@@ -171,23 +223,34 @@ component! {
                             @else if step.progress == StepProgress::Part { span class="visually-hidden" { ", partly done" } }
                             @else if step.progress == StepProgress::Fail { span class="visually-hidden" { ", stopped" } }
                             @else { span class="visually-hidden" { ", to come" } }
+                            @if let Some(detail) = step.detail { small { (detail) } }
                         }
                     }
                 }
             }
-            p class="mk-stage-msg" role="status" { strong { (title) "." } " " (message) }
+            @if let Some(title) = title {
+                p class="mk-stage-msg" role="status" {
+                    strong { (title) "." }
+                    @if let Some(message) = message { " " (message) }
+                }
+            }
         }
     }
 }
 
 pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
     use crate::OrderState;
-    let step = |label: &str, progress| ProgressStep {
-        label: label.into(),
-        progress,
-    };
+    let step = |label: &str, progress| ProgressStep::new(label, progress);
     let payment = |steps: Vec<ProgressStep>, title: &str, message: &str, state| {
-        ProgressSteps::new("Payment progress", steps, title, message).state(state)
+        ProgressSteps::new("Payment progress", steps)
+            .title(title)
+            .message(message)
+            .state(state)
+    };
+    // An order's life, each step in its state and drawn as the POS draws it.
+    let life = |label: &str, state, wedge: Option<u32>, detail: &str| {
+        let icon = crate::StatusIcon::new(state).maybe_progress(wedge);
+        step(label, Done).state(state).icon(icon).detail(detail)
     };
     use StepProgress::*;
     vec![
@@ -253,6 +316,53 @@ pub(super) fn progress_steps_examples() -> Vec<(&'static str, ProgressSteps)> {
                 OrderState::Pending,
             )
             .compact(true),
+        ),
+        (
+            "Upright: an order, start to finish",
+            ProgressSteps::new(
+                "An order, start to finish",
+                vec![
+                    life(
+                        "Awaiting payment",
+                        OrderState::Pending,
+                        None,
+                        "Your page asks Monokulo for an order, and the customer scans its QR code in the checkout.",
+                    ),
+                    life(
+                        "Unconfirmed",
+                        OrderState::Unconfirmed,
+                        None,
+                        "Seen in about a second, as the payment reaches the network.",
+                    ),
+                    life(
+                        "Confirming",
+                        OrderState::Confirming,
+                        Some(60),
+                        "Confirmed as blocks arrive, straight to your own wallet.",
+                    ),
+                    life(
+                        "Paid",
+                        OrderState::Paid,
+                        None,
+                        "Your server hears order.paid, signed, so you ship on Monokulo's word, not the browser's.",
+                    ),
+                ],
+            )
+            .vertical(true),
+        ),
+        (
+            "Upright, with the line under it",
+            payment(
+                vec![
+                    step("Send", Done).detail("0.42 XMR to the order's address."),
+                    step("Confirm", Now).detail("3 of 10 confirmations."),
+                    step("Paid", Todo),
+                ],
+                "Confirming",
+                "Payment seen; 3 of 10 confirmations.",
+                OrderState::Confirming,
+            )
+            .vertical(true),
         ),
     ]
 }
