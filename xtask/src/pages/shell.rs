@@ -31,6 +31,8 @@ pub(super) mod icon {
     pub(in crate::pages) const COIN: &str = r#"<circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M7.5 10h5M10 7.5v5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>"#;
     /// A plug: Integrations.
     pub(in crate::pages) const PLUG: &str = r#"<path d="M8 3v4M12 3v4M6 7h8v3a4 4 0 01-8 0zM10 14v3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>"#;
+    /// A server, two units stacked: Run Monokulo.
+    pub(in crate::pages) const SERVER: &str = r#"<rect x="3.5" y="3.5" width="13" height="5.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="3.5" y="11" width="13" height="5.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="6.75" cy="6.25" r="1" fill="currentColor"/><circle cx="6.75" cy="13.75" r="1" fill="currentColor"/>"#;
     /// A book: Reference, and the API's Overview.
     pub(in crate::pages) const BOOK: &str = r#"<path d="M5 3.5h8.5a1.5 1.5 0 011.5 1.5v11.5H6.5A1.5 1.5 0 015 15zM5 15a1.5 1.5 0 011.5-1.5H15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>"#;
     /// Braces: the API's resources.

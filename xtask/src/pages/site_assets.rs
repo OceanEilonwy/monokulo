@@ -128,11 +128,13 @@ static BAKED: &[Asset] = &[
     asset!(text "theme.css", ui::assets::TOKENS_CSS, CSS),
     asset!(text "ui.css", ui::assets::COMPONENTS_CSS, CSS),
     asset!(from "styles.css", "src/pages/assets/styles.css", CSS),
-    // Every page's search and the docs' shell (`shell`), the landing page's
+    // The POS's status symbols, which `ui.css` leaves out: the homepage's
+    // order draws with them, and links them after the rest.
+    asset!(text "status.css", ui::assets::STATUS_CSS, CSS),
+    // Every page's search, the docs' shell (`shell`) and the router page's
     // OpenWrt version picker, and the testing report's filters and
     // screenshot viewer.
     asset!(from "site.js", "src/pages/assets/site/site.js", JS),
-    asset!(from "landing.js", "src/pages/assets/landing/landing.js", JS),
     asset!(from "coverage.js", "src/pages/assets/coverage/coverage.js", JS),
     // The typeface (the `ui` package's) and the icon (monokulo's).
     asset!(bytes "manrope-500.woff2", ui::assets::MANROPE_500, WOFF2),
