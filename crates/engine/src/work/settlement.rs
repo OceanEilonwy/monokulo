@@ -25,6 +25,9 @@ use super::{Progress, Round, Wait};
 const VANISHED_PAGE: usize = 64;
 const RECOMPUTE_PAGE: usize = 64;
 const RECOMPUTES_PER_JOB: usize = 16;
+/// How long the node's word that it is synchronized stands while its tip
+/// doesn't move.
+const SYNC_RECHECK: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[derive(Default)]
 pub(crate) struct SettlementState {
@@ -34,6 +37,11 @@ pub(crate) struct SettlementState {
     /// intervals up to a minute, instead of every round for as long as
     /// they stay that way.
     unresolved: super::Backoff<i64>,
+    /// The node's tip when it was last asked whether it is synchronized
+    /// with its peers, and when: `None` until asked, and again after a
+    /// round that couldn't read the tip (the node may have been down, and
+    /// come back behind).
+    sync_checked: parking_lot::Mutex<Option<(u64, Instant)>>,
 }
 
 #[derive(Default)]
@@ -48,6 +56,7 @@ pub(crate) struct SettlementRound {
 /// spare recomputes something.
 pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     let Some(tip) = round.tip else {
+        *round.state.settlement.sync_checked.lock() = None;
         return Progress::Blocked(Wait::ChainHeightUnknown);
     };
     if !round.settlement.tip_observed {
@@ -58,6 +67,12 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
             return Progress::Failed(error);
         }
         round.settlement.tip_observed = true;
+        if let Err(error) = synchronized(round, tip).await {
+            return Progress::Failed(error);
+        }
+        if let Err(error) = report_hold(round, tip).await {
+            return Progress::Failed(error);
+        }
     }
     let mut failure = None;
     if !round.settlement.vanished_done {
@@ -75,6 +90,64 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         (None, 0) => Progress::Idle,
         (None, _) => Progress::Advanced,
     }
+}
+
+/// Asks the node whether it is synchronized with its peers, when its tip
+/// moved since it was last asked, it was asked over a minute ago, or the
+/// tip couldn't be read since: a node that was down itself comes back
+/// with an old tip and fetches what it missed from its peers, and orders
+/// mustn't expire until it has (`Store::expiry_hold`). A node that doesn't
+/// say counts as synchronized; one that fails to answer leaves the last
+/// answer standing.
+async fn synchronized(round: &Round<'_>, tip: u64) -> Result<(), ScannerError> {
+    let due = round
+        .state
+        .settlement
+        .sync_checked
+        .lock()
+        .is_none_or(|(checked, at)| checked != tip || at.elapsed() >= SYNC_RECHECK);
+    if !due {
+        return Ok(());
+    }
+    *round.state.settlement.sync_checked.lock() = Some((tip, Instant::now()));
+    let info = match super::bounded(round.inputs.daemon.get_info()).await {
+        Ok(info) => info,
+        Err(error) => {
+            tracing::debug!(network = crate::network::network_str(round.network()), error = %error, "asking the node whether it is synchronized failed");
+            return Ok(());
+        }
+    };
+    let (synced, now) = (info.synchronized.unwrap_or(true), round.now);
+    round
+        .db(move |s, network| s.observe_node_synchronized(network, synced, now))
+        .await
+}
+
+/// Says, at most once a minute, that orders past their deadline aren't
+/// expiring, and why: a store behind the node's tip (a block fetch that
+/// doesn't get through), the node not synchronized, or a reorg being
+/// reconciled; and since when.
+async fn report_hold(round: &Round<'_>, tip: u64) -> Result<(), ScannerError> {
+    let now = round.now;
+    let Some(hold) = round
+        .db(move |s, network| s.expiry_hold(network, tip, now))
+        .await?
+    else {
+        return Ok(());
+    };
+    let network = crate::network::network_str(round.network());
+    shared::throttled!(
+        format!("expiry-held:{network}"),
+        warn,
+        network,
+        orders = hold.orders,
+        overdue_since = hold.overdue_since,
+        behind_tip = hold.behind_tip,
+        node_unsynchronized_since = ?hold.node_unsynchronized_since,
+        reorg_open_since = ?hold.reorg_open_since,
+        "orders past their deadline aren't expiring: blocks that may hold their payments aren't scanned yet"
+    );
+    Ok(())
 }
 
 /// The blind spot reorg detection can't cover: a zero-conf payment whose

@@ -122,6 +122,11 @@ impl MoneroDaemonClient for AdversarialNode {
         })
         .await
     }
+    /// Asked with the tip (`get_info` says the node's height too).
+    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+        self.call(Rpc::Tip, async |_b| self.fake.get_info().await)
+            .await
+    }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.call(Rpc::Hash, async |_b| self.fake.get_block_hash(height).await)
             .await

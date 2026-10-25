@@ -852,13 +852,17 @@ fn portfolio_reorg_retains_pending_settlement_until_branch_is_proven() {
 #[test]
 fn portfolio_outage_longer_than_grace_credits_the_on_time_payment() {
     use crate::work::portfolio::scenario::reviewed::outage_longer_than_grace;
-    let hits = crate::work::portfolio::explore(&outage_longer_than_grace().encode());
-    assert!(
-        hits.get("outage-longer-than-grace")
-            .copied()
-            .unwrap_or_default()
-            > 0
-    );
+    // The engine's outage, then its node's.
+    for node in [false, true] {
+        let hits = crate::work::portfolio::explore(&outage_longer_than_grace(node).encode());
+        assert!(
+            hits.get("outage-longer-than-grace")
+                .copied()
+                .unwrap_or_default()
+                > 0,
+            "node={node}"
+        );
+    }
 }
 
 #[test]

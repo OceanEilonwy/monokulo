@@ -20,6 +20,9 @@ use std::{
     time::Duration,
 };
 
+/// How far each advance moves time on, in seconds.
+pub(super) const STEP: i64 = 301;
+
 pub(super) fn hash(epoch: u64, height: u64) -> String {
     let mut bytes = [17; 32];
     bytes[..8].copy_from_slice(&epoch.to_le_bytes());
@@ -35,6 +38,10 @@ pub(super) struct World {
     pub(super) client: FallbackDaemonClient,
     nodes: [Arc<AdversarialNode>; 3],
     chain: RefCell<BTreeMap<u64, String>>,
+    /// Blocks mined while the nodes were down, which they fetch from their
+    /// peers one a round once back (`release`), saying meanwhile that they
+    /// aren't synchronized.
+    withheld: RefCell<std::collections::VecDeque<(String, Vec<monero::Transaction>)>>,
     proven: RefCell<BTreeMap<u64, String>>,
     known: RefCell<Vec<monero::Transaction>>,
     pruned: Cell<bool>,
@@ -69,6 +76,7 @@ impl World {
             client,
             nodes,
             chain: RefCell::new(BTreeMap::new()),
+            withheld: RefCell::default(),
             proven: RefCell::default(),
             known: RefCell::default(),
             pruned: Cell::new(false),
@@ -106,9 +114,33 @@ impl World {
     }
     pub(super) async fn advance(&self) {
         tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(301)).await;
+        tokio::time::advance(Duration::from_secs(STEP.unsigned_abs())).await;
         tokio::time::resume();
-        self.now.set(self.now.get() + 301);
+        self.now.set(self.now.get() + STEP);
+    }
+    /// A block mined while the nodes are down: theirs once they fetch it.
+    pub(super) fn withhold_block(&self, hash: &str, txs: Vec<monero::Transaction>) {
+        let height = self.chain.borrow().len() as u64 + 1;
+        self.chain.borrow_mut().insert(height, hash.into());
+        self.withheld.borrow_mut().push_back((hash.into(), txs));
+        for n in &self.nodes {
+            n.fake.set_synchronized(Some(false));
+        }
+    }
+    /// The nodes fetch the next block they missed, if any; synchronized
+    /// once they have them all.
+    pub(super) fn release(&self) {
+        let Some((hash, txs)) = self.withheld.borrow_mut().pop_front() else {
+            return;
+        };
+        for n in &self.nodes {
+            n.fake.push_block(&hash, txs.clone());
+        }
+        if self.withheld.borrow().is_empty() {
+            for n in &self.nodes {
+                n.fake.set_synchronized(Some(true));
+            }
+        }
     }
     pub(super) fn push_block(&self, hash: &str, txs: Vec<monero::Transaction>) {
         let height = self.chain.borrow().len() as u64 + 1;

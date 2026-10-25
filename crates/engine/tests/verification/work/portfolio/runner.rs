@@ -218,6 +218,9 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             // Voided at some point: a payment restored after that may follow
             // its order's expiry (its void is only rechecked later).
             let mut once_voided = vec![false; count];
+            // When each transaction was first in the pool, as of the round
+            // that first saw it there.
+            let mut pool_since: Vec<Option<i64>> = vec![None; count];
             daemon.push_block(&effects::hash(0, 1), vec![]);
             daemon.push_block(&effects::hash(0, 2), vec![]);
             let mut state = ScanState::default();
@@ -240,6 +243,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 vec![]
             });
             daemon.proof(backend.db(), 2, false).await;
+            seen_in_pool(&mut pool_since, &locations, &daemon);
             settle(
                 &Effects::new(&backend, &custody, &daemon, &tenants, &state),
                 &Ledger {
@@ -249,6 +253,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     locations: &locations,
                     voided: &voided,
                     once_voided: &once_voided,
+                    pool_since: &pool_since,
                     observed: &observed,
                 },
                 2,
@@ -319,28 +324,37 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             );
                         }
                     }
-                    Command::Outage { transaction, after } => {
+                    Command::Outage {
+                        transaction,
+                        after,
+                        node,
+                    } => {
                         // Blocks mined while no round runs, the one with
                         // the transaction `after % 16` blocks in, and time
                         // running on past every deadline (and a narrow
-                        // grace) before the next round.
+                        // grace) before the next round. After a node's
+                        // outage the nodes fetch them one a round.
+                        let mine = |hash: &str, txs| {
+                            if node {
+                                daemon.withhold_block(hash, txs);
+                            } else {
+                                daemon.push_block(hash, txs);
+                            }
+                        };
                         let t = usize::from(transaction) % count;
                         for _ in 0..after % 16 {
                             tip += 1;
-                            daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                            mine(&effects::hash(epoch, tip), vec![]);
                         }
                         tip += 1;
                         if matches!(locations[t], Location::Block(_)) {
-                            daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                            mine(&effects::hash(epoch, tip), vec![]);
                         } else {
                             locations[t] = Location::Block(tip);
                             observed[t] = true;
                             voided[t] = false;
                             daemon.clear_spent(&transactions[t]);
-                            daemon.push_block(
-                                &effects::hash(epoch, tip),
-                                vec![transactions[t].clone()],
-                            );
+                            mine(&effects::hash(epoch, tip), vec![transactions[t].clone()]);
                         }
                         for _ in 0..13 {
                             daemon.advance().await;
@@ -495,6 +509,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 for (once, now) in once_voided.iter_mut().zip(&voided) {
                     *once |= *now;
                 }
+                seen_in_pool(&mut pool_since, &locations, &daemon);
                 daemon.set_mempool(
                     transactions
                         .iter()
@@ -512,6 +527,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         locations: &locations,
                         voided: &voided,
                         once_voided: &once_voided,
+                        pool_since: &pool_since,
                         observed: &observed,
                     },
                     tip,
@@ -553,6 +569,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     locations: &locations,
                     voided: &voided,
                     once_voided: &once_voided,
+                    pool_since: &pool_since,
                     observed: &observed,
                 },
                 3,
@@ -602,6 +619,15 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
         Err(error) => {
             eprintln!("PORTFOLIO_TRACE {:?}", scenario::Scenario::decode(data));
             std::panic::resume_unwind(error)
+        }
+    }
+}
+/// Notes the transactions in the pool not seen there before: the next
+/// settle's rounds, a step on, are the first to see them.
+fn seen_in_pool(pool_since: &mut [Option<i64>], locations: &[Location], daemon: &World) {
+    for (since, location) in pool_since.iter_mut().zip(locations) {
+        if *location == Location::Pool && since.is_none() {
+            *since = Some(daemon.now.get() + effects::STEP);
         }
     }
 }
@@ -733,15 +759,17 @@ async fn settle(effects: &Effects<'_>, ledger: &Ledger<'_>, tip: u64, oracle: &m
     daemon.advance().await;
     let input = inputs(backend.db(), custody, daemon, tenants);
     for _ in 0..32 {
+        daemon.release();
         run_round_at(state, &input, Duration::ZERO, daemon.now.get())
             .await
             .into_result()
             .unwrap();
-        if ledger.ready(&backend.store().lock(), daemon, tenants, tip) {
+        if ledger.ready(&backend.store().lock(), daemon, tenants, tip, oracle) {
             break;
         }
     }
     for _ in 0..2 {
+        daemon.release();
         run_round_at(state, &input, Duration::ZERO, daemon.now.get())
             .await
             .into_result()
