@@ -1136,6 +1136,7 @@ impl live_settings::Reloadable for NodesReloadable {
     ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.daemons.snapshot();
         let mut map = HashMap::new();
+        let mut warnings = Vec::new();
         for (name, node) in &new.nodes {
             let setting = NETWORKS
                 .iter()
@@ -1144,6 +1145,18 @@ impl live_settings::Reloadable for NodesReloadable {
             let network = crate::network::parse_network(name)
                 .map_err(|e| FieldError::new(setting, e.to_string()))?;
             let unchanged = old.nodes.get(name) == Some(node) && old.strict_tls == new.strict_tls;
+            // One already set (a save refuses a new one) doesn't stop the
+            // engine: it is kept, never asked anything (`RpcDaemonClient`),
+            // and said once here, which boot logs, and on `/status`.
+            if let Some(onion) = node
+                .onion_node()
+                .filter(|_| old.nodes.get(name) != Some(node))
+            {
+                warnings.push(live_settings::Warning::for_key(
+                    setting,
+                    crate::settings::onion_node_message(&onion.host, onion.port),
+                ));
+            }
             let client = match current.get(&network) {
                 Some(existing) if unchanged => Arc::clone(existing),
                 _ => Arc::new(
@@ -1153,7 +1166,7 @@ impl live_settings::Reloadable for NodesReloadable {
             };
             map.insert(network, client);
         }
-        Ok((map, Vec::new()))
+        Ok((map, warnings))
     }
 
     async fn install(&self, prepared: Self::Prepared) {

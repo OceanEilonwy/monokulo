@@ -4333,6 +4333,31 @@ async fn a_node_listed_twice_in_one_network_is_refused() {
         saved_node(&router, "stagenet").await,
         serde_json::Value::Null
     );
+
+    // A node on an onion address, as a fallback, from the node form or as
+    // a plain setting: refused before it is asked anything, since asking
+    // would look its name up in the system's DNS.
+    let mut onion = node_json(node, &[]);
+    onion["fallbacks"] = serde_json::json!([{ "host": "Node.2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion.", "port": 18089 }]);
+    for body in [
+        serde_json::json!({ "monero_node": { "stagenet": onion } }),
+        serde_json::json!({ "scalars": { "monero_node.stagenet": onion.to_string() } }),
+    ] {
+        let (status, body) = try_save(&router, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["fields"][0]["key"], "monero_node.stagenet", "{body}");
+        let message = body["fields"][0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("is an onion address")
+                && message.contains("over the web only")
+                && message.contains("system's DNS"),
+            "{message}"
+        );
+        assert_eq!(
+            saved_node(&router, "stagenet").await,
+            serde_json::Value::Null
+        );
+    }
 }
 
 #[tokio::test]
