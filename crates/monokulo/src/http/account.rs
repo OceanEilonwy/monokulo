@@ -17,7 +17,7 @@ use crate::db::{Theme, UserRow};
 use crate::views;
 use crate::views::account::{AccountTab, AccountViewModel, Card, Outcome, Profile};
 
-use super::signup::{normalize_email, MIN_PASSWORD_LEN};
+use super::signup::{self, normalize_email};
 use super::{AppState, AuthedUser};
 
 #[derive(Deserialize, Default)]
@@ -71,6 +71,7 @@ async fn render(
         saved: saved_profile(user),
         shown,
         browser_zone: user.browser_timezone.clone(),
+        min_password_len: signup::min_password_len(user.is_admin),
         outcome,
         wallets,
         retired,
@@ -271,9 +272,10 @@ async fn new_password_hash(user: &UserRow, form: &ProfileForm) -> Result<String,
     if !current_ok {
         return Err("That isn't your current password.".to_string());
     }
-    if form.new_password.chars().count() < MIN_PASSWORD_LEN {
+    if !signup::password_long_enough(&form.new_password, user.is_admin) {
         return Err(format!(
-            "The new password must be at least {MIN_PASSWORD_LEN} characters."
+            "The new password must be at least {} characters.",
+            signup::min_password_len(user.is_admin)
         ));
     }
     if form.new_password != form.confirm_password {
