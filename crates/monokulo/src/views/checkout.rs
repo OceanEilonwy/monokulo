@@ -465,10 +465,7 @@ fn stage_steps(data: &CheckoutViewModel) -> Vec<ui::ProgressStep> {
     };
     steps
         .into_iter()
-        .map(|(label, progress)| ui::ProgressStep {
-            label: label.to_string(),
-            progress,
-        })
+        .map(|(label, progress)| ui::ProgressStep::new(label, progress))
         .collect()
 }
 
@@ -549,7 +546,7 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
     html! {
         div id="live-status" class="stage-slot" data-live {
             span id="status-badge" class=(format!("sr-only state-{shown}")) { (data.status_label) }
-            (ui::ProgressSteps::new("Payment progress", steps, title, message).state(state))
+            (ui::ProgressSteps::new("Payment progress", steps).title(title).message(message).state(state))
         }
     }
 }

@@ -5,10 +5,11 @@
 //! right and testing in isolation first: how a delivery is authenticated, and how a
 //! merchant-supplied URL is checked before this server ever makes a request to it.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
+use telemetry::redact::embedded_ipv4;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -97,20 +98,19 @@ pub fn is_disallowed_address(ip: IpAddr) -> bool {
     // exactly one set of rules applies to any given destination, regardless of which
     // family a resolver happened to express it in.
     //
-    // `to_ipv4`, not `to_ipv4_mapped`: the deprecated IPv4-*compatible* form
-    // (`::127.0.0.1`, i.e. `::/96` without the `ffff` marker) embeds a v4 address just
-    // as literally, and unmapping only the `::ffff:` form left it classified as an
-    // ordinary global v6 address - one character away from the same bypass, in the
-    // fix meant to close it. The two v6 addresses this additionally folds into v4,
-    // `::` and `::1`, land on 0.0.0.0 and 0.0.0.1, both of which the v4 arm rejects.
-    // Likewise a v6 address that is a v4 one in a translation prefix: NAT64
-    // (64:ff9b::/96, RFC 6052, and the local-use 64:ff9b:1::/48 of RFC 8215,
-    // made for translating to private v4), 6to4 (2002::/16, the v4 address
-    // in bits 16-47) and Teredo (2001::/32, the server's v4 address in the
-    // last 32 bits, inverted). On a host with such a translator, a
-    // connection to one of these lands on the embedded v4 address.
+    // The deprecated IPv4-*compatible* form (`::127.0.0.1`, i.e. `::/96` without the
+    // `ffff` marker) embeds a v4 address just as literally, and unmapping only the
+    // `::ffff:` form left it classified as an ordinary global v6 address - one
+    // character away from the same bypass, in the fix meant to close it. The two v6
+    // addresses this additionally folds into v4, `::` and `::1`, land on 0.0.0.0 and
+    // 0.0.0.1, both of which the v4 arm rejects. Likewise a v6 address that is a v4
+    // one in a translation prefix (NAT64, including the local-use prefix made for
+    // translating to private v4, 6to4 and Teredo): on a host with such a translator,
+    // a connection to one of these lands on the embedded v4 address. The log
+    // redactor uses the same `embedded_ipv4`, so the two agree on which v6
+    // addresses are really v4 ones.
     let ip = match ip {
-        IpAddr::V6(v6) => match v6.to_ipv4().or_else(|| embedded_ipv4(v6)) {
+        IpAddr::V6(v6) => match embedded_ipv4(v6) {
             Some(v4) => IpAddr::V4(v4),
             None => IpAddr::V6(v6),
         },
@@ -164,31 +164,11 @@ pub fn is_disallowed_address(ip: IpAddr) -> bool {
     }
 }
 
-/// The IPv4 address a translation-prefix IPv6 address stands for, if it is
-/// one: NAT64 (`64:ff9b::/96` and `64:ff9b:1::/48`), 6to4 (`2002::/16`) or
-/// Teredo (`2001::/32`).
-fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
-    let segments = v6.segments();
-    let octets = v6.octets();
-    let last_four = |invert: bool| {
-        let mut bytes = [octets[12], octets[13], octets[14], octets[15]];
-        if invert {
-            bytes = bytes.map(|b| !b);
-        }
-        Ipv4Addr::from(bytes)
-    };
-    match segments {
-        [0x0064, 0xff9b, 0, 0, 0, 0, _, _] => Some(last_four(false)),
-        [0x0064, 0xff9b, 0x0001, ..] => Some(last_four(false)),
-        [0x2002, ..] => Some(Ipv4Addr::from([octets[2], octets[3], octets[4], octets[5]])),
-        [0x2001, 0x0000, ..] => Some(last_four(true)),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::net::Ipv4Addr;
 
     /// What the delivery path does with a resolved address.
     #[derive(Debug, PartialEq)]
