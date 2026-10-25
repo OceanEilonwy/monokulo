@@ -27,7 +27,7 @@ struct Body {
 async fn get(app: ConnectedApp) -> api::Result<Body> {
     let app = app.0;
     Ok(Body {
-        app_id: app.id,
+        app_id: app.id.into_string(),
         device_name: app.device_name,
         platform: app.platform,
         connected_at: app.connected_at,
@@ -48,8 +48,12 @@ async fn delete(app: ConnectedApp, apps: Apps) -> api::Result<NoContent> {
         .write(move |db| db.delete_app(&store_id, &app_id))
         .await
     {
-        Ok(_) => {
-            state.apps.disconnected(&app.id);
+        Ok(deleted) => {
+            // Gone already (disconnected from the dashboard meanwhile): its
+            // streams were ended then.
+            if let Some(deleted) = &deleted {
+                state.apps.disconnected(deleted);
+            }
             tracing::info!(store.id = %app.store_id, app.id = %app.id, "an app disconnected itself");
             Ok(NoContent)
         }

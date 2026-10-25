@@ -34,7 +34,7 @@ use super::{AppState, AuthedUser, OwnedStore};
 /// What the Apps card shows for an app.
 pub(super) fn app_row(app: &AppConnection, clock: &crate::views::time::Clock) -> AppRow {
     AppRow {
-        id: app.id.clone(),
+        id: app.id.to_string(),
         app: Plugin::stored(&app.slug, &app.name).to_string(),
         device_name: app.device_name.clone(),
         platform: app.platform.clone(),
@@ -213,24 +213,30 @@ pub async fn connect_status(
 pub async fn disconnect_submit(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, app_id)): Path<(ConnectionId, String)>,
+    Path((id, app_id)): Path<(ConnectionId, crate::db::AppId)>,
 ) -> Response {
     let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let (store_id, gone) = (row.id.clone(), app_id.clone());
-    if let Err(e) = state
+    let store_id = row.id.clone();
+    match state
         .db
-        .write(move |db| db.delete_app(&store_id, &gone))
+        .write(move |db| db.delete_app(&store_id, &app_id))
         .await
     {
-        tracing::error!(store.id = %id, error = %e, "an app could not be disconnected");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        Ok(Some(deleted)) => {
+            state.apps.disconnected(&deleted);
+            crate::base::see_other(format!("/stores/{id}/settings?tab=connections#card-apps"))
+        }
+        // Not one of this store's apps: nothing to disconnect.
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(store.id = %id, error = %e, "an app could not be disconnected");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
-    state.apps.disconnected(&app_id);
-    crate::base::see_other(format!("/stores/{id}/settings?tab=connections#card-apps"))
 }
 
 // -- The app's API -----------------------------------------------------------------
