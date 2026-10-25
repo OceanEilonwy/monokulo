@@ -4171,13 +4171,17 @@ fn void_recheck_due(store: &SharedStore) {
         &i64::MIN,
     )
     .unwrap();
-    s.set_scheduler_position::<crate::store::position::VoidRecheck>(monero::Network::Mainnet, &0)
-        .unwrap();
+    s.set_scheduler_position::<crate::store::position::VoidRecheck>(
+        monero::Network::Mainnet,
+        &crate::store::position::VoidPass::default(),
+    )
+    .unwrap();
 }
 
 /// More recent voids than a page, and no time to spare: each round rechecks
-/// one, the pass carries on from where it stopped, and ends once the last is
-/// done.
+/// one and the pass carries on from where it stopped. When the voids still
+/// ahead of it leave the window between rounds, the pass is over rather than
+/// stuck there, and the next one reaches a fresh void behind it.
 #[tokio::test]
 async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
     let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
@@ -4209,8 +4213,9 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
             .scheduler_position::<crate::store::position::VoidRecheck>(monero::Network::Mainnet)
             .unwrap()
     };
-    assert_ne!(position(), Some(0), "the pass is still going");
-    for _ in 0..17 {
+    let stopped_at = || position().unwrap_or_default().last();
+    assert!(stopped_at().is_some(), "the pass is still going");
+    for _ in 0..16 {
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
@@ -4220,8 +4225,40 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
         .into_result()
         .unwrap();
     }
-    assert_eq!(voided(), 0);
-    assert_eq!(position(), Some(0), "and the pass is over");
+    assert_eq!(voided(), 1);
+    // Before the next round the last one ages out of the window, and a reorg
+    // voids the first again: a fresh, false void behind the pass.
+    let after = stopped_at().expect("one is still ahead of the pass");
+    {
+        let s = store.lock();
+        s.execute_raw_for_test(&format!(
+            "UPDATE order_payments SET voided_at_utc = voided_at_utc - 3 * 86400 WHERE id > {after}"
+        ))
+        .unwrap();
+        s.void_payment(
+            &shared::ids::OrderId::new(orders[0].to_string()),
+            &"00".repeat(32),
+            0,
+            crate::now_unix(),
+        )
+        .unwrap();
+        s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>(
+            monero::Network::Mainnet,
+            &i64::MIN,
+        )
+        .unwrap();
+    }
+    assert_eq!(voided(), 2);
+    run_round(
+        &state,
+        &inputs(&db, &custody, &fake, &tenants),
+        Duration::ZERO,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    assert_eq!(voided(), 1, "the fresh void is restored, the aged one left");
+    assert_eq!(stopped_at(), None, "and the pass is over");
 }
 
 /// Every SQL statement of a void recheck failed in turn: the void is
