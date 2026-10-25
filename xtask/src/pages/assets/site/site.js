@@ -99,8 +99,9 @@
       a.setAttribute("role", "option");
       if (hit.method) {
         const m = document.createElement("span");
-        m.className = "method";
-        m.dataset.method = hit.method;
+        // The ui's HttpMethodTag, as the reference's map draws it.
+        m.className = "mk-http-method";
+        m.dataset.method = hit.method.toLowerCase();
         m.textContent = hit.method;
         a.append(m);
       }

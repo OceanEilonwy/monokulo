@@ -219,6 +219,18 @@ fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or_default()
 }
 
+/// A method as the ui's tag draws it (`GET`, `POST`, `DELETE`); one it has
+/// no tag for, in words.
+fn method_tag(method: &str) -> Markup {
+    let tag = match method {
+        "GET" => ui::HttpMethod::Get,
+        "POST" => ui::HttpMethod::Post,
+        "DELETE" => ui::HttpMethod::Delete,
+        other => return html! { code { (other) } },
+    };
+    html! { (ui::HttpMethodTag::new(tag)) }
+}
+
 /// Which page of the reference a page is, for its map to mark.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Here<'a> {
@@ -245,7 +257,7 @@ fn map(reference: &Value, up: &str, here: Here) -> Vec<shell::Group> {
         let label = html! {
             span.map-key { (text(resource, "key")) }
             @for method in list(resource, "methods") {
-                span.method data-method=(text(method, "method")) { (text(method, "method")) }
+                (method_tag(text(method, "method")))
             }
         };
         link(label, format!("{up}rels/{rel}/"), here == Here::Rel(rel))
