@@ -165,40 +165,78 @@ pub fn stored_site(site: Option<&Site>) -> &str {
     site.map_or("", Site::as_str)
 }
 
-/// Records the hash of each store's secret key that doesn't have one yet
-/// (migration 0044), so the API can find the store by its key. Run once at
-/// start; a store whose key can't be decrypted is logged and left without,
-/// and can't use the API with its key until it can. Returns how many it
-/// filled.
-pub fn fill_secret_key_hashes(db: &crate::db::Db, key: &crate::crypto::AtRestKey) -> usize {
-    let missing = match db.stores_missing_secret_key_hash() {
-        Ok(missing) => missing,
+/// Runs monokulo's start-up code steps ([`crate::db::BACKFILL_STEP`]),
+/// each once, once the at-rest key is known: copying stores' site domains
+/// into their domains, and recording their secret key hashes. A step that
+/// fails is logged, leaves nothing behind, and is tried again at the next
+/// start.
+pub fn backfill_at_start(db: &crate::db::Db, key: &crate::crypto::AtRestKey) {
+    match crate::embed_domains::import_existing_domains(db) {
+        Ok(true) => tracing::info!(
+            step = crate::db::STORE_DOMAINS_STEP,
+            "imported existing stores' domains"
+        ),
+        Ok(false) => {}
         Err(e) => {
-            tracing::error!(error = %e, "stores' secret key hashes could not be read");
-            return 0;
-        }
-    };
-    let mut filled = 0;
-    for (id, encrypted) in missing {
-        let hash = match crate::crypto::decrypt(
-            key,
-            crate::crypto::Binding::StoreSecret(id.as_str()),
-            &encrypted,
-        ) {
-            Ok(secret) => shared::auth::RawToken::presented(&secret).hash(),
-            Err(e) => {
-                tracing::error!(store.id = %id, error = %e, "a store's secret key could not be decrypted to record its hash");
-                continue;
-            }
-        };
-        match db.set_secret_key_hash(&id, &hash) {
-            Ok(()) => filled += 1,
-            Err(e) => {
-                tracing::error!(store.id = %id, error = %e, "a store's secret key hash could not be recorded")
-            }
+            tracing::error!(step = crate::db::STORE_DOMAINS_STEP, error = %e, "could not import existing stores' domains (tried again at the next start)")
         }
     }
-    filled
+    match fill_secret_key_hashes(db, key) {
+        Ok(true) => tracing::info!(
+            step = crate::db::SECRET_KEY_HASHES_STEP,
+            "recorded stores' secret key hashes"
+        ),
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!(step = crate::db::SECRET_KEY_HASHES_STEP, error = %e, "could not record stores' secret key hashes (tried again at the next start)")
+        }
+    }
+}
+
+/// Why recording stores' secret key hashes failed.
+#[derive(Debug, thiserror::Error)]
+pub enum SecretKeyHashError {
+    #[error(transparent)]
+    Db(#[from] crate::db::DbError),
+    #[error("store {store}'s secret key could not be decrypted: {error}")]
+    Decrypt {
+        store: crate::db::ConnectionId,
+        error: crate::crypto::CryptoError,
+    },
+}
+
+impl From<rusqlite::Error> for SecretKeyHashError {
+    fn from(e: rusqlite::Error) -> Self {
+        Self::Db(e.into())
+    }
+}
+
+/// Records the hash of each store's secret key that doesn't have one
+/// (stores made before migration 0044; every store made since has it from
+/// the start), so the API can find the store by its key: the code step
+/// [`crate::db::SECRET_KEY_HASHES_STEP`], run once. A store whose key
+/// can't be decrypted fails the step, so none is recorded and it is tried
+/// again at the next start (with the right encryption key, say) rather than
+/// leaving that store without a hash for good. Returns whether it ran.
+pub fn fill_secret_key_hashes(
+    db: &crate::db::Db,
+    key: &crate::crypto::AtRestKey,
+) -> Result<bool, SecretKeyHashError> {
+    db.run_backfill_step(crate::db::SECRET_KEY_HASHES_STEP, |db| {
+        for (id, encrypted) in db.stores_missing_secret_key_hash()? {
+            let secret = crate::crypto::decrypt(
+                key,
+                crate::crypto::Binding::StoreSecret(id.as_str()),
+                &encrypted,
+            )
+            .map_err(|error| SecretKeyHashError::Decrypt {
+                store: id.clone(),
+                error,
+            })?;
+            db.set_secret_key_hash(&id, &shared::auth::RawToken::presented(&secret).hash())?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

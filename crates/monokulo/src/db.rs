@@ -181,6 +181,19 @@ fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
     shared::migrations::apply(conn, MIGRATIONS)
 }
 
+/// The kind of monokulo's code steps (`shared::migrations::run_code_step`):
+/// changes to existing rows that SQL can't make, run once each at start
+/// ([`crate::stores::backfill_at_start`]) and recorded in `code_migrations`. Each id
+/// names the SQL migration whose new column it fills.
+pub const BACKFILL_STEP: &str = "backfill";
+/// Copies each store's own site domain into its domains (migration 0020):
+/// the domain is read out of the site in code
+/// (`crate::embed_domains::import_existing_domains`).
+pub const STORE_DOMAINS_STEP: &str = "0020-store-domains";
+/// Records each store's secret key hash (migration 0044): the hash needs
+/// the key, which needs the at-rest key (`crate::stores::fill_secret_key_hashes`).
+pub const SECRET_KEY_HASHES_STEP: &str = "0044-secret-key-hashes";
+
 /// Known credentials every test fixture seeds via [`Db::seed_test_admin`] -
 /// public (not `#[cfg(test)]`-gated on the constants themselves) so a test in
 /// any module can log in as this account without redefining the literal.
@@ -1406,6 +1419,7 @@ impl Db {
         site: Option<&Site>,
         tenant_public_key: &str,
         tenant_secret_token_encrypted: &str,
+        secret_key_hash: &TokenHash,
         created_at: i64,
         base_currency: &str,
         wallet_id: &WalletId,
@@ -1415,10 +1429,13 @@ impl Db {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
+        // Made with its key's hash and its domains imported, so neither
+        // start-up backfill (`crate::stores::backfill_at_start`) is needed
+        // for it: the caller adds its site's domain.
         tx.execute(
             "INSERT INTO store_connections
-                (id, user_id, name, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, wallet_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, json_array('coingecko'), ?8, ?9)",
+                (id, user_id, name, site, tenant_public_key, tenant_secret_token_encrypted, secret_key_hash, domains_imported, created_at_utc, fx_providers, base_currency, wallet_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, json_array('coingecko'), ?9, ?10)",
             params![
                 id,
                 user_id,
@@ -1426,6 +1443,7 @@ impl Db {
                 site,
                 tenant_public_key,
                 tenant_secret_token_encrypted,
+                secret_key_hash,
                 created_at,
                 base_currency,
                 wallet_id,
@@ -1628,6 +1646,19 @@ impl Db {
             params![id, tenant_secret_token_encrypted, secret_key_hash],
         )?;
         Ok(())
+    }
+
+    /// Runs the code step `id` of [`BACKFILL_STEP`] with `run`, unless it
+    /// has run before: its writes and its record commit together. Returns
+    /// whether it ran.
+    pub fn run_backfill_step<E: From<rusqlite::Error>>(
+        &self,
+        id: &str,
+        run: impl FnOnce(&Db) -> std::result::Result<(), E>,
+    ) -> std::result::Result<bool, E> {
+        // `run` writes through `self`, on the connection the step's
+        // transaction is open on.
+        shared::migrations::run_code_step(&self.conn, BACKFILL_STEP, id, |_| run(self))
     }
 
     /// The hash of the store's secret key (migration 0044), which the API
@@ -2664,11 +2695,13 @@ impl Db {
             .map_err(DbError::from)
     }
 
+    /// Makes the store look as one made before migrations 0020 and 0044:
+    /// no domains imported, and no secret key hash.
     #[cfg(test)]
-    pub fn reset_store_domains_imported_for_test(&self, connection_id: &ConnectionId) {
+    pub fn reset_store_backfills_for_test(&self, connection_id: &ConnectionId) {
         self.conn
             .execute(
-                "UPDATE store_connections SET domains_imported = 0 WHERE id = ?1",
+                "UPDATE store_connections SET domains_imported = 0, secret_key_hash = NULL WHERE id = ?1",
                 params![connection_id],
             )
             .unwrap();
@@ -3078,6 +3111,9 @@ pub(crate) mod test_rows {
             Site::stored(site).as_ref(),
             tenant_public_key,
             tenant_secret_token_encrypted,
+            // A key of its own: a test that uses the store's key sets the
+            // hash of the one it uses.
+            &shared::auth::RawToken::presented(&format!("sk_of_{}", id.as_str())).hash(),
             created_at,
             base_currency,
             &wallet,

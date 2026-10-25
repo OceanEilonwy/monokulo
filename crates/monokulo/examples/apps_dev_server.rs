@@ -147,6 +147,7 @@ async fn main() {
             crypto::Binding::StoreSecret(STORE),
             tenant.secret_token.expose(),
         ),
+        &tenant.secret_token.hash(),
         0,
         "USD",
         &monokulo::db::WalletId::new("w_dev"),

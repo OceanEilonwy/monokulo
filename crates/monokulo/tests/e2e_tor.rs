@@ -392,6 +392,7 @@ async fn start_monokulo(
             monokulo::crypto::Binding::StoreSecret("store-1"),
             tenant.secret_token.expose(),
         ),
+        &tenant.secret_token.hash(),
         0,
         "XMR",
         &wallet,
