@@ -85,9 +85,14 @@ impl Webhooks {
     }
 }
 
-/// `url` as a webhook may have it: an absolute `http(s)` URL. Whether its
-/// host is private is checked at every delivery, not here: DNS can change
-/// in between.
+/// Why a webhook URL on an onion address is refused.
+pub const ONION_REFUSED: &str = "Monokulo can't send webhooks to an onion address: it doesn't send them over Tor. Give the webhook a web address.";
+
+/// `url` as a webhook may have it: an absolute `http(s)` URL, not on an
+/// onion address. Deliveries don't go over Tor, so an onion host could only
+/// be looked up in the system's DNS, which would tell its resolver the
+/// shop's onion address and never find it. Whether a host is private is
+/// checked at every delivery, not here: DNS can change in between.
 pub fn check_url(url: &str) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
@@ -102,8 +107,11 @@ pub fn check_url(url: &str) -> Result<String, String> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("A webhook URL must start with http:// or https://.".to_string());
     }
-    if parsed.host().is_none() {
+    let Some(host) = parsed.host_str() else {
         return Err("A webhook URL needs a host.".to_string());
+    };
+    if crate::onion::is_onion_host(host) {
+        return Err(ONION_REFUSED.to_string());
     }
     Ok(url.to_string())
 }

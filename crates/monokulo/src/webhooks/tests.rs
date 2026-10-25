@@ -251,6 +251,11 @@ async fn a_webhook_is_refused_a_reserved_header_or_a_url_that_isnt_http() {
         ("not a url", vec![], "valid URL"),
         ("", vec![], "Enter a webhook URL"),
         (
+            "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/hook",
+            vec![],
+            "onion address",
+        ),
+        (
             "https://shop.example/hook",
             vec![("X-Monokulo-Signature", "forged")],
             "set by Monokulo",
