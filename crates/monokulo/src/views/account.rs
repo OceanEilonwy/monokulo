@@ -127,6 +127,9 @@ pub struct AccountViewModel {
     pub shown: Profile,
     /// The browser's own zone (the `tz` cookie), for Automatic's note.
     pub browser_zone: Option<String>,
+    /// Fewest characters this account's new password may have
+    /// (`http::signup::min_password_len`).
+    pub min_password_len: usize,
     pub outcome: Option<Outcome>,
     /// The Wallets tab's lists.
     pub wallets: Vec<WalletListItem>,
@@ -324,7 +327,7 @@ fn email_confirm_dialog(saved: &Profile) -> Markup {
 /// The Password card: the current password, and the new one typed twice.
 /// Left empty, saving the profile leaves the password as it is.
 fn password_card(data: &AccountViewModel) -> Markup {
-    let min = crate::http::MIN_PASSWORD_LEN;
+    let min = data.min_password_len;
     let password = |name: &str, id: &str, autocomplete: &str| {
         ui::Input::new(name)
             .id(id)
@@ -446,6 +449,7 @@ mod tests {
             saved: profile(),
             shown: profile(),
             browser_zone: Some("Europe/London".to_string()),
+            min_password_len: crate::http::MIN_PASSWORD_LEN,
             outcome,
             wallets: Vec::new(),
             retired: Vec::new(),

@@ -124,7 +124,7 @@ pub(crate) const SESSION_COOKIE_NAME: &str = "session";
 
 pub(crate) use orders::decrypt_sk;
 pub(crate) use pos::resolve_confirmations_required;
-pub(crate) use signup::MIN_PASSWORD_LEN;
+pub(crate) use signup::{min_password_len, MIN_PASSWORD_LEN};
 pub(crate) use telemetry_client::clip as clip_report;
 
 /// The session cookie as it is set and cleared: `HttpOnly` (never readable

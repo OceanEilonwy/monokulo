@@ -25,7 +25,7 @@ use super::AppState;
 pub(super) enum CreateAccountError {
     DuplicateEmail,
     Internal,
-    /// The password is shorter than [`MIN_PASSWORD_LEN`] (an empty one
+    /// The password is shorter than [`min_password_len`] (an empty one
     /// included), or the email is not an address.
     WeakPassword,
     InvalidEmail,
@@ -60,7 +60,7 @@ pub(super) async fn create_account(
     invite_token: Option<&str>,
 ) -> Result<String, CreateAccountError> {
     let email = normalize_email(email).ok_or(CreateAccountError::InvalidEmail)?;
-    if password.chars().count() < MIN_PASSWORD_LEN {
+    if !password_long_enough(password, is_admin) {
         return Err(CreateAccountError::WeakPassword);
     }
     let token_hash = invite_token
@@ -136,9 +136,29 @@ pub(super) async fn create_account(
         .await
 }
 
-/// Fewest characters a password may have, for every account. Twelve for
-/// the admin account made by first-run setup (`http::admin_setup`).
+/// Fewest characters a merchant's password may have.
 pub const MIN_PASSWORD_LEN: usize = 8;
+
+/// Fewest characters the admin's password may have: this one account can
+/// reconfigure every setting on the instance, scanner settings included,
+/// so it gets its own, stricter floor rather than the merchants' one.
+const MIN_ADMIN_PASSWORD_LEN: usize = 12;
+
+/// Fewest characters an account's password may have, at setup, sign-up
+/// and every later change alike.
+pub fn min_password_len(is_admin: bool) -> usize {
+    if is_admin {
+        MIN_ADMIN_PASSWORD_LEN
+    } else {
+        MIN_PASSWORD_LEN
+    }
+}
+
+/// Whether `password` is long enough for the account, counted in
+/// characters (not bytes, so letters outside ASCII don't count double).
+pub fn password_long_enough(password: &str, is_admin: bool) -> bool {
+    password.chars().count() >= min_password_len(is_admin)
+}
 
 /// The form an email address is stored and looked up in: trimmed and
 /// lowercased, so `Ann@Example.com ` and `ann@example.com` are one
