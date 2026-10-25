@@ -51,10 +51,34 @@ pub(super) struct Group {
 pub(super) struct Link {
     pub(super) label: Markup,
     pub(super) href: String,
-    /// The page this is.
-    pub(super) current: bool,
+    /// Whether it's the page it's on, or where that page is.
+    pub(super) current: Option<Mark>,
     /// A file rather than a page of the site (the OpenAPI document).
     pub(super) file: bool,
+}
+
+/// What a link in the map is to the page it's on, as `aria-current` says.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Mark {
+    /// The page itself.
+    Page,
+    /// Where the page is: a problem's page is under Problems, which links
+    /// the table of them.
+    Location,
+}
+
+impl Mark {
+    /// `current` as the map marks it: the page, or none.
+    pub(super) fn page_if(current: bool) -> Option<Mark> {
+        current.then_some(Mark::Page)
+    }
+
+    fn attribute(self) -> &'static str {
+        match self {
+            Mark::Page => "page",
+            Mark::Location => "location",
+        }
+    }
 }
 
 /// A page of the docs or the API reference, `up` from the site's root.
@@ -142,7 +166,7 @@ pub(super) fn render(page: Page) -> Markup {
                                 ul {
                                     @for link in &group.links {
                                         li {
-                                            a href=(link.href) aria-current=[link.current.then_some("page")] data-file[link.file] { (link.label) }
+                                            a href=(link.href) aria-current=[link.current.map(Mark::attribute)] data-file[link.file] { (link.label) }
                                         }
                                     }
                                 }

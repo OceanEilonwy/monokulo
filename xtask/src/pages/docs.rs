@@ -23,7 +23,7 @@
 //! Search finds every page and each of its sections, from the index the
 //! build writes at `search/docs.json`.
 
-use super::shell::{self, icon, Group as MapGroup, Link};
+use super::shell::{self, icon, Group as MapGroup, Link, Mark};
 use super::site_assets;
 use super::site_header::{Section, GITHUB_URL, SITE_URL};
 use crate::support::{at, Exit};
@@ -291,7 +291,7 @@ pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
             let pages = PAGES.iter().filter(|p| p.group == group).map(|p| Link {
                 label: html! { (p.label) },
                 href: format!("{up}{}/", p.dir),
-                current: current == Some(p.dir),
+                current: Mark::page_if(current == Some(p.dir)),
                 file: false,
             });
             let links = LINKS
@@ -300,7 +300,7 @@ pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
                 .map(|(_, label, href, file)| Link {
                     label: html! { (label) },
                     href: format!("{up}{href}"),
-                    current: false,
+                    current: None,
                     file: *file,
                 });
             MapGroup {
@@ -572,10 +572,38 @@ mod tests {
                     other.dir
                 );
             }
-            // Each group's pages are together, the groups in their order.
-            let groups: Vec<Group> = PAGES.iter().map(|p| p.group).collect();
-            let order = |g: &Group| Group::ALL.iter().position(|a| a == g).unwrap();
-            assert!(groups.windows(2).all(|w| order(&w[0]) <= order(&w[1])));
+            // The map's groups in their order, each page under its own.
+            let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
+            let map = map.split(r#"<div class="map-foot">"#).next().unwrap();
+            let groups: Vec<(&str, &str)> = map
+                .split(r#"<div class="map-group">"#)
+                .skip(1)
+                .map(|group| {
+                    let heading = group.split("</svg>").nth(1).unwrap();
+                    (heading.split("</p>").next().unwrap(), group)
+                })
+                .collect();
+            let titles: Vec<&str> = groups.iter().map(|(title, _)| *title).collect();
+            let expected: Vec<&str> = Group::ALL
+                .iter()
+                .filter(|g| {
+                    PAGES.iter().any(|p| p.group == **g) || LINKS.iter().any(|l| l.0 == **g)
+                })
+                .map(|g| g.title())
+                .collect();
+            assert_eq!(titles, expected, "{}", page.dir);
+            for other in &PAGES {
+                let (_, group) = groups
+                    .iter()
+                    .find(|(t, _)| *t == other.group.title())
+                    .unwrap();
+                assert!(
+                    group.contains(&format!(r#"href="../{}/""#, other.dir)),
+                    "{}: {}",
+                    page.dir,
+                    other.dir
+                );
+            }
             // Previous and Next.
             let pager = html
                 .split(r#"<nav class="pager""#)

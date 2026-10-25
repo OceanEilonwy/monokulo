@@ -130,12 +130,12 @@ fn bar(current: Section, root: &str, github_url: &str, lead: Option<Markup>) -> 
         (ui::NavMenu::new("Resources", resources(root, github_url).to_vec()))
     };
     let actions = html! {
-        button.site-search type="button" aria-haspopup="dialog" aria-keyshortcuts="/ Control+K" hidden {
+        button.site-nav-search type="button" aria-haspopup="dialog" aria-keyshortcuts="/ Control+K" hidden {
             (PreEscaped(icons::SEARCH))
             span { "Search docs and API" }
             kbd { "/" }
         }
-        a.site-github href=(github_url) aria-label="Monokulo on GitHub" {
+        a.site-nav-out href=(github_url) aria-label="Monokulo on GitHub" {
             (PreEscaped(GITHUB_MARK)) span { "GitHub" }
         }
         @if current == Section::Home {
@@ -193,8 +193,8 @@ mod tests {
             }
             let get_started = html.contains("Get started");
             assert_eq!(get_started, section == Section::Home, "{section:?}");
-            assert!(html.contains(r#"class="site-search""#), "{section:?}");
-            let search = html.split(r#"class="site-search""#).nth(1).unwrap();
+            assert!(html.contains(r#"class="site-nav-search""#), "{section:?}");
+            let search = html.split(r#"class="site-nav-search""#).nth(1).unwrap();
             assert!(
                 search.split('>').next().unwrap().contains("hidden"),
                 "{section:?}"

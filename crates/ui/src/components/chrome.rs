@@ -50,10 +50,10 @@ component! {
                 @if let Some(lead) = lead { (lead) }
                 a href=(home) class="site-nav-brand" { (brand) }
                 @if let Some(status) = status { (status) }
-                @if let Some(actions) = actions { div class="site-nav-actions" { (actions) } }
                 input type="checkbox" id=(toggle_id) class="nav-toggle-checkbox";
                 label for=(toggle_id) class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" { (links) }
+                @if let Some(actions) = actions { div class="site-nav-actions" { (actions) } }
             }
         }
     }

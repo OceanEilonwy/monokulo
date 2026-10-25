@@ -16,7 +16,7 @@
   const parts = (script.dataset.search || "").split(" ").filter(Boolean);
 
   /* ---------- search ---------- */
-  const buttons = [...document.querySelectorAll(".site-search")];
+  const buttons = [...document.querySelectorAll(".site-nav-search")];
   let dialog, input, list, entries, hits = [], selected = 0;
 
   const load = () => entries ??= Promise.all(parts.map(part =>
@@ -91,6 +91,7 @@
     hits = find(all, query).slice(0, 20);
     list.replaceChildren(...hits.map((hit, i) => {
       const li = document.createElement("li");
+      li.setAttribute("role", "none");
       const a = document.createElement("a");
       a.href = new URL(hit.href, root);
       a.dataset.i = i;
@@ -120,6 +121,7 @@
     if (!hits.length) {
       const li = document.createElement("li");
       li.className = "search-none";
+      li.setAttribute("role", "none");
       li.textContent = all.length ? `Nothing matches “${query}”.` : "Search isn't available here.";
       list.append(li);
     }
@@ -159,7 +161,7 @@
     }
     document.addEventListener("keydown", e => {
       const typing = e.target.closest?.("input, textarea, select, [contenteditable]");
-      if ((e.key === "/" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) || (e.key.toLowerCase() === "k" && (e.ctrlKey || e.metaKey))) {
+      if ((e.key === "/" && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) || ((e.key || "").toLowerCase() === "k" && (e.ctrlKey || e.metaKey))) {
         e.preventDefault();
         open();
       }
@@ -173,6 +175,8 @@
     document.addEventListener("keydown", e => {
       if (e.key === "Escape" && toggle.checked) { toggle.checked = false; toggle.focus(); }
     });
+    // Enter opens the menu too, as it would a button.
+    toggle.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); toggle.click(); } });
     map.addEventListener("click", e => { if (e.target.closest("a")) toggle.checked = false; });
     // The current page in sight in a long map.
     const current = map.querySelector('ul a[aria-current="page"]');

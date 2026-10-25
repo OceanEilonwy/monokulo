@@ -237,7 +237,7 @@ fn map(reference: &Value, up: &str, here: Here) -> Vec<shell::Group> {
     let link = |label: Markup, href: String, current: bool| shell::Link {
         label,
         href,
-        current,
+        current: shell::Mark::page_if(current),
         file: false,
     };
     let rel = |resource: &Value| {
@@ -283,11 +283,16 @@ fn map(reference: &Value, up: &str, here: Here) -> Vec<shell::Group> {
         shell::Group {
             title: "Errors".to_owned(),
             icon: icon::ALERT,
-            links: vec![link(
-                html! { "Problems" },
-                format!("{up}api/reference/#problems"),
-                here == Here::Problem,
-            )],
+            // Not a problem's page, but the table that lists them: where
+            // a problem's page is.
+            links: vec![shell::Link {
+                current: (here == Here::Problem).then_some(shell::Mark::Location),
+                ..link(
+                    html! { "Problems" },
+                    format!("{up}api/reference/#problems"),
+                    false,
+                )
+            }],
         },
     ]
 }
@@ -886,25 +891,30 @@ mod tests {
             .chain(list(&reference, "rels"))
             .map(|r| text(r, "rel"))
             .collect();
-        let current = regex::Regex::new(r#"<a href="([^"]+)" aria-current="page""#).unwrap();
+        let current =
+            regex::Regex::new(r#"<a href="([^"]+)" aria-current="(page|location)""#).unwrap();
         let h2 = regex::Regex::new(r"<h2[ >]").unwrap();
         let mut pages = vec![(
             "api/reference/index.html".to_owned(),
             "../../api/reference/".to_owned(),
+            "page",
         )];
         for rel in &rels {
             pages.push((
                 format!("rels/{rel}/index.html"),
                 format!("../../rels/{rel}/"),
+                "page",
             ));
         }
         for problem in list(&reference, "problems") {
             pages.push((
                 format!("problems/{}/index.html", text(problem, "slug")),
                 "../../api/reference/#problems".to_owned(),
+                // The table that lists it, not the page itself.
+                "location",
             ));
         }
-        for (file, marked) in pages {
+        for (file, marked, how) in pages {
             let html = fs::read_to_string(site.join(&file)).unwrap();
             let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
             let map = map.split(r#"<div class="map-foot">"#).next().unwrap();
@@ -914,11 +924,11 @@ mod tests {
                     "{file}: {rel}"
                 );
             }
-            let marks: Vec<&str> = current
+            let marks: Vec<(&str, &str)> = current
                 .captures_iter(map.split_once(r#"<div class="map-group">"#).unwrap().1)
-                .map(|c| c.get(1).unwrap().as_str())
+                .map(|c| (c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str()))
                 .collect();
-            assert_eq!(marks, [marked.as_str()], "{file}");
+            assert_eq!(marks, [(marked.as_str(), how)], "{file}");
             // No breadcrumbs: the map says where the page is.
             assert!(!html.contains(" › "), "{file}");
             let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();

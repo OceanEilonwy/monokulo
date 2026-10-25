@@ -80,13 +80,6 @@ export function SiteNav(props: SiteNavProps): JSX.Element {
         ) : (
           null
         )}
-        {props.actions != null ? (
-          <div class="site-nav-actions">
-            {props.actions}
-          </div>
-        ) : (
-          null
-        )}
         <input type="checkbox" id={(props.toggle_id ?? "nav-toggle")} class="nav-toggle-checkbox" />
         <label for={(props.toggle_id ?? "nav-toggle")} class="nav-toggle-label" aria-label="Menu">
           ☰
@@ -94,6 +87,13 @@ export function SiteNav(props: SiteNavProps): JSX.Element {
         <div class="site-nav-links">
           {props.links}
         </div>
+        {props.actions != null ? (
+          <div class="site-nav-actions">
+            {props.actions}
+          </div>
+        ) : (
+          null
+        )}
       </div>
     </nav>
   );
