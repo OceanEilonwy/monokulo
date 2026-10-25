@@ -674,7 +674,9 @@ impl EngineClient {
 
     /// `POST /api/v1/admin/wallets/{id}/retire` — no store can use it again
     /// and its keys are deleted. The engine refuses (`409`) while a store
-    /// uses it or an order on it can still be paid. When, as unix seconds.
+    /// uses it, an order on it can still be paid, or a row scanning it is
+    /// behind the chain; `404` for an unknown or already retired one. When,
+    /// as unix seconds.
     pub async fn retire_wallet(&self, id: &EngineWalletId) -> Result<i64, EngineClientError> {
         #[derive(Deserialize)]
         struct Retired {
@@ -1264,6 +1266,8 @@ pub struct WalletStatus {
     pub stores: u64,
     pub payable_orders: u64,
     pub payable_until: Option<i64>,
+    /// Rows scanning it still behind the chain.
+    pub scans_behind: u64,
 }
 
 /// Mirrors the engine's `WalletView`.

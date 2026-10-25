@@ -839,6 +839,9 @@ pub enum RetireState {
         orders: u64,
         /// Until about when, in the viewer's time zone.
         until: Option<String>,
+        /// A row scanning it is still behind the chain, so an order on it
+        /// may have a payment in a block not yet read.
+        catching_up: bool,
     },
     /// The engine couldn't say.
     Unknown,
@@ -846,16 +849,19 @@ pub enum RetireState {
 }
 
 impl RetireState {
-    /// Every condition is ticked.
-    pub fn ready(&self) -> bool {
-        matches!(
-            self,
-            RetireState::Checked {
-                stores: 0,
-                orders: 0,
-                ..
-            }
-        )
+    /// Every condition is ticked, with no store of the viewer's still on
+    /// it (`stores`, the wallet page's list).
+    pub fn ready(&self, stores: &[WalletStore]) -> bool {
+        stores.is_empty()
+            && matches!(
+                self,
+                RetireState::Checked {
+                    stores: 0,
+                    orders: 0,
+                    catching_up: false,
+                    ..
+                }
+            )
     }
 }
 
@@ -1201,33 +1207,47 @@ fn retire_content(
             stores: in_use,
             orders,
             until,
-        } => vec![
-            check(
-                *in_use == 0,
-                "No store takes payments into it",
-                html! {
-                    @if stores.is_empty() {
-                        (if *in_use == 1 { "A store does".to_owned() } else { format!("{in_use} stores do") })
-                    }
-                    @for store in stores {
-                        span class="fix-line" {
-                            (store.name) " does · "
-                            a href=(change_wallet_link(&store.id)) { "change its wallet" }
+            catching_up,
+        } => {
+            // The engine counts stores of every account; the viewer's own
+            // are named, each with its fix, and the rest counted after them.
+            let count = (*in_use).max(stores.len() as u64);
+            let others = count - stores.len() as u64;
+            vec![
+                check(
+                    count == 0,
+                    "No store takes payments into it",
+                    html! {
+                        (if count == 1 { "1 store does".to_owned() } else { format!("{count} stores do") })
+                        @for store in stores {
+                            span class="fix-line" {
+                                (store.name) " does · "
+                                a href=(change_wallet_link(&store.id)) { "change its wallet" }
+                            }
                         }
-                    }
-                },
-            ),
-            check(
-                *orders == 0,
-                "No order on it can still be paid",
-                html! {
-                    @match until {
-                        Some(until) => { "until about " (until) }
-                        None => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
-                    }
-                },
-            ),
-        ],
+                        @if others > 0 && !stores.is_empty() {
+                            span class="fix-line" {
+                                (if others == 1 { "and 1 store of another account".to_owned() } else { format!("and {others} stores of other accounts") })
+                            }
+                        }
+                    },
+                ),
+                check(
+                    *orders == 0 && !catching_up,
+                    "No order on it can still be paid",
+                    html! {
+                        @match until {
+                            Some(until) => { "until about " (until) }
+                            None if *orders > 0 => { (if *orders == 1 { "1 order can".to_owned() } else { format!("{orders} orders can") }) }
+                            None => {
+                                "Monokulo is still reading recent blocks · "
+                                a href=(action) { "check again" }
+                            }
+                        }
+                    },
+                ),
+            ]
+        }
         RetireState::Unknown => vec![check(
             false,
             "Monokulo can't check right now",
@@ -1241,7 +1261,7 @@ fn retire_content(
         p { "Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app." }
         @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
         (ui::Checks::new(checks))
-        @if state.ready() {
+        @if state.ready(stores) {
             form method="post" action=(action) {
                 div class="setting-field" {
                     div class="setting-label-row" {
@@ -1567,6 +1587,7 @@ mod tests {
                 stores: 0,
                 orders: 2,
                 until: Some("9 Oct, 14:00".to_owned()),
+                catching_up: false,
             },
             &[],
         );
@@ -1578,6 +1599,7 @@ mod tests {
                 stores: 0,
                 orders: 1,
                 until: None,
+                catching_up: false,
             },
             &[],
         );
@@ -1593,12 +1615,13 @@ mod tests {
                     stores: 1,
                     orders: 0,
                     until: None,
+                    catching_up: false,
                 },
                 &[store("s1", "Bakery", None, None)],
             );
             assert!(html.starts_with("<h2 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>"), "{html}");
             assert!(html.contains("<p>Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app.</p>"), "{html}");
-            assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix"><span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
+            assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix">1 store does<span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
             assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No order on it can still be paid</span></li>"#), "{html}");
             assert!(
                 html.contains("Retire becomes available when both are ticked."),
@@ -1615,6 +1638,7 @@ mod tests {
                     stores: 2,
                     orders: 0,
                     until: None,
+                    catching_up: false,
                 },
                 &[],
             );
@@ -1622,6 +1646,32 @@ mod tests {
                 html.contains(r#"<span class="fix">2 stores do</span>"#),
                 "{html}"
             );
+            // Others besides the viewer's own: still counted.
+            let html = retire(
+                RetireState::Checked {
+                    stores: 3,
+                    orders: 0,
+                    until: None,
+                    catching_up: false,
+                },
+                &[store("s1", "Bakery", None, None)],
+            );
+            assert!(html.contains(r#"<span class="fix">3 stores do<span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span><span class="fix-line">and 2 stores of other accounts</span></span>"#), "{html}");
+        }
+
+        // Retire waits while the engine is still reading blocks for it.
+        {
+            let html = retire(
+                RetireState::Checked {
+                    stores: 0,
+                    orders: 0,
+                    until: None,
+                    catching_up: true,
+                },
+                &[],
+            );
+            assert!(html.contains(r#"No order on it can still be paid<span class="fix">Monokulo is still reading recent blocks · <a href="/account/wallets/w_Shop takings/retire">check again</a></span>"#), "{html}");
+            assert!(html.contains(DISABLED), "{html}");
         }
 
         // Retire is ready once both are ticked and asks for the name.
@@ -1631,6 +1681,7 @@ mod tests {
                     stores: 0,
                     orders: 0,
                     until: None,
+                    catching_up: false,
                 },
                 &[],
             );
@@ -1666,6 +1717,7 @@ mod tests {
             stores: 0,
             orders: 0,
             until: None,
+            catching_up: false,
         };
         let page = retire_page(&chrome, &w, &state, &[], Some("Type it exactly.")).into_string();
         assert!(
