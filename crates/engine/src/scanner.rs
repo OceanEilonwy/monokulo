@@ -1352,9 +1352,11 @@ pub async fn register_missing_wallets_reporting(
         }
         // The row read again under its lock: a wallet change, key move or
         // deletion since the list is seen, and none lands before the
-        // handle is in the map.
-        let Ok(_using) = tokio::time::timeout_at(pass_end, wallet_handles.using(&listed.id)).await
-        else {
+        // handle is in the map. A row whose lock is held exclusively is
+        // being changed by whoever holds it, which registers its keys: it
+        // is left to the next pass rather than waited for, so a wallet
+        // change never holds up the round for every store on the network.
+        let Some(_using) = wallet_handles.try_using(&listed.id) else {
             failed += 1;
             continue;
         };
@@ -1462,7 +1464,10 @@ async fn forget_disabled_rows(
         .cloned()
         .collect();
     for id in unlisted {
-        let _changing = wallet_handles.changing(&id).await;
+        // A row in use is looked at again on the next pass.
+        let Some(_changing) = wallet_handles.try_changing(&id) else {
+            continue;
+        };
         let lookup = id.clone();
         let row = db
             .run(crate::store::db::Class::Scanner, move |s| {

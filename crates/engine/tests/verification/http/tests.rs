@@ -646,14 +646,30 @@ async fn a_deleted_stores_keys_are_not_registered_again_by_a_request_in_flight()
         .header("authorization", format!("Bearer {}", created.secret_token))
         .body(Body::empty())
         .unwrap();
+    // Driven as far as it goes: it authenticates, then waits for the
+    // registration's hold on the row, so the row is still enabled.
     let mut delete = Box::pin(router.oneshot(delete));
-    let first = std::future::poll_fn(|cx| {
-        std::task::Poll::Ready(std::future::Future::poll(delete.as_mut(), cx))
-    })
-    .await;
+    for _ in 0..8 {
+        let polled = std::future::poll_fn(|cx| {
+            std::task::Poll::Ready(std::future::Future::poll(delete.as_mut(), cx))
+        })
+        .await;
+        assert!(
+            polled.is_pending(),
+            "the deletion waits for the registration"
+        );
+        tokio::task::yield_now().await;
+    }
     assert!(
-        first.is_pending(),
-        "the deletion waits for the registration"
+        state
+            .db
+            .lock()
+            .get_tenant_by_id(&tenant.id)
+            .unwrap()
+            .unwrap()
+            .disabled_at
+            .is_none(),
+        "not deleted while its keys were being registered"
     );
     custody
         .registration_mode

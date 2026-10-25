@@ -184,6 +184,20 @@ impl WalletHandles {
         self.row(id).read_owned().await
     }
 
+    /// [`WalletHandles::using`], unless someone holds the row's lock
+    /// exclusively right now: for work that can leave the row to its next
+    /// pass rather than wait (the scanner, which would hold up every store
+    /// on its network).
+    pub fn try_using(&self, id: &TenantId) -> Option<tokio::sync::OwnedRwLockReadGuard<()>> {
+        self.row(id).try_read_owned().ok()
+    }
+
+    /// [`WalletHandles::changing`], unless the row's lock is held at all
+    /// right now.
+    pub fn try_changing(&self, id: &TenantId) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        self.row(id).try_write_owned().ok()
+    }
+
     /// The row's lock, exclusive: for changing its wallet or keys, or
     /// deleting it.
     pub async fn changing(&self, id: &TenantId) -> tokio::sync::OwnedRwLockWriteGuard<()> {
