@@ -10,22 +10,25 @@ import type { OrderState, ProgressStep } from './types';
  * Where something is in a short, fixed sequence (a payment: Send,
  * Confirm, Paid), with a line saying what that means and what to do:
  * the same place and shape in every state, so nothing moves as it
- * changes. The colours follow `state`; the words say it all.
+ * changes. The colours follow `state`; the words say it all. Stood
+ * upright (`vertical`), each step can say more under its name and
+ * carry its own state and symbol: an order's life, start to finish.
  */
-export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-size" | "label" | "message" | "state" | "steps" | "style" | "title"> {
+export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "class" | "classList" | "compact" | "data-size" | "label" | "message" | "state" | "steps" | "style" | "title" | "vertical"> {
   /**
    * What the steps are of ("Payment progress").
    */
   label: string;
   steps: readonly ProgressStep[];
   /**
-   * The headline of the line under the steps ("Waiting for payment").
+   * The headline of the line under the steps ("Waiting for payment");
+   * without one, there's no line.
    */
-  title: string;
+  title?: string;
   /**
    * The rest of the line.
    */
-  message: JSX.Element;
+  message?: JSX.Element;
   /**
    * The colours: an order's state.
    */
@@ -35,35 +38,51 @@ export interface ProgressStepsProps extends Omit<JSX.IntrinsicElements["div"], "
    * @default false
    */
   compact?: boolean;
+  /**
+   * Top to bottom, each step's name beside its dot, rather than
+   * across.
+   * @default false
+   */
+  vertical?: boolean;
 }
 
 /**
  * Where something is in a short, fixed sequence (a payment: Send,
  * Confirm, Paid), with a line saying what that means and what to do:
  * the same place and shape in every state, so nothing moves as it
- * changes. The colours follow `state`; the words say it all.
+ * changes. The colours follow `state`; the words say it all. Stood
+ * upright (`vertical`), each step can say more under its name and
+ * carry its own state and symbol: an order's life, start to finish.
  */
 export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
-  const rest = omit(props, "label", "steps", "title", "message", "state", "compact");
+  const rest = omit(props, "label", "steps", "title", "message", "state", "compact", "vertical");
   return (
     <div class={tokens(`mk-stage`, props.state != null && `state-${props.state}`)} data-size={(props.compact ?? false) ? `compact` : undefined} {...rest}>
-      <ol class="mk-track" aria-label={props.label}>
+      <ol class="mk-track" data-orientation={(props.vertical ?? false) ? `vertical` : undefined} aria-label={props.label}>
         <For each={props.steps}>
           {(step) => (
-            <li class={`step-${step.progress}`}>
+            <li class={tokens(`step-${step.progress}`, step.state != null && `state-${step.state}`)}>
               <span class="mk-track-dot" aria-hidden="true">
-                {step.progress === "done" ? (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="m4.5 12.5 5 5 10-11"></path>
-                  </svg>
+                {step.icon != null ? (
+                  <>
+                    {step.icon}
+                  </>
                 ) : (
                   <>
-                    {step.progress === "fail" ? (
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
-                        <path d="M7 7l10 10M17 7 7 17"></path>
+                    {step.progress === "done" ? (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m4.5 12.5 5 5 10-11"></path>
                       </svg>
                     ) : (
-                      null
+                      <>
+                        {step.progress === "fail" ? (
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+                            <path d="M7 7l10 10M17 7 7 17"></path>
+                          </svg>
+                        ) : (
+                          null
+                        )}
+                      </>
                     )}
                   </>
                 )}
@@ -103,19 +122,42 @@ export function ProgressSteps(props: ProgressStepsProps): JSX.Element {
                     )}
                   </>
                 )}
+                {(props.vertical ?? false) ? (
+                  <>
+                    {step.detail != null ? (
+                      <small>
+                        {step.detail}
+                      </small>
+                    ) : (
+                      null
+                    )}
+                  </>
+                ) : (
+                  null
+                )}
               </span>
             </li>
           )}
         </For>
       </ol>
-      <p class="mk-stage-msg" role="status">
-        <strong>
-          {props.title}
-          .
-        </strong>
-        {" "}
-        {props.message}
-      </p>
+      {props.title != null ? (
+        <p class="mk-stage-msg" role="status">
+          <strong>
+            {props.title}
+            .
+          </strong>
+          {props.message != null ? (
+            <>
+              {" "}
+              {props.message}
+            </>
+          ) : (
+            null
+          )}
+        </p>
+      ) : (
+        null
+      )}
     </div>
   );
 }

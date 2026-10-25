@@ -9,7 +9,9 @@
 //!   from a few known-public names) is replaced by [`REDACTED`].
 //! - A field whose name says it holds a client's IP address keeps only its
 //!   network: the last octet of an IPv4 address and all but the first 48
-//!   bits of an IPv6 address are zeroed, and the port is dropped.
+//!   bits of an IPv6 address are zeroed, and the port is dropped. An
+//!   IPv6 address that carries an IPv4 one (mapped, 6to4, NAT64, Teredo)
+//!   is logged as that IPv4 address.
 //!   Loopback and private addresses are kept whole; they identify nobody.
 //! - In every string, including the message itself, a Monero address is
 //!   shortened to its first 6 and last 4 characters (enough to tell two
@@ -110,13 +112,46 @@ fn anonymize_ip(ip: IpAddr) -> IpAddr {
             IpAddr::V4(Ipv4Addr::new(a, b, c, 0))
         }
         IpAddr::V6(v6) if v6.is_loopback() || v6.is_unspecified() => ip,
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+        IpAddr::V6(v6) => match embedded_ipv4(v6) {
             Some(v4) => anonymize_ip(IpAddr::V4(v4)),
             None => {
                 let s = v6.segments();
                 IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0))
             }
         },
+    }
+}
+
+/// The IPv4 address an IPv6 address carries, if it carries one: the
+/// IPv4-mapped (`::ffff:0:0/96`) and the deprecated IPv4-compatible
+/// (`::/96`) forms, NAT64 (`64:ff9b::/96`, RFC 6052, and the local-use
+/// `64:ff9b:1::/48` of RFC 8215), 6to4 (`2002::/16`, the IPv4 address in
+/// bits 16-47) and Teredo (`2001::/32`, the client's IPv4 address in the
+/// last 32 bits, inverted). `::` and `::1` come out as 0.0.0.0 and
+/// 0.0.0.1.
+///
+/// The log redactor anonymizes the IPv4 address in place of the IPv6 one,
+/// and the webhook guard judges a destination by it, so neither lets an
+/// IPv4 address through dressed as an IPv6 one.
+pub fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4() {
+        return Some(v4);
+    }
+    let segments = v6.segments();
+    let octets = v6.octets();
+    let last_four = |invert: bool| {
+        let mut bytes = [octets[12], octets[13], octets[14], octets[15]];
+        if invert {
+            bytes = bytes.map(|b| !b);
+        }
+        Ipv4Addr::from(bytes)
+    };
+    match segments {
+        [0x0064, 0xff9b, 0, 0, 0, 0, _, _] => Some(last_four(false)),
+        [0x0064, 0xff9b, 0x0001, ..] => Some(last_four(false)),
+        [0x2002, ..] => Some(Ipv4Addr::from([octets[2], octets[3], octets[4], octets[5]])),
+        [0x2001, 0x0000, ..] => Some(last_four(true)),
+        _ => None,
     }
 }
 
@@ -277,6 +312,20 @@ mod tests {
         );
         assert_eq!(
             field("client.address", "::ffff:203.0.113.77"),
+            "203.0.113.0"
+        );
+        // IPv6 forms that carry the client's IPv4 address: 6to4 has it in
+        // bits 16-47, which the IPv6 rule would keep, so each comes out as
+        // that IPv4 address with its last octet zeroed.
+        assert_eq!(
+            field("client.address", "[2002:cb00:714d:1::5]:443"),
+            "203.0.113.0"
+        );
+        assert_eq!(field("client.address", "::203.0.113.77"), "203.0.113.0");
+        assert_eq!(field("client.address", "64:ff9b::cb00:714d"), "203.0.113.0");
+        // Teredo: the server's address, then the client's inverted.
+        assert_eq!(
+            field("client.address", "2001:0:c633:6401::34ff:8eb2"),
             "203.0.113.0"
         );
         assert_eq!(field("client.address", "127.0.0.1:9000"), "127.0.0.1");

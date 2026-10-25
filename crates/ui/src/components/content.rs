@@ -332,6 +332,152 @@ pub(super) fn tag_examples() -> Vec<(&'static str, Tag)> {
 }
 
 component! {
+    /// An order's state as the POS draws it, in a square box the caller's
+    /// CSS sizes: a spinner while it waits, an empty disc once a payment is
+    /// seen, the disc filling in a wedge as it confirms, a coin when paid
+    /// (part of one, or two), and a symbol for an order that stopped. The
+    /// coins and symbols are `<use>`s of `assets::STATUS_SYMBOLS`, which a
+    /// page includes once; `assets::STATUS_CSS` draws them in the state's
+    /// ink. It carries its state's colours itself (`state-*`), so it needs
+    /// nothing around it. A picture of what the words near it say, so
+    /// screen readers skip it.
+    pub struct StatusIcon {
+        state: OrderState,
+        /// How far a confirming order is, in percent: the wedge.
+        progress: Option<u32>,
+    }
+    html {
+        span class={ "pos-icon pos-icon-" (state) " state-" (state) } aria-hidden="true" {
+            @if state == OrderState::Pending { span class="pos-spinner" {} }
+            @else if state == OrderState::Unconfirmed { span class="pos-disc" {} }
+            @else if state == OrderState::Confirming {
+                @if let Some(progress) = progress { span class="pos-disc" style={ "--progress: " (progress) "%;" } {} }
+                @else { span class="pos-disc" {} }
+            }
+            @else if state == OrderState::Partial { svg viewBox="0 0 32 32" { use href="#pos-coin-partial" {} } }
+            @else if state == OrderState::Paid { svg viewBox="0 0 32 32" { use href="#pos-coin" {} } }
+            @else if state == OrderState::Overpaid { svg viewBox="0 0 44 32" { use href="#pos-coins-overpaid" {} } }
+            @else if state == OrderState::Expired { svg viewBox="0 0 24 24" { use href="#pos-expired" {} } }
+            @else if state == OrderState::DoubleSpend { svg viewBox="0 0 24 24" { use href="#pos-double-spend" {} } }
+            @else if state == OrderState::Offline { svg viewBox="0 0 24 24" { use href="#pos-offline" {} } }
+            @else if state == OrderState::Cancelled { svg viewBox="0 0 24 24" { use href="#pos-cancelled" {} } }
+        }
+    }
+}
+
+pub(super) fn status_icon_examples() -> Vec<(&'static str, StatusIcon)> {
+    vec![
+        ("Awaiting payment", StatusIcon::new(OrderState::Pending)),
+        ("Unconfirmed", StatusIcon::new(OrderState::Unconfirmed)),
+        (
+            "Confirming, 3 of 5",
+            StatusIcon::new(OrderState::Confirming).progress(60u32),
+        ),
+        ("Partially paid", StatusIcon::new(OrderState::Partial)),
+        ("Paid", StatusIcon::new(OrderState::Paid)),
+        ("Overpaid", StatusIcon::new(OrderState::Overpaid)),
+        ("Expired", StatusIcon::new(OrderState::Expired)),
+        ("Double spend", StatusIcon::new(OrderState::DoubleSpend)),
+        ("Connection lost", StatusIcon::new(OrderState::Offline)),
+        ("Cancelled", StatusIcon::new(OrderState::Cancelled)),
+    ]
+}
+
+/// An HTTP request's method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum HttpMethod {
+    Get,
+    Post,
+    Delete,
+}
+
+component! {
+    /// A request's method, beside a route's path in the API reference: GET
+    /// in a neutral tint, POST in the brand's, DELETE in the error's, so a
+    /// route that changes or removes something stands out from one that
+    /// reads.
+    pub struct HttpMethodTag {
+        method: HttpMethod,
+        rest: Attrs,
+    }
+    html {
+        span class="mk-http-method" data-method=(method) ..rest {
+            @if method == HttpMethod::Get { "GET" }
+            @else if method == HttpMethod::Post { "POST" }
+            @else { "DELETE" }
+        }
+    }
+}
+
+pub(super) fn http_method_tag_examples() -> Vec<(&'static str, HttpMethodTag)> {
+    vec![
+        ("Reads", HttpMethodTag::new(HttpMethod::Get)),
+        ("Makes or changes", HttpMethodTag::new(HttpMethod::Post)),
+        ("Removes", HttpMethodTag::new(HttpMethod::Delete)),
+    ]
+}
+
+/// What kind of answer an HTTP status code is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
+pub enum HttpOutcome {
+    /// 2xx and 3xx: it worked, or here's where.
+    Ok,
+    /// 4xx: the request was wrong.
+    ClientError,
+    /// 5xx: the server failed.
+    ServerError,
+    /// Anything else (1xx, or an API description's "default").
+    Other,
+}
+
+impl HttpOutcome {
+    /// The kind of `code` ("404"), by its first digit.
+    pub fn of(code: &str) -> HttpOutcome {
+        match code.as_bytes().first() {
+            Some(b'2' | b'3') => HttpOutcome::Ok,
+            Some(b'4') => HttpOutcome::ClientError,
+            Some(b'5') => HttpOutcome::ServerError,
+            _ => HttpOutcome::Other,
+        }
+    }
+}
+
+component! {
+    /// A response's status code, in the API reference: success in the
+    /// success tint, a client's error in the warning's, a server's in the
+    /// error's. [`HttpStatusTag::of`] works the kind out from the code.
+    pub struct HttpStatusTag {
+        /// The code as the API names it ("200", "4xx").
+        code: String,
+        outcome: HttpOutcome,
+        rest: Attrs,
+    }
+    html {
+        span class="mk-http-status" data-outcome=(outcome) ..rest { (code) }
+    }
+}
+
+impl HttpStatusTag {
+    /// The tag for `code`, its kind by its first digit.
+    pub fn of(code: impl Into<String>) -> HttpStatusTag {
+        let code = code.into();
+        let outcome = HttpOutcome::of(&code);
+        HttpStatusTag::new(code, outcome)
+    }
+}
+
+pub(super) fn http_status_tag_examples() -> Vec<(&'static str, HttpStatusTag)> {
+    vec![
+        ("Success", HttpStatusTag::of("200")),
+        ("A redirect", HttpStatusTag::of("303")),
+        ("The client's error", HttpStatusTag::of("404")),
+        ("Client errors", HttpStatusTag::of("4xx")),
+        ("The server's error", HttpStatusTag::of("503")),
+        ("Anything else", HttpStatusTag::of("default")),
+    ]
+}
+
+component! {
     /// A Monero network, the same wherever a network is shown: the word
     /// always, with an icon and an edge to back it up. Mainnet (real money)
     /// has the brand's orange tint, a coin and a solid edge; a test network
