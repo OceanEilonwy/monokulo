@@ -446,13 +446,6 @@ fn see_other(location: &str) -> Response {
     if let Ok(value) = HeaderValue::from_str(location) {
         response.headers_mut().insert(header::LOCATION, value);
     }
-    no_store(response)
-}
-
-fn no_store(mut response: Response) -> Response {
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
 }
 
@@ -483,13 +476,12 @@ fn challenge_page(
     };
     let chrome = views::PageChrome::from_user(None, request.uri().path());
     // 429: this is not the page that was asked for (yet).
-    no_store(
-        (
-            StatusCode::TOO_MANY_REQUESTS,
-            views::challenge::challenge_page(&chrome, &view),
-        )
-            .into_response(),
+    // Never kept: both routers' no-store default covers it.
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        views::challenge::challenge_page(&chrome, &view),
     )
+        .into_response()
 }
 
 fn challenge_json(
@@ -518,7 +510,7 @@ fn challenge_json(
     if let Ok(value) = HeaderValue::from_str(&header_value) {
         problem = problem.header(header::HeaderName::from_static(CHALLENGE_HEADER), value);
     }
-    no_store(problem.into_response())
+    problem.into_response()
 }
 
 fn blocked(state: &AppState, class: RouteClass, retry_after_secs: u64) -> Response {
@@ -543,7 +535,7 @@ fn blocked(state: &AppState, class: RouteClass, retry_after_secs: u64) -> Respon
     response
         .headers_mut()
         .insert(header::RETRY_AFTER, HeaderValue::from(retry_after_secs));
-    no_store(response)
+    response
 }
 
 #[cfg(test)]
