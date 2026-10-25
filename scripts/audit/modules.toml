@@ -1,0 +1,397 @@
+# The audit's modules: features of the app, each a set of files across
+# crates. `audit.py modules` gives every Rust file the first module whose
+# `files` globs match it (fnmatch, so `*` crosses directories), and refuses
+# to go on while any file matches none. `context` globs add files a
+# reviewer should read alongside, without reviewing them there.
+#
+# priority: 1 = money, keys, privacy or the scanner (reviewed first),
+# 2 = the app's other features, 3 = tooling and test support.
+
+[[module]]
+name = "engine-scanner"
+priority = 1
+description = "The engine's scanner: finding payments in blocks and the mempool, chain reorgs, settlement, scheduling and tuning of scan work."
+focus = "Missed or double-counted payments, reorg handling, confirmation counting, overflow in piconero sums, races between mempool and block work, lock ordering, ScanTuning validation."
+files = [
+    "crates/engine/src/scanner.rs",
+    "crates/engine/src/scanner_status.rs",
+    "crates/engine/src/work/*",
+    "crates/engine/src/store/work.rs",
+    "crates/engine/src/threads.rs",
+    "crates/engine/src/scaling.rs",
+    "crates/engine/tests/verification/work/*",
+    "crates/engine/tests/verification/scanner/*",
+    "crates/engine/tests/verification/store/work_*",
+    "crates/engine/tests/verification/lifecycle/*",
+    "crates/engine/tests/verification/inputs/*",
+    "crates/engine/tests/verification/resources/*",
+]
+context = ["crates/shared/src/xmr_amount.rs", "crates/shared/src/monero_tx.rs", "crates/shared/src/order_status.rs"]
+
+[[module]]
+name = "engine-daemon"
+priority = 1
+description = "How the engine talks to monerod: JSON-RPC, fallback between nodes, ZMQ/ZMTP notifications, proof-of-work checks."
+focus = "Trusting node responses (malicious or lagging node), timeouts, fallback switching, parsing of untrusted input, ZMTP framing, PoW verification correctness."
+files = [
+    "crates/engine/src/daemon.rs",
+    "crates/engine/src/daemon_rpc.rs",
+    "crates/engine/src/daemon_fallback.rs",
+    "crates/engine/src/node_events.rs",
+    "crates/engine/src/zmtp.rs",
+    "crates/engine/src/pow/*",
+    "crates/engine/src/network.rs",
+    "crates/engine/tests/daemon_rpc_replay.rs",
+    "crates/engine/tests/verification/daemon/*",
+    "crates/engine/tests/verification/notifications/*",
+]
+
+[[module]]
+name = "engine-store"
+priority = 1
+description = "The engine's SQLite store: orders, order events, the dispatch queue, conflicts, migrations, backup and restore."
+focus = "Transactions that should be atomic but aren't, migration safety on a live production DB, query correctness, status transitions, integer types for amounts and heights."
+files = [
+    "crates/engine/src/store/*",
+    "crates/engine/tests/backup_restore.rs",
+    "crates/engine/tests/verification/store/*",
+]
+context = ["crates/shared/src/sqlite.rs", "crates/shared/src/migrations.rs"]
+
+[[module]]
+name = "engine-proof"
+priority = 1
+description = "Payment proofs: anchoring and verifying that an order was paid."
+focus = "Cryptographic and logical soundness of proofs, what an attacker could forge, input validation."
+files = [
+    "crates/engine/src/proof/*",
+    "crates/engine/tests/verification/proof/*",
+]
+context = ["crates/engine/src/store/proof.rs", "crates/shared/src/proof.rs"]
+
+[[module]]
+name = "engine-http"
+priority = 1
+description = "The engine's private HTTP API (admin and instance admin), activity, links, status page, rate limits, order event streams."
+focus = "Authorization on every route, the engine-private boundary (only monokulo may call it), input validation, SSE stream lifetimes."
+files = [
+    "crates/engine/src/http/*",
+    "crates/engine/src/auth.rs",
+    "crates/engine/src/link.rs",
+    "crates/engine/src/activity.rs",
+    "crates/engine/src/status.rs",
+    "crates/engine/tests/verification/http/*",
+    "crates/engine/tests/verification/status/*",
+]
+
+[[module]]
+name = "engine-runtime"
+priority = 2
+description = "Starting and running the engine: CLI, settings, supervision loops, key custody slot, stress and sweep binaries."
+focus = "Settings validation (invalid values must stop the process), shutdown and task supervision, secrets handling."
+files = [
+    "crates/engine/src/run.rs",
+    "crates/engine/src/main.rs",
+    "crates/engine/src/lib.rs",
+    "crates/engine/src/cli.rs",
+    "crates/engine/src/settings.rs",
+    "crates/engine/src/engine_settings.rs",
+    "crates/engine/src/loops.rs",
+    "crates/engine/src/key_custody/*",
+    "crates/engine/src/bin/*",
+    "crates/engine/tests/options_file.rs",
+    "crates/engine/tests/verification/support/*",
+    "crates/engine/tests/*",
+]
+
+[[module]]
+name = "key-custody"
+priority = 1
+description = "Keeping wallet view keys: the plain and SEV-SNP backends, the router, attested HPKE key transport, the custody CLI and SNP attestation."
+focus = "Key material leaking (logs, Debug, errors), attestation verification gaps, transport crypto misuse, zeroisation."
+files = [
+    "crates/key-custody/*",
+    "crates/key-custody-cli/*",
+    "crates/snp-attest/*",
+]
+
+[[module]]
+name = "wallet-tools"
+priority = 2
+description = "The CLI wallet used in development and e2e, and wallet setup (also built to wasm)."
+focus = "Amount parsing and arithmetic, file locking, key handling in wallet-setup."
+files = [
+    "crates/cli-wallet/*",
+    "crates/wallet-setup/*",
+]
+
+[[module]]
+name = "monokulo-orders-checkout"
+priority = 1
+description = "Orders and checkout in monokulo: creating orders, the checkout page and embed, POS, live updates."
+focus = "Order amount and currency conversion, status shown to the buyer versus the engine's truth, the no-JS path, embed isolation, SSE live updates."
+files = [
+    "crates/monokulo/src/http/checkout.rs",
+    "crates/monokulo/src/views/checkout.rs",
+    "crates/monokulo/src/http/orders.rs",
+    "crates/monokulo/src/views/orders.rs",
+    "crates/monokulo/src/views/create_order.rs",
+    "crates/monokulo/src/http/pos.rs",
+    "crates/monokulo/src/views/pos.rs",
+    "crates/monokulo/src/live.rs",
+    "crates/monokulo/src/qr.rs",
+    "crates/monokulo/src/confirmation_thresholds.rs",
+]
+
+[[module]]
+name = "monokulo-api"
+priority = 1
+description = "The public API: /api/v1 (key picks the store), the runtime that builds HAL responses, problem+json, OpenAPI, and the api-macros crate."
+focus = "Key scoping (one store's key must never reach another store), extractors, error mapping, the OpenAPI document matching behaviour."
+files = [
+    "crates/monokulo/src/api/*",
+    "crates/api-macros/*",
+]
+
+[[module]]
+name = "monokulo-db"
+priority = 1
+description = "Monokulo's own SQLite database: stores, users, sessions, apps, webhooks, order changes, and their migrations."
+focus = "Migrations safe on the production instance, transactions, encrypted columns, query correctness, stringly-typed IDs."
+files = [
+    "crates/monokulo/src/db.rs",
+    "crates/monokulo/src/db/*",
+    "crates/monokulo/src/crypto.rs",
+]
+context = ["crates/shared/src/sqlite.rs", "crates/shared/src/migrations.rs", "crates/shared/src/sqlite_query.rs"]
+
+[[module]]
+name = "monokulo-engine-link"
+priority = 1
+description = "Monokulo's side of the engine: the engine client, the engine view state machine and relay, nodes admin, status and scaling pages."
+focus = "Mismatch between engine and monokulo types, error handling when the engine is down, state machine transitions, relay lifetimes."
+files = [
+    "crates/monokulo/src/engine_client.rs",
+    "crates/monokulo/src/engine_view/*",
+    "crates/monokulo/src/admin_nodes.rs",
+    "crates/monokulo/src/http/engine_page.rs",
+    "crates/monokulo/src/views/engine.rs",
+    "crates/monokulo/src/http/status_page.rs",
+    "crates/monokulo/src/views/status.rs",
+    "crates/monokulo/src/views/scaling.rs",
+    "crates/monokulo/src/http/machine_tests.rs",
+]
+
+[[module]]
+name = "monokulo-auth-accounts"
+priority = 1
+description = "Accounts and access: login, signup, sessions, CSRF, invites, first-run setup, store keys and key entry."
+focus = "Session fixation, CSRF coverage of every state-changing route, timing-safe comparisons, password handling, privilege checks between store members and admins."
+files = [
+    "crates/monokulo/src/http/auth.rs",
+    "crates/monokulo/src/http/login.rs",
+    "crates/monokulo/src/http/signup.rs",
+    "crates/monokulo/src/http/account.rs",
+    "crates/monokulo/src/http/account/*",
+    "crates/monokulo/src/http/invites.rs",
+    "crates/monokulo/src/http/csrf.rs",
+    "crates/monokulo/src/http/setup.rs",
+    "crates/monokulo/src/http/admin_setup.rs",
+    "crates/monokulo/src/http/key_entry.rs",
+    "crates/monokulo/src/http/store_key.rs",
+    "crates/monokulo/src/views/auth.rs",
+    "crates/monokulo/src/views/account.rs",
+    "crates/monokulo/src/views/key_entry.rs",
+    "crates/monokulo/src/views/setup.rs",
+    "crates/monokulo/src/stores.rs",
+    "crates/shared/src/auth.rs",
+    "crates/shared/src/password.rs",
+]
+
+[[module]]
+name = "monokulo-abuse"
+priority = 2
+description = "Abuse protection: rate limiting, proof-of-work challenges, client identity, PROXY protocol."
+focus = "Bypasses (spoofed headers, PROXY protocol trust), memory growth from attacker-controlled keys, challenge replay."
+files = [
+    "crates/monokulo/src/abuse/*",
+    "crates/monokulo/src/http/abuse.rs",
+    "crates/monokulo/src/views/challenge.rs",
+    "crates/shared/src/rate_limit.rs",
+]
+
+[[module]]
+name = "monokulo-webhooks"
+priority = 1
+description = "Webhooks to shops: subscribing, signing, delivering with retries, test deliveries, vectors for plugins."
+focus = "Signature correctness, SSRF and Tor leaks in delivery, retry storms, duplicate or lost deliveries."
+files = [
+    "crates/monokulo/src/webhooks/*",
+    "crates/monokulo/src/webhooks.rs",
+    "crates/monokulo/src/http/webhooks.rs",
+    "crates/monokulo/src/http/webhooks/*",
+    "crates/monokulo/src/views/webhooks.rs",
+    "crates/shared/src/webhook_sign.rs",
+]
+context = ["crates/monokulo/src/db/webhooks.rs"]
+
+[[module]]
+name = "monokulo-wallets"
+priority = 1
+description = "Merchant wallets in monokulo: adding and changing a wallet, the wallet service."
+focus = "Address and view key validation, network mismatch (mainnet/stagenet), key material in logs or pages."
+files = [
+    "crates/monokulo/src/wallets.rs",
+    "crates/monokulo/src/http/wallets.rs",
+    "crates/monokulo/src/http/wallet_service.rs",
+    "crates/monokulo/src/views/wallets.rs",
+]
+
+[[module]]
+name = "monokulo-stores-integrations"
+priority = 2
+description = "Stores and what connects to them: embed domains and DNS checks, plugin connect flow, connected apps, store site and details."
+focus = "Embed domain verification (DNS), the connect flow's tokens, app scoping, plugins naming themselves."
+files = [
+    "crates/monokulo/src/embed_domains.rs",
+    "crates/monokulo/src/http/embed_domains.rs",
+    "crates/monokulo/src/views/domains.rs",
+    "crates/monokulo/src/http/connect.rs",
+    "crates/monokulo/src/views/connect.rs",
+    "crates/monokulo/src/http/connections.rs",
+    "crates/monokulo/src/http/apps.rs",
+    "crates/monokulo/src/http/apps/*",
+    "crates/monokulo/src/apps.rs",
+    "crates/monokulo/src/views/connected_apps.rs",
+    "crates/monokulo/src/plugins.rs",
+    "crates/monokulo/src/http/store_site.rs",
+    "crates/monokulo/src/views/store_site.rs",
+    "crates/monokulo/src/views/store_detail.rs",
+    "crates/shared/src/dns.rs",
+    "crates/shared/src/dns/*",
+]
+
+[[module]]
+name = "monokulo-settings"
+priority = 2
+description = "Settings: the live-settings registry crate, admin and store settings pages, exchange-rate and FX provider config, currencies."
+focus = "Every setting in the registry, invalid values stop the process, CLI/env locks, reload only on save, secrets env-only."
+files = [
+    "crates/live-settings/*",
+    "crates/monokulo/src/settings.rs",
+    "crates/monokulo/src/http/admin_settings.rs",
+    "crates/monokulo/src/http/admin_settings/*",
+    "crates/monokulo/src/views/admin.rs",
+    "crates/monokulo/src/views/settings.rs",
+    "crates/monokulo/src/http/store_settings.rs",
+    "crates/monokulo/src/views/store_settings.rs",
+    "crates/monokulo/src/exchange_rate_config.rs",
+    "crates/monokulo/src/fx_provider_settings.rs",
+    "crates/monokulo/src/currencies.rs",
+    "crates/monokulo/src/http/fx.rs",
+    "crates/monokulo/tests/options_file.rs",
+]
+
+[[module]]
+name = "fx-rates"
+priority = 1
+description = "Exchange rates: CoinMarketCap and Haveno clients, the rate model, the HTTP cache."
+focus = "Rate staleness, rounding and precision in fiat to XMR conversion, trusting remote responses, cache key correctness."
+files = [
+    "crates/shared/src/exchange_rate.rs",
+    "crates/shared/src/coinmarketcap.rs",
+    "crates/shared/src/haveno.rs",
+    "crates/shared/src/http_cache.rs",
+]
+
+[[module]]
+name = "tor-network"
+priority = 1
+description = "Networking and Tor: the embedded Arti onion service, external tor, listeners, how outbound requests are routed."
+focus = "Privacy leaks (clearnet requests that should go over Tor, DNS leaks, identifying headers), onion service lifecycle."
+files = [
+    "crates/monokulo/src/tor/*",
+    "crates/monokulo/src/onion.rs",
+    "crates/monokulo/src/network.rs",
+    "crates/monokulo/src/network/*",
+    "crates/shared/src/network.rs",
+    "crates/monokulo/tests/e2e_tor.rs",
+    "crates/monokulo/tests/e2e_arti.rs",
+    "crates/monokulo/tests/onion_listener.rs",
+]
+
+[[module]]
+name = "logs-telemetry"
+priority = 2
+description = "Logs and telemetry: the telemetry crate (store, OTLP, redaction, queries), the admin logs page, client and POS logs."
+focus = "Redaction of secrets and personal data, unbounded storage, log injection, opt-in rules for client logs."
+files = [
+    "crates/telemetry/*",
+    "crates/monokulo/src/logs.rs",
+    "crates/monokulo/src/http/logs_page.rs",
+    "crates/monokulo/src/http/logs_page/*",
+    "crates/monokulo/src/views/logs.rs",
+    "crates/monokulo/src/http/pos_logs.rs",
+    "crates/monokulo/src/http/telemetry_client.rs",
+    "crates/shared/src/log.rs",
+]
+
+[[module]]
+name = "monokulo-web-shell"
+priority = 2
+description = "Monokulo's web shell: startup, CLI, router, paths, home, layout views, query pages, assets and static-assets/bakery."
+focus = "Router wiring (routes that exist but are unreachable, or missing middleware), cache headers, startup error handling, theme rules."
+files = [
+    "crates/monokulo/src/main.rs",
+    "crates/monokulo/src/lib.rs",
+    "crates/monokulo/src/cli.rs",
+    "crates/monokulo/build.rs",
+    "crates/monokulo/src/base.rs",
+    "crates/monokulo/src/assets.rs",
+    "crates/monokulo/src/templates.rs",
+    "crates/monokulo/src/http/mod.rs",
+    "crates/monokulo/src/http/paths.rs",
+    "crates/monokulo/src/http/home.rs",
+    "crates/monokulo/src/http/query_page.rs",
+    "crates/monokulo/src/http/query_page/*",
+    "crates/monokulo/src/http/tests.rs",
+    "crates/monokulo/src/http/test_support.rs",
+    "crates/monokulo/src/http/prefix_tests.rs",
+    "crates/monokulo/src/views/*",
+    "crates/static-assets/*",
+    "crates/bakery/*",
+]
+
+[[module]]
+name = "ui-components"
+priority = 2
+description = "The UI component system: the Rust component! macro, IR, maud rendering and the generated Solid package."
+focus = "Escaping (XSS) in rendering, the macro's generated code, maud and Solid output staying in step."
+files = [
+    "crates/ui/*",
+    "crates/ui-macros/*",
+]
+
+[[module]]
+name = "shared-core"
+priority = 1
+description = "Shared building blocks: IDs, XMR amounts, order status, Monero tx parsing, SQLite helpers, migrations, resources, supervision, short IDs."
+focus = "Newtypes that should exist but don't, amount arithmetic, parsing of untrusted bytes, SQLite pragmas and pool behaviour."
+files = [
+    "crates/shared/*",
+    "crates/short-id/*",
+]
+
+[[module]]
+name = "dev-tooling"
+priority = 3
+description = "Tooling and test support: xtask, the mock WooCommerce shop, engine test support and fake monerod, fuzz targets, monokulo examples."
+focus = "Dead code, tests that can't fail, duplication with production code, simpler structure."
+files = [
+    "xtask/*",
+    "crates/mock-woocommerce/*",
+    "crates/engine-test-support/*",
+    "fuzz/*",
+    "crates/monokulo/examples/*",
+    "crates/monokulo/tests/*",
+]
