@@ -1609,6 +1609,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-client"
+version = "0.1.0"
+dependencies = [
+ "proptest",
+ "rand 0.10.2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3710,6 +3721,7 @@ dependencies = [
  "bytes",
  "clap",
  "credentials",
+ "dns-client",
  "engine",
  "engine-protocol",
  "engine-test-support",
@@ -5661,8 +5673,6 @@ dependencies = [
  "moka",
  "monero",
  "parking_lot",
- "proptest",
- "rand 0.10.2",
  "reqwest",
  "reqwest-middleware",
  "rusqlite",

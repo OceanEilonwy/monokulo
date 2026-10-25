@@ -383,14 +383,14 @@ pub trait TxtLookup: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>>;
 }
 
-/// The real lookup ([`shared::dns`]): from the root servers down to the
+/// The real lookup ([`dns_client`]): from the root servers down to the
 /// domain's own name servers, so a record is seen the moment it's published,
 /// with no resolver's cache still saying there is no such name.
-pub struct LiveDns(shared::dns::Resolver);
+pub struct LiveDns(dns_client::Resolver);
 
 impl LiveDns {
     pub fn new() -> Self {
-        LiveDns(shared::dns::Resolver::system())
+        LiveDns(dns_client::Resolver::system())
     }
 }
 

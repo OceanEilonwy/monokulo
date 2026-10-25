@@ -6,6 +6,7 @@ members = [
     "crates/engine-protocol",
     "crates/sqlite",
     "crates/credentials",
+    "crates/dns-client",
     "crates/live-settings",
     "crates/telemetry",
     "crates/monokulo",

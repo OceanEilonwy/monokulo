@@ -63,6 +63,8 @@ shared = { path = "../shared" }
 engine-protocol = { path = "../engine-protocol", features = ["schemars"] }
 sqlite = { path = "../sqlite" }
 credentials = { path = "../credentials" }
+# Reads a verified domain's TXT records (`embed_domains::LiveDns`).
+dns-client = { path = "../dns-client" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
 subtle = "2.6.1"
 # Abuse protection (`crate::abuse`): HMAC-signed challenges, proof-of-work

@@ -10,7 +10,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 engine = { path = "../crates/engine", features = ["fuzzing"] }
-shared = { path = "../crates/shared" }
+dns-client = { path = "../crates/dns-client" }
 
 [features]
 zmq = ["engine/zmq"]

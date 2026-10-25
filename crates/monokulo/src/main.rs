@@ -169,7 +169,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     };
 
     // Verified embed domains: looked up from the root servers down
-    // (`shared::dns`), so a record shows the moment it is published.
+    // (`dns_client`), so a record shows the moment it is published.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
         Arc::new(monokulo::embed_domains::LiveDns::new());
     // Onion shops are proved by a file fetched over Tor inside monokulo.
