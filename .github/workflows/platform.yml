@@ -40,7 +40,9 @@ jobs:
   # that one and save nothing, so the repository keeps one Linux cache
   # instead of one a suite. Cargo resolves a dependency's features per
   # build, so they still compile the few crates a narrower build resolves
-  # differently. A coverage run keeps a cache a suite, as its builds differ.
+  # differently. A coverage run's Rust tests are instrumented, so they keep
+  # a cache of their own; its browser and progress suites build what the
+  # plain run's do and restore the dev cache like them.
   # rust-cache.yml builds the Linux one again on each new nightly.
   rust:
     name: rust tests
@@ -262,11 +264,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Coverage instruments only the pages' scripts here, so the Rust
+      # build is the plain run's.
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: ${{ inputs.coverage && 'coverage' || '' }}
-          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
-          save: ${{ inputs.coverage }}
+          shared-key: dev
+          save: 'false'
           npm-lockfiles: |
             e2e/browser/package-lock.json
             package-lock.json
@@ -275,9 +278,11 @@ jobs:
       # Chromium runs every browser test (coverage-browser.config.js). The
       # key names the browser, so a cache saved with others isn't restored.
       # Its system libraries aren't cached: they are installed either way.
-      - name: Cache Playwright's browsers
+      # Only main saves it, as with the Rust cache: a pull request that
+      # missed it saved a 270 MB copy of its own that no other run reads.
+      - name: Restore Playwright's browsers
         id: browsers
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('e2e/browser/package-lock.json') }}
@@ -289,6 +294,12 @@ jobs:
           else
             npx playwright install --with-deps chromium
           fi
+      - name: Save Playwright's browsers
+        if: steps.browsers.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.browsers.outputs.cache-primary-key }}
       # Every binary the tests run, with the one command the run's global
       # setup and the fixture specs repeat (real-stack.js BUILD_ARGS), so
       # theirs find nothing to do and the test step times only the tests;
@@ -347,11 +358,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      # Its coverage run is the plain run, so the build is the same.
       - uses: ./.github/actions/setup-rust
         with:
-          cache-key: ${{ inputs.coverage && 'coverage' || '' }}
-          shared-key: ${{ !inputs.coverage && 'dev' || '' }}
-          save: ${{ inputs.coverage }}
+          shared-key: dev
+          save: 'false'
           pos-app: 'false'
       - name: Measure engine scanner progress on one CPU
         id: stress
