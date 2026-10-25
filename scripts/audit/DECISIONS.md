@@ -19,6 +19,10 @@ audit database (`target/code-audit/audit.db`).
   deletes the stored row.
 - **Severities:** #39 and #99 raised to critical, #17 to high; #107 lowered
   to low.
+- **Onion Monero node host:** refused when a node setting is saved; an
+  existing one still starts, with a boot warning and a status-page note
+  (it would leak the onion name to the system DNS; monerod over Tor is
+  out of scope).
 - **Fix order:** critical groups first, then high, then the cross-crate type
   groups, then medium, then low bundles; one pull request per fix group.
 
@@ -32,5 +36,17 @@ audit database (`target/code-audit/audit.db`).
   currency and idempotency findings join `order-creation-single-path`;
   #76 lands with #143 (`event-kinds-and-followers`) so a strict event-kind
   enum can't stop every store's webhooks on version skew.
+- #161 recorded from the independent review of PR 173: a lying node can
+  still hide a payment by swapping a block body for one that pays nobody.
+  Pre-existing; fixed separately.
+- PR 175 (#39): the key check and stored-version check can't stop a host
+  that already knows the planted master (they are host-editable rows); the
+  release guest-SVN floor in the measured image is the guard the host
+  can't edit, so a flawed image is answered by raising that floor. An image
+  signed at guest SVN 0 no longer starts (the floor is 1); self-hosters who
+  signed at 0 must re-sign.
+- PR 173 (#4): a mismatched re-fetch is a node error that evicts the cached
+  block; follow-ups from its review (failover on an empty answer, the test
+  fake's default binding) go into the same PR.
 - Fix agents build in `target/fix-slot-N` with 6 build jobs each, so several
   can build at once without running out of memory.
