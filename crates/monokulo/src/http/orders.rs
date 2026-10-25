@@ -3081,7 +3081,7 @@ mod tests {
             settings: crate::settings::MonokuloSettings::fixed_with_snp_entry(
                 crate::settings::PerRequest {
                     signup_mode: crate::settings::SignupMode::Public,
-                    public_uri: String::new(),
+                    public_uri: "https://pay.example.test".to_owned(),
                 },
                 crate::settings::SnpEntryPolicy {
                     trust: Some(trust),
@@ -3209,11 +3209,36 @@ mod tests {
             html.contains(r#"<option value="snp" selected>"#),
             "the other backend is offered: {html}"
         );
-        assert!(html.contains("key-custody-cli seal --bundle"), "{html}");
+        assert!(
+            html.contains(
+                "key-custody-cli seal --bundle https://pay.example.test/key-custody/bundles/"
+            ),
+            "{html}"
+        );
         assert!(html.contains(r#"name="encrypted_keys""#), "{html}");
         assert!(
             !html.contains(TEST_VIEW_KEY_HEX),
             "keys are never echoed back"
+        );
+
+        // On Tor, the command never names the web address, which the
+        // merchant's own machine would fetch from: the bundle is a file,
+        // fetched by their browser.
+        let mut over_tor = Request::builder()
+            .uri(&wallet_tab)
+            .header("cookie", format!("session={session_token}"))
+            .body(Body::empty())
+            .unwrap();
+        over_tor
+            .extensions_mut()
+            .insert(axum::extract::ConnectInfo(crate::tor::circuit_peer(7)));
+        let response = router.clone().oneshot(over_tor).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let on_tor = body_text(response).await;
+        assert!(!on_tor.contains("pay.example.test"), "{on_tor}");
+        assert!(
+            on_tor.contains("key-custody-cli seal --bundle key-custody-bundle.json"),
+            "{on_tor}"
         );
 
         // Typed in the clear: refused here, never sent on.

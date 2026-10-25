@@ -21,6 +21,10 @@ copy.
 https://www.monokulo.com/apps/connect#token=ct_…
 ```
 
+A merchant using the dashboard over the onion address is given a link on
+the onion address, and told the app connects over Tor: the code is never on
+the web address for them, so their phone isn't sent off Tor unasked.
+
 Read it with your app's scanner, or let the merchant paste it. The token is
 in the `#` part, which a browser never sends to a server. It works once,
 for 10 minutes. Redeem it at the link's address:

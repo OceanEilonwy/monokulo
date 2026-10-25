@@ -28,7 +28,13 @@
 //! (`api::runtime::auth::Context::base`), since its links are made in
 //! handlers, not views.
 //!
-//! Outside a request (a unit test rendering a view), the prefix is empty.
+//! The network the request arrived on is kept beside the prefix
+//! ([`network`]), for the few things a page gives that leave the browser
+//! (a command to run, a code for an app): those must never name the web
+//! address to a visitor on Tor, however deep in a page they are made.
+//!
+//! Outside a request (a unit test rendering a view), the prefix is empty
+//! and the network unknown.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -41,9 +47,18 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
 use crate::http::AppState;
+use crate::network::NetworkKind;
+
+/// What a request's rendering is scoped with: its base path, and the
+/// network it arrived on.
+#[derive(Clone)]
+struct Scope {
+    base: Arc<str>,
+    network: NetworkKind,
+}
 
 tokio::task_local! {
-    static BASE: Arc<str>;
+    static BASE: Scope;
 }
 
 /// Where this Monokulo's paths start for a request, on the network it came
@@ -63,7 +78,16 @@ pub fn for_request(state: &AppState, extensions: &axum::http::Extensions) -> Str
 
 /// The current request's base path ([`for_request`]): `/monokulo`, or empty.
 pub fn path() -> String {
-    BASE.try_with(|base| base.to_string()).unwrap_or_default()
+    BASE.try_with(|scope| scope.base.to_string())
+        .unwrap_or_default()
+}
+
+/// The network the current request arrived on, `None` outside a request.
+/// Whatever a page gives to be used outside the browser (a command, an
+/// app's code) asks this, so a visitor on Tor is never given the web
+/// address there: their own machine would connect to it directly.
+pub fn network() -> Option<NetworkKind> {
+    BASE.try_with(|scope| scope.network).ok()
 }
 
 /// `path`, a path on this site starting with `/` (with any query or
@@ -78,7 +102,7 @@ pub fn url(path: impl AsRef<str>) -> String {
         path.starts_with('/') && !path.starts_with("//"),
         "not a path on this site: {path}"
     );
-    BASE.try_with(|base| format!("{base}{path}"))
+    BASE.try_with(|scope| format!("{}{path}", scope.base))
         .unwrap_or_else(|_| path.to_owned())
 }
 
@@ -104,24 +128,31 @@ fn location(status: StatusCode, location: &str) -> Response {
 }
 
 /// Runs `f` with `base` as the base path, as a request's handler runs: for
-/// tests rendering a view as a prefixed deployment would.
+/// tests rendering a view as a prefixed deployment (on the web) would.
 pub fn sync_scope<R>(base: &str, f: impl FnOnce() -> R) -> R {
-    BASE.sync_scope(Arc::from(base), f)
+    let scope = Scope {
+        base: Arc::from(base),
+        network: NetworkKind::Web,
+    };
+    BASE.sync_scope(scope, f)
 }
 
-/// Middleware keeping the request's base path ([`for_request`]) for its
-/// handler and for its response body, so whatever renders for the request
-/// ([`url`]) carries it.
+/// Middleware keeping the request's base path ([`for_request`]) and
+/// network ([`network`]) for its handler and for its response body, so
+/// whatever renders for the request ([`url`]) carries them.
 pub async fn layer(State(state): State<AppState>, request: Request, next: Next) -> Response {
-    let base: Arc<str> = Arc::from(for_request(&state, request.extensions()));
-    let response = BASE.scope(base.clone(), next.run(request)).await;
-    response.map(|body| Body::new(Scoped { base, body }))
+    let scope = Scope {
+        base: Arc::from(for_request(&state, request.extensions())),
+        network: NetworkKind::of(request.extensions()),
+    };
+    let response = BASE.scope(scope.clone(), next.run(request)).await;
+    response.map(|body| Body::new(Scoped { scope, body }))
 }
 
 /// A response body polled with its request's base path set: a stream's
 /// later frames render after the handler has returned.
 struct Scoped {
-    base: Arc<str>,
+    scope: Scope,
     body: Body,
 }
 
@@ -135,7 +166,7 @@ impl http_body::Body for Scoped {
     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         let this = &mut *self;
         let body = &mut this.body;
-        BASE.sync_scope(this.base.clone(), || Pin::new(body).poll_frame(cx))
+        BASE.sync_scope(this.scope.clone(), || Pin::new(body).poll_frame(cx))
     }
 
     fn is_end_stream(&self) -> bool {
