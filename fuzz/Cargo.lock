@@ -769,6 +769,7 @@ dependencies = [
  "sha2 0.11.0",
  "shared",
  "snp-attest",
+ "socket2",
  "subtle",
  "telemetry",
  "thiserror 2.0.21",
