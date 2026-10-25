@@ -36,12 +36,35 @@ pub(super) struct Ledger<'a> {
     pub(super) txids: &'a [String],
     pub(super) locations: &'a [Location],
     pub(super) voided: &'a [bool],
+    pub(super) once_voided: &'a [bool],
     pub(super) observed: &'a [bool],
+}
+/// Whether the ledger expects output `index` of transaction `txid` among
+/// an invoice's `rows`. Every observed output is, while no order can have
+/// closed longer than the grace ago. Past that, one seen only in the pool
+/// may have come too late to be looked for; one in a block is always
+/// expected (every block's time is before every deadline), however long
+/// an outage kept it from being scanned.
+fn expected(
+    daemon: &World,
+    observed: bool,
+    location: Location,
+    rows: &[crate::store::OrderPaymentRow],
+    txid: &str,
+    index: usize,
+) -> bool {
+    observed
+        && (daemon.now.get() - daemon.grace.get() < daemon.start
+            || matches!(location, Location::Block(_))
+            || rows
+                .iter()
+                .any(|p| p.txid == txid && p.output_index == index as i64))
 }
 impl Ledger<'_> {
     pub(super) fn ready(
         &self,
         s: &Store,
+        daemon: &World,
         tenants: &[(TenantId, crate::key_custody::WalletHandle)],
         tip: u64,
     ) -> bool {
@@ -51,6 +74,7 @@ impl Ledger<'_> {
             txids,
             locations,
             voided,
+            once_voided: _,
             observed,
         } = self;
         s.reorg_job(NETWORK).unwrap().is_none()
@@ -63,21 +87,31 @@ impl Ledger<'_> {
             })
             && invoices.iter().all(|invoice| {
                 let rows = s.get_all_payments(&invoice.id).unwrap();
+                let rows = &rows;
                 let expected = outputs
                     .iter()
                     .enumerate()
                     .flat_map(|(t, v)| {
                         v.iter().filter_map(move |o| {
-                            (observed[t] && o.wallet == invoice.wallet && o.minor == invoice.minor)
-                                .then_some((
-                                    txids[t].clone(),
-                                    o.index as i64,
-                                    o.amount,
-                                    match locations[t] {
-                                        Location::Block(h) => Some(h as i64),
-                                        Location::Pool | Location::Gone => None,
-                                    },
+                            (o.wallet == invoice.wallet
+                                && o.minor == invoice.minor
+                                && expected(
+                                    daemon,
+                                    observed[t],
+                                    locations[t],
+                                    rows,
+                                    &txids[t],
+                                    o.index,
                                 ))
+                            .then_some((
+                                txids[t].clone(),
+                                o.index as i64,
+                                o.amount,
+                                match locations[t] {
+                                    Location::Block(h) => Some(h as i64),
+                                    Location::Pool | Location::Gone => None,
+                                },
+                            ))
                         })
                     })
                     .collect::<std::collections::BTreeSet<_>>();
@@ -113,6 +147,7 @@ impl Ledger<'_> {
             txids,
             locations,
             voided,
+            once_voided,
             observed,
         } = self;
         let Oracle {
@@ -121,18 +156,30 @@ impl Ledger<'_> {
         } = oracle;
         assert!(s.reorg_job(NETWORK).unwrap().is_none());
         let mut expected_pending = std::collections::BTreeSet::new();
+        let mut may_expire = std::collections::BTreeSet::new();
         for invoice in *invoices {
+            let rows = s.get_all_payments(&invoice.id).unwrap();
             let mut expected = BTreeMap::new();
             let mut total = 0u64;
             let mut eligible = 0u64;
             let mut observed_eligible = 0u64;
             let mut mined = false;
+            // A payment that may come after the order's expiry: one not
+            // in a block (from the pool, late), or one restored after a void.
+            let mut late = false;
             for (t, planned) in outputs.iter().enumerate() {
-                if !observed[t] {
-                    continue;
-                }
                 for o in planned {
-                    if o.wallet != invoice.wallet || o.minor != invoice.minor {
+                    if o.wallet != invoice.wallet
+                        || o.minor != invoice.minor
+                        || !self::expected(
+                            daemon,
+                            observed[t],
+                            locations[t],
+                            &rows,
+                            &txids[t],
+                            o.index,
+                        )
+                    {
                         continue;
                     }
                     let height = match locations[t] {
@@ -169,9 +216,9 @@ impl Ledger<'_> {
                         eligible += o.amount;
                     }
                     mined |= height.is_some();
+                    late |= height.is_none() || once_voided[t];
                 }
             }
-            let rows = s.get_all_payments(&invoice.id).unwrap();
             assert_eq!(rows.len(), expected.len());
             for row in rows {
                 assert_eq!(
@@ -225,6 +272,9 @@ impl Ledger<'_> {
                 expected_pending.insert(invoice.id.as_str().to_owned());
                 daemon.hit("unproven-payment-keeps-settlement-pending");
             }
+            if status == OrderStatus::Expired || late {
+                may_expire.insert(invoice.id.clone());
+            }
             statuses.insert(invoice.id.as_str().into(), status);
             let actual = s.get_order(&invoice.tenant, &invoice.id).unwrap().unwrap();
             assert_eq!(
@@ -248,7 +298,7 @@ impl Ledger<'_> {
                 }
             }
         }
-        daemon.check_events(s, invoices);
+        daemon.check_events(s, invoices, &may_expire);
         let actual_pending = s
             .pending_payment_recomputes_page(NETWORK, "", 100)
             .unwrap()

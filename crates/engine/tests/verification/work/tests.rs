@@ -846,10 +846,11 @@ impl MoneroDaemonClient for CannotLocate<'_> {
 }
 
 /// While a reorg is being reconciled, only what depends on the chain being
-/// settled waits: blocks aren't scanned and no order newly settles. The
-/// mempool is still scanned and orders still expire.
+/// settled waits: blocks aren't scanned, no order newly settles and none
+/// expires (its payment may be in a block the reorg replaces). The mempool
+/// is still scanned.
 #[tokio::test]
-async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expiry() {
+async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
     let (_guard, logs) = crate::test_log::capture();
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
@@ -945,8 +946,8 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
             &store,
             &shared::ids::OrderId::new(overdue_order.as_str().to_owned())
         ),
-        OrderStatus::Expired,
-        "and orders still expire"
+        OrderStatus::Pending,
+        "its expiry waits for the reorg"
     );
     assert_eq!(
         report.outcome(Tier::Chain),

@@ -8908,7 +8908,9 @@ async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_p
 #[tokio::test]
 async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_grace_period_is_left_to_lookup(
 ) {
-    for (closed_ago, grace, expect_scanned) in [(100, 3600, true), (7200, 3600, false)] {
+    // The paying block is mined now: its window starts the grace, plus the
+    // two hours a block's timestamp may run ahead, before that.
+    for (closed_ago, grace, expect_scanned) in [(100, 3600, true), (11_400, 3600, false)] {
         let store = Store::open_in_memory().unwrap();
         let custody = PlainKeyCustody::default();
         let (a, a_handle, a_order) =
@@ -8954,6 +8956,7 @@ async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_
         .await
         .unwrap();
         daemon.push_block("h3", vec![fixture_tx()]);
+        daemon.set_block_timestamp(3, crate::now_unix() as u64);
         run_scan_tick(
             &store,
             &custody,

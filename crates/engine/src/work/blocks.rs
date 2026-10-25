@@ -54,7 +54,7 @@ use super::{bounded, count, Progress, Round, Wait};
 use walked::Walked;
 
 /// How far ahead of real time consensus lets a block's timestamp run.
-/// Catch-up windows start this much before a block's own timestamp, so a
+/// A block's scan window starts this much before its own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
 const BLOCK_TIMESTAMP_DRIFT_SECONDS: i64 = 2 * 60 * 60;
 
@@ -1034,6 +1034,8 @@ mod walked {
 struct Plan {
     /// The page of tenants at the parent cursor this scan is for.
     page: Page,
+    /// Its tenants.
+    ids: Vec<TenantId>,
     /// Tenants at the parent cursor with something in scope, and their
     /// windows.
     members: Vec<(TenantId, Vec<u32>)>,
@@ -1042,6 +1044,45 @@ struct Plan {
     parent: Option<String>,
     /// Checkpoints of those tenants.
     checkpoints: HashMap<TenantId, BlockCheckpoint>,
+}
+
+/// Where the scan window of a block mined at `timestamp` starts: the drift
+/// consensus allows before it, and never later than `now`.
+fn window_start(timestamp: u64, now: i64) -> i64 {
+    i64::try_from(timestamp)
+        .unwrap_or(i64::MAX)
+        .saturating_sub(BLOCK_TIMESTAMP_DRIFT_SECONDS)
+        .min(now)
+}
+
+/// The tenants among `ids` with something in scope from `since`, their
+/// windows, and their checkpoints.
+#[expect(clippy::type_complexity, reason = "a plan's two parts, read together")]
+fn scope(
+    s: &Store,
+    network: monero::Network,
+    ids: &[TenantId],
+    since: i64,
+    grace: i64,
+) -> Result<
+    (
+        Vec<(TenantId, Vec<u32>)>,
+        HashMap<TenantId, BlockCheckpoint>,
+    ),
+    ScannerError,
+> {
+    let mut windows = s.scan_windows(ids, since, grace)?;
+    let members: Vec<(TenantId, Vec<u32>)> = ids
+        .iter()
+        .filter_map(|id| windows.remove(id).map(|w| (id.clone(), w)))
+        .collect();
+    let mut checkpoints = HashMap::new();
+    for (tenant_id, _) in &members {
+        if let Some(checkpoint) = s.block_checkpoint(network, tenant_id)? {
+            checkpoints.insert(tenant_id.clone(), checkpoint);
+        }
+    }
+    Ok((members, checkpoints))
 }
 
 /// One block to scan for one group.
@@ -1122,24 +1163,23 @@ async fn scan_block(
             return Ok(BlockOutcome::NobodyToScan(Movement::Stayed));
         }
     }
-    // Which orders could have been paid in this block: as of now for a new
-    // block; for an old one, as of the block's own time (less the drift
-    // consensus allows), so an order that closed during the gap is still
-    // looked for.
-    let since = if frontier {
-        round.now
+    // Which orders could have been paid in this block: as of the block's
+    // own time (less the drift consensus allows), so an order that closed
+    // since is still looked for. A new block too: after an outage every
+    // block mined during it is new, and orders closed while it lasted.
+    let timestamp = if let Some(block) = round.blocks.cache.get(height) {
+        Some(block.timestamp)
+    } else if round.state.blocks.headers_first() || round.blocks.headers.contains_key(&height) {
+        Some(known_header(round, height, end).await?.timestamp)
+    } else if frontier {
+        // A new block not held yet is fetched once: whole if anyone is in
+        // scope as of now (its own time can only add to them), else its
+        // header, which a block nobody is scanned for needs anyway.
+        None
     } else {
-        let timestamp =
-            if round.state.blocks.headers_first() || round.blocks.headers.contains_key(&height) {
-                known_header(round, height, end).await?.timestamp
-            } else {
-                block(round, height, end).await?.timestamp
-            };
-        i64::try_from(timestamp)
-            .unwrap_or(i64::MAX)
-            .saturating_sub(BLOCK_TIMESTAMP_DRIFT_SECONDS)
-            .min(round.now)
+        Some(block(round, height, end).await?.timestamp)
     };
+    let mut since = timestamp.map_or(round.now, |timestamp| window_start(timestamp, round.now));
     let plan = round
         .db(move |s, network| -> Result<_, ScannerError> {
             let ids = match registered {
@@ -1161,19 +1201,10 @@ async fn scan_block(
             } else {
                 Page::Last
             };
-            let mut windows = s.scan_windows(&ids, since, grace)?;
-            let members: Vec<(TenantId, Vec<u32>)> = ids
-                .into_iter()
-                .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
-                .collect();
-            let mut checkpoints = HashMap::new();
-            for (tenant_id, _) in &members {
-                if let Some(checkpoint) = s.block_checkpoint(network, tenant_id)? {
-                    checkpoints.insert(tenant_id.clone(), checkpoint);
-                }
-            }
+            let (members, checkpoints) = scope(s, network, &ids, since, grace)?;
             Ok(Plan {
                 page,
+                ids,
                 members,
                 recorded: s.get_scanned_block_hash(network, height)?,
                 parent: s.get_scanned_block_hash(network, parent)?,
@@ -1181,8 +1212,32 @@ async fn scan_block(
             })
         })
         .await?;
-    let scannable: Vec<(TenantId, WalletHandle, ScanIndices)> = plan
-        .members
+    let Plan {
+        page,
+        ids,
+        mut members,
+        recorded,
+        parent: parent_hash,
+        mut checkpoints,
+    } = plan;
+    if timestamp.is_none() {
+        let anyone = members
+            .iter()
+            .any(|(id, _)| round.handles.contains_key(id.as_str()));
+        let timestamp = if anyone {
+            block(round, height, end).await?.timestamp
+        } else {
+            known_header(round, height, end).await?.timestamp
+        };
+        let start = window_start(timestamp, round.now);
+        if start < since {
+            since = start;
+            (members, checkpoints) = round
+                .db(move |s, network| scope(s, network, &ids, since, grace))
+                .await?;
+        }
+    }
+    let scannable: Vec<(TenantId, WalletHandle, ScanIndices)> = members
         .into_iter()
         .filter_map(|(id, window)| {
             round
@@ -1224,17 +1279,12 @@ async fn scan_block(
         source(round, height, end).await?
     };
     let (hash, prev_hash) = source.identity();
-    if plan
-        .recorded
-        .as_ref()
-        .is_some_and(|recorded| recorded != hash)
-    {
+    if recorded.as_ref().is_some_and(|recorded| recorded != hash) {
         return Ok(BlockOutcome::Diverged(
             "the node's block differs from the one recorded",
         ));
     }
-    if plan
-        .parent
+    if parent_hash
         .as_ref()
         .is_some_and(|parent_hash| parent_hash != prev_hash)
     {
@@ -1252,7 +1302,7 @@ async fn scan_block(
         txs: count(tx_count),
         header_only,
     });
-    let mut scan = BlockScan::new(&scannable, &plan.checkpoints, &hash, tx_count);
+    let mut scan = BlockScan::new(&scannable, &checkpoints, &hash, tx_count);
     let mut progressed = on_timeout == OnTimeout::Stop;
     let at = ScanAt {
         height,
@@ -1318,7 +1368,7 @@ async fn scan_block(
     // to the high-water mark when catching up (nothing could have been paid
     // to them in the whole gap).
     let idle_to = if frontier { height } else { high_water };
-    let checkpointed = plan.checkpoints.into_keys().collect();
+    let checkpointed = checkpoints.into_keys().collect();
     let txids = (!header_only).then(|| match &source {
         Source::Whole(block) => block.txids.iter().cloned().collect(),
         Source::Pages(paged) => paged.outline.txids.iter().cloned().collect(),
@@ -1368,7 +1418,7 @@ async fn scan_block(
         *paged = None;
     }
     drop(paged);
-    Ok(BlockOutcome::Committed(plan.page, scanned.and(idle)))
+    Ok(BlockOutcome::Committed(page, scanned.and(idle)))
 }
 
 /// One block's scan in progress, for the tenants of one group: where each

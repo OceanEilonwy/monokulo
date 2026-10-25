@@ -65,6 +65,13 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             let worker = backend_byte % 2 == 1;
             // Every transaction observed in the pool before any command.
             let pool_first = backend_byte & 2 != 0;
+            // Bits 2 and 3: the grace closed orders are scanned for, longer
+            // than most histories, ten minutes or none.
+            let grace = match (backend_byte >> 2) % 4 {
+                2 => 600,
+                3 => 0,
+                _ => 100_000,
+            };
             let mut pairs = (0..wallets)
                 .map(|i| pair(10 + i as u8 * 2))
                 .collect::<Vec<_>>();
@@ -130,6 +137,8 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             let custody = FlakyKeyCustody::default();
             let daemon = World::new();
             daemon.body_variant(recorded && first & 64 != 0);
+            daemon.grace.set(grace);
+            daemon.hit(&format!("setup:grace-{grace}"));
             daemon.hit(if recorded {
                 "fixture:recorded-and-synthetic"
             } else {
@@ -206,6 +215,9 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             }
             let mut backend = backend::Backend::new(&path, store.into_shared(), worker);
             let mut voided = vec![false; count];
+            // Voided at some point: a payment restored after that may follow
+            // its order's expiry (its void is only rechecked later).
+            let mut once_voided = vec![false; count];
             daemon.push_block(&effects::hash(0, 1), vec![]);
             daemon.push_block(&effects::hash(0, 2), vec![]);
             let mut state = ScanState::default();
@@ -236,6 +248,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     txids: &txids,
                     locations: &locations,
                     voided: &voided,
+                    once_voided: &once_voided,
                     observed: &observed,
                 },
                 2,
@@ -304,6 +317,39 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                                 Location::Block(tip),
                                 "mining must attach the output to the new height"
                             );
+                        }
+                    }
+                    Command::Outage { transaction, after } => {
+                        // Blocks mined while no round runs, the one with
+                        // the transaction `after % 16` blocks in, and time
+                        // running on past every deadline (and a narrow
+                        // grace) before the next round.
+                        let t = usize::from(transaction) % count;
+                        for _ in 0..after % 16 {
+                            tip += 1;
+                            daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                        }
+                        tip += 1;
+                        if matches!(locations[t], Location::Block(_)) {
+                            daemon.push_block(&effects::hash(epoch, tip), vec![]);
+                        } else {
+                            locations[t] = Location::Block(tip);
+                            observed[t] = true;
+                            voided[t] = false;
+                            daemon.clear_spent(&transactions[t]);
+                            daemon.push_block(
+                                &effects::hash(epoch, tip),
+                                vec![transactions[t].clone()],
+                            );
+                        }
+                        for _ in 0..13 {
+                            daemon.advance().await;
+                        }
+                        if invoices
+                            .iter()
+                            .any(|i| i.expires < daemon.now.get() - daemon.grace.get())
+                        {
+                            daemon.hit("outage-longer-than-grace");
                         }
                     }
                     Command::Extend(n) => {
@@ -446,6 +492,9 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     },
                     command.family()
                 ));
+                for (once, now) in once_voided.iter_mut().zip(&voided) {
+                    *once |= *now;
+                }
                 daemon.set_mempool(
                     transactions
                         .iter()
@@ -462,6 +511,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                         txids: &txids,
                         locations: &locations,
                         voided: &voided,
+                        once_voided: &once_voided,
                         observed: &observed,
                     },
                     tip,
@@ -502,6 +552,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                     txids: &txids,
                     locations: &locations,
                     voided: &voided,
+                    once_voided: &once_voided,
                     observed: &observed,
                 },
                 3,
@@ -641,7 +692,7 @@ fn inputs<'a>(
         tenants,
         network: NETWORK,
         reorg_check_depth: 20,
-        grace_period_seconds: 100_000,
+        grace_period_seconds: daemon.grace.get(),
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
     }
@@ -686,7 +737,7 @@ async fn settle(effects: &Effects<'_>, ledger: &Ledger<'_>, tip: u64, oracle: &m
             .await
             .into_result()
             .unwrap();
-        if ledger.ready(&backend.store().lock(), tenants, tip) {
+        if ledger.ready(&backend.store().lock(), daemon, tenants, tip) {
             break;
         }
     }

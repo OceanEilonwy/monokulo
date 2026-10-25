@@ -552,6 +552,10 @@ pub struct CreatedTenant {
 pub struct Order {
     pub id: OrderId,
     pub tenant_id: TenantId,
+    /// The tenant row whose keys and cursor scan this order: the store's
+    /// own, or, once the store changed wallet, the scan-only row watching
+    /// the old wallet.
+    pub scan_tenant_id: TenantId,
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
@@ -687,8 +691,9 @@ struct StatusFacts<'a> {
     /// The order's valid payments as of `current_height`.
     views: &'a [PaymentView],
     confirmations_required: u64,
-    /// The tenant is behind the network: blocks not yet scanned for it
-    /// could hold a payment.
+    /// The tenant row scanning the order is behind the network or the
+    /// node's tip, or a reorg is replacing blocks it scanned: blocks not
+    /// yet scanned for it could hold a payment.
     tenant_lagging: bool,
     /// A reorg is being reconciled on the order's network, or a counted
     /// payment's height is above every recorded block: the node named it
@@ -757,10 +762,12 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     } else {
         derived
     };
-    // While the tenant is behind the network, an order mustn't become
-    // expired: its payment may be in a block not yet scanned for it, and an
+    // While the row scanning it is behind the network or the node's tip
+    // (after an outage every store is), or a reorg is replacing blocks it
+    // scanned, an order mustn't become expired: its payment may be in a
+    // block not yet scanned for it, and an
     // `order.expired` event can make a shop cancel an order that turns out
-    // to be paid. It expires once the tenant has caught up.
+    // to be paid. It expires once that row has caught up.
     let expiry_held = derived == OrderStatus::Expired
         && order.status != OrderStatus::Expired
         && facts.tenant_lagging;
@@ -2248,6 +2255,7 @@ impl Store {
         Ok(Order {
             id: row.get("id")?,
             tenant_id: row.get("tenant_id")?,
+            scan_tenant_id: row.get("scan_tenant_id")?,
             merchant_order_id: row.get("merchant_order_id")?,
             minor_index: row
                 .get::<_, shared::sqlite::Unsigned<u32>>("minor_index")?
@@ -2357,7 +2365,16 @@ impl Store {
     /// The highest block recorded on `tenant_id`'s network (`0` before the
     /// first), for a status recompute made outside the scanner.
     pub fn scanned_tip(&self, tenant_id: &TenantId) -> Result<u64> {
-        let (_, network, _) = self.recompute_facts(tenant_id)?;
+        let network = self
+            .conn
+            .query_row(
+                "SELECT network FROM tenants WHERE id = ?1",
+                [tenant_id],
+                |row| row.get::<_, shared::network::SqlNetwork>(0),
+            )
+            .optional()?
+            .ok_or(StoreError::NotFound)?
+            .0;
         Ok(self.max_scanned_height(network)?.unwrap_or(0))
     }
 
@@ -2687,7 +2704,8 @@ impl Store {
         let order = self
             .get_order_by_id(order_id)?
             .ok_or(StoreError::NotFound)?;
-        let (confirmations_required, network, lagging) = self.recompute_facts(&order.tenant_id)?;
+        let (confirmations_required, network, lagging) =
+            self.recompute_facts(&order, current_height)?;
         let conflicts = self.settle_output_key_conflicts(order_id, network, now)?;
         let counted: Vec<_> = self
             .get_valid_payments(order_id)?
@@ -2786,18 +2804,34 @@ impl Store {
         Ok((order.status, plan.status))
     }
 
-    /// What a status recompute needs to know about an order's tenant: its
-    /// confirmations requirement, its network, and whether it is behind the
-    /// network (a disabled tenant never is). One small row, not the tenant
-    /// with its key material.
-    fn recompute_facts(&self, tenant_id: &TenantId) -> Result<(u64, monero::Network, bool)> {
+    /// What a status recompute needs to know about an order: its store's
+    /// confirmations requirement and network, and whether the row that
+    /// scans it (the store's, or the scan-only row watching an old wallet)
+    /// is behind: below the highest block recorded on the network or the
+    /// `current_height` the recompute counts against (the node's tip),
+    /// whichever is higher, or on a network whose recorded chain a reorg
+    /// is replacing. A block not yet scanned for the order could hold its
+    /// payment. A disabled row is never behind. Small rows, not the tenants
+    /// with their key material.
+    fn recompute_facts(
+        &self,
+        order: &Order,
+        current_height: u64,
+    ) -> Result<(u64, monero::Network, bool)> {
         self.conn
             .query_row(
                 "SELECT t.confirmations_required, t.network,
-                        t.disabled_at_utc IS NULL AND t.scanned_through_height IS NOT NULL
-                        AND t.scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = t.network)
-                 FROM tenants t WHERE t.id = ?1",
-                [tenant_id],
+                        s.disabled_at_utc IS NULL
+                        AND ((s.scanned_through_height IS NOT NULL
+                              AND s.scanned_through_height < MAX(?3,
+                                  COALESCE((SELECT MAX(height) FROM scanned_blocks WHERE network = t.network), 0)))
+                             OR EXISTS (SELECT 1 FROM reorg_jobs WHERE network = t.network))
+                 FROM tenants t, tenants s WHERE t.id = ?1 AND s.id = ?2",
+                params![
+                    order.tenant_id,
+                    order.scan_tenant_id,
+                    i64::try_from(current_height).unwrap_or(i64::MAX)
+                ],
                 |row| {
                     Ok((
                         row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
@@ -3156,6 +3190,7 @@ mod tests {
         Order {
             id: "o".into(),
             tenant_id: "t".into(),
+            scan_tenant_id: "t".into(),
             merchant_order_id: None,
             minor_index: 1,
             address: "a".into(),
