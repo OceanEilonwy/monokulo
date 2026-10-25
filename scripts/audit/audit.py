@@ -643,7 +643,7 @@ def cmd_fixplan(args):
             if row is None or row["status"] != "confirmed":
                 sys.exit(f"entry {e['finding']}: not a confirmed finding")
             conn.execute(
-                "INSERT OR REPLACE INTO fix_plan VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO fix_plan (finding_id, fix_group, approach, fix, test_where, test_what, rationale, effort, planned_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (e["finding"], e["fix_group"], e["approach"], e["fix"], e.get("test_where", ""),
                  e.get("test_what", ""), e["rationale"], e["effort"], agent),
             )
