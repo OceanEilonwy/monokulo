@@ -67,8 +67,15 @@ pub fn onion_node_message(host: &str, port: u16) -> String {
 /// non-empty one is refused rather than saved and ignored.
 ///
 /// An empty one is what a form sends for "none".
+///
+/// A node or fallback on an onion address is invalid too: the engine
+/// reaches nodes over the web only. Like any invalid value, one in the
+/// options file or the stored settings stops the engine at boot.
 pub fn check_node(node: &Option<live_settings::Json<MoneroNodeSetting>>) -> Result<(), String> {
     let Some(node) = node else { return Ok(()) };
+    if let Some(onion) = node.0.onion_node() {
+        return Err(onion_node_message(&onion.host, onion.port));
+    }
     for fallback in &node.0.fallbacks {
         if !fallback.fallbacks.is_empty() {
             return Err(format!(
