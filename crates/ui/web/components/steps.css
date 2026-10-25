@@ -19,7 +19,7 @@
 .mk-track:has(> li:nth-child(2):last-child)::before { left: 25%; right: 25%; }
 .mk-track > li { position: relative; display: grid; justify-items: center; gap: var(--space-xs); font-size: var(--text-xs); font-weight: 700; }
 .mk-track-dot { display: grid; place-items: center; width: 2.13em; height: 2.13em; border: 2px solid color-mix(in srgb, currentColor 40%, transparent); border-radius: 50%; background: var(--paper-raised); }
-.mk-track-dot svg { width: 1.2em; height: 1.2em; }
+.mk-track-dot > svg { width: 1.2em; height: 1.2em; }
 .mk-track > .step-done .mk-track-dot { background: var(--state-paid-border); border-color: var(--state-paid-border); color: var(--paper-raised); }
 .mk-track > .step-now .mk-track-dot { border-color: currentColor; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
 /* Half filled, the right half: one straight edge. (A conic-gradient's hard
@@ -36,6 +36,25 @@
 .mk-stage[data-size="compact"] { padding: var(--space-sm); }
 .mk-stage[data-size="compact"] .mk-track > li { font-size: var(--text-2xs); }
 .mk-stage[data-size="compact"] .mk-stage-msg { font-size: var(--text-xs); }
+.mk-track:last-child { margin-bottom: 0; }
+/* A step in its own order state: its dot in the state's tint, edge and
+   ink, whatever the card's, and its symbol (StatusIcon) filling it. */
+.mk-track > [class*="state-"] .mk-track-dot { background: var(--state-bg); border-color: var(--state-border); color: var(--state-ink); }
+.mk-track-dot > .pos-icon { width: 86%; height: 86%; }
+/* Upright: dots down the left, each name beside its dot with its detail
+   under it. The step's line is its dot's height (2.13em, worked out at the
+   step, so it holds at any size) and the name inherits it, so the two
+   share a middle; each step's connector runs from its dot to the next and
+   stops at the last. */
+.mk-stage:not([data-size="compact"]):has(> .mk-track[data-orientation="vertical"]) { padding: var(--space-xl); }
+.mk-track[data-orientation="vertical"] { grid-auto-flow: row; grid-auto-columns: auto; gap: var(--space-xl); margin-bottom: var(--space-lg); }
+.mk-track[data-orientation="vertical"]::before { display: none; }
+.mk-track[data-orientation="vertical"] > li { grid-template-columns: auto minmax(0, 1fr); justify-items: start; align-items: start; column-gap: var(--space-md); font-size: var(--text-sm); line-height: 2.13em; }
+.mk-track[data-orientation="vertical"] > li:not(:last-child)::after { content: ""; position: absolute; left: calc(1.065em - 1px); top: 2.3em; bottom: calc(-1 * var(--space-xl) + .2em); width: 2px; background: var(--line-strong); }
+.mk-track[data-orientation="vertical"] .mk-track-name { font-size: var(--text-base); font-weight: 800; }
+.mk-track[data-orientation="vertical"] .mk-track-name small { display: block; font-size: var(--text-sm); font-weight: 500; line-height: 1.45; opacity: .85; }
+.mk-stage[data-size="compact"] .mk-track[data-orientation="vertical"] .mk-track-name { font-size: var(--text-xs); }
+.mk-stage[data-size="compact"] .mk-track[data-orientation="vertical"] .mk-track-name small { font-size: var(--text-2xs); }
 
 /* Time left (Countdown): the time in its tone's colour, the note muted,
    then a thin bar that empties. Native values drive the bar. */

@@ -744,6 +744,165 @@
     "title": "An order cancelled"
   },
   {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-pending state-pending\" aria-hidden=\"true\"><span class=\"pos-spinner\"></span></span>",
+    "props": {
+      "state": "pending"
+    },
+    "title": "Awaiting payment"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-unconfirmed state-unconfirmed\" aria-hidden=\"true\"><span class=\"pos-disc\"></span></span>",
+    "props": {
+      "state": "unconfirmed"
+    },
+    "title": "Unconfirmed"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-confirming state-confirming\" aria-hidden=\"true\"><span class=\"pos-disc\" style=\"--progress: 60%;\"></span></span>",
+    "props": {
+      "progress": 60,
+      "state": "confirming"
+    },
+    "title": "Confirming, 3 of 5"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-partial state-partial\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin-partial\"></use></svg></span>",
+    "props": {
+      "state": "partial"
+    },
+    "title": "Partially paid"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-paid state-paid\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin\"></use></svg></span>",
+    "props": {
+      "state": "paid"
+    },
+    "title": "Paid"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-overpaid state-overpaid\" aria-hidden=\"true\"><svg viewBox=\"0 0 44 32\"><use href=\"#pos-coins-overpaid\"></use></svg></span>",
+    "props": {
+      "state": "overpaid"
+    },
+    "title": "Overpaid"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-expired state-expired\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-expired\"></use></svg></span>",
+    "props": {
+      "state": "expired"
+    },
+    "title": "Expired"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-double-spend state-double-spend\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-double-spend\"></use></svg></span>",
+    "props": {
+      "state": "double-spend"
+    },
+    "title": "Double spend"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-offline state-offline\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-offline\"></use></svg></span>",
+    "props": {
+      "state": "offline"
+    },
+    "title": "Connection lost"
+  },
+  {
+    "component": "StatusIcon",
+    "html": "<span class=\"pos-icon pos-icon-cancelled state-cancelled\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\"><use href=\"#pos-cancelled\"></use></svg></span>",
+    "props": {
+      "state": "cancelled"
+    },
+    "title": "Cancelled"
+  },
+  {
+    "component": "HttpMethodTag",
+    "html": "<span class=\"mk-http-method\" data-method=\"get\">GET</span>",
+    "props": {
+      "method": "get"
+    },
+    "title": "Reads"
+  },
+  {
+    "component": "HttpMethodTag",
+    "html": "<span class=\"mk-http-method\" data-method=\"post\">POST</span>",
+    "props": {
+      "method": "post"
+    },
+    "title": "Makes or changes"
+  },
+  {
+    "component": "HttpMethodTag",
+    "html": "<span class=\"mk-http-method\" data-method=\"delete\">DELETE</span>",
+    "props": {
+      "method": "delete"
+    },
+    "title": "Removes"
+  },
+  {
+    "component": "HttpStatusTag",
+    "html": "<span class=\"mk-http-status\" data-outcome=\"ok\">200</span>",
+    "props": {
+      "code": "200",
+      "outcome": "ok"
+    },
+    "title": "Success"
+  },
+  {
+    "component": "HttpStatusTag",
+    "html": "<span class=\"mk-http-status\" data-outcome=\"ok\">303</span>",
+    "props": {
+      "code": "303",
+      "outcome": "ok"
+    },
+    "title": "A redirect"
+  },
+  {
+    "component": "HttpStatusTag",
+    "html": "<span class=\"mk-http-status\" data-outcome=\"client-error\">404</span>",
+    "props": {
+      "code": "404",
+      "outcome": "client-error"
+    },
+    "title": "The client's error"
+  },
+  {
+    "component": "HttpStatusTag",
+    "html": "<span class=\"mk-http-status\" data-outcome=\"client-error\">4xx</span>",
+    "props": {
+      "code": "4xx",
+      "outcome": "client-error"
+    },
+    "title": "Client errors"
+  },
+  {
+    "component": "HttpStatusTag",
+    "html": "<span class=\"mk-http-status\" data-outcome=\"server-error\">503</span>",
+    "props": {
+      "code": "503",
+      "outcome": "server-error"
+    },
+    "title": "The server's error"
+  },
+  {
+    "component": "HttpStatusTag",
+    "html": "<span class=\"mk-http-status\" data-outcome=\"other\">default</span>",
+    "props": {
+      "code": "default",
+      "outcome": "other"
+    },
+    "title": "Anything else"
+  },
+  {
     "component": "NetworkBadge",
     "html": "<span class=\"tag-network is-main\"><svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\"></circle><path d=\"M7 15V9l5 5 5-5v6\"></path></svg><span class=\"tag-network-name\">Mainnet</span></span>",
     "props": {
@@ -3876,7 +4035,8 @@
           "progress": "todo"
         }
       ],
-      "title": "Send 0.42 XMR"
+      "title": "Send 0.42 XMR",
+      "vertical": false
     },
     "title": "Waiting for a payment"
   },
@@ -3906,7 +4066,8 @@
           "progress": "todo"
         }
       ],
-      "title": "Part paid"
+      "title": "Part paid",
+      "vertical": false
     },
     "title": "Part paid"
   },
@@ -3936,7 +4097,8 @@
           "progress": "todo"
         }
       ],
-      "title": "Confirming"
+      "title": "Confirming",
+      "vertical": false
     },
     "title": "Confirming"
   },
@@ -3962,7 +4124,8 @@
           "progress": "done"
         }
       ],
-      "title": "Paid"
+      "title": "Paid",
+      "vertical": false
     },
     "title": "Paid, counted as soon as seen"
   },
@@ -3992,7 +4155,8 @@
           "progress": "todo"
         }
       ],
-      "title": "Expired"
+      "title": "Expired",
+      "vertical": false
     },
     "title": "Expired"
   },
@@ -4022,9 +4186,185 @@
           "progress": "todo"
         }
       ],
-      "title": "Send 0.42 XMR"
+      "title": "Send 0.42 XMR",
+      "vertical": false
     },
     "title": "On the POS"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage\"><ol class=\"mk-track\" data-orientation=\"vertical\" aria-label=\"An order, start to finish\"><li class=\"step-done state-pending\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-pending state-pending\" aria-hidden=\"true\"><span class=\"pos-spinner\"></span></span></span><span class=\"mk-track-name\">Awaiting payment<span class=\"visually-hidden\">, done</span><small>Your page asks Monokulo for an order, and the customer scans its QR code in the checkout.</small></span></li><li class=\"step-done state-unconfirmed\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-unconfirmed state-unconfirmed\" aria-hidden=\"true\"><span class=\"pos-disc\"></span></span></span><span class=\"mk-track-name\">Unconfirmed<span class=\"visually-hidden\">, done</span><small>Seen in about a second, as the payment reaches the network.</small></span></li><li class=\"step-done state-confirming\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-confirming state-confirming\" aria-hidden=\"true\"><span class=\"pos-disc\" style=\"--progress: 60%;\"></span></span></span><span class=\"mk-track-name\">Confirming<span class=\"visually-hidden\">, done</span><small>Confirmed as blocks arrive, straight to your own wallet.</small></span></li><li class=\"step-done state-paid\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><span class=\"pos-icon pos-icon-paid state-paid\" aria-hidden=\"true\"><svg viewBox=\"0 0 32 32\"><use href=\"#pos-coin\"></use></svg></span></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, done</span><small>Your server hears order.paid, signed, so you ship on Monokulo's word, not the browser's.</small></span></li></ol></div>",
+    "props": {
+      "compact": false,
+      "label": "An order, start to finish",
+      "steps": [
+        {
+          "detail": {
+            "$slot": [
+              "Your page asks Monokulo for an order, and the customer scans its QR code in the checkout."
+            ]
+          },
+          "icon": {
+            "$slot": [
+              {
+                "$component": "StatusIcon",
+                "props": {
+                  "state": "pending"
+                }
+              }
+            ]
+          },
+          "label": "Awaiting payment",
+          "progress": "done",
+          "state": "pending"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "Seen in about a second, as the payment reaches the network."
+            ]
+          },
+          "icon": {
+            "$slot": [
+              {
+                "$component": "StatusIcon",
+                "props": {
+                  "state": "unconfirmed"
+                }
+              }
+            ]
+          },
+          "label": "Unconfirmed",
+          "progress": "done",
+          "state": "unconfirmed"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "Confirmed as blocks arrive, straight to your own wallet."
+            ]
+          },
+          "icon": {
+            "$slot": [
+              {
+                "$component": "StatusIcon",
+                "props": {
+                  "progress": 60,
+                  "state": "confirming"
+                }
+              }
+            ]
+          },
+          "label": "Confirming",
+          "progress": "done",
+          "state": "confirming"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "Your server hears order.paid, signed, so you ship on Monokulo's word, not the browser's."
+            ]
+          },
+          "icon": {
+            "$slot": [
+              {
+                "$component": "StatusIcon",
+                "props": {
+                  "state": "paid"
+                }
+              }
+            ]
+          },
+          "label": "Paid",
+          "progress": "done",
+          "state": "paid"
+        }
+      ],
+      "vertical": true
+    },
+    "title": "Upright: an order, start to finish"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-confirming\"><ol class=\"mk-track\" data-orientation=\"vertical\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span><small>0.42 XMR to the order's address.</small></span></li><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, now</span><small>3 of 10 confirmations.</small></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Confirming.</strong> Payment seen; 3 of 10 confirmations.</p></div>",
+    "props": {
+      "compact": false,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Payment seen; 3 of 10 confirmations."
+        ]
+      },
+      "state": "confirming",
+      "steps": [
+        {
+          "detail": {
+            "$slot": [
+              "0.42 XMR to the order's address."
+            ]
+          },
+          "label": "Send",
+          "progress": "done"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "3 of 10 confirmations."
+            ]
+          },
+          "label": "Confirm",
+          "progress": "now"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Confirming",
+      "vertical": true
+    },
+    "title": "Upright, with the line under it"
+  },
+  {
+    "component": "ProgressSteps",
+    "html": "<div class=\"mk-stage state-confirming\" data-size=\"compact\"><ol class=\"mk-track\" data-orientation=\"vertical\" aria-label=\"Payment progress\"><li class=\"step-done\"><span class=\"mk-track-dot\" aria-hidden=\"true\"><svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m4.5 12.5 5 5 10-11\"></path></svg></span><span class=\"mk-track-name\">Send<span class=\"visually-hidden\">, done</span><small>0.42 XMR to the order's address.</small></span></li><li class=\"step-now\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Confirm<span class=\"visually-hidden\">, now</span><small>3 of 10 confirmations.</small></span></li><li class=\"step-todo\"><span class=\"mk-track-dot\" aria-hidden=\"true\"></span><span class=\"mk-track-name\">Paid<span class=\"visually-hidden\">, to come</span></span></li></ol><p class=\"mk-stage-msg\" role=\"status\"><strong>Confirming.</strong> Payment seen; 3 of 10 confirmations.</p></div>",
+    "props": {
+      "compact": true,
+      "label": "Payment progress",
+      "message": {
+        "$slot": [
+          "Payment seen; 3 of 10 confirmations."
+        ]
+      },
+      "state": "confirming",
+      "steps": [
+        {
+          "detail": {
+            "$slot": [
+              "0.42 XMR to the order's address."
+            ]
+          },
+          "label": "Send",
+          "progress": "done"
+        },
+        {
+          "detail": {
+            "$slot": [
+              "3 of 10 confirmations."
+            ]
+          },
+          "label": "Confirm",
+          "progress": "now"
+        },
+        {
+          "label": "Paid",
+          "progress": "todo"
+        }
+      ],
+      "title": "Confirming",
+      "vertical": true
+    },
+    "title": "Upright and small"
   },
   {
     "component": "Countdown",

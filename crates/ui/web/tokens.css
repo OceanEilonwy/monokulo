@@ -148,6 +148,25 @@
   --network-main-edge: var(--accent-text);
   --network-test-bg: var(--tint-neutral);
   --network-test-edge: var(--line-strong);
+  /* An HTTP method and a response's status in the API reference
+     (HttpMethodTag, HttpStatusTag): GET, which only reads, neutral; POST in
+     the brand's tint; DELETE in the error's. A status in its outcome's
+     tint: success, a client's error amber, a server's red. Ink on each. */
+  --http-ink: var(--ink);
+  --http-get-bg: var(--tint-neutral);
+  --http-get-edge: var(--line-strong);
+  --http-post-bg: var(--tint-highlight);
+  --http-post-edge: var(--accent-text);
+  --http-delete-bg: var(--tint-error);
+  --http-delete-edge: var(--error);
+  --http-ok-bg: var(--tint-success);
+  --http-ok-edge: var(--success);
+  --http-client-error-bg: var(--tint-warning);
+  --http-client-error-edge: var(--warning);
+  --http-server-error-bg: var(--tint-error);
+  --http-server-error-edge: var(--error);
+  --http-other-bg: var(--tint-neutral);
+  --http-other-edge: var(--line-strong);
   /* A clickable row under the pointer (lighter than `--surface-sunken`, so a
      bar drawn on that track stays readable), and the dim behind a dialog. */
   --tint-hover: color-mix(in srgb, var(--brand-orange) 5%, var(--paper-raised));
