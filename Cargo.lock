@@ -1094,6 +1094,7 @@ dependencies = [
  "serde",
  "sha2 0.11.0",
  "subtle",
+ "telemetry",
  "tokio",
 ]
 

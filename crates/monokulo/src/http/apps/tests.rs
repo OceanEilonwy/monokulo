@@ -442,7 +442,7 @@ async fn an_app_on_another_site_disconnects_itself_cross_origin() {
     assert!(state
         .db
         .lock()
-        .list_apps(&shared::ids::ConnectionId::new(id))
+        .list_apps(&engine_protocol::ids::ConnectionId::new(id))
         .unwrap()
         .is_empty());
 }

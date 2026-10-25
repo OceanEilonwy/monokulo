@@ -3773,7 +3773,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
             .unwrap()
             .unwrap();
         let sk = crate::crypto::decrypt(
@@ -3782,7 +3784,7 @@ mod tests {
             &row.tenant_secret_token_encrypted,
         )
         .unwrap();
-        let sk = shared::auth::RawToken::presented(&sk);
+        let sk = credentials::auth::RawToken::presented(&sk);
         state
             .engine
             .client

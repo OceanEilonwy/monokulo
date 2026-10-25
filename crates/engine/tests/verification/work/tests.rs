@@ -4245,7 +4245,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
         ))
         .unwrap();
         s.void_payment(
-            &shared::ids::OrderId::new(orders[0].to_string()),
+            &engine_protocol::ids::OrderId::new(orders[0].to_string()),
             &"00".repeat(32),
             0,
             crate::now_unix(),
