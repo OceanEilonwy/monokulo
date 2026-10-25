@@ -53,6 +53,13 @@ LEASE_MINUTES = 90
 # until its non-test lines pass this.
 SLICE_LINES = 4000
 
+REQUIRED = {
+    "finding": ("job", "file", "lines", "category", "severity", "confidence", "title", "problem",
+                "scenario", "recommendation"),
+    "verify": ("job", "verdict", "note"),
+    "note": ("finding", "text"),
+}
+
 CATEGORIES = ("bug", "security", "type_safety", "simplify", "dead_code", "convention")
 SEVERITIES = ("critical", "high", "medium", "low")
 CONFIDENCES = ("high", "medium", "low")
@@ -523,7 +530,7 @@ def own_job(conn, job_id, agent, kinds):
 def cmd_finding(args):
     agent = agent_name(args)
     conn = connect()
-    start, _, end = args.lines.partition("-")
+    start, _, end = str(args.lines).partition("-")
     if not (start.isdigit() and (end.isdigit() or not end)):
         sys.exit(f"--lines takes one range, START or START-END, not {args.lines!r}; "
                  "record separate places as separate findings or name them in --problem")
@@ -727,30 +734,33 @@ def main():
     sub.add_parser("claim", parents=[common]).set_defaults(run=cmd_claim)
 
     p = sub.add_parser("finding", parents=[common])
-    p.add_argument("--job", type=int, required=True)
-    p.add_argument("--file", required=True)
-    p.add_argument("--lines", required=True, help="START or START-END")
-    p.add_argument("--category", choices=CATEGORIES, required=True)
-    p.add_argument("--severity", choices=SEVERITIES, required=True)
-    p.add_argument("--confidence", choices=CONFIDENCES, required=True)
-    p.add_argument("--title", required=True)
-    p.add_argument("--problem", required=True)
-    p.add_argument("--scenario", required=True, help="concrete input or state, and the wrong outcome")
-    p.add_argument("--recommendation", required=True)
+    p.add_argument("--from", dest="from_file", help="read these fields from a JSON object in FILE")
+    p.add_argument("--job", type=int)
+    p.add_argument("--file")
+    p.add_argument("--lines", help="START or START-END")
+    p.add_argument("--category", choices=CATEGORIES)
+    p.add_argument("--severity", choices=SEVERITIES)
+    p.add_argument("--confidence", choices=CONFIDENCES)
+    p.add_argument("--title")
+    p.add_argument("--problem")
+    p.add_argument("--scenario", help="concrete input or state, and the wrong outcome")
+    p.add_argument("--recommendation")
     p.add_argument("--test", help="the regression test that would catch it")
     p.set_defaults(run=cmd_finding)
 
     p = sub.add_parser("verify", parents=[common])
-    p.add_argument("--job", type=int, required=True)
-    p.add_argument("--verdict", choices=("confirmed", "rejected", "duplicate"), required=True)
-    p.add_argument("--note", required=True)
+    p.add_argument("--from", dest="from_file", help="read these fields from a JSON object in FILE")
+    p.add_argument("--job", type=int)
+    p.add_argument("--verdict", choices=("confirmed", "rejected", "duplicate"))
+    p.add_argument("--note")
     p.add_argument("--duplicate-of", type=int)
     p.add_argument("--severity", choices=SEVERITIES, help="correct the severity")
     p.set_defaults(run=cmd_verify)
 
     p = sub.add_parser("note", parents=[common])
-    p.add_argument("finding", type=int)
-    p.add_argument("text")
+    p.add_argument("--from", dest="from_file", help="read finding and text from a JSON object in FILE")
+    p.add_argument("finding", type=int, nargs="?")
+    p.add_argument("text", nargs="?")
     p.set_defaults(run=cmd_note)
 
     p = sub.add_parser("purpose", parents=[common])
@@ -783,6 +793,21 @@ def main():
     p.set_defaults(run=cmd_report)
 
     args = parser.parse_args()
+    if getattr(args, "from_file", None):
+        fields = json.loads(Path(args.from_file).read_text())
+        for key, value in fields.items():
+            key = key.replace("-", "_")
+            if not hasattr(args, key):
+                sys.exit(f"{args.from_file}: {args.command} has no field {key!r}")
+            setattr(args, key, value)
+    missing = [k for k in REQUIRED.get(args.command, ()) if getattr(args, k, None) in (None, "")]
+    if missing:
+        sys.exit(f"{args.command} needs: " + ", ".join(m.replace("_", "-") for m in missing))
+    for key, allowed in (("category", CATEGORIES), ("severity", SEVERITIES), ("confidence", CONFIDENCES),
+                         ("verdict", ("confirmed", "rejected", "duplicate"))):
+        value = getattr(args, key, None)
+        if value is not None and value not in allowed:
+            sys.exit(f"{key} must be one of {', '.join(allowed)}, not {value!r}")
     args.run(args)
 
 

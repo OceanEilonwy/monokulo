@@ -69,6 +69,14 @@ machine. Use `rg`, `git grep` and reading.
     --test "The regression test that would catch it"
   ```
 
+  Text with backticks, `#[...]` or quotes can trip the shell's checks. Then
+  write the fields as a JSON object to a file under
+  `/home/henry/.claude/jobs/662be1eb/tmp/` (keys as the flags: `job`, `file`,
+  `lines`, `category`, ..., `test`) and run
+  `audit.py finding --agent NAME --from FILE`. `verify` and `note` take
+  `--from` too (`job`, `verdict`, `note`, `duplicate_of`, `severity`; or
+  `finding`, `text`).
+
   Paths are relative to the repository root. Line numbers are at the audited
   commit. `--scenario` is required: if you can't say what goes wrong, it
   isn't a bug finding (it may still be `simplify` or `type_safety`, where
