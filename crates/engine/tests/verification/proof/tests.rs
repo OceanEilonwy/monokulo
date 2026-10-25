@@ -951,7 +951,7 @@ mod settlement {
     struct Shop {
         world: World,
         custody: FlakyKeyCustody,
-        tenants: Vec<(crate::store::TenantId, crate::key_custody::WalletHandle)>,
+        tenants: Vec<(crate::store::TenantId, crate::key_custody::LiveWallet)>,
         order: crate::store::OrderId,
         state: ScanState,
     }
@@ -964,6 +964,10 @@ mod settlement {
             let custody = FlakyKeyCustody::default();
             let (tenant, handle, order) =
                 fixture_tenant_shared(&world.store, &custody, TEST_NOW + 3600).await;
+            let live = {
+                let store = world.store.lock();
+                crate::key_custody::LiveWallet::of_store(&store, &tenant, handle)
+            };
             {
                 let store = world.store.lock();
                 let tip = chain.tip();
@@ -981,7 +985,7 @@ mod settlement {
             Self {
                 world,
                 custody,
-                tenants: vec![(tenant, handle)],
+                tenants: vec![(tenant, live)],
                 order,
                 state: ScanState::default(),
             }

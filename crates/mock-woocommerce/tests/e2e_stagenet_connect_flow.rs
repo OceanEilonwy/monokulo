@@ -266,7 +266,7 @@ async fn live_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     {
         let store = engine.store().lock();
         for tenant in store.list_active_tenants().unwrap() {
-            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+            while store.peek_next_minor_index(&tenant.id).unwrap().minor_index < FIRST_MINOR_INDEX {
                 store.allocate_minor_index(&tenant.id).unwrap();
             }
         }

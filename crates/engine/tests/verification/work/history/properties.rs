@@ -1,6 +1,6 @@
 //! Storage boundaries, large queues, composed histories and actual process death.
 use super::*;
-use crate::scanner::tests::{payment_tx_outputs, register_fixture_wallet};
+use crate::scanner::tests::{live_tenants, payment_tx_outputs, register_fixture_wallet};
 use crate::store::{Db, TenantId};
 use std::sync::Arc;
 
@@ -220,11 +220,11 @@ fn crash_process_child() {
                     Db::over_shared(Arc::clone(&store))
                 },
             ),
-            store: Some(store),
+            store: Some(Arc::clone(&store)),
             path: super::super::TempDb(path.clone()),
             custody,
             daemon,
-            tenants: vec![(tenant, handle)],
+            tenants: live_tenants(&store, [(tenant, handle)]).to_vec(),
             order,
             state: Harness::state(),
             model: super::super::Model {
@@ -711,14 +711,14 @@ mod properties {
                         description: None, created_at: h.now, expires_at: i64::MAX,
                         confirmations_required_override: Some(0), idempotency_key: Some("boundary-invoice".to_owned()),
                     };
-                    s.create_order_claiming_minor_index(minor, &invoice).unwrap_err();
+                    s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap_err();
                     assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor);
                     invoice.xmr_amount_piconero = 1;
-                    let created = s.create_order_claiming_minor_index(minor, &invoice).unwrap().unwrap();
+                    let created = s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap().unwrap();
                     assert_eq!(created.xmr_amount_piconero, 1);
                     assert_eq!(created.minor_index, minor);
                     assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
-                    let retried = s.create_order_claiming_minor_index(minor, &invoice).unwrap().unwrap();
+                    let retried = s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap().unwrap();
                     assert_eq!(retried.id, created.id);
                     assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
                 });
@@ -971,7 +971,7 @@ mod properties {
                         .collect(),
                 );
                 h.daemon.fail_calls(failures);
-                h.custody.fail(h.tenants[0].1);
+                h.custody.fail(h.tenants[0].1.handle);
                 round(&mut h, &orders, Duration::ZERO, GRACE, Some(fault)).await;
                 if restart {
                     h.restart();

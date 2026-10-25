@@ -73,13 +73,16 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
                 rusqlite::params![(2 + index % groups) as i64, tenant],
             )
             .unwrap();
-        tenants.push((tenant, handle));
+        tenants.push((
+            tenant.clone(),
+            LiveWallet::of_store(&store, &tenant, handle),
+        ));
     }
     tenants.sort_by(|a, b| a.0.cmp(&b.0));
     let failing: Vec<_> = tenants
         .iter()
         .take(count.div_ceil(2))
-        .map(|(_, h)| *h)
+        .map(|(_, live)| live.handle)
         .collect();
     for handle in &failing {
         custody.fail(*handle);

@@ -276,7 +276,7 @@ async fn tenant_failure_history(
     for _ in 1..tenant_count {
         let (tenant, handle, order) =
             fixture_tenant_shared(harness.store(), &harness.custody, i64::MAX).await;
-        harness.tenants.push((tenant, handle));
+        harness.register(tenant, handle);
         orders.push(order);
     }
     // The original tenant remains healthy, so the existing per-round
@@ -289,7 +289,7 @@ async fn tenant_failure_history(
         },
         |index| 1 + index % (tenant_count - 1),
     );
-    harness.custody.fail(harness.tenants[failed].1);
+    harness.custody.fail(harness.tenants[failed].1.handle);
     harness.state = ScanState::default()
         .with_tuning(ScanTuning {
             group_page,
@@ -378,7 +378,7 @@ async fn tenant_failure_history(
             }
         }
     }
-    harness.custody.recover(harness.tenants[failed].1);
+    harness.custody.recover(harness.tenants[failed].1.handle);
     harness.restart();
     for _ in 0..limit {
         harness.tick().await.into_result().unwrap();

@@ -308,7 +308,7 @@ async fn live_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     {
         let store = engine.store().lock();
         for tenant in store.list_active_tenants().unwrap() {
-            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+            while store.peek_next_minor_index(&tenant.id).unwrap().minor_index < FIRST_MINOR_INDEX {
                 store.allocate_minor_index(&tenant.id).unwrap();
             }
         }

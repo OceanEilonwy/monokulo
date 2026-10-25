@@ -37,7 +37,6 @@
 
 mod support;
 
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -181,7 +180,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
     {
         let store = store.lock();
         for tenant in store.list_active_tenants().unwrap() {
-            while store.peek_next_minor_index(&tenant.id).unwrap() < FIRST_MINOR_INDEX {
+            while store.peek_next_minor_index(&tenant.id).unwrap().minor_index < FIRST_MINOR_INDEX {
                 store.allocate_minor_index(&tenant.id).unwrap();
             }
         }
@@ -190,9 +189,12 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
         .unseal_and_register(&created.tenant.sealed_key_material)
         .await
         .unwrap();
-    let wallet_handles = Arc::new(RwLock::new(HashMap::from([(
+    let wallet_handles = Arc::new(engine::key_custody::WalletHandles::from(HashMap::from([(
         created.tenant.id.clone(),
-        handle,
+        engine::key_custody::LiveWallet {
+            wallet_id: created.tenant.wallet_id.clone(),
+            handle,
+        },
     )])));
 
     let app_state = AppState {

@@ -11,13 +11,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use monero::Network;
-use parking_lot::RwLock;
 use shared::supervise::supervise_until;
 use tracing::Instrument as _;
 
 use crate::engine_settings::{Daemons, EngineSettings};
 use crate::http::now_unix;
-use crate::key_custody::{KeyCustody, WalletHandle};
+use crate::key_custody::{KeyCustody, LiveWallet, WalletHandles};
 use crate::scanner_status::{self, ScannerStatusMap};
 use crate::store::Db;
 
@@ -54,17 +53,17 @@ pub async fn run_fast_mempool_loop(
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
     daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    wallet_handles: Arc<WalletHandles>,
     settings: Arc<EngineSettings>,
 ) {
     loop {
         let scan = settings.scan.load();
         let interval = fast_mempool_interval(scan.poll_interval);
         if let Some(daemon) = daemons.get(network) {
-            let tenants: Vec<(crate::store::TenantId, WalletHandle)> = wallet_handles
+            let tenants: Vec<(crate::store::TenantId, LiveWallet)> = wallet_handles
                 .read()
                 .iter()
-                .map(|(id, h)| (id.clone(), *h))
+                .map(|(id, live)| (id.clone(), live.clone()))
                 .collect();
             let pinned = daemon.pin();
             let inputs = crate::work::RoundInputs {
@@ -190,7 +189,7 @@ pub async fn manage_network_loops(
     db: Db,
     key_custody: Arc<dyn KeyCustody>,
     daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    wallet_handles: Arc<WalletHandles>,
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
 ) {
@@ -363,7 +362,7 @@ pub async fn run_scanner_loop(
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
     daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+    wallet_handles: Arc<WalletHandles>,
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
 ) {
@@ -399,7 +398,7 @@ pub async fn run_scanner_loop(
         let lost_a_handle = wallet_handles
             .read()
             .values()
-            .any(|handle| !key_custody.handle_is_live(*handle));
+            .any(|live| !key_custody.handle_is_live(live.handle));
         let retry_after = if lost_a_handle || registrations_failed {
             REGISTRATION_RETRY_AFTER_LOSS
         } else {
@@ -422,10 +421,10 @@ pub async fn run_scanner_loop(
                 tracing::info!(network = ?network, stores = registered, "registered the keys of stores that had none");
             }
         }
-        let tenants: Vec<(crate::store::TenantId, WalletHandle)> = wallet_handles
+        let tenants: Vec<(crate::store::TenantId, LiveWallet)> = wallet_handles
             .read()
             .iter()
-            .map(|(id, h)| (id.clone(), *h))
+            .map(|(id, live)| (id.clone(), live.clone()))
             .collect();
         let started_at = now_unix();
         if scan_state.activity().node_pool_due() {
@@ -651,8 +650,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             .to_string();
         assert!(unasked.contains("is an onion address"), "{unasked}");
         let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>> =
-            Arc::default();
+        let wallet_handles: Arc<WalletHandles> = Arc::default();
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
             db: crate::store::Database::inline(Arc::clone(&store)),
@@ -865,7 +863,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
     /// store and the loop.
     async fn a_registered_store() -> (
         Arc<CustodyRouter>,
-        Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
+        Arc<WalletHandles>,
         crate::store::TenantId,
         tokio::task::JoinHandle<()>,
     ) {
@@ -899,8 +897,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
                 client: Arc::new(node),
             }])),
         )]));
-        let wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>> =
-            Arc::default();
+        let wallet_handles: Arc<WalletHandles> = Arc::default();
         let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&router);
         let scan_loop = tokio::spawn(run_scanner_loop(
             Arc::default(),
@@ -923,7 +920,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
     #[tokio::test]
     async fn a_store_is_registered_on_the_scanner_loop_s_first_round() {
         let (router, wallet_handles, tenant, scan_loop) = a_registered_store().await;
-        assert!(router.handle_is_live(wallet_handles.read()[&tenant]));
+        assert!(router.handle_is_live(wallet_handles.read()[&tenant].handle));
         scan_loop.abort();
     }
 
@@ -935,7 +932,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
     async fn a_store_whose_backend_was_replaced_is_registered_again_within_seconds() {
         let started = tokio::time::Instant::now();
         let (router, wallet_handles, tenant, scan_loop) = a_registered_store().await;
-        let first = wallet_handles.read()[&tenant];
+        let first = wallet_handles.read()[&tenant].handle;
 
         // The backend is replaced by a new instance: the old handle is gone.
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
@@ -947,7 +944,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             wallet_handles
                 .read()
                 .get(&tenant)
-                .is_some_and(|h| *h != first && router.handle_is_live(*h))
+                .is_some_and(|live| live.handle != first && router.handle_is_live(live.handle))
         })
         .await;
         let waited = started.elapsed();
