@@ -338,11 +338,10 @@ async fn store_with_deliveries(
         let event = LoggedEvent {
             seq,
             event_id: format!("evt_{seq}"),
-            event_type: event_type.to_string(),
+            kind: event_type.into(),
             created_at: now - 600,
             tenant_public_key: pk.clone(),
             order_id: OrderId::new(format!("5f01c9a7d2e14b88a3e0f9c6d1e21b0{seq}")),
-            status: event_type.strip_prefix("order.").map(str::to_string),
             txid: None,
             merchant_order_id: None,
             description: None,

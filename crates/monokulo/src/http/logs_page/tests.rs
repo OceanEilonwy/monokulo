@@ -879,21 +879,21 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
     s.state
         .db
         .lock()
-        .create_order_currency_metadata(
-            &shared::ids::ConnectionId::new("c_who"),
-            &crate::db::OrderId::new("o_who"),
-            "EUR",
-            "12.34",
-            shared::xmr_amount::Piconero(1_000_000),
-            "fixed",
-            1000,
-            "EUR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        .create_order_currency_metadata(&crate::db::NewOrderRecord {
+            connection_id: &shared::ids::ConnectionId::new("c_who"),
+            order_id: &crate::db::OrderId::new("o_who"),
+            currency: "EUR",
+            amount: "12.34",
+            piconero_per_unit: shared::xmr_amount::Piconero(1_000_000),
+            provider: "fixed",
+            created_at: 1000,
+            base_currency: "EUR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
     call("/checkout/o_who", None).await.unwrap();
 

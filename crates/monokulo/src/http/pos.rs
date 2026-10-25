@@ -10,9 +10,8 @@
 //! API's order creation (`POST /api/v1/orders`), a POS terminal is operated
 //! by the merchant themselves, logged in, standing at the register.
 //!
-//! Order creation reuses the exact same pricing/threshold-resolution path
-//! `http::orders::create_order` and `api::v1::orders::create` already use
-//! (`crate::confirmation_thresholds::resolve_for_order`) - a POS sale is not
+//! Order creation is the one path `http::orders::create_order` and
+//! `api::v1::orders::create` also use (`crate::orders::make`) - a POS sale is not
 //! a different kind of order, just a different UI for creating one, always
 //! denominated in this store's own `base_currency` rather than a
 //! caller-chosen one (there's no currency picker on a terminal screen).
@@ -45,6 +44,7 @@ use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::api::runtime::extract::{JsonBody, QueryParams};
+use crate::api::runtime::scalars::IdempotencyKey;
 use crate::engine_client::{EngineClientError, OrderView};
 use crate::views;
 use crate::views::pos::PosViewModel;
@@ -133,10 +133,9 @@ pub struct PosCreateOrderResponse {
 
 /// `POST /stores/{id}/pos/orders` - creates a real order,
 /// always priced in this store's own `base_currency` (a POS terminal has no
-/// currency picker). Mirrors
-/// `http::orders::create_order`/`api::v1::orders::create` field for field;
-/// see either's own doc comment for why the pricing/threshold-resolution
-/// steps look the way they do.
+/// currency picker), through the path the API and the dashboard share
+/// (`crate::orders::make`). The terminal's request key makes a retry after
+/// a lost answer get the same order, at the price it was made at.
 pub async fn create_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -149,79 +148,17 @@ pub async fn create_order(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
-    if let Some(key) = req.request_key.as_deref() {
-        if key.len() > 100 || key.is_empty() {
-            return ApiError::BadRequest("Invalid request key.".to_string()).into_response();
+    let request_key = match req.request_key.as_deref().map(IdempotencyKey::parse) {
+        Some(Ok(key)) => Some(key),
+        Some(Err(_)) => {
+            return ApiError::BadRequest("Invalid request key.".to_string()).into_response()
         }
-    }
-
-    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
-    let row = match load_owned_connection(&state.db, &user, &id).await {
-        Ok(Some(row)) => row,
-        Ok(None) => return ApiError::NotFound.into_response(),
-        Err(()) => return ApiError::Internal.into_response(),
+        None => None,
     };
-
-    if let Some(key) = req.request_key.as_deref() {
-        let (store_id, key) = (row.id.clone(), key.to_string());
-        let existing = state
-            .db
-            .read(move |db| db.pos_order_by_request_key(&store_id, &key))
-            .await;
-        match existing {
-            Ok(Some(existing)) => {
-                let sk = match decrypt_sk(&state.encryption_key, &row) {
-                    Ok(sk) => sk,
-                    Err(()) => return ApiError::Internal.into_response(),
-                };
-                let detail = match state.engine.client.get_order_detail(&sk, &existing).await {
-                    Ok(detail) => detail,
-                    Err(error) => return engine_failure(&error),
-                };
-                let (store_id, order_id) = (row.id.clone(), existing.clone());
-                let metadata_result = state
-                    .db
-                    .read(move |db| db.get_order_currency_metadata(&store_id, &order_id))
-                    .await;
-                let metadata = match metadata_result {
-                    Ok(Some(metadata)) => metadata,
-                    _ => return ApiError::Internal.into_response(),
-                };
-                if metadata.amount != req.amount.trim()
-                    || detail.order.merchant_order_id.as_deref().unwrap_or("")
-                        != req.merchant_order_id.as_deref().unwrap_or("").trim()
-                {
-                    return ApiError::BadRequest(
-                        "Request key was already used for a different order.".to_string(),
-                    )
-                    .into_response();
-                }
-                return Json(PosCreateOrderResponse {
-                    order_id: existing,
-                    address: detail.order.address,
-                    xmr_amount: shared::exchange_rate::format_piconero_as_xmr(
-                        detail.order.xmr_amount_piconero,
-                    ),
-                    amount: metadata.amount,
-                    currency: metadata.currency,
-                    confirmations_required: metadata
-                        .confirmations_required_applied
-                        .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS),
-                    expires_at: detail.order.expires_at,
-                    merchant_order_id: detail.order.merchant_order_id,
-                })
-                .into_response();
-            }
-            Ok(None) => {}
-            Err(_) => return ApiError::Internal.into_response(),
-        }
-    }
-
     let amount = req.amount.trim();
     if amount.is_empty() {
         return ApiError::BadRequest("Enter an amount.".to_string()).into_response();
     }
-    let currency = row.base_currency.clone();
     let merchant_order_id = req
         .merchant_order_id
         .as_deref()
@@ -236,160 +173,67 @@ pub async fn create_order(
             .into_response();
     }
 
-    let (piconero_per_unit, provider) = match state
-        .exchange_rate
-        .piconero_per_unit_for(&row, &currency)
-        .await
-    {
-        Ok(Some(result)) => result,
-        Ok(None) => {
-            return ApiError::BadRequest(format!("unsupported currency: {currency}"))
-                .into_response()
-        }
-        Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
-            return ApiError::BadRequest(format!("unsupported currency: {currency}"))
-                .into_response();
-        }
-        Err(e) => {
-            tracing::warn!(store.id = %row.id, currency = ?currency, error = %e, "no usable exchange rate right now");
-            return match e.unavailable(&currency) {
-                Some(unavailable) => unavailable.problem().into_response(),
-                None => ApiError::Internal.into_response(),
+    let request = crate::orders::OrderRequest {
+        amount: amount.to_string(),
+        currency: row.base_currency.clone(),
+        merchant_order_id,
+        // The till takes an amount, not a list of items: nothing to
+        // describe, so the checkout shows the store's payment description,
+        // if it has one.
+        description: None,
+        // The till's reference (often the customer's name) is for the
+        // payer to see.
+        show_merchant_order_id: true,
+        idempotency_key: request_key,
+    };
+    match crate::orders::make(&state, &row, crate::orders::Origin::Pos, request).await {
+        Ok(crate::orders::Made::Created(order)) => Json(PosCreateOrderResponse {
+            xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
+            order_id: order.order_id,
+            address: order.address,
+            amount: order.amount,
+            currency: order.currency.to_string(),
+            confirmations_required: order.price.confirmations_required,
+            expires_at: order.expires_at,
+            merchant_order_id: order.merchant_order_id,
+        })
+        .into_response(),
+        // The sale an earlier attempt with the same key made.
+        Ok(crate::orders::Made::Found(order_id)) => {
+            let sk = match decrypt_sk(&state.encryption_key, &row) {
+                Ok(sk) => sk,
+                Err(()) => return ApiError::Internal.into_response(),
             };
-        }
-    };
-    let xmr_amount_piconero =
-        match shared::exchange_rate::compute_order_amount(&currency, amount, piconero_per_unit) {
-            Ok(amount) => amount,
-            Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
-        };
-
-    let sk = match decrypt_sk(&state.encryption_key, &row) {
-        Ok(sk) => sk,
-        Err(()) => return ApiError::Internal.into_response(),
-    };
-    let resolution = match crate::confirmation_thresholds::resolve_for_order(
-        &state,
-        &row,
-        &policy,
-        &sk,
-        &currency,
-        piconero_per_unit,
-        xmr_amount_piconero,
-    )
-    .await
-    {
-        Ok(resolution) => resolution,
-        Err(crate::confirmation_thresholds::ResolveError::NoRate(message)) => {
-            return ApiError::BadRequest(message).into_response()
-        }
-        Err(e) => return e.problem().into_response(),
-    };
-
-    match state
-        .engine
-        .client
-        .create_order(
-            &sk,
-            shared::xmr_amount::Piconero(xmr_amount_piconero),
-            merchant_order_id.clone(),
-            // The till takes an amount, not a list of items: nothing to
-            // describe, so the checkout shows the store's payment
-            // description, if it has one.
-            None,
-            Some(resolution.confirmations_required),
-            // The terminal's own key for this sale: a retry after a lost
-            // answer (or a failed local write below) gets the same order.
-            req.request_key.as_ref().map(|key| format!("pos:{key}")),
-        )
-        .await
-    {
-        Ok(order) => {
-            let (store_id, order_id) = (row.id.clone(), order.order_id.clone());
-            let (request_key, reference) = (req.request_key.clone(), merchant_order_id.clone());
-            let recorded = state
+            let detail = match state.engine.client.get_order_detail(&sk, &order_id).await {
+                Ok(detail) => detail,
+                Err(error) => return engine_failure(&error),
+            };
+            let (store_id, metadata_order) = (row.id.clone(), order_id.clone());
+            let metadata = match state
                 .db
-                .write(move |db| {
-                    db.insert_pos_order(
-                        &store_id,
-                        &order_id,
-                        request_key.as_deref(),
-                        reference.as_deref(),
-                        crate::now_unix(),
-                    )
-                })
-                .await;
-            if let Err(e) = recorded {
-                tracing::error!(order.id = %order.order_id, store.id = %row.id, error = %e, "failed to record a POS order");
-                return ApiError::Internal.into_response();
-            }
-            let (store_id, order_id, order_currency, order_amount, provider) = (
-                row.id.clone(),
-                order.order_id.clone(),
-                currency.clone(),
-                amount.to_string(),
-                provider.to_string(),
-            );
-            let base_currency = resolution.base_currency.clone();
-            let (base_rate, confirmations) = (
-                resolution.base_currency_piconero_per_unit,
-                resolution.confirmations_required,
-            );
-            let recorded = state
-                .db
-                .write(move |db| {
-                    db.create_order_currency_metadata(
-                        &store_id,
-                        &order_id,
-                        &order_currency,
-                        &order_amount,
-                        shared::xmr_amount::Piconero(piconero_per_unit),
-                        &provider,
-                        crate::now_unix(),
-                        &base_currency,
-                        base_rate,
-                        confirmations,
-                        // The merchant's own signed-in session: as trusted as
-                        // the key.
-                        true,
-                        Some("pos"),
-                        // The till's reference (often the customer's name)
-                        // is for the payer to see.
-                        true,
-                    )
-                })
-                .await;
-            if let Err(e) = recorded {
-                tracing::error!(
-                    order.id = %order.order_id,
-                    store.id = %row.id,
-                    error = %e,
-                    "failed to record local fiat metadata - the real order still exists on the engine and this \
-                     response is still correct, but its fiat display on monokulo's own pages will be missing"
-                );
-            }
-            let xmr_amount =
-                shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
-
+                .read(move |db| db.get_order_currency_metadata(&store_id, &metadata_order))
+                .await
+            {
+                Ok(Some(metadata)) => metadata,
+                _ => return ApiError::Internal.into_response(),
+            };
             Json(PosCreateOrderResponse {
-                order_id: order.order_id,
-                address: order.address,
-                xmr_amount,
-                amount: amount.to_string(),
-                currency,
-                confirmations_required: resolution.confirmations_required,
-                expires_at: order.expires_at,
-                merchant_order_id,
+                order_id,
+                address: detail.order.address,
+                xmr_amount: shared::exchange_rate::format_piconero_as_xmr(
+                    detail.order.xmr_amount_piconero,
+                ),
+                amount: metadata.amount,
+                currency: metadata.currency,
+                confirmations_required: metadata
+                    .confirmations_required_applied
+                    .unwrap_or(crate::confirmation_thresholds::FALLBACK_CONFIRMATIONS),
+                expires_at: detail.order.expires_at,
+                merchant_order_id: detail.order.merchant_order_id,
             })
             .into_response()
         }
-        Err(EngineClientError::EngineError { status, message })
-            if status == reqwest::StatusCode::BAD_REQUEST =>
-        {
-            ApiError::BadRequest(message).into_response()
-        }
-        Err(error) if error.is_unavailable() => ApiError::EngineUnavailable.into_response(),
-        Err(_) => ApiError::Internal.into_response(),
+        Err(e) => e.problem().into_response(),
     }
 }
 
@@ -1160,7 +1004,7 @@ mod tests {
             .unwrap();
         assert_eq!(body_json(retry).await["order_id"], first_id);
         let changed = router.clone().oneshot(create(&owner, serde_json::json!({"amount":"0.020000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string())).await.unwrap();
-        assert_eq!(changed.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(changed.status(), StatusCode::CONFLICT);
         let order_url = format!("{base}/{first_id}");
         let other_list = router
             .clone()

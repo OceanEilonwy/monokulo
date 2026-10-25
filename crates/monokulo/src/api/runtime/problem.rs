@@ -70,7 +70,8 @@ pub enum Problem {
     #[problem(status = 503, title = "No exchange rate right now")]
     RatesUnavailable,
     /// The `idempotency_key` was used before for a different order: a
-    /// different amount, currency or reference.
+    /// different amount, currency, reference or description, or another
+    /// choice of whether the reference shows.
     #[problem(status = 409, title = "Key used for another order")]
     IdempotencyConflict,
     /// The request body is larger than the route takes.

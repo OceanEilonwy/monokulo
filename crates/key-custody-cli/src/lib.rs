@@ -9,8 +9,10 @@
 //! the view key and the spend public key, and prints them encrypted to that
 //! engine, for pasting into the form.
 //!
-//! What it trusts is built in: AMD's roots (`snp-attest`) and the official
-//! engine ID key (`key-custody`'s `official_id_key_digest.txt`), so a site
+//! What it trusts is built in: AMD's roots (`snp-attest`), the official
+//! engine ID key (`key-custody`'s `official_id_key_digest.txt`) and the lowest
+//! image security version and firmware this release trusts
+//! (`release_guest_svn_floor.txt`, `release_tcb_floors.txt`), so a site
 //! that served a doctored bundle or page can't change it. `--trust-id-key`
 //! replaces the official key for an instance that runs its own signed engine
 //! image, and says so loudly.

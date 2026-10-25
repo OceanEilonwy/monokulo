@@ -117,10 +117,14 @@ pub fn body_v2(
     let body = BodyV2 {
         api_version: API_VERSION,
         event_id: &event.event_id,
-        event: &event.event_type,
+        event: event.kind.as_str(),
         created_at: event.created_at,
         order_id: event.order_id.as_str(),
-        status: event.status.as_deref(),
+        status: event
+            .kind
+            .known()
+            .and_then(|kind| kind.status())
+            .map(|status| status.as_str()),
         txid: event.txid.as_deref(),
         merchant_order_id: event
             .merchant_order_id
@@ -253,11 +257,10 @@ mod tests {
         LoggedEvent {
             seq: 7,
             event_id: "evt_4be2d07a85c113e9".into(),
-            event_type: event_type.into(),
+            kind: event_type.into(),
             created_at: 1_760_020_320,
             tenant_public_key: "pk_1".into(),
             order_id: OrderId::new("5f01c9a7"),
-            status: None,
             txid: None,
             merchant_order_id: Some("gm-1042".into()),
             description: Some("Two sourdough loaves".into()),
@@ -291,8 +294,7 @@ mod tests {
     /// and in its order.
     #[test]
     fn a_fiat_orders_body_carries_its_price_its_rate_and_its_store() {
-        let mut paid = event("order.paid");
-        paid.status = Some("paid".into());
+        let paid = event("order.paid");
         // 12.50 EUR at 0.0065 XMR per euro.
         let body = body_v2(
             &paid,

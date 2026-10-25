@@ -123,21 +123,21 @@ mod tests {
         )
         .unwrap();
         // An order of the store, so its checkout finds it.
-        db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new("c1"),
-            &shared::ids::OrderId::new("o1"),
-            "XMR",
-            "1",
-            shared::xmr_amount::Piconero(1),
-            "xmr",
-            0,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        db.create_order_currency_metadata(&crate::db::NewOrderRecord {
+            connection_id: &shared::ids::ConnectionId::new("c1"),
+            order_id: &shared::ids::OrderId::new("o1"),
+            currency: "XMR",
+            amount: "1",
+            piconero_per_unit: shared::xmr_amount::Piconero(1),
+            provider: "xmr",
+            created_at: 0,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
         db
     }

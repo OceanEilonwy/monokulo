@@ -1,0 +1,10 @@
+# The lowest engine image security version (the ID block's guest SVN) this
+# release trusts with keys. Built into the engine image (so it is part of the
+# measurement), the browser's WASM and key-custody-cli: no setting lowers it,
+# so an older signed image, perhaps one with a known flaw, is refused by
+# every client and every engine, however its site or host is configured.
+#
+# Release checklist: when a release fixes a security problem in the engine
+# image, sign that image at a higher --guest-svn (deploy/sev-snp/README.md
+# §3) and raise this to it, before tagging the release.
+1

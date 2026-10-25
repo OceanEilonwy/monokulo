@@ -14,7 +14,7 @@ impl WrapStore for StoreWraps {
     fn load(&self) -> Result<Vec<StoredWrap>, String> {
         let rows = self.0.lock().snp_master_keys().map_err(|e| e.to_string())?;
         rows.into_iter()
-            .map(|(measurement, guest_svn, tcb, wrapped)| {
+            .map(|(measurement, guest_svn, tcb, wrapped, key_check)| {
                 Ok(StoredWrap {
                     measurement: measurement.try_into().map_err(|bytes: Vec<u8>| {
                         format!("a stored measurement is {} bytes, not 48", bytes.len())
@@ -24,6 +24,13 @@ impl WrapStore for StoreWraps {
                         format!("a stored TCB is {} bytes, not 8", bytes.len())
                     })?,
                     wrapped,
+                    key_check: key_check
+                        .map(|check| {
+                            check.try_into().map_err(|bytes: Vec<u8>| {
+                                format!("a stored key check is {} bytes, not 32", bytes.len())
+                            })
+                        })
+                        .transpose()?,
                 })
             })
             .collect()
@@ -32,7 +39,13 @@ impl WrapStore for StoreWraps {
     fn save(&self, wrap: &StoredWrap) -> Result<(), String> {
         self.0
             .lock()
-            .save_snp_master_key(&wrap.measurement, wrap.guest_svn, &wrap.tcb, &wrap.wrapped)
+            .save_snp_master_key(
+                &wrap.measurement,
+                wrap.guest_svn,
+                &wrap.tcb,
+                &wrap.wrapped,
+                wrap.key_check.as_ref().map(<[u8; 32]>::as_slice),
+            )
             .map_err(|e| e.to_string())
     }
 }

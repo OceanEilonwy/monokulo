@@ -13,6 +13,8 @@ use axum::Router;
 use http_body_util::BodyExt as _;
 use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
+use shared::order_event::OrderEventKind;
+use shared::order_status::OrderStatus;
 use tower::ServiceExt as _;
 
 use crate::daemon::fake::FakeDaemonClient;
@@ -2559,13 +2561,18 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
             store
                 .append_order_event(
                     &order_id,
-                    "order.unconfirmed",
-                    &[("status", "unconfirmed")],
+                    OrderEventKind::Status(OrderStatus::Unconfirmed),
+                    &[],
                     100,
                 )
                 .unwrap(),
             store
-                .append_order_event(&order_id, "order.paid", &[("status", "paid")], 200)
+                .append_order_event(
+                    &order_id,
+                    OrderEventKind::Status(OrderStatus::Paid),
+                    &[],
+                    200,
+                )
                 .unwrap(),
         )
     };
@@ -2597,7 +2604,7 @@ async fn the_order_event_stream_replays_from_a_position_then_goes_live() {
         .db
         .lock()
         .in_transaction(|s| {
-            s.append_order_event(&order_id, "order.double_spend_detected", &[], 300)
+            s.append_order_event(&order_id, OrderEventKind::DoubleSpendDetected, &[], 300)
         })
         .unwrap();
     let (event, id, data) = next_logged_event(&mut body, &mut buffer).await;
@@ -2633,11 +2640,21 @@ async fn the_order_event_stream_says_when_a_reader_missed_events() {
         let store = state.db.lock();
         for at in [10, 20] {
             store
-                .append_order_event(&order_id, "order.unconfirmed", &[], at)
+                .append_order_event(
+                    &order_id,
+                    OrderEventKind::Status(OrderStatus::Unconfirmed),
+                    &[],
+                    at,
+                )
                 .unwrap();
         }
         let kept = store
-            .append_order_event(&order_id, "order.paid", &[], 5000)
+            .append_order_event(
+                &order_id,
+                OrderEventKind::Status(OrderStatus::Paid),
+                &[],
+                5000,
+            )
             .unwrap();
         assert_eq!(store.prune_order_events_before(1000).unwrap(), 2);
         kept
@@ -4333,6 +4350,31 @@ async fn a_node_listed_twice_in_one_network_is_refused() {
         saved_node(&router, "stagenet").await,
         serde_json::Value::Null
     );
+
+    // A node on an onion address, as a fallback, from the node form or as
+    // a plain setting: refused before it is asked anything, since asking
+    // would look its name up in the system's DNS.
+    let mut onion = node_json(node, &[]);
+    onion["fallbacks"] = serde_json::json!([{ "host": "Node.2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion.", "port": 18089 }]);
+    for body in [
+        serde_json::json!({ "monero_node": { "stagenet": onion } }),
+        serde_json::json!({ "scalars": { "monero_node.stagenet": onion.to_string() } }),
+    ] {
+        let (status, body) = try_save(&router, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["fields"][0]["key"], "monero_node.stagenet", "{body}");
+        let message = body["fields"][0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("is an onion address")
+                && message.contains("over the web only")
+                && message.contains("system's DNS"),
+            "{message}"
+        );
+        assert_eq!(
+            saved_node(&router, "stagenet").await,
+            serde_json::Value::Null
+        );
+    }
 }
 
 #[tokio::test]

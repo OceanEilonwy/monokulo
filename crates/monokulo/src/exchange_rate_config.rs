@@ -184,8 +184,7 @@ impl ExchangeRateLookupError {
 /// The real per-order dispatcher `AppState.exchange_rate` holds - built once
 /// at boot (`build`) from the parsed `ExchangeRateConfig`, then shared
 /// read-only across every request. `piconero_per_unit_for` is the single
-/// entry point every caller (`api::v1::orders::create`,
-/// `http::orders::create_order`, `http::pos::create_order`) uses.
+/// entry point order creation (`crate::orders::make`) uses.
 #[derive(Debug)]
 pub struct ExchangeRateProviders {
     xmr: XmrIdentityProvider,
@@ -362,9 +361,10 @@ impl ExchangeRateProviders {
     /// provider actually answered - computed together so the two can never
     /// disagree (a call site recording "what rate, from which provider" for
     /// an order gets both from one call, not two independent branches that
-    /// could drift). `currency == "XMR"` (case-insensitively) always uses
-    /// the identity provider, regardless of the store's providers - see the
-    /// module doc comment.
+    /// could drift). `XMR` always uses the identity provider, regardless of
+    /// the store's providers - see the module doc comment. A provider is
+    /// only ever asked for a code of the `currencies` table, never an alias
+    /// as a caller typed it (`KnownCurrency`).
     ///
     /// Any other currency walks `store.fx_providers` in the store's own
     /// order. A provider this instance has not enabled is skipped; one that
@@ -379,9 +379,10 @@ impl ExchangeRateProviders {
     pub async fn piconero_per_unit_for(
         &self,
         store: &StoreConnectionRow,
-        currency: &str,
+        currency: &crate::currencies::KnownCurrency,
     ) -> Result<Option<(u64, &'static str)>, ExchangeRateLookupError> {
-        if currency.eq_ignore_ascii_case("XMR") {
+        let currency = currency.as_str();
+        if currency == "XMR" {
             return Ok(Some((self.xmr.piconero_per_unit(), "xmr")));
         }
         let fiat = self.fiat();
@@ -604,20 +605,12 @@ mod tests {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&["coingecko"]); // not even configured - must not matter for XMR
         let (rate, provider) = providers
-            .piconero_per_unit_for(&store, "XMR")
+            .piconero_per_unit_for(&store, &crate::currencies::KnownCurrency::for_test("XMR"))
             .await
             .unwrap()
             .unwrap();
         assert_eq!(rate, 1_000_000_000_000);
         assert_eq!(provider, "xmr");
-
-        // Case-insensitive, same as every other currency lookup in this codebase.
-        let (rate, _) = providers
-            .piconero_per_unit_for(&store, "xmr")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(rate, 1_000_000_000_000);
     }
 
     #[tokio::test]
@@ -626,7 +619,7 @@ mod tests {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&[COINGECKO]);
         let err = providers
-            .piconero_per_unit_for(&store, "USD")
+            .piconero_per_unit_for(&store, &crate::currencies::KnownCurrency::for_test("USD"))
             .await
             .unwrap_err();
         assert!(
@@ -640,7 +633,7 @@ mod tests {
         let providers = ExchangeRateProviders::xmr_only();
         let store = test_store(&["fixed"]); // a stale pre-removal value
         let err = providers
-            .piconero_per_unit_for(&store, "USD")
+            .piconero_per_unit_for(&store, &crate::currencies::KnownCurrency::for_test("USD"))
             .await
             .unwrap_err();
         assert!(
@@ -718,13 +711,19 @@ mod tests {
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(cg, cmc);
 
         let (rate, name) = providers
-            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINGECKO, COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
         assert_eq!((rate, name), (1_000_000_000_000, COINGECKO));
         let (rate, name) = providers
-            .piconero_per_unit_for(&test_store(&[COINMARKETCAP, COINGECKO]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINMARKETCAP, COINGECKO]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
@@ -737,7 +736,10 @@ mod tests {
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(down, cmc);
         let (_, name) = providers
-            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINGECKO, COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
@@ -747,7 +749,10 @@ mod tests {
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd, cmc);
         let (_, name) = providers
-            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINGECKO, COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
@@ -769,7 +774,10 @@ mod tests {
         let providers =
             ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd.clone(), cmc_none);
         assert!(providers
-            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINGECKO, COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD")
+            )
             .await
             .unwrap()
             .is_none());
@@ -777,7 +785,10 @@ mod tests {
         let cmc_down = spawn_json(CMC_PATH, "boom", 500).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(no_usd, cmc_down);
         let err = providers
-            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINGECKO, COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -792,7 +803,10 @@ mod tests {
         let cmc = spawn_json(CMC_PATH, CMC_USD_2, 200).await;
         let providers = ExchangeRateProviders::coingecko_and_coinmarketcap(cg, cmc);
         let (_, name) = providers
-            .piconero_per_unit_for(&test_store(&[COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
@@ -802,14 +816,20 @@ mod tests {
         let providers =
             ExchangeRateProviders::coinmarketcap_only(spawn_json(CMC_PATH, CMC_USD_2, 200).await);
         let (_, name) = providers
-            .piconero_per_unit_for(&test_store(&[COINGECKO, COINMARKETCAP]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[COINGECKO, COINMARKETCAP]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
         assert_eq!(name, COINMARKETCAP);
 
         let err = providers
-            .piconero_per_unit_for(&test_store(&[]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -853,13 +873,19 @@ mod tests {
         let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
         let providers = ExchangeRateProviders::haveno_only(hv.clone());
         let (rate, name) = providers
-            .piconero_per_unit_for(&test_store(&[HAVENO]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[HAVENO]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
         assert_eq!((rate, name), (10_000_000_000, HAVENO));
         assert!(providers
-            .piconero_per_unit_for(&test_store(&[HAVENO]), "EUR")
+            .piconero_per_unit_for(
+                &test_store(&[HAVENO]),
+                &crate::currencies::KnownCurrency::for_test("EUR")
+            )
             .await
             .unwrap()
             .is_none());
@@ -868,13 +894,19 @@ mod tests {
         let cg = spawn_json(CG_PATH, r#"{"monero":{"eur":2.0}}"#, 200).await;
         let providers = ExchangeRateProviders::all(cg, unused_local_url(), hv);
         let (_, name) = providers
-            .piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "EUR")
+            .piconero_per_unit_for(
+                &test_store(&[HAVENO, COINGECKO]),
+                &crate::currencies::KnownCurrency::for_test("EUR"),
+            )
             .await
             .unwrap()
             .unwrap();
         assert_eq!(name, COINGECKO);
         let (_, name) = providers
-            .piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "USD")
+            .piconero_per_unit_for(
+                &test_store(&[HAVENO, COINGECKO]),
+                &crate::currencies::KnownCurrency::for_test("USD"),
+            )
             .await
             .unwrap()
             .unwrap();
@@ -935,7 +967,7 @@ mod tests {
             &[HAVENO, COINGECKO],
         );
         let (_, name) = providers
-            .piconero_per_unit_for(&store, "USD")
+            .piconero_per_unit_for(&store, &crate::currencies::KnownCurrency::for_test("USD"))
             .await
             .unwrap()
             .unwrap();
@@ -953,7 +985,7 @@ mod tests {
             &[HAVENO],
         );
         assert!(providers
-            .piconero_per_unit_for(&only, "USD")
+            .piconero_per_unit_for(&only, &crate::currencies::KnownCurrency::for_test("USD"))
             .await
             .unwrap()
             .is_none());
@@ -982,7 +1014,7 @@ mod tests {
         );
         assert_eq!(
             providers
-                .piconero_per_unit_for(&loose, "USD")
+                .piconero_per_unit_for(&loose, &crate::currencies::KnownCurrency::for_test("USD"))
                 .await
                 .unwrap()
                 .unwrap()
@@ -991,7 +1023,7 @@ mod tests {
         );
         assert_eq!(
             providers
-                .piconero_per_unit_for(&strict, "USD")
+                .piconero_per_unit_for(&strict, &crate::currencies::KnownCurrency::for_test("USD"))
                 .await
                 .unwrap()
                 .unwrap()
@@ -1001,7 +1033,7 @@ mod tests {
         );
         assert_eq!(
             providers
-                .piconero_per_unit_for(&loose, "USD")
+                .piconero_per_unit_for(&loose, &crate::currencies::KnownCurrency::for_test("USD"))
                 .await
                 .unwrap()
                 .unwrap()
@@ -1046,7 +1078,7 @@ mod tests {
         );
         assert_eq!(
             providers
-                .piconero_per_unit_for(&deep, "USD")
+                .piconero_per_unit_for(&deep, &crate::currencies::KnownCurrency::for_test("USD"))
                 .await
                 .unwrap()
                 .unwrap()
@@ -1055,7 +1087,7 @@ mod tests {
         );
         assert_eq!(
             providers
-                .piconero_per_unit_for(&shallow, "USD")
+                .piconero_per_unit_for(&shallow, &crate::currencies::KnownCurrency::for_test("USD"))
                 .await
                 .unwrap()
                 .unwrap()

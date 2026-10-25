@@ -110,6 +110,7 @@ pub const COLUMNS: Classification = Classification {
         // The SEV-SNP master key, wrapped
         ("snp_master_keys", "wrapped", Secret),
         ("snp_master_keys", "created_at_utc", Visible),
+        ("snp_master_keys", "key_check", Visible),
         ("tenants", "id", Visible),
         ("tenants", "public_key", Visible),
         // A store's secret token (sk_), hashed

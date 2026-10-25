@@ -21,6 +21,10 @@ copy.
 https://www.monokulo.com/apps/connect#token=ct_…
 ```
 
+A merchant using the dashboard over the onion address is given a link on
+the onion address, and told the app connects over Tor: the code is never on
+the web address for them, so their phone isn't sent off Tor unasked.
+
 Read it with your app's scanner, or let the merchant paste it. The token is
 in the `#` part, which a browser never sends to a server. It works once,
 for 10 minutes. Redeem it at the link's address:
@@ -131,7 +135,9 @@ that links its order (`mk:order`):
 ```
 
 There's no `sale.cancelled`: only the POS cancels an order, and only its
-own, so an app's order never is.
+own, so an app's order never is. `sale.waiting` comes again after
+`sale.double_spend` when the order is left with nothing received: wait for
+a payment again.
 
 A comment arrives every 25 s. After `lagged`, or a reconnect, read the
 orders you're showing again: follow each one's `mk:order` link (or the

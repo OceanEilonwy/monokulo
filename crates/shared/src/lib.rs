@@ -18,6 +18,7 @@ pub mod log;
 pub mod migrations;
 pub mod monero_tx;
 pub mod network;
+pub mod order_event;
 pub mod order_status;
 pub mod password;
 pub mod proof;

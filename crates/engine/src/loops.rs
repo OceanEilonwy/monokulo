@@ -615,21 +615,41 @@ mod tests {
         panic!("timed out waiting for: {what}");
     }
 
+    /// Also: a testnet node already set on an onion address (from the
+    /// options file, as one saved before such nodes were refused) doesn't
+    /// stop the engine. Its network starts, and
+    /// the node is never asked anything, so its name never reaches the
+    /// system's DNS: every request fails with why, which `/status` shows.
     #[tokio::test]
     async fn saving_a_node_starts_its_networks_loops_and_clearing_it_stops_them() {
+        use crate::daemon::MoneroDaemonClient as _;
         let store = Store::open_in_memory().unwrap().into_shared();
         let daemons = Daemons::default();
         let rate_limits = Arc::new(ApiRateLimits::new(10_000, Some(10_000)));
-        let settings = EngineSettings::load_with(
+        let options = r#"[monero_node]
+testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion","port":28081}'
+"#;
+        let settings = EngineSettings::load_full(
             Arc::clone(&store),
             Some(crate::engine_settings::NodesReloadable {
                 daemons: daemons.clone(),
             }),
+            None,
             Arc::clone(&rate_limits),
-            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+            live_settings::Env::fixed([("ENGINE_TOKEN", crate::http::TEST_ENGINE_TOKEN)]),
+            live_settings::OptionsFile::in_memory(options),
+            false,
         )
         .await
         .unwrap();
+        let unasked = daemons
+            .get(Network::Testnet)
+            .expect("the onion node is kept")
+            .get_height()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(unasked.contains("is an onion address"), "{unasked}");
         let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>> =
             Arc::default();
@@ -690,6 +710,17 @@ mod tests {
         eventually("the stagenet scanner to tick", || {
             status.read().contains_key(&Network::Stagenet)
         })
+        .await;
+        eventually(
+            "the testnet scanner to say its node isn't supported",
+            || {
+                status
+                    .read()
+                    .get(&Network::Testnet)
+                    .and_then(|s| s.last_error.clone())
+                    .is_some_and(|e| e.contains("is an onion address"))
+            },
+        )
         .await;
         assert!(
             !status.read().contains_key(&Network::Mainnet),

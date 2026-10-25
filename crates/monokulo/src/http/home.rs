@@ -312,21 +312,21 @@ mod tests {
             state
                 .db
                 .write(move |db| {
-                    db.create_order_currency_metadata(
-                        &metadata_connection,
-                        &metadata_order,
-                        "EUR",
-                        "12.34",
-                        shared::xmr_amount::Piconero(1_000_000),
-                        "fixed",
-                        1000,
-                        "EUR",
-                        None,
-                        10,
-                        false,
-                        None,
-                        true,
-                    )
+                    db.create_order_currency_metadata(&crate::db::NewOrderRecord {
+                        connection_id: &metadata_connection,
+                        order_id: &metadata_order,
+                        currency: "EUR",
+                        amount: "12.34",
+                        piconero_per_unit: shared::xmr_amount::Piconero(1_000_000),
+                        provider: "fixed",
+                        created_at: 1000,
+                        base_currency: "EUR",
+                        base_currency_piconero_per_unit: None,
+                        confirmations_required_applied: 10,
+                        created_with_key: false,
+                        source: None,
+                        show_merchant_order_id: true,
+                    })
                 })
                 .await
                 .unwrap();
