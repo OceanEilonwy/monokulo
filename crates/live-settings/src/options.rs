@@ -63,6 +63,9 @@ pub struct OptionsFile {
     /// Settings that were renamed, old key and new: a file still holding
     /// an old key is refused with the new name, so the fix is plain.
     renamed: &'static [(&'static str, &'static str)],
+    /// Settings that were removed, key and when: a file still holding one
+    /// is read without it, and [`OptionsFile::retired_warnings`] says so.
+    retired: &'static [(&'static str, &'static str)],
 }
 
 /// Which file, and which part of it: not its text.
@@ -101,6 +104,7 @@ impl OptionsFile {
             leaves: None,
             hint: None,
             renamed: &[],
+            retired: &[],
         }
     }
 
@@ -115,6 +119,7 @@ impl OptionsFile {
             leaves: None,
             hint: None,
             renamed: &[],
+            retired: &[],
         }
     }
 
@@ -140,6 +145,15 @@ impl OptionsFile {
         self
     }
 
+    /// This handle, reading past each `(key, since)` in `retired` rather
+    /// than refusing it as unknown: a setting removed on `since`, which an
+    /// options file written before then may still hold. Its value goes
+    /// nowhere; [`Self::retired_warnings`] names it.
+    pub fn with_retired(mut self, retired: &'static [(&'static str, &'static str)]) -> Self {
+        self.retired = retired;
+        self
+    }
+
     /// How [`parse`] reads the file for this handle.
     fn reading(&self) -> Reading<'_> {
         Reading {
@@ -147,6 +161,7 @@ impl OptionsFile {
             leaves: self.leaves.as_deref(),
             hint: self.hint.as_ref().map(|(t, h)| (t.as_str(), h.as_str())),
             renamed: self.renamed,
+            retired: self.retired,
         }
     }
 
@@ -203,11 +218,24 @@ impl OptionsFile {
         declared: &[&'static dyn AnySetting],
     ) -> Result<HashMap<String, String>, StoreError> {
         let text = self.read_text()?;
-        let values = parse(&text, declared, &self.reading()).map_err(|problems| {
-            StoreError::new(format!("{}: {}", self.name(), problems.join("; ")))
-        })?;
+        let Parsed { values, .. } =
+            parse(&text, declared, &self.reading()).map_err(|problems| {
+                StoreError::new(format!("{}: {}", self.name(), problems.join("; ")))
+            })?;
         *self.shared.loaded.lock() = text;
         Ok(values)
+    }
+
+    /// One line for each retired setting ([`Self::with_retired`]) the file
+    /// still holds, saying it does nothing now and can be deleted: for the
+    /// process to log at start. Nothing when the file can't be read; its
+    /// read says why.
+    pub fn retired_warnings(&self, declared: &[&'static dyn AnySetting]) -> Vec<String> {
+        self.read_text()
+            .ok()
+            .and_then(|text| parse(&text, declared, &self.reading()).ok())
+            .map(|parsed| parsed.retired)
+            .unwrap_or_default()
     }
 
     /// The file's values, by key, checked against `declared`, for what a
@@ -365,27 +393,37 @@ struct Reading<'a> {
     leaves: Option<&'a str>,
     hint: Option<(&'a str, &'a str)>,
     renamed: &'static [(&'static str, &'static str)],
+    retired: &'static [(&'static str, &'static str)],
+}
+
+/// What [`parse`] found in a file.
+struct Parsed {
+    values: HashMap<String, String>,
+    /// A warning for each retired setting the file holds.
+    retired: Vec<String>,
 }
 
 /// The values in `text`, by key: one table per key prefix, or the whole
-/// key as a dotted key. Anything that isn't a setting the file may hold,
-/// or a value its setting refuses, is a problem, given with its line and
-/// its full key.
+/// key as a dotted key, and a warning for each retired setting it holds.
+/// Anything else that isn't a setting the file may hold, or a value its
+/// setting refuses, is a problem, given with its line and its full key.
 fn parse(
     text: &str,
     declared: &[&'static dyn AnySetting],
     reading: &Reading<'_>,
-) -> Result<HashMap<String, String>, Vec<String>> {
+) -> Result<Parsed, Vec<String>> {
     let doc =
         toml_edit::Document::parse(text).map_err(|e| vec![e.to_string().trim().to_string()])?;
     let mut values = HashMap::new();
     let mut problems = Vec::new();
+    let mut retired = Vec::new();
     let mut walking = Walk {
         text,
         declared,
         reading,
         values: &mut values,
         problems: &mut problems,
+        retired: &mut retired,
     };
     match reading.scope {
         None => walking.table(doc.as_table(), ""),
@@ -402,7 +440,7 @@ fn parse(
         }
     }
     if problems.is_empty() {
-        Ok(values)
+        Ok(Parsed { values, retired })
     } else {
         Err(problems)
     }
@@ -418,6 +456,7 @@ struct Walk<'a, 'r> {
     reading: &'a Reading<'r>,
     values: &'a mut HashMap<String, String>,
     problems: &'a mut Vec<String>,
+    retired: &'a mut Vec<String>,
 }
 
 impl Walk<'_, '_> {
@@ -471,6 +510,14 @@ impl Walk<'_, '_> {
                 Item::Table(table) => self.table(table, &key),
                 Item::Value(Value::InlineTable(inline)) => self.table(inline, &key),
                 _ => {
+                    if let Some((_, since)) =
+                        self.reading.retired.iter().find(|(key, _)| *key == shown)
+                    {
+                        self.retired.push(format!(
+                            "{at}{shown} was retired on {since} and does nothing now: delete it from the options file"
+                        ));
+                        return;
+                    }
                     if let Some((_, new)) =
                         self.reading.renamed.iter().find(|(old, _)| *old == shown)
                     {

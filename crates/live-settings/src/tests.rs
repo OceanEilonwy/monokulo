@@ -2725,6 +2725,39 @@ url = \"http://node:18081\"
         let renamed =
             OptionsFile::in_memory("[server]\nbind = \"0.0.0.0:8081\"\n").with_renamed(RENAMED);
         read(&renamed, ALL).unwrap();
+
+        // A retired setting is read past with one warning, from the file
+        // or the command line, rather than stopping the process.
+        const RETIRED: &[(&str, &str)] = &[("cache.max_mb", "2026-10-25")];
+        let text = "[cache]\nmax_mb = 16\n[server]\nbind = \"0.0.0.0:8081\"\n";
+        let file = OptionsFile::in_memory(text).with_retired(RETIRED);
+        let values = read(&file, ALL).unwrap();
+        assert_eq!(values.keys().collect::<Vec<_>>(), ["server.bind"]);
+        assert_eq!(
+            file.retired_warnings(ALL),
+            ["line 2: cache.max_mb was retired on 2026-10-25 and does nothing now: delete it from the options file"]
+        );
+        let problem = read(&OptionsFile::in_memory(text), ALL).unwrap_err();
+        assert!(
+            problem.contains("there is no setting called cache.max_mb"),
+            "{problem}"
+        );
+        let command = crate::cli::with_retired(
+            crate::cli::with_settings(clap::Command::new("app"), ALL, "app.toml"),
+            RETIRED,
+        );
+        assert!(!command
+            .clone()
+            .render_long_help()
+            .to_string()
+            .contains("--cache-max-mb"));
+        let matches = command
+            .try_get_matches_from(["app", "--cache-max-mb", "16"])
+            .unwrap();
+        assert_eq!(
+            crate::cli::retired_given(&matches, RETIRED),
+            ["--cache-max-mb was retired on 2026-10-25 and does nothing now: remove it from the command line"]
+        );
     }
 
     /// Both services save into the one file, each keeping the other's
