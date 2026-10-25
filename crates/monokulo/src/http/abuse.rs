@@ -47,7 +47,8 @@
 //! a page (from `static/challenge.js`), `?monokulo_wait=<token>` (the
 //! no-JavaScript wait), or the `Monokulo-Proof` header on the machine API. It
 //! grants the client a pass; a page is then redirected to itself without the
-//! parameter.
+//! parameter. A solved proof's pass covers everything; a wait's covers pages
+//! only (`crate::abuse::Pass::covers`), so the API still costs the work.
 
 use std::net::SocketAddr;
 
@@ -59,6 +60,7 @@ use serde_json::json;
 
 use crate::abuse::proxy_protocol::OnionPeer;
 use crate::abuse::stats::Event;
+pub use crate::abuse::RouteClass;
 use crate::abuse::{identity, ClientIdentity, Tier, TrustedProxies};
 use crate::views;
 
@@ -72,19 +74,6 @@ pub const PROOF_HEADER: &str = "monokulo-proof";
 pub const CHALLENGE_HEADER: &str = "monokulo-challenge";
 const PROOF_PARAM: &str = "monokulo_proof";
 const WAIT_PARAM: &str = "monokulo_wait";
-
-/// How a route may be treated - see the module doc comment's table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RouteClass {
-    Page,
-    Api,
-    Stream,
-    Other,
-    /// Log reports: their own budget, never challenged.
-    Logs,
-    /// Not counted at all (the status indicator's cached poll).
-    Exempt,
-}
 
 /// The anonymous client a request comes from: the Tor circuit on the onion
 /// listener, otherwise the clearnet address behind any trusted proxies.
@@ -211,7 +200,9 @@ pub async fn api_and_checkout_middleware(
             KeyCheck::Invalid => {
                 if let Some(anonymous) = &anonymous {
                     if let Tier::Blocked { retry_after_secs } =
-                        state.abuse.check(anonymous, false, state.abuse.now())
+                        state
+                            .abuse
+                            .check(anonymous, class, false, state.abuse.now())
                     {
                         return blocked(&state, class, retry_after_secs);
                     }
@@ -353,12 +344,14 @@ async fn guard(
             _ => None,
         };
         match redeemed {
-            Some(Ok(())) => {
+            Some(Ok(grant)) => {
                 abuse.stats.record(Event::Solved, now);
-                abuse.limiter.grant_pass(&client, now);
+                abuse.limiter.grant_pass(&client, grant, now);
                 if class == RouteClass::Page {
                     // Counted, so redemption itself can't be hammered.
-                    if let Tier::Blocked { retry_after_secs } = abuse.check(&client, false, now) {
+                    if let Tier::Blocked { retry_after_secs } =
+                        abuse.check(&client, class, false, now)
+                    {
                         return blocked(state, class, retry_after_secs);
                     }
                     return see_other(&url_without_challenge_params(&request));
@@ -373,7 +366,7 @@ async fn guard(
     }
 
     let challengeable = matches!(class, RouteClass::Page | RouteClass::Api);
-    match abuse.check(&client, challengeable, now) {
+    match abuse.check(&client, class, challengeable, now) {
         Tier::Allowed => {}
         Tier::Blocked { retry_after_secs } => {
             abuse.stats.record(Event::Refused, now);

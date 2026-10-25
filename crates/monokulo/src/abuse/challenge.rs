@@ -19,20 +19,20 @@
 //! (10 seconds after issue). Waiting is the proof.
 //!
 //! Every token names the client it was issued to and only redeems for that
-//! client, and each redeems once: redeemed tokens are remembered until they
-//! expire (memory-capped; when full of unexpired tokens further redemptions
-//! are refused rather than forgetting one, which would allow a replay).
+//! client. The pass it earns ([`PassGrant`]) ends a fixed time after the
+//! token could first be redeemed, not after the redemption, so redeeming it
+//! again earns nothing more: there is no memory of redeemed tokens for
+//! anyone to fill, and a replay can only give a client the pass it already
+//! has. A proof of work earns [`Pass::Work`], a wait [`Pass::Wait`].
 //!
 //! The key is random per process, so a restart simply invalidates
 //! outstanding challenges (clients get a new one).
-
-use parking_lot::Mutex;
-use std::collections::HashMap;
 
 use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
 use sha2::{Digest, Sha256};
 
+use super::limiter::{Pass, PassGrant, PASS_SECS};
 use super::ClientIdentity;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -43,8 +43,6 @@ pub const CHALLENGE_TTL_SECS: i64 = 5 * 60;
 pub const WAIT_SECS: i64 = 10;
 /// How long after `not_before` a wait token still redeems.
 pub const WAIT_TTL_SECS: i64 = 5 * 60;
-/// Redeemed tokens remembered at once (see the module doc comment).
-pub const MAX_REDEEMED: usize = 200_000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RedeemError {
@@ -54,8 +52,6 @@ pub enum RedeemError {
     TooEarly,
     WrongClient,
     NotSolved,
-    Replayed,
-    Full,
 }
 
 impl RedeemError {
@@ -68,23 +64,19 @@ impl RedeemError {
             RedeemError::TooEarly => "Please wait a few more seconds.",
             RedeemError::WrongClient => "The challenge was issued to a different connection.",
             RedeemError::NotSolved => "The challenge answer is not correct.",
-            RedeemError::Replayed => "The challenge was already used.",
-            RedeemError::Full => "Too many challenges right now. Please try again shortly.",
         }
     }
 }
 
 pub struct Challenges {
     key: [u8; 32],
-    redeemed: Mutex<Redeemed>,
-    max_redeemed: usize,
 }
 
 impl Default for Challenges {
     fn default() -> Self {
         let mut key = [0u8; 32];
         rand::rng().fill_bytes(&mut key);
-        Challenges::with_key(key, MAX_REDEEMED)
+        Challenges::with_key(key)
     }
 }
 
@@ -96,44 +88,9 @@ pub struct IssuedChallenge {
     pub expires_in: i64,
 }
 
-/// The tokens redeemed so far, each until it expires. Kept as a 16-byte
-/// digest (a token is ~220 bytes, and only "seen before" is asked of it),
-/// with expiries in order, so forgetting the expired ones means popping
-/// the buckets that are due, not walking every entry under the lock on
-/// every redemption.
-#[derive(Default)]
-struct Redeemed {
-    by_key: HashMap<[u8; 16], i64>,
-    by_expiry: std::collections::BTreeMap<i64, Vec<[u8; 16]>>,
-}
-
-impl Redeemed {
-    fn key_of(token: &str) -> [u8; 16] {
-        let digest = Sha256::digest(token.as_bytes());
-        let mut key = [0u8; 16];
-        key.copy_from_slice(&digest[..16]);
-        key
-    }
-
-    fn forget_expired(&mut self, now: i64) {
-        while let Some(entry) = self.by_expiry.first_entry() {
-            if *entry.key() > now {
-                break;
-            }
-            for key in entry.remove() {
-                self.by_key.remove(&key);
-            }
-        }
-    }
-}
-
 impl Challenges {
-    pub fn with_key(key: [u8; 32], max_redeemed: usize) -> Self {
-        Challenges {
-            key,
-            redeemed: Mutex::new(Redeemed::default()),
-            max_redeemed,
-        }
+    pub fn with_key(key: [u8; 32]) -> Self {
+        Challenges { key }
     }
 
     fn sign(&self, payload: &str) -> String {
@@ -193,28 +150,14 @@ impl Challenges {
         Ok(fields)
     }
 
-    fn remember(&self, token: &str, expires: i64, now: i64) -> Result<(), RedeemError> {
-        let mut redeemed = self.redeemed.lock();
-        redeemed.forget_expired(now);
-        let key = Redeemed::key_of(token);
-        if redeemed.by_key.contains_key(&key) {
-            return Err(RedeemError::Replayed);
-        }
-        if redeemed.by_key.len() >= self.max_redeemed {
-            return Err(RedeemError::Full);
-        }
-        redeemed.by_key.insert(key, expires);
-        redeemed.by_expiry.entry(expires).or_default().push(key);
-        Ok(())
-    }
-
-    /// Redeems a proof `<challenge>.<nonce>` for `client`.
+    /// Redeems a proof `<challenge>.<nonce>` for `client`: a work pass
+    /// from the challenge's issue.
     pub fn redeem_proof(
         &self,
         proof: &str,
         client: &ClientIdentity,
         now: i64,
-    ) -> Result<(), RedeemError> {
+    ) -> Result<PassGrant, RedeemError> {
         let (challenge, nonce) = proof
             .trim()
             .rsplit_once('.')
@@ -238,16 +181,20 @@ impl Challenges {
         {
             return Err(RedeemError::NotSolved);
         }
-        self.remember(challenge, expires, now)
+        Ok(PassGrant {
+            pass: Pass::Work,
+            until: expires - CHALLENGE_TTL_SECS + PASS_SECS,
+        })
     }
 
-    /// Redeems a wait token for `client`.
+    /// Redeems a wait token for `client`: a wait pass from the end of the
+    /// wait.
     pub fn redeem_wait(
         &self,
         token: &str,
         client: &ClientIdentity,
         now: i64,
-    ) -> Result<(), RedeemError> {
+    ) -> Result<PassGrant, RedeemError> {
         let fields = self.open(token.trim())?;
         if fields[0] != "wait" {
             return Err(RedeemError::Malformed);
@@ -263,7 +210,10 @@ impl Challenges {
         if fields[3] != client.to_string() {
             return Err(RedeemError::WrongClient);
         }
-        self.remember(token.trim(), expires, now)
+        Ok(PassGrant {
+            pass: Pass::Wait,
+            until: not_before + PASS_SECS,
+        })
     }
 }
 
@@ -301,25 +251,29 @@ mod tests {
         ClientIdentity::Circuit(n)
     }
 
+    /// A proof earns its own client a work pass that ends a fixed time
+    /// after the challenge was issued: redeemed again later, it earns the
+    /// same pass, so a replay buys nothing and nothing needs remembering.
     #[test]
-    fn a_solved_challenge_redeems_once_for_its_own_client_only() {
-        let challenges = Challenges::with_key([1; 32], 100);
+    fn a_solved_challenge_earns_one_fixed_pass_for_its_own_client_only() {
+        let challenges = Challenges::with_key([1; 32]);
         let issued = challenges.issue(&client(1), 8, 1000);
         let proof = format!("{}.{}", issued.challenge, solve(&issued.challenge, 8));
         assert_eq!(
             challenges.redeem_proof(&proof, &client(2), 1001),
             Err(RedeemError::WrongClient)
         );
-        assert_eq!(challenges.redeem_proof(&proof, &client(1), 1001), Ok(()));
-        assert_eq!(
-            challenges.redeem_proof(&proof, &client(1), 1002),
-            Err(RedeemError::Replayed)
-        );
+        let pass = PassGrant {
+            pass: Pass::Work,
+            until: 1000 + PASS_SECS,
+        };
+        assert_eq!(challenges.redeem_proof(&proof, &client(1), 1001), Ok(pass));
+        assert_eq!(challenges.redeem_proof(&proof, &client(1), 1200), Ok(pass));
     }
 
     #[test]
     fn unsolved_expired_forged_and_malformed_proofs_are_refused() {
-        let challenges = Challenges::with_key([1; 32], 100);
+        let challenges = Challenges::with_key([1; 32]);
         let issued = challenges.issue(&client(1), 12, 1000);
         let nonce = solve(&issued.challenge, 12);
         // A nonce that doesn't meet the difficulty.
@@ -344,7 +298,7 @@ mod tests {
             Err(RedeemError::Expired)
         );
         // Signed with another process's key.
-        let other = Challenges::with_key([2; 32], 100).issue(&client(1), 1, 1000);
+        let other = Challenges::with_key([2; 32]).issue(&client(1), 1, 1000);
         let other_nonce = solve(&other.challenge, 1);
         assert_eq!(
             challenges.redeem_proof(
@@ -379,8 +333,8 @@ mod tests {
     }
 
     #[test]
-    fn a_wait_token_only_redeems_after_its_wait_and_once() {
-        let challenges = Challenges::with_key([1; 32], 100);
+    fn a_wait_token_only_redeems_after_its_wait_for_one_fixed_page_pass() {
+        let challenges = Challenges::with_key([1; 32]);
         let token = challenges.issue_wait(&client(1), 1000);
         assert_eq!(
             challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS - 1),
@@ -390,13 +344,17 @@ mod tests {
             challenges.redeem_wait(&token, &client(2), 1000 + WAIT_SECS),
             Err(RedeemError::WrongClient)
         );
+        let pass = PassGrant {
+            pass: Pass::Wait,
+            until: 1000 + WAIT_SECS + PASS_SECS,
+        };
         assert_eq!(
             challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS),
-            Ok(())
+            Ok(pass)
         );
         assert_eq!(
-            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS + 1),
-            Err(RedeemError::Replayed)
+            challenges.redeem_wait(&token, &client(1), 1000 + WAIT_SECS + 60),
+            Ok(pass)
         );
         let late = challenges.issue_wait(&client(1), 1000);
         assert_eq!(
@@ -412,64 +370,6 @@ mod tests {
         assert_eq!(
             challenges.redeem_proof(&format!("{late}.1"), &client(1), 1011),
             Err(RedeemError::Malformed)
-        );
-    }
-
-    /// Forgetting expired tokens is by expiry order, so a full memory of
-    /// mostly-expired tokens frees as soon as they are due and a redeemed
-    /// token is still refused a second time meanwhile.
-    #[test]
-    fn expired_tokens_are_forgotten_in_order_and_live_ones_still_refuse_replay() {
-        let challenges = Challenges::with_key([1; 32], 3);
-        let early = challenges.issue_wait(&client(1), 0);
-        challenges
-            .redeem_wait(&early, &client(1), WAIT_SECS)
-            .unwrap();
-        let late = challenges.issue_wait(&client(2), 100);
-        challenges
-            .redeem_wait(&late, &client(2), 100 + WAIT_SECS)
-            .unwrap();
-        assert_eq!(
-            challenges.redeem_wait(&late, &client(2), 100 + WAIT_SECS + 1),
-            Err(RedeemError::Replayed)
-        );
-        let redeemed = challenges.redeemed.lock();
-        assert_eq!(redeemed.by_key.len(), 2);
-        drop(redeemed);
-        // Past `early`'s expiry (but not `late`'s): one forgotten, one kept.
-        let after_early = WAIT_SECS + WAIT_TTL_SECS + 1;
-        let third = challenges.issue_wait(&client(3), after_early - WAIT_SECS);
-        challenges
-            .redeem_wait(&third, &client(3), after_early)
-            .unwrap();
-        let redeemed = challenges.redeemed.lock();
-        assert_eq!(
-            redeemed.by_key.len(),
-            2,
-            "early forgotten, late and third kept"
-        );
-        assert_eq!(redeemed.by_expiry.len(), 2);
-    }
-
-    #[test]
-    fn the_replay_memory_is_capped_and_fails_closed() {
-        let challenges = Challenges::with_key([1; 32], 2);
-        for n in 0..2 {
-            let token = challenges.issue_wait(&client(n), 0);
-            challenges
-                .redeem_wait(&token, &client(n), WAIT_SECS)
-                .unwrap();
-        }
-        let third = challenges.issue_wait(&client(3), 0);
-        assert_eq!(
-            challenges.redeem_wait(&third, &client(3), WAIT_SECS),
-            Err(RedeemError::Full)
-        );
-        // Once the remembered ones expire there is room again.
-        let fourth = challenges.issue_wait(&client(4), 1000);
-        assert_eq!(
-            challenges.redeem_wait(&fourth, &client(4), 1000 + WAIT_SECS),
-            Ok(())
         );
     }
 
