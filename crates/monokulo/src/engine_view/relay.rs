@@ -357,7 +357,7 @@ impl Relay {
                 match Upstream::open(&self.client, &channel.network, from).await {
                     Ok(upstream) => break upstream,
                     Err(error) => {
-                        shared::throttled!(
+                        telemetry::throttled!(
                             format!("engine-page-stream:{}", channel.network),
                             warn,
                             network = %channel.network,

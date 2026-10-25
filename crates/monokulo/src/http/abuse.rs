@@ -323,7 +323,7 @@ async fn guard(
             } else {
                 "browser"
             };
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("client-logs-dropped:{source}"),
                 warn,
                 report.source = source,

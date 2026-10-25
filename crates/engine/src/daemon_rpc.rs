@@ -1144,7 +1144,7 @@ impl PoolView {
                         self.bodies.insert(txid.clone(), fetched.tx);
                     }
                     Ok(_) => {}
-                    Err(error) => shared::throttled!(
+                    Err(error) => telemetry::throttled!(
                         "pool-body-mismatch",
                         warn,
                         tx.id = %txid,
@@ -1797,7 +1797,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 // Refused past the tip, which is expected; a node that
                 // refuses every range makes this one header a call, which
                 // an operator should be able to see.
-                Err(error) => shared::throttled!(
+                Err(error) => telemetry::throttled!(
                     "headers-range-refused",
                     debug,
                     error = %error,
@@ -1981,7 +1981,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                             fetched.txid
                         )))
                     }
-                    Err(e) => shared::throttled!(
+                    Err(e) => telemetry::throttled!(
                         format!("undecodable-tx:{}", self.base_url),
                         warn,
                         error = %e,

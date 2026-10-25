@@ -424,7 +424,7 @@ async fn run_round_at(
     let (tip, tip_hash, tip_error) = match tip_answer {
         Ok(tip) => (Some(tip.height), tip.hash, None),
         Err(error) => {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("round-height:{:?}", inputs.network),
                 warn,
                 network = ?inputs.network,

@@ -305,7 +305,7 @@ impl Follower {
         match self.checked_round(db, client, now).await {
             Ok(report) => report,
             Err(error) => {
-                shared::throttled!(
+                telemetry::throttled!(
                     format!("proof-round:{:?}", self.network),
                     warn,
                     network = ?self.network,
@@ -335,7 +335,7 @@ impl Follower {
             return;
         }
         if let Err(error) = self.db(db, Store::disable_proof).await {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("proof-off:{:?}", self.network),
                 warn,
                 network = ?self.network,
@@ -422,7 +422,7 @@ impl Follower {
                         .saturating_mul(1 << self.anchor_failures.saturating_sub(1).min(10))
                         .min(self.tuning.anchor_retry.saturating_mul(10));
                     self.next_anchor = Some(tokio::time::Instant::now() + wait);
-                    shared::throttled!(
+                    telemetry::throttled!(
                         format!("proof-anchor:{:?}", self.network),
                         info,
                         network = ?self.network,
@@ -921,7 +921,7 @@ impl Follower {
     }
 
     fn caught(&self, node: &NodeRef<'_>, height: u64, why: String) -> Finding {
-        shared::throttled!(
+        telemetry::throttled!(
             format!("proof-caught:{}", node.label),
             warn,
             network = ?self.network,

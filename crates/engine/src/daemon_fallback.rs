@@ -286,7 +286,7 @@ impl FallbackDaemonClient {
             health.cooldown_until = Some(Instant::now() + cooldown);
             cooldown
         };
-        shared::throttled!(
+        telemetry::throttled!(
             format!("node-failed:{}", self.nodes[idx].label),
             warn,
             node = %self.nodes[idx].label,

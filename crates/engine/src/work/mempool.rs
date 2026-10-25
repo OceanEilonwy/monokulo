@@ -545,7 +545,7 @@ async fn scan_and_record(
         let scan = match result {
             Ok(scan) => scan,
             Err(error) => {
-                shared::throttled!(format!("mempool-scan:{tenant_id}"), warn, store.id = %tenant_id, network = ?inputs.network,
+                telemetry::throttled!(format!("mempool-scan:{tenant_id}"), warn, store.id = %tenant_id, network = ?inputs.network,
                     error = %error, "scanning a mempool transaction failed");
                 state.backoff.failed(&tenant_id);
                 outcome.failed.push(tenant_id);
@@ -601,7 +601,7 @@ fn readable(
     match answer {
         Ok(txids) => Some(txids),
         Err(error) => {
-            shared::throttled!(format!("mempool-poll:{:?}", inputs.network), warn, network = ?inputs.network, error = %error,
+            telemetry::throttled!(format!("mempool-poll:{:?}", inputs.network), warn, network = ?inputs.network, error = %error,
                 "polling the mempool failed - no zero-conf detection until it answers");
             None
         }

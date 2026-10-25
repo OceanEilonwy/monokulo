@@ -5,5 +5,4 @@
 //! for Monero data (`network`, `monero_tx`). Key custody has a crate of its own
 //! (`key-custody`).
 
-pub mod log;
 pub mod monero_tx;

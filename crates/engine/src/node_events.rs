@@ -211,7 +211,7 @@ mod subscriber {
                 p.last_error = Some(error.clone());
                 p.last_error_at = Some(service_runtime::time::now_unix());
             });
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("zmq-failed:{endpoint}"),
                 warn,
                 network = ?network,

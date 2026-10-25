@@ -5,10 +5,8 @@ repository.workspace = true
 edition = "2021"
 
 [dependencies]
-parking_lot = "0.12.5"
 hex = "0.4.3"
 monero = "0.22.0"
-tracing = "0.1.44"
 
 [lints]
 workspace = true

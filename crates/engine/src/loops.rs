@@ -93,7 +93,7 @@ pub async fn run_fast_mempool_loop(
                 // The round loop is the safety net, so this is not an
                 // outage; but a pass that keeps hitting its deadline is a
                 // node that keeps hanging, which an operator should see.
-                Err(_) => shared::throttled!(
+                Err(_) => telemetry::throttled!(
                     format!("fast-mempool-deadline:{network:?}"),
                     warn,
                     network = ?network,
@@ -482,7 +482,7 @@ pub async fn run_scanner_loop(
         };
         let finished_at = now_unix();
         if let Err(e) = &result {
-            shared::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
+            telemetry::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
         }
         // Not for a network whose node setting was cleared during this tick:
         // its status was removed when its loops were stopped.
@@ -583,7 +583,7 @@ async fn record_snapshot(
             .record(engine_protocol::activity::Event::Snapshot(Box::new(
                 snapshot,
             ))),
-        Err(error) => shared::throttled!(
+        Err(error) => telemetry::throttled!(
             format!("activity-snapshot:{network:?}"),
             warn,
             network = ?network,

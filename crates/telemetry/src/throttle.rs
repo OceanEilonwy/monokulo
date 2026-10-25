@@ -41,14 +41,14 @@ static SEEN: LazyLock<Mutex<HashMap<String, Seen>>> = LazyLock::new(Default::def
 /// one kind of event, as before.
 ///
 /// ```ignore
-/// shared::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
+/// telemetry::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
 /// ```
 #[macro_export]
 macro_rules! throttled {
     ($key:expr, $level:ident, $($rest:tt)+) => {{
-        let key = $crate::log::namespaced(::std::module_path!(), &$key);
-        if let Some(suppressed) = $crate::log::admit(&key) {
-            $crate::log::tracing::$level!(throttle_key = %key, suppressed, $($rest)+);
+        let key = $crate::throttle::namespaced(::std::module_path!(), &$key);
+        if let Some(suppressed) = $crate::throttle::admit(&key) {
+            $crate::throttle::tracing::$level!(throttle_key = %key, suppressed, $($rest)+);
         }
     }};
 }
@@ -152,7 +152,11 @@ mod tests {
     #[test]
     fn the_macro_throttles_by_the_namespaced_key() {
         crate::throttled!("test:macro:namespaced", warn, "first");
-        assert_eq!(admit("shared/test:macro:namespaced"), None, "already seen");
+        assert_eq!(
+            admit("telemetry/test:macro:namespaced"),
+            None,
+            "already seen"
+        );
         assert_eq!(
             admit("test:macro:namespaced"),
             Some(0),

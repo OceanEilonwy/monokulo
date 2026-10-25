@@ -1361,7 +1361,7 @@ pub async fn register_missing_wallets_reporting(
     if let Some((first_store, first_error)) = first_error {
         // One line per network, and not every retry: a backend that is down
         // would otherwise log every store it holds every few seconds.
-        shared::throttled!(
+        telemetry::throttled!(
             format!("register-failed:{}", crate::network::network_str(network)),
             warn,
             network = crate::network::network_str(network),
