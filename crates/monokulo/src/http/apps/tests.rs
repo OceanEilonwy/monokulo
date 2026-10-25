@@ -388,6 +388,38 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
         .is_empty());
 }
 
+/// An app running in a browser on another site disconnects itself: its
+/// cross-origin `DELETE /api/v1/app` with its key is carried out and
+/// answered with `access-control-allow-origin`, so the page can read that
+/// it worked.
+#[tokio::test]
+async fn an_app_on_another_site_disconnects_itself_cross_origin() {
+    let (state, _engine) = state_with_engine(&format!("public_uri = \"{PUBLIC_URI}\"\n")).await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let (token, _) = code(&router, &id, &cookie, "").await;
+    let creds = body_json(redeem(&router, connect_body(&token)).await).await;
+    let key = creds["app_key"].as_str().unwrap().to_owned();
+
+    let origin = "https://docs.monokulo.com";
+    let mut request = api_request("DELETE", "/api/v1/app", Some(&key), None);
+    request
+        .headers_mut()
+        .insert("origin", origin.parse().unwrap());
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["access-control-allow-origin"], origin);
+    assert!(!response
+        .headers()
+        .contains_key("access-control-allow-credentials"));
+    assert!(state
+        .db
+        .lock()
+        .list_apps(&shared::ids::ConnectionId::new(id))
+        .unwrap()
+        .is_empty());
+}
+
 /// Without a public address the code can't be made, and redeeming says so
 /// with a `no-public-address` problem before spending a code; a bad slug
 /// or body is `invalid-request`, an unknown code `invalid-connect-code`:
