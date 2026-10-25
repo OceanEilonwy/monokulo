@@ -649,6 +649,40 @@ def cmd_fixplan(args):
     print(f"planned {len(entries)} findings")
 
 
+def cmd_fixreport(args):
+    conn = connect(readonly=True)
+    rank = "CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END"
+    groups = conn.execute(
+        f"SELECT p.fix_group, max({rank}) top, count(*) n FROM fix_plan p JOIN review_finding f ON f.id = p.finding_id "
+        "GROUP BY p.fix_group ORDER BY top DESC, n DESC, p.fix_group"
+    ).fetchall()
+    counts = conn.execute("SELECT approach, count(*) n FROM fix_plan GROUP BY approach ORDER BY n DESC").fetchall()
+    out = ["# Fix plan", "",
+           "Each confirmed finding's fix, and the test that protects it if one earns its place. "
+           "`construction` fixes make the bug impossible and add no test; `construction+test` is kept for "
+           "critical properties; tests extend existing ones wherever they can.", "",
+           "| Approach | Findings |", "|---|---|"]
+    out += [f"| {c['approach']} | {c['n']} |" for c in counts]
+    out.append("")
+    names = {4: "critical", 3: "high", 2: "medium", 1: "low"}
+    for g in groups:
+        out += [f"## {g['fix_group']} (top: {names[g['top']]}, {g['n']} findings)", ""]
+        rows = conn.execute(
+            "SELECT f.id, f.severity, f.title, cf.path, f.line_start, p.* FROM fix_plan p "
+            "JOIN review_finding f ON f.id = p.finding_id JOIN crate_file cf ON cf.id = f.crate_file_id "
+            f"WHERE p.fix_group = ? ORDER BY {rank} DESC, f.id", (g["fix_group"],)
+        ).fetchall()
+        for r in rows:
+            out += [f"### #{r['id']} {r['title']}",
+                    f"`{r['path']}:{r['line_start']}` · {r['severity']} · **{r['approach']}** · effort {r['effort']}", "",
+                    f"**Fix:** {r['fix']}", ""]
+            if r["test_where"]:
+                out += [f"**Test:** `{r['test_where']}`: {r['test_what']}", ""]
+            out += [f"**Why:** {r['rationale']}", ""]
+    Path(args.out).write_text("\n".join(out))
+    print(f"wrote {args.out} ({len(groups)} groups)")
+
+
 def cmd_purpose(args):
     conn = connect()
     with Tx(conn):
@@ -844,6 +878,10 @@ def main():
     p = sub.add_parser("fixplan", parents=[common])
     p.add_argument("--from", dest="from_file", required=True, help="a JSON object or list of them")
     p.set_defaults(run=cmd_fixplan)
+
+    p = sub.add_parser("fixreport", parents=[common])
+    p.add_argument("--out", required=True)
+    p.set_defaults(run=cmd_fixreport)
 
     p = sub.add_parser("purpose", parents=[common])
     p.add_argument("path")
