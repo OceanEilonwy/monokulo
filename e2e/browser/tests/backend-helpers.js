@@ -122,7 +122,7 @@ function settingsTabOf(name) {
   if (/^(payment|webhooks|exchange_rate)\./.test(key)) return 'payments';
   if (key.startsWith('key_custody.')) return 'custody';
   if (/^(abuse|rate_limit)\./.test(key)) return 'abuse';
-  if (/^(server|http_cache)\./.test(key)) return 'server';
+  if (key.startsWith('server.')) return 'server';
   if (/^(engine:)?logging\./.test(key)) return 'logging';
   return 'general';
 }

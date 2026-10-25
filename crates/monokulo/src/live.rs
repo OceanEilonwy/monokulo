@@ -200,17 +200,6 @@ impl LiveHub {
         }
     }
 
-    /// Ends every stream from this hub (task 3.2: `engine.url` changed).
-    /// Upstream connections to the old engine are aborted and every order
-    /// watch is dropped, so each browser's stream ends and its reconnect is
-    /// served by the client's new hub.
-    pub fn shutdown(&self) {
-        let stores = std::mem::take(&mut *self.stores.lock());
-        for (_, store) in stores {
-            store.upstream.abort();
-        }
-    }
-
     /// How many stores currently hold an upstream connection - for tests.
     pub fn upstream_count(&self) -> usize {
         self.stores.lock().len()
@@ -227,8 +216,7 @@ impl Drop for OrderSubscription {
 /// backgrounding it), which the engine knows nothing of and
 /// so never reports to a [`LiveHub`]. Held by the database
 /// (`db::Database::order_changes`), which wakes it for every write that
-/// changes such an order, and not by the engine client, so its watchers
-/// carry on across a change of engine.
+/// changes such an order.
 #[derive(Clone, Default)]
 pub struct OrderChanges {
     stores: Arc<Mutex<HashMap<crate::db::ConnectionId, HashMap<crate::db::OrderId, LocalWatch>>>>,
@@ -820,57 +808,5 @@ mod tests {
         assert_eq!(changes.stores.lock()[&store].len(), 1);
         drop((b, elsewhere));
         assert!(changes.stores.lock().is_empty());
-    }
-
-    /// Unlike the engine's own feed, which ends with its hub when the
-    /// engine client changes, monokulo's changes keep reaching their
-    /// watchers.
-    #[tokio::test]
-    async fn order_changes_outlive_a_new_engine_hub() {
-        let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
-        let changes = OrderChanges::default();
-        let (store, order) = (
-            shared::ids::ConnectionId::new("conn"),
-            shared::ids::OrderId::new("order"),
-        );
-        let engine_side = engine.subscribe_order(
-            &store,
-            &shared::auth::RawToken::presented("sk_test"),
-            &order,
-        );
-        let watch = changes.subscribe(&store, &order);
-        engine.set_cache_limit(1024 * 1024);
-        assert!(
-            engine_side.changed.has_changed().is_err(),
-            "the engine's feed ended"
-        );
-        changes.notify(&store, &order);
-        assert!(watch.changed.has_changed().unwrap());
-    }
-
-    #[tokio::test]
-    async fn a_new_cache_size_ends_live_streams_on_the_old_http_client() {
-        let engine = crate::engine_client::EngineClient::for_tests("http://127.0.0.1:1");
-        let mut subscription = engine.subscribe_order(
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_test"),
-            &shared::ids::OrderId::new("order"),
-        );
-        assert_eq!(engine.live_upstream_count(), 1);
-        engine.set_cache_limit(1024 * 1024);
-        assert_eq!(
-            engine.live_upstream_count(),
-            0,
-            "the new hub has no streams yet"
-        );
-        let ended = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            subscription.changed.changed(),
-        )
-        .await;
-        assert!(
-            matches!(ended, Ok(Err(_))),
-            "the old stream ends, so the browser reconnects through the new client"
-        );
     }
 }

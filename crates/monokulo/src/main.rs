@@ -55,7 +55,9 @@ fn main() {
     // wrong in it stops monokulo here, line by line. The engine's tables
     // are left to the engine at first; they are refused below if there is
     // no engine here to read them.
-    let file = OptionsFile::at(&start.options).with_renamed(settings::RENAMED);
+    let file = OptionsFile::at(&start.options)
+        .with_renamed(settings::RENAMED)
+        .with_retired(settings::RETIRED);
     let own_options = file.clone().leaving(settings::ENGINE_TABLE);
     let values = own_options.read(settings::ALL).unwrap_or_else(|e| stop(e));
     let early = Snapshot::new(values, env.clone());
@@ -66,6 +68,15 @@ fn main() {
         &early.get(&settings::LOGGING_LEVEL),
         telemetry::Format::chosen(early.get(&settings::LOGGING_FORMAT)),
     );
+    // A setting that no longer exists, still given: it does nothing, and
+    // is said once here so the line can go.
+    for retired in args
+        .retired
+        .iter()
+        .chain(&own_options.retired_warnings(settings::ALL))
+    {
+        tracing::warn!("{retired}");
+    }
     let mode = settings::engine_mode(&early, &env).unwrap_or_else(|e| stop(e));
     let own_options = match mode {
         EngineMode::Embedded => own_options,
@@ -159,10 +170,9 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         _ => {
             let engine_url = early.get(&settings::ENGINE_URL);
             let engine_token = required(&settings::ENGINE_TOKEN, &env);
-            let client = EngineClient::with_cache_limit(
+            let client = EngineClient::new(
                 engine_url.as_str().to_string(),
                 shared::auth::engine_token(engine_token.expose()),
-                shared::http_cache::DEFAULT_MAX_CACHE_BYTES,
             );
             (client, None)
         }
@@ -189,7 +199,6 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
         settings::DbSettings::new(db.clone(), encryption_key.clone()),
-        engine_client.clone(),
         exchange_rate.clone(),
         abuse.clone(),
         Some(settings::OnionServing {

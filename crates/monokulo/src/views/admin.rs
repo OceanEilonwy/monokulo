@@ -755,7 +755,7 @@ impl Group {
                 "abuse" if rest == "onion_listener" => Group::TorService,
                 "abuse" if rest == "trusted_proxies" => Group::AbuseVisitors,
                 "abuse" | "rate_limit" => Group::AbuseLimits,
-                "http_cache" | "database" | "server" | "crypto" => Group::Server(owner),
+                "database" | "server" | "crypto" => Group::Server(owner),
                 // The Query page's switch, beside the server's own settings.
                 "admin" => Group::Server(owner),
                 "logging" => Group::Logging(owner),
@@ -2280,7 +2280,6 @@ mod tests {
             ("engine.url", M, General, "engine"),
             ("engine.status_cache_ms", M, General, "engine"),
             ("engine.token", M, General, "engine"),
-            ("http_cache.max_mb", M, Server, "server-monokulo"),
             ("database.read_connections", M, Server, "server-monokulo"),
             ("database.path", M, Server, "server-monokulo"),
             ("server.bind", M, Server, "server-monokulo"),

@@ -87,7 +87,7 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   // fix or discard.
   await openSettingsTab(page, 'server');
   await page.locator('input[name="server.cpus"]').fill('abc');
-  await page.locator('input[name="http_cache.max_mb"]').fill('20');
+  await page.locator('input[name="database.read_connections"]').fill('6');
   await expect(bar).toContainText('2 unsaved changes in Monokulo and Engine');
   await bar.getByRole('button', { name: 'Save', exact: true }).click();
 
@@ -101,7 +101,7 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   await expect(page.locator('input[name="server.cpus"]')).toHaveValue('abc');
   await expect(page.locator('#card-server-monokulo')).not.toHaveClass(/is-failed/);
   await expect(page.locator('#card-server-monokulo .card-saved')).toHaveCount(0);
-  await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('20');
+  await expect(page.locator('input[name="database.read_connections"]')).toHaveValue('6');
   // The bar is red and says why, with a link to the card.
   await expect(bar).toHaveClass(/is-failed/);
   await expect(bar).toContainText('Nothing saved.');
@@ -118,10 +118,10 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   await page.locator('input[name="server.cpus"]').fill('');
   await expect(bar).toContainText('1 unsaved change in Monokulo');
   await page.locator('#card-server-monokulo').getByRole('button', { name: 'Discard' }).click();
-  await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('16');
+  await expect(page.locator('input[name="database.read_connections"]')).toHaveValue('4');
   await expect(bar).toBeHidden();
   await openSettingsTab(page, 'server');
-  await expect(page.locator('input[name="http_cache.max_mb"]')).toHaveValue('16');
+  await expect(page.locator('input[name="database.read_connections"]')).toHaveValue('4');
 });
 
 test('a http or network failure restores Save and allows retry', async ({ page }) => {

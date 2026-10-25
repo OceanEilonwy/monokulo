@@ -2,7 +2,7 @@
 //! two transports:
 //!
 //! - **remote**: over HTTP to a separately running engine
-//!   (`monokulo-engine`), with `reqwest`, through `shared::http_cache`;
+//!   (`monokulo-engine`), with `reqwest`, through `shared::http_client`;
 //! - **embedded**: the engine's own router (`engine::run::Engine::router`),
 //!   called in this process. No socket, no port: the same handlers,
 //!   authentication, validation and rate limits run as over HTTP, and only
@@ -77,19 +77,11 @@ fn with_query(path: &str, query: &impl Serialize) -> String {
 /// A client for one engine's admin API, over either transport.
 ///
 /// `Clone` is free: every clone shares the same target (and, remotely, the
-/// same connection pool and cache), which is what lets `EngineClient` live
-/// on `AppState`, which axum clones per request.
-///
-/// Remotely, every call goes through `shared::http_cache`'s byte-bounded,
-/// cache-aware transport - safe as a blanket default because only a response
-/// the engine explicitly marks cacheable (`Cache-Control: max-age=N`) is
-/// ever cached, and no engine endpoint sets that header today. Embedded,
-/// there is nothing to cache: a call is a function call.
+/// same connection pool), which is what lets `EngineClient` live on
+/// `AppState`, which axum clones per request.
 #[derive(Clone)]
 pub struct EngineClient {
-    /// Swapped whole when `http_cache.max_mb` is saved (admin_settings_v2.md
-    /// task 3.2); every clone sees the change, since they share this handle.
-    current: std::sync::Arc<parking_lot::RwLock<std::sync::Arc<EngineTarget>>>,
+    target: std::sync::Arc<EngineTarget>,
 }
 
 /// How requests reach the engine.
@@ -97,7 +89,6 @@ enum Transport {
     /// Over HTTP to a separately running engine at `base_url`.
     Remote {
         base_url: String,
-        max_cache_bytes: u64,
         http: reqwest_middleware::ClientWithMiddleware,
     },
     /// The engine's own router, in this process; its handlers run on the
@@ -214,7 +205,7 @@ impl EngineReply {
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<Bytes, EngineClientError>> + Send>>;
 
 impl EngineTarget {
-    fn remote(base_url: String, token: RawToken, max_cache_bytes: u64) -> Self {
+    fn remote(base_url: String, token: RawToken) -> Self {
         // The engine refuses any request without it, whatever the route.
         let mut value = reqwest::header::HeaderValue::from_str(token.expose())
             .expect("an engine token read from the environment is a valid header value");
@@ -226,10 +217,8 @@ impl EngineTarget {
         EngineTarget {
             transport: Transport::Remote {
                 base_url,
-                max_cache_bytes,
-                http: shared::http_cache::build_traced_client_with_headers(
+                http: shared::http_client::build_traced_client_with_headers(
                     concat!("monokulo/", env!("CARGO_PKG_VERSION")),
-                    max_cache_bytes,
                     headers,
                 ),
             },
@@ -483,7 +472,7 @@ impl EngineClient {
     /// The engine at `base_url`, reached over HTTP with the engine token
     /// `token` (`ENGINE_TOKEN`), which every request carries.
     pub fn new(base_url: impl Into<String>, token: RawToken) -> Self {
-        Self::with_cache_limit(base_url, token, shared::http_cache::DEFAULT_MAX_CACHE_BYTES)
+        Self::from_target(EngineTarget::remote(base_url.into(), token))
     }
 
     /// The engine running in this process, reached through its own
@@ -532,51 +521,14 @@ impl EngineClient {
         )
     }
 
-    /// Same as [`Self::new`], but with an explicit byte cap for the HTTP
-    /// cache rather than the default - what `main.rs` uses so the admin's
-    /// `http_cache.max_mb` takes effect.
-    pub fn with_cache_limit(
-        base_url: impl Into<String>,
-        token: RawToken,
-        max_cache_bytes: u64,
-    ) -> Self {
-        Self::from_target(EngineTarget::remote(
-            base_url.into(),
-            token,
-            max_cache_bytes,
-        ))
-    }
-
     fn from_target(target: EngineTarget) -> Self {
         EngineClient {
-            current: std::sync::Arc::new(parking_lot::RwLock::new(std::sync::Arc::new(target))),
+            target: std::sync::Arc::new(target),
         }
     }
 
     fn target(&self) -> std::sync::Arc<EngineTarget> {
-        self.current.read().clone()
-    }
-
-    /// Gives every clone of this client a fresh HTTP cache of
-    /// `max_cache_bytes` (task 3.2). Live-update streams are ended with the
-    /// old client, so browsers watching orders reconnect. Nothing happens
-    /// when the size is what it already is, so open streams aren't cut for
-    /// no reason, nor for an embedded engine, which has no cache.
-    pub fn set_cache_limit(&self, max_cache_bytes: u64) {
-        let (base_url, token) = {
-            let current = self.current.read();
-            match &current.transport {
-                Transport::Remote {
-                    base_url,
-                    max_cache_bytes: current_bytes,
-                    ..
-                } if *current_bytes != max_cache_bytes => (base_url.clone(), current.token.clone()),
-                _ => return,
-            }
-        };
-        let next = std::sync::Arc::new(EngineTarget::remote(base_url, token, max_cache_bytes));
-        let previous = std::mem::replace(&mut *self.current.write(), next);
-        previous.live.shutdown();
+        self.target.clone()
     }
 
     /// Watches one order for changes - see `crate::live::LiveHub::subscribe`.
@@ -1208,8 +1160,8 @@ pub const MAX_ORDER_IDS_PER_REQUEST: usize = 100;
 pub enum EngineClientError {
     #[error("request to engine failed: {0}")]
     Request(#[from] reqwest::Error),
-    /// From the shared HTTP-cache-aware transport's own middleware layer
-    /// (`shared::http_cache`) - see `ExchangeRateError::Middleware`'s own doc
+    /// From the shared transport's middleware layer
+    /// (`shared::http_client`) - see `ExchangeRateError::Middleware`'s own doc
     /// comment (its exact sibling in `shared::exchange_rate`) for why this is a
     /// distinct variant from `Request` above rather than a merge.
     #[error("request to engine failed: {0}")]
@@ -1645,35 +1597,6 @@ mod tests {
         assert_eq!(path_id("wh_0123abcd").unwrap(), "wh_0123abcd");
     }
 
-    #[test]
-    fn the_same_cache_size_changes_nothing_and_a_new_one_makes_a_new_client() {
-        let client = EngineClient::with_cache_limit(
-            "http://127.0.0.1:8443",
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
-            1024,
-        );
-        let before = client.target();
-        client.set_cache_limit(1024);
-        assert!(
-            std::sync::Arc::ptr_eq(&before, &client.target()),
-            "same cache: kept, streams stay open"
-        );
-        client.set_cache_limit(2048);
-        assert!(
-            !std::sync::Arc::ptr_eq(&before, &client.target()),
-            "a new cache size is a new client"
-        );
-        assert!(
-            matches!(&client.target().transport, Transport::Remote { base_url, .. } if base_url == "http://127.0.0.1:8443"),
-            "same engine"
-        );
-        assert_eq!(
-            client.target().token,
-            RawToken::presented(shared::auth::TEST_ENGINE_TOKEN),
-            "same token"
-        );
-    }
-
     /// Same fixed-scalar construction `src/http/tests.rs` (engine crate) uses
     /// for its own `valid_view_key_hex`/`valid_spend_pubkey_hex` helpers,
     /// pre-computed here rather than pulling the `monero` crate into
@@ -1826,18 +1749,13 @@ mod tests {
         assert_eq!(stored.confirmations_required_override, None);
     }
 
-    /// A hand-rolled server standing in for a real engine response, with a
-    /// caller-controlled `Cache-Control` and a real call counter - the same
-    /// technique `shared::http_cache`'s own tests use, applied here to prove
-    /// `EngineClient` itself (not the engine) actually respects that
-    /// transport: a second call within the cache window must never reach the
-    /// server at all.
+    /// A router answering `body` at `path`, counting the calls that reach
+    /// it.
+    #[cfg(feature = "embedded-engine")]
     fn counting_router(
         path: &'static str,
-        cache_control: Option<&'static str>,
         body: serde_json::Value,
     ) -> (axum::Router, std::sync::Arc<std::sync::atomic::AtomicU64>) {
-        use axum::response::IntoResponse;
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let calls_for_handler = calls.clone();
         let app = axum::Router::new().route(
@@ -1847,119 +1765,11 @@ mod tests {
                 let body = body.clone();
                 async move {
                     calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    let mut response = axum::response::Json(body).into_response();
-                    if let Some(cc) = cache_control {
-                        response.headers_mut().insert(
-                            axum::http::header::CACHE_CONTROL,
-                            axum::http::HeaderValue::from_static(cc),
-                        );
-                        response.headers_mut().insert(
-                            axum::http::header::ETAG,
-                            axum::http::HeaderValue::from_static("\"fixed\""),
-                        );
-                    }
-                    response
+                    axum::response::Json(body)
                 }
             }),
         );
         (app, calls)
-    }
-
-    /// [`counting_router`], served over HTTP.
-    async fn spawn_counting_server(
-        path: &'static str,
-        cache_control: Option<&'static str>,
-        body: serde_json::Value,
-    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
-        let (app, calls) = counting_router(path, cache_control, body);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        (format!("http://{addr}"), calls)
-    }
-
-    #[tokio::test]
-    async fn a_second_call_over_http_within_the_cache_window_never_reaches_the_server() {
-        let order_body = serde_json::json!({
-            "order_id": "pay_1", "merchant_order_id": null, "address": "addr",
-            "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
-            "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
-            "created_at": 1000, "expires_at": 2000, "updated_at": 1000,
-            "first_scanned_height": null, "last_scanned_height": null, "currently_scanning": true,
-            "payments": []
-        });
-        let (base_url, calls) = spawn_counting_server(
-            "/api/v1/admin/tenant/orders/{order_id}",
-            Some("max-age=60"),
-            order_body,
-        )
-        .await;
-        let client = EngineClient::for_tests(base_url);
-
-        client
-            .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
-                &shared::ids::OrderId::new("pay_1"),
-            )
-            .await
-            .unwrap();
-        client
-            .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
-                &shared::ids::OrderId::new("pay_1"),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "the second call within the cache-control window must be served from EngineClient's own cache"
-        );
-    }
-
-    /// The other half of adopting this transport as a blanket default (its
-    /// own safety requirement): an ordinary engine call whose
-    /// response carries no `Cache-Control` at all - `get_order_detail`, exactly
-    /// like every engine endpoint before this feature - must never be served
-    /// from cache, proven the same way: a real call-count assertion, not just
-    /// a claim.
-    #[tokio::test]
-    async fn get_order_detail_is_never_cached_over_http() {
-        let order_body = serde_json::json!({
-            "order_id": "pay_1", "merchant_order_id": null, "address": "addr",
-            "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
-            "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
-            "created_at": 1000, "expires_at": 2000, "updated_at": 1000,
-            "first_scanned_height": null, "last_scanned_height": null, "currently_scanning": true,
-            "payments": []
-        });
-        let (base_url, calls) =
-            spawn_counting_server("/api/v1/admin/tenant/orders/{order_id}", None, order_body).await;
-        let client = EngineClient::for_tests(base_url);
-
-        client
-            .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
-                &shared::ids::OrderId::new("pay_1"),
-            )
-            .await
-            .unwrap();
-        client
-            .get_order_detail(
-                &shared::auth::RawToken::presented("sk_whatever"),
-                &shared::ids::OrderId::new("pay_1"),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            calls.load(std::sync::atomic::Ordering::SeqCst),
-            2,
-            "an ordinary, non-cache-control-bearing response must never be served from cache"
-        );
     }
 
     /// The engine is private: monokulo may only use its admin API (with a
@@ -1969,11 +1779,8 @@ mod tests {
     #[cfg(feature = "embedded-engine")]
     #[tokio::test]
     async fn a_call_to_a_non_admin_route_is_refused_before_it_is_sent() {
-        let (router, calls) = counting_router(
-            concat!("/api/v1/", "t/{key}/orders"),
-            None,
-            serde_json::json!([]),
-        );
+        let (router, calls) =
+            counting_router(concat!("/api/v1/", "t/{key}/orders"), serde_json::json!([]));
         let client = EngineClient::embedded_for_tests(router);
         for path in [
             concat!("/api/v1/", "t/pk_1/orders"),

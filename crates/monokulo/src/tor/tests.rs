@@ -51,7 +51,6 @@ async fn problem_loading(options: &str) -> Option<String> {
     let state = AppState::for_tests();
     crate::settings::MonokuloSettings::load(
         crate::settings::DbSettings::new(state.db.clone(), crate::http::TEST_ENCRYPTION_KEY),
-        state.engine.client.clone(),
         state.exchange_rate.clone(),
         state.abuse.clone(),
         None,
