@@ -34,7 +34,8 @@
 //! - **`convert` does not have to be fiat.** An unknown-to-fiat code that
 //!   happens to be a crypto ticker (`ZZZ`, `BTC`) comes back priced. That is
 //!   why this provider only ever accepts a 3-letter alphabetic code and why
-//!   monokulo only asks it for codes from its own `currencies` table; it
+//!   monokulo only asks it for codes from its own `currencies` table (its
+//!   `currencies::KnownCurrency`, never an alias as a caller typed it); it
 //!   deliberately offers no "supported currencies" list of its own - the
 //!   keyless tier has no fiat map (`/v1/fiat/map` needs a key).
 //! - **Rate limits are per IP and undisclosed** without a key, and per key

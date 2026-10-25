@@ -1011,10 +1011,11 @@ async fn state_on_its_own(engine: axum::Router) -> AppState {
 /// router), on a Monokulo without an onion address (the common case) and
 /// then the same one with one: the handshakes and each problem they
 /// answer; the API with each key, its streams and its problems. One order
-/// is made (by an app, then again by the shop's server and its website
-/// with the same `idempotency_key`, which gets that same order), and it
-/// is the one read, listed, streamed and linked, so a client can follow
-/// the examples' links from one to the next.
+/// is made (by an app, then again by the shop's server with the same
+/// `idempotency_key`, which gets that same order; the website's same key
+/// is its own, and makes another), and it is the one read, listed,
+/// streamed and linked, so a client can follow the examples' links from
+/// one to the next.
 pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     let recorder = Recorder::default();
     let fixture = fixture_on(engine.clone(), PUBLIC_URI, false, &recorder).await;
@@ -1141,7 +1142,9 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
 
     // The order: made by the app (a till) while the store's sale events
     // are followed, then again, with the same idempotency key, by the
-    // shop's server and its website, which get that same order.
+    // shop's server, which gets that same order, and by its website, whose
+    // keys are its own (anyone can send the public key), which gets
+    // another.
     let order_input = json!({
         "amount": "0.25",
         "currency": "XMR",
@@ -1152,9 +1155,9 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     });
     let stream = call(&router, "GET", "/api/v1/events".into(), Some(&ak), None).await;
     assert_eq!(stream.status(), StatusCode::OK);
-    let mut order_id = None;
-    for key in [ak.as_str(), sk, pk] {
-        let made = call(
+    let mut made = Vec::new();
+    for key in [ak.as_str(), sk] {
+        let answer = call(
             &router,
             "POST",
             "/api/v1/orders".into(),
@@ -1162,18 +1165,17 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
             Some(order_input.clone()),
         )
         .await;
-        assert_eq!(made.status(), StatusCode::CREATED);
-        let id = body_json(made).await["order_id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        assert_eq!(
-            order_id.get_or_insert_with(|| id.clone()),
-            &id,
-            "the same key gets the same order"
-        );
+        assert_eq!(answer.status(), StatusCode::CREATED);
+        made.push(body_json(answer).await);
     }
-    let order_id = order_id.unwrap();
+    let [by_app, by_server] = &made[..] else {
+        unreachable!("two orders were asked for")
+    };
+    assert_eq!(
+        by_server["order_id"], by_app["order_id"],
+        "the server's key gets the app's order"
+    );
+    let order_id = by_app["order_id"].as_str().unwrap().to_owned();
     let events = read_events(stream, 2).await;
     recorder.push(Exchange {
         method: "GET".into(),
@@ -1331,6 +1333,11 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
             continue;
         }
         for key in onion_keys.admitted(handler) {
+            // The website's same key is its own and makes another order:
+            // that is made last (see the end).
+            if key == pk && handler.method == "POST" && handler.template == "/api/v1/orders" {
+                continue;
+            }
             let answer = call(
                 &onion_router,
                 handler.method,
@@ -1365,6 +1372,27 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     // Last, the app disconnects itself; its key no longer works.
     call(&router, "DELETE", "/api/v1/app".into(), Some(&ak), None).await;
     call(&router, "GET", "/api/v1".into(), Some(&ak), None).await;
+
+    // Last of all (so no list shows it), the website, with the same
+    // idempotency key, on each network: its keys are its own (anyone can
+    // send the public key), so it gets an order of its own, never the
+    // server's, and the same one again on the onion.
+    let mut by_website = Vec::new();
+    for router in [&router, &onion_router] {
+        let made = call(
+            router,
+            "POST",
+            "/api/v1/orders".into(),
+            Some(pk),
+            Some(order_input.clone()),
+        )
+        .await;
+        assert_eq!(made.status(), StatusCode::CREATED);
+        by_website.push(body_json(made).await);
+    }
+    assert_ne!(by_website[0]["order_id"], order_id.as_str());
+    assert_ne!(by_website[0]["address"], by_app["address"]);
+    assert_eq!(by_website[1]["order_id"], by_website[0]["order_id"]);
 
     let recorded = recorder.take();
     // The first of each method, route, key, network and status, for a
@@ -1873,7 +1901,9 @@ fn every_answer_has_an_example(document: &Value) {
 
 /// Every link in the examples to a resource with recorded examples leads
 /// to one of them (the same order, not another): the examples are one
-/// sequence, which a client can follow link by link.
+/// sequence, which a client can follow link by link. The website's own
+/// order (its idempotency keys are its own, so it never gets the
+/// server's) starts a sequence of its own, not followed further.
 fn every_link_to_an_example_leads_to_one(recorded: &[Exchange]) {
     let path_of = |href: &str| href.split('?').next().unwrap_or(href).to_owned();
     let mut checked = 0;
@@ -1881,6 +1911,9 @@ fn every_link_to_an_example_leads_to_one(recorded: &[Exchange]) {
         let Some(response) = &exchange.response else {
             continue;
         };
+        let websites = (exchange.method == "POST" && exchange.key.as_deref() == Some("pk"))
+            .then(|| response["order_id"].as_str())
+            .flatten();
         let mut stack = vec![response];
         while let Some(value) = stack.pop() {
             match value {
@@ -1903,7 +1936,7 @@ fn every_link_to_an_example_leads_to_one(recorded: &[Exchange]) {
                             .filter(|e| e.route == route && e.method == "GET")
                             .map(|e| path_of(&e.path))
                             .collect();
-                        if examples.is_empty() {
+                        if examples.is_empty() || websites.is_some_and(|id| path.contains(id)) {
                             continue;
                         }
                         assert!(

@@ -20,8 +20,10 @@ use crate::stores::Site;
 
 mod apps;
 mod order_changes;
+mod order_requests;
 mod webhooks;
 pub use apps::{AppConnection, AppOrder, NewApp};
+pub use order_requests::{OrderPrice, Reserved};
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
     Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewTestDelivery,
@@ -172,6 +174,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         46,
         include_str!("../migrations/0046_encrypted_settings.sql"),
     ),
+    (47, include_str!("../migrations/0047_order_requests.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -261,32 +264,16 @@ impl Db {
         &self,
         connection_id: &ConnectionId,
         order_id: &OrderId,
-        request_key: Option<&str>,
         reference: Option<&str>,
         created_at: i64,
     ) -> Result<()> {
         self.conn.execute(
             // A retry of the same sale writes nothing new.
-            "INSERT INTO pos_orders (connection_id, order_id, request_key, reference, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO pos_orders (connection_id, order_id, reference, created_at_utc) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT (connection_id, order_id) DO NOTHING",
-            params![connection_id, order_id, request_key, reference, created_at],
+            params![connection_id, order_id, reference, created_at],
         )?;
         Ok(())
-    }
-
-    pub fn pos_order_by_request_key(
-        &self,
-        connection_id: &ConnectionId,
-        request_key: &str,
-    ) -> Result<Option<OrderId>> {
-        self.conn
-            .query_row(
-                "SELECT order_id FROM pos_orders WHERE connection_id = ?1 AND request_key = ?2",
-                params![connection_id, request_key],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(DbError::from)
     }
 
     pub fn get_pos_order(
@@ -913,6 +900,37 @@ pub struct OrderCurrencyMetadataRow {
     pub show_merchant_order_id: bool,
 }
 
+/// A new order's `order_currency_metadata` row
+/// ([`Db::create_order_currency_metadata`]): the fields above, as the
+/// order is made. `piconero_per_unit` is stored as `i64` (SQLite has no
+/// native unsigned integer type) - safe: a real fiat-per-XMR rate is many
+/// orders of magnitude below `i64::MAX`, this only guards against a `u64`
+/// value SQLite genuinely cannot represent, not a plausible real one.
+///
+/// `confirmations_required_applied`/`base_currency`/`base_currency_piconero_per_unit`
+/// are the order-creation-time snapshot of how its confirmation threshold
+/// was decided (migration `0016_order_confirmation_snapshot.sql`'s own doc
+/// comment) - `base_currency_piconero_per_unit` is `None` specifically when
+/// the order's own currency already was the base currency (see
+/// `confirmation_thresholds::Resolution`), never merely "not recorded".
+/// `source` is what made it (`pos`, `dashboard`, a plugin's slug, ...).
+#[derive(Clone, Copy)]
+pub struct NewOrderRecord<'a> {
+    pub connection_id: &'a ConnectionId,
+    pub order_id: &'a OrderId,
+    pub currency: &'a str,
+    pub amount: &'a str,
+    pub piconero_per_unit: Piconero,
+    pub provider: &'a str,
+    pub created_at: i64,
+    pub base_currency: &'a str,
+    pub base_currency_piconero_per_unit: Option<Piconero>,
+    pub confirmations_required_applied: u64,
+    pub created_with_key: bool,
+    pub source: Option<&'a str>,
+    pub show_merchant_order_id: bool,
+}
+
 /// An `order_currency_metadata` row, columns in the order both queries
 /// select them; every number is read with a checked conversion.
 fn metadata_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OrderCurrencyMetadataRow> {
@@ -1037,6 +1055,15 @@ impl Db {
     /// connections do (`shared::sqlite::read_only`).
     pub fn read_only<T>(&self, f: impl FnOnce() -> T) -> T {
         shared::sqlite::read_only(&self.conn, f)
+    }
+
+    /// Runs `f` in one transaction: everything it writes commits together,
+    /// or, when it fails, nothing does.
+    pub fn in_transaction<T>(&self, f: impl FnOnce(&Db) -> Result<T>) -> Result<T> {
+        let tx = self.conn.unchecked_transaction()?;
+        let value = f(self)?;
+        tx.commit()?;
+        Ok(value)
     }
 
     pub fn into_shared(self) -> SharedDb {
@@ -2100,42 +2127,28 @@ impl Db {
 
     /// Records what a customer was quoted for one order - called once, at
     /// order-creation time, by the same code that computes the XMR amount
-    /// from this exact rate. `piconero_per_unit` is stored as `i64` (SQLite has no native
-    /// unsigned integer type) - safe: a real fiat-per-XMR rate is many
-    /// orders of magnitude below `i64::MAX`, this only guards against a
-    /// `u64` value SQLite genuinely cannot represent, not a plausible real
-    /// one.
-    ///
-    /// `confirmations_required_applied`/`base_currency`/`base_currency_piconero_per_unit`
-    /// are the order-creation-time snapshot of how its confirmation
-    /// threshold was decided (migration `0016_order_confirmation_snapshot.sql`'s
-    /// own doc comment) - `base_currency_piconero_per_unit` is `None`
-    /// specifically when the order's own currency already was the base
-    /// currency (see `confirmation_thresholds::Resolution`), never merely
-    /// "not recorded".
-    ///
-    /// `show_merchant_order_id` is whether the checkout shows the payer the
-    /// order's merchant reference.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_order_currency_metadata(
-        &self,
-        connection_id: &ConnectionId,
-        order_id: &OrderId,
-        currency: &str,
-        amount: &str,
-        piconero_per_unit: Piconero,
-        provider: &str,
-        created_at: i64,
-        base_currency: &str,
-        base_currency_piconero_per_unit: Option<Piconero>,
-        confirmations_required_applied: u64,
-        created_with_key: bool,
-        source: Option<&str>,
-        show_merchant_order_id: bool,
-    ) -> Result<()> {
+    /// from this exact rate ([`NewOrderRecord`]). `true` when it was
+    /// recorded now, `false` when the order already had its record (a
+    /// retry that got the same order back keeps the first).
+    pub fn create_order_currency_metadata(&self, record: &NewOrderRecord<'_>) -> Result<bool> {
+        let NewOrderRecord {
+            connection_id,
+            order_id,
+            currency,
+            amount,
+            piconero_per_unit,
+            provider,
+            created_at,
+            base_currency,
+            base_currency_piconero_per_unit,
+            confirmations_required_applied,
+            created_with_key,
+            source,
+            show_merchant_order_id,
+        } = *record;
         // An amount too large for SQLite is refused (a conversion error), not
         // wrapped or panicked on.
-        self.conn.execute(
+        let inserted = self.conn.execute(
             "INSERT INTO order_currency_metadata
                 (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                  store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key,
@@ -2158,7 +2171,7 @@ impl Db {
                 show_merchant_order_id,
             ],
         )?;
-        Ok(())
+        Ok(inserted == 1)
     }
 
     /// Looks up one order's currency metadata - `None` when nothing was ever
@@ -2369,20 +2382,6 @@ impl Db {
             params![id],
         )?;
         tx.commit()?;
-        Ok(())
-    }
-
-    pub fn dashboard_order_request(&self, id: &ConnectionId, key: &str) -> Result<Option<OrderId>> {
-        Ok(self.conn.query_row("SELECT order_id FROM dashboard_order_requests WHERE connection_id = ?1 AND request_key = ?2", params![id, key], |row| row.get(0)).optional()?)
-    }
-
-    pub fn record_dashboard_order_request(
-        &self,
-        id: &ConnectionId,
-        key: &str,
-        order: &OrderId,
-    ) -> Result<()> {
-        self.conn.execute("INSERT INTO dashboard_order_requests (connection_id, request_key, order_id) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING", params![id, key, order])?;
         Ok(())
     }
 
@@ -3122,7 +3121,6 @@ mod tests {
                     &shared::ids::ConnectionId::new("no-such-store"),
                     &shared::ids::OrderId::new("o1"),
                     None,
-                    None,
                     1,
                 )
             })
@@ -3182,7 +3180,6 @@ mod tests {
         db.insert_pos_order(
             &shared::ids::ConnectionId::new("store-a"),
             &shared::ids::OrderId::new("order-1"),
-            Some("key-1"),
             Some("Mia coffee"),
             10,
         )
@@ -3194,24 +3191,6 @@ mod tests {
             )
             .unwrap()
             .is_none());
-        assert_eq!(
-            db.pos_order_by_request_key(&shared::ids::ConnectionId::new("store-a"), "key-1")
-                .unwrap(),
-            Some(shared::ids::OrderId::new("order-1"))
-        );
-        assert!(db
-            .pos_order_by_request_key(&shared::ids::ConnectionId::new("store-b"), "key-1")
-            .unwrap()
-            .is_none());
-        assert!(db
-            .insert_pos_order(
-                &shared::ids::ConnectionId::new("store-a"),
-                &shared::ids::OrderId::new("order-2"),
-                Some("key-1"),
-                None,
-                11
-            )
-            .is_err());
         assert!(!db
             .background_pos_order(
                 &shared::ids::ConnectionId::new("store-b"),
@@ -3248,7 +3227,6 @@ mod tests {
             db.insert_pos_order(
                 &shared::ids::ConnectionId::new("store-a"),
                 &shared::ids::OrderId::new(format!("order-{i:02}")),
-                None,
                 None,
                 100 + i,
             )
@@ -3324,7 +3302,7 @@ mod tests {
         .unwrap();
         let (first, second) = (OrderId::new("first"), OrderId::new("second"));
         for order in [&first, &second] {
-            db.insert_pos_order(&store, order, None, None, 1).unwrap();
+            db.insert_pos_order(&store, order, None, 1).unwrap();
         }
         let db = Database::inline(db.into_shared());
         let mut first_watch = db.order_changes().subscribe(&store, &first);
@@ -3706,21 +3684,21 @@ mod tests {
         {
             let db = Db::open_in_memory().unwrap();
             let connection_id = seed_connection_for_connect_token_tests(&db);
-            db.create_order_currency_metadata(
-                &shared::ids::ConnectionId::new(connection_id.to_string()),
-                &shared::ids::OrderId::new("pay_1"),
-                "USD",
-                "25.00",
-                shared::xmr_amount::Piconero(6_700_000_000),
-                "fixed",
-                1000,
-                "XMR",
-                None,
-                10,
-                false,
-                None,
-                true,
-            )
+            db.create_order_currency_metadata(&NewOrderRecord {
+                connection_id: &shared::ids::ConnectionId::new(connection_id.to_string()),
+                order_id: &shared::ids::OrderId::new("pay_1"),
+                currency: "USD",
+                amount: "25.00",
+                piconero_per_unit: shared::xmr_amount::Piconero(6_700_000_000),
+                provider: "fixed",
+                created_at: 1000,
+                base_currency: "XMR",
+                base_currency_piconero_per_unit: None,
+                confirmations_required_applied: 10,
+                created_with_key: false,
+                source: None,
+                show_merchant_order_id: true,
+            })
             .unwrap();
 
             let row = db
@@ -4281,21 +4259,21 @@ mod tests {
             .client_logging(&shared::ids::ConnectionId::new("conn-cl"))
             .unwrap());
         let order = OrderId::new("order_cl");
-        db.create_order_currency_metadata(
-            &ConnectionId::new("conn-cl"),
-            &order,
-            "XMR",
-            "1",
-            Piconero(1),
-            "xmr",
-            3000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        db.create_order_currency_metadata(&NewOrderRecord {
+            connection_id: &ConnectionId::new("conn-cl"),
+            order_id: &order,
+            currency: "XMR",
+            amount: "1",
+            piconero_per_unit: Piconero(1),
+            provider: "xmr",
+            created_at: 3000,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
         assert!(!db.client_logging_by_order(&order).unwrap());
         db.set_client_logging(&shared::ids::ConnectionId::new("conn-cl"), true)
@@ -4457,21 +4435,21 @@ mod tests {
     fn an_out_of_range_rate_is_refused_not_panicked_on() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        let stored = db.create_order_currency_metadata(
-            &ConnectionId::new(connection_id.to_string()),
-            &OrderId::new("pay_huge"),
-            "USD",
-            "1.00",
-            Piconero(u64::MAX),
-            "fixed",
-            1000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        );
+        let stored = db.create_order_currency_metadata(&NewOrderRecord {
+            connection_id: &ConnectionId::new(connection_id.to_string()),
+            order_id: &OrderId::new("pay_huge"),
+            currency: "USD",
+            amount: "1.00",
+            piconero_per_unit: Piconero(u64::MAX),
+            provider: "fixed",
+            created_at: 1000,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        });
         assert!(matches!(stored, Err(DbError::Sqlite(_))), "{stored:?}");
     }
 
@@ -4502,37 +4480,37 @@ mod tests {
         )
         .unwrap();
 
-        db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_shared"),
-            "USD",
-            "10.00",
-            shared::xmr_amount::Piconero(1_000_000),
-            "fixed",
-            1000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        db.create_order_currency_metadata(&NewOrderRecord {
+            connection_id: &shared::ids::ConnectionId::new(connection_id.to_string()),
+            order_id: &shared::ids::OrderId::new("pay_shared"),
+            currency: "USD",
+            amount: "10.00",
+            piconero_per_unit: shared::xmr_amount::Piconero(1_000_000),
+            provider: "fixed",
+            created_at: 1000,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
-        db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new("conn-2"),
-            &shared::ids::OrderId::new("pay_shared"),
-            "EUR",
-            "20.00",
-            shared::xmr_amount::Piconero(2_000_000),
-            "coingecko",
-            2000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        db.create_order_currency_metadata(&NewOrderRecord {
+            connection_id: &shared::ids::ConnectionId::new("conn-2"),
+            order_id: &shared::ids::OrderId::new("pay_shared"),
+            currency: "EUR",
+            amount: "20.00",
+            piconero_per_unit: shared::xmr_amount::Piconero(2_000_000),
+            provider: "coingecko",
+            created_at: 2000,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
 
         let first = db
@@ -4559,37 +4537,37 @@ mod tests {
     fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_order_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_a"),
-            "USD",
-            "10.00",
-            shared::xmr_amount::Piconero(1_000_000),
-            "fixed",
-            1000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        db.create_order_currency_metadata(&NewOrderRecord {
+            connection_id: &shared::ids::ConnectionId::new(connection_id.to_string()),
+            order_id: &shared::ids::OrderId::new("pay_a"),
+            currency: "USD",
+            amount: "10.00",
+            piconero_per_unit: shared::xmr_amount::Piconero(1_000_000),
+            provider: "fixed",
+            created_at: 1000,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
-        db.create_order_currency_metadata(
-            &shared::ids::ConnectionId::new(connection_id.to_string()),
-            &shared::ids::OrderId::new("pay_b"),
-            "EUR",
-            "20.00",
-            shared::xmr_amount::Piconero(2_000_000),
-            "fixed",
-            2000,
-            "XMR",
-            None,
-            10,
-            false,
-            None,
-            true,
-        )
+        db.create_order_currency_metadata(&NewOrderRecord {
+            connection_id: &shared::ids::ConnectionId::new(connection_id.to_string()),
+            order_id: &shared::ids::OrderId::new("pay_b"),
+            currency: "EUR",
+            amount: "20.00",
+            piconero_per_unit: shared::xmr_amount::Piconero(2_000_000),
+            provider: "fixed",
+            created_at: 2000,
+            base_currency: "XMR",
+            base_currency_piconero_per_unit: None,
+            confirmations_required_applied: 10,
+            created_with_key: false,
+            source: None,
+            show_merchant_order_id: true,
+        })
         .unwrap();
 
         let map = db

@@ -272,7 +272,10 @@ async fn a_key_set_on_the_page_is_checked_stored_encrypted_used_replaced_and_rem
     seen.lock().clear();
     let (rate, provider) = state
         .exchange_rate
-        .piconero_per_unit_for(&cmc_store(), "USD")
+        .piconero_per_unit_for(
+            &cmc_store(),
+            &crate::currencies::KnownCurrency::for_test("USD"),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -338,7 +341,10 @@ async fn a_key_set_on_the_page_is_checked_stored_encrypted_used_replaced_and_rem
     assert_ne!(stored_row(&state), Some(stored));
     state
         .exchange_rate
-        .piconero_per_unit_for(&cmc_store(), "USD")
+        .piconero_per_unit_for(
+            &cmc_store(),
+            &crate::currencies::KnownCurrency::for_test("USD"),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -374,7 +380,10 @@ async fn a_key_set_on_the_page_is_checked_stored_encrypted_used_replaced_and_rem
     );
     state
         .exchange_rate
-        .piconero_per_unit_for(&cmc_store(), "USD")
+        .piconero_per_unit_for(
+            &cmc_store(),
+            &crate::currencies::KnownCurrency::for_test("USD"),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -491,7 +500,10 @@ async fn a_saved_key_refused_later_falls_back_and_is_shown_beside_it() {
     revoked.store(true, std::sync::atomic::Ordering::SeqCst);
     let error = state
         .exchange_rate
-        .piconero_per_unit_for(&cmc_store(), "USD")
+        .piconero_per_unit_for(
+            &cmc_store(),
+            &crate::currencies::KnownCurrency::for_test("USD"),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -526,7 +538,10 @@ async fn a_key_from_the_environment_is_used_and_locked_on_the_page() {
 
     state
         .exchange_rate
-        .piconero_per_unit_for(&cmc_store(), "USD")
+        .piconero_per_unit_for(
+            &cmc_store(),
+            &crate::currencies::KnownCurrency::for_test("USD"),
+        )
         .await
         .unwrap();
     assert_eq!(
