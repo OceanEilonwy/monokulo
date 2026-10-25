@@ -1199,6 +1199,7 @@ async fn main() {
             crypto::Binding::StoreSecret("coverage-store"),
             tenant.secret_token.expose(),
         ),
+        &tenant.secret_token.hash(),
         0,
         "XMR",
         &monokulo::db::WalletId::new("w_cake"),

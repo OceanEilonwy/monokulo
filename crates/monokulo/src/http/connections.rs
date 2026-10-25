@@ -183,11 +183,11 @@ pub(super) async fn create_connection_for_user(
                 req.site.as_ref(),
                 &public_key,
                 &encrypted_secret_token,
+                &secret_key_hash,
                 now_unix(),
                 &base_currency,
                 &wallet_id,
             )?;
-            db.set_secret_key_hash(&connection_id, &secret_key_hash)?;
             // The site's domain joins the store's domains waiting for DNS
             // (`crate::embed_domains`).
             crate::embed_domains::suggest_site_domain(
@@ -196,7 +196,6 @@ pub(super) async fn create_connection_for_user(
                 req.site.as_ref(),
                 now_unix(),
             );
-            let _ = db.mark_store_domains_imported(&connection_id);
             Ok::<_, crate::db::DbError>(())
         })
         .await;

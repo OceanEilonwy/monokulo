@@ -115,12 +115,14 @@ fn apply_one(conn: &Connection, version: i64, sql: &str, rebuild: bool) -> rusql
 /// and records it with when it ran: its writes and its `code_migrations` row
 /// commit together or not at all, as a SQL migration's do. Returns whether
 /// it ran. [`apply`] makes the table, so `conn` must have been migrated.
-pub fn run_code_step(
+/// `run` may fail with its own error (one that can hold a database error),
+/// which is returned as it is.
+pub fn run_code_step<E: From<rusqlite::Error>>(
     conn: &Connection,
     kind: &str,
     id: &str,
-    run: impl FnOnce(&Connection) -> rusqlite::Result<()>,
-) -> rusqlite::Result<bool> {
+    run: impl FnOnce(&Connection) -> Result<(), E>,
+) -> Result<bool, E> {
     // As in `apply_one`, callers hold `&Connection`.
     let tx = conn.unchecked_transaction()?;
     let already_run: bool = tx.query_row(

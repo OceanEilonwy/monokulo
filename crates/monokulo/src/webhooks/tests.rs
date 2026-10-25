@@ -116,6 +116,7 @@ fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
             .as_ref(),
         &format!("pk_{id}"),
         "",
+        &shared::auth::RawToken::presented(&format!("sk_{id}")).hash(),
         0,
         "EUR",
         &wallet,

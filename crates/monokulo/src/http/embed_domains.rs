@@ -799,67 +799,66 @@ mod tests {
         router.clone().oneshot(request).await.unwrap()
     }
 
-    /// A new store's site joins its domains straight away; a store from
-    /// before domains existed gets its site imported, once.
+    /// A new store's site joins its domains, and its key's hash is
+    /// recorded, straight away; a store from before either existed gets
+    /// both at start, by code steps that run once.
     #[tokio::test]
     async fn a_new_stores_site_joins_its_domains_and_existing_stores_get_theirs_imported_once() {
         let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
         let router = build_router(state.clone());
         let session = session_for(&router, "import@example.com").await;
-        let id = create_store(&router, &state, &session).await;
-        let domains = |state: &AppState, id: &str| -> Vec<String> {
+        let store = crate::http::test_support::store_with_keys(
+            &router,
+            &state,
+            &session,
+            "store-home.example",
+            "XMR",
+        )
+        .await;
+        let id = shared::ids::ConnectionId::new(store.id.clone());
+        let domains = |state: &AppState| -> Vec<String> {
             state
                 .db
                 .lock()
-                .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
+                .list_store_domains(&id)
                 .unwrap()
                 .into_iter()
                 .map(|d| d.domain)
                 .collect()
         };
-        assert_eq!(
-            domains(&state, &id),
-            vec!["store-home.example".to_string()],
-            "a new store's site is added straight away"
-        );
-
-        // A store from before this existed: only its own site is imported,
-        // from monokulo's own records (nothing is read from the engine).
-        let site_only = vec!["store-home.example".to_string()];
-        let existing = state
-            .db
-            .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
-            .unwrap();
-        for domain in existing {
+        let found_by_key = |state: &AppState| {
             state
                 .db
                 .lock()
-                .delete_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &domain.id)
-                .unwrap();
-        }
-        state
-            .db
-            .lock()
-            .reset_store_domains_imported_for_test(&shared::ids::ConnectionId::new(id.to_string()));
-        embed_domains::import_existing_domains(&state.db.lock());
-        assert_eq!(domains(&state, &id), site_only);
+                .get_store_connection_by_secret_key_hash(
+                    &shared::auth::RawToken::presented(&store.secret_key).hash(),
+                )
+                .unwrap()
+                .map(|row| row.id)
+        };
+        assert_eq!(
+            domains(&state),
+            vec!["store-home.example".to_string()],
+            "a new store's site is added straight away"
+        );
+        assert_eq!(found_by_key(&state), Some(id.clone()), "and its key's hash");
 
-        // Once only: a domain the merchant removes afterwards stays removed.
-        let site = state
-            .db
-            .lock()
-            .list_store_domains(&shared::ids::ConnectionId::new(id.to_string()))
-            .unwrap()
-            .pop()
-            .unwrap();
-        state
-            .db
-            .lock()
-            .delete_store_domain(&shared::ids::ConnectionId::new(id.to_string()), &site.id)
-            .unwrap();
-        embed_domains::import_existing_domains(&state.db.lock());
-        assert!(domains(&state, &id).is_empty());
+        // A store from before these existed: only its own site is
+        // imported, from monokulo's own records (nothing is read from the
+        // engine), and its key's hash recorded from its stored key.
+        state.db.lock().reset_store_backfills_for_test(&id);
+        assert_eq!(found_by_key(&state), None);
+        crate::stores::backfill_at_start(&state.db.lock(), &state.encryption_key);
+        assert_eq!(domains(&state), vec!["store-home.example".to_string()]);
+        assert_eq!(found_by_key(&state), Some(id.clone()));
+
+        // Once only: a domain the merchant removes afterwards stays
+        // removed, and neither step runs at the next start, whatever the
+        // store's row says.
+        state.db.lock().reset_store_backfills_for_test(&id);
+        crate::stores::backfill_at_start(&state.db.lock(), &state.encryption_key);
+        assert!(domains(&state).is_empty());
+        assert_eq!(found_by_key(&state), None);
     }
 
     /// `POST /api/v1/orders` for the store `pk` with an optional page

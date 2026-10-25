@@ -72,6 +72,7 @@ pub const COLUMNS: Classification = Classification {
         ("pending_payment_recomputes", "order_id", Visible),
         ("proof_networks", "network", Visible),
         ("proof_networks", "enabled_at", Visible),
+        ("proof_networks", "enabled", Visible),
         ("proof_networks", "anchor_height", Visible),
         ("proof_networks", "anchor_hash", Visible),
         ("proof_networks", "anchor_agreed", Visible),
