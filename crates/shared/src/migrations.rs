@@ -13,6 +13,12 @@
 //! persisted in the database file (e.g. `PRAGMA foreign_keys`) and that must run
 //! *before* calling `apply`: `PRAGMA foreign_keys` is a no-op if issued inside a
 //! transaction, and each migration here runs inside one.
+//!
+//! Some changes to stored data can't be SQL run before the database opens:
+//! they need something only the running process has, such as a key it
+//! unseals. Those run as **code steps** ([`run_code_step`]) once the process
+//! has what they need, and are tracked as SQL migrations are, in
+//! `code_migrations`, by a kind the caller names and an id within it.
 
 use rusqlite::{params, Connection};
 
@@ -44,7 +50,13 @@ pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<
         )));
     }
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)",
+        "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
+         CREATE TABLE IF NOT EXISTS code_migrations (
+             kind            TEXT NOT NULL,
+             id              TEXT NOT NULL,
+             applied_at_utc  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+             PRIMARY KEY (kind, id)
+         );",
     )?;
     for (version, sql) in migrations {
         let already_applied: bool = conn.query_row(
@@ -99,9 +111,77 @@ fn apply_one(conn: &Connection, version: i64, sql: &str, rebuild: bool) -> rusql
     tx.commit()
 }
 
+/// Runs the code step `id` of `kind` with `run`, unless it has run before,
+/// and records it with when it ran: its writes and its `code_migrations` row
+/// commit together or not at all, as a SQL migration's do. Returns whether
+/// it ran. [`apply`] makes the table, so `conn` must have been migrated.
+pub fn run_code_step(
+    conn: &Connection,
+    kind: &str,
+    id: &str,
+    run: impl FnOnce(&Connection) -> rusqlite::Result<()>,
+) -> rusqlite::Result<bool> {
+    // As in `apply_one`, callers hold `&Connection`.
+    let tx = conn.unchecked_transaction()?;
+    let already_run: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM code_migrations WHERE kind = ?1 AND id = ?2)",
+        params![kind, id],
+        |row| row.get(0),
+    )?;
+    if already_run {
+        return Ok(false);
+    }
+    run(&tx)?;
+    tx.execute(
+        "INSERT INTO code_migrations (kind, id) VALUES (?1, ?2)",
+        params![kind, id],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A code step runs once, recorded with when it ran, and a step that
+    /// fails leaves neither its writes nor its record, so it runs again.
+    #[test]
+    fn a_code_step_runs_once_and_commits_with_its_record() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply(&conn, &[(1, "CREATE TABLE t (v TEXT);")]).unwrap();
+        let insert = |v: &'static str| {
+            move |conn: &Connection| conn.execute("INSERT INTO t VALUES (?1)", [v]).map(|_| ())
+        };
+        let failing = |conn: &Connection| {
+            conn.execute("INSERT INTO t VALUES ('half')", [])?;
+            conn.execute("NOT SQL", []).map(|_| ())
+        };
+        assert!(run_code_step(&conn, "k", "a", failing).is_err());
+        assert!(run_code_step(&conn, "k", "a", insert("a")).unwrap());
+        assert!(!run_code_step(&conn, "k", "a", insert("again")).unwrap());
+        // Ids are per kind.
+        assert!(run_code_step(&conn, "other", "a", insert("other")).unwrap());
+
+        let rows: Vec<String> = conn
+            .prepare("SELECT v FROM t ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, ["a", "other"]);
+        let recorded: Vec<(String, String, String)> = conn
+            .prepare("SELECT kind, id, applied_at_utc FROM code_migrations ORDER BY kind")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!((&*recorded[0].0, &*recorded[0].1), ("k", "a"));
+        assert!(recorded[0].2.ends_with('Z'), "{}", recorded[0].2);
+    }
 
     #[test]
     fn a_failing_migration_leaves_neither_its_schema_changes_nor_its_version_row() {

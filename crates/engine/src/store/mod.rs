@@ -47,6 +47,31 @@ pub use work::{
 /// `(measurement, guest_svn, tcb, wrapped, key_check)`.
 pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>, Vec<u8>, Option<Vec<u8>>);
 
+/// The engine's post-unseal migration step that wraps the SEV-SNP master key
+/// again after a firmware update.
+///
+/// A code step (`shared::migrations::run_code_step`): it needs
+/// the unwrapped key, which only the running engine has, so it can't be SQL;
+/// its ids are `<measurement>@<committed TCB>`, one per image and firmware
+/// version the machine moves to (`key_custody::snp`).
+pub const SNP_REWRAP_STEP: &str = "snp-rewrap";
+
+fn save_snp_master_key(
+    conn: &Connection,
+    measurement: &[u8],
+    guest_svn: u32,
+    tcb: &[u8],
+    wrapped: &[u8],
+    key_check: Option<&[u8]>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO snp_master_keys (measurement, guest_svn, tcb, wrapped, key_check) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, tcb = ?3, wrapped = ?4, key_check = ?5",
+        params![measurement, guest_svn, tcb, wrapped, key_check],
+    )?;
+    Ok(())
+}
+
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
 /// Re-running the raw DDL against an already-migrated database (e.g. every time the
@@ -1828,12 +1853,30 @@ impl Store {
         wrapped: &[u8],
         key_check: Option<&[u8]>,
     ) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO snp_master_keys (measurement, guest_svn, tcb, wrapped, key_check) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (measurement) DO UPDATE SET guest_svn = ?2, tcb = ?3, wrapped = ?4, key_check = ?5",
-            params![measurement, guest_svn, tcb, wrapped, key_check],
-        )?;
+        save_snp_master_key(&self.conn, measurement, guest_svn, tcb, wrapped, key_check)?;
         Ok(())
+    }
+
+    /// Stores a wrap as [`Store::save_snp_master_key`] does, as the
+    /// post-unseal migration step `step` of kind [`SNP_REWRAP_STEP`] (the
+    /// wrap made again after a firmware update): the row and the step's
+    /// record commit together, and a step that has run isn't run again.
+    /// Returns whether it ran.
+    pub fn rewrap_snp_master_key(
+        &self,
+        step: &str,
+        measurement: &[u8],
+        guest_svn: u32,
+        tcb: &[u8],
+        wrapped: &[u8],
+        key_check: Option<&[u8]>,
+    ) -> Result<bool> {
+        Ok(shared::migrations::run_code_step(
+            &self.conn,
+            SNP_REWRAP_STEP,
+            step,
+            |conn| save_snp_master_key(conn, measurement, guest_svn, tcb, wrapped, key_check),
+        )?)
     }
 
     /// How many enabled tenants each network has, for the admin page (tasks

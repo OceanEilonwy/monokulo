@@ -1699,6 +1699,9 @@ mod tests {
                 fn save(&self, _wrap: &StoredWrap) -> Result<(), String> {
                     Ok(())
                 }
+                fn save_as_step(&self, _step: &str, _wrap: &StoredWrap) -> Result<bool, String> {
+                    Ok(true)
+                }
             }
 
             let old = TestEngineConfig::new()
