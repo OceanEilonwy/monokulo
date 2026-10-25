@@ -13,6 +13,7 @@
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
 //! shown (ZMQ unless told otherwise): they run each build separately.
 
+mod api_explorer;
 mod api_reference;
 mod docs;
 mod fetch;
@@ -83,12 +84,13 @@ pub(crate) const HELP: &str = "\
                       --site-url, https://docs.monokulo.com by default)\n\
         pages docs --site DIR\n\
                       Build the docs into the site DIR from xtask/src/pages/docs/*.md: /guide/, a folder\n\
-                      per page beside it, /api/, the Geomart sample shop (examples/geomart/) under\n\
+                      per page beside it, the Geomart sample shop (examples/geomart/) under\n\
                       /geomart/, and a redirect from each page's old address under /docs/\n\
         pages api --site DIR\n\
                       Build the HTTP API's reference into the site DIR, generated from the code and\n\
                       from exchanges recorded against a test engine (runs monokulo's api_reference example):\n\
-                      /api/reference/, /rels/{rel}/, /problems/{slug}/ and /api/v1/openapi.json\n\
+                      the explorer at /api/ (and a redirect to it from /api/reference/), /rels/{rel}/,\n\
+                      /problems/{slug}/ and /api/v1/openapi.json\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

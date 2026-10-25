@@ -13,12 +13,13 @@
 //! `/docs/` until the site moved to its own domain; every old address keeps
 //! a small page that sends the reader on (`redirects`).
 //!
-//! `/api/` is the HTTP API's section: its front page is `api.md`, here, and
-//! the reference generated from the API goes beside it, from its own build
-//! step into the same site folder: its pages under `api/reference/`, the
-//! OpenAPI document at `api/v1/openapi.json`, and the link relations and
-//! problem types its responses name under `rels/` and `problems/`. No docs
-//! page is published in those folders (`API_OUTPUT` in the tests).
+//! `/api/` is the HTTP API's section, written by its own build step into
+//! the same site folder (`api_reference`): the explorer at `/api/` (whose
+//! introduction is `api.md`, here), the OpenAPI document at
+//! `api/v1/openapi.json`, and the link relations and problem types its
+//! responses name under `rels/` and `problems/`. The map's Reference group
+//! links it. No docs page is published in those folders (`API_OUTPUT` in
+//! the tests).
 //!
 //! Search finds every page and each of its sections, from the index the
 //! build writes at `search/docs.json`.
@@ -73,28 +74,26 @@ impl Group {
 
 /// One page of the docs: its Markdown file in `xtask/src/pages/docs/`, the
 /// folder it is published as at the site's top level, its name in the map,
-/// the map's group it is in, the part of the site the header marks, and the
-/// folder it was published as before the docs moved to their own domain
-/// (`docs/…`), which keeps a redirect to it; none for a page added since.
+/// the map's group it is in, and the folder it was published as before the
+/// docs moved to their own domain (`docs/…`), which keeps a redirect to it;
+/// none for a page added since.
 pub(super) struct Page {
     pub(super) source: &'static str,
     pub(super) dir: &'static str,
     pub(super) label: &'static str,
     pub(super) group: Group,
-    pub(super) section: Section,
     pub(super) old: Option<&'static str>,
 }
 
 /// The docs, in the map's order, which is also Previous and Next's: each
 /// group's pages together, the groups in `Group::ALL`'s order. The first is
 /// where the bar's Docs and Get started go.
-pub(super) const PAGES: [Page; 8] = [
+pub(super) const PAGES: [Page; 7] = [
     Page {
         source: "index.md",
         dir: "guide",
         label: "Accept your first payment",
         group: Group::GetStarted,
-        section: Section::Docs,
         old: Some("docs"),
     },
     Page {
@@ -102,7 +101,6 @@ pub(super) const PAGES: [Page; 8] = [
         dir: "walkthrough-geomart",
         label: "Walkthrough: Geomart",
         group: Group::GetStarted,
-        section: Section::Docs,
         old: Some("docs/walkthrough-geomart"),
     },
     Page {
@@ -110,7 +108,6 @@ pub(super) const PAGES: [Page; 8] = [
         dir: "js-library",
         label: "JS library",
         group: Group::TakePayments,
-        section: Section::Docs,
         old: Some("docs/js-library"),
     },
     Page {
@@ -118,7 +115,6 @@ pub(super) const PAGES: [Page; 8] = [
         dir: "paid",
         label: "When is it paid?",
         group: Group::TakePayments,
-        section: Section::Docs,
         old: Some("docs/paid"),
     },
     Page {
@@ -126,7 +122,6 @@ pub(super) const PAGES: [Page; 8] = [
         dir: "webhooks",
         label: "Webhooks",
         group: Group::TakePayments,
-        section: Section::Docs,
         old: Some("docs/webhooks"),
     },
     Page {
@@ -134,7 +129,6 @@ pub(super) const PAGES: [Page; 8] = [
         dir: "plugins",
         label: "Shop plugins",
         group: Group::Integrations,
-        section: Section::Docs,
         old: Some("docs/plugins"),
     },
     Page {
@@ -142,30 +136,17 @@ pub(super) const PAGES: [Page; 8] = [
         dir: "apps",
         label: "Connected apps",
         group: Group::Integrations,
-        section: Section::Docs,
         old: Some("docs/apps"),
-    },
-    Page {
-        source: "api.md",
-        dir: "api",
-        label: "API reference",
-        group: Group::Reference,
-        section: Section::Api,
-        old: None,
     },
 ];
 
 /// The map's links that aren't docs pages, after their group's pages: the
-/// API reference's own, which its build writes (`api_reference`). Each is
+/// API explorer's, which its build writes (`api_reference`). Each is
 /// (group, label, link from the site's root, whether it's a file rather
 /// than a page).
-const LINKS: [(Group, &str, &str, bool); 2] = [
-    (
-        Group::Reference,
-        "Problems",
-        "api/reference/#problems",
-        false,
-    ),
+const LINKS: [(Group, &str, &str, bool); 3] = [
+    (Group::Reference, "API reference", "api/", false),
+    (Group::Reference, "Problems", "api/#problems", false),
     (
         Group::Reference,
         "OpenAPI document",
@@ -261,7 +242,7 @@ fn redirects() -> Vec<(String, String)> {
 /// canonical address, and links it for a reader whose browser does not
 /// follow the refresh. It needs no script; a browser with one keeps the old
 /// link's `#section` (and query), which a refresh drops.
-fn redirect(old: &str, new: &str) -> Markup {
+pub(super) fn redirect(old: &str, new: &str) -> Markup {
     let to = format!("{}{new}", "../".repeat(old.matches('/').count()));
     let canonical = format!("{SITE_URL}/{new}");
     html! {
@@ -293,6 +274,7 @@ pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
                 href: format!("{up}{}/", p.dir),
                 current: Mark::page_if(current == Some(p.dir)),
                 file: false,
+                nested: false,
             });
             let links = LINKS
                 .iter()
@@ -302,6 +284,7 @@ pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
                     href: format!("{up}{href}"),
                     current: None,
                     file: *file,
+                    nested: false,
                 });
             MapGroup {
                 title: group.title().to_owned(),
@@ -337,7 +320,7 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
     };
     shell::render(shell::Page {
         up,
-        section: page.section,
+        section: Section::Docs,
         title: format!("{} · Monokulo docs", title(page, markdown)),
         description: "How to add Monokulo, self-hosted Monero payments, to your own website.",
         map_label: "Docs",
@@ -349,6 +332,8 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
             "{GITHUB_URL}/edit/main/xtask/src/pages/docs/{}",
             page.source
         )),
+        layout: shell::Layout::Article,
+        script: None,
     })
 }
 
@@ -471,9 +456,8 @@ mod tests {
     use super::*;
     use crate::support::Scratch;
 
-    /// The folders the generated API reference is written to, beside
-    /// `api/index.html`.
-    const API_OUTPUT: [&str; 4] = ["api/reference", "api/v1", "rels", "problems"];
+    /// The folders the API's own build writes (`api_reference`).
+    const API_OUTPUT: [&str; 3] = ["api", "rels", "problems"];
 
     #[test]
     fn every_page_and_the_sample_shop_are_written() {
@@ -510,13 +494,8 @@ mod tests {
                     .is_array()
             );
         }
-        // The API page is the API's section in the header, and the docs
-        // write nothing where the generated reference goes.
-        let api = fs::read_to_string(site.join("api/index.html")).unwrap();
-        assert!(
-            api.contains(r#"<a href="../api/" aria-current="page">API reference</a>"#),
-            "{api}"
-        );
+        // The docs write nothing where the API's own build writes (the
+        // explorer at api/, which the map links).
         for dir in API_OUTPUT {
             assert!(!site.join(dir).exists(), "{dir}");
         }
@@ -752,10 +731,7 @@ mod tests {
                 "{old}"
             );
         }
-        // A page since the move has no old address, and none is published
-        // where the API reference goes.
-        let api = PAGES.iter().find(|page| page.dir == "api").unwrap();
-        assert_eq!(api.old, None);
+        // No page is published where the API's build writes.
         for page in &PAGES {
             assert!(!API_OUTPUT.contains(&page.dir), "{}", page.dir);
         }

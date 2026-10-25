@@ -4,12 +4,15 @@
 //! this page", the page's sections (its `h2`s), with a link to edit the
 //! page. Previous and Next end it. On a narrow screen the map is a menu
 //! behind the bar's Menu button, the site's own links at its top: a
-//! checkbox opens it, so it works without a script.
+//! checkbox opens it, so it works without a script. The API explorer is a
+//! wide page instead ([`Layout::Wide`]): its sections across the width,
+//! the map linking each.
 //!
 //! Every page reads fully without a script. The site's script
-//! (`assets/site/site.js`) marks the section being read in "On this page",
-//! closes the map's menu on Escape, and adds search, from the index each
-//! part's build writes beside its pages ([`write_index`]).
+//! (`assets/site/site.js`) marks the section being read in "On this page"
+//! (or, on a wide page, in the map), closes the map's menu on Escape, and
+//! adds search, from the index each part's build writes beside its pages
+//! ([`write_index`]).
 
 use super::site_assets;
 use super::site_header::{self, Section, GITHUB_URL};
@@ -55,6 +58,9 @@ pub(super) struct Link {
     pub(super) current: Option<Mark>,
     /// A file rather than a page of the site (the OpenAPI document).
     pub(super) file: bool,
+    /// Under the link before it: a section of the API's introduction, an
+    /// operation of a resource.
+    pub(super) nested: bool,
 }
 
 /// What a link in the map is to the page it's on, as `aria-current` says.
@@ -100,6 +106,23 @@ pub(super) struct Page<'a> {
     pub(super) next: Option<(String, String)>,
     /// Where its source is edited on GitHub.
     pub(super) edit: Option<String>,
+    /// How the page is laid out beside the map.
+    pub(super) layout: Layout,
+    /// One more of the site's scripts (`site_assets`) the page runs, by
+    /// name.
+    pub(super) script: Option<&'static str>,
+}
+
+/// How a page is laid out beside the map.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Layout {
+    /// An article at a reading width, "On this page" beside it, Previous
+    /// and Next under it.
+    Article,
+    /// The page's own sections across the whole width, each laying out its
+    /// own columns (the API explorer), with no "On this page": the map
+    /// marks the section being read.
+    Wide,
 }
 
 /// A section of a page: an `h2`'s id and its words.
@@ -138,10 +161,9 @@ pub(super) fn sections(html: &str) -> Vec<Heading> {
 }
 
 /// The page, in the shell.
-pub(super) fn render(page: Page) -> Markup {
+pub(super) fn render(mut page: Page) -> Markup {
     let up = page.up;
-    let article = page.article.into_string();
-    let toc = sections(&article);
+    let article = std::mem::replace(&mut page.article, PreEscaped(String::new())).into_string();
     html! {
         (DOCTYPE)
         html lang="en" {
@@ -151,6 +173,9 @@ pub(super) fn render(page: Page) -> Markup {
                 title { (page.title) }
                 meta name="description" content=(page.description);
                 (site_assets::head(up))
+                @if let Some(script) = page.script {
+                    script defer src=(site_assets::url(up, script)) {}
+                }
             }
             body.shell-page {
                 (site_header::with_map(page.section, up, GITHUB_URL, MAP_TOGGLE))
@@ -166,7 +191,7 @@ pub(super) fn render(page: Page) -> Markup {
                                 ul {
                                     @for link in &group.links {
                                         li {
-                                            a href=(link.href) aria-current=[link.current.map(Mark::attribute)] data-file[link.file] { (link.label) }
+                                            a href=(link.href) aria-current=[link.current.map(Mark::attribute)] data-file[link.file] data-nested[link.nested] { (link.label) }
                                         }
                                     }
                                 }
@@ -179,35 +204,48 @@ pub(super) fn render(page: Page) -> Markup {
                         }
                     }
                     label.map-scrim for=(MAP_TOGGLE) aria-hidden="true" {}
-                    main.shell-main {
-                        article.prose {
-                            (PreEscaped(&article))
-                            @if page.previous.is_some() || page.next.is_some() {
-                                nav.pager aria-label="Pages" {
-                                    @if let Some((label, href)) = &page.previous {
-                                        a.previous href=(href) { small { "Previous" } (label) }
-                                    }
-                                    @if let Some((label, href)) = &page.next {
-                                        a.next href=(href) { small { "Next" } (label) }
-                                    }
-                                }
+                    @if page.layout == Layout::Wide {
+                        main.shell-main.shell-wide { (PreEscaped(&article)) }
+                    } @else {
+                        (article_main(&page, &article))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An article page's `main`: the article, Previous and Next under it, and
+/// "On this page" beside it.
+fn article_main(page: &Page, article: &str) -> Markup {
+    let toc = sections(article);
+    html! {
+        main.shell-main {
+            article.prose {
+                (PreEscaped(article))
+                @if page.previous.is_some() || page.next.is_some() {
+                    nav.pager aria-label="Pages" {
+                        @if let Some((label, href)) = &page.previous {
+                            a.previous href=(href) { small { "Previous" } (label) }
+                        }
+                        @if let Some((label, href)) = &page.next {
+                            a.next href=(href) { small { "Next" } (label) }
+                        }
+                    }
+                }
+            }
+            @if !toc.is_empty() || page.edit.is_some() {
+                aside.toc aria-label="On this page" {
+                    @if !toc.is_empty() {
+                        p.toc-heading { "On this page" }
+                        ul {
+                            @for section in &toc {
+                                li { a href=(format!("#{}", section.id)) { (PreEscaped(&section.text)) } }
                             }
                         }
-                        @if !toc.is_empty() || page.edit.is_some() {
-                            aside.toc aria-label="On this page" {
-                                @if !toc.is_empty() {
-                                    p.toc-heading { "On this page" }
-                                    ul {
-                                        @for section in &toc {
-                                            li { a href=(format!("#{}", section.id)) { (PreEscaped(&section.text)) } }
-                                        }
-                                    }
-                                }
-                                @if let Some(edit) = &page.edit {
-                                    a.edit href=(edit) { "Edit this page on GitHub" }
-                                }
-                            }
-                        }
+                    }
+                    @if let Some(edit) = &page.edit {
+                        a.edit href=(edit) { "Edit this page on GitHub" }
                     }
                 }
             }

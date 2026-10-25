@@ -1,14 +1,15 @@
-//! `cargo xtask pages api --site DIR`: the HTTP API's reference, generated
-//! from the code and from real exchanges (`crate::api`, which runs
-//! monokulo's `api_reference` example into `target/api/`; nothing is
-//! committed), into the site beside the docs' `/api/` page:
+//! `cargo xtask pages api --site DIR`: the HTTP API's section of the site,
+//! generated from the code and from real exchanges (`crate::api`, which
+//! runs monokulo's `api_reference` example into `target/api/`; nothing is
+//! committed):
 //!
-//! - `api/reference/`: every resource, with its methods and who may call
-//!   them, and every problem;
+//! - `api/`: the explorer (`api_explorer`), every resource and operation
+//!   with its recorded examples, and Try it; `api/reference/`, where the
+//!   resources' index was, sends the reader there;
 //! - `rels/{rel}/`: one page per resource, which the API's `mk:` link
 //!   relations point at (`https://docs.monokulo.com/rels/{rel}`): what it
 //!   is, its URL, its methods, its body's fields, the forms it offers and
-//!   recorded examples;
+//!   recorded examples, and a link to its section of the explorer;
 //! - `problems/{slug}/`: one page per problem, which an error's `type`
 //!   points at;
 //! - `api/v1/openapi.json`: the OpenAPI document.
@@ -17,8 +18,9 @@
 //! request really made against a test engine, so the pages can't drift
 //! from the API.
 
-use super::docs::markdown_html;
-use super::shell::{self, icon, Entry};
+use super::api_explorer::{self, Api, Here};
+use super::docs::{self, markdown_html};
+use super::shell::{self, Entry};
 use super::site_assets;
 use super::site_header::{self, Section};
 use crate::support::{at, Exit};
@@ -31,6 +33,10 @@ use std::{
 
 /// Where the reference is generated, from the repository's root.
 const GENERATED: &str = "target/api";
+
+/// Where the resources' index was, which now sends the reader to the
+/// explorer (keeping the link's `#section`).
+const OLD_INDEX: &str = "api/reference/index.html";
 
 /// `cargo xtask pages api --site DIR`.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
@@ -58,35 +64,39 @@ fn read_json(path: &Path) -> io::Result<Value> {
     serde_json::from_str(&text).map_err(|e| at(path, io::Error::other(e)))
 }
 
-/// Writes every page and the OpenAPI document, from the `generated`
-/// reference, into `site`; returns how many pages.
+/// Writes the explorer, every page and the OpenAPI document, from the
+/// `generated` reference and document, into `site`; returns how many
+/// pages.
 pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
     let reference = read_json(&generated.join("reference.json"))?;
     points_here(&reference)?;
+    let openapi_path = generated.join("openapi.json");
+    let openapi = read_json(&openapi_path)?;
+    let api = Api::new(&openapi, &reference);
     let put = |path: PathBuf, contents: String| -> io::Result<()> {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| at(dir, e))?;
         }
         fs::write(&path, contents).map_err(|e| at(&path, e))
     };
-    let mut pages = 0;
+    put(site.join("api/index.html"), explorer(&api).into_string())?;
     put(
-        site.join("api/reference/index.html"),
-        index(&reference).into_string(),
+        site.join(OLD_INDEX),
+        docs::redirect(OLD_INDEX, "api/").into_string(),
     )?;
-    pages += 1;
+    let mut pages = 1;
     for resource in list(&reference, "resources") {
         let rel = text(resource, "rel");
         put(
             site.join("rels").join(rel).join("index.html"),
-            resource_page(resource, &reference).into_string(),
+            resource_page(resource, &reference, &api).into_string(),
         )?;
         pages += 1;
     }
     for rel in list(&reference, "rels") {
         put(
             site.join("rels").join(text(rel, "rel")).join("index.html"),
-            onion_rel_page(rel, &reference).into_string(),
+            onion_rel_page(rel, &api).into_string(),
         )?;
         pages += 1;
     }
@@ -94,42 +104,21 @@ pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
         let slug = text(problem, "slug");
         put(
             site.join("problems").join(slug).join("index.html"),
-            problem_page(problem, &reference).into_string(),
+            problem_page(problem, &reference, &api).into_string(),
         )?;
         pages += 1;
     }
-    let openapi = generated.join("openapi.json");
     let dir = site.join("api/v1");
     fs::create_dir_all(&dir).map_err(|e| at(&dir, e))?;
-    fs::copy(&openapi, dir.join("openapi.json")).map_err(|e| at(&openapi, e))?;
-    shell::write_index(site, "api", &search(&reference))?;
+    fs::copy(&openapi_path, dir.join("openapi.json")).map_err(|e| at(&openapi_path, e))?;
+    shell::write_index(site, "api", &search(&api, &reference))?;
     site_assets::write(site)?;
     Ok(pages)
 }
 
-/// What search finds in the reference: each resource and each of its
-/// operations, each onion link, each handshake and each problem.
-fn search(reference: &Value) -> Vec<Entry> {
-    let mut entries = Vec::new();
-    for resource in list(reference, "resources") {
-        let rel = text(resource, "rel");
-        entries.push(Entry {
-            title: text(resource, "key").to_owned(),
-            sub: text(resource, "title").to_owned(),
-            kind: "Resource",
-            href: format!("rels/{rel}/"),
-            method: None,
-        });
-        for method in list(resource, "methods") {
-            entries.push(Entry {
-                title: first_sentence(text(method, "doc")).to_owned(),
-                sub: format!("{} {}", text(method, "method"), text(resource, "template")),
-                kind: "Endpoint",
-                href: format!("rels/{rel}/#{}", text(method, "name")),
-                method: Some(text(method, "method").to_owned()),
-            });
-        }
-    }
+/// What search finds: the explorer's sections, and each onion link's page.
+fn search(api: &Api, reference: &Value) -> Vec<Entry> {
+    let mut entries = api_explorer::search(api);
     for rel in list(reference, "rels") {
         entries.push(Entry {
             title: text(rel, "key").to_owned(),
@@ -139,39 +128,53 @@ fn search(reference: &Value) -> Vec<Entry> {
             method: None,
         });
     }
-    for handshake in list(reference, "handshakes") {
-        entries.push(Entry {
-            title: first_sentence(text(handshake, "title")).to_owned(),
-            sub: format!(
-                "{} {}",
-                text(handshake, "method"),
-                text(handshake, "template")
-            ),
-            kind: "Endpoint",
-            href: "api/reference/#handshakes".to_owned(),
-            method: Some(text(handshake, "method").to_owned()),
-        });
-    }
-    for problem in list(reference, "problems") {
-        entries.push(Entry {
-            title: text(problem, "title").to_owned(),
-            sub: format!("{} · {}", problem["status"], text(problem, "slug")),
-            kind: "Problem",
-            href: format!("problems/{}/", text(problem, "slug")),
-            method: None,
-        });
-    }
     entries
 }
 
-/// A doc comment's first sentence: "Read the entry." of "Read the entry.
-/// Open without a key, …".
-fn first_sentence(doc: &str) -> &str {
-    let doc = doc.trim();
-    let line = doc.split('\n').next().unwrap_or(doc);
-    match line.find(". ") {
-        Some(end) => &line[..=end],
-        None => line,
+/// The explorer, `api/`, in the shell: the whole width, the map marking the
+/// section being read.
+fn explorer(api: &Api) -> Markup {
+    shell::render(shell::Page {
+        up: "../",
+        section: Section::Api,
+        title: "API reference · Monokulo".to_owned(),
+        description: "Monokulo's HTTP API: every resource and route, with real recorded examples, and Try it.",
+        map_label: "API reference",
+        map: api_explorer::map(api, Here::Explorer),
+        article: api_explorer::page(api),
+        previous: None,
+        next: None,
+        edit: None,
+        layout: shell::Layout::Wide,
+        script: Some("api.js"),
+    })
+}
+
+/// A page under the explorer, two folders below the site's root, in the
+/// shell with the API's map, `section` marked as where it is.
+fn page(api: &Api, section: &str, title: &str, description: &str, body: Markup) -> Markup {
+    shell::render(shell::Page {
+        up: "../../",
+        section: Section::Api,
+        title: format!("{title} · Monokulo API"),
+        description,
+        map_label: "API reference",
+        map: api_explorer::map(api, Here::Under(section)),
+        article: body,
+        previous: None,
+        next: None,
+        edit: None,
+        layout: shell::Layout::Article,
+        script: None,
+    })
+}
+
+/// A link to a section of the explorer, from a page under it.
+fn in_explorer(section: &str, what: &str) -> Markup {
+    html! {
+        p.api-in-explorer {
+            a href={ "../../api/#" (section) } { (what) " in the API explorer" }
+        }
     }
 }
 
@@ -211,108 +214,12 @@ fn points_here(reference: &Value) -> io::Result<()> {
     Ok(())
 }
 
-fn list<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+pub(super) fn list<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value[key].as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> &'a str {
+pub(super) fn text<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or_default()
-}
-
-/// Which page of the reference a page is, for its map to mark.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Here<'a> {
-    /// `api/reference/`.
-    Index,
-    /// `rels/{rel}/`.
-    Rel(&'a str),
-    /// `problems/{slug}/`.
-    Problem,
-}
-
-/// The reference's map, from a page `up` from the site's root: the API's
-/// overview, every resource (its methods beside it) and onion link, and
-/// the problems.
-fn map(reference: &Value, up: &str, here: Here) -> Vec<shell::Group> {
-    let link = |label: Markup, href: String, current: bool| shell::Link {
-        label,
-        href,
-        current: shell::Mark::page_if(current),
-        file: false,
-    };
-    let rel = |resource: &Value| {
-        let rel = text(resource, "rel");
-        let label = html! {
-            span.map-key { (text(resource, "key")) }
-            @for method in list(resource, "methods") {
-                span.method data-method=(text(method, "method")) { (text(method, "method")) }
-            }
-        };
-        link(label, format!("{up}rels/{rel}/"), here == Here::Rel(rel))
-    };
-    vec![
-        shell::Group {
-            title: "Overview".to_owned(),
-            icon: icon::BOOK,
-            links: vec![
-                link(html! { "Introduction" }, format!("{up}api/"), false),
-                link(
-                    html! { "All resources" },
-                    format!("{up}api/reference/"),
-                    here == Here::Index,
-                ),
-                shell::Link {
-                    file: true,
-                    ..link(
-                        html! { "OpenAPI document" },
-                        format!("{up}api/v1/openapi.json"),
-                        false,
-                    )
-                },
-            ],
-        },
-        shell::Group {
-            title: "Resources".to_owned(),
-            icon: icon::BRACES,
-            links: list(reference, "resources")
-                .iter()
-                .chain(list(reference, "rels"))
-                .map(rel)
-                .collect(),
-        },
-        shell::Group {
-            title: "Errors".to_owned(),
-            icon: icon::ALERT,
-            // Not a problem's page, but the table that lists them: where
-            // a problem's page is.
-            links: vec![shell::Link {
-                current: (here == Here::Problem).then_some(shell::Mark::Location),
-                ..link(
-                    html! { "Problems" },
-                    format!("{up}api/reference/#problems"),
-                    false,
-                )
-            }],
-        },
-    ]
-}
-
-/// A page of the reference, in the shell with the reference's map. Every
-/// page is two folders below the site's root.
-fn page(reference: &Value, here: Here, title: &str, description: &str, body: Markup) -> Markup {
-    let up = "../../";
-    shell::render(shell::Page {
-        up,
-        section: Section::Api,
-        title: format!("{title} · Monokulo API"),
-        description,
-        map_label: "API reference",
-        map: map(reference, up, here),
-        article: body,
-        previous: None,
-        next: None,
-        edit: None,
-    })
 }
 
 /// The keys a page's link is offered to, in words.
@@ -344,99 +251,11 @@ fn who(method: &Value) -> String {
     names.join(", ")
 }
 
-fn index(reference: &Value) -> Markup {
-    let up = "../../";
-    let body = html! {
-        h1 { "API reference" }
-        p {
-            "Every resource of " code { "/api/v1" } ", what it is and who may use it, and every problem it answers with. "
-            "The " a href=(format!("{up}api/v1/openapi.json")) { "OpenAPI document" } " has the same, for tools."
-        }
-        h2 id="resources" { "Resources" }
-        div.tbl { table {
-            thead { tr { th { "Relation" } th { "URL" } th { "Methods" } th { "What it is" } } }
-            tbody {
-                @for resource in list(reference, "resources") {
-                    tr {
-                        td { a href=(format!("{up}rels/{}/", text(resource, "rel"))) { code { (text(resource, "key")) } } }
-                        td { code { (text(resource, "template")) } }
-                        td {
-                            @for method in list(resource, "methods") {
-                                code { (text(method, "method")) } " "
-                            }
-                        }
-                        td { (text(resource, "title")) }
-                    }
-                }
-            }
-        } }
-        @if !list(reference, "rels").is_empty() {
-            h2 id="onion-links" { "Onion links" }
-            p {
-                "While a Monokulo has an onion address, these say where a resource is on it, as absolute URLs, "
-                "whichever address the client called. Without one they're absent."
-            }
-            div.tbl { table {
-                thead { tr { th { "Relation" } th { "URL" } th { "What it is" } } }
-                tbody {
-                    @for rel in list(reference, "rels") {
-                        tr {
-                            td { a href=(format!("{up}rels/{}/", text(rel, "rel"))) { code { (text(rel, "key")) } } }
-                            td { code { (text(rel, "template")) } }
-                            td { (text(rel, "title")) }
-                        }
-                    }
-                }
-            } }
-        }
-        @if !list(reference, "handshakes").is_empty() {
-            h2 id="handshakes" { "Handshakes" }
-            p {
-                "Beside the API: where a " a href=(format!("{up}plugins/")) { "shop plugin" } " or a "
-                a href=(format!("{up}apps/")) { "connected app" } " gets its key, once. They answer with the problems listed."
-            }
-            div.tbl { table {
-                thead { tr { th { "Route" } th { "What it does" } th { "Problems" } } }
-                tbody {
-                    @for handshake in list(reference, "handshakes") {
-                        tr {
-                            td { code { (text(handshake, "method")) " " (text(handshake, "template")) } }
-                            td { (text(handshake, "title")) }
-                            td {
-                                @for slug in list(handshake, "problems").iter().filter_map(Value::as_str) {
-                                    a href=(format!("{up}problems/{slug}/")) { code { (slug) } } " "
-                                }
-                            }
-                        }
-                    }
-                }
-            } }
-        }
-        h2 id="problems" { "Problems" }
-        div.tbl { table {
-            thead { tr { th { "Type" } th { "Status" } th { "Title" } } }
-            tbody {
-                @for problem in list(reference, "problems") {
-                    tr {
-                        td { a href=(format!("{up}problems/{}/", text(problem, "slug"))) { code { (text(problem, "slug")) } } }
-                        td { (problem["status"]) }
-                        td { (text(problem, "title")) }
-                    }
-                }
-            }
-        } }
-    };
-    page(
-        reference,
-        Here::Index,
-        "API reference",
-        "Every resource and problem of Monokulo's HTTP API.",
-        body,
-    )
-}
-
 /// The fields of an object schema, with `definitions` to follow `$ref`s.
-fn fields<'a>(schema: &'a Value, definitions: &'a Value) -> Vec<(&'a str, String, &'a str, bool)> {
+pub(super) fn fields<'a>(
+    schema: &'a Value,
+    definitions: &'a Value,
+) -> Vec<(&'a str, String, &'a str, bool)> {
     let required: Vec<&str> = list(schema, "required")
         .iter()
         .filter_map(Value::as_str)
@@ -459,7 +278,7 @@ fn fields<'a>(schema: &'a Value, definitions: &'a Value) -> Vec<(&'a str, String
 }
 
 /// A field's type in a few words: `string`, `integer`, `Wallet or null`.
-fn type_name(schema: &Value, definitions: &Value) -> String {
+pub(super) fn type_name(schema: &Value, definitions: &Value) -> String {
     if let Some(reference) = schema["$ref"].as_str() {
         let name = reference.rsplit('/').next().unwrap_or(reference);
         let target = &definitions[name];
@@ -493,8 +312,9 @@ fn json_block(value: &Value) -> Markup {
     html! { pre { code { (serde_json::to_string_pretty(value).unwrap_or_default()) } } }
 }
 
-fn resource_page(resource: &Value, reference: &Value) -> Markup {
+fn resource_page(resource: &Value, reference: &Value, api: &Api) -> Markup {
     let up = "../../";
+    let section = api.anchor_of(text(resource, "rel"));
     let definitions = &reference["definitions"];
     let body = &resource["body"];
     let links: Vec<(&String, &Value)> = body["properties"]["_links"]["properties"]
@@ -504,6 +324,7 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
     let markup = html! {
         h1 { code { (text(resource, "key")) } }
         p.lede { (text(resource, "title")) }
+        (in_explorer(&section, "Its routes, with Try it,"))
         (markdown_html(text(resource, "description").split_once("\n\n").map_or("", |(_, rest)| rest)))
         h2 id="url" { "URL" }
         p { code { (text(resource, "template")) } " · " code { (text(resource, "media_type")) } }
@@ -605,8 +426,8 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
         }
     };
     page(
-        reference,
-        Here::Rel(text(resource, "rel")),
+        api,
+        &section,
         text(resource, "key"),
         text(resource, "title"),
         markup,
@@ -614,12 +435,14 @@ fn resource_page(resource: &Value, reference: &Value) -> Markup {
 }
 
 /// The page of an onion link's relation (`mk:onion-…`).
-fn onion_rel_page(rel: &Value, reference: &Value) -> Markup {
+fn onion_rel_page(rel: &Value, api: &Api) -> Markup {
     let up = "../../";
     let target = &rel["target"];
+    let section = api.anchor_of(text(rel, "rel"));
     let markup = html! {
         h1 { code { (text(rel, "key")) } }
         p.lede { (text(rel, "title")) }
+        (in_explorer(&section, "Every onion link"))
         (markdown_html(text(rel, "description").split_once("\n\n").map_or("", |(_, rest)| rest)))
         h2 id="url" { "URL" }
         p {
@@ -630,16 +453,10 @@ fn onion_rel_page(rel: &Value, reference: &Value) -> Markup {
         }
         p { "Present only while this Monokulo has an onion address; absent otherwise. A link the caller's key may not follow is left out." }
     };
-    page(
-        reference,
-        Here::Rel(text(rel, "rel")),
-        text(rel, "key"),
-        text(rel, "title"),
-        markup,
-    )
+    page(api, &section, text(rel, "key"), text(rel, "title"), markup)
 }
 
-fn problem_page(problem: &Value, reference: &Value) -> Markup {
+fn problem_page(problem: &Value, reference: &Value, api: &Api) -> Markup {
     let slug = text(problem, "slug");
     let example = list(reference, "resources")
         .iter()
@@ -653,6 +470,7 @@ fn problem_page(problem: &Value, reference: &Value) -> Markup {
     let markup = html! {
         h1 { (text(problem, "title")) }
         p { code { (text(problem, "type")) } " · HTTP " (problem["status"]) }
+        (in_explorer(&format!("problem-{slug}"), "Every problem"))
         (markdown_html(text(problem, "doc")))
         p {
             "Answered as " code { "application/problem+json" } " (RFC 9457): "
@@ -665,8 +483,8 @@ fn problem_page(problem: &Value, reference: &Value) -> Markup {
         }
     };
     page(
-        reference,
-        Here::Problem,
+        api,
+        "problems",
         text(problem, "title"),
         text(problem, "title"),
         markup,
@@ -804,215 +622,555 @@ mod tests {
         })
     }
 
+    /// An OpenAPI document shaped as monokulo writes it, for the same API:
+    /// tags for the resources and the handshakes, operations with keys,
+    /// parameters, a body, a stream and a page, and recorded examples (one
+    /// with markup in it, as an answer may have).
+    fn openapi(site: &str) -> Value {
+        let problem = |slug: &str, status: u16| {
+            json!({"description": format!("A problem: [`{slug}`]({site}/problems/{slug})."), "content": {
+                "application/problem+json": {"examples": {slug: {"value": {
+                    "type": format!("{site}/problems/{slug}"), "title": "Nope", "status": status, "detail": "<b>no</b>"
+                }}}}
+            }})
+        };
+        json!({
+            "openapi": "3.1.0",
+            "servers": [{"url": "{monokulo}", "variables": {"monokulo": {"default": "https://www.monokulo.com"}}}],
+            "tags": [
+                {"name": "order", "description": "One order.\n\nWhat the payer was asked for.", "externalDocs": {"url": format!("{site}/rels/order")}},
+                {"name": "orders", "description": "The store's orders.", "externalDocs": {"url": format!("{site}/rels/orders")}},
+                {"name": "order-events", "description": "One order's changes.", "externalDocs": {"url": format!("{site}/rels/order-events")}},
+                {"name": "app", "description": "The connected app."},
+                {"name": "pages", "description": "Pages for people."},
+                {"name": "handshakes", "description": "How a plugin gets its key.", "externalDocs": {"url": format!("{site}/plugins/")}}
+            ],
+            "paths": {
+                "/api/v1/orders/{order_id}": {"get": {
+                    "operationId": "order.get", "tags": ["order"], "summary": "Read one order. Any key of the store.",
+                    "description": "Read one order. Any key of the store.\n\nWith every link the key may follow.",
+                    "security": [{"bearer": []}], "x-monokulo-keys": ["pk", "sk", "ak"],
+                    "parameters": [{"in": "path", "name": "order_id", "required": true, "schema": {"type": "string"}}],
+                    "responses": {
+                        "200": {"description": "OK", "content": {"application/prs.hal-forms+json": {"examples": {
+                            "pk": {"summary": "With the public key", "value": {"order_id": "order_1", "note": "<script>alert(1)</script>"}},
+                            "sk": {"summary": "With the secret key", "value": {"order_id": "order_1", "amount": "0.25", "paid": false}}
+                        }}}},
+                        "404": problem("not-found", 404)
+                    }
+                }},
+                "/api/v1/orders": {"post": {
+                    "operationId": "orders.create", "tags": ["orders"], "summary": "Make an order.",
+                    "description": "Make an order.", "security": [{"bearer": []}], "x-monokulo-keys": ["pk", "sk"],
+                    "requestBody": {"content": {"application/json": {
+                        "example": {"amount": "0.25", "currency": "XMR"},
+                        "schema": {"$ref": "#/components/schemas/OrdersInput"}
+                    }}},
+                    "responses": {
+                        "201": {"description": "Created", "content": {"application/prs.hal-forms+json": {"examples": {
+                            "sk": {"summary": "With the secret key", "value": {"order_id": "order_2"}}
+                        }}}},
+                        "400": problem("invalid-amount", 400)
+                    }
+                }},
+                "/api/v1/orders/{order_id}/events": {"get": {
+                    "operationId": "order-events.get", "tags": ["order-events"], "summary": "Follow one order.",
+                    "description": "Follow one order.", "security": [{"bearer": []}], "x-monokulo-keys": ["sk"],
+                    "parameters": [{"in": "path", "name": "order_id", "required": true, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "The stream", "content": {"text/event-stream": {
+                        "example": "event: order\ndata: {\"order_id\":\"order_1\"}\n\n", "schema": {"type": "string"}
+                    }}}}
+                }},
+                "/api/v1/app": {"delete": {
+                    "operationId": "app.delete", "tags": ["app"], "summary": "Disconnect this app.",
+                    "description": "Disconnect this app.", "security": [{"bearer": []}], "x-monokulo-keys": ["ak"],
+                    "responses": {"204": {"description": "No Content"}}
+                }},
+                "/stores/{id}/orders/{order_id}": {"get": {
+                    "operationId": "dashboard-order.get", "tags": ["pages"], "summary": "The order's page.",
+                    "description": "The order's page.", "security": [{"session": []}],
+                    "responses": {"200": {"description": "The page.", "content": {"text/html": {"schema": {"type": "string"}}}}}
+                }},
+                "/apps/connect": {"post": {
+                    "operationId": "app-connect.redeem", "tags": ["handshakes"], "summary": "Connect an app.",
+                    "description": "Connect an app.", "security": [{}],
+                    "requestBody": {"content": {"application/json": {"example": {"token": "ct_1"}, "schema": {"type": "object"}}}},
+                    "responses": {"401": problem("invalid-connect-code", 401)}
+                }}
+            },
+            "components": {"schemas": {"OrdersInput": {
+                "type": "object", "required": ["amount"],
+                "properties": {"amount": {"type": "string", "description": "The price."}, "currency": {"type": "string"}}
+            }}}
+        })
+    }
+
     fn generated(scratch: &Scratch, reference: &Value) -> PathBuf {
         let dir = scratch.path().join("generated");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("reference.json"), reference.to_string()).unwrap();
         fs::write(
             dir.join("openapi.json"),
-            json!({"openapi": "3.1.0", "paths": {}}).to_string(),
+            openapi(site_header::SITE_URL).to_string(),
         )
         .unwrap();
         dir
     }
 
-    /// Every resource and every problem in the reference has its page, and
-    /// the OpenAPI document is published beside them.
+    /// The site, written from the fixtures.
+    fn site(name: &str) -> (Scratch, PathBuf) {
+        let scratch = Scratch::new(name);
+        let site = scratch.path().join("site");
+        write(
+            &generated(&scratch, &reference(site_header::SITE_URL)),
+            &site,
+        )
+        .unwrap();
+        (scratch, site)
+    }
+
+    fn read(site: &Path, page: &str) -> String {
+        fs::read_to_string(site.join(page)).unwrap()
+    }
+
+    /// Every `id` in a page.
+    fn ids(html: &str) -> Vec<String> {
+        let id = regex::Regex::new(r#"\sid="([^"]+)""#).unwrap();
+        id.captures_iter(html).map(|c| c[1].to_owned()).collect()
+    }
+
+    /// The links in a page's map, before its foot, with how each is marked.
+    fn map_links(html: &str) -> Vec<(String, Option<String>)> {
+        let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
+        let map = map
+            .split(r#"<div class="map-group">"#)
+            .skip(1)
+            .collect::<String>();
+        let map = map
+            .split(r#"<div class="map-foot">"#)
+            .next()
+            .unwrap()
+            .to_owned();
+        let link = regex::Regex::new(r#"<a href="([^"]+)"(?: aria-current="(\w+)")?"#).unwrap();
+        link.captures_iter(&map)
+            .map(|c| (c[1].to_owned(), c.get(2).map(|m| m.as_str().to_owned())))
+            .collect()
+    }
+
+    /// Whether `link`, from the page at `from` (a file in the site), lands
+    /// on a file the build wrote, and on an element of it when it names one.
+    fn resolves(site: &Path, from: &str, link: &str) -> bool {
+        let (path, anchor) = link.split_once('#').unwrap_or((link, ""));
+        let file = if path.is_empty() {
+            site.join(from)
+        } else {
+            let mut dir = site.join(from);
+            dir.pop();
+            let file = dir.join(path);
+            if path.ends_with('/') {
+                file.join("index.html")
+            } else {
+                file
+            }
+        };
+        let Ok(html) = fs::read_to_string(&file) else {
+            return false;
+        };
+        anchor.is_empty()
+            || !file.extension().is_some_and(|e| e == "html")
+            || ids(&html).iter().any(|id| id == anchor)
+    }
+
+    /// The ids of the operations in the fixture's document.
+    fn operation_ids() -> Vec<String> {
+        let openapi = openapi(site_header::SITE_URL);
+        let mut ids = Vec::new();
+        for (_, methods) in openapi["paths"].as_object().unwrap() {
+            for (_, op) in methods.as_object().unwrap() {
+                ids.push(text(op, "operationId").replace('.', "-"));
+            }
+        }
+        ids
+    }
+
+    /// Every operation of the document has its section in the explorer, by
+    /// its anchor, after its resource's, the resources in the explorer's
+    /// order; every problem has its row; no two elements share an id.
+    #[test]
+    fn every_operation_has_its_section_in_the_explorer() {
+        let (_scratch, site) = site("api-explorer-operations");
+        let html = read(&site, "api/index.html");
+        // A template's ids are only in the page once the dialog takes its
+        // copy, one at a time.
+        let live = regex::Regex::new(r"(?s)<template.*?</template>")
+            .unwrap()
+            .replace_all(&html, "");
+        let ids = ids(&live);
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "an id twice");
+        let sections: Vec<&str> =
+            regex::Regex::new(r#"<section class="api-sec[^"]*" id="([^"]+)""#)
+                .unwrap()
+                .captures_iter(&html)
+                .map(|c| c.get(1).unwrap().as_str())
+                .collect();
+        assert_eq!(
+            sections,
+            [
+                "introduction",
+                "orders",
+                "orders-create",
+                "order",
+                "order-get",
+                "order-events",
+                "order-events-get",
+                "app",
+                "app-delete",
+                "handshakes",
+                "app-connect-redeem",
+                "pages",
+                "dashboard-order-get",
+                "onion-links",
+                "problems",
+            ]
+        );
+        for id in operation_ids() {
+            assert!(sections.contains(&id.as_str()), "{id}");
+        }
+        // The introduction's sections are api.md's.
+        assert!(ids.iter().any(|id| id == "keys"));
+        for problem in list(&reference(site_header::SITE_URL), "problems") {
+            let slug = text(problem, "slug");
+            assert!(ids.contains(&format!("problem-{slug}")), "{slug}");
+            assert!(
+                resolves(&site, "api/index.html", &format!("../problems/{slug}/")),
+                "{slug}"
+            );
+        }
+    }
+
+    /// Every recorded example of every status of every operation is on the
+    /// page, in its status's disclosure (the first open), so a reader
+    /// without a script can open each; a status with no body says so.
+    #[test]
+    fn every_recorded_example_is_reachable_without_javascript() {
+        let (_scratch, site) = site("api-explorer-examples");
+        let html = read(&site, "api/index.html");
+        let openapi = openapi(site_header::SITE_URL);
+        let details = regex::Regex::new(
+            r#"(?s)<details class="api-example" data-status="(\w+)"( open)?>(.*?)</details>"#,
+        )
+        .unwrap();
+        let figure =
+            regex::Regex::new(r#"<figure class="api-variant" data-example="([^"]+)""#).unwrap();
+        for (_, methods) in openapi["paths"].as_object().unwrap() {
+            for (_, op) in methods.as_object().unwrap() {
+                let id = text(op, "operationId").replace('.', "-");
+                let section = html
+                    .split(&format!(r#" id="{id}" data-op="{id}""#))
+                    .nth(1)
+                    .unwrap();
+                let section = section.split("</section>").next().unwrap();
+                let found: Vec<(String, bool, Vec<String>, bool)> = details
+                    .captures_iter(section)
+                    .map(|c| {
+                        let examples = figure
+                            .captures_iter(&c[3])
+                            .map(|f| f[1].to_owned())
+                            .collect();
+                        (
+                            c[1].to_owned(),
+                            c.get(2).is_some(),
+                            examples,
+                            c[3].contains("No body."),
+                        )
+                    })
+                    .collect();
+                let expected: Vec<(String, Vec<String>)> = op["responses"]
+                    .as_object()
+                    .unwrap()
+                    .iter()
+                    .map(|(status, response)| {
+                        let mut names = Vec::new();
+                        for (_, content) in response["content"].as_object().into_iter().flatten() {
+                            names.extend(
+                                content["examples"]
+                                    .as_object()
+                                    .into_iter()
+                                    .flatten()
+                                    .map(|(n, _)| n.clone()),
+                            );
+                            if !content["example"].is_null() {
+                                names.push("recorded".to_owned());
+                            }
+                        }
+                        (status.clone(), names)
+                    })
+                    .collect();
+                let statuses: Vec<(String, Vec<String>)> = found
+                    .iter()
+                    .map(|(s, _, e, _)| (s.clone(), e.clone()))
+                    .collect();
+                assert_eq!(statuses, expected, "{id}");
+                assert_eq!(found.iter().filter(|f| f.1).count(), 1, "{id}: one open");
+                for (status, _, examples, no_body) in &found {
+                    assert_eq!(examples.is_empty(), *no_body, "{id} {status}");
+                }
+            }
+        }
+    }
+
+    /// Without a script every request reads in each language, and Try it,
+    /// which needs one, only shows with one; only the API's own routes
+    /// have it (and their form for the dialog), never a handshake or a
+    /// page for people.
+    #[test]
+    fn every_request_reads_in_every_language_without_javascript() {
+        let (_scratch, site) = site("api-explorer-snippets");
+        let html = read(&site, "api/index.html");
+        let snippet =
+            regex::Regex::new(r#"<figure class="api-snippet" data-snippet="(\w+)">"#).unwrap();
+        let try_it = regex::Regex::new(
+            r#"<button [^>]*data-only="(\w+)" data-opens-dialog="try-it" data-try="([^"]+)""#,
+        )
+        .unwrap();
+        let sections: Vec<&str> = html
+            .split(r#"<section class="api-sec api-op""#)
+            .skip(1)
+            .collect();
+        assert_eq!(sections.len(), operation_ids().len());
+        let mut tried = Vec::new();
+        for section in &sections {
+            let section = section.split("</section>").next().unwrap();
+            let languages: Vec<&str> = snippet
+                .captures_iter(section)
+                .map(|c| c.get(1).unwrap().as_str())
+                .collect();
+            assert_eq!(languages, ["curl", "js", "http"]);
+            for c in try_it.captures_iter(section) {
+                assert_eq!(&c[1], "script");
+                tried.push(c[2].to_owned());
+            }
+        }
+        assert_eq!(
+            tried,
+            [
+                "orders-create",
+                "order-get",
+                "order-events-get",
+                "app-delete"
+            ]
+        );
+        let forms: Vec<&str> = regex::Regex::new(r#"<template data-try-form="([^"]+)">"#)
+            .unwrap()
+            .captures_iter(&html)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        assert_eq!(forms, tried);
+        let banner = html.split(r#"<div class="api-banner""#).nth(1).unwrap();
+        assert!(banner.starts_with(r#" data-only="script""#), "{banner}");
+    }
+
+    /// What an example says is shown, never run: markup in a recorded
+    /// answer is escaped.
+    #[test]
+    fn markup_in_a_recorded_answer_is_escaped() {
+        let (_scratch, site) = site("api-explorer-escape");
+        let html = read(&site, "api/index.html");
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(!html.contains("<b>no</b>"));
+    }
+
+    /// Every resource and problem in the reference has its page, each
+    /// links its section of the explorer, the old index sends the reader to
+    /// the explorer, and the OpenAPI document is published beside them.
     #[test]
     fn every_relation_and_problem_has_a_page() {
         let reference = reference(site_header::SITE_URL);
         let scratch = Scratch::new("api-reference");
         let site = scratch.path().join("site");
-        let pages = write(&generated(&scratch, &reference), &site).unwrap();
-        assert_eq!(pages, 8);
-        for resource in list(&reference, "resources") {
-            let html = fs::read_to_string(
-                site.join("rels")
-                    .join(text(resource, "rel"))
-                    .join("index.html"),
-            )
-            .unwrap();
-            assert!(html.contains(text(resource, "template")), "{html}");
-            let linked = site_assets::assert_links_published(&html, &site.join("assets"));
-            assert!(linked.contains(&"styles.css"));
+        let written = write(&generated(&scratch, &reference), &site).unwrap();
+        assert_eq!(written, 8);
+        let into_explorer = regex::Regex::new(r#"href="(\.\./\.\./api/#[^"]+)""#).unwrap();
+        let mut pages = Vec::new();
+        for resource in list(&reference, "resources")
+            .iter()
+            .chain(list(&reference, "rels"))
+        {
+            pages.push(format!("rels/{}/index.html", text(resource, "rel")));
         }
-        let onion = fs::read_to_string(site.join("rels/onion-order/index.html")).unwrap();
+        for problem in list(&reference, "problems") {
+            pages.push(format!("problems/{}/index.html", text(problem, "slug")));
+        }
+        for page in &pages {
+            let html = read(&site, page);
+            let linked = site_assets::assert_links_published(&html, &site.join("assets"));
+            assert!(linked.contains(&"styles.css"), "{page}");
+            let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();
+            let links: Vec<&str> = into_explorer
+                .captures_iter(article)
+                .map(|c| c.get(1).unwrap().as_str())
+                .collect();
+            assert_eq!(links.len(), 1, "{page}: its section of the explorer");
+            assert!(resolves(&site, page, links[0]), "{page}: {}", links[0]);
+        }
+        let onion = read(&site, "rels/onion-order/index.html");
         assert!(onion.contains("For a client on Tor."), "{onion}");
-        assert!(onion.contains(r#"href="../../rels/order/""#), "{onion}");
+        assert!(resolves(
+            &site,
+            "rels/onion-order/index.html",
+            "../../rels/order/"
+        ));
         // A method lists the problems it may answer.
-        let orders = fs::read_to_string(site.join("rels/orders/index.html")).unwrap();
+        let orders = read(&site, "rels/orders/index.html");
         assert!(
             orders.contains(r#"href="../../problems/invalid-amount/""#),
             "{orders}"
         );
-        let order = fs::read_to_string(site.join("rels/order/index.html")).unwrap();
-        assert!(order.contains("Wallet"), "{order}");
-        assert!(order.contains("Real exchanges"), "{order}");
-        let problem = fs::read_to_string(site.join("problems/not-found/index.html")).unwrap();
+        let problem = read(&site, "problems/not-found/index.html");
         assert!(problem.contains("/api/v1/orders/order_2"), "{problem}");
-        // A problem only a handshake answers has its example too.
-        let code =
-            fs::read_to_string(site.join("problems/invalid-connect-code/index.html")).unwrap();
+        let code = read(&site, "problems/invalid-connect-code/index.html");
         assert!(code.contains("POST /apps/connect"), "{code}");
-        // A page says who gets its link; a stream, its events.
-        let page = fs::read_to_string(site.join("rels/dashboard-order/index.html")).unwrap();
+        let page = read(&site, "rels/dashboard-order/index.html");
         assert!(page.contains("Only the sk_ key and the merchant"), "{page}");
-        let stream = fs::read_to_string(site.join("rels/order-events/index.html")).unwrap();
+        let stream = read(&site, "rels/order-events/index.html");
         assert!(stream.contains("The order as it is now."), "{stream}");
-        assert!(stream.contains("<code>order</code>"), "{stream}");
-        let openapi: Value =
-            serde_json::from_str(&fs::read_to_string(site.join("api/v1/openapi.json")).unwrap())
-                .unwrap();
+        let openapi: Value = serde_json::from_str(&read(&site, "api/v1/openapi.json")).unwrap();
         assert_eq!(openapi["openapi"], "3.1.0");
-        let index = fs::read_to_string(site.join("api/reference/index.html")).unwrap();
-        assert!(index.contains(r#"href="../../rels/order/""#), "{index}");
+        // The old index sends the reader on to the explorer.
+        let old = read(&site, OLD_INDEX);
         assert!(
-            index.contains(r#"href="../../rels/onion-order/""#),
-            "{index}"
+            old.contains(r#"<meta http-equiv="refresh" content="0; url=../../api/">"#),
+            "{old}"
         );
-        assert!(index.contains("POST /apps/connect"), "{index}");
-        assert!(
-            index.contains(r#"href="../../problems/invalid-connect-code/""#),
-            "{index}"
-        );
+        assert!(resolves(&site, OLD_INDEX, "../../api/#problems"));
     }
 
-    /// Every page is in the shell with the reference's map: every resource
-    /// and onion link in it, the page's own marked (a problem's marks the
-    /// problems), and "On this page" listing each of its sections.
+    /// Every page has the API's map: on the explorer its links are its own
+    /// sections, every one there and none marked (the script marks what's
+    /// read), with no "On this page"; on a page under it, the explorer's,
+    /// the page's section marked as where it is, and "On this page" its
+    /// sections.
     #[test]
-    fn every_page_has_the_map_and_its_sections() {
+    fn every_page_has_the_map_and_its_links_resolve() {
+        let (_scratch, site) = site("api-reference-shell");
         let reference = reference(site_header::SITE_URL);
-        let scratch = Scratch::new("api-reference-shell");
-        let site = scratch.path().join("site");
-        write(&generated(&scratch, &reference), &site).unwrap();
-        let rels: Vec<&str> = list(&reference, "resources")
+        let explorer = read(&site, "api/index.html");
+        let links = map_links(&explorer);
+        for op in operation_ids() {
+            assert!(
+                links.iter().any(|(href, _)| *href == format!("#{op}")),
+                "{op}"
+            );
+        }
+        for (href, current) in &links {
+            assert!(resolves(&site, "api/index.html", href), "{href}");
+            assert_eq!(*current, None, "{href}");
+        }
+        assert_eq!(explorer.matches(r#"<aside class="toc""#).count(), 0);
+        let mut pages: Vec<(String, String)> = Vec::new();
+        for resource in list(&reference, "resources")
             .iter()
             .chain(list(&reference, "rels"))
-            .map(|r| text(r, "rel"))
-            .collect();
-        let current =
-            regex::Regex::new(r#"<a href="([^"]+)" aria-current="(page|location)""#).unwrap();
-        let h2 = regex::Regex::new(r"<h2[ >]").unwrap();
-        let mut pages = vec![(
-            "api/reference/index.html".to_owned(),
-            "../../api/reference/".to_owned(),
-            "page",
-        )];
-        for rel in &rels {
-            pages.push((
-                format!("rels/{rel}/index.html"),
-                format!("../../rels/{rel}/"),
-                "page",
-            ));
+        {
+            let rel = text(resource, "rel");
+            let section = match rel {
+                "dashboard-order" => "dashboard-order-get",
+                "onion-order" => "onion-links",
+                rel => rel,
+            };
+            pages.push((format!("rels/{rel}/index.html"), section.to_owned()));
         }
         for problem in list(&reference, "problems") {
             pages.push((
                 format!("problems/{}/index.html", text(problem, "slug")),
-                "../../api/reference/#problems".to_owned(),
-                // The table that lists it, not the page itself.
-                "location",
+                "problems".to_owned(),
             ));
         }
-        for (file, marked, how) in pages {
-            let html = fs::read_to_string(site.join(&file)).unwrap();
-            let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
-            let map = map.split(r#"<div class="map-foot">"#).next().unwrap();
-            for rel in &rels {
-                assert!(
-                    map.contains(&format!(r#"href="../../rels/{rel}/""#)),
-                    "{file}: {rel}"
-                );
+        let h2 = regex::Regex::new(r"<h2[ >]").unwrap();
+        for (page, section) in pages {
+            let html = read(&site, &page);
+            let links = map_links(&html);
+            assert_eq!(links.len(), map_links(&explorer).len(), "{page}");
+            for (href, _) in &links {
+                assert!(resolves(&site, &page, href), "{page}: {href}");
             }
-            let marks: Vec<(&str, &str)> = current
-                .captures_iter(map.split_once(r#"<div class="map-group">"#).unwrap().1)
-                .map(|c| (c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str()))
-                .collect();
-            assert_eq!(marks, [(marked.as_str(), how)], "{file}");
-            // No breadcrumbs: the map says where the page is.
-            assert!(!html.contains(" › "), "{file}");
+            let marked: Vec<&(String, Option<String>)> =
+                links.iter().filter(|(_, c)| c.is_some()).collect();
+            assert_eq!(
+                marked,
+                [&(format!("../../api/#{section}"), Some("location".to_owned()))],
+                "{page}"
+            );
             let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();
             let article = article.split("</article>").next().unwrap();
             let sections = shell::sections(article);
             assert_eq!(
                 h2.find_iter(article).count(),
                 sections.len(),
-                "{file}: an h2 without an id"
+                "{page}: an h2 without an id"
             );
-            for section in &sections {
+            let toc = html
+                .split(r#"<aside class="toc""#)
+                .nth(1)
+                .unwrap_or_default();
+            for s in &sections {
                 assert!(
-                    html.contains(&format!(r##"<li><a href="#{}">"##, section.id)),
-                    "{file}: {}",
-                    section.id
+                    toc.contains(&format!(r##"href="#{}""##, s.id)),
+                    "{page}: {}",
+                    s.id
+                );
+                assert!(
+                    resolves(&site, &page, &format!("#{}", s.id)),
+                    "{page}: {}",
+                    s.id
                 );
             }
         }
     }
 
-    /// Search finds every resource, every operation, every onion link, every
-    /// handshake and every problem, each at a page the build wrote.
+    /// Search finds the explorer's introduction and its sections, every
+    /// resource, operation and problem at its section of the explorer, and
+    /// every onion link at its page: each where the build wrote it.
     #[test]
     fn the_search_index_lists_every_resource_operation_and_problem() {
-        let reference = reference(site_header::SITE_URL);
-        let scratch = Scratch::new("api-reference-search");
-        let site = scratch.path().join("site");
-        write(&generated(&scratch, &reference), &site).unwrap();
-        let index: Vec<Value> =
-            serde_json::from_str(&fs::read_to_string(site.join("search/api.json")).unwrap())
-                .unwrap();
+        let (_scratch, site) = site("api-reference-search");
+        let index: Vec<Value> = serde_json::from_str(&read(&site, "search/api.json")).unwrap();
         let has =
             |kind: &str, href: &str| index.iter().any(|e| e["kind"] == kind && e["href"] == href);
-        for resource in list(&reference, "resources") {
-            let rel = text(resource, "rel");
-            assert!(has("Resource", &format!("rels/{rel}/")), "{rel}");
-            for method in list(resource, "methods") {
-                let href = format!("rels/{rel}/#{}", text(method, "name"));
-                assert!(has("Endpoint", &href), "{href}");
-                let entry = index.iter().find(|e| e["href"] == href).unwrap();
-                assert_eq!(entry["method"], method["method"], "{href}");
-                // The operation's anchor is on its page.
-                let html = fs::read_to_string(site.join(format!("rels/{rel}/index.html"))).unwrap();
-                assert!(
-                    html.contains(&format!(r#"id="{}""#, text(method, "name"))),
-                    "{href}"
-                );
+        let openapi = openapi(site_header::SITE_URL);
+        for tag in list(&openapi, "tags") {
+            let href = format!("api/#{}", text(tag, "name"));
+            assert!(has("Resource", &href), "{href}");
+        }
+        for (_, methods) in openapi["paths"].as_object().unwrap() {
+            for (method, op) in methods.as_object().unwrap() {
+                let href = format!("api/#{}", text(op, "operationId").replace('.', "-"));
+                let entry = index
+                    .iter()
+                    .find(|e| e["href"] == href)
+                    .unwrap_or_else(|| panic!("{href}"));
+                assert_eq!(entry["kind"], "Endpoint", "{href}");
+                assert_eq!(entry["method"], method.to_uppercase(), "{href}");
             }
         }
+        let reference = reference(site_header::SITE_URL);
         for rel in list(&reference, "rels") {
             assert!(has("Resource", &format!("rels/{}/", text(rel, "rel"))));
         }
-        let handshakes = index
-            .iter()
-            .filter(|e| e["href"] == "api/reference/#handshakes")
-            .count();
-        assert_eq!(handshakes, list(&reference, "handshakes").len());
         for problem in list(&reference, "problems") {
-            assert!(has(
-                "Problem",
-                &format!("problems/{}/", text(problem, "slug"))
-            ));
+            let href = format!("api/#problem-{}", text(problem, "slug"));
+            assert!(has("Problem", &href), "{href}");
         }
+        assert!(has("Guide", "api/"));
+        assert!(has("Section", "api/#keys"));
         for entry in &index {
             let href = entry["href"].as_str().unwrap();
-            let path = href.split('#').next().unwrap();
-            assert!(site.join(path).join("index.html").is_file(), "{href}");
+            assert!(resolves(&site, "index.html", href), "{href}");
         }
-    }
-
-    #[test]
-    fn an_operations_first_sentence_names_it() {
-        assert_eq!(
-            first_sentence("Read the entry. Open without a key."),
-            "Read the entry."
-        );
-        assert_eq!(
-            first_sentence("Make an order.\n\nWith the key."),
-            "Make an order."
-        );
-        assert_eq!(
-            first_sentence("Connect an app: its own key."),
-            "Connect an app: its own key."
-        );
     }
 
     /// A reference whose links point at another site isn't published.

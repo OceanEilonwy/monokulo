@@ -7,7 +7,8 @@
 //   search/{part}.json (xtask/src/pages/shell.rs); arrows move, Enter
 //   opens, Escape closes.
 // - On a page in the shell: the section being read marked in "On this
-//   page", the current page kept in sight in the map, and the map's menu
+//   page" (on the API explorer, which has none, in the map, kept in
+//   sight), the current page kept in sight in the map, and the map's menu
 //   (a checkbox, on a narrow screen) closed by Escape or a link chosen.
 (() => {
   const script = document.currentScript;
@@ -99,8 +100,9 @@
       a.setAttribute("role", "option");
       if (hit.method) {
         const m = document.createElement("span");
-        m.className = "method";
-        m.dataset.method = hit.method;
+        // The ui's method tag (HttpMethodTag).
+        m.className = "mk-http-method";
+        m.dataset.method = hit.method.toLowerCase();
         m.textContent = hit.method;
         a.append(m);
       }
@@ -185,17 +187,28 @@
     }
   }
 
-  // "On this page": the section whose heading was last scrolled past the
-  // top third of the window, or the first.
-  const toc = [...document.querySelectorAll('.toc a[href^="#"]')];
+  // "On this page", or on a page without it whose map links its own
+  // sections (the API explorer), the map: the section whose heading was
+  // last scrolled past the top third of the window, or the first. The map
+  // keeps the marked link in sight.
+  let toc = [...document.querySelectorAll('.toc a[href^="#"]')];
+  const inMap = !toc.length;
+  if (inMap) toc = [...document.querySelectorAll('.map ul a[href^="#"]')];
   const headings = toc.map(a => document.getElementById(decodeURIComponent(a.hash.slice(1))));
   if (toc.length && headings.every(Boolean)) {
     let queued = false;
+    let marked = -1;
     const spy = () => {
       queued = false;
       let at = 0;
       headings.forEach((h, i) => { if (h.getBoundingClientRect().top < innerHeight / 3) at = i; });
+      if (at === marked) return;
+      marked = at;
       toc.forEach((a, i) => (i === at ? a.setAttribute("aria-current", "true") : a.removeAttribute("aria-current")));
+      if (inMap && map) {
+        const a = toc[at], top = a.offsetTop - map.scrollTop;
+        if (top < 0 || top + a.offsetHeight > map.clientHeight) map.scrollTop = a.offsetTop - map.clientHeight / 3;
+      }
     };
     addEventListener("scroll", () => { if (!queued) { queued = true; requestAnimationFrame(spy); } }, { passive: true });
     spy();

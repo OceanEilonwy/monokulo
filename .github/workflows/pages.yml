@@ -11,9 +11,9 @@
 #               beside it (/webhooks/, /plugins/, ...), the Geomart sample
 #               shop under /geomart/, and a redirect from each page's old
 #               address under /docs/
-#   /api/       the HTTP API's section: its front page from the docs; the
-#               reference generated from the API under /api/reference/,
-#               /api/v1/openapi.json, /rels/ and /problems/
+#   /api/       the HTTP API's section (`cargo xtask pages api`): the explorer,
+#               generated from the API with Try it, /api/v1/openapi.json,
+#               /rels/ and /problems/ (/api/reference/ redirects to /api/)
 #   /stylebook/ the ui components' stylebook (`npm run build -w @monokulo/stylebook`,
 #               apps/stylebook), from this checkout
 #
