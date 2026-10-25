@@ -116,6 +116,22 @@ pub(super) struct ScannerStatusView {
     pub is_stale: bool,
 }
 
+/// [`crate::store::ExpiryHold`], for `/status`.
+#[derive(Serialize, Clone)]
+pub(super) struct ExpiryHeldView {
+    pub orders: u64,
+    /// The earliest of their deadlines.
+    pub overdue_since: i64,
+    /// Some stores are behind the node's tip.
+    pub behind_tip: bool,
+    /// Since when the node has said it isn't synchronized with its peers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_unsynchronized_since: Option<i64>,
+    /// Since when a reorg has been reconciled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reorg_open_since: Option<i64>,
+}
+
 #[derive(Serialize, Clone)]
 pub(super) struct NetworkStatus {
     pub network: String,
@@ -126,6 +142,11 @@ pub(super) struct NetworkStatus {
     pub lagging_tenants: usize,
     /// How far behind the furthest-behind tenant is, in blocks.
     pub max_blocks_behind: u64,
+    /// Orders past their deadline that aren't expiring, because blocks
+    /// that may hold their payments aren't scanned yet, and why; absent
+    /// while there are none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry_held: Option<ExpiryHeldView>,
     /// How the block scan is going and what limits it.
     pub scaling: shared::scaling::NetworkScaling,
     /// The nodes' ZMQ announcements; absent while no
@@ -300,7 +321,7 @@ pub(super) async fn status_page(
             }
         };
 
-        let (lagging_tenants, max_blocks_behind, high_water) = state
+        let (lagging_tenants, max_blocks_behind, high_water, expiry_held) = state
             .db
             .read(move |store| {
                 let high_water = store.max_scanned_height(network)?.unwrap_or(0);
@@ -310,9 +331,21 @@ pub(super) async fn status_page(
                     .map(|(_, cursor)| high_water.saturating_sub(*cursor))
                     .max()
                     .unwrap_or(0);
-                Ok((lagging.len(), behind, high_water))
+                // Against the tip settlement last saw the node at.
+                let tip = store
+                    .scheduler_position::<crate::store::position::SettlementTip>(network)?
+                    .unwrap_or(high_water);
+                let held = store.expiry_hold(network, tip, now)?;
+                Ok((lagging.len(), behind, high_water, held))
             })
             .await?;
+        let expiry_held = expiry_held.map(|hold| ExpiryHeldView {
+            orders: hold.orders,
+            overdue_since: hold.overdue_since,
+            behind_tip: hold.behind_tip,
+            node_unsynchronized_since: hold.node_unsynchronized_since,
+            reorg_open_since: hold.reorg_open_since,
+        });
         let scaling = network_scaling(
             &state,
             &nodes,
@@ -326,6 +359,7 @@ pub(super) async fn status_page(
             scanner,
             lagging_tenants,
             max_blocks_behind,
+            expiry_held,
             scaling,
             announcements,
             proof,
@@ -564,6 +598,7 @@ mod tests {
             },
             lagging_tenants: 0,
             max_blocks_behind: 0,
+            expiry_held: None,
             scaling: shared::scaling::NetworkScaling {
                 scan: crate::scaling::ScanProgress::default().report(0),
                 blocks_behind: 0,
@@ -697,6 +732,7 @@ mod tests {
             info: info.map(|(nettype, height)| crate::daemon::DaemonInfo {
                 nettype: nettype.to_owned(),
                 height,
+                synchronized: None,
             }),
             height,
             height_requests: std::sync::atomic::AtomicUsize::default(),

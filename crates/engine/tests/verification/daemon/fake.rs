@@ -71,6 +71,9 @@ struct State {
     /// Bodies blocks send in place of the transaction named, by its id
     /// (`send_in_blocks_as`).
     listed: HashMap<String, Transaction>,
+    /// What `get_info` says of the node's sync with its peers: by default
+    /// nothing (`set_synchronized`).
+    synchronized: Option<bool>,
 }
 
 #[derive(Default)]
@@ -112,6 +115,12 @@ impl FakeDaemonClient {
     pub fn set_online(&self, online: bool) {
         self.online
             .store(online, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// What `get_info` says of the node's sync with its peers: `false`
+    /// models a node fetching blocks it missed while it was down.
+    pub fn set_synchronized(&self, synchronized: Option<bool>) {
+        self.state.lock().synchronized = synchronized;
     }
 
     fn require_online(&self) -> Result<(), DaemonError> {
@@ -395,6 +404,14 @@ impl MoneroDaemonClient for FakeDaemonClient {
         Ok(ChainTip {
             height,
             hash: state.blocks.get(&height).map(|b| b.hash.clone()),
+        })
+    }
+
+    async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, DaemonError> {
+        self.require_online()?;
+        Ok(crate::daemon::DaemonInfo {
+            synchronized: self.state.lock().synchronized,
+            ..crate::daemon::DaemonInfo::unknown()
         })
     }
 

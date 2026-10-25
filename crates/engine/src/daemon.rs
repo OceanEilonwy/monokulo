@@ -53,9 +53,11 @@ impl DaemonError {
     }
 }
 
-/// What a node says about itself (monerod's `get_info`). Only the network
-/// it's on is used: the settings API refuses a node saved for the wrong
-/// network, and `/status` reports it.
+/// What a node says about itself (monerod's `get_info`).
+///
+/// The network it's on: the settings API refuses a node saved for the
+/// wrong network, and `/status` reports it. And whether it has caught up
+/// with its peers: orders don't expire while it hasn't.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonInfo {
     /// `"mainnet"`, `"stagenet"`, `"testnet"`, `"fakechain"`, or
@@ -65,6 +67,10 @@ pub struct DaemonInfo {
     /// as [`MoneroDaemonClient::get_height`], from the same answer, so a
     /// caller that wants both asks once.
     pub height: Option<u64>,
+    /// Whether the node has caught up with the chain its peers have, when
+    /// it said. A node still syncing (after it was down itself) has a tip
+    /// below the network's, and blocks it hasn't got yet may hold payments.
+    pub synchronized: Option<bool>,
 }
 
 impl DaemonInfo {
@@ -74,6 +80,7 @@ impl DaemonInfo {
         Self {
             nettype: Self::UNKNOWN.to_owned(),
             height: None,
+            synchronized: None,
         }
     }
 
