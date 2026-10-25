@@ -1,13 +1,16 @@
-//! `cargo xtask pages docs`: the guides for adding Monokulo to a site, from
-//! the Markdown in `xtask/src/pages/docs/`, beside the landing page and the
-//! coverage report. Each page is rendered with maud around pulldown-cmark's
-//! HTML, in the shell the docs and the API reference share (`shell`): the
+//! `cargo xtask pages docs`: the guides for installing Monokulo and adding
+//! it to a site, from the Markdown in `xtask/src/pages/docs/`, beside the
+//! landing page and the coverage report. Each page is rendered with maud
+//! around pulldown-cmark's HTML, or drawn in Rust (`install`: the install,
+//! config and backups pages, whose steps use the `ui` package's tabs and
+//! copyable commands, and the router's the site's apk repositories), in the
+//! shell the docs and the API reference share (`shell`): the
 //! map of every page down the left, grouped as `PAGES` groups them, and the
 //! page's sections beside it. A fenced `diff` block becomes the
 //! walkthrough's added and kept lines.
 //!
 //! Every page is a folder at the site's top level (docs.monokulo.com):
-//! `/guide/` is the front page, `/webhooks/`, `/plugins/` and the rest
+//! `/introduction/` is the front page, `/guide/`, `/webhooks/` and the rest
 //! beside it. The sample shop the walkthrough builds, `examples/geomart/`,
 //! is copied to `/geomart/` so its pages run there. The docs were under
 //! `/docs/` until the site moved to its own domain; every old address keeps
@@ -22,7 +25,13 @@
 //!
 //! Search finds every page and each of its sections, from the index the
 //! build writes at `search/docs.json`.
+//!
+//! The router's page names the apk repositories in the site
+//! (`openwrt/<release>/<arch>/`), so the build needs them there: the pages
+//! workflow fetches them into the site before it builds any part, and the
+//! build publishes their signing key beside them.
 
+use super::install::{self, Site};
 use super::shell::{self, icon, Group as MapGroup, Link, Mark};
 use super::site_assets;
 use super::site_header::{Section, GITHUB_URL, SITE_URL};
@@ -41,14 +50,16 @@ pub(super) enum Group {
     GetStarted,
     TakePayments,
     Integrations,
+    RunMonokulo,
     Reference,
 }
 
 impl Group {
-    const ALL: [Group; 4] = [
+    const ALL: [Group; 5] = [
         Group::GetStarted,
         Group::TakePayments,
         Group::Integrations,
+        Group::RunMonokulo,
         Group::Reference,
     ];
 
@@ -57,6 +68,7 @@ impl Group {
             Group::GetStarted => "Get started",
             Group::TakePayments => "Take payments",
             Group::Integrations => "Integrations",
+            Group::RunMonokulo => "Run Monokulo",
             Group::Reference => "Reference",
         }
     }
@@ -66,18 +78,45 @@ impl Group {
             Group::GetStarted => icon::FLAG,
             Group::TakePayments => icon::COIN,
             Group::Integrations => icon::PLUG,
+            Group::RunMonokulo => icon::SERVER,
             Group::Reference => icon::BOOK,
         }
     }
 }
 
-/// One page of the docs: its Markdown file in `xtask/src/pages/docs/`, the
-/// folder it is published as at the site's top level, its name in the map,
-/// the map's group it is in, the part of the site the header marks, and the
-/// folder it was published as before the docs moved to their own domain
+/// Where a page's words come from.
+pub(super) enum Source {
+    /// A Markdown file in `xtask/src/pages/docs/`; its `# ` heading is the
+    /// page's title.
+    Markdown(&'static str),
+    /// Drawn in Rust from what the site holds (`install`): its file under
+    /// `xtask/src/pages/`, its title, the line under it, and what follows,
+    /// each `h2` with an `id` a section.
+    Rust {
+        file: &'static str,
+        title: &'static str,
+        lead: &'static str,
+        render: fn(&Site) -> Markup,
+    },
+}
+
+impl Source {
+    /// Its file, from the checkout's root: where the page is edited.
+    fn file(&self) -> String {
+        match self {
+            Source::Markdown(file) => format!("xtask/src/pages/docs/{file}"),
+            Source::Rust { file, .. } => format!("xtask/src/pages/{file}"),
+        }
+    }
+}
+
+/// One page of the docs: where its words come from, the folder it is
+/// published as at the site's top level, its name in the map, the map's
+/// group it is in, the part of the site the header marks, and the folder
+/// it was published as before the docs moved to their own domain
 /// (`docs/…`), which keeps a redirect to it; none for a page added since.
 pub(super) struct Page {
-    pub(super) source: &'static str,
+    pub(super) source: Source,
     pub(super) dir: &'static str,
     pub(super) label: &'static str,
     pub(super) group: Group,
@@ -88,9 +127,43 @@ pub(super) struct Page {
 /// The docs, in the map's order, which is also Previous and Next's: each
 /// group's pages together, the groups in `Group::ALL`'s order. The first is
 /// where the bar's Docs and Get started go.
-pub(super) const PAGES: [Page; 8] = [
+pub(super) const PAGES: [Page; 13] = [
     Page {
-        source: "index.md",
+        source: Source::Markdown("introduction.md"),
+        dir: "introduction",
+        label: "Introduction",
+        group: Group::GetStarted,
+        section: Section::Docs,
+        old: None,
+    },
+    Page {
+        source: Source::Rust {
+            file: "install/computer.rs",
+            title: install::computer::TITLE,
+            lead: install::computer::LEAD,
+            render: install::computer::render,
+        },
+        dir: "install-computer",
+        label: "Install on a computer",
+        group: Group::GetStarted,
+        section: Section::Docs,
+        old: None,
+    },
+    Page {
+        source: Source::Rust {
+            file: "install/router.rs",
+            title: install::router::TITLE,
+            lead: install::router::LEAD,
+            render: install::router::render,
+        },
+        dir: "install-router",
+        label: "Install on a router",
+        group: Group::GetStarted,
+        section: Section::Docs,
+        old: None,
+    },
+    Page {
+        source: Source::Markdown("index.md"),
         dir: "guide",
         label: "Accept your first payment",
         group: Group::GetStarted,
@@ -98,7 +171,7 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs"),
     },
     Page {
-        source: "walkthrough-geomart.md",
+        source: Source::Markdown("walkthrough-geomart.md"),
         dir: "walkthrough-geomart",
         label: "Walkthrough: Geomart",
         group: Group::GetStarted,
@@ -106,7 +179,7 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs/walkthrough-geomart"),
     },
     Page {
-        source: "js-library.md",
+        source: Source::Markdown("js-library.md"),
         dir: "js-library",
         label: "JS library",
         group: Group::TakePayments,
@@ -114,7 +187,7 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs/js-library"),
     },
     Page {
-        source: "paid.md",
+        source: Source::Markdown("paid.md"),
         dir: "paid",
         label: "When is it paid?",
         group: Group::TakePayments,
@@ -122,7 +195,7 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs/paid"),
     },
     Page {
-        source: "webhooks.md",
+        source: Source::Markdown("webhooks.md"),
         dir: "webhooks",
         label: "Webhooks",
         group: Group::TakePayments,
@@ -130,7 +203,7 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs/webhooks"),
     },
     Page {
-        source: "plugins.md",
+        source: Source::Markdown("plugins.md"),
         dir: "plugins",
         label: "Shop plugins",
         group: Group::Integrations,
@@ -138,7 +211,7 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs/plugins"),
     },
     Page {
-        source: "apps.md",
+        source: Source::Markdown("apps.md"),
         dir: "apps",
         label: "Connected apps",
         group: Group::Integrations,
@@ -146,7 +219,33 @@ pub(super) const PAGES: [Page; 8] = [
         old: Some("docs/apps"),
     },
     Page {
-        source: "api.md",
+        source: Source::Rust {
+            file: "install/run.rs",
+            title: install::run::CONFIG_TITLE,
+            lead: install::run::CONFIG_LEAD,
+            render: install::run::config,
+        },
+        dir: "config",
+        label: "Config and data",
+        group: Group::RunMonokulo,
+        section: Section::Docs,
+        old: None,
+    },
+    Page {
+        source: Source::Rust {
+            file: "install/run.rs",
+            title: install::run::BACKUPS_TITLE,
+            lead: install::run::BACKUPS_LEAD,
+            render: install::run::backups,
+        },
+        dir: "backups",
+        label: "Backups and updates",
+        group: Group::RunMonokulo,
+        section: Section::Docs,
+        old: None,
+    },
+    Page {
+        source: Source::Markdown("api.md"),
         dir: "api",
         label: "API reference",
         group: Group::Reference,
@@ -182,40 +281,66 @@ const GEOMART: [&str; 2] = ["index.html", "done.html"];
 /// `webhooks::vectors` keeps them true), beside the plugins page.
 const VECTORS: &str = "webhook-vectors.json";
 
-/// `cargo xtask pages docs --site DIR`.
+/// `cargo xtask pages docs --site DIR [--site-url URL]`. The site's
+/// address is where routers fetch the apk repositories from:
+/// docs.monokulo.com unless a fork publishes its own.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
-    let site = match args {
-        ["--site", dir] => PathBuf::from(dir),
-        _ => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "pages docs needs --site DIR",
-            ))
+    let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
+    let (mut site, mut site_url) = (None, SITE_URL.to_string());
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let value = rest
+            .next()
+            .ok_or_else(|| bad(&format!("{flag} needs a value")))?;
+        match *flag {
+            "--site" => site = Some(PathBuf::from(value)),
+            "--site-url" => site_url = value.trim_end_matches('/').to_string(),
+            _ => return Err(bad(&format!("unknown option {flag}"))),
         }
-    };
-    write(root, &site)?;
+    }
+    let site = site.ok_or_else(|| bad("pages docs needs --site DIR"))?;
+    write(root, &site, &site_url)?;
     eprintln!("docs in {}: {} page(s)", site.display(), PAGES.len());
     Ok(Exit::SUCCESS)
 }
 
 /// Writes every page, the sample shop and the old addresses' redirects into
-/// the site's folder `site`, and the assets they use into its `assets/`.
-pub(super) fn write(root: &Path, site: &Path) -> io::Result<()> {
+/// the site's folder `site`, and the assets they use into its `assets/`;
+/// the router's page tells routers to fetch from `site_url`.
+pub(super) fn write(root: &Path, site: &Path, site_url: &str) -> io::Result<()> {
     let put = |path: PathBuf, contents: String| {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| at(dir, e))?;
         }
         fs::write(&path, contents).map_err(|e| at(&path, e))
     };
+    let held = Site::load(root, site, site_url, GITHUB_URL)?;
     let mut found = Vec::new();
     for page in &PAGES {
-        let source = root.join("xtask/src/pages/docs").join(page.source);
-        let markdown = fs::read_to_string(&source).map_err(|e| at(&source, e))?;
+        let (title, words) = match &page.source {
+            Source::Markdown(file) => {
+                let source = root.join("xtask/src/pages/docs").join(file);
+                let markdown = fs::read_to_string(&source).map_err(|e| at(&source, e))?;
+                (
+                    markdown_title(page, &markdown).to_owned(),
+                    markdown_html(&markdown),
+                )
+            }
+            Source::Rust {
+                title,
+                lead,
+                render,
+                ..
+            } => (
+                (*title).to_owned(),
+                html! { h1 { (title) } p { (lead) } (render(&held)) },
+            ),
+        };
         put(
             site.join(page.dir).join("index.html"),
-            render(page, &markdown).0,
+            render(page, &title, &words).0,
         )?;
-        found.extend(index(page, &markdown));
+        found.extend(index(page, &title, &words));
     }
     shell::write_index(site, "docs", &found)?;
     for (old, new) in redirects() {
@@ -313,18 +438,18 @@ pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
         .collect()
 }
 
-/// A page's title: its Markdown's `# ` heading, or its name in the map.
-fn title<'a>(page: &'a Page, markdown: &'a str) -> &'a str {
+/// A Markdown page's title: its `# ` heading, or its name in the map.
+fn markdown_title<'a>(page: &'a Page, markdown: &'a str) -> &'a str {
     markdown
         .lines()
         .find_map(|line| line.strip_prefix("# "))
         .unwrap_or(page.label)
 }
 
-/// A page, in the shell, with Previous and Next in the map's order. Every
-/// page is a folder at the site's top level, so the site's root is `../`
-/// from each.
-pub(super) fn render(page: &Page, markdown: &str) -> Markup {
+/// A page called `title`, its words `words` (its `h1` and what follows), in
+/// the shell, with Previous and Next in the map's order. Every page is a
+/// folder at the site's top level, so the site's root is `../` from each.
+pub(super) fn render(page: &Page, title: &str, words: &Markup) -> Markup {
     let up = "../";
     let at = PAGES.iter().position(|p| p.dir == page.dir);
     let neighbour = |i: Option<usize>| {
@@ -333,35 +458,33 @@ pub(super) fn render(page: &Page, markdown: &str) -> Markup {
     };
     let article = html! {
         p.crumbs { span { "Docs" } span { (page.group.title()) } }
-        (markdown_html(markdown))
+        (words)
     };
     shell::render(shell::Page {
         up,
         section: page.section,
-        title: format!("{} · Monokulo docs", title(page, markdown)),
-        description: "How to add Monokulo, self-hosted Monero payments, to your own website.",
+        title: format!("{title} · Monokulo docs"),
+        description:
+            "How to install Monokulo, self-hosted Monero payments, and add it to your own website.",
         map_label: "Docs",
         map: map(up, Some(page.dir)),
         article,
         previous: neighbour(at.and_then(|i| i.checked_sub(1))),
         next: neighbour(at.map(|i| i + 1)),
-        edit: Some(format!(
-            "{GITHUB_URL}/edit/main/xtask/src/pages/docs/{}",
-            page.source
-        )),
+        edit: Some(format!("{GITHUB_URL}/edit/main/{}", page.source.file())),
     })
 }
 
 /// What search finds on a page: the page, and each of its sections.
-fn index(page: &Page, markdown: &str) -> Vec<shell::Entry> {
+fn index(page: &Page, title: &str, words: &Markup) -> Vec<shell::Entry> {
     let guide = shell::Entry {
         title: page.label.to_owned(),
-        sub: format!("{} · {}", page.group.title(), title(page, markdown)),
+        sub: format!("{} · {title}", page.group.title()),
         kind: "Guide",
         href: format!("{}/", page.dir),
         method: None,
     };
-    let sections = shell::sections(&markdown_html(markdown).0)
+    let sections = shell::sections(&words.0)
         .into_iter()
         .map(|section| shell::Entry {
             title: section.plain(),
@@ -475,19 +598,28 @@ mod tests {
     /// `api/index.html`.
     const API_OUTPUT: [&str; 4] = ["api/reference", "api/v1", "rels", "problems"];
 
+    /// The docs, written into a site that holds an apk repository, as the
+    /// pages workflow's does.
+    fn built(name: &str) -> Scratch {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scratch = Scratch::new(name);
+        install::tests::repo(
+            scratch.path(),
+            "25.12",
+            "aarch64_cortex-a53",
+            "monokulo-0.1.0-r1.apk",
+        );
+        write(root, scratch.path(), SITE_URL).unwrap();
+        scratch
+    }
+
     #[test]
     fn every_page_and_the_sample_shop_are_written() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let scratch = Scratch::new("docs");
+        let scratch = built("docs");
         let site = scratch.path();
-        write(root, site).unwrap();
         for page in &PAGES {
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
-            assert!(
-                html.contains(r#"<article class="prose">"#),
-                "{}",
-                page.source
-            );
+            assert!(html.contains(r#"<article class="prose">"#), "{}", page.dir);
         }
         let walkthrough = fs::read_to_string(site.join("walkthrough-geomart/index.html")).unwrap();
         assert!(
@@ -524,8 +656,8 @@ mod tests {
         for page in &PAGES {
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
             let linked = site_assets::assert_links_published(&html, &site.join("assets"));
-            assert!(linked.contains(&"styles.css"), "{}", page.source);
-            assert!(linked.contains(&"site.js"), "{}", page.source);
+            assert!(linked.contains(&"styles.css"), "{}", page.dir);
+            assert!(linked.contains(&"site.js"), "{}", page.dir);
         }
     }
 
@@ -548,10 +680,8 @@ mod tests {
     /// are every `h2` it has.
     #[test]
     fn every_page_is_in_the_map_and_lists_its_sections() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let scratch = Scratch::new("docs-shell");
+        let scratch = built("docs-shell");
         let site = scratch.path();
-        write(root, site).unwrap();
         let h2 = regex::Regex::new(r"<h2[ >]").unwrap();
         let toc_link = regex::Regex::new(r##"<li><a href="#([^"]+)">"##).unwrap();
         for (i, page) in PAGES.iter().enumerate() {
@@ -644,21 +774,18 @@ mod tests {
                 .collect();
             let ids: Vec<&str> = sections.iter().map(|s| s.id.as_str()).collect();
             assert_eq!(listed, ids, "{}", page.dir);
-            assert!(
-                toc.contains(&format!("/edit/main/xtask/src/pages/docs/{}", page.source)),
-                "{}",
-                page.dir
-            );
+            let edit = format!("/edit/main/{}", page.source.file());
+            assert!(toc.contains(&edit), "{}", page.dir);
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+            assert!(root.join(page.source.file()).is_file(), "{edit}");
         }
     }
 
     /// Search finds every page and every section of each, at its address.
     #[test]
     fn the_search_index_lists_every_page_and_section() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let scratch = Scratch::new("docs-search");
+        let scratch = built("docs-search");
         let site = scratch.path();
-        write(root, site).unwrap();
         let index: Vec<serde_json::Value> =
             serde_json::from_str(&fs::read_to_string(site.join("search/docs.json")).unwrap())
                 .unwrap();
@@ -685,6 +812,96 @@ mod tests {
         }
     }
 
+    /// The router's page installs from the newest release's repository,
+    /// offers every repository in its picker (the newest first), writes
+    /// each version's steps and package files, and links files the site
+    /// holds; a fork's address is the one routers are told to fetch from.
+    #[test]
+    fn the_router_page_installs_from_the_newest_release_and_lists_every_repository() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scratch = Scratch::new("docs-router");
+        let site = scratch.path();
+        install::tests::repo(
+            site,
+            "25.12",
+            "aarch64_cortex-a53",
+            "monokulo-0.1.0-r42.apk",
+        );
+        install::tests::repo(site, "26.06", "x86_64", "monokulo-0.2.0-r50.apk");
+        install::tests::repo(
+            site,
+            "26.06",
+            "aarch64_cortex-a53",
+            "monokulo-0.2.0-r50.apk",
+        );
+        write(root, site, "https://fork.example/").unwrap();
+        let page = fs::read_to_string(site.join("install-router/index.html")).unwrap();
+
+        // The picker: every repository, the newest release first, so the
+        // newest is what a script shows first.
+        let option = regex::Regex::new(r#"<option value="([^"]+)""#).unwrap();
+        let options: Vec<&str> = option
+            .captures_iter(&page)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        assert_eq!(
+            options,
+            [
+                "26.06-aarch64_cortex-a53",
+                "26.06-x86_64",
+                "25.12-aarch64_cortex-a53"
+            ]
+        );
+        // Each version's blocks: the repository line in LuCI's steps, the
+        // terminal's, and its package files, each the fork's address.
+        let target = regex::Regex::new(r#"data-target="([^"]+)""#).unwrap();
+        for id in &options {
+            let blocks = target.captures_iter(&page).filter(|c| &c[1] == *id).count();
+            assert_eq!(blocks, 3, "{id}");
+        }
+        let line = regex::Regex::new(r"https://fork\.example/(openwrt/[^/]+/[^/]+)/packages\.adb")
+            .unwrap();
+        let first = line.captures(&page).unwrap();
+        assert_eq!(&first[1], "openwrt/26.06/aarch64_cortex-a53");
+        assert!(!page.contains("https://docs.monokulo.com/openwrt"));
+        // The needs name every release and CPU.
+        let needs = page.split(r#"<div class="req">"#).nth(1).unwrap();
+        let needs = needs.split("</div>").next().unwrap();
+        assert!(needs.contains("OpenWrt 26.06 / 25.12 with LuCI"), "{needs}");
+        assert!(needs.contains("aarch64_cortex-a53, x86_64"), "{needs}");
+        // The key to paste, whole, with a Copy button named for it, and the
+        // same key published where the page says.
+        let key = fs::read_to_string(root.join("openwrt/keys/monokulo.pem")).unwrap();
+        assert!(page.contains(&format!("<code>{}</code></pre>", key.trim_end())));
+        assert!(page.contains("&quot;copy_label&quot;:&quot;Copy the signing key&quot;}"));
+        assert_eq!(
+            fs::read_to_string(site.join("openwrt/monokulo.pem")).unwrap(),
+            key
+        );
+        // Every package file it links is in the site.
+        let href = regex::Regex::new(r#"href="\.\./(openwrt/[^"]+)""#).unwrap();
+        let files: Vec<&str> = href
+            .captures_iter(&page)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        assert_eq!(files.len(), 3 * 2 + 1, "{files:?}");
+        for file in files {
+            assert!(site.join(file).is_file(), "{file}");
+        }
+    }
+
+    /// A site without an apk repository has nothing for the router's page
+    /// to install from: the build stops.
+    #[test]
+    fn the_docs_need_an_apk_repository_in_the_site() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let scratch = Scratch::new("docs-no-repo");
+        fs::create_dir_all(scratch.join("openwrt")).unwrap();
+        let error = write(root, scratch.path(), SITE_URL).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!scratch.join("install-router").exists());
+    }
+
     /// Every address the docs were published at under /docs/ before they
     /// moved to their own domain. A page keeps its old address's redirect
     /// for as long as it is in `PAGES`.
@@ -702,10 +919,8 @@ mod tests {
 
     #[test]
     fn every_old_docs_address_sends_the_reader_to_its_page() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let scratch = Scratch::new("docs-redirects");
+        let scratch = built("docs-redirects");
         let site = scratch.path();
-        write(root, site).unwrap();
         let olds: Vec<String> = redirects().into_iter().map(|(old, _)| old).collect();
         assert_eq!(olds, PUBLISHED_UNDER_DOCS);
         for (old, new) in redirects() {
