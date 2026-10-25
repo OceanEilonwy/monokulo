@@ -97,7 +97,7 @@ impl Ledger<'_> {
         &self,
         s: &Store,
         daemon: &World,
-        tenants: &[(TenantId, crate::key_custody::WalletHandle)],
+        tenants: &[(TenantId, crate::key_custody::LiveWallet)],
         tip: u64,
         oracle: &Oracle,
     ) -> bool {
@@ -177,7 +177,7 @@ impl Ledger<'_> {
         &self,
         s: &Store,
         daemon: &World,
-        tenants: &[(TenantId, crate::key_custody::WalletHandle)],
+        tenants: &[(TenantId, crate::key_custody::LiveWallet)],
         tip: u64,
         oracle: &mut Oracle,
     ) {

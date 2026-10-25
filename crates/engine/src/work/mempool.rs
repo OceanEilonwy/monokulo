@@ -36,7 +36,7 @@ use std::time::Duration;
 use monero::Transaction;
 use tokio::time::Instant;
 
-use crate::key_custody::{ScanIndices, WalletHandle};
+use crate::key_custody::{LiveWallet, ScanIndices};
 use crate::scanner::{record_scan_match, scan_for_tenants, ScannerError};
 use crate::store::db::Class;
 
@@ -65,7 +65,7 @@ const FAST_TXS_PER_PASS: usize = 256;
 /// transaction for a store whose window changed.
 const WINDOWS_TTL: Duration = Duration::from_secs(1);
 
-type TenantWindow = (crate::store::TenantId, WalletHandle, ScanIndices);
+type TenantWindow = (crate::store::TenantId, LiveWallet, ScanIndices);
 
 /// Each store with something in scope and its subaddress window.
 type Windows = Arc<Vec<(crate::store::TenantId, Vec<u32>)>>;
@@ -529,8 +529,9 @@ async fn scan_and_record(
         .iter()
         .map(|(id, _, w)| (id.as_str(), w.generation()))
         .collect();
-    // When the scan began: what a store that changed wallet since is
-    // checked against (`record_scan_match`).
+    // When the scan began: when what it finds was seen. (A store that
+    // changed wallet since is told by the wallet the scan's keys are of,
+    // `record_scan_match`, not by this.)
     let scanned_at = crate::now_unix();
     for (tenant_id, result) in scan_for_tenants(
         inputs.custody,
@@ -825,10 +826,10 @@ async fn all_windows(
         *state.mempool.windows.lock() = Some((Instant::now(), Arc::clone(&loaded)));
         loaded
     };
-    let handles: HashMap<&str, WalletHandle> = inputs
+    let handles: HashMap<&str, &LiveWallet> = inputs
         .tenants
         .iter()
-        .map(|(id, h)| (id.as_str(), *h))
+        .map(|(id, live)| (id.as_str(), live))
         .collect();
     Ok(with_handles(state, &handles, &windows))
 }
@@ -837,16 +838,20 @@ async fn all_windows(
 /// a retry delay. (Every window listed has something in it.)
 fn with_handles(
     state: &ScanState,
-    handles: &HashMap<&str, WalletHandle>,
+    handles: &HashMap<&str, &LiveWallet>,
     windows: &[(crate::store::TenantId, Vec<u32>)],
 ) -> Vec<TenantWindow> {
     windows
         .iter()
         .filter(|(id, _)| !state.backoff.is_waiting(id))
         .filter_map(|(id, window)| {
-            handles
-                .get(id.as_str())
-                .map(|h| (id.clone(), *h, ScanIndices::new(window.clone())))
+            handles.get(id.as_str()).map(|live| {
+                (
+                    id.clone(),
+                    (*live).clone(),
+                    ScanIndices::new(window.clone()),
+                )
+            })
         })
         .collect()
 }

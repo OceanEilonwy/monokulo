@@ -1,6 +1,7 @@
 //! Independent ownership and cache-budget models for generated event histories.
 use super::{MempoolState, ScanClaims};
-use crate::key_custody::{ScanIndices, WalletHandle};
+use crate::key_custody::{LiveWallet, ScanIndices, WalletHandle};
+use crate::scanner::tests::unrecorded;
 use crate::store::TenantId;
 use monero::Transaction;
 use std::collections::BTreeMap;
@@ -23,7 +24,7 @@ pub(super) fn explore(data: &[u8]) {
     let mut occupied: BTreeMap<Key, usize> = BTreeMap::new();
     let mut cached: BTreeMap<String, usize> = BTreeMap::new();
     let tx = Arc::new(Transaction::default());
-    let handles: [WalletHandle; 8] = std::array::from_fn(|_| WalletHandle::generate());
+    let handles: [LiveWallet; 8] = std::array::from_fn(|_| unrecorded(WalletHandle::generate()));
     let header = |i| data.get(i).copied().unwrap_or(0);
     let max_count = usize::from(header(0) % 17);
     let max_bytes = usize::from(u16::from_le_bytes([header(1), header(2)]));
@@ -48,7 +49,7 @@ pub(super) fn explore(data: &[u8]) {
                         let indices = [u32::from(window), u32::from(i), u32::from(window)];
                         (
                             TenantId::new(format!("tenant-{i}")),
-                            handles[usize::from(i)],
+                            handles[usize::from(i)].clone(),
                             ScanIndices::new(indices),
                         )
                     })
@@ -130,7 +131,7 @@ pub(super) fn explore(data: &[u8]) {
                     .map(|i| {
                         (
                             TenantId::new(format!("tenant-{i}")),
-                            handles[usize::from(i)],
+                            handles[usize::from(i)].clone(),
                             ScanIndices::new([u32::from(window), u32::from(i)]),
                         )
                     })
