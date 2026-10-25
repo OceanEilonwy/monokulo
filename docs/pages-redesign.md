@@ -15,19 +15,20 @@ and there are three content links plus a menu.
 
 | Now | Proposed | Why |
 | --- | --- | --- |
-| How it works, Install | **Product** (the homepage) | Sections of one page don't belong in site navigation |
+| How it works, Install | **Home** | Sections of one page don't belong in site navigation |
 | Docs | **Docs** | Guides, install and operating, in one sidebar |
 | API | **API reference** | The usual name; it says this is the per-route reference |
-| Testing, Stylebook | **Resources ▾**: Releases, Test reports, Design system, Report an issue | Useful, but not where most readers go first |
+| Testing, Stylebook | **Resources ▾**: Releases, Test reports, Design system, Report an issue, each with an icon | Useful, but not where most readers go first |
 | Source code | **GitHub** (icon and label) on the right, beside search | Where readers look for it |
-| | **Get started** (the one orange button), on the product page only | Takes a new reader to the docs' Introduction |
+| | **Get started →** (the one orange button), on the homepage only | Takes a new reader to the docs' Introduction |
 
 The brand no longer repeats the section ("Monokulo | API" beside an API
 link); the current link is marked instead.
 
 **Homepage: about the product.** The hero and the six feature tiles stay.
 New on it: an order from start to finish (checkout, paid in about a second,
-`order.paid`), four ways to take payments that each link into the docs, a
+`order.paid`), drawn with the ui's progress steps (`ProgressSteps`) stood
+upright, four ways to take payments that each link into the docs, a
 two-call code sample, an install band, and a footer. The desktop and
 OpenWrt install guides move into the docs; the homepage links to them.
 
@@ -38,7 +39,8 @@ rail is a menu, with the site links at its top. The rail ends with links to
 the source on GitHub, Releases and Report an issue.
 
 **Docs sidebar.** Each group has a heading in ink, an icon and a rule above
-it, with its pages indented below:
+it. Its pages sit under it at the same indent: the headings divide the
+groups, so indenting only costs width.
 
 - Get started: Introduction (new), Install on a computer, Install on a
   router, Accept your first payment (was Key steps), Walkthrough: Geomart
@@ -71,9 +73,13 @@ GitHub" link.
 The rail lists every operation with a method chip and highlights the one on
 screen.
 
-**Try it.** A banner across the top of the API reference says where
-requests go and with which key, with a dot once the connection is checked.
-Its Settings button (a cog) opens the Try it dialog. "Try it" on any
+**Try it.** A banner across the top of the API reference (the ui's
+`StatusBanner`) says where requests go and with which key, and turns
+green or red once the connection is checked. Its Settings button (a cog)
+opens the Try it dialog, built from the ui's components: `Dialog` (wide)
+with a `DialogTitle` (the route as a `Tag` beside it), two `Field`s (the
+key's with an eye button to show it), the connection's state as a `Tag`,
+and `DialogActions` at the foot (Check connection, Close, Send request). "Try it" on any
 operation opens the same dialog: the connection (address and key, with
 Check connection) at the top, then that operation's form (path and query
 parameters, plus the body, prefilled from the example) and its response.
@@ -98,6 +104,26 @@ it has any. Credentials are never allowed. Two gaps:
   POST only. The console says so and disables Send.
 - A `pk_` key may get `429 challenge-required`. The console shows that 429
   as it is; it doesn't solve the proof of work.
+
+## The ui components it uses
+
+The mockup loads `crates/ui`'s own `theme.css` and `ui.css`, as the site
+does, and uses their markup: `mk-btn`, `mk-field`, `mk-input`,
+`mk-input-with-actions`, `mk-segmented` (the language and example
+switches), `tag`, `mk-status-banner`, `settings-dialog`, and `mk-stage` and
+`mk-track` (the progress steps). It needs three additions to `crates/ui`:
+
+- `ProgressSteps` stood upright: a `data-orientation="vertical"` on
+  `mk-track`, with a detail line under each step's name. The mockup's CSS
+  for it is under "ProgressSteps upright".
+- Icons for Releases (a package), Design system (a palette) and Report an
+  issue (a bug), drawn like the others in `crates/ui/web/icons`. Test
+  reports uses the existing `flask.svg`.
+- The method and status chips (`GET`, `POST`, `DELETE`; `200`, `4xx`,
+  `5xx`) need roles in `tokens.css`; the mockup uses the existing tints.
+
+The API page's Keys table now has a "Key prefix" column (`sk_`, `ak_`,
+`pk_`): that change is made in `xtask/src/pages/docs/api.md` on this branch.
 
 ## Building it for real
 
