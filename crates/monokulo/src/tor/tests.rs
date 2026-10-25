@@ -142,11 +142,79 @@ async fn starting_makes_a_private_state_folder_and_needs_a_real_hidden_service_d
         .err()
         .unwrap();
     assert_eq!(refused.key, TOR_HIDDEN_SERVICE_DIR.key);
-    std::fs::write(empty.join(CTOR_SECRET_KEY_FILE), b"key").unwrap();
-    assert!(reloadable
-        .prepare(&inside(&state_dir, Some(empty)), &TorConfig::defaults())
+    // A C tor key, the tag then the 64-byte expanded secret key, in a
+    // folder only this user can open, as tor keeps it.
+    prepare_state_dir(&empty).unwrap();
+    let mut key = b"== ed25519v1-secret: type0 ==\0\0\0".to_vec();
+    key.extend([7u8; 64]);
+    std::fs::write(empty.join(CTOR_SECRET_KEY_FILE), &key).unwrap();
+    let problem = reloadable
+        .prepare(
+            &inside(&state_dir, Some(empty.clone())),
+            &TorConfig::defaults(),
+        )
         .await
-        .is_ok());
+        .err()
+        .map(|e| e.message);
+    assert_eq!(problem, None);
+
+    // Arti made a key of its own in this state folder on an earlier run;
+    // the HiddenServiceDir's is still the one served, and a hostname file
+    // naming another address is refused.
+    #[cfg(feature = "tor")]
+    {
+        use safelog::DisplayRedacted as _;
+        let own = Wanted {
+            state_dir: state_dir.clone(),
+            hidden_service_dir: None,
+        };
+        let (config, service) = arti::configs(&own).unwrap();
+        let own_address =
+            arti_client::TorClient::<tor_rtcompat::PreferredRuntime>::create_onion_service(
+                &config, service,
+            )
+            .unwrap()
+            .generate_identity_key(tor_keymgr::KeystoreSelector::Primary)
+            .unwrap()
+            .display_unredacted()
+            .to_string();
+        let served = arti::address_to_serve(&Wanted {
+            state_dir: state_dir.clone(),
+            hidden_service_dir: Some(empty.clone()),
+        })
+        .unwrap()
+        .unwrap();
+        assert_ne!(served, own_address);
+        let fresh = dir.join("fresh");
+        prepare_state_dir(&fresh).unwrap();
+        let from_fresh = arti::address_to_serve(&Wanted {
+            state_dir: fresh,
+            hidden_service_dir: Some(empty.clone()),
+        })
+        .unwrap();
+        assert_eq!(from_fresh.as_ref(), Some(&served), "the key alone decides");
+
+        std::fs::write(empty.join(HOSTNAME_FILE), format!("{own_address}\n")).unwrap();
+        let refused = reloadable
+            .prepare(
+                &inside(&state_dir, Some(empty.clone())),
+                &TorConfig::defaults(),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.key, TOR_HIDDEN_SERVICE_DIR.key);
+        assert!(
+            refused.message.contains(&served) && refused.message.contains(&own_address),
+            "{}",
+            refused.message
+        );
+        std::fs::write(empty.join(HOSTNAME_FILE), format!("{served}\n")).unwrap();
+        assert!(reloadable
+            .prepare(&inside(&state_dir, Some(empty)), &TorConfig::defaults())
+            .await
+            .is_ok());
+    }
 
     // Off or external: nothing to run.
     let (change, _) = reloadable
