@@ -76,7 +76,7 @@ machine. Use `rg`, `git grep` and reading.
   write the fields as a JSON object to a file under
   `/home/henry/.claude/jobs/662be1eb/tmp/` (keys as the flags: `job`, `file`,
   `lines`, `category`, ..., `test`) and run
-  `audit.py finding --agent NAME --from FILE`. `verify` and `note` take
+  `audit.py finding --agent NAME --from FILE`. `verify`, `note` and `done` take
   `--from` too (`job`, `verdict`, `note`, `duplicate_of`, `severity`; or
   `finding`, `text`).
 

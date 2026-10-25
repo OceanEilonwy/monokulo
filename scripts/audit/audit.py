@@ -59,6 +59,7 @@ REQUIRED = {
                 "scenario", "recommendation"),
     "verify": ("job", "verdict", "note"),
     "note": ("finding", "text"),
+    "done": ("job", "summary"),
 }
 
 CATEGORIES = ("bug", "security", "type_safety", "simplify", "dead_code", "convention")
@@ -811,8 +812,9 @@ def main():
     p.set_defaults(run=cmd_purpose)
 
     p = sub.add_parser("done", parents=[common])
-    p.add_argument("--job", type=int, required=True)
-    p.add_argument("--summary", required=True)
+    p.add_argument("--from", dest="from_file", help="read job and summary from a JSON object in FILE")
+    p.add_argument("--job", type=int)
+    p.add_argument("--summary")
     p.set_defaults(run=cmd_done)
 
     p = sub.add_parser("release", parents=[common])
