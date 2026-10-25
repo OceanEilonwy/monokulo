@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 
 use cli_wallet::amount::{parse_amount, Unit};
-use cli_wallet::RING_LEN;
+use cli_wallet::{Pieces, RING_LEN};
 
 /// `index=<N1>[,<N2>,...]`, or `index=all` where a command allows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +181,7 @@ pub fn parse_uri(uri: &str) -> Result<(String, u64), String> {
 pub struct SweepArgs {
     pub indexes: Option<IndexSelection>,
     pub priority: Option<u32>,
-    pub outputs: usize,
+    pub outputs: Pieces,
     pub address: String,
 }
 
@@ -196,10 +196,9 @@ fn parse_sweep_tail(
     let outputs = match take_option(&mut args, "outputs=") {
         Some(n) => n
             .parse()
-            .ok()
-            .filter(|n| *n >= 1)
-            .ok_or_else(|| format!("amount of outputs should be greater than 0: {n}"))?,
-        None => 1,
+            .map_err(|_| format!("a sweep splits into a number of outputs, not {n}"))
+            .and_then(|n| Pieces::sweep(n).map_err(|e| e.to_string()))?,
+        None => Pieces::sweep(1).map_err(|e| e.to_string())?,
     };
     match (args.pop_front(), args.pop_front()) {
         (Some(address), None) => Ok(SweepArgs {
@@ -324,7 +323,7 @@ pub fn parse_history(words: &[String]) -> Result<HistoryArgs, String> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PocketchangeArgs {
-    pub pieces: usize,
+    pub pieces: Pieces,
     pub inputs: usize,
     pub priority: Option<u32>,
 }
@@ -334,7 +333,7 @@ pub struct PocketchangeArgs {
 /// largest output.
 pub fn parse_pocketchange(words: &[String]) -> Result<PocketchangeArgs, String> {
     let mut parsed = PocketchangeArgs {
-        pieces: cli_wallet::MAX_OUTPUTS,
+        pieces: Pieces::pocketchange(cli_wallet::MAX_OUTPUTS).map_err(|e| e.to_string())?,
         inputs: 1,
         priority: None,
     };
@@ -349,11 +348,8 @@ pub fn parse_pocketchange(words: &[String]) -> Result<PocketchangeArgs, String> 
         } else {
             parsed.pieces = word
                 .parse()
-                .ok()
-                .filter(|n| (2..=cli_wallet::MAX_OUTPUTS).contains(n))
-                .ok_or_else(|| {
-                    format!("pieces should be 2 to {}: {word}", cli_wallet::MAX_OUTPUTS)
-                })?;
+                .map_err(|_| format!("pocketchange splits into a number of pieces, not {word}"))
+                .and_then(|n| Pieces::pocketchange(n).map_err(|e| e.to_string()))?;
         }
     }
     Ok(parsed)
@@ -506,13 +502,13 @@ mod tests {
             SweepArgs {
                 indexes: Some(IndexSelection::All),
                 priority: Some(4),
-                outputs: 3,
+                outputs: Pieces::sweep(3).unwrap(),
                 address: ADDR.to_string()
             }
         );
 
         let (account, account_args) = parse_sweep_account(&words(&format!("2 {ADDR}"))).unwrap();
-        assert_eq!((account, account_args.outputs), (2, 1));
+        assert_eq!((account, account_args.outputs.get()), (2, 1));
 
         let (threshold, _) =
             parse_sweep_below(&words(&format!("0.01 index=1 {ADDR}")), Unit::Monero).unwrap();
@@ -522,11 +518,12 @@ mod tests {
         let (image, single) =
             parse_sweep_single(&words(&format!("normal outputs=2 {key_image} {ADDR}"))).unwrap();
         assert_eq!(
-            (image, single.priority, single.outputs),
+            (image, single.priority, single.outputs.get()),
             ([0x11; 32], Some(2), 2)
         );
 
         assert!(parse_sweep_all(&words(&format!("outputs=0 {ADDR}"))).is_err());
+        assert!(parse_sweep_all(&words(&format!("outputs=16 {ADDR}"))).is_err());
         assert!(parse_sweep_all(&words(&format!("{ADDR} {ADDR}"))).is_err());
     }
 
@@ -550,7 +547,7 @@ mod tests {
         assert_eq!(
             parse_pocketchange(&[]),
             Ok(PocketchangeArgs {
-                pieces: 16,
+                pieces: Pieces::pocketchange(16).unwrap(),
                 inputs: 1,
                 priority: None
             })
@@ -558,7 +555,7 @@ mod tests {
         assert_eq!(
             parse_pocketchange(&words("inputs=3 8 normal")),
             Ok(PocketchangeArgs {
-                pieces: 8,
+                pieces: Pieces::pocketchange(8).unwrap(),
                 inputs: 3,
                 priority: Some(2)
             })

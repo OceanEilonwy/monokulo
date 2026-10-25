@@ -350,7 +350,10 @@ fn transfer_arguments_are_checked_before_any_node_is_contacted() {
             vec!["transfer", "5AAAA", "1", "0123456789abcdef"],
             "payment IDs are obsolete",
         ),
-        (vec!["sweep_all", "outputs=0", "5AAAA"], "greater than 0"),
+        (
+            vec!["sweep_all", "outputs=0", "5AAAA"],
+            "a sweep splits into 1 to 15 outputs, not 0",
+        ),
         (vec!["mark_output_spent", "12345"], "<amount>/<offset>"),
         (vec!["set", "default-ring-size", "11"], "must be 16"),
     ] {

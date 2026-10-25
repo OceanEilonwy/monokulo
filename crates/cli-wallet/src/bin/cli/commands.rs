@@ -1243,11 +1243,37 @@ async fn sweep(
     .await
 }
 
+/// Which way a `show_transfers` line's money went, and whether it's
+/// confirmed yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Received, in a block.
+    In,
+    /// Sent by this wallet, in a block.
+    Out,
+    /// Sent by this wallet, not yet in a block.
+    Pending,
+    /// Received, still in the mempool.
+    Pool,
+}
+
+impl Direction {
+    /// The word `show_transfers` and the CSV print.
+    pub fn name(self) -> &'static str {
+        match self {
+            Direction::In => "in",
+            Direction::Out => "out",
+            Direction::Pending => "pending",
+            Direction::Pool => "pool",
+        }
+    }
+}
+
 /// One `show_transfers` line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransferRow {
     pub height: Option<u64>,
-    pub direction: &'static str,
+    pub direction: Direction,
     pub unlocked: Option<bool>,
     pub timestamp: Option<u64>,
     pub amount: u64,
@@ -1280,7 +1306,7 @@ pub fn transfer_rows(
             .entry((output.txid.clone(), account))
             .or_insert_with(|| TransferRow {
                 height: Some(output.height),
-                direction: "in",
+                direction: Direction::In,
                 unlocked: Some(output.unlocked(tip)),
                 timestamp: output.timestamp,
                 amount: 0,
@@ -1299,9 +1325,9 @@ pub fn transfer_rows(
         rows.push(TransferRow {
             height: sent.height,
             direction: if sent.height.is_some() {
-                "out"
+                Direction::Out
             } else {
-                "pending"
+                Direction::Pending
             },
             unlocked: None,
             timestamp: sent.timestamp,
@@ -1325,7 +1351,7 @@ pub fn transfer_rows(
     {
         rows.push(TransferRow {
             height: None,
-            direction: "pool",
+            direction: Direction::Pool,
             unlocked: Some(false),
             timestamp: None,
             amount: pending.amount_piconero,
@@ -1350,10 +1376,10 @@ fn filter_rows(
     rows.into_iter()
         .filter(|row| row.account == account)
         .filter(|row| match row.direction {
-            "in" => filter.incoming,
-            "out" => filter.outgoing,
-            "pending" => filter.pending,
-            _ => filter.pool,
+            Direction::In => filter.incoming,
+            Direction::Out => filter.outgoing,
+            Direction::Pending => filter.pending,
+            Direction::Pool => filter.pool,
         })
         .filter(|row| {
             row.height
@@ -1393,7 +1419,7 @@ pub fn format_transfer_row(row: &TransferRow, note: &str, unit: Unit) -> String 
         .join(",");
     format!(
         "{height:>8} {:>7} {lock:>8} {:>25} {:>20} {} {payment_id} {fee:>14} {destinations} {indexes} - {note}",
-        row.direction,
+        row.direction.name(),
         format_timestamp(row.timestamp),
         money(row.amount, unit),
         row.txid
@@ -1447,10 +1473,10 @@ async fn show_transfer(session: &mut Session, txid: &str) -> Result<(), CliError
     let note = data.tx_notes.get(txid).map(String::as_str).unwrap_or("");
     for row in rows {
         let direction = match row.direction {
-            "in" => "Incoming transaction found",
-            "out" => "Outgoing transaction found",
-            "pending" => "Unconfirmed outgoing transaction found",
-            _ => "Unconfirmed incoming transaction found",
+            Direction::In => "Incoming transaction found",
+            Direction::Out => "Outgoing transaction found",
+            Direction::Pending => "Unconfirmed outgoing transaction found",
+            Direction::Pool => "Unconfirmed incoming transaction found",
         };
         println!("{direction}");
         println!("txid: {}", row.txid);
@@ -1475,7 +1501,7 @@ async fn show_transfer(session: &mut Session, txid: &str) -> Result<(), CliError
             for (address, amount) in &row.destinations {
                 println!("Destination: {address} {}", money(*amount, unit));
             }
-        } else if row.direction == "in" {
+        } else if row.direction == Direction::In {
             println!(
                 "Address index: {}",
                 row.indexes
@@ -1515,9 +1541,12 @@ async fn export_transfers(session: &mut Session, words: &[String]) -> Result<(),
     let mut running: i128 = 0;
     for row in rows {
         match row.direction {
-            "in" => running += row.amount as i128,
-            "out" | "pending" => running -= (row.amount + row.fee.unwrap_or(0)) as i128,
-            _ => {}
+            Direction::In => running += row.amount as i128,
+            Direction::Out | Direction::Pending => {
+                running -= (row.amount + row.fee.unwrap_or(0)) as i128
+            }
+            // Not confirmed, so not in the balance yet.
+            Direction::Pool => {}
         }
         let running_text = if running < 0 {
             format!("-{}", money(running.unsigned_abs() as u64, unit))
@@ -1535,7 +1564,7 @@ async fn export_transfers(session: &mut Session, words: &[String]) -> Result<(),
         for (i, (destination, destination_amount)) in lines.into_iter().enumerate() {
             let fields = [
                 row.height.map_or(String::new(), |h| h.to_string()),
-                row.direction.to_string(),
+                row.direction.name().to_string(),
                 row.unlocked.map_or(String::new(), |u| {
                     if u { "unlocked" } else { "locked" }.to_string()
                 }),

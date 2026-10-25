@@ -85,8 +85,8 @@ pub use file::{WalletData, WalletFile};
 pub use monero_wallet::address::Network;
 pub use monero_wallet::interface::FeePriority;
 pub use wallet::{
-    CommittedTransfer, DaemonVersion, OwnedOutput, PreparedTransfer, RescanReport, SweepSelect,
-    TransferKind, TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
+    CommittedTransfer, DaemonVersion, OwnedOutput, Pieces, PreparedTransfer, RescanReport,
+    SweepSelect, TransferKind, TransferRequest, Wallet, WalletBalance, WalletKeys, MAX_OUTPUTS,
 };
 
 /// The ring size required for the `ClsagBulletproofPlus` RCT type this
@@ -98,13 +98,50 @@ pub const RING_LEN: u8 = 16;
 /// spendable - `CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE`, a real consensus rule.
 pub const SPENDABLE_AGE: u64 = 10;
 
-/// The networks this wallet works on, by the name a wallet file records
+/// A network this wallet works on, as a wallet file records it
 /// ([`file::WalletData::network`]). Mainnet isn't one: every key here is
-/// kept in plaintext.
-pub const NETWORKS: [(&str, Network); 2] = [
-    ("stagenet", Network::Stagenet),
-    ("testnet", Network::Testnet),
-];
+/// kept in plaintext, so no wallet for it can be built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WalletNetwork {
+    Stagenet,
+    Testnet,
+}
+
+impl WalletNetwork {
+    pub const ALL: [WalletNetwork; 2] = [WalletNetwork::Stagenet, WalletNetwork::Testnet];
+
+    /// Its name in a wallet file and in messages: `stagenet`, `testnet`.
+    pub fn name(self) -> &'static str {
+        network_name(self.into())
+    }
+}
+
+impl From<WalletNetwork> for Network {
+    fn from(network: WalletNetwork) -> Network {
+        match network {
+            WalletNetwork::Stagenet => Network::Stagenet,
+            WalletNetwork::Testnet => Network::Testnet,
+        }
+    }
+}
+
+/// The network a wallet file names, refusing any this wallet doesn't work
+/// on.
+impl std::str::FromStr for WalletNetwork {
+    type Err = WalletError;
+
+    fn from_str(name: &str) -> Result<Self, WalletError> {
+        WalletNetwork::ALL
+            .into_iter()
+            .find(|network| network.name() == name)
+            .ok_or_else(|| {
+                WalletError::Invalid(format!(
+                    "{name} isn't a network this wallet works on - one of {:?}",
+                    WalletNetwork::ALL.map(WalletNetwork::name)
+                ))
+            })
+    }
+}
 
 /// `network`'s name in a wallet file and in messages: `stagenet`,
 /// `testnet` (and `mainnet`, which no wallet file may name).
@@ -114,21 +151,6 @@ pub fn network_name(network: Network) -> &'static str {
         Network::Stagenet => "stagenet",
         Network::Testnet => "testnet",
     }
-}
-
-/// The network a wallet file names, refusing any this wallet doesn't work
-/// on (see [`NETWORKS`]).
-pub fn parse_network(name: &str) -> Result<Network, WalletError> {
-    NETWORKS
-        .iter()
-        .find(|(known, _)| *known == name)
-        .map(|(_, network)| *network)
-        .ok_or_else(|| {
-            WalletError::Invalid(format!(
-                "{name} isn't a network this wallet works on - one of {:?}",
-                NETWORKS.map(|(known, _)| known)
-            ))
-        })
 }
 
 /// How to fund a wallet on `network` that has run out, for
@@ -350,7 +372,7 @@ pub struct WalletCredentials {
 pub struct WalletCtx {
     /// The network the wallets are on. A wallet file for another network
     /// is refused ([`ResolvedWallet::open`]).
-    pub network: Network,
+    pub network: WalletNetwork,
     /// Nodes to use, in order of preference. A node that can't be
     /// reached (public nodes rate-limit, and one busy address - an e2e
     /// test's own engine talking to the same node - is enough to have
@@ -434,7 +456,7 @@ impl Default for WalletCtx {
     /// The standard layout every real e2e suite in this repo already uses -
     /// see `e2e/README.md`.
     fn default() -> Self {
-        Self::for_network(Network::Stagenet)
+        Self::for_network(WalletNetwork::Stagenet)
     }
 }
 
@@ -443,12 +465,12 @@ impl WalletCtx {
     /// default nodes, the committed decoy snapshot where there is one
     /// (stagenet's), and the wallet directory [`WALLET_DIR_VAR`] names, if
     /// any.
-    pub fn for_network(network: Network) -> Self {
+    pub fn for_network(network: WalletNetwork) -> Self {
         let (nodes, decoy_distribution_path) = match network {
-            Network::Testnet => (DEFAULT_TESTNET_NODES, None),
+            WalletNetwork::Testnet => (DEFAULT_TESTNET_NODES, None),
             // Three community stagenet nodes on separate machines, so one
             // rate-limiting us doesn't block the others.
-            _ => (
+            WalletNetwork::Stagenet => (
                 DEFAULT_STAGENET_NODES,
                 Some(e2e_path!("stagenet-decoy-distribution.json").to_string()),
             ),
@@ -486,7 +508,7 @@ pub struct ResolvedWallet {
     pub address: String,
     pub private_spend_key_hex: String,
     pub private_view_key_hex: String,
-    pub network: Network,
+    pub network: WalletNetwork,
     /// See [`WalletCtx::node_urls`].
     pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
@@ -520,13 +542,13 @@ impl ResolvedWallet {
     /// refusing it unless it's for `ctx`'s network.
     pub fn open(ctx: &WalletCtx, path: impl AsRef<Path>) -> Result<Self, WalletError> {
         let file = WalletFile::load(path.as_ref())?;
-        let network = file.data.network()?;
+        let network = file.data.network;
         if network != ctx.network {
             return Err(WalletError::WalletFile(format!(
                 "{} is a {} wallet, not {}",
                 path.as_ref().display(),
-                network_name(network),
-                network_name(ctx.network)
+                network.name(),
+                ctx.network.name()
             )));
         }
         Ok(ResolvedWallet {
@@ -596,7 +618,7 @@ impl ResolvedWallet {
         assert!(
             !self.node_urls.is_empty(),
             "no {} node configured",
-            network_name(self.network)
+            self.network.name()
         );
         let mut last_error = None;
         let mut connected = None;
@@ -612,7 +634,7 @@ impl ResolvedWallet {
                 }
                 Err(source) => {
                     let error = WalletError::DaemonUnreachable {
-                        network: self.network,
+                        network: self.network.into(),
                         url: node_url,
                         source,
                     };
@@ -1077,7 +1099,7 @@ mod tests {
     fn temp_wallet(test: &str, name: &str) -> (PathBuf, WalletData) {
         let dir = std::env::temp_dir().join(format!("cli-wallet-{test}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let data = WalletData::new(Network::Stagenet, fixture_wallet(name));
+        let data = WalletData::new(WalletNetwork::Stagenet, fixture_wallet(name));
         let path = dir.join(format!("{name}.db"));
         WalletFile::create(&path, data.clone()).unwrap();
         (path, data)
@@ -1302,7 +1324,7 @@ mod tests {
 
     #[test]
     fn seeds_restore_the_keys_they_came_from() {
-        for (_, network) in NETWORKS {
+        for network in WalletNetwork::ALL.map(Network::from) {
             let generated = generate_credentials(network, "English").unwrap();
             let phrase = generated.mnemonic.clone().unwrap();
             assert_eq!(phrase.split_whitespace().count(), 25);
@@ -1356,14 +1378,17 @@ mod tests {
         let path = dir.join("t.db");
         WalletFile::create(
             &path,
-            WalletData::new(Network::Testnet, credentials.clone()),
+            WalletData::new(WalletNetwork::Testnet, credentials.clone()),
         )
         .unwrap();
-        assert_eq!(WalletFile::load(&path).unwrap().data.network, "testnet");
+        assert_eq!(
+            WalletFile::load(&path).unwrap().data.network,
+            WalletNetwork::Testnet
+        );
 
-        let ctx = WalletCtx::for_network(Network::Testnet);
+        let ctx = WalletCtx::for_network(WalletNetwork::Testnet);
         let resolved = ResolvedWallet::open(&ctx, &path).unwrap();
-        assert_eq!(resolved.network, Network::Testnet);
+        assert_eq!(resolved.network, WalletNetwork::Testnet);
         assert!(resolved.node_urls.iter().all(|url| url.ends_with(":28089")));
         assert_eq!(resolved.decoy_distribution_path, None);
         let keys = resolved.keys().unwrap();
@@ -1397,32 +1422,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(stagenet_path.parent().unwrap());
     }
 
-    /// Every key here is plaintext, so a mainnet wallet is never written,
-    /// nor one for a network nobody's heard of; the file keeps what it had.
+    /// Every key here is plaintext, so no wallet names mainnet, nor a
+    /// network nobody's heard of (the schema refuses one written by hand:
+    /// `store`'s `the_schema_refuses_mainnet`).
     #[test]
-    fn a_wallet_file_for_mainnet_or_an_unknown_network_is_refused() {
-        let (path, data) = temp_wallet("mainnet-refused", "spender");
+    fn a_wallet_network_is_never_mainnet_or_an_unknown_one() {
         for network in ["mainnet", "regtest"] {
-            let mut file = WalletFile::load(&path).unwrap();
-            file.data.network = network.to_string();
-            let error = file.save().unwrap_err();
+            let error = network.parse::<WalletNetwork>().unwrap_err();
             assert!(
                 error
                     .to_string()
                     .contains(&format!("{network} isn't a network this wallet works on")),
                 "{error}"
             );
-            assert_eq!(WalletFile::load(&path).unwrap().data.network, data.network);
-
-            let mut data = data.clone();
-            data.network = network.to_string();
-            let other = path.with_file_name(format!("{network}.db"));
-            assert!(WalletFile::create(&other, data).is_err());
-            assert!(!other.exists(), "a refused create leaves no file");
+        }
+        for network in WalletNetwork::ALL {
+            assert_eq!(network.name().parse::<WalletNetwork>().unwrap(), network);
         }
         assert_eq!(network_name(Network::Mainnet), "mainnet");
-        assert!(parse_network("mainnet").is_err());
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

@@ -15,15 +15,14 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::meta::WalletMeta;
-use crate::{network_name, parse_network, Network, WalletCredentials, WalletError};
+use crate::{WalletCredentials, WalletError, WalletNetwork};
 
 /// Everything one wallet file holds, read whole into memory. Its `Debug`
 /// leaves out the private keys and the mnemonic.
 #[derive(Clone, PartialEq)]
 pub struct WalletData {
-    /// `stagenet` or `testnet` (see [`crate::NETWORKS`]): which network the
-    /// keys derive addresses for - [`Self::network`] reads it.
-    pub network: String,
+    /// Which network the keys derive addresses for.
+    pub network: WalletNetwork,
     pub address: String,
     pub private_spend_key: String,
     pub private_view_key: String,
@@ -112,9 +111,9 @@ pub struct SentDestination {
 impl WalletData {
     /// A fresh wallet file's contents for `credentials`, on `network`: no
     /// outputs yet.
-    pub fn new(network: Network, credentials: WalletCredentials) -> Self {
+    pub fn new(network: WalletNetwork, credentials: WalletCredentials) -> Self {
         WalletData {
-            network: network_name(network).to_string(),
+            network,
             address: credentials.address,
             private_spend_key: credentials.private_spend_key_hex,
             private_view_key: credentials.private_view_key_hex,
@@ -126,11 +125,6 @@ impl WalletData {
             tx_notes: BTreeMap::new(),
             extra: serde_json::Map::new(),
         }
-    }
-
-    /// The network this wallet is on, refusing one it doesn't work on.
-    pub fn network(&self) -> Result<Network, WalletError> {
-        parse_network(&self.network)
     }
 
     /// Adds `txid` to the pending list, unless it's already there.
@@ -160,11 +154,6 @@ impl WalletFile {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, WalletError> {
         let path = path.as_ref();
         let data = crate::store::read(path)?;
-        // Addresses are derived for the recorded network, so it has to be
-        // one this wallet works on (never mainnet).
-        if let Err(e) = data.network() {
-            return Err(WalletError::WalletFile(format!("{}: {e}", path.display())));
-        }
         Ok(WalletFile {
             path: path.to_path_buf(),
             data,
@@ -462,7 +451,7 @@ mod tests {
         let file = WalletFile {
             path: path.clone(),
             data: WalletData::new(
-                Network::Stagenet,
+                WalletNetwork::Stagenet,
                 crate::WalletCredentials {
                     address: "a".into(),
                     private_spend_key_hex: "00".repeat(32),

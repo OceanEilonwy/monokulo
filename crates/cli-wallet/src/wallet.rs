@@ -118,7 +118,7 @@ impl WalletKeys {
         let view_pair = ViewPair::new(public_spend, view_key.clone()).map_err(|_| {
             WalletError::WalletFile("the spend key in the wallet file is torsioned".to_string())
         })?;
-        let network = data.network()?;
+        let network: Network = data.network.into();
         let address = view_pair.legacy_address(network);
         if address.to_string() != data.address {
             return Err(WalletError::WalletFile(
@@ -483,7 +483,7 @@ pub enum TransferKind {
     /// `address`, split over `outputs` outputs.
     Sweep {
         address: String,
-        outputs: usize,
+        outputs: Pieces,
         select: SweepSelect,
     },
     /// `pocketchange`: spend the `inputs` largest spendable outputs and pay
@@ -492,12 +492,50 @@ pub enum TransferKind {
     /// never wait on one output's change to mature. The change output is
     /// one of the pieces, so up to [`MAX_OUTPUTS`] pieces fit in one
     /// transaction.
-    Pocketchange { pieces: usize, inputs: usize },
+    Pocketchange { pieces: Pieces, inputs: usize },
 }
 
 /// The most outputs one Monero transaction can have (change included) -
 /// Bulletproofs+ prove at most this many amounts at once.
 pub const MAX_OUTPUTS: usize = 16;
+
+/// How many outputs a transfer splits what it sends into: a sweep's
+/// `outputs=`, or `pocketchange`'s pieces. Only a count that fits one
+/// transaction can be made, so one that can't is refused before any input
+/// is picked or decoy fetched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pieces(usize);
+
+impl Pieces {
+    /// A sweep's outputs, which its change output sits beside: 1 to
+    /// [`MAX_OUTPUTS`] - 1.
+    pub fn sweep(outputs: usize) -> Result<Self, WalletError> {
+        if (1..MAX_OUTPUTS).contains(&outputs) {
+            Ok(Pieces(outputs))
+        } else {
+            Err(WalletError::Invalid(format!(
+                "a sweep splits into 1 to {} outputs, not {outputs}",
+                MAX_OUTPUTS - 1
+            )))
+        }
+    }
+
+    /// `pocketchange`'s pieces, the change output one of them: 2 to
+    /// [`MAX_OUTPUTS`].
+    pub fn pocketchange(pieces: usize) -> Result<Self, WalletError> {
+        if (2..=MAX_OUTPUTS).contains(&pieces) {
+            Ok(Pieces(pieces))
+        } else {
+            Err(WalletError::Invalid(format!(
+                "pocketchange splits into 2 to {MAX_OUTPUTS} pieces, not {pieces}"
+            )))
+        }
+    }
+
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum SweepSelect {
@@ -910,25 +948,31 @@ impl Wallet {
                     inputs.push(self.with_decoys(decoy_block_number, owned.output).await?);
                 }
                 let total_in: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
-                let pieces = (*outputs).max(1) as u64;
+                let pieces = outputs.get() as u64;
+                // What was left after the fee, when it was too little to
+                // give every output a piconero.
+                let mut too_little = None;
                 settle_fee(|fee| {
-                    let amount = total_in
-                        .checked_sub(fee)
-                        .filter(|amount| *amount >= pieces)?;
+                    let amount = total_in.checked_sub(fee)?;
+                    if amount < pieces {
+                        too_little = Some(amount);
+                        return None;
+                    }
                     let mut payments = vec![(address, amount / pieces); pieces as usize];
                     payments[0].1 += amount % pieces;
                     Some(build(&inputs, payments))
+                })
+                .map_err(|e| match too_little {
+                    Some(amount) => WalletError::Invalid(format!(
+                        "{amount} piconero is left after the fee, too little to split into {pieces} outputs"
+                    )),
+                    None => e,
                 })?
             }
             TransferKind::Pocketchange {
                 pieces,
                 inputs: input_count,
             } => {
-                if !(2..=MAX_OUTPUTS).contains(pieces) {
-                    return Err(WalletError::Invalid(format!(
-                        "pocketchange splits into 2 to {MAX_OUTPUTS} pieces, not {pieces}"
-                    )));
-                }
                 if *input_count == 0 {
                     return Err(WalletError::Invalid(
                         "pocketchange needs at least 1 input".to_string(),
@@ -945,7 +989,7 @@ impl Wallet {
                 }
                 let own_address = self.parse_address(&self.subaddress(request.account, 0))?;
                 let total_in: u64 = inputs.iter().map(|i| i.commitment().amount).sum();
-                let pieces = *pieces as u64;
+                let pieces = pieces.get() as u64;
                 // `pieces - 1` payments to the account's own address; the
                 // change output, also the account's, is the last piece (plus
                 // the division's remainder).
@@ -1148,7 +1192,7 @@ impl Wallet {
     /// usable, same as any other change output.
     pub async fn pocketchange(
         &self,
-        pieces: usize,
+        pieces: Pieces,
         inputs: usize,
     ) -> Result<[u8; 32], WalletError> {
         self.transfer(TransferRequest {

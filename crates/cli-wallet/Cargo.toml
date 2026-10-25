@@ -64,6 +64,8 @@ polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch =
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 reedline = "0.49.0"
+# The seed and spend key prompts read without echo at a terminal.
+rpassword = "7"
 nu-ansi-term = "0.50"
 
 # The CLI restores the default SIGPIPE action, so `wallet-cli
