@@ -315,7 +315,7 @@ mod tests {
                         order_id: &metadata_order,
                         currency: "EUR",
                         amount: "12.34",
-                        piconero_per_unit: shared::xmr_amount::Piconero(1_000_000),
+                        piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000),
                         provider: "fixed",
                         created_at: 1000,
                         base_currency: "EUR",

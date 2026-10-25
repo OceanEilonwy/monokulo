@@ -34,6 +34,7 @@ pub mod http;
 pub mod key_custody;
 pub mod link;
 pub mod loops;
+pub mod monero_tx;
 pub mod network;
 pub mod node_events;
 #[cfg(any(test, feature = "fuzzing"))]
@@ -70,4 +71,4 @@ pub mod work;
 mod zmtp;
 
 /// Seconds since the Unix epoch: the one clock both services share.
-pub use shared::time::now_unix;
+pub use service_runtime::time::now_unix;

@@ -10,8 +10,8 @@
 
 use std::collections::VecDeque;
 
+use engine_protocol::activity::{ActivityPage, Event, Recorded, Tuning};
 use serde::Serialize;
-use shared::activity::{ActivityPage, Event, Recorded, Tuning};
 
 use super::machine::{step, Effect, Mark, State};
 

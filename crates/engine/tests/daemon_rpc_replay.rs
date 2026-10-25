@@ -263,7 +263,7 @@ async fn exercise(client: &RpcDaemonClient, node: &str) {
     let (found, location) = client.find_transaction(KNOWN_TX).await.unwrap().unwrap();
     assert_eq!(location, TxLocation::InBlock(KNOWN_TX_HEIGHT));
     assert_eq!(found.txid, KNOWN_TX);
-    assert!(shared::monero_tx::is_pruned(&found.tx));
+    assert!(engine::monero_tx::is_pruned(&found.tx));
     assert_eq!(ScanTx::of(&found.tx), *known);
     assert!(client.find_transaction(ABSENT_TX).await.unwrap().is_none());
     // Fetched by id: the one the node has, pruned; the other left out.

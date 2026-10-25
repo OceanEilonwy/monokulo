@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use engine_protocol::ids::WebhookId;
 use serde::Deserialize;
-use shared::ids::WebhookId;
 
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};

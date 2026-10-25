@@ -30,10 +30,10 @@ use crate::store::db::Class;
 use crate::store::{Db, Store};
 
 pub use blocks::ScannedBlock;
+use engine_protocol::activity::{Event, UnitProgress, Work};
+pub use engine_protocol::activity::{Tier, TierOutcome, Wait};
 pub use mempool::{fast_pass, FastReport};
 pub use observe::snapshot;
-use shared::activity::{Event, UnitProgress, Work};
-pub use shared::activity::{Tier, TierOutcome, Wait};
 pub use tuning::{ScanTuning, TierShares, TuningError};
 
 /// One value per tier, indexed by [`Tier`].
@@ -427,7 +427,7 @@ async fn run_round_at(
     let (tip, tip_hash, tip_error) = match tip_answer {
         Ok(tip) => (Some(tip.height), tip.hash, None),
         Err(error) => {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("round-height:{:?}", inputs.network),
                 warn,
                 network = ?inputs.network,

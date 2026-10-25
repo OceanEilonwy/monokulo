@@ -46,7 +46,7 @@ fn request(token: &str, method: &str, path: &str, value: &serde_json::Value) -> 
     Request::builder()
         .method(method)
         .uri(path)
-        .header(shared::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
+        .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
         .body(Body::from(value.to_string()))

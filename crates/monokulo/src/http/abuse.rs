@@ -292,7 +292,7 @@ async fn signed_in_identity(state: &AppState, headers: &HeaderMap) -> Option<Cli
 async fn signed_in_session(
     state: &AppState,
     headers: &HeaderMap,
-) -> Option<(crate::db::UserRow, shared::auth::TokenHash)> {
+) -> Option<(crate::db::UserRow, credentials::auth::TokenHash)> {
     headers.get(header::COOKIE)?;
     super::resolve_authed_user(state, headers).await
 }
@@ -323,7 +323,7 @@ async fn guard(
             } else {
                 "browser"
             };
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("client-logs-dropped:{source}"),
                 warn,
                 report.source = source,
@@ -941,7 +941,7 @@ mod tests {
         {
             let db = state.db.lock();
             db.create_user(
-                &shared::ids::UserId::new("u1"),
+                &engine_protocol::ids::UserId::new("u1"),
                 "merchant@example.com",
                 "x",
                 false,
@@ -949,8 +949,8 @@ mod tests {
             )
             .unwrap();
             db.create_session(
-                &shared::auth::RawToken::presented("session-token").hash(),
-                &shared::ids::UserId::new("u1"),
+                &credentials::auth::RawToken::presented("session-token").hash(),
+                &engine_protocol::ids::UserId::new("u1"),
                 crate::now_unix(),
             )
             .unwrap();
@@ -1183,7 +1183,7 @@ mod tests {
         {
             let db = state.db.lock();
             db.create_user(
-                &shared::ids::UserId::new("admin"),
+                &engine_protocol::ids::UserId::new("admin"),
                 "admin@example.com",
                 "x",
                 true,
@@ -1191,7 +1191,7 @@ mod tests {
             )
             .unwrap();
             db.create_user(
-                &shared::ids::UserId::new("merchant"),
+                &engine_protocol::ids::UserId::new("merchant"),
                 "m@example.com",
                 "x",
                 false,
@@ -1199,14 +1199,14 @@ mod tests {
             )
             .unwrap();
             db.create_session(
-                &shared::auth::RawToken::presented("admin-token").hash(),
-                &shared::ids::UserId::new("admin"),
+                &credentials::auth::RawToken::presented("admin-token").hash(),
+                &engine_protocol::ids::UserId::new("admin"),
                 crate::now_unix(),
             )
             .unwrap();
             db.create_session(
-                &shared::auth::RawToken::presented("merchant-token").hash(),
-                &shared::ids::UserId::new("merchant"),
+                &credentials::auth::RawToken::presented("merchant-token").hash(),
+                &engine_protocol::ids::UserId::new("merchant"),
                 crate::now_unix(),
             )
             .unwrap();

@@ -48,7 +48,7 @@ pub fn resolve_currency(db: &Db, input: &str) -> Result<Option<String>, DbError>
 /// order is priced in, asked of the rate providers and recorded as. Only
 /// [`KnownCurrency::resolve`] makes one from what a caller sent, so an
 /// alias (`RMB`, `US$`) or another casing (`xmr`) never reaches a rate
-/// provider or an order's record; `shared::coinmarketcap`'s safety rests
+/// provider or an order's record; `pricing::coinmarketcap`'s safety rests
 /// on that.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KnownCurrency(String);
@@ -177,7 +177,7 @@ pub fn new_store_default(can_price_fiat: bool, accept_language: &str) -> &'stati
 /// minor units): 12 for XMR, 0 for yen-like currencies, 3 or 4 for the few
 /// that use them, and 2 for everything else. Only for showing and typing
 /// amounts; what an order may be priced with is
-/// `shared::exchange_rate::MAX_AMOUNT_DECIMALS` in every currency.
+/// `pricing::exchange_rate::MAX_AMOUNT_DECIMALS` in every currency.
 pub fn minor_units(code: &str) -> u8 {
     const ZERO: &[&str] = &[
         "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG", "RWF", "UGX", "UYI", "VND",
@@ -187,7 +187,7 @@ pub fn minor_units(code: &str) -> u8 {
     const FOUR: &[&str] = &["CLF", "UYW"];
     let is = |list: &[&str]| list.iter().any(|c| c.eq_ignore_ascii_case(code));
     if code.eq_ignore_ascii_case("XMR") {
-        shared::exchange_rate::MAX_AMOUNT_DECIMALS
+        pricing::exchange_rate::MAX_AMOUNT_DECIMALS
     } else if is(ZERO) {
         0
     } else if is(THREE) {

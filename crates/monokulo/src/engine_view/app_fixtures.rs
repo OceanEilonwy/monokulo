@@ -7,12 +7,12 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
-use shared::activity::{
+use engine_protocol::activity::{
     Database, Event, Group, Node, PoolPath, Recorded, Snapshot, StoreGroup, Tier, TierOutcome,
     Transition, Tuning, UnitProgress, Wait, Wake, Work,
 };
-use shared::order_status::OrderStatus;
+use engine_protocol::order_status::OrderStatus;
+use serde_json::{json, Value};
 
 use super::machine::{step, CommitHow, MarkKind, State};
 
@@ -108,7 +108,7 @@ fn slept(woken_by: Wake) -> Event {
 
 fn pool(watched: bool, size: u64, txids: &[&str]) -> Event {
     Event::Snapshot(Box::new(Snapshot {
-        pool: shared::activity::Pool {
+        pool: engine_protocol::activity::Pool {
             watched,
             size,
             txids: txids.iter().map(|&txid| txid.to_owned()).collect(),
@@ -279,7 +279,7 @@ fn states() -> BTreeMap<&'static str, State> {
             "side",
             after([
                 Event::Snapshot(Box::new(Snapshot {
-                    pool: shared::activity::Pool {
+                    pool: engine_protocol::activity::Pool {
                         watched: true,
                         size: 12,
                         txids: vec!["aaaaaaaa".into()],

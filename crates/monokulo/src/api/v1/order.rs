@@ -1,4 +1,4 @@
-use shared::order_status::OrderStatus;
+use engine_protocol::order_status::OrderStatus;
 
 use super::{order_events, orders};
 use crate::api::{self, prelude::*};

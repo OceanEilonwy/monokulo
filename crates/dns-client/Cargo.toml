@@ -1,0 +1,20 @@
+[package]
+name = "dns-client"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "A small iterative DNS client that reads a name's TXT records the moment they are published, for monokulo's verified domains"
+
+[dependencies]
+rand = "0.10.2"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+# `parse` reads other people's name servers' answers: arbitrary bytes
+# must give a message or an error, never a panic.
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

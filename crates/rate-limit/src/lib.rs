@@ -1,7 +1,7 @@
 //! A generic, fixed-window per-key rate limiter, shared so monokulo uses
 //! the same limiter as the engine rather than reimplementing it. The HTTP-specific
 //! parts (axum middleware, which key to extract from a request) stay in
-//! each crate that actually serves HTTP - this module is pure logic with no
+//! each crate that actually serves HTTP - this crate is pure logic with no
 //! HTTP/axum dependency at all.
 //!
 //! Fixed-window counters, not a proper token bucket - simpler, and

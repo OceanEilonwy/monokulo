@@ -134,7 +134,7 @@ impl LiveHub {
         self: &Arc<Self>,
         engine: &EngineClient,
         connection_id: &crate::db::ConnectionId,
-        sk: &shared::auth::RawToken,
+        sk: &credentials::auth::RawToken,
         order_id: &crate::db::OrderId,
     ) -> OrderSubscription {
         let mut stores = self.stores.lock();
@@ -302,7 +302,7 @@ async fn run_upstream(
     hub: std::sync::Weak<LiveHub>,
     engine: EngineClient,
     connection_id: crate::db::ConnectionId,
-    sk: shared::auth::RawToken,
+    sk: credentials::auth::RawToken,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
@@ -730,15 +730,15 @@ mod tests {
         let engine = EngineClient::for_tests("http://127.0.0.1:9");
         let a = hub.subscribe(
             &engine,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
-            &shared::ids::OrderId::new("o1"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &credentials::auth::RawToken::presented("sk_x"),
+            &engine_protocol::ids::OrderId::new("o1"),
         );
         let b = hub.subscribe(
             &engine,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
-            &shared::ids::OrderId::new("o2"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &credentials::auth::RawToken::presented("sk_x"),
+            &engine_protocol::ids::OrderId::new("o2"),
         );
         assert_eq!(hub.upstream_count(), 1);
         drop(a);
@@ -753,21 +753,21 @@ mod tests {
         let engine = EngineClient::for_tests("http://127.0.0.1:9");
         let mut a = hub.subscribe(
             &engine,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
-            &shared::ids::OrderId::new("o1"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &credentials::auth::RawToken::presented("sk_x"),
+            &engine_protocol::ids::OrderId::new("o1"),
         );
         let mut b = hub.subscribe(
             &engine,
-            &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
-            &shared::ids::OrderId::new("o2"),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            &credentials::auth::RawToken::presented("sk_x"),
+            &engine_protocol::ids::OrderId::new("o2"),
         );
         a.changed.mark_unchanged();
         b.changed.mark_unchanged();
         hub.wake(
-            &shared::ids::ConnectionId::new("conn"),
-            Some(&shared::ids::OrderId::new("o1")),
+            &engine_protocol::ids::ConnectionId::new("conn"),
+            Some(&engine_protocol::ids::OrderId::new("o1")),
         );
         assert!(a.changed.has_changed().unwrap());
         assert!(!b.changed.has_changed().unwrap());
@@ -779,10 +779,10 @@ mod tests {
     #[test]
     fn order_changes_reach_only_the_named_order_and_are_released_with_their_watchers() {
         let changes = OrderChanges::default();
-        let store = shared::ids::ConnectionId::new("conn");
+        let store = engine_protocol::ids::ConnectionId::new("conn");
         let (o1, o2) = (
-            shared::ids::OrderId::new("o1"),
-            shared::ids::OrderId::new("o2"),
+            engine_protocol::ids::OrderId::new("o1"),
+            engine_protocol::ids::OrderId::new("o2"),
         );
         changes.notify(&store, &o1);
         assert!(changes.stores.lock().is_empty());
@@ -790,7 +790,7 @@ mod tests {
         let mut a = changes.subscribe(&store, &o1);
         let mut a_again = changes.subscribe(&store, &o1);
         let b = changes.subscribe(&store, &o2);
-        let elsewhere = changes.subscribe(&shared::ids::ConnectionId::new("other"), &o1);
+        let elsewhere = changes.subscribe(&engine_protocol::ids::ConnectionId::new("other"), &o1);
         changes.notify(&store, &o1);
         assert!(a.changed.has_changed().unwrap());
         assert!(a_again.changed.has_changed().unwrap());

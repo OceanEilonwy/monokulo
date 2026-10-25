@@ -261,7 +261,7 @@ pub async fn save_profile(
 /// is long enough and typed the same twice; else why not.
 async fn new_password_hash(user: &UserRow, form: &ProfileForm) -> Result<String, String> {
     let (current, stored) = (form.current_password.clone(), user.password_hash.clone());
-    let current_ok = shared::password::run(move |hasher| hasher.verify(&current, &stored))
+    let current_ok = credentials::password::run(move |hasher| hasher.verify(&current, &stored))
         .await
         .unwrap_or(false);
     if !current_ok {
@@ -276,7 +276,7 @@ async fn new_password_hash(user: &UserRow, form: &ProfileForm) -> Result<String,
         return Err("The new password and its confirmation don't match.".to_string());
     }
     let new = form.new_password.clone();
-    match shared::password::run(move |hasher| hasher.hash(&new)).await {
+    match credentials::password::run(move |hasher| hasher.hash(&new)).await {
         Some(Ok(hash)) => Ok(hash),
         _ => Err("Something went wrong. Please try again.".to_string()),
     }

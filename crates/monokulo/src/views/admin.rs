@@ -766,9 +766,8 @@ impl Group {
             SettingOwner::Engine => match prefix {
                 // Each network's nodes and its proof-of-work switch, in the
                 // network's own card.
-                "monero_node" | "proof_of_work" => {
-                    shared::network::parse_network(rest).map_or(Group::AllNodes, Group::Network)
-                }
+                "monero_node" | "proof_of_work" => engine_protocol::network::parse_network(rest)
+                    .map_or(Group::AllNodes, Group::Network),
                 // How much memory a scan may use is about the machine, not
                 // about payments.
                 "payment" if rest == "scan_chunk_memory_budget_mb" => Group::Server(owner),
@@ -817,7 +816,7 @@ impl Group {
             Group::Signup => "Sign-up".into(),
             Group::PublicAddress => "Public addresses".into(),
             Group::EngineConnection => "Engine connection".into(),
-            Group::Network(network) => capitalized(shared::network::network_str(network)),
+            Group::Network(network) => capitalized(engine_protocol::network::network_str(network)),
             Group::AllNodes => "Every node".into(),
             Group::Orders => "Orders".into(),
             Group::Chain => "Watching the chain".into(),
@@ -883,7 +882,11 @@ impl std::fmt::Display for Group {
             Group::PublicAddress => f.write_str("public-address"),
             Group::EngineConnection => f.write_str("engine"),
             Group::Network(network) => {
-                write!(f, "network-{}", shared::network::network_str(*network))
+                write!(
+                    f,
+                    "network-{}",
+                    engine_protocol::network::network_str(*network)
+                )
             }
             Group::AllNodes => f.write_str("nodes-all"),
             Group::Orders => f.write_str("orders"),
@@ -1509,7 +1512,9 @@ fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<Group> {
         groups.extend(
             data.engine_networks
                 .iter()
-                .filter_map(|network| shared::network::parse_network(&network.network).ok())
+                .filter_map(|network| {
+                    engine_protocol::network::parse_network(&network.network).ok()
+                })
                 .map(Group::Network),
         );
     }
@@ -2001,7 +2006,7 @@ fn tab_cards(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
         Group::Network(n) => data
             .engine_networks
             .iter()
-            .find(|network| network.network == shared::network::network_str(n)),
+            .find(|network| network.network == engine_protocol::network::network_str(n)),
         _ => None,
     };
     html! {

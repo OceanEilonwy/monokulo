@@ -289,7 +289,7 @@ async fn fetch_engine_settings(
     networks.sort_by_key(|n| {
         admin_nodes::NETWORKS
             .iter()
-            .position(|known| shared::network::network_str(*known) == n.network)
+            .position(|known| engine_protocol::network::network_str(*known) == n.network)
             .unwrap_or(usize::MAX)
     });
     Ok(EngineSettings {
@@ -475,7 +475,7 @@ async fn build_view_model(
     // with the engine's word on a network at the top of its block.
     if let Some(nodes) = &nodes {
         for network in &mut view.engine_networks {
-            let rows = shared::network::parse_network(&network.network)
+            let rows = engine_protocol::network::parse_network(&network.network)
                 .ok()
                 .and_then(|n| nodes.rows(n));
             if let Some(rows) = rows {
@@ -549,10 +549,9 @@ fn attach_node_status(
             else {
                 continue;
             };
-            let wrong_network = node
-                .network
-                .clone()
-                .filter(|on| shared::network::parse_network(on).is_ok() && *on != network.network);
+            let wrong_network = node.network.clone().filter(|on| {
+                engine_protocol::network::parse_network(on).is_ok() && *on != network.network
+            });
             row.status = Some(NodeStatusView {
                 height: node.height,
                 error: node.error.clone(),
@@ -703,7 +702,7 @@ fn split_tab(
                 tab.bad_networks.push(*network);
             } else {
                 tab.engine.monero_node.insert(
-                    shared::network::network_str(*network).to_string(),
+                    engine_protocol::network::network_str(*network).to_string(),
                     admin_nodes::rows_to_setting(rows),
                 );
             }
@@ -879,10 +878,10 @@ async fn check_coinmarketcap_key(
                 .find(|view| view.key == base_key)
                 .map(|view| view.value)
         })?;
-    let key = shared::coinmarketcap::ApiKey::new(key);
-    match shared::coinmarketcap::check_api_key(base_url.trim(), &key).await {
-        shared::coinmarketcap::KeyCheck::Accepted => None,
-        shared::coinmarketcap::KeyCheck::Rejected { status, message } => {
+    let key = pricing::coinmarketcap::ApiKey::new(key);
+    match pricing::coinmarketcap::check_api_key(base_url.trim(), &key).await {
+        pricing::coinmarketcap::KeyCheck::Accepted => None,
+        pricing::coinmarketcap::KeyCheck::Rejected { status, message } => {
             tracing::warn!(status, reason = %message, "CoinMarketCap refused the API key entered on the admin settings page");
             let why = format!("CoinMarketCap refused this key (HTTP {status}: {message}). Check it on your CoinMarketCap developer dashboard.");
             Some(Refusal {
@@ -890,7 +889,7 @@ async fn check_coinmarketcap_key(
                 message: why,
             })
         }
-        shared::coinmarketcap::KeyCheck::Unchecked(reason) => {
+        pricing::coinmarketcap::KeyCheck::Unchecked(reason) => {
             tracing::warn!(reason = %reason, "the new CoinMarketCap API key couldn't be checked now, so it is saved unchecked");
             None
         }
@@ -2116,7 +2115,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_settings_page_is_unreachable_without_a_session_at_all() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let response = router
             .oneshot(
@@ -2135,7 +2134,7 @@ mod tests {
     /// isn't the admin account gets `403`, not a redirect or a `401`.
     #[tokio::test]
     async fn a_non_admin_session_is_forbidden_from_the_settings_page() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
 
         let signup = router
@@ -2186,7 +2185,7 @@ mod tests {
     /// every one individually confirmed to have taken effect.
     #[tokio::test]
     async fn every_monokulo_setting_on_the_admin_page_saves_correctly() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -2467,7 +2466,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_signup_mode_applies_to_the_next_signup() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         // The sign-up form: a `302` on to setup once the account is made.
@@ -2538,7 +2537,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_public_uri_applies_to_the_next_plugin_connection() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let confirm = "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
@@ -2647,7 +2646,7 @@ mod tests {
         for never in [
             r#"name="engine.token""#,
             r#"name="clear:engine.token""#,
-            shared::auth::TEST_ENGINE_TOKEN,
+            credentials::auth::TEST_ENGINE_TOKEN,
         ] {
             assert!(!page.contains(never), "{never}: {page}");
         }
@@ -2821,7 +2820,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_secret_is_shown_locked_and_a_form_sending_one_is_refused() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let settings = state.settings.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -2870,7 +2869,7 @@ mod tests {
     /// is refused with a message naming the setting and what it needs.
     #[tokio::test]
     async fn an_operators_typical_mistakes_are_each_refused_with_what_the_setting_needs() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         for (key, value, expected) in [
@@ -3020,7 +3019,7 @@ mod tests {
 
         // An invalid monokulo setting is rejected and nothing is saved.
         {
-            let state = test_app_state_over_http(shared::unreachable::address()).await;
+            let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
             let router = build_router(state);
             let cookie = admin_session_cookie(&router).await;
 
@@ -3187,8 +3186,8 @@ mod tests {
             let direct: serde_json::Value = reqwest::Client::new()
                 .post(format!("http://{}/api/v1/admin/settings", engine.addr))
                 .header(
-                    shared::auth::ENGINE_TOKEN_HEADER,
-                    shared::auth::TEST_ENGINE_TOKEN,
+                    credentials::auth::ENGINE_TOKEN_HEADER,
+                    credentials::auth::TEST_ENGINE_TOKEN,
                 )
                 .json(&serde_json::json!({ "scalars": { "payment.confirmations_required": "-1" } }))
                 .send()
@@ -3276,7 +3275,7 @@ mod tests {
     /// settings in effect is saved; sent again unchanged, nothing is.
     #[tokio::test]
     async fn a_save_saves_only_the_cards_whose_settings_changed() {
-        let state = test_app_state_over_http(shared::unreachable::address()).await;
+        let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
         let db = state.db.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
@@ -3475,7 +3474,7 @@ mod tests {
         // sent anything to the engine would be refused: it goes through, and
         // back to its own tab.
         {
-            let state = test_app_state_over_http(shared::unreachable::address()).await;
+            let state = test_app_state_over_http(service_runtime::unreachable::address()).await;
             let settings = state.settings.clone();
             let router = build_router(state);
             let cookie = admin_session_cookie(&router).await;
@@ -3593,8 +3592,8 @@ mod tests {
         // Addresses that hang up on every request, rather than closed ports,
         // which Windows takes two seconds to refuse each time.
         let (first_node, second_node) = (
-            shared::unreachable::address().to_string(),
-            shared::unreachable::address().to_string(),
+            service_runtime::unreachable::address().to_string(),
+            service_runtime::unreachable::address().to_string(),
         );
         // A store on stagenet, which needs a stagenet node saved first.
         let first = post_settings(

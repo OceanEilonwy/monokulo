@@ -20,8 +20,8 @@ use crate::scanner::tests::{
 };
 use crate::status::OrderStatus;
 use crate::store::SharedStore;
-use shared::activity::{Group, PoolPath};
-use shared::order_event::OrderEventKind;
+use engine_protocol::activity::{Group, PoolPath};
+use engine_protocol::order_event::OrderEventKind;
 
 /// A fake node that counts the block-hash lookups made against it and the
 /// blocks it sends, and answers as whichever node a test says it is.
@@ -292,7 +292,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
             .unwrap()
             .len(),
         1,
@@ -301,7 +301,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Unconfirmed,
         "and its status recomputed"
@@ -384,7 +384,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     // The order's payment, 31 blocks deep: settled as soon as it's recomputed.
     store
         .record_payment_match(
-            &shared::ids::OrderId::new(order.to_string()),
+            &engine_protocol::ids::OrderId::new(order.to_string()),
             &crate::daemon::fake::tx_id_hex(&fixture_tx()),
             0,
             1,
@@ -401,7 +401,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
             .2;
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(other.to_string()),
+                &engine_protocol::ids::OrderId::new(other.to_string()),
                 &format!("{i:064x}"),
                 0,
                 1,
@@ -440,7 +440,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     assert_ne!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid,
         "no settlement while a reorg is open"
@@ -478,7 +478,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
             .is_none()
             && order_status(
                 &store,
-                &shared::ids::OrderId::new(order.as_str().to_owned()),
+                &engine_protocol::ids::OrderId::new(order.as_str().to_owned()),
             ) == OrderStatus::Paid
         {
             break;
@@ -495,7 +495,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid
     );
@@ -668,7 +668,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
             assert!(
                 store
                     .lock()
-                    .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                    .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
                     .unwrap()
                     .is_empty(),
                 "no payment before the block commits"
@@ -677,7 +677,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
                 .lock()
                 .block_checkpoint(
                     monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(tenant.to_string()),
+                    &engine_protocol::ids::TenantId::new(tenant.to_string()),
                 )
                 .unwrap()
                 .expect("progress is checkpointed");
@@ -697,7 +697,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     assert_eq!(cursor_of(&store, tenant.as_str()), Some(height));
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1);
     assert_eq!(payments[0].block_height, Some(height as i64));
@@ -706,7 +706,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
             .lock()
             .block_checkpoint(
                 monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant.to_string())
+                &engine_protocol::ids::TenantId::new(tenant.to_string())
             )
             .unwrap(),
         None,
@@ -883,7 +883,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
     let stuck = "ab".repeat(32);
     store
         .record_payment_match(
-            &shared::ids::OrderId::new(candidate_order.to_string()),
+            &engine_protocol::ids::OrderId::new(candidate_order.to_string()),
             &stuck,
             0,
             1,
@@ -939,7 +939,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(open_order.to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(open_order.to_string()))
             .unwrap()
             .len(),
         1,
@@ -948,14 +948,14 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(open_order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(open_order.as_str().to_owned())
         ),
         OrderStatus::Unconfirmed
     );
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(overdue_order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(overdue_order.as_str().to_owned())
         ),
         OrderStatus::Pending,
         "its expiry waits for the reorg"
@@ -1015,7 +1015,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
             .unwrap()[0]
             .block_height,
         Some(35)
@@ -1070,7 +1070,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
         .is_none());
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1, "recorded once");
     assert_eq!(
@@ -1171,7 +1171,7 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
             .unwrap()[0]
             .block_height,
         Some(3)
@@ -1188,14 +1188,14 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     }
     let payment = &store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
         .unwrap()[0];
     assert_eq!(payment.block_height, None, "not in any block any more");
     assert_eq!(payment.voided_at, None, "and not voided without proof");
     assert_ne!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid,
         "no confirmations on a discarded block"
@@ -1430,7 +1430,7 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
     );
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
         .unwrap();
     assert!(
         payments.iter().all(|p| p.block_height.is_none()),
@@ -1439,7 +1439,7 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
     assert_ne!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Paid
     );
@@ -1586,7 +1586,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
             .2;
         store
             .record_payment_match(
-                &shared::ids::OrderId::new(order.to_string()),
+                &engine_protocol::ids::OrderId::new(order.to_string()),
                 &format!("{i:064x}"),
                 0,
                 1,
@@ -1665,7 +1665,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(healthy.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(healthy.as_str().to_owned())
         ),
         OrderStatus::Expired
     );
@@ -1675,13 +1675,13 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
     round().await;
     assert!(state
         .order_backoff
-        .is_waiting(&shared::ids::OrderId::new(poisoned.to_string())));
+        .is_waiting(&engine_protocol::ids::OrderId::new(poisoned.to_string())));
     let later = round().await;
     assert!(later.error.is_none(), "{:?}", later.error);
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(poisoned.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(poisoned.as_str().to_owned())
         ),
         OrderStatus::Pending
     );
@@ -1693,7 +1693,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
 async fn backoff_forgets_keys_that_stopped_failing() {
     let backoff = Backoff::<crate::store::TenantId>::default();
     for _ in 0..4 {
-        backoff.failed(&shared::ids::TenantId::new("gone"));
+        backoff.failed(&engine_protocol::ids::TenantId::new("gone"));
     }
     assert_eq!(backoff.waiting(), vec!["gone".to_owned()]);
     tokio::time::advance(Duration::from_mins(61)).await;
@@ -1915,7 +1915,7 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     assert_eq!(
         order_status(
             &store,
-            &shared::ids::OrderId::new(order.as_str().to_owned())
+            &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
         ),
         OrderStatus::Unconfirmed
     );
@@ -2199,7 +2199,7 @@ const DOUBLE_SPENT: &Steps = &[
         let payments = story
             .store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(story.order.to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(story.order.to_string()))
             .unwrap();
         for payment in payments {
             for image in serde_json::from_str::<Vec<String>>(&payment.key_images_json).unwrap() {
@@ -2969,7 +2969,7 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
     );
     let payment = &store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap()[0];
     assert_eq!(
         (payment.block_height, payment.voided_at),
@@ -3018,7 +3018,7 @@ async fn a_candidate_deleted_mid_page_is_skipped() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()[0]
             .block_height,
         Some(9)
@@ -3036,7 +3036,7 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
     store
         .lock()
         .void_payment(
-            &shared::ids::OrderId::new(orders[0].to_string()),
+            &engine_protocol::ids::OrderId::new(orders[0].to_string()),
             &txid,
             0,
             crate::now_unix(),
@@ -3050,7 +3050,11 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
         hook: Box::new(|txid| {
             store
                 .lock()
-                .unvoid_payment(&shared::ids::OrderId::new(order.to_string()), txid, 0)
+                .unvoid_payment(
+                    &engine_protocol::ids::OrderId::new(order.to_string()),
+                    txid,
+                    0,
+                )
                 .unwrap();
         }),
     };
@@ -3065,7 +3069,7 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
     run_job(&chain).await;
     let payment = &store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap()[0];
     assert_eq!((payment.block_height, payment.voided_at), (Some(10), None));
 }
@@ -3271,7 +3275,7 @@ async fn a_payment_deep_in_a_big_block_is_found_in_one_go_and_a_unit_at_a_time()
         }
         let payments = store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(
@@ -3312,7 +3316,7 @@ async fn a_payment_whose_amount_cannot_be_read_does_not_stop_the_store_at_its_bl
     assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(22));
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1, "only the payment that can be read");
     assert_eq!(
@@ -3347,7 +3351,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
         .lock()
         .block_checkpoint(
             monero::Network::Mainnet,
-            &shared::ids::TenantId::new(tenant.to_string()),
+            &engine_protocol::ids::TenantId::new(tenant.to_string()),
         )
         .unwrap()
         .expect("checkpointed partway");
@@ -3370,7 +3374,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     assert_eq!(cursor_of(&store, tenant.as_str()), Some(21));
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1, "once, not once per version of the block");
     assert_eq!(payments[0].block_height, Some(21));
@@ -3387,7 +3391,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
             .lock()
             .block_checkpoint(
                 monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenant.to_string())
+                &engine_protocol::ids::TenantId::new(tenant.to_string())
             )
             .unwrap(),
         None
@@ -3481,7 +3485,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
                 .lock()
                 .block_checkpoint(
                     monero::Network::Mainnet,
-                    &shared::ids::TenantId::new(id.to_string()),
+                    &engine_protocol::ids::TenantId::new(id.to_string()),
                 )
                 .unwrap()
                 .is_some()
@@ -3521,7 +3525,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
                 .unwrap()
                 .len(),
             1
@@ -3626,7 +3630,7 @@ async fn catching_up_below_the_recorded_history_records_nothing_for_the_network(
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()[0]
             .block_height,
         Some(12)
@@ -3729,7 +3733,7 @@ async fn pool_transactions_gone_before_their_bodies_came_are_moved_past() {
     assert!(report.error.is_none(), "{:?}", report.error);
     assert!(store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap()
         .is_empty());
 }
@@ -3762,7 +3766,7 @@ async fn a_fast_pass_that_cannot_load_windows_tries_again_next_pass() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()
             .len(),
         1
@@ -3888,12 +3892,12 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
 
     // Past its free retries, the store waits: the rotation doesn't scan the
     // pool for it.
-    state
-        .backoff
-        .failed(&shared::ids::TenantId::new(tenants[0].0.to_string()));
-    state
-        .backoff
-        .failed(&shared::ids::TenantId::new(tenants[0].0.to_string()));
+    state.backoff.failed(&engine_protocol::ids::TenantId::new(
+        tenants[0].0.to_string(),
+    ));
+    state.backoff.failed(&engine_protocol::ids::TenantId::new(
+        tenants[0].0.to_string(),
+    ));
     let before = custody.attempts.lock().get(&handle).copied();
     run_round(
         &state,
@@ -3965,7 +3969,7 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
         assert_eq!(
             store
                 .lock()
-                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
                 .unwrap()
                 .len(),
             1,
@@ -4039,7 +4043,7 @@ async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
         assert_eq!(logs.count(message), 1, "{}", logs.text());
         let payment = &store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()[0];
         assert_eq!((payment.block_height, payment.voided_at), (None, None));
         assert_eq!(position(), before, "the rotation waits at it");
@@ -4131,7 +4135,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()[0]
             .block_height,
         Some(height as i64)
@@ -4139,7 +4143,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[1].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[1].to_string()))
             .unwrap()[0]
             .block_height,
         None
@@ -4158,7 +4162,7 @@ fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8
         let txid = format!("{i:02x}").repeat(32);
         let image = format!("{:02x}", 0x80 + i).repeat(32);
         s.record_payment_match(
-            &shared::ids::OrderId::new(order.to_string()),
+            &engine_protocol::ids::OrderId::new(order.to_string()),
             &txid,
             0,
             1,
@@ -4168,10 +4172,15 @@ fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8
             None,
         )
         .unwrap();
-        s.void_payment(&shared::ids::OrderId::new(order.to_string()), &txid, 0, now)
-            .unwrap();
+        s.void_payment(
+            &engine_protocol::ids::OrderId::new(order.to_string()),
+            &txid,
+            0,
+            now,
+        )
+        .unwrap();
     }
-    s.mark_double_spend_detected(&shared::ids::OrderId::new(order.to_string()), now)
+    s.mark_double_spend_detected(&engine_protocol::ids::OrderId::new(order.to_string()), now)
         .unwrap();
 }
 
@@ -4204,7 +4213,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
     let voided = || {
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()
             .iter()
             .filter(|p| p.voided_at.is_some())
@@ -4248,7 +4257,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
         ))
         .unwrap();
         s.void_payment(
-            &shared::ids::OrderId::new(orders[0].to_string()),
+            &engine_protocol::ids::OrderId::new(orders[0].to_string()),
             &"00".repeat(32),
             0,
             crate::now_unix(),
@@ -4308,7 +4317,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         .unwrap();
         let payment = &store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()[0];
         assert_eq!(payment.voided_at, None, "fault {fault}");
         let reversed = store
@@ -4337,7 +4346,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
         let s = store.lock();
         for i in 0..70 {
             let index = s
-                .allocate_minor_index(&shared::ids::TenantId::new(tenant.to_string()))
+                .allocate_minor_index(&engine_protocol::ids::TenantId::new(tenant.to_string()))
                 .unwrap();
             let order = s
                 .create_order(&crate::store::NewOrder {
@@ -4374,7 +4383,7 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
         assert_eq!(
             order_status(
                 &store,
-                &shared::ids::OrderId::new(order.as_str().to_owned())
+                &engine_protocol::ids::OrderId::new(order.as_str().to_owned())
             ),
             OrderStatus::Unconfirmed,
             "{order}"
@@ -4405,7 +4414,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()
             .len(),
         1
@@ -4438,7 +4447,7 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[1].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[1].to_string()))
             .unwrap()
             .len(),
         1,
@@ -4477,7 +4486,7 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()
             .len(),
         1
@@ -4564,7 +4573,7 @@ async fn commit_a_checkpointed_block_with_a_fault(fault: usize) -> bool {
         .lock()
         .block_checkpoint(
             monero::Network::Mainnet,
-            &shared::ids::TenantId::new(tenants[0].0.to_string())
+            &engine_protocol::ids::TenantId::new(tenants[0].0.to_string())
         )
         .unwrap()
         .is_some());
@@ -4591,7 +4600,7 @@ async fn commit_a_checkpointed_block_with_a_fault(fault: usize) -> bool {
     }
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1, "fault {fault}");
     assert_eq!(payments[0].block_height, Some(21), "fault {fault}");
@@ -4651,7 +4660,7 @@ async fn work_a_reorg_job_with_a_fault(fault: usize) -> bool {
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()[0]
             .block_height,
         Some(10),
@@ -4691,7 +4700,7 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
     // Now in its processing phase: put the candidate well into the future.
     let id = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap()[0]
         .id;
     for _ in 0..6 {
@@ -4726,7 +4735,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
         let s = store.lock();
         for i in 0..200 {
             let index = s
-                .allocate_minor_index(&shared::ids::TenantId::new(tenant.to_string()))
+                .allocate_minor_index(&engine_protocol::ids::TenantId::new(tenant.to_string()))
                 .unwrap();
             let order = s
                 .create_order(&crate::store::NewOrder {
@@ -5033,7 +5042,7 @@ async fn a_slow_link_halves_its_requests_until_they_arrive_and_the_scan_complete
     }
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1);
     assert_eq!(payments[0].block_height, Some(tip as i64));
@@ -5596,7 +5605,7 @@ async fn a_200_mb_block_is_scanned_in_pages_and_its_payment_found() {
     let payments = || {
         store
             .lock()
-            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
             .unwrap()
     };
     let staged = || {
@@ -5697,7 +5706,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
         .lock()
         .block_checkpoint(
             monero::Network::Mainnet,
-            &shared::ids::TenantId::new(tenants[0].0.to_string()),
+            &engine_protocol::ids::TenantId::new(tenants[0].0.to_string()),
         )
         .unwrap()
         .expect("the pages before the failure are kept");
@@ -5718,7 +5727,7 @@ async fn a_failed_page_keeps_the_pages_before_it() {
     );
     let payments = store
         .lock()
-        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
         .unwrap();
     assert_eq!(payments.len(), 1);
 }
@@ -5933,7 +5942,7 @@ async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
             );
         }
     }
-    let nodes = vec![shared::activity::Node {
+    let nodes = vec![engine_protocol::activity::Node {
         label: "fake".to_owned(),
         active: true,
         cooling_down: false,
@@ -5952,7 +5961,7 @@ async fn a_snapshot_after_the_paid_story_shows_where_it_ended() {
     assert_eq!(snapshot.tip, Some(high_water));
     assert_eq!(
         snapshot.groups,
-        [shared::activity::StoreGroup {
+        [engine_protocol::activity::StoreGroup {
             cursor: high_water,
             stores: 1
         }]
@@ -5976,7 +5985,7 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
     let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-    let order = shared::ids::OrderId::new(order.to_string());
+    let order = engine_protocol::ids::OrderId::new(order.to_string());
     let fake = FakeDaemonClient::new();
     for h in 1..=60 {
         let txs = if h == 55 { vec![fixture_tx()] } else { vec![] };

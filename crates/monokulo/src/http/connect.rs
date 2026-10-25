@@ -378,7 +378,7 @@ async fn mint_token_and_redirect(
     nonce: &str,
     target: &ConnectTarget,
 ) -> Option<Response> {
-    let raw_token = shared::auth::generate_connect_token();
+    let raw_token = credentials::auth::generate_connect_token();
     let token_hash = raw_token.hash();
     let (id, stored_nonce) = (connection_id.clone(), nonce.to_owned());
     state
@@ -515,7 +515,7 @@ pub async fn finish(
     if let Some(url) = &req.webhook_url {
         crate::webhooks::check_url(url).map_err(|why| Problem::InvalidRequest.detail(why))?;
     }
-    let token_hash = shared::auth::RawToken::presented(&req.token).hash();
+    let token_hash = credentials::auth::RawToken::presented(&req.token).hash();
 
     // The token is spent and its connection read in one write job.
     let row = state
@@ -589,7 +589,7 @@ pub async fn finish(
         .and_then(|i| i.webhook_id);
     if let Some(earlier) = earlier {
         let store_id = row.id.clone();
-        let earlier = shared::ids::WebhookId::new(earlier);
+        let earlier = engine_protocol::ids::WebhookId::new(earlier);
         if let Err(e) = state
             .db
             .write(move |db| db.delete_webhook(&store_id, &earlier))
@@ -966,7 +966,7 @@ mod tests {
         // The secret token is the tenant's real, working credential.
         let engine_client = EngineClient::embedded_for_tests(engine.router());
         let tenant_view = engine_client
-            .get_tenant(&shared::auth::RawToken::presented(secret_token))
+            .get_tenant(&credentials::auth::RawToken::presented(secret_token))
             .await
             .expect("the tenant's genuine sk_ credential");
         assert_eq!(tenant_view.public_key, public_key);
@@ -1257,7 +1257,7 @@ mod tests {
 
         let engine_client = EngineClient::embedded_for_tests(engine.router());
         let tenant_view = engine_client
-            .get_tenant(&shared::auth::RawToken::presented(&secret_token))
+            .get_tenant(&credentials::auth::RawToken::presented(&secret_token))
             .await
             .unwrap();
         assert_eq!(tenant_view.order_expiry_seconds, 1);
@@ -1393,7 +1393,8 @@ mod tests {
         .await;
         let token = parse_query_params(&location(&back))["token"].clone();
         let creds = finish_as_plugin(&router, &token, "0.4.0").await;
-        let old_sk = shared::auth::RawToken::presented(creds["secret_token"].as_str().unwrap());
+        let old_sk =
+            credentials::auth::RawToken::presented(creds["secret_token"].as_str().unwrap());
         let pk = creds["public_key"].as_str().unwrap().to_owned();
         let store = state
             .db
@@ -1632,7 +1633,7 @@ mod tests {
         engine
             .record_order_payment(
                 &order_id,
-                shared::xmr_amount::Piconero(1_000_000_000_000),
+                pricing::xmr_amount::Piconero(1_000_000_000_000),
                 None,
             )
             .unwrap();
@@ -1698,7 +1699,7 @@ mod tests {
         let unreachable = build_router(AppState {
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
-                shared::unreachable::address()
+                service_runtime::unreachable::address()
             ))),
             ..state.clone()
         });
@@ -1986,7 +1987,9 @@ mod tests {
         let row = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(connection_id.clone()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(
+                connection_id.clone(),
+            ))
             .unwrap()
             .unwrap();
         let finish_body =

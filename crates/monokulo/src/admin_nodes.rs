@@ -13,8 +13,8 @@
 //! list is a normal save and works without JavaScript: the submitted rows
 //! are the list, in order, and the button says what to do to it first.
 
+use engine_protocol::network::{network_str, parse_network};
 use monero::Network;
-use shared::network::{network_str, parse_network};
 use std::collections::{HashMap, HashSet};
 
 /// The networks the engine can scan, in the order the page shows them.
@@ -490,7 +490,7 @@ mod tests {
     const ORDER: &[Network] = &NETWORKS;
 
     fn addresses(form: &NodeForm, network: &str) -> Vec<String> {
-        form.rows(shared::network::parse_network(network).unwrap())
+        form.rows(engine_protocol::network::parse_network(network).unwrap())
             .unwrap()
             .iter()
             .map(|row| row.address.clone())

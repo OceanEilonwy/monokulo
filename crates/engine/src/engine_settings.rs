@@ -61,7 +61,7 @@ settings! {
         key: "server.token",
         env: "ENGINE_TOKEN",
         default: live_settings::Secret::default(),
-        check: |token: &live_settings::Secret| shared::auth::check_engine_token(token.expose()),
+        check: |token: &live_settings::Secret| credentials::auth::check_engine_token(token.expose()),
         description: "The token every request to the engine must carry; the engine refuses any request without it. Required, at least 32 characters. Generate one with `openssl rand -hex 32` and give the same value to the engine (ENGINE_TOKEN) and monokulo (MONOKULO_ENGINE_TOKEN).",
         applies: Restart,
         sources: [Env],
@@ -257,7 +257,7 @@ settings! {
     },
     DATABASE_READ_CONNECTIONS: usize {
         key: "database.read_connections",
-        default: shared::sqlite::DEFAULT_READ_CONNECTIONS,
+        default: sqlite::DEFAULT_READ_CONNECTIONS,
         check: range(1, 64),
         description: "Read-only connections the engine opens to its database, each on its own thread. Reads run side by side, so more help up to the number of CPU cores; each keeps its own cache of about 2 MB.",
         example: "4",
@@ -517,7 +517,7 @@ impl Section for ScanConfig {
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         let budget_mb = snapshot.get(&PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
         let networks = configured_networks(snapshot);
-        if let Some(limit) = shared::resources::memory_limit_bytes() {
+        if let Some(limit) = service_runtime::resources::memory_limit_bytes() {
             if let Some(problem) = scan_budget_problem(budget_mb, networks, limit) {
                 return Err(vec![FieldError::new(
                     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB.key,
@@ -1248,7 +1248,7 @@ impl EngineSettings {
             nodes,
             None,
             rate_limits,
-            env.or_var(SERVER_TOKEN.env_var, shared::auth::TEST_ENGINE_TOKEN),
+            env.or_var(SERVER_TOKEN.env_var, credentials::auth::TEST_ENGINE_TOKEN),
             live_settings::OptionsFile::in_memory(""),
             false,
         )
@@ -1358,7 +1358,8 @@ mod tests {
 
     #[test]
     fn a_budget_bigger_than_this_machine_allows_is_refused_with_the_maximum() {
-        let limit = shared::resources::memory_limit_bytes().expect("the test machine's memory");
+        let limit =
+            service_runtime::resources::memory_limit_bytes().expect("the test machine's memory");
         let max = max_scan_budget_mb(limit, 1);
         let snapshot = |budget: u32| {
             Snapshot::new(

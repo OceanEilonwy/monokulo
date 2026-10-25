@@ -14,8 +14,8 @@
 
 use std::collections::HashMap;
 
+use pricing::haveno::HavenoPolicy;
 use serde::{Deserialize, Serialize};
-use shared::haveno::HavenoPolicy;
 
 const DEFAULT_MAX_SPREAD_PCT: f64 = 5.0;
 const DEFAULT_MIN_OFFERS_PER_SIDE: u32 = 1;

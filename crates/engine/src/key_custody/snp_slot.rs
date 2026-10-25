@@ -169,7 +169,7 @@ const RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 /// from the engine it replaces.
 #[expect(
     clippy::infinite_loop,
-    reason = "a supervised loop: `shared::supervise` restarts one that returns"
+    reason = "a supervised loop: `service_runtime::supervise` restarts one that returns"
 )]
 pub async fn run_snp_upkeep(slot: Arc<SnpSlot>, handoff: Option<Handoff>) {
     let source = match snp_attest::kds::client() {
@@ -235,7 +235,7 @@ pub async fn request_handoff(
     );
     let response = http
         .post(&url)
-        .header(shared::auth::ENGINE_TOKEN_HEADER, &handoff.token)
+        .header(credentials::auth::ENGINE_TOKEN_HEADER, &handoff.token)
         .json(&bundle)
         .send()
         .await

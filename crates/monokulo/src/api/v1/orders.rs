@@ -186,7 +186,7 @@ async fn create(
             address: order.address.clone(),
             xmr_amount_piconero: order.xmr_amount_piconero,
             amount_received_piconero: 0,
-            status: shared::order_status::OrderStatus::Pending,
+            status: engine_protocol::order_status::OrderStatus::Pending,
             confirmations: 0,
             double_spend_detected_at: None,
             cancelled_at: None,

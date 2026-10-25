@@ -21,7 +21,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
-pub use shared::ids::{OrderId, TenantId};
+pub use engine_protocol::ids::{OrderId, TenantId};
 
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
@@ -50,7 +50,7 @@ pub type SnpMasterKeyRow = (Vec<u8>, u32, Vec<u8>, Vec<u8>, Option<Vec<u8>>);
 /// The engine's post-unseal migration step that wraps the SEV-SNP master key
 /// again after a firmware update.
 ///
-/// A code step (`shared::migrations::run_code_step`): it needs
+/// A code step (`sqlite::migrations::run_code_step`): it needs
 /// the unwrapped key, which only the running engine has, so it can't be SQL;
 /// its ids are `<measurement>@<committed TCB>`, one per image and firmware
 /// version the machine moves to (`key_custody::snp`).
@@ -192,13 +192,13 @@ const MIGRATIONS: &[(i64, &str)] = &[
 ];
 
 /// The engine's writing connections (the shared store and the database
-/// worker) take `shared::sqlite`'s writer settings: WAL, `synchronous =
+/// worker) take `sqlite`'s writer settings: WAL, `synchronous =
 /// NORMAL`, foreign keys, a busy timeout and a statement cache. This isn't a
 /// ledger moving funds, it's a record of payments observed on-chain, so
 /// NORMAL's tradeoff (only an OS crash or power loss can lose the last few
 /// commits) beats paying an fsync per commit.
 fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
-    shared::sqlite::configure_writer(conn)
+    sqlite::configure_writer(conn)
 }
 
 /// A column value as plain text, for comparing database states in tests.
@@ -221,33 +221,32 @@ pub(crate) fn value_text(value: rusqlite::types::ValueRef<'_>) -> String {
 /// to start against its own database.
 ///
 /// The actual mechanism (transactional per-migration apply, tracked in
-/// `schema_migrations`) lives in `shared::migrations::apply` - moved there
+/// `schema_migrations`) lives in `sqlite::migrations::apply` - moved there
 /// so the monokulo database can reuse it without a second, hand-rolled copy.
 /// This wrapper just supplies the engine's own migration list, which - being
 /// `include_str!("../../migrations/...")` paths relative to this crate - can't live in
-/// `shared` itself.
+/// the `sqlite` crate itself.
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
-    shared::migrations::apply(conn, MIGRATIONS)
+    sqlite::migrations::apply(conn, MIGRATIONS)
 }
 
 pub type SharedStore = Arc<Mutex<Store>>;
 
-/// Independent read-only SQLite connections (`shared::sqlite::Pool`).
+/// Independent read-only SQLite connections (`sqlite::Pool`).
 ///
 /// WAL lets these readers run concurrently with the writer; each connection
 /// stays on its own thread, so a disk stall never blocks a Tokio worker, and
 /// a read goes to whichever connection is free.
 #[derive(Clone)]
-pub struct ReadStorePool(shared::sqlite::Pool<Store>);
+pub struct ReadStorePool(sqlite::Pool<Store>);
 
 impl ReadStorePool {
     pub fn open(path: &str, count: usize) -> Result<Self> {
-        let stores = std::iter::repeat_with(|| {
-            Ok(Store::from_connection(shared::sqlite::open_reader(path)?))
-        })
-        .take(count.max(1))
-        .collect::<Result<Vec<_>>>()?;
-        shared::sqlite::Pool::start("engine-db-read", stores)
+        let stores =
+            std::iter::repeat_with(|| Ok(Store::from_connection(sqlite::open_reader(path)?)))
+                .take(count.max(1))
+                .collect::<Result<Vec<_>>>()?;
+        sqlite::Pool::start("engine-db-read", stores)
             .map(Self)
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))
     }
@@ -256,7 +255,7 @@ impl ReadStorePool {
     /// connection: for tests and their in-memory databases.
     #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
-        Self(shared::sqlite::Pool::Inline(store))
+        Self(sqlite::Pool::Inline(store))
     }
 
     pub async fn query<T: Send + 'static>(
@@ -478,8 +477,8 @@ pub enum StoreError {
     Refused(String),
 }
 
-impl From<shared::sqlite::PoolError> for StoreError {
-    fn from(e: shared::sqlite::PoolError) -> Self {
+impl From<sqlite::PoolError> for StoreError {
+    fn from(e: sqlite::PoolError) -> Self {
         Self::WorkerUnavailable(e.to_string())
     }
 }
@@ -938,13 +937,14 @@ fn scan_window_orders(tenants: &str) -> String {
 /// conversion error rather than a panic, so one bad row fails the query that
 /// read it, not the whole scan loop.
 fn status_from_str(s: &str) -> rusqlite::Result<OrderStatus> {
-    s.parse().map_err(|e: shared::order_status::UnknownStatus| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            format!("{e} in database").into(),
-        )
-    })
+    s.parse()
+        .map_err(|e: engine_protocol::order_status::UnknownStatus| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("{e} in database").into(),
+            )
+        })
 }
 
 /// The bytes of an in-memory database with every migration applied, built
@@ -1104,9 +1104,9 @@ impl Store {
     }
 
     /// Runs `f` with this connection refusing writes, as a read pool's
-    /// connections do (`shared::sqlite::read_only`).
+    /// connections do (`sqlite::read_only`).
     pub fn read_only<T>(&self, f: impl FnOnce() -> T) -> T {
-        shared::sqlite::read_only(&self.conn, f)
+        sqlite::read_only(&self.conn, f)
     }
 
     pub fn into_shared(self) -> SharedStore {
@@ -1280,29 +1280,25 @@ impl Store {
                 )
                 .unwrap();
             self.conn
-                .set_prepared_statement_cache_capacity(shared::sqlite::STATEMENT_CACHE);
+                .set_prepared_statement_cache_capacity(sqlite::STATEMENT_CACHE);
         }
         seen
     }
 
-    /// One statement from monokulo's Query page (`shared::sqlite_query`),
+    /// One statement from monokulo's Query page (`sqlite::query`),
     /// read-only and with the secret columns read as NULL
     /// ([`query_columns::COLUMNS`]).
     pub fn admin_query(
         &self,
         sql: &str,
-        limits: shared::sqlite_query::Limits,
-    ) -> std::result::Result<shared::sqlite_query::QueryResult, shared::sqlite_query::QueryError>
-    {
-        shared::sqlite_query::run(&self.conn, sql, limits, &query_columns::COLUMNS)
+        limits: sqlite::query::Limits,
+    ) -> std::result::Result<sqlite::query::QueryResult, sqlite::query::QueryError> {
+        sqlite::query::run(&self.conn, sql, limits, &query_columns::COLUMNS)
     }
 
     /// The tables the Query page lists.
-    pub fn admin_query_schema(&self) -> Result<Vec<shared::sqlite_query::TableInfo>> {
-        Ok(shared::sqlite_query::schema(
-            &self.conn,
-            &query_columns::COLUMNS,
-        )?)
+    pub fn admin_query_schema(&self) -> Result<Vec<sqlite::query::TableInfo>> {
+        Ok(sqlite::query::schema(&self.conn, &query_columns::COLUMNS)?)
     }
 
     /// The connection itself, for exploration that queries it directly.
@@ -1483,9 +1479,7 @@ impl Store {
                     sealed_key_material: row.get("sealed_key_material")?,
                     primary_address: row.get("primary_address")?,
                     network: row.get("network")?,
-                    next_minor_index: row
-                        .get::<_, shared::sqlite::Unsigned<u32>>("next_minor_index")?
-                        .0,
+                    next_minor_index: row.get::<_, sqlite::Unsigned<u32>>("next_minor_index")?.0,
                     created_at: row.get("created_at_utc")?,
                     deleted_at: row.get("deleted_at_utc")?,
                 })
@@ -1745,11 +1739,9 @@ impl Store {
             primary_address: row.get("primary_address")?,
             network: row.get("network")?,
             wallet_id: row.get("wallet_id")?,
-            next_minor_index: row
-                .get::<_, shared::sqlite::Unsigned<u32>>("next_minor_index")?
-                .0,
+            next_minor_index: row.get::<_, sqlite::Unsigned<u32>>("next_minor_index")?.0,
             confirmations_required: row
-                .get::<_, shared::sqlite::Unsigned<u64>>("confirmations_required")?
+                .get::<_, sqlite::Unsigned<u64>>("confirmations_required")?
                 .0,
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             created_at: row.get("created_at_utc")?,
@@ -1765,9 +1757,10 @@ impl Store {
     pub fn tenant_public_keys_on_network(&self, network: monero::Network) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL AND watches_for IS NULL ORDER BY public_key")?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                row.get::<_, String>(0)
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| row.get::<_, String>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1778,9 +1771,10 @@ impl Store {
             "SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY id",
         )?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                row.get::<_, TenantId>(0)
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| row.get::<_, TenantId>(0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1811,12 +1805,15 @@ impl Store {
              ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
-                ))
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1912,7 +1909,7 @@ impl Store {
         wrapped: &[u8],
         key_check: Option<&[u8]>,
     ) -> Result<bool> {
-        Ok(shared::migrations::run_code_step(
+        Ok(sqlite::migrations::run_code_step(
             &self.conn,
             SNP_REWRAP_STEP,
             step,
@@ -1930,7 +1927,7 @@ impl Store {
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
+                    row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
                 ))
             })?
             .collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
@@ -2019,7 +2016,7 @@ impl Store {
              WHERE id = ?1",
             params![
                 tenant_id,
-                patch.confirmations_required.map(shared::sqlite::Unsigned),
+                patch.confirmations_required.map(sqlite::Unsigned),
                 patch.order_expiry_seconds
             ],
         )?;
@@ -2135,7 +2132,11 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(
-                params![shared::network::SqlNetwork(network), after, limit as i64],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    after,
+                    limit as i64
+                ],
                 |row| row.get(0),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2190,7 +2191,7 @@ impl Store {
                AND next_minor_index > 0 AND next_minor_index < ?2
              RETURNING next_minor_index - 1",
                 params![tenant_id, i64::from(u32::MAX)],
-                |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
+                |row| row.get::<_, sqlite::Unsigned<u32>>(0),
             )
             .optional()?
             .ok_or_else(|| {
@@ -2224,7 +2225,7 @@ impl Store {
             "SELECT w.next_minor_index FROM tenants t JOIN wallets w ON w.id = t.wallet_id
              WHERE t.id = ?1",
             params![tenant_id],
-            |row| row.get::<_, shared::sqlite::Unsigned<u32>>(0),
+            |row| row.get::<_, sqlite::Unsigned<u32>>(0),
         )?;
         Ok(next.0)
     }
@@ -2329,12 +2330,11 @@ impl Store {
                 new.merchant_order_id,
                 new.minor_index,
                 new.address,
-                shared::sqlite::Unsigned(new.xmr_amount_piconero),
+                sqlite::Unsigned(new.xmr_amount_piconero),
                 new.description,
                 new.created_at,
                 new.expires_at,
-                new.confirmations_required_override
-                    .map(shared::sqlite::Unsigned),
+                new.confirmations_required_override.map(sqlite::Unsigned),
                 new.idempotency_key,
             ],
         )?;
@@ -2354,20 +2354,16 @@ impl Store {
             tenant_id: row.get("tenant_id")?,
             scan_tenant_id: row.get("scan_tenant_id")?,
             merchant_order_id: row.get("merchant_order_id")?,
-            minor_index: row
-                .get::<_, shared::sqlite::Unsigned<u32>>("minor_index")?
-                .0,
+            minor_index: row.get::<_, sqlite::Unsigned<u32>>("minor_index")?.0,
             address: row.get("address")?,
             xmr_amount_piconero: row
-                .get::<_, shared::sqlite::Unsigned<u64>>("xmr_amount_piconero")?
+                .get::<_, sqlite::Unsigned<u64>>("xmr_amount_piconero")?
                 .0,
             amount_received_piconero: row
-                .get::<_, shared::sqlite::Unsigned<u64>>("amount_received_piconero")?
+                .get::<_, sqlite::Unsigned<u64>>("amount_received_piconero")?
                 .0,
             status: status_from_str(&status_str)?,
-            confirmations: row
-                .get::<_, shared::sqlite::Unsigned<u64>>("confirmations")?
-                .0,
+            confirmations: row.get::<_, sqlite::Unsigned<u64>>("confirmations")?.0,
             double_spend_detected_at: row.get("double_spend_detected_at_utc")?,
             refund_address: row.get("refund_address")?,
             description: row.get("description")?,
@@ -2377,7 +2373,7 @@ impl Store {
             first_scanned_height: row.get("first_scanned_height")?,
             last_scanned_height: row.get("last_scanned_height")?,
             confirmations_required_override: row
-                .get::<_, Option<shared::sqlite::Unsigned<u64>>>("confirmations_required_override")?
+                .get::<_, Option<sqlite::Unsigned<u64>>>("confirmations_required_override")?
                 .map(|v| v.0),
             closed_at: row.get("closed_at_utc")?,
             cancelled_at: row.get("cancelled_at_utc")?,
@@ -2467,7 +2463,7 @@ impl Store {
             .query_row(
                 "SELECT network FROM tenants WHERE id = ?1",
                 [tenant_id],
-                |row| row.get::<_, shared::network::SqlNetwork>(0),
+                |row| row.get::<_, engine_protocol::network::SqlNetwork>(0),
             )
             .optional()?
             .ok_or(StoreError::NotFound)?
@@ -2567,7 +2563,7 @@ impl Store {
                 order_id,
                 txid,
                 output_index,
-                shared::sqlite::Unsigned(amount_piconero),
+                sqlite::Unsigned(amount_piconero),
                 key_images_json,
                 first_seen_at,
                 block_height,
@@ -2682,9 +2678,7 @@ impl Store {
             order_id: row.get("order_id")?,
             txid: row.get("txid")?,
             output_index: row.get("output_index")?,
-            amount_piconero: row
-                .get::<_, shared::sqlite::Unsigned<u64>>("amount_piconero")?
-                .0,
+            amount_piconero: row.get::<_, sqlite::Unsigned<u64>>("amount_piconero")?.0,
             key_images_json: row.get("key_images_json")?,
             first_seen_at: row.get("first_seen_at_utc")?,
             block_height: row.get("block_height")?,
@@ -2713,7 +2707,10 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(
-                params![shared::network::SqlNetwork(network), sql_height(height)?],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    sql_height(height)?
+                ],
                 Self::row_to_payment,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2734,7 +2731,10 @@ impl Store {
                  JOIN tenants t ON t.id = o.tenant_id
                  WHERE op.block_height > ?2 AND t.network = ?1
                    AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL))",
-                params![shared::network::SqlNetwork(network), sql_height(height)?],
+                params![
+                    engine_protocol::network::SqlNetwork(network),
+                    sql_height(height)?
+                ],
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -2757,7 +2757,7 @@ impl Store {
         let rows = stmt
             .query_map(
                 params![
-                    shared::network::SqlNetwork(network),
+                    engine_protocol::network::SqlNetwork(network),
                     after_rowid,
                     limit as i64
                 ],
@@ -2874,7 +2874,7 @@ impl Store {
                 // Individual payments can fit SQLite while their total does
                 // not. Fail the write instead of wrapping money negative;
                 // transactional callers then roll the whole update back.
-                shared::sqlite::Unsigned(plan.amount_received),
+                sqlite::Unsigned(plan.amount_received),
                 now,
                 is_terminal(plan.status),
                 closed_at,
@@ -2926,8 +2926,8 @@ impl Store {
                 },
                 |row| {
                     Ok((
-                        row.get::<_, shared::sqlite::Unsigned<u64>>(0)?.0,
-                        row.get::<_, shared::network::SqlNetwork>(1)?.0,
+                        row.get::<_, sqlite::Unsigned<u64>>(0)?.0,
+                        row.get::<_, engine_protocol::network::SqlNetwork>(1)?.0,
                         row.get::<_, Option<bool>>(2)?.unwrap_or(false),
                     ))
                 },
@@ -2981,7 +2981,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT MAX(height) FROM scanned_blocks WHERE network = ?1",
-                params![shared::network::SqlNetwork(network)],
+                params![engine_protocol::network::SqlNetwork(network)],
                 |row| row.get::<_, Option<i64>>(0),
             )
             .map(|opt| opt.map(|h| h as u64))
@@ -3011,7 +3011,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT block_hash FROM scanned_blocks WHERE network = ?1 AND height = ?2",
-                params![shared::network::SqlNetwork(network), height as i64],
+                params![engine_protocol::network::SqlNetwork(network), height as i64],
                 |row| row.get(0),
             )
             .optional()
@@ -3027,7 +3027,11 @@ impl Store {
         self.conn.execute(
             "INSERT INTO scanned_blocks (network, height, block_hash) VALUES (?1, ?2, ?3)
              ON CONFLICT(network, height) DO UPDATE SET block_hash = excluded.block_hash",
-            params![shared::network::SqlNetwork(network), height as i64, hash],
+            params![
+                engine_protocol::network::SqlNetwork(network),
+                height as i64,
+                hash
+            ],
         )?;
         Ok(())
     }
@@ -3037,8 +3041,8 @@ impl Store {
             "INSERT OR IGNORE INTO partial_block_matches
              (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![shared::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
-                shared::sqlite::Unsigned(matched.amount), matched.key_images_json, matched.seen_at, matched.output_key],
+            params![engine_protocol::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
+                sqlite::Unsigned(matched.amount), matched.key_images_json, matched.seen_at, matched.output_key],
         )?;
         Ok(())
     }
@@ -3050,11 +3054,11 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-            params![shared::network::SqlNetwork(network), tenant_id],
+            params![engine_protocol::network::SqlNetwork(network), tenant_id],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-            params![shared::network::SqlNetwork(network), tenant_id],
+            params![engine_protocol::network::SqlNetwork(network), tenant_id],
         )?;
         Ok(())
     }
@@ -3076,7 +3080,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height >= ?2",
-            params![shared::network::SqlNetwork(network), height as i64],
+            params![engine_protocol::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -3102,7 +3106,10 @@ impl Store {
     ) -> Result<u64> {
         let deleted = self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
-            params![shared::network::SqlNetwork(network), min_height as i64],
+            params![
+                engine_protocol::network::SqlNetwork(network),
+                min_height as i64
+            ],
         )?;
         Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
     }
@@ -3119,7 +3126,7 @@ impl Store {
     pub fn anchor_unset_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height IS NULL",
-            params![shared::network::SqlNetwork(network), height as i64],
+            params![engine_protocol::network::SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -3130,11 +3137,11 @@ impl Store {
         match height {
             Some(h) => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height > ?2",
-                params![shared::network::SqlNetwork(network), h as i64],
+                params![engine_protocol::network::SqlNetwork(network), h as i64],
             )?,
             None => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = NULL WHERE network = ?1",
-                params![shared::network::SqlNetwork(network)],
+                params![engine_protocol::network::SqlNetwork(network)],
             )?,
         };
         Ok(())
@@ -3150,12 +3157,15 @@ impl Store {
              ORDER BY scanned_through_height, id",
         )?;
         let rows = stmt
-            .query_map(params![shared::network::SqlNetwork(network)], |row| {
-                Ok((
-                    row.get::<_, TenantId>(0)?,
-                    row.get::<_, shared::sqlite::Unsigned<u64>>(1)?.0,
-                ))
-            })?
+            .query_map(
+                params![engine_protocol::network::SqlNetwork(network)],
+                |row| {
+                    Ok((
+                        row.get::<_, TenantId>(0)?,
+                        row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
+                    ))
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -3166,17 +3176,17 @@ impl Store {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
-            params![shared::network::SqlNetwork(network), height as i64],
+            params![engine_protocol::network::SqlNetwork(network), height as i64],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [shared::network::SqlNetwork(network)],
+            [engine_protocol::network::SqlNetwork(network)],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [shared::network::SqlNetwork(network)],
+            [engine_protocol::network::SqlNetwork(network)],
         )?;
         Ok(())
     }
@@ -5232,7 +5242,7 @@ mod tests {
         // schema version, put real data in it, then apply the rest.
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..3]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..3]).unwrap();
         let store = Store::from_connection(conn);
 
         // Inserted directly via raw SQL, not `new_tenant`/`Store::create_tenant`:
@@ -5278,7 +5288,7 @@ mod tests {
             ))
             .unwrap();
 
-        shared::migrations::apply(&store.conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&store.conn, MIGRATIONS).unwrap();
 
         let payments = store
             .get_all_payments(&OrderId::new(order_id.to_owned()))
@@ -5413,7 +5423,7 @@ mod tests {
     fn migration_0028_gives_every_existing_store_its_own_wallet_with_its_counter() {
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..27]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..27]).unwrap();
         conn.execute_batch(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, network, next_minor_index, created_at_utc)
@@ -5421,7 +5431,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
         let store = Store::from_connection(conn);
         let tenant = store
             .get_tenant_by_id(&TenantId::new("tn_old"))
@@ -5439,7 +5449,7 @@ mod tests {
     fn migration_0014_drops_the_tenant_allowed_origins_column_and_keeps_the_tenant() {
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..13]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..13]).unwrap();
         conn.execute_batch(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, allowed_origins, created_at_utc)
@@ -5447,7 +5457,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
         let columns: Vec<String> = conn
             .prepare("SELECT name FROM pragma_table_info('tenants')")
             .unwrap()
@@ -5474,7 +5484,7 @@ mod tests {
     fn migration_0013_preserves_orders_already_paid_by_the_old_ceiling() {
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
-        shared::migrations::apply(&conn, &MIGRATIONS[..12]).unwrap();
+        sqlite::migrations::apply(&conn, &MIGRATIONS[..12]).unwrap();
         conn.execute_batch(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, allowed_origins, created_at_utc,
@@ -5488,7 +5498,7 @@ mod tests {
         )
         .unwrap();
 
-        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        sqlite::migrations::apply(&conn, MIGRATIONS).unwrap();
         let override_for = |id: &str| -> Option<i64> {
             conn.query_row(
                 "SELECT confirmations_required_override FROM orders WHERE id = ?1",

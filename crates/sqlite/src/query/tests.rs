@@ -30,7 +30,7 @@ fn db() -> Connection {
              CREATE VIEW user_secrets AS SELECT id, password_hash FROM users;",
         )
         .unwrap();
-    crate::sqlite::open_reader(&path).unwrap()
+    crate::open_reader(&path).unwrap()
 }
 
 fn run_page(conn: &Connection, sql: &str) -> Result<QueryResult, QueryError> {

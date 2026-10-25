@@ -10,7 +10,7 @@ use crate::scanner::{void_and_notify_in_tx, ScannerError};
 use crate::store::db::Class;
 use crate::store::{Db, OpenedReorg, OrderPaymentRow, ReorgPhase, Store};
 
-use shared::activity::Event;
+use engine_protocol::activity::Event;
 
 use super::{bounded, count, Progress, Round, Wait};
 
@@ -665,7 +665,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
         // A node that fails partway leaves the job (and the losing chain's
         // hashes) exactly where they were; the next round carries on.
         Progress::Failed(ScannerError::Daemon(error)) => {
-            shared::throttled!(
+            telemetry::throttled!(
                 format!("chain-node:{}", crate::network::network_str(round.network())),
                 warn,
                 network = crate::network::network_str(round.network()),

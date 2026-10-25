@@ -1,12 +1,12 @@
 //! Connected apps (migration 0043, `crate::apps`): their connections, the
 //! single-use codes that make them, and the orders they made.
 
+use credentials::auth::TokenHash;
 use rusqlite::{params, OptionalExtension as _};
-use shared::auth::TokenHash;
-use shared::sqlite::Unsigned;
+use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
-pub use shared::ids::AppId;
+pub use engine_protocol::ids::AppId;
 
 /// A device connected to a store with a key of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]

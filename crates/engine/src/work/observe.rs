@@ -3,7 +3,7 @@
 //! one moment. The scan loop records one every
 //! [`crate::activity::SNAPSHOT_EVERY`].
 
-use shared::activity::{Database, Node, Pool, ReorgJob, ReorgPhase, Snapshot, StoreGroup};
+use engine_protocol::activity::{Database, Node, Pool, ReorgJob, ReorgPhase, Snapshot, StoreGroup};
 
 use super::ScanState;
 use crate::scanner::ScannerError;

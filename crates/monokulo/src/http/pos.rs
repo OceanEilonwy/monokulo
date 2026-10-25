@@ -35,7 +35,7 @@
 //! client already has to handle "the connection failed" separately from
 //! "the status says there's a problem".
 
-use shared::order_status::OrderStatus;
+use engine_protocol::order_status::OrderStatus;
 use std::collections::HashMap;
 
 use axum::extract::{Path, State};
@@ -102,7 +102,7 @@ pub struct PosCreateOrderRequest {
     /// real decimal precision (`PosViewModel::base_currency_decimals`)
     /// before it's ever sent here. Re-validated server-side the same way
     /// every other order-creation surface in this crate already is
-    /// (`shared::exchange_rate::compute_order_amount`) - a client-side
+    /// (`pricing::exchange_rate::compute_order_amount`) - a client-side
     /// keypad bug or a hand-crafted request is not trusted to have gotten
     /// this right.
     pub amount: String,
@@ -188,7 +188,7 @@ pub async fn create_order(
     };
     match crate::orders::make(&state, &row, crate::orders::Origin::Pos, request).await {
         Ok(crate::orders::Made::Created(order)) => Json(PosCreateOrderResponse {
-            xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
+            xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
             order_id: order.order_id,
             address: order.address,
             amount: order.amount,
@@ -220,7 +220,7 @@ pub async fn create_order(
             Json(PosCreateOrderResponse {
                 order_id,
                 address: detail.order.address,
-                xmr_amount: shared::exchange_rate::format_piconero_as_xmr(
+                xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(
                     detail.order.xmr_amount_piconero,
                 ),
                 amount: metadata.amount,
@@ -239,7 +239,7 @@ pub async fn create_order(
 
 #[derive(Debug, Serialize)]
 pub struct PosStatusResponse {
-    pub status: shared::order_status::OrderStatus,
+    pub status: engine_protocol::order_status::OrderStatus,
     pub updated_at: i64,
     pub confirmations: u64,
     pub confirmations_required: u64,
@@ -279,7 +279,7 @@ pub struct PosOrderData {
     xmr_amount: String,
     amount: String,
     currency: String,
-    status: shared::order_status::OrderStatus,
+    status: engine_protocol::order_status::OrderStatus,
     updated_at: i64,
     confirmations: u64,
     confirmations_required: u64,
@@ -304,7 +304,7 @@ pub struct PosOrderData {
 async fn pos_order_data(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     row: crate::db::PosOrderRow,
 ) -> Result<PosOrderData, EngineClientError> {
     let detail = state
@@ -362,12 +362,12 @@ fn pos_order_view(
         merchant_order_id: order.merchant_order_id.clone(),
         address_short: crate::views::short_address_text(&order.address),
         address: order.address.clone(),
-        xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
+        xmr_amount: pricing::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
         amount: metadata
             .as_ref()
             .map(|m| m.amount.clone())
             .unwrap_or_else(|| {
-                shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)
+                pricing::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)
             }),
         currency: metadata
             .as_ref()
@@ -382,8 +382,10 @@ fn pos_order_view(
         cancelled_at: order.cancelled_at,
         created_at: row.created_at,
         expires_at: order.expires_at,
-        received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+        received_xmr: pricing::exchange_rate::format_piconero_as_xmr(
+            order.amount_received_piconero,
+        ),
+        remaining_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             order
                 .xmr_amount_piconero
                 .saturating_sub(order.amount_received_piconero),
@@ -398,7 +400,7 @@ fn pos_order_view(
 /// watching many orders must not spend one request per order.
 async fn engine_orders(
     state: &AppState,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_ids: &[crate::db::OrderId],
 ) -> Result<HashMap<crate::db::OrderId, OrderView>, EngineClientError> {
     let mut orders = HashMap::with_capacity(order_ids.len());
@@ -440,7 +442,7 @@ pub struct PosListQuery {
 async fn active_pos_orders(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
 ) -> Result<Vec<PosOrderData>, EngineClientError> {
     let open = state.engine.client.list_open_orders(sk).await?;
     let ids: Vec<crate::db::OrderId> = open.iter().map(|order| order.order_id.clone()).collect();
@@ -644,7 +646,7 @@ pub async fn cancel_order(
 pub(crate) async fn resolve_confirmations_required(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order_id: &crate::db::OrderId,
 ) -> u64 {
     let (store_id, order) = (connection_id.clone(), order_id.clone());
@@ -730,7 +732,7 @@ pub async fn order_status(
 async fn pos_status(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
-    sk: &shared::auth::RawToken,
+    sk: &credentials::auth::RawToken,
     order: &OrderView,
     pos_row: Option<&crate::db::PosOrderRow>,
 ) -> PosStatusResponse {
@@ -749,8 +751,10 @@ async fn pos_status(
         confirmations_required,
         is_terminal,
         error: derive_payment_error(order),
-        received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+        received_xmr: pricing::exchange_rate::format_piconero_as_xmr(
+            order.amount_received_piconero,
+        ),
+        remaining_xmr: pricing::exchange_rate::format_piconero_as_xmr(
             order
                 .xmr_amount_piconero
                 .saturating_sub(order.amount_received_piconero),
@@ -1300,8 +1304,8 @@ mod tests {
             .db
             .lock()
             .get_order_currency_metadata(
-                &shared::ids::ConnectionId::new(id.to_string()),
-                &shared::ids::OrderId::new(order_id.to_string()),
+                &engine_protocol::ids::ConnectionId::new(id.to_string()),
+                &engine_protocol::ids::OrderId::new(order_id.to_string()),
             )
             .unwrap()
             .unwrap();
@@ -1609,7 +1613,7 @@ mod tests {
             .store()
             .lock()
             .mark_double_spend_detected(
-                &shared::ids::OrderId::new(order_ids[1].to_string()),
+                &engine_protocol::ids::OrderId::new(order_ids[1].to_string()),
                 crate::now_unix()
             )
             .unwrap());
@@ -2077,7 +2081,7 @@ mod tests {
         let order = store.orders(1).await.remove(0);
         store
             .engine
-            .record_order_payment(&order, shared::xmr_amount::Piconero(1), Some(1))
+            .record_order_payment(&order, pricing::xmr_amount::Piconero(1), Some(1))
             .unwrap();
 
         let response = store.act(&order, "cancel").await;
@@ -2110,7 +2114,7 @@ mod tests {
         );
         store
             .engine
-            .record_order_payment(&order, shared::xmr_amount::Piconero(1), Some(1))
+            .record_order_payment(&order, pricing::xmr_amount::Piconero(1), Some(1))
             .unwrap();
         let status = store.status(&order).await;
         assert_eq!(status["status"], "cancelled");
@@ -2227,7 +2231,7 @@ mod tests {
         let pk = state
             .db
             .lock()
-            .get_store_connection_by_id(&shared::ids::ConnectionId::new(id.to_string()))
+            .get_store_connection_by_id(&engine_protocol::ids::ConnectionId::new(id.to_string()))
             .unwrap()
             .unwrap()
             .tenant_public_key;
@@ -2360,7 +2364,7 @@ mod pure_logic_tests {
 
     fn order_with_status(status: &str) -> OrderView {
         OrderView {
-            order_id: shared::ids::OrderId::new("pay_test".to_string()),
+            order_id: engine_protocol::ids::OrderId::new("pay_test".to_string()),
             merchant_order_id: None,
             description: None,
             address: "addr".to_string(),

@@ -304,7 +304,7 @@ impl ScanTuning {
     /// Whether the scanner can run this tuning: the relations the rest of
     /// the engine relies on. [`Self::DEFAULT`] is checked at build time.
     pub const fn validate(&self) -> Result<(), TuningError> {
-        let slow_secs = shared::scaling::SLOW_BLOCK_SECS as u64;
+        let slow_secs = engine_protocol::scaling::SLOW_BLOCK_SECS as u64;
         if self.shares.total() != 100 {
             Err(TuningError::SharesNotWholeRound)
         } else if self.round_budget.is_zero() {

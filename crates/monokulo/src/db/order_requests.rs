@@ -2,9 +2,9 @@
 //! `crate::orders`): what each key's purchase was, the price it was made
 //! at, and, once recorded, the order it made.
 
+use pricing::xmr_amount::Piconero;
 use rusqlite::{params, OptionalExtension as _};
-use shared::sqlite::Unsigned;
-use shared::xmr_amount::Piconero;
+use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
 

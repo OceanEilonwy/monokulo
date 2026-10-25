@@ -511,6 +511,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "credentials"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "hex",
+ "hmac",
+ "rand 0.10.3",
+ "rand_core 0.6.4",
+ "rusqlite",
+ "serde",
+ "sha2 0.11.0",
+ "subtle",
+ "telemetry",
+ "tokio",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -696,6 +713,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "dns-client"
+version = "0.1.0"
+dependencies = [
+ "rand 0.10.3",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -750,6 +777,8 @@ dependencies = [
  "async-trait",
  "axum",
  "clap",
+ "credentials",
+ "engine-protocol",
  "futures-util",
  "hex",
  "http-body",
@@ -761,15 +790,17 @@ dependencies = [
  "parking_lot",
  "rand 0.10.3",
  "randomx-rs",
+ "rate-limit",
  "reqwest",
  "rusqlite",
  "rustix",
  "serde",
  "serde_json",
+ "service-runtime",
  "sha2 0.11.0",
- "shared",
  "snp-attest",
  "socket2",
+ "sqlite",
  "subtle",
  "telemetry",
  "thiserror 2.0.21",
@@ -785,9 +816,19 @@ dependencies = [
 name = "engine-fuzz"
 version = "0.0.0"
 dependencies = [
+ "dns-client",
  "engine",
  "libfuzzer-sys",
- "shared",
+]
+
+[[package]]
+name = "engine-protocol"
+version = "0.1.0"
+dependencies = [
+ "monero",
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2160,6 +2201,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rate-limit"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2220,21 +2268,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
-]
-
-[[package]]
-name = "reqwest-middleware"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07bc3f1384cffa4f274dad2d4ddd73aed32fed8f786d96c6be8aa4e5fd3c3b58"
-dependencies = [
- "anyhow",
- "async-trait",
- "http",
- "reqwest",
- "serde",
- "thiserror 2.0.21",
- "tower-service",
 ]
 
 [[package]]
@@ -2591,6 +2624,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-runtime"
+version = "0.1.0"
+dependencies = [
+ "parking_lot",
+ "serde",
+ "sysinfo",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2619,36 +2663,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shared"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "async-trait",
- "hex",
- "hmac",
- "http",
- "httpdate",
- "monero",
- "parking_lot",
- "rand 0.10.3",
- "rand_core 0.6.4",
- "reqwest",
- "reqwest-middleware",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "subtle",
- "sysinfo",
- "telemetry",
- "thiserror 2.0.21",
- "tokio",
- "tracing",
- "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -2762,6 +2776,18 @@ checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
 dependencies = [
  "base64ct",
  "der 0.8.2",
+]
+
+[[package]]
+name = "sqlite"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

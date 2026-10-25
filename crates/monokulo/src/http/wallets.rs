@@ -1576,7 +1576,7 @@ mod tests {
                     .client
                     .create_order(
                         &sk,
-                        shared::xmr_amount::Piconero(1_000_000),
+                        pricing::xmr_amount::Piconero(1_000_000),
                         None,
                         None,
                         None,
@@ -1990,7 +1990,7 @@ mod tests {
             .client
             .create_order(
                 &sk,
-                shared::xmr_amount::Piconero(1_000_000),
+                pricing::xmr_amount::Piconero(1_000_000),
                 None,
                 None,
                 None,
@@ -2124,7 +2124,7 @@ mod tests {
             .client
             .create_order(
                 &sk,
-                shared::xmr_amount::Piconero(1_000_000),
+                pricing::xmr_amount::Piconero(1_000_000),
                 None,
                 None,
                 None,

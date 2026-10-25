@@ -36,7 +36,7 @@ where
             let path = request.uri().path().to_string();
             let key = request
                 .headers()
-                .get(shared::coinmarketcap::API_KEY_HEADER)
+                .get(pricing::coinmarketcap::API_KEY_HEADER)
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             record.lock().push((path.clone(), key.clone()));
@@ -86,8 +86,10 @@ async fn state_with(base: &str, env: live_settings::Env) -> AppState {
     let db = Db::open_in_memory().unwrap();
     db.seed_test_admin();
     let db = db.into_shared();
-    let engine_client =
-        EngineClient::for_tests(format!("http://{}", shared::unreachable::address()));
+    let engine_client = EngineClient::for_tests(format!(
+        "http://{}",
+        service_runtime::unreachable::address()
+    ));
     let exchange_rate = test_exchange_rate_provider();
     let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
     let options = live_settings::OptionsFile::in_memory(format!(
@@ -124,7 +126,7 @@ fn env_with_key(key: &str) -> live_settings::Env {
         ),
         (
             crate::settings::ENGINE_TOKEN.env_var.to_string(),
-            "t".repeat(shared::auth::MIN_ENGINE_TOKEN_LEN),
+            "t".repeat(credentials::auth::MIN_ENGINE_TOKEN_LEN),
         ),
         (
             EXCHANGE_RATE_COINMARKETCAP_API_KEY.env_var.to_string(),
@@ -136,8 +138,8 @@ fn env_with_key(key: &str) -> live_settings::Env {
 /// A store pricing with CoinMarketCap alone.
 fn cmc_store() -> crate::db::StoreConnectionRow {
     crate::db::StoreConnectionRow {
-        id: shared::ids::ConnectionId::new("conn-1".to_string()),
-        user_id: shared::ids::UserId::new("user-1".to_string()),
+        id: engine_protocol::ids::ConnectionId::new("conn-1".to_string()),
+        user_id: engine_protocol::ids::UserId::new("user-1".to_string()),
         name: "Shop".to_string(),
         site: None,
         tenant_public_key: "pk_test".to_string(),
