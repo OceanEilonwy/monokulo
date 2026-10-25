@@ -131,6 +131,11 @@ impl MoneroDaemonClient for FixtureDaemon {
                 } else {
                     vec![self.txid.clone()]
                 },
+                bindings: if height == 0 {
+                    vec![]
+                } else {
+                    vec![engine::daemon::IdBinding::Computed]
+                },
                 wire_bytes: if height == 0 {
                     0
                 } else {

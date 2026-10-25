@@ -4919,6 +4919,60 @@ async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful
 }
 
 #[tokio::test]
+async fn a_payment_a_node_makes_up_under_a_real_blocks_transaction_id_is_never_credited() {
+    // `get_blocks.bin` sends a block's transactions pruned, without the hash
+    // of the part left out, so nothing ties a body to the id the block lists
+    // for it: the block's id (and its proof of work) covers the list, not the
+    // bodies. A lying node can keep a real block and swap one transaction's
+    // body for a made-up one paying the order. The scan may read such a body,
+    // but takes a payment from it only once the transaction, fetched again by
+    // its id (where the body is checked against the id), says the same.
+    let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+    let store = store.into_shared();
+    let tenants = [(shared::ids::TenantId::new(tenant_id.clone()), handle)];
+    let payments = |store: &crate::store::SharedStore| {
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.clone()))
+            .unwrap()
+    };
+
+    // Block 2 really holds a transaction that pays nobody; the node sends
+    // the fixture's payment under its id.
+    let real = conflicting_tx(1);
+    let lying = FakeDaemonClient::new();
+    lying.push_block("h1", vec![]);
+    lying.push_block("h2", vec![real.clone()]);
+    lying.send_in_blocks_as(&tx_id_hex(&real), fixture_tx());
+    run_scan_tick(&store, &key_custody, &lying, "mainnet", &tenants, 20, 0)
+        .await
+        .unwrap();
+    assert!(
+        payments(&store).is_empty(),
+        "a made-up payment was credited"
+    );
+    assert_eq!(
+        store.lock().max_scanned_height(Network::Mainnet).unwrap(),
+        Some(1),
+        "the block isn't passed over either: an honest node scans it again"
+    );
+
+    // The same block shape from a node sending the paying transaction itself
+    // the same way: fetched again it is what came, and it is credited.
+    let honest = FakeDaemonClient::new();
+    honest.push_block("h1", vec![]);
+    honest.push_block("h2", vec![fixture_tx()]);
+    honest.send_in_blocks_as(&tx_id_hex(&fixture_tx()), fixture_tx());
+    run_scan_tick(&store, &key_custody, &honest, "mainnet", &tenants, 20, 0)
+        .await
+        .unwrap();
+    let credited = payments(&store);
+    assert_eq!(credited.len(), 1);
+    assert_eq!(credited[0].txid, tx_id_hex(&fixture_tx()));
+    assert_eq!(credited[0].block_height, Some(2));
+}
+
+#[tokio::test]
 async fn a_fallback_daemon_still_voids_a_real_double_spend_every_node_agrees_on() {
     // The regression this fix must not cause: requiring corroboration must not
     // make genuine double-spend detection any less reliable when every

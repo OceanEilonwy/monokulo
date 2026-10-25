@@ -40,7 +40,7 @@ use std::sync::Arc;
 
 use tokio::time::Instant;
 
-use crate::daemon::{BlockOutline, ChainBlock, ChainHeader, ScanTx};
+use crate::daemon::{BlockOutline, ChainBlock, ChainHeader, IdBinding, ScanTx};
 use crate::key_custody::{ScanIndices, ScanInput, WalletHandle};
 use crate::scanner::{
     record_scan_match, scan_txs_for_tenants, stage_block_match, ScanResult, ScannerError,
@@ -1268,23 +1268,35 @@ async fn scan_block(
                 .lock()
                 .fetched_block(height, block.wire_bytes);
             // Each transaction is recorded under the id it came with.
-            if block.txids.len() != block.txs.len() {
+            if block.txids.len() != block.txs.len() || block.bindings.len() != block.txs.len() {
                 return Err(ScannerError::Internal(format!(
-                    "block {height} has {} transactions and {} ids",
+                    "block {height} has {} transactions, {} ids and {} bindings",
                     block.txs.len(),
-                    block.txids.len()
+                    block.txids.len(),
+                    block.bindings.len()
                 )));
             }
-            scan_txs(
+            let scanned = scan_txs(
                 round,
                 &mut scan,
                 &at,
                 0,
                 &block.txids,
                 &block.txs,
+                &block.bindings,
                 &mut progressed,
             )
-            .await
+            .await;
+            match scanned {
+                Ok(finished) => finished,
+                Err(error) => {
+                    // A body that came with the block and couldn't be
+                    // confirmed: the block is fetched again, not scanned
+                    // from what came again.
+                    round.blocks.cache.remove(height);
+                    return Err(error);
+                }
+            }
         }
         Source::Pages(paged) => {
             match scan_pages(round, &mut scan, &at, paged, &mut progressed).await {
@@ -1745,6 +1757,16 @@ struct ScanAt<'s> {
 /// tenant still due them, the tuning's `txs_per_scan` at a time. `false` if
 /// the unit's time ran out first (once it had made progress): the caller
 /// writes down how far each tenant got.
+///
+/// A payment found in a transaction that came [`IdBinding::Listed`] is
+/// kept only once the transaction, fetched again by its id, is the body
+/// that came with the block ([`confirm_listed`]); otherwise the node sent a
+/// body that isn't the transaction, which is an error and nothing found in
+/// the batch is kept.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the block's three parallel lists and where the scan stands"
+)]
 async fn scan_txs(
     round: &Round<'_>,
     scan: &mut BlockScan,
@@ -1752,10 +1774,13 @@ async fn scan_txs(
     offset: usize,
     txids: &[String],
     txs: &[ScanTx],
+    bindings: &[IdBinding],
     progressed: &mut bool,
-) -> bool {
+) -> Result<bool, ScannerError> {
     let inputs: Vec<ScanInput> = txs.iter().map(|tx| tx.input.clone()).collect();
     let tuning = round.state.tuning();
+    // Listed transactions fetched again and found to be what came.
+    let mut confirmed = HashSet::new();
     for start in (0..txs.len()).step_by(tuning.txs_per_scan) {
         let end = (start + tuning.txs_per_scan).min(txs.len());
         for batch in scan
@@ -1763,7 +1788,7 @@ async fn scan_txs(
             .chunks(tuning.scan_concurrency)
         {
             if *progressed && at.until.is_some_and(|until| Instant::now() >= until) {
-                return false;
+                return Ok(false);
             }
             let scanning = Instant::now();
             let results = scan_txs_for_tenants(
@@ -1783,6 +1808,28 @@ async fn scan_txs(
                 ((end - start) * batch.len()) as u64,
             );
             let height = at.height;
+            // Before anything found is kept, each transaction it was found
+            // in that came listed is fetched again.
+            for found in results
+                .iter()
+                .filter_map(|(_, result)| result.as_ref().ok())
+            {
+                for result in found {
+                    let index = txids
+                        .iter()
+                        .position(|txid| *txid == result.txid)
+                        .ok_or_else(|| {
+                            ScannerError::Internal(format!(
+                                "a match in block {height} for {}, which isn't in the batch",
+                                result.txid
+                            ))
+                        })?;
+                    if bindings.get(index) != Some(&IdBinding::Computed) && confirmed.insert(index)
+                    {
+                        confirm_listed(round, height, &txids[index], &txs[index]).await?;
+                    }
+                }
+            }
             for (tenant_id, result) in results {
                 match result {
                     Ok(found) => scan.scanned(tenant_id, offset + end, found),
@@ -1797,7 +1844,46 @@ async fn scan_txs(
             *progressed = true;
         }
     }
-    true
+    Ok(true)
+}
+
+/// Fetches transaction `txid` of block `height` again by its id, before a
+/// payment is taken from `tx`, the body that came with the block under it.
+///
+/// That body came pruned without the hash of the part left out
+/// ([`IdBinding::Listed`]): the block's id covers its list of ids, but
+/// nothing ties the body to the id in it, so a node could send a made-up
+/// one paying a store inside a real block. Fetched by its id, a body is
+/// checked against the id with the hash of its pruned part, which a node
+/// can't choose to make another body hash to it (`get_transactions_with_ids`).
+/// What the scan read must be what that body says; anything else is the
+/// node's failure. Payments are rare, so this costs a round trip only for
+/// one.
+async fn confirm_listed(
+    round: &Round<'_>,
+    height: u64,
+    txid: &str,
+    tx: &ScanTx,
+) -> Result<(), ScannerError> {
+    let fetched = bounded(
+        round
+            .inputs
+            .daemon
+            .get_transactions_with_ids(std::slice::from_ref(&txid.to_owned())),
+    )
+    .await?;
+    if fetched
+        .iter()
+        .any(|fetched| fetched.txid == txid && ScanTx::of(&fetched.tx) == *tx)
+    {
+        return Ok(());
+    }
+    Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
+        format!(
+            "transaction {txid} of block {height}, fetched by its id, isn't the body that came \
+             with the block - not taking a payment from it"
+        ),
+    )))
 }
 
 /// Scans a large block a page of transactions at a time,
@@ -1852,7 +1938,9 @@ async fn scan_pages(
         });
         let ids = &txids[next..next + len];
         let txs = fetch_page(round, at.height, ids, avg_tx_bytes).await?;
-        if !scan_txs(round, scan, at, next, ids, &txs, progressed).await {
+        // Fetched by id, each checked against its id.
+        let bindings = vec![IdBinding::Computed; txs.len()];
+        if !scan_txs(round, scan, at, next, ids, &txs, &bindings, progressed).await? {
             return Ok(false);
         }
         next = scan.first_due(total).max(next + len);
@@ -2135,6 +2223,7 @@ async fn header_block(
         timestamp: header.timestamp,
         txs: Vec::new(),
         txids: Vec::new(),
+        bindings: Vec::new(),
         wire_bytes: 0,
     }))
 }
@@ -2152,6 +2241,7 @@ mod tests {
             timestamp: 0,
             txs: vec![],
             txids: Vec::new(),
+            bindings: Vec::new(),
             wire_bytes: 0,
         }
     }

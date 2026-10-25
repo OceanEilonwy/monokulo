@@ -33,7 +33,7 @@ use tokio::time::Instant;
 
 use crate::daemon::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, DifficultyHeader, EndpointStats,
-    FetchedTx, KeyImageStatus, MoneroDaemonClient, PoolAnswer, PoolOutlook, TxLocation,
+    FetchedTx, IdBinding, KeyImageStatus, MoneroDaemonClient, PoolAnswer, PoolOutlook, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -522,10 +522,15 @@ impl RpcDaemonClient {
 /// back `SpentInBlockchain` *because that very transaction spent them*, and a
 /// perfectly good confirmed payment is written off.
 ///
-/// So only an affirmative answer counts. `missed_tx` naming the hash is the daemon
-/// saying "I do not have this"; that is `NotFound`. Everything else that fails to
-/// place the transaction is a *non-answer* and becomes an error:
+/// So only an affirmative answer counts. `missed_tx` naming the hash, and no entry
+/// placing it, is the daemon saying "I do not have this"; that is `NotFound`.
+/// Everything else that fails to place the transaction is a *non-answer* and
+/// becomes an error:
 ///
+///  - Both lists mention the hash: the daemon has said it both has and hasn't
+///    got the transaction. Every caller (`locate_transaction`,
+///    `locate_transactions`, `find_transaction`) classifies through here, so
+///    none reads that as either.
 ///  - Neither list mentions the hash. Every field of `GetTransactionsResponse` is
 ///    optional (necessarily - a real node omits `txs` when nothing matched and
 ///    `missed_tx` when nothing was missed), so a bare `{"status":"OK"}` from anything
@@ -546,28 +551,31 @@ impl RpcDaemonClient {
 /// said it was gone is not a close call.
 fn classify_located_transaction(
     txid: &str,
-    resp: GetTransactionsResponse,
+    resp: &GetTransactionsResponse,
+    lone: bool,
 ) -> Result<TxLocation, DaemonError> {
-    if resp.missed_tx.iter().any(|h| h == txid) {
-        return Ok(TxLocation::NotFound);
-    }
+    // Both lists are matched by the same rule: hex, either case.
+    let missed = resp.missed_tx.iter().any(|h| h.eq_ignore_ascii_case(txid));
     // The entry for the transaction asked about, not whatever came first:
     // an entry for another hash (a cache or proxy answering for someone
-    // else) is a non-answer.
-    let entry = resp.txs.and_then(|v| {
-        v.into_iter()
-            .find(|entry| entry.tx_hash.is_empty() || entry.tx_hash.eq_ignore_ascii_case(txid))
+    // else) is a non-answer. One that names no hash answers for the
+    // transaction only when it was the one asked about (`lone`).
+    let entry = resp.txs.iter().flatten().find(|entry| {
+        entry.tx_hash.eq_ignore_ascii_case(txid) || (lone && entry.tx_hash.is_empty())
     });
-    match entry {
-        Some(entry) if entry.in_pool => Ok(TxLocation::InPool),
-        Some(entry) => match entry.block_height {
-            Some(h) => Ok(TxLocation::InBlock(h)),
-            None => Err(DaemonError::Request(format!(
+    match (missed, entry) {
+        (true, None) => Ok(TxLocation::NotFound),
+        (true, Some(_)) => Err(DaemonError::Request(format!(
+            "daemon named transaction {txid} both as missed and as found - refusing to read a \
+             contradiction as 'not on the chain', which would void the payment"
+        ))),
+        (false, Some(entry)) => entry.location().ok_or_else(|| {
+            DaemonError::Request(format!(
                 "daemon reported transaction {txid} as confirmed but gave no block_height - \
                  refusing to read that as 'not on the chain', which would void the payment"
-            ))),
-        },
-        None => Err(DaemonError::Request(format!(
+            ))
+        }),
+        (false, None) => Err(DaemonError::Request(format!(
             "daemon returned neither a transaction nor a miss for {txid} - refusing to read a \
              non-answer as 'not on the chain', which would void the payment"
         ))),
@@ -643,8 +651,10 @@ fn epee_request(fields: &[(&str, EpeeField<'_>)]) -> Vec<u8> {
 /// rs`'s `fetch_contiguous_blocks`, and against live nodes).
 ///
 /// Pruned: each transaction comes as its prefix and `RingCT` base (what a
-/// scan reads) with the hash of the rest, from which its id is checked
-/// against the block's own list (`BinBlock::into_chain_block`).
+/// scan reads), under the id the block lists for it. Where the hash of the
+/// rest comes too, the id is checked against the body; monerod sends none,
+/// and then the body is only listed under the id
+/// (`BinBlock::into_chain_block`).
 fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
     epee_request(&[
         ("prune", EpeeField::Bool(true)),
@@ -720,7 +730,10 @@ impl BinBlock {
     /// the height (the coinbase names it), so a node answering from another
     /// height is refused rather than its blocks scanned as the ones asked
     /// for; and each transaction's id against the block's own list, so what
-    /// is scanned is what the block holds.
+    /// is scanned is what the block holds. A transaction whose id can't be
+    /// computed from what came (no hash of its pruned part) is kept under
+    /// the listed id as [`IdBinding::Listed`]: the scan fetches it again by
+    /// its id before it takes a payment from it.
     fn into_chain_block(self, height: u64) -> Result<ChainBlock, DaemonError> {
         let blob = self.block.ok_or_else(|| {
             DaemonError::Request(format!("get_blocks.bin: block {height} had no block blob"))
@@ -755,16 +768,18 @@ impl BinBlock {
             (blob.len() + self.txs.iter().map(|entry| entry.blob.len()).sum::<usize>()) as u64;
         let mut txs = Vec::with_capacity(self.txs.len());
         let mut txids = Vec::with_capacity(self.txs.len());
+        let mut bindings = Vec::with_capacity(self.txs.len());
         for (entry, listed) in self.txs.iter().zip(&block.tx_hashes) {
             let txid = hex::encode(listed.0);
-            let tx = decode_tx_blob(&entry.blob, entry.prunable_hash.as_ref(), Some(&txid))
-                .map_err(|e| {
-                    DaemonError::Request(format!("get_blocks.bin: block {height}: {e}"))
-                })?;
+            let (tx, binding) =
+                decode_tx_blob(&entry.blob, entry.prunable_hash.as_ref(), Some(&txid)).map_err(
+                    |e| DaemonError::Request(format!("get_blocks.bin: block {height}: {e}")),
+                )?;
             // Only what the scan reads is kept; the transaction itself is
             // dropped here.
             txs.push(crate::daemon::ScanTx::of(&tx.tx));
             txids.push(txid);
+            bindings.push(binding);
         }
         Ok(ChainBlock {
             height,
@@ -773,26 +788,31 @@ impl BinBlock {
             timestamp: block.header.timestamp.0,
             txs,
             txids,
+            bindings,
             wire_bytes,
         })
     }
 }
 
-/// A transaction blob, whole or pruned, as a transaction with its id.
+/// A transaction blob, whole or pruned, as a transaction with its id, and
+/// how the two are tied.
 ///
 /// The id is computed wherever it can be: a whole transaction hashes to it,
 /// and a pruned version 2 one does together with `prunable_hash`. If the
 /// node (or the block the transaction came in) `claimed` an id, a computed
 /// one that differs is an error: the transaction isn't the one named. Only
 /// where nothing can be computed (a pruned version 1 transaction, or no
-/// prunable hash sent - a node does not send one for every transaction;
-/// stagenet nodes answer `get_blocks.bin` without) is the claimed id taken
-/// as given: in a block, that is the block's own list, which its id covers.
+/// prunable hash sent - monerod sends none with `get_blocks.bin`'s pruned
+/// transactions) is the claimed id taken as given, and the body comes back
+/// [`IdBinding::Listed`]: nothing ties it to the id. Only a block's own
+/// list keeps such a body (`BinBlock::into_chain_block`), for the scan to
+/// fetch again before it takes a payment from it; `TxEntry::fetched` and
+/// `PoolView::apply` refuse it.
 fn decode_tx_blob(
     blob: &[u8],
     prunable_hash: Option<&[u8; 32]>,
     claimed: Option<&str>,
-) -> Result<FetchedTx, String> {
+) -> Result<(FetchedTx, IdBinding), String> {
     let tx = shared::monero_tx::decode_any(blob)
         .map_err(|e| format!("failed to parse a transaction blob: {e}"))?;
     let computed = if shared::monero_tx::is_pruned(&tx) {
@@ -804,17 +824,17 @@ fn decode_tx_blob(
         Some(tx.hash())
     }
     .map(|hash| hex::encode(hash.to_bytes()));
-    let txid = match (computed, claimed) {
+    let (txid, binding) = match (computed, claimed) {
         (Some(computed), Some(claimed)) if computed != claimed => {
             return Err(format!(
                 "a transaction sent as {claimed} hashes to {computed}"
             ))
         }
-        (Some(computed), _) => computed,
-        (None, Some(claimed)) if is_txid(claimed) => claimed.to_owned(),
+        (Some(computed), _) => (computed, IdBinding::Computed),
+        (None, Some(claimed)) if is_txid(claimed) => (claimed.to_owned(), IdBinding::Listed),
         (None, _) => return Err("a pruned transaction came without an id".to_owned()),
     };
-    Ok(FetchedTx { txid, tx })
+    Ok((FetchedTx { txid, tx }, binding))
 }
 
 /// Whether `s` has the shape of a transaction id: 64 lowercase hex digits.
@@ -1151,10 +1171,10 @@ impl PoolView {
             // fetched (and reported) the same way.
             if self.bodies.len() < POOL_BODIES_MAX {
                 match decode_tx_blob(&blob, None, Some(&txid)) {
-                    Ok(fetched) if !shared::monero_tx::is_pruned(&fetched.tx) => {
+                    Ok((fetched, IdBinding::Computed)) => {
                         self.bodies.insert(txid.clone(), fetched.tx);
                     }
-                    Ok(_) => {}
+                    Ok((_, IdBinding::Listed)) => {}
                     Err(error) => shared::throttled!(
                         "pool-body-mismatch",
                         warn,
@@ -1368,7 +1388,11 @@ impl TxEntry {
         }
     }
 
-    /// The transaction with its id, from whichever form the node sent.
+    /// The transaction with its id, from whichever form the node sent,
+    /// computed from it. A pruned one without the hash of the part left out
+    /// (none, or the all-zero "none") is a non-answer: it can't be checked
+    /// against the id it came under, so a node could send any body under
+    /// any id.
     fn fetched(&self) -> Result<FetchedTx, DaemonError> {
         let hex_blob = if self.pruned_as_hex.is_empty() {
             &self.as_hex
@@ -1387,12 +1411,20 @@ impl TxEntry {
             .ok()
             .and_then(|bytes| hash32(&bytes));
         let claimed = self.tx_hash.to_ascii_lowercase();
-        decode_tx_blob(
+        match decode_tx_blob(
             &blob,
             prunable_hash.as_ref(),
             Some(claimed.as_str()).filter(|claimed| !claimed.is_empty()),
         )
-        .map_err(DaemonError::Request)
+        .map_err(DaemonError::Request)?
+        {
+            (fetched, IdBinding::Computed) => Ok(fetched),
+            (fetched, IdBinding::Listed) => Err(DaemonError::Request(format!(
+                "transaction {} came pruned without the hash of its pruned part, so it can't \
+                 be checked against its id",
+                fetched.txid
+            ))),
+        }
     }
 }
 
@@ -1732,6 +1764,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 timestamp: header.timestamp,
                 txs: Vec::new(),
                 txids: Vec::new(),
+                bindings: Vec::new(),
                 wire_bytes: 0,
             });
             1
@@ -2008,36 +2041,25 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let resp = self
             .request_transactions(std::slice::from_ref(&txid.to_owned()))
             .await?;
-        classify_located_transaction(txid, resp)
+        classify_located_transaction(txid, &resp, true)
     }
 
     /// One `/get_transactions` (pruned: only the locations are read) for up
     /// to `TXS_PER_REQUEST` transactions at a time. Only an affirmative
-    /// answer is given for a transaction: the node named it as missed
-    /// (`NotFound`) or sent an entry that places it. Anything else is left
-    /// out, for `locate_transaction` to ask about (and refuse a non-answer).
+    /// answer is given for a transaction, by the rule `locate_transaction`
+    /// reads one with (`classify_located_transaction`). Anything else is
+    /// left out, for `locate_transaction` to ask about (and refuse a
+    /// non-answer).
     async fn locate_transactions(
         &self,
         txids: &[String],
     ) -> Result<HashMap<String, TxLocation>, DaemonError> {
         let mut out = HashMap::with_capacity(txids.len());
         for batch in txids.chunks(TXS_PER_REQUEST) {
-            let wanted: HashSet<&str> = batch.iter().map(String::as_str).collect();
             let resp = self.request_transactions(batch).await?;
-            for missed in &resp.missed_tx {
-                if let Some(txid) = wanted.get(missed.as_str()) {
-                    out.insert(txid.to_string(), TxLocation::NotFound);
-                }
-            }
-            for entry in resp.txs.unwrap_or_default() {
-                let (Some(txid), Some(location)) =
-                    (wanted.get(entry.tx_hash.as_str()), entry.location())
-                else {
-                    continue;
-                };
-                // Named both as missed and as found: no answer at all.
-                if out.insert(txid.to_string(), location).is_some() {
-                    out.remove(*txid);
+            for txid in batch {
+                if let Ok(location) = classify_located_transaction(txid, &resp, batch.len() == 1) {
+                    out.insert(txid.clone(), location);
                 }
             }
         }
@@ -2059,7 +2081,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
             .and_then(|txs| txs.first())
             .map(TxEntry::fetched)
             .transpose();
-        let location = classify_located_transaction(txid, resp)?;
+        let location = classify_located_transaction(txid, &resp, true)?;
         if location == TxLocation::NotFound {
             return Ok(None);
         }
@@ -2194,51 +2216,43 @@ mod tests {
         // spending txid, so nothing else in the system cross-checks that conclusion.
         // Every non-answer therefore has to be an error rather than a "no".
         let txid = "aa".repeat(32);
+        let classify = |resp| classify_located_transaction(&txid, &resp, true);
 
         // The daemon affirmatively says it doesn't have it. This is the only shape
         // that may report NotFound.
         assert_eq!(
-            classify_located_transaction(
-                &txid,
-                GetTransactionsResponse {
-                    txs: None,
-                    missed_tx: vec![txid.clone()]
-                }
-            )
+            classify(GetTransactionsResponse {
+                txs: None,
+                missed_tx: vec![txid.clone()]
+            })
             .unwrap(),
             TxLocation::NotFound
         );
 
         // Ordinary positive answers are unaffected.
         assert_eq!(
-            classify_located_transaction(
-                &txid,
-                GetTransactionsResponse {
-                    txs: Some(vec![TxEntry {
-                        as_hex: String::new(),
-                        in_pool: false,
-                        block_height: Some(3_755_690),
-                        ..Default::default()
-                    }]),
-                    missed_tx: vec![],
-                }
-            )
+            classify(GetTransactionsResponse {
+                txs: Some(vec![TxEntry {
+                    as_hex: String::new(),
+                    in_pool: false,
+                    block_height: Some(3_755_690),
+                    ..Default::default()
+                }]),
+                missed_tx: vec![],
+            })
             .unwrap(),
             TxLocation::InBlock(3_755_690)
         );
         assert_eq!(
-            classify_located_transaction(
-                &txid,
-                GetTransactionsResponse {
-                    txs: Some(vec![TxEntry {
-                        as_hex: String::new(),
-                        in_pool: true,
-                        block_height: None,
-                        ..Default::default()
-                    }]),
-                    missed_tx: vec![],
-                }
-            )
+            classify(GetTransactionsResponse {
+                txs: Some(vec![TxEntry {
+                    as_hex: String::new(),
+                    in_pool: true,
+                    block_height: None,
+                    ..Default::default()
+                }]),
+                missed_tx: vec![],
+            })
             .unwrap(),
             TxLocation::InPool
         );
@@ -2250,13 +2264,10 @@ mod tests {
         // transaction is gone from the chain", which for a *confirmed* payment means
         // its own key images come back SpentInBlockchain and it gets voided as a
         // double-spend.
-        let err = classify_located_transaction(
-            &txid,
-            GetTransactionsResponse {
-                txs: None,
-                missed_tx: vec![],
-            },
-        )
+        let err = classify(GetTransactionsResponse {
+            txs: None,
+            missed_tx: vec![],
+        })
         .unwrap_err();
         assert!(
             err.to_string().contains("neither a transaction nor a miss"),
@@ -2269,30 +2280,56 @@ mod tests {
 
         // ...and a miss reported for some *other* hash is equally not an answer about
         // this one.
-        classify_located_transaction(
-            &txid,
-            GetTransactionsResponse {
-                txs: None,
-                missed_tx: vec!["bb".repeat(32)],
-            },
-        )
+        classify(GetTransactionsResponse {
+            txs: None,
+            missed_tx: vec!["bb".repeat(32)],
+        })
         .unwrap_err();
 
         // "Confirmed, but I won't say where" is self-contradictory, not a miss.
-        let err = classify_located_transaction(
-            &txid,
-            GetTransactionsResponse {
-                txs: Some(vec![TxEntry {
-                    as_hex: String::new(),
-                    in_pool: false,
-                    block_height: None,
-                    ..Default::default()
-                }]),
-                missed_tx: vec![],
-            },
-        )
+        let err = classify(GetTransactionsResponse {
+            txs: Some(vec![TxEntry {
+                as_hex: String::new(),
+                in_pool: false,
+                block_height: None,
+                ..Default::default()
+            }]),
+            missed_tx: vec![],
+        })
         .unwrap_err();
         assert!(err.to_string().contains("no block_height"), "got {err}");
+
+        // Named as missed and placed too, in the pool or in a block: a
+        // contradiction, not a miss. The batched lookup reads it the same way.
+        for placed in [
+            TxEntry {
+                tx_hash: txid.clone(),
+                in_pool: true,
+                ..Default::default()
+            },
+            TxEntry {
+                tx_hash: txid.clone(),
+                in_pool: false,
+                block_height: Some(3_755_690),
+                ..Default::default()
+            },
+        ] {
+            let err = classify(GetTransactionsResponse {
+                txs: Some(vec![placed]),
+                missed_tx: vec![txid.clone()],
+            })
+            .unwrap_err();
+            assert!(err.to_string().contains("both as missed"), "got {err}");
+        }
+        // A miss in upper case is a miss of the same transaction.
+        assert_eq!(
+            classify(GetTransactionsResponse {
+                txs: None,
+                missed_tx: vec![txid.to_ascii_uppercase()],
+            })
+            .unwrap(),
+            TxLocation::NotFound
+        );
     }
 
     /// The response shapes a real node sends, field by field, including the
@@ -3031,36 +3068,41 @@ mod wire_tests {
 
     /// A pruned transaction is taken under an id only if it hashes to it
     /// (with the hash of its pruned part); where nothing can be computed,
-    /// the id it was sent under stands; with neither, it is refused.
+    /// the id it was sent under stands, but only as listed; with neither,
+    /// it is refused.
     #[test]
     fn a_transaction_blob_is_checked_against_the_id_it_came_under() {
         let (txid, blob, prunable) = pruned_fixture();
         let whole = hex::decode(FIXTURE_TX_HEX.trim()).unwrap();
+        let id = |decoded: (FetchedTx, IdBinding)| (decoded.0.txid, decoded.1);
+        let computed = (txid.clone(), IdBinding::Computed);
         // Whole: hashed, whatever was claimed.
-        assert_eq!(decode_tx_blob(&whole, None, None).unwrap().txid, txid);
+        assert_eq!(id(decode_tx_blob(&whole, None, None).unwrap()), computed);
         assert_eq!(
-            decode_tx_blob(&whole, None, Some(&txid)).unwrap().txid,
-            txid
+            id(decode_tx_blob(&whole, None, Some(&txid)).unwrap()),
+            computed
         );
         let error = decode_tx_blob(&whole, None, Some(B)).unwrap_err();
         assert!(error.contains("hashes to"), "{error}");
         // Pruned, with the hash of the rest: computed, and checked.
-        let fetched = decode_tx_blob(&blob, Some(&prunable), None).unwrap();
+        let (fetched, _) = decode_tx_blob(&blob, Some(&prunable), None).unwrap();
         assert_eq!(fetched.txid, txid);
         assert!(shared::monero_tx::is_pruned(&fetched.tx));
         assert_eq!(
-            decode_tx_blob(&blob, Some(&prunable), Some(&txid))
-                .unwrap()
-                .txid,
-            txid
+            id(decode_tx_blob(&blob, Some(&prunable), Some(&txid)).unwrap()),
+            computed
         );
         decode_tx_blob(&blob, Some(&prunable), Some(B)).unwrap_err();
         decode_tx_blob(&blob, Some(&[7; 32]), Some(&txid)).unwrap_err();
-        // Pruned, no hash of the rest (or the all-zero "none"): as claimed.
-        assert_eq!(decode_tx_blob(&blob, None, Some(&txid)).unwrap().txid, txid);
+        // Pruned, no hash of the rest (or the all-zero "none"): as claimed,
+        // and only listed under it.
         assert_eq!(
-            decode_tx_blob(&blob, Some(&[0; 32]), Some(B)).unwrap().txid,
-            B
+            id(decode_tx_blob(&blob, None, Some(&txid)).unwrap()),
+            (txid.clone(), IdBinding::Listed)
+        );
+        assert_eq!(
+            id(decode_tx_blob(&blob, Some(&[0; 32]), Some(B)).unwrap()),
+            (B.to_owned(), IdBinding::Listed)
         );
         // ...and refused with no usable id at all.
         decode_tx_blob(&blob, None, None).unwrap_err();
@@ -3154,6 +3196,30 @@ mod wire_tests {
         assert_eq!(fetched.len(), 1);
         assert_eq!(fetched[0].txid, a);
         assert!(shared::monero_tx::is_pruned(&fetched[0].tx));
+
+        // A pruned body without the hash of its pruned part (none, or the
+        // all-zero "none") can't be checked against its id: left out, not
+        // taken under the id it came with.
+        for prunable_hash in [Some(String::new()), Some("0".repeat(64)), None] {
+            let (client, node) = scripted().await;
+            let mut entry = pruned_entry(&a, &blob);
+            match prunable_hash {
+                Some(hash) => entry["prunable_hash"] = json!(hash),
+                None => {
+                    entry.as_object_mut().unwrap().remove("prunable_hash");
+                }
+            }
+            node.answer(
+                "/get_transactions",
+                json!({ "status": "OK", "txs": [entry] }).to_string(),
+            );
+            assert!(client
+                .get_transactions_with_ids(std::slice::from_ref(&a))
+                .await
+                .unwrap()
+                .is_empty());
+            client.find_transaction(&a).await.unwrap_err();
+        }
 
         // The same transaction, found with where it is.
         let (client, node) = scripted().await;
@@ -3687,11 +3753,31 @@ mod wire_tests {
             .into_chain_block(height)
             .unwrap_err();
         assert!(error.to_string().contains("hashes to"), "{error}");
-        // No hash of the pruned part: the block's list is what names it.
-        assert_eq!(
-            entry(&txid, None).into_chain_block(height).unwrap().txids,
-            vec![txid]
-        );
+        assert_eq!(block.bindings, vec![IdBinding::Computed]);
+        // No hash of the pruned part: the block's list is what names it,
+        // and only names it: nothing ties the body to the id.
+        let listed = entry(&txid, None).into_chain_block(height).unwrap();
+        assert_eq!(listed.txids, vec![txid.clone()]);
+        assert_eq!(listed.bindings, vec![IdBinding::Listed]);
+        // ...so a made-up body under it comes the same way: listed, never
+        // as the transaction.
+        let whole = whole_tx();
+        let mut prefix = whole.prefix.clone();
+        prefix.unlock_time = monero::VarInt(1);
+        let mut forged_blob = serialize(&prefix);
+        forged_blob.extend(serialize(whole.rct_signatures.sig.as_ref().unwrap()));
+        let forged = BinBlock {
+            block: Some(block_listing(&txid)),
+            txs: vec![BinTx {
+                blob: forged_blob,
+                prunable_hash: None,
+            }],
+        }
+        .into_chain_block(height)
+        .unwrap();
+        assert_eq!(forged.txids, vec![txid]);
+        assert_eq!(forged.bindings, vec![IdBinding::Listed]);
+        assert_ne!(forged.txs, listed.txs);
     }
 }
 
