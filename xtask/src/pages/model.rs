@@ -173,7 +173,7 @@ impl Area {
             Area::Custody => CUSTODY_CRATES.is_match(krate) || CUSTODY.is_match(group),
             Area::Storage => STORAGE.is_match(group),
             Area::Rates => RATES.is_match(group),
-            Area::Abuse => ABUSE.is_match(group),
+            Area::Abuse => krate == "abuse" || ABUSE.is_match(group),
             Area::Logs => krate == "telemetry" || LOGS.is_match(group),
             Area::Woo => krate == "mock-woocommerce",
             Area::Tools => tool && krate != "mock-woocommerce",
@@ -460,6 +460,12 @@ mod tests {
             .find(|a| a.claims(&webhook, false))
             .unwrap();
         assert_eq!(webhook.area, Area::Webhooks);
+        let mut limiter = rust_case(&test("abuse", "limiter::tests::refuses"));
+        limiter.area = Area::ALL
+            .into_iter()
+            .find(|a| a.claims(&limiter, false))
+            .unwrap();
+        assert_eq!(limiter.area, Area::Abuse);
         let mut wallet = rust_case(&test("cli-wallet", "amount::tests::parses"));
         assert!(Area::Tools.claims(&wallet, true));
         wallet.area = Area::ALL

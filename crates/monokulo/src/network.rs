@@ -17,10 +17,10 @@
 use axum::extract::ConnectInfo;
 use axum::http::{header, Extensions, HeaderMap, HeaderValue};
 
-use crate::abuse::proxy_protocol::OnionPeer;
-use crate::abuse::TrustedProxies;
 use crate::settings::{MonokuloSettings, TorMode};
 use crate::tor::Tor;
+use abuse::proxy_protocol::OnionPeer;
+use abuse::TrustedProxies;
 
 /// Which network a request arrived on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

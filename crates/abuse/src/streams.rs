@@ -20,7 +20,7 @@
 //! A client is cheap to multiply (a new Tor circuit is one), so there are
 //! two ceilings above it: streams to one store from everyone together, and
 //! streams in all. Each open stream costs a connection and a task (its
-//! engine reads are shared per order, `crate::live::SharedDetail`).
+//! engine reads are shared per order, monokulo's `live::SharedDetail`).
 
 use parking_lot::Mutex;
 use std::collections::HashMap;

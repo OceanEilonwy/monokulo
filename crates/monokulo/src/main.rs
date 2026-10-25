@@ -195,7 +195,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // settings by the registry, which reconfigures them in place whenever
     // the admin page saves or reloads the options file.
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only());
-    let abuse = Arc::new(monokulo::abuse::AbuseProtection::default());
+    let abuse = Arc::new(abuse::AbuseProtection::default());
     let onion = settings::OnionReloadable::default();
     let monokulo_settings = match settings::MonokuloSettings::load(
         settings::DbSettings::new(db.clone(), encryption_key.clone()),
@@ -286,7 +286,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         engine,
     };
     let router = build_router(app_state);
-    // The onion listener (`monokulo::abuse::proxy_protocol`): same router,
+    // The onion listener (`abuse::proxy_protocol`): same router,
     // but every connection must start with tor's PROXY header, which names
     // the Tor circuit - each circuit is then its own client.
     onion.router_ready(router.clone());

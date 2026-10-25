@@ -234,7 +234,7 @@ async fn state(engine: axum::Router, public_uri: Option<&str>, onion: bool) -> A
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::embedded_for_tests(
             engine,
         )),
-        abuse: abuse(crate::abuse::AbuseConfig::default()),
+        abuse: abuse(abuse::AbuseConfig::default()),
         ..AppState::for_tests()
     }
     .with_options(&options(public_uri, onion))
@@ -449,7 +449,7 @@ async fn record_handshake_failures(
 
     let limited = with_abuse(
         state,
-        crate::abuse::AbuseConfig {
+        abuse::AbuseConfig {
             soft_per_min: 1,
             hard_per_min: 1,
             ..Default::default()
@@ -663,11 +663,7 @@ async fn rate_limited_coingecko(secs: u64) -> String {
 
 /// `router` on a Monokulo like `state` but with abuse protection `config`,
 /// on the recording's clock ([`abuse`]).
-fn with_abuse(
-    state: &AppState,
-    config: crate::abuse::AbuseConfig,
-    recorder: &Recorder,
-) -> axum::Router {
+fn with_abuse(state: &AppState, config: abuse::AbuseConfig, recorder: &Recorder) -> axum::Router {
     recorder.around(build_router(AppState {
         abuse: abuse(config),
         ..state.clone()
@@ -678,11 +674,8 @@ fn with_abuse(
 /// how long a client is told to wait (`retry_after`, `Retry-After`) and
 /// when a challenge expires depend on where in the minute its requests
 /// fall, so on the system's clock they'd change from run to run.
-fn abuse(config: crate::abuse::AbuseConfig) -> Arc<crate::abuse::AbuseProtection> {
-    Arc::new(
-        crate::abuse::AbuseProtection::new(config)
-            .with_clock(crate::abuse::Clock::Fixed(RECORDED_AT)),
-    )
+fn abuse(config: abuse::AbuseConfig) -> Arc<abuse::AbuseProtection> {
+    Arc::new(abuse::AbuseProtection::new(config).with_clock(abuse::Clock::Fixed(RECORDED_AT)))
 }
 
 /// Runs a statement on `state`'s database, to make it fail for a moment.
@@ -807,7 +800,7 @@ async fn record_route_problems(
     // asked to solve a challenge, on every route that asks one.
     let limited = with_abuse(
         state,
-        crate::abuse::AbuseConfig {
+        abuse::AbuseConfig {
             soft_per_min: 1,
             hard_per_min: 1,
             per_store_key_per_min: 1,
@@ -838,7 +831,7 @@ async fn record_route_problems(
     }
     let under_attack = with_abuse(
         state,
-        crate::abuse::AbuseConfig {
+        abuse::AbuseConfig {
             under_attack: true,
             ..Default::default()
         },
@@ -861,7 +854,7 @@ async fn record_route_problems(
     // A client with as many streams open on the store as it may.
     let one_stream = with_abuse(
         state,
-        crate::abuse::AbuseConfig {
+        abuse::AbuseConfig {
             stream_cap: 1,
             ..Default::default()
         },
@@ -1427,7 +1420,7 @@ async fn state_without_address(engine: axum::Router) -> AppState {
     state(engine, None, false).await
 }
 
-/// A challenge (`crate::abuse::challenge`: the hex of
+/// A challenge (`abuse::challenge`: the hex of
 /// `pow|<difficulty>|<expires>|<client>|<random>`, a dot, the hex of its
 /// HMAC) with its two random parts, the nonce and the HMAC under this
 /// process's random key, made zeros of the same length. Those are random

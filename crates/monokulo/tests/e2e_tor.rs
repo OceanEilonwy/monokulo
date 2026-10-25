@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use monokulo::abuse::proxy_protocol::{OnionListener, OnionPeer};
-use monokulo::abuse::ClientIdentity;
+use abuse::proxy_protocol::{OnionListener, OnionPeer};
+use abuse::ClientIdentity;
 use monokulo::db::Db;
 use monokulo::engine_client::{CreateTenantRequest, EngineClient};
 use monokulo::http::{build_router, AppState};

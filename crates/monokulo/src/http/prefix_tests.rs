@@ -194,7 +194,7 @@ impl Walk {
             .unwrap();
         if self.over_tor {
             request.extensions_mut().insert(axum::extract::ConnectInfo(
-                crate::abuse::proxy_protocol::OnionPeer {
+                abuse::proxy_protocol::OnionPeer {
                     source: "fc00:dead:beef:4dad::1".parse().unwrap(),
                 },
             ));
@@ -405,7 +405,7 @@ async fn the_session_cookie_is_scoped_to_the_base_path() {
         );
         if onion {
             request.extensions_mut().insert(axum::extract::ConnectInfo(
-                crate::abuse::proxy_protocol::OnionPeer {
+                abuse::proxy_protocol::OnionPeer {
                     source: "fc00:dead:beef:4dad::1".parse().unwrap(),
                 },
             ));

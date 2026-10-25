@@ -224,7 +224,7 @@ With L1 + L2 the properties can stay in the local default and the run stays unde
 
 ### Q6. The clock waits, in detail
 
-**What the challenge's 10 s wait is for.** When an anonymous visitor goes over the soft rate limit, pages show "Checking your connection". A browser with JavaScript solves a small proof-of-work puzzle. Without JavaScript (for example Tor Browser on Safest), the page instead gives a signed token that only works 10 s after it was issued: waiting is the proof (`crates/monokulo/src/abuse/challenge.rs:16-19, 43`). That makes the wait a throttle, and it stays a fixed constant.
+**What the challenge's 10 s wait is for.** When an anonymous visitor goes over the soft rate limit, pages show "Checking your connection". A browser with JavaScript solves a small proof-of-work puzzle. Without JavaScript (for example Tor Browser on Safest), the page instead gives a signed token that only works 10 s after it was issued: waiting is the proof (`crates/abuse/src/challenge.rs:16-19, 43`). That makes the wait a throttle, and it stays a fixed constant.
 
 One mechanism doesn't fit all 8 tests. Three fixes apply:
 

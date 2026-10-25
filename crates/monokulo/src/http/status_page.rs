@@ -506,7 +506,7 @@ pub async fn status_events(
     authed: Option<super::AuthedUser>,
     extensions: axum::http::Extensions,
 ) -> Response {
-    let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
+    let permit = match extensions.get::<abuse::ClientIdentity>() {
         Some(client) => match state.abuse.streams.try_acquire(client, "status") {
             Some(permit) => Some(permit),
             None => {

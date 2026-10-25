@@ -21,7 +21,7 @@ use super::{
     circuit_peer, Tor, TorConnections, TorListener, TorStatus, Wanted, CTOR_NICKNAME,
     HOSTNAME_FILE, NICKNAME,
 };
-use crate::abuse::proxy_protocol::OnionPeer;
+use abuse::proxy_protocol::OnionPeer;
 
 /// How long after an error the service starts again.
 const RETRY: Duration = Duration::from_secs(30);

@@ -777,7 +777,7 @@ fn gone() -> crate::live::LiveSnapshot {
 /// with the clock rather than with the order.
 ///
 /// One client may hold only so many of these open per store at once
-/// (`crate::abuse::streams`); past that the request gets `429`.
+/// (`abuse::streams`); past that the request gets `429`.
 pub async fn checkout_events(
     CheckoutEventsPath { order_id }: CheckoutEventsPath,
     State(state): State<AppState>,
@@ -795,7 +795,7 @@ pub async fn checkout_events(
     };
     // The client `http::abuse` identified; absent only when a test drives
     // the router without a connection, which fails open.
-    let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
+    let permit = match extensions.get::<abuse::ClientIdentity>() {
         Some(client) => match state
             .abuse
             .streams
@@ -1799,12 +1799,10 @@ mod tests {
     #[tokio::test]
     async fn one_source_may_hold_only_so_many_open_streams_per_store() {
         let (mut state, _engine) = test_state_with_real_engine().await;
-        state.abuse = std::sync::Arc::new(crate::abuse::AbuseProtection::new(
-            crate::abuse::AbuseConfig {
-                stream_cap: 1,
-                ..Default::default()
-            },
-        ));
+        state.abuse = std::sync::Arc::new(abuse::AbuseProtection::new(abuse::AbuseConfig {
+            stream_cap: 1,
+            ..Default::default()
+        }));
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,

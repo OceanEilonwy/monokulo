@@ -3,7 +3,7 @@
 //! naming the Tor circuit it arrived on (`HiddenServiceExportCircuitID
 //! haproxy` in `torrc`; see `deploy/tor/torrc.snippet`). Used with an
 //! external tor (`tor.mode = external`); Tor inside monokulo hands its
-//! streams over directly (`crate::tor::TorListener`).
+//! streams over directly (monokulo's `tor::TorListener`).
 //!
 //! From the tor manual: the header looks like
 //! `PROXY TCP6 fc00:dead:beef:4dad::ffff:ffff ::1 65535 42\r\n`, and the
@@ -209,8 +209,17 @@ impl Listener for OnionListener {
     }
 }
 
-impl Connected<IncomingStream<'_, OnionListener>> for OnionPeer {
-    fn connect_info(stream: IncomingStream<'_, OnionListener>) -> Self {
+/// A listener whose connections come from onion visitors, each with the
+/// circuit it arrived on: the [`OnionListener`] here, and Tor inside
+/// monokulo's own listener, which hands its streams over directly. Served
+/// with `into_make_service_with_connect_info::<OnionPeer>()`, each request
+/// sees its [`OnionPeer`].
+pub trait OnionPeerListener: Listener<Addr = OnionPeer> {}
+
+impl OnionPeerListener for OnionListener {}
+
+impl<L: OnionPeerListener> Connected<IncomingStream<'_, L>> for OnionPeer {
+    fn connect_info(stream: IncomingStream<'_, L>) -> Self {
         *stream.remote_addr()
     }
 }

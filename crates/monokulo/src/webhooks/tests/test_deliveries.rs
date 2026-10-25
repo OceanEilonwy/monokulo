@@ -387,8 +387,8 @@ async fn a_store_sends_at_most_six_tests_a_minute() {
     // minute, so it can't roll over halfway through.
     let state = AppState {
         abuse: Arc::new(
-            crate::abuse::AbuseProtection::new(shop.state.abuse.config())
-                .with_clock(crate::abuse::Clock::Fixed(1_767_225_615)),
+            abuse::AbuseProtection::new(shop.state.abuse.config())
+                .with_clock(abuse::Clock::Fixed(1_767_225_615)),
         ),
         ..shop.state.clone()
     };

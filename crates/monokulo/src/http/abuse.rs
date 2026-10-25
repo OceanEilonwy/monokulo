@@ -1,4 +1,4 @@
-//! The HTTP side of abuse protection (`crate::abuse`): who each request is
+//! The HTTP side of abuse protection (`abuse`): who each request is
 //! from, what that client may do, and the challenge it gets past its soft
 //! limit (steps 9a, 9c and 9d).
 //!
@@ -31,7 +31,7 @@
 //! | Logs (browser, POS and plugin reports) | continue | - | `429` + `Retry-After`, report dropped |
 //!
 //! Log reports have a budget of their own (`abuse.client_logs_per_min`,
-//! [`crate::abuse::AbuseProtection::check_logs`]) and don't count against
+//! [`abuse::AbuseProtection::check_logs`]) and don't count against
 //! the client's main one, so a page that reports a lot of problems never
 //! gets its visitor challenged or blocked, and a client spamming reports
 //! only loses its reports.
@@ -48,7 +48,7 @@
 //! no-JavaScript wait), or the `Monokulo-Proof` header on the machine API. It
 //! grants the client a pass; a page is then redirected to itself without the
 //! parameter. A solved proof's pass covers everything; a wait's covers pages
-//! only (`crate::abuse::Pass::covers`), so the API still costs the work.
+//! only (`abuse::Pass::covers`), so the API still costs the work.
 
 use std::net::SocketAddr;
 
@@ -58,11 +58,10 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
-use crate::abuse::proxy_protocol::OnionPeer;
-use crate::abuse::stats::Event;
-pub use crate::abuse::RouteClass;
-use crate::abuse::{identity, ClientIdentity, Tier, TrustedProxies};
 use crate::views;
+use abuse::proxy_protocol::OnionPeer;
+use abuse::stats::Event;
+use abuse::{identity, ClientIdentity, RouteClass, Tier, TrustedProxies};
 
 use super::store_key::{self, KeyCheck, RequestStore};
 use super::AppState;
@@ -539,8 +538,8 @@ mod tests {
     use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
-    use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
     use crate::db::Db;
+    use abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
 
     use super::super::{build_router, AppState};
 
@@ -767,7 +766,7 @@ mod tests {
         assert!(html.contains("Please wait a few more seconds."), "{html}");
 
         // The solved proof redeems, redirects to the page without the parameter...
-        let nonce = crate::abuse::challenge::solve(&challenge, 8);
+        let nonce = abuse::challenge::solve(&challenge, 8);
         let proof = format!("{page}&monokulo_proof={challenge}.{nonce}");
         let response = router.clone().oneshot(get(&proof, peer)).await.unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -814,12 +813,9 @@ mod tests {
         let mut retry = get(uri, peer);
         retry.headers_mut().insert(
             "monokulo-proof",
-            format!(
-                "{challenge}.{}",
-                crate::abuse::challenge::solve(&challenge, 8)
-            )
-            .parse()
-            .unwrap(),
+            format!("{challenge}.{}", abuse::challenge::solve(&challenge, 8))
+                .parse()
+                .unwrap(),
         );
         assert_eq!(
             router.clone().oneshot(retry).await.unwrap().status(),
@@ -836,12 +832,9 @@ mod tests {
             .unwrap();
         stolen.headers_mut().insert(
             "monokulo-proof",
-            format!(
-                "{challenge}.{}",
-                crate::abuse::challenge::solve(&challenge, 8)
-            )
-            .parse()
-            .unwrap(),
+            format!("{challenge}.{}", abuse::challenge::solve(&challenge, 8))
+                .parse()
+                .unwrap(),
         );
         let response = router.clone().oneshot(stolen).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
@@ -863,7 +856,7 @@ mod tests {
                         hard_per_min: 2,
                         ..Default::default()
                     })
-                    .with_clock(crate::abuse::Clock::Fixed(1_767_225_630)),
+                    .with_clock(abuse::Clock::Fixed(1_767_225_630)),
                 ),
                 ..state(AbuseConfig::default())
             });
@@ -1196,7 +1189,7 @@ mod tests {
         state
             .abuse
             .stats
-            .record(crate::abuse::stats::Event::Issued, crate::now_unix());
+            .record(abuse::stats::Event::Issued, crate::now_unix());
         let router = build_router(state);
         let page = |cookie: Option<&'static str>| {
             let mut request = Request::builder()

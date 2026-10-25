@@ -12,6 +12,12 @@
 //!
 //! Everything here is in memory and per process: nothing is written to the
 //! database and no cookie is ever set.
+//!
+//! This crate holds no settings of its own. Monokulo's settings registry
+//! (`monokulo::settings`) reads, checks and reloads the operator's values,
+//! builds an [`AbuseConfig`] from them and hands it to [`AbuseProtection`];
+//! the registry's defaults are [`AbuseConfig::default`]'s. Its HTTP side
+//! (middleware, the challenge page, `429`s) is monokulo's `http::abuse`.
 
 pub mod challenge;
 pub mod identity;
@@ -26,11 +32,9 @@ use std::sync::Arc;
 pub use identity::{ClientIdentity, TrustedProxies};
 pub use limiter::{Limits, Pass, PassGrant, RouteClass, Tier};
 
-use crate::settings;
-
-/// The abuse-protection settings in force, read from the settings table
-/// (`crate::settings`) at startup and again whenever the admin settings
-/// page saves ([`AbuseProtection::reload`]).
+/// The abuse-protection settings in force. Monokulo builds it from its
+/// settings registry (`monokulo::settings`) at startup and again whenever
+/// the admin settings page saves ([`AbuseProtection::reload`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct AbuseConfig {
     pub trusted_proxies: TrustedProxies,
@@ -53,18 +57,20 @@ pub struct AbuseConfig {
     pub under_attack: bool,
 }
 
+/// The defaults, which are also the settings registry's: no trusted
+/// proxies, a challenge past 60 requests a minute and a refusal past 300.
 impl Default for AbuseConfig {
     fn default() -> Self {
         AbuseConfig {
             trusted_proxies: TrustedProxies::default(),
-            soft_per_min: settings::ABUSE_SOFT_PER_MIN.default_value(),
-            hard_per_min: settings::ABUSE_HARD_PER_MIN.default_value(),
-            signed_in_per_min: settings::ABUSE_SIGNED_IN_PER_MIN.default_value(),
-            client_logs_per_min: settings::ABUSE_CLIENT_LOGS_PER_MIN.default_value(),
-            per_store_key_per_min: settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN.default_value(),
-            stream_cap: settings::ABUSE_STREAM_CAP.default_value(),
-            challenge_bits: settings::ABUSE_CHALLENGE_BITS.default_value(),
-            under_attack: settings::ABUSE_UNDER_ATTACK.default_value(),
+            soft_per_min: 60,
+            hard_per_min: 300,
+            signed_in_per_min: 600,
+            client_logs_per_min: 30,
+            per_store_key_per_min: 600,
+            stream_cap: 16,
+            challenge_bits: 16,
+            under_attack: false,
         }
     }
 }
@@ -109,14 +115,14 @@ impl Clock {
     /// Seconds since the Unix epoch, by this clock.
     pub fn now(self) -> i64 {
         match self {
-            Clock::System => crate::now_unix(),
+            Clock::System => service_runtime::time::now_unix(),
             Clock::Fixed(at) => at,
         }
     }
 }
 
 /// All abuse-protection state for one monokulo process, shared by every
-/// request (`AppState::abuse`).
+/// request (monokulo's `AppState::abuse`).
 pub struct AbuseProtection {
     config: RwLock<AbuseConfig>,
     /// What its limits and challenges read the time from.

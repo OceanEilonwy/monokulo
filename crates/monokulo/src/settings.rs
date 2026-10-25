@@ -38,9 +38,9 @@ use live_settings::{
     Snapshot, Warning,
 };
 
-use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
 use crate::db::Database;
 use crate::exchange_rate_config::{ExchangeRateConfig, ExchangeRateProviders};
+use abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
 
 choice_value! {
     /// Who may sign up.
@@ -124,7 +124,7 @@ fn check_trusted_proxies(value: &str) -> Result<(), String> {
 }
 
 fn check_onion_listener(value: &str) -> Result<(), String> {
-    crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ())
+    abuse::proxy_protocol::validate_onion_listener(value).map(|_| ())
 }
 
 fn check_onion_uri(value: &str) -> Result<(), String> {
@@ -280,7 +280,7 @@ settings! {
     },
     RATE_LIMIT_PER_STORE_KEY_PER_MIN: u32 {
         key: "rate_limit.per_store_key_per_min",
-        default: 600,
+        default: abuse::AbuseConfig::default().per_store_key_per_min,
         check: range(1, 10_000_000),
         description: "Requests a minute a shop's server may make with its store's secret key (for example a shop plugin creating orders). These are never challenged.",
         example: "600",
@@ -432,49 +432,49 @@ settings! {
     },
     ABUSE_STREAM_CAP: usize {
         key: "abuse.stream_cap",
-        default: 16,
+        default: abuse::AbuseConfig::default().stream_cap,
         check: range(1, 100_000),
         description: "Live-update streams one client may hold open at once to one store.",
         example: "16",
     },
     ABUSE_SOFT_PER_MIN: u32 {
         key: "abuse.soft_per_min",
-        default: 60,
+        default: abuse::AbuseConfig::default().soft_per_min,
         check: range(1, 10_000_000),
         description: "Requests a minute one visitor (a Tor circuit, or an address) may make to the checkout and public pages before being asked to solve a short challenge. Signed-in merchants and shops using their secret key are never challenged.",
         example: "60",
     },
     ABUSE_HARD_PER_MIN: u32 {
         key: "abuse.hard_per_min",
-        default: 300,
+        default: abuse::AbuseConfig::default().hard_per_min,
         check: range(1, 10_000_000),
         description: "Requests a minute past which a visitor is refused outright (429) until the minute is up. Must be above the soft limit.",
         example: "300",
     },
     ABUSE_SIGNED_IN_PER_MIN: u32 {
         key: "abuse.signed_in_per_min",
-        default: 600,
+        default: abuse::AbuseConfig::default().signed_in_per_min,
         check: range(1, 10_000_000),
         description: "Requests a minute a signed-in merchant may make (dashboard, POS). Never challenged.",
         example: "600",
     },
     ABUSE_CLIENT_LOGS_PER_MIN: u32 {
         key: "abuse.client_logs_per_min",
-        default: 30,
+        default: abuse::AbuseConfig::default().client_logs_per_min,
         check: range(1, 100_000),
         description: "Log reports a minute one client may send (browser problem reports, POS session timelines, shop plugin errors). Past it, reports are dropped with a 429 - never a challenge - and the client's other requests are unaffected.",
         example: "30",
     },
     ABUSE_CHALLENGE_BITS: u32 {
         key: "abuse.challenge_bits",
-        default: 16,
+        default: abuse::AbuseConfig::default().challenge_bits,
         check: range(8, 24),
         description: "How hard the challenge is, in leading zero bits of a SHA-256 hash. Each extra bit doubles the work; 16 takes a phone about a second.",
         example: "16",
     },
     ABUSE_UNDER_ATTACK: bool {
         key: "abuse.under_attack",
-        default: false,
+        default: abuse::AbuseConfig::default().under_attack,
         description: "When on, every visitor who isn't signed in must pass a challenge before using the checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
         example: "false",
         sources: [Database],
@@ -983,7 +983,14 @@ impl Section for ExchangeRateConfig {
     }
 }
 
-impl Section for AbuseConfig {
+/// The abuse-protection settings as a section of the registry: the
+/// `abuse` crate's [`AbuseConfig`], built from (and checked against) the
+/// settings here. A wrapper because the crate owns the type and
+/// `live_settings` the trait.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AbuseSettings(pub AbuseConfig);
+
+impl Section for AbuseSettings {
     const NAME: &'static str = "abuse protection";
     fn keys() -> &'static [&'static dyn AnySetting] {
         &[
@@ -1007,7 +1014,7 @@ impl Section for AbuseConfig {
                 format!("abuse.hard_per_min ({hard}) must be above abuse.soft_per_min ({soft})."),
             )]);
         }
-        Ok(AbuseConfig {
+        Ok(AbuseSettings(AbuseConfig {
             trusted_proxies: TrustedProxies::parse(&snapshot.get(&ABUSE_TRUSTED_PROXIES))
                 .unwrap_or_default(),
             soft_per_min: soft,
@@ -1018,7 +1025,7 @@ impl Section for AbuseConfig {
             stream_cap: snapshot.get(&ABUSE_STREAM_CAP),
             challenge_bits: snapshot.get(&ABUSE_CHALLENGE_BITS),
             under_attack: snapshot.get(&ABUSE_UNDER_ATTACK),
-        })
+        }))
     }
 }
 
@@ -1034,7 +1041,7 @@ impl Section for OnionListenerConfig {
         &[&ABUSE_ONION_LISTENER]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        crate::abuse::proxy_protocol::validate_onion_listener(&snapshot.get(&ABUSE_ONION_LISTENER))
+        abuse::proxy_protocol::validate_onion_listener(&snapshot.get(&ABUSE_ONION_LISTENER))
             .map(|address| OnionListenerConfig { address })
             .map_err(|e| vec![FieldError::new(ABUSE_ONION_LISTENER.key, e)])
     }
@@ -1264,15 +1271,15 @@ pub struct AbuseReloadable {
 
 #[live_settings::async_trait]
 impl live_settings::Reloadable for AbuseReloadable {
-    type Config = AbuseConfig;
+    type Config = AbuseSettings;
     type Prepared = AbuseConfig;
 
     async fn prepare(
         &self,
-        new: &AbuseConfig,
-        _old: &AbuseConfig,
+        new: &AbuseSettings,
+        _old: &AbuseSettings,
     ) -> Result<(AbuseConfig, Vec<Warning>), FieldError> {
-        Ok((new.clone(), Vec::new()))
+        Ok((new.0.clone(), Vec::new()))
     }
 
     async fn install(&self, config: AbuseConfig) {
@@ -1299,7 +1306,7 @@ pub struct OnionReloadable {
 struct OnionInner {
     router: OnceLock<axum::Router>,
     running: parking_lot::Mutex<Option<tokio::sync::watch::Sender<bool>>>,
-    waiting: parking_lot::Mutex<Option<crate::abuse::proxy_protocol::OnionListener>>,
+    waiting: parking_lot::Mutex<Option<abuse::proxy_protocol::OnionListener>>,
 }
 
 impl OnionReloadable {
@@ -1313,7 +1320,7 @@ impl OnionReloadable {
         }
     }
 
-    fn start(&self, listener: crate::abuse::proxy_protocol::OnionListener) {
+    fn start(&self, listener: abuse::proxy_protocol::OnionListener) {
         let Some(router) = self.inner.router.get().cloned() else {
             *self.inner.waiting.lock() = Some(listener);
             return;
@@ -1345,7 +1352,7 @@ pub enum OnionChange {
     /// Cleared: stop it.
     Off,
     /// A new address, already bound.
-    Start(crate::abuse::proxy_protocol::OnionListener),
+    Start(abuse::proxy_protocol::OnionListener),
 }
 
 #[live_settings::async_trait]
@@ -1369,7 +1376,7 @@ impl live_settings::Reloadable for OnionReloadable {
                 // one lets go of it moments after it's stopped.
                 let mut attempts = 0;
                 loop {
-                    match crate::abuse::proxy_protocol::OnionListener::bind(address).await {
+                    match abuse::proxy_protocol::OnionListener::bind(address).await {
                         Ok(listener) => return Ok((OnionChange::Start(listener), Vec::new())),
                         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 20 => {
                             attempts += 1;
@@ -1936,7 +1943,11 @@ mod tests {
         let snapshot = Snapshot::defaults();
         assert!(PerRequest::from_snapshot(&snapshot).is_ok());
         assert!(ExchangeRateConfig::from_snapshot(&snapshot).is_ok());
-        assert!(AbuseConfig::from_snapshot(&snapshot).is_ok());
+        // The registry's defaults are the abuse crate's own.
+        assert_eq!(
+            AbuseSettings::from_snapshot(&snapshot).unwrap(),
+            AbuseSettings(AbuseConfig::default())
+        );
         assert!(OnionListenerConfig::from_snapshot(&snapshot).is_ok());
         assert!(LoggingConfig::from_snapshot(&snapshot).is_ok());
         assert!(BootConfig::from_snapshot(&snapshot).is_ok());
@@ -1953,7 +1964,7 @@ mod tests {
             SnpEntryPolicy::keys(),
             SnpBundleLimits::keys(),
             ExchangeRateConfig::keys(),
-            AbuseConfig::keys(),
+            AbuseSettings::keys(),
             OnionListenerConfig::keys(),
             TorConfig::keys(),
             LoggingConfig::keys(),
