@@ -648,7 +648,17 @@ def cmd_findings(args):
 
 def cmd_query(args):
     conn = connect(readonly=True)
-    cursor = conn.execute(args.sql)
+    try:
+        cursor = conn.execute(args.sql)
+    except sqlite3.Error as error:
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') ORDER BY name"
+        ).fetchall()
+        lines = [f"query failed: {error}", "tables and their columns:"]
+        for t in tables:
+            columns = [c["name"] for c in conn.execute(f"PRAGMA table_info({t['name']})")]
+            lines.append(f"  {t['name']}: {', '.join(columns)}")
+        sys.exit("\n".join(lines))
     names = [d[0] for d in cursor.description or []]
     print("\t".join(names))
     for row in cursor:
