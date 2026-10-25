@@ -310,7 +310,8 @@ pub async fn checkout_page(
 /// browser, or anything that isn't a browser) is let through, as are
 /// orders created with the key (a shop plugin, the dashboard, the POS and
 /// payment links shared from it), orders monokulo has no record of, and
-/// every order of an unrestricted store.
+/// every order of an unrestricted store. A policy or order that can't be
+/// read is not unrestricted: the page is turned away.
 async fn must_open_from_shop(
     state: &AppState,
     row: &StoreConnectionRow,
@@ -326,20 +327,23 @@ async fn must_open_from_shop(
     if dest.eq_ignore_ascii_case("iframe") || dest.eq_ignore_ascii_case("frame") {
         return false;
     }
+    match crate::embed_domains::policy_for_public_key(&state.db, &row.tenant_public_key).await {
+        Ok(Some(policy)) if policy.restricted => {}
+        Ok(_) => return false,
+        Err(_) => return true,
+    }
     let (id, order_id) = (row.id.clone(), order_id.clone());
-    state
+    match state
         .db
-        .read(move |db| {
-            if !db.embed_restricted(&id).unwrap_or(false) {
-                return Ok(false);
-            }
-            Ok::<_, crate::db::DbError>(matches!(
-                db.get_order_currency_metadata(&id, &order_id),
-                Ok(Some(metadata)) if !metadata.created_with_key
-            ))
-        })
+        .read(move |db| db.get_order_currency_metadata(&id, &order_id))
         .await
-        .unwrap_or(false)
+    {
+        Ok(metadata) => metadata.is_some_and(|metadata| !metadata.created_with_key),
+        Err(e) => {
+            tracing::error!(error = %e, "could not read the order's metadata");
+            true
+        }
+    }
 }
 
 fn open_from_shop_response(order_id: &crate::db::OrderId) -> Response {
