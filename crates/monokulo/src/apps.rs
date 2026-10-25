@@ -11,6 +11,8 @@
 
 use std::sync::Arc;
 
+use shared::order_event::OrderEventKind;
+use shared::order_status::OrderStatus;
 use tokio::sync::broadcast;
 
 use crate::db::{AppOrder, LoggedEvent};
@@ -30,12 +32,73 @@ pub fn clean_device_name(raw: &str) -> String {
         .unwrap_or_default()
 }
 
+/// What happened to an app's sale: the stream's `event:` name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaleKind {
+    Waiting,
+    Seen,
+    Confirming,
+    Paid,
+    Partial,
+    Expired,
+    DoubleSpend,
+}
+
+impl SaleKind {
+    /// Every kind, in the order a sale can go through them.
+    pub const ALL: [SaleKind; 7] = [
+        SaleKind::Waiting,
+        SaleKind::Seen,
+        SaleKind::Confirming,
+        SaleKind::Paid,
+        SaleKind::Partial,
+        SaleKind::Expired,
+        SaleKind::DoubleSpend,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SaleKind::Waiting => "sale.waiting",
+            SaleKind::Seen => "sale.seen",
+            SaleKind::Confirming => "sale.confirming",
+            SaleKind::Paid => "sale.paid",
+            SaleKind::Partial => "sale.partial",
+            SaleKind::Expired => "sale.expired",
+            SaleKind::DoubleSpend => "sale.double_spend",
+        }
+    }
+
+    /// The sale kind an engine order event is; `None` for events apps
+    /// aren't told about.
+    fn of(kind: OrderEventKind) -> Option<SaleKind> {
+        match kind {
+            // Walked back to nothing received (its payment was double
+            // spent): waiting for a payment again.
+            OrderEventKind::Status(OrderStatus::Pending) => Some(SaleKind::Waiting),
+            OrderEventKind::Status(OrderStatus::Unconfirmed) => Some(SaleKind::Seen),
+            OrderEventKind::Status(OrderStatus::Confirming) => Some(SaleKind::Confirming),
+            OrderEventKind::Status(OrderStatus::Paid | OrderStatus::Overpaid) => {
+                Some(SaleKind::Paid)
+            }
+            OrderEventKind::Status(OrderStatus::Partial) => Some(SaleKind::Partial),
+            OrderEventKind::Status(OrderStatus::Expired) => Some(SaleKind::Expired),
+            // Only the POS cancels an order, and only its own: an app's
+            // never is.
+            OrderEventKind::Status(OrderStatus::Cancelled) => None,
+            OrderEventKind::DoubleSpendDetected => Some(SaleKind::DoubleSpend),
+            // Apps have no event for it: the status it lands on follows as
+            // its own event when it changed, and an app told
+            // `sale.double_spend` re-reads the order before handing
+            // anything over.
+            OrderEventKind::DoubleSpendReversed => None,
+        }
+    }
+}
+
 /// One change to an order an app made, as the store's apps see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaleEvent {
-    /// `sale.waiting`, `sale.seen`, `sale.confirming`, `sale.paid`,
-    /// `sale.partial`, `sale.expired` or `sale.double_spend`.
-    pub event: &'static str,
+    pub event: SaleKind,
     pub order_id: String,
     pub amount: String,
     pub currency: String,
@@ -50,38 +113,20 @@ pub struct SaleEvent {
 }
 
 impl SaleEvent {
-    /// Every sale event's name, in the order a sale can go through them.
-    pub const NAMES: [&'static str; 7] = [
-        "sale.waiting",
-        "sale.seen",
-        "sale.confirming",
-        "sale.paid",
-        "sale.partial",
-        "sale.expired",
-        "sale.double_spend",
-    ];
-
     /// The event an app's new order is.
     pub fn waiting(order: &AppOrder) -> Self {
-        Self::of(order, "sale.waiting", order.created_at)
+        Self::of(order, SaleKind::Waiting, order.created_at)
     }
 
     /// The sale event an engine order event is, for an order an app made;
-    /// `None` for events apps aren't told about.
+    /// `None` for events apps aren't told about, and for a kind a newer
+    /// engine added.
     pub fn from_logged(order: &AppOrder, logged: &LoggedEvent) -> Option<Self> {
-        let event = match logged.event_type.as_str() {
-            "order.unconfirmed" => "sale.seen",
-            "order.confirming" => "sale.confirming",
-            "order.paid" | "order.overpaid" => "sale.paid",
-            "order.partial" => "sale.partial",
-            "order.expired" => "sale.expired",
-            "order.double_spend_detected" => "sale.double_spend",
-            _ => return None,
-        };
+        let event = SaleKind::of(logged.kind.known()?)?;
         Some(Self::of(order, event, logged.created_at))
     }
 
-    fn of(order: &AppOrder, event: &'static str, at: i64) -> Self {
+    fn of(order: &AppOrder, event: SaleKind, at: i64) -> Self {
         Self {
             event,
             order_id: order.order_id.to_string(),
@@ -175,11 +220,10 @@ mod tests {
         LoggedEvent {
             seq: 1,
             event_id: "evt_1".into(),
-            event_type: event_type.into(),
+            kind: event_type.into(),
             created_at: 1_500,
             tenant_public_key: "pk_1".into(),
             order_id: crate::db::OrderId::new("ord_1".to_owned()),
-            status: None,
             txid: None,
             merchant_order_id: None,
             description: None,
@@ -198,16 +242,17 @@ mod tests {
             ("order.partial", "sale.partial"),
             ("order.expired", "sale.expired"),
             ("order.double_spend_detected", "sale.double_spend"),
+            ("order.pending", "sale.waiting"),
         ] {
             let e = SaleEvent::from_logged(&o, &logged(engine)).unwrap();
-            assert_eq!((e.event, e.at), (sale, 1_500), "{engine}");
-            assert!(SaleEvent::NAMES.contains(&e.event), "{engine}");
+            assert_eq!((e.event.as_str(), e.at), (sale, 1_500), "{engine}");
         }
         assert!(SaleEvent::from_logged(&o, &logged("order.double_spend_reversed")).is_none());
         // Only the POS cancels an order, and only its own: an app's never is.
         assert!(SaleEvent::from_logged(&o, &logged("order.cancelled")).is_none());
-        assert_eq!(SaleEvent::waiting(&o).event, "sale.waiting");
-        assert!(SaleEvent::NAMES.contains(&"sale.waiting"));
+        // A newer engine's kind.
+        assert!(SaleEvent::from_logged(&o, &logged("order.refunded")).is_none());
+        assert_eq!(SaleEvent::waiting(&o).event, SaleKind::Waiting);
     }
 
     #[tokio::test]

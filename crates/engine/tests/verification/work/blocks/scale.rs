@@ -8,6 +8,7 @@ fn header(height: u64) -> ChainBlock {
         timestamp: height,
         txs: vec![],
         txids: vec![],
+        bindings: vec![],
         wire_bytes: 512,
     }
 }

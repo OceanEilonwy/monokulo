@@ -109,6 +109,15 @@
         "X-Monokulo-Signature": "t=1760020380,v1=2b1c50f6f1401734dc7d78164fd4658364d2585e7d9c6bcf84aedc05526e3448"
       },
       "name": "webhook.test"
+    },
+    {
+      "body": "{\"api_version\":2,\"event_id\":\"evt_0000000000000013\",\"event\":\"order.pending\",\"created_at\":1760020333,\"order_id\":\"5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"status\":\"pending\",\"merchant_order_id\":\"1042\",\"description\":\"Order #1042: Blue mug + 2 more\",\"amount\":\"12.50\",\"currency\":\"EUR\",\"xmr_amount\":\"0.081245310000\",\"fx_source\":\"coingecko\",\"fx_rate\":\"153.85503483\",\"store\":{\"id\":\"917701c2-15c7-4bcb-bbc8-72d9ab28e785\",\"name\":\"Bakery\"},\"_links\":{\"curies\":[{\"href\":\"https://docs.monokulo.com/rels/{rel}\",\"name\":\"mk\",\"templated\":true}],\"mk:order\":{\"href\":\"https://www.monokulo.com/api/v1/orders/5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"title\":\"One order: what to pay, where, and how far the payment has got.\"},\"mk:dashboard-order\":{\"href\":\"https://www.monokulo.com/stores/917701c2-15c7-4bcb-bbc8-72d9ab28e785/orders/5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"title\":\"The order's page on the merchant's dashboard: everything Monokulo knows about the order and its payment.\",\"type\":\"text/html\"},\"mk:checkout\":{\"href\":\"https://www.monokulo.com/checkout/5f01c9a7d2e14b88a3e0f9c6d1e21b07\",\"title\":\"The page the payer pays on: the amount, the address and its QR code, and live progress.\",\"type\":\"text/html\"}}}",
+      "headers": {
+        "X-Monokulo-Event": "order.pending",
+        "X-Monokulo-Event-Id": "evt_0000000000000013",
+        "X-Monokulo-Signature": "t=1760020380,v1=c6964690c84579ed42da1452b68cbb0321ba364dc1de30170c372eb524e15645"
+      },
+      "name": "order.pending"
     }
   ],
   "refuse": [

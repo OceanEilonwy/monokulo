@@ -169,6 +169,7 @@ impl MoneroDaemonClient for SweepDaemon {
                 timestamp: self.tip_time - (self.tip - height) * BLOCK_SECS,
                 txs: vec![self.tx.clone()],
                 txids: vec![self.txid.clone()],
+                bindings: vec![engine::daemon::IdBinding::Computed],
                 wire_bytes: self.block_bytes,
             })
             .collect())

@@ -596,6 +596,7 @@ const WAIT_WORDS: Record<Wait, string> = {
   reorg_being_reconciled: 'a reorganisation is being reconciled',
   rewound_this_round: 'rewound this round',
   node_failed: 'the node failed',
+  node_unconfirmed_transaction: "the node sent a block transaction it doesn't back by its id",
   node_cannot_serve_tip: "the node can't serve its tip yet",
   mempool_unreadable: "the pool couldn't be read",
   reorg_candidates_retrying: 'payments to re-examine are waiting to retry',

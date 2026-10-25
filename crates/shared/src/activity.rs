@@ -68,6 +68,10 @@ pub enum Wait {
     RewoundThisRound,
     /// The node failed or didn't answer; retried next round.
     NodeFailed,
+    /// The node sent a block transaction it doesn't back when asked for it
+    /// by its id: the node is skipped for a while, and the block fetched
+    /// again next round.
+    NodeUnconfirmedTransaction,
     /// The node reports a tip it can't serve yet (first run).
     NodeCannotServeTip,
     /// The mempool couldn't be read.
@@ -89,6 +93,9 @@ impl std::fmt::Display for Wait {
                 "rewound this round; replacement blocks are scanned from the next"
             }
             Wait::NodeFailed => "the node failed",
+            Wait::NodeUnconfirmedTransaction => {
+                "the node sent a block transaction it doesn't back by its id"
+            }
             Wait::NodeCannotServeTip => "the node can't serve its own tip yet",
             Wait::MempoolUnreadable => "the mempool couldn't be read",
             Wait::ReorgCandidatesRetrying => "reorg candidates are waiting to be retried",
@@ -299,6 +306,12 @@ pub enum Event {
     Vanished { looked: u64 },
     /// The upkeep tier's first unit of a round ran.
     Upkeep { pruned: u64 },
+    /// A kind this build doesn't know: a newer engine's, while the engine
+    /// and monokulo run different builds during an upgrade. Nothing draws
+    /// it, so one new kind doesn't make the whole page unreadable. The
+    /// engine never records it.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Event {
@@ -329,7 +342,8 @@ impl Event {
             Event::Snapshot(_)
             | Event::RoundStarted { .. }
             | Event::RoundFinished { .. }
-            | Event::Slept { .. } => None,
+            | Event::Slept { .. }
+            | Event::Unknown => None,
         }
     }
 }

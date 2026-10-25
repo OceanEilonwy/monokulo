@@ -3,15 +3,19 @@
 //! plugins page): one signed delivery for each event (`webhook.test`
 //! included), built by the same [`super::body::body_v2`] (and
 //! [`super::body::test_body`]) and [`shared::webhook_sign::sign_payload`]
-//! monokulo sends with, and deliveries a receiver must refuse.
+//! monokulo sends with, and deliveries a receiver must refuse. The
+//! webhooks page's list of events is made here too, from the same
+//! [`OrderEventKind::ALL`].
 //!
-//! The file is checked against what this code builds, so it can't drift
-//! from monokulo; `tests.rs`'s contract test checks that what a real store
-//! delivers has the same shape. When a change to the body is meant, write
-//! the file again with `MONOKULO_WRITE_VECTORS=1 cargo nextest run -p
-//! monokulo webhooks::vectors`.
+//! The file and the list are checked against what this code builds, so
+//! they can't drift from monokulo; `tests.rs`'s contract test checks that
+//! what a real store delivers has the same shape. When a change to the
+//! body is meant, write them again with `MONOKULO_WRITE_VECTORS=1 cargo
+//! nextest run -p monokulo webhooks::vectors`.
 
 use serde_json::{json, Value};
+use shared::order_event::OrderEventKind;
+use shared::order_status::OrderStatus;
 use shared::xmr_amount::Piconero;
 
 use super::body::{body_v2, LinkBases, API_VERSION};
@@ -66,21 +70,109 @@ fn metadata(currency: &str, amount: &str, piconero_per_unit: u64) -> OrderCurren
 
 /// The engine's event `n` for the order: `order.<status>` carries the
 /// status, the double-spend events the transaction.
-fn event(n: u8, event_type: &str) -> LoggedEvent {
-    let double_spend = event_type.starts_with("order.double_spend");
+fn event(n: u8, kind: OrderEventKind) -> LoggedEvent {
     LoggedEvent {
         seq: i64::from(n),
         event_id: format!("evt_00000000000000{n:02}"),
-        event_type: event_type.into(),
+        kind: kind.into(),
         created_at: SENT_AT - 60 + i64::from(n),
         tenant_public_key: "pk_test".into(),
         order_id: OrderId::new("5f01c9a7d2e14b88a3e0f9c6d1e21b07"),
-        status: (!double_spend).then(|| event_type.trim_start_matches("order.").to_owned()),
-        txid: double_spend.then(|| "a".repeat(64)),
+        txid: kind.status().is_none().then(|| "a".repeat(64)),
         merchant_order_id: Some("1042".into()),
         description: Some("Order #1042: Blue mug + 2 more".into()),
         xmr_amount_piconero: 81_245_310_000,
     }
+}
+
+const PAID: OrderEventKind = OrderEventKind::Status(OrderStatus::Paid);
+
+/// The number `kind`'s vector has: its event id, kept as plugins pinned
+/// it. A kind added later takes the next number free.
+fn number(kind: OrderEventKind) -> u8 {
+    match kind {
+        OrderEventKind::Status(OrderStatus::Unconfirmed) => 1,
+        OrderEventKind::Status(OrderStatus::Confirming) => 2,
+        OrderEventKind::Status(OrderStatus::Partial) => 3,
+        OrderEventKind::Status(OrderStatus::Paid) => 4,
+        OrderEventKind::Status(OrderStatus::Overpaid) => 5,
+        OrderEventKind::Status(OrderStatus::Expired) => 6,
+        OrderEventKind::DoubleSpendDetected => 7,
+        OrderEventKind::DoubleSpendReversed => 8,
+        OrderEventKind::Status(OrderStatus::Cancelled) => 10,
+        OrderEventKind::Status(OrderStatus::Pending) => 13,
+    }
+}
+
+/// What `kind` tells a shop, for the docs' list of events.
+fn about(kind: OrderEventKind) -> &'static str {
+    match kind {
+        OrderEventKind::Status(OrderStatus::Pending) => {
+            "The order is back to nothing received: the payment it had no longer counts \
+             (it was spent twice), so it comes after `order.double_spend_detected`. \
+             Treat the order as waiting for its payment again."
+        }
+        OrderEventKind::Status(OrderStatus::Unconfirmed) => {
+            "A payment was seen in the pool, not yet in a block."
+        }
+        OrderEventKind::Status(OrderStatus::Confirming) => {
+            "The payment is in a block, with too few confirmations yet."
+        }
+        OrderEventKind::Status(OrderStatus::Paid) => {
+            "Paid in full, with enough confirmations: mark the shop's order paid."
+        }
+        OrderEventKind::Status(OrderStatus::Partial) => {
+            "Less than the amount has arrived; the rest can still come before it expires."
+        }
+        OrderEventKind::Status(OrderStatus::Overpaid) => {
+            "Paid more than the amount, with enough confirmations: paid too."
+        }
+        OrderEventKind::Status(OrderStatus::Expired) => {
+            "It expired before it was paid: it takes no payment any more."
+        }
+        OrderEventKind::Status(OrderStatus::Cancelled) => {
+            "The merchant cancelled it before anything was paid (below)."
+        }
+        OrderEventKind::DoubleSpendDetected => {
+            "A payment to it was spent twice and no longer counts. The status it leaves \
+             the order in follows as its own event, when it changed."
+        }
+        OrderEventKind::DoubleSpendReversed => {
+            "A double spend reported earlier was wrong: the payment counts again."
+        }
+    }
+}
+
+/// Where the docs' list of events is, from this crate, and the lines it
+/// sits between.
+const DOCS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../xtask/src/pages/docs/webhooks.md"
+);
+const EVENTS_START: &str = "<!-- events: written by monokulo's webhooks::vectors -->\n";
+const EVENTS_END: &str = "<!-- end of events -->\n";
+
+/// The docs' list of events: one line for each kind there is.
+fn event_list() -> String {
+    let mut list = String::from("\n");
+    for kind in OrderEventKind::ALL {
+        list.push_str(&format!("- `{}`: {}\n", kind.as_str(), about(kind)));
+    }
+    list.push('\n');
+    list
+}
+
+/// `docs` with its list of events as [`event_list`] makes it; `None` when
+/// it has no place for one.
+fn with_event_list(docs: &str) -> Option<String> {
+    let start = docs.find(EVENTS_START)? + EVENTS_START.len();
+    let end = start + docs[start..].find(EVENTS_END)?;
+    Some(format!(
+        "{}{}{}",
+        &docs[..start],
+        event_list(),
+        &docs[end..]
+    ))
 }
 
 /// The Monokulo every vector comes from: a web address, and no onion
@@ -104,7 +196,7 @@ fn delivery(
         "name": name,
         "headers": {
             "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, SENT_AT, body.as_bytes()),
-            "X-Monokulo-Event": event.event_type,
+            "X-Monokulo-Event": event.kind.as_str(),
             "X-Monokulo-Event-Id": event.event_id,
         },
         "body": body,
@@ -114,46 +206,39 @@ fn delivery(
 /// The whole file.
 fn vectors() -> Value {
     let eur = metadata("EUR", "12.50", 6_499_624_800);
-    let events = [
-        "order.unconfirmed",
-        "order.confirming",
-        "order.partial",
-        "order.paid",
-        "order.overpaid",
-        "order.expired",
-        "order.double_spend_detected",
-        "order.double_spend_reversed",
-    ];
-    let mut deliveries: Vec<Value> = events
-        .iter()
-        .zip(1..)
-        .map(|(name, n)| delivery(name, &event(n, name), &eur, &web()))
+    // One delivery for each kind of event, then the ones that show
+    // something more, each numbered as plugins pinned it.
+    let mut deliveries: Vec<(u8, Value)> = OrderEventKind::ALL
+        .into_iter()
+        .map(|kind| {
+            let n = number(kind);
+            (n, delivery(kind.as_str(), &event(n, kind), &eur, &web()))
+        })
         .collect();
     // Priced in XMR: no exchange rate, so no `fx_source` or `fx_rate`.
-    deliveries.push(delivery(
-        "order.paid priced in XMR",
-        &event(9, "order.paid"),
-        &metadata("XMR", "0.08124531", 1_000_000_000_000),
-        &web(),
-    ));
-    // Added after the others, so their ids stay as plugins pinned them.
-    deliveries.push(delivery(
-        "order.cancelled",
-        &event(10, "order.cancelled"),
-        &eur,
-        &web(),
+    deliveries.push((
+        9,
+        delivery(
+            "order.paid priced in XMR",
+            &event(9, PAID),
+            &metadata("XMR", "0.08124531", 1_000_000_000_000),
+            &web(),
+        ),
     ));
     // From a Monokulo with an onion address: `mk:onion-checkout` too.
-    deliveries.push(delivery(
-        "order.paid from a Monokulo with an onion address",
-        &event(11, "order.paid"),
-        &eur,
-        &LinkBases {
-            onion: Some(
-                "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion".into(),
-            ),
-            ..web()
-        },
+    deliveries.push((
+        11,
+        delivery(
+            "order.paid from a Monokulo with an onion address",
+            &event(11, PAID),
+            &eur,
+            &LinkBases {
+                onion: Some(
+                    "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion".into(),
+                ),
+                ..web()
+            },
+        ),
     ));
     // A test delivery ("Send a test webhook", `send-test-webhook`): no
     // order. A receiver checks it like any other and answers `2xx`.
@@ -164,17 +249,22 @@ fn vectors() -> Value {
         "wh_00000000000000000000000000000000",
         &web(),
     );
-    deliveries.push(json!({
-        "name": super::body::TEST_EVENT,
-        "headers": {
-            "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, SENT_AT, test.as_bytes()),
-            "X-Monokulo-Event": super::body::TEST_EVENT,
-            "X-Monokulo-Event-Id": "evt_0000000000000012",
-        },
-        "body": test,
-    }));
+    deliveries.push((
+        12,
+        json!({
+            "name": super::body::TEST_EVENT,
+            "headers": {
+                "X-Monokulo-Signature": shared::webhook_sign::sign_payload(SECRET, SENT_AT, test.as_bytes()),
+                "X-Monokulo-Event": super::body::TEST_EVENT,
+                "X-Monokulo-Event-Id": "evt_0000000000000012",
+            },
+            "body": test,
+        }),
+    ));
+    deliveries.sort_by_key(|(n, _)| *n);
+    let deliveries: Vec<Value> = deliveries.into_iter().map(|(_, d)| d).collect();
 
-    let paid = body_v2(&event(4, "order.paid"), &store(), Some(&eur), &web());
+    let paid = body_v2(&event(4, PAID), &store(), Some(&eur), &web());
     let signed = shared::webhook_sign::sign_payload(SECRET, SENT_AT, paid.as_bytes());
     let tampered = paid.replace("12.50", "1.25");
     let old = SENT_AT - shared::webhook_sign::SIGNATURE_TOLERANCE_SECS - 1;
@@ -222,17 +312,23 @@ fn rendered() -> String {
     text
 }
 
-/// The published file is exactly what monokulo builds.
+/// The published file is exactly what monokulo builds, and the docs list
+/// every event there is.
 #[test]
 fn the_published_vectors_are_what_monokulo_sends() {
     let expected = rendered();
+    let docs = std::fs::read_to_string(DOCS).expect("the webhooks page is readable");
+    let expected_docs = with_event_list(&docs).expect("the webhooks page has its list of events");
     if std::env::var_os("MONOKULO_WRITE_VECTORS").is_some() {
         std::fs::write(PATH, &expected).expect("the vectors file is writable");
+        std::fs::write(DOCS, &expected_docs).expect("the webhooks page is writable");
     }
     let published = std::fs::read_to_string(PATH).unwrap_or_default();
+    let docs = std::fs::read_to_string(DOCS).unwrap_or_default();
     assert!(
-        published == expected,
-        "{PATH} is not what monokulo sends. If the change is meant, write it again with \
+        published == expected && docs == expected_docs,
+        "{PATH} or the list of events in {DOCS} is not what monokulo sends. If the change \
+         is meant, write them again with \
          MONOKULO_WRITE_VECTORS=1 cargo nextest run -p monokulo webhooks::vectors"
     );
 }
@@ -251,7 +347,7 @@ fn every_delivery_verifies_and_every_refusal_does_not() {
         )
     };
     let deliveries = vectors["deliveries"].as_array().unwrap();
-    assert_eq!(deliveries.len(), 12);
+    assert_eq!(deliveries.len(), 13);
     for delivery in deliveries {
         assert!(verifies(delivery), "{delivery}");
         let body: Value = serde_json::from_str(delivery["body"].as_str().unwrap()).unwrap();

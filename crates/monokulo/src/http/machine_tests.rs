@@ -346,12 +346,21 @@ async fn everything_in(response: Response) -> (StatusCode, String) {
 /// never given the web address: not in the API's entry or orders (whose
 /// links are relative, or absolute on the onion address), not on the
 /// checkout page, its share page, its live updates, nor in a redirect or
-/// `Location`.
+/// `Location`; and a merchant on Tor is given no web address on their
+/// store's pages, nor in the code an app connects with.
 #[tokio::test]
 async fn nothing_served_over_tor_names_the_web_address() {
     let (state, _engine) = instance(true).await;
     let router = build_router(state.clone());
-    let (_, store) = merchant(&router, &state, "onion-visitor@example.com").await;
+    let (session, store) = merchant(&router, &state, "onion-visitor@example.com").await;
+    let cookie = format!("session={session}");
+    let signed_in = |method: &str, uri: &str, form: &str| {
+        request(method, uri)
+            .header("cookie", &cookie)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(form.to_owned()))
+            .unwrap()
+    };
     let (pk, sk) = (store.public_key.as_str(), store.secret_key.as_str());
 
     let made = send(
@@ -402,6 +411,17 @@ async fn nothing_served_over_tor_names_the_web_address() {
         request("GET", "/checkout/order_nope")
             .body(Body::empty())
             .unwrap(),
+        signed_in("GET", &format!("/stores/{}/settings", store.id), ""),
+        signed_in(
+            "GET",
+            &format!("/stores/{}/settings?tab=wallet", store.id),
+            "",
+        ),
+        signed_in(
+            "POST",
+            &format!("/stores/{}/settings/apps/connect", store.id),
+            "device_name=Till",
+        ),
     ];
     for read in reads {
         let what = format!("{} {}", read.method(), read.uri());

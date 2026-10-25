@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use monero::blockdata::transaction::TxOutTarget;
 use monero::Transaction;
+use shared::order_event::OrderEventKind;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::key_custody::{
@@ -615,12 +616,7 @@ pub(crate) fn recompute_and_notify_in_tx(
     if old_status == new_status {
         return Ok(None);
     }
-    store.append_order_event(
-        order_id,
-        &format!("order.{new_status}"),
-        &[("status", new_status.as_str())],
-        now,
-    )?;
+    store.append_order_event(order_id, OrderEventKind::Status(new_status), &[], now)?;
     #[cfg(test)]
     crate::store::crash_checkpoint("recompute.before_commit");
     Ok(Some(shared::activity::Transition {
@@ -754,7 +750,7 @@ pub(crate) fn void_and_notify_in_tx(
     // whatever status transition the recompute above may also have announced.
     store.append_order_event(
         order_id,
-        "order.double_spend_detected",
+        OrderEventKind::DoubleSpendDetected,
         &[("txid", txid)],
         now,
     )?;
@@ -807,7 +803,7 @@ fn unvoid_as_false_positive(
         recompute_and_notify_in_tx(store, order_id, current_height, now)?;
         store.append_order_event(
             order_id,
-            "order.double_spend_reversed",
+            OrderEventKind::DoubleSpendReversed,
             &[("txid", txid)],
             now,
         )?;

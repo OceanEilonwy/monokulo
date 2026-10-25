@@ -194,7 +194,7 @@ mod properties {
             for (action,height,bytes) in events {
                 match action {
                     0 => {
-                        cache.insert(ChainBlock { height, hash: height.to_string(), prev_hash: height.saturating_sub(1).to_string(), timestamp: 1000, txs: vec![], txids: vec![], wire_bytes: bytes as u64 }, bytes);
+                        cache.insert(ChainBlock { height, hash: height.to_string(), prev_hash: height.saturating_sub(1).to_string(), timestamp: 1000, txs: vec![], txids: vec![], bindings: vec![], wire_bytes: bytes as u64 }, bytes);
                         model.insert(height,(bytes,false));
                     }
                     1 => { cache.mark_scanned(height); if let Some(v) = model.get_mut(&height) { v.1=true; } }

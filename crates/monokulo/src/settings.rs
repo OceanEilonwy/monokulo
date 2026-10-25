@@ -316,7 +316,7 @@ settings! {
     KEY_CUSTODY_SNP_ENTRY_MIN_GUEST_SVN: u32 {
         key: "key_custody.snp_entry_min_guest_svn",
         default: 0,
-        description: "The lowest engine image security version (the ID block's guest SVN) this site's key entry forms encrypt keys to. Keep it equal to the engine's key_custody.snp_min_guest_svn; the status page shows an alert when they differ.",
+        description: "The lowest engine image security version (the ID block's guest SVN) this site's key entry forms encrypt keys to. It only raises this release's built-in floor, which no setting lowers. Keep it equal to the engine's key_custody.snp_min_guest_svn; the status page shows an alert when they differ.",
         example: "1",
     },
     KEY_CUSTODY_SNP_ENTRY_MIN_TCB: Option<String> {

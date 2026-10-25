@@ -164,9 +164,13 @@ pub fn code_page(
     link: &str,
     qr: &crate::qr::QrSvg,
     status_path: &str,
+    onion: bool,
 ) -> Markup {
     let body = html! {
         p { "Open the app and scan this code. On this device, copy the link and paste it into the app instead." }
+        @if onion {
+            (ui::Hint::new("The code is on this Monokulo's onion address, as you are, so the app connects over Tor: it needs Tor running on the device (Orbot, for one) to use it."))
+        }
         div class="connect-app-qr" { (PreEscaped(qr.as_str())) }
         (ui::CopyValue::new(link).copy_label("Copy the connect link"))
         (ui::Hint::new("It works once, for 10 minutes. Anyone with it can connect a device to this store, so don't share it."))

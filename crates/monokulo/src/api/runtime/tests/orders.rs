@@ -112,12 +112,21 @@ fn create_order_request(pk: &str, amount: &str, currency: &str) -> Request<Body>
 }
 
 /// A storefront retrying `POST /api/v1/orders` with the same
-/// idempotency key (its first answer was lost) gets the same order and
-/// address; another key, another order; the key reused for a different
-/// total is a 409; a malformed key is a 400.
+/// idempotency key (its first answer was lost) gets the same order,
+/// address and XMR amount, even after the rate moved; another key,
+/// another order; the key reused for a different total is a 409; a
+/// malformed key is a 400.
 #[tokio::test]
 async fn a_retried_order_creation_with_one_key_makes_one_order() {
-    let (state, _engine) = test_state_with_real_engine().await;
+    let (mut state, _engine) = test_state_with_real_engine().await;
+    let coingecko = spawn_mock_coingecko().await; // $1.00 per XMR
+    let coinmarketcap = spawn_mock_coinmarketcap(Some(2.0)).await; // $2.00 per XMR
+    state.exchange_rate = std::sync::Arc::new(
+        crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
+            coingecko,
+            coinmarketcap,
+        ),
+    );
     let router = build_router(state.clone());
     let session_token = signed_up_and_logged_in_session_token(
         &router,
@@ -126,6 +135,13 @@ async fn a_retried_order_creation_with_one_key_makes_one_order() {
     )
     .await;
     let pk = create_connection(&router, &state, &session_token).await;
+    let connection_id = state
+        .db
+        .lock()
+        .get_store_connection_by_public_key(&pk)
+        .unwrap()
+        .unwrap()
+        .id;
     let post = |body: serde_json::Value| {
         let (router, pk) = (router.clone(), pk.clone());
         async move {
@@ -151,10 +167,19 @@ async fn a_retried_order_creation_with_one_key_makes_one_order() {
     };
     let (status, first) = post(order("wc:9:25.00", "25.00")).await;
     assert_eq!(status, StatusCode::CREATED, "{first}");
+    // The rate moves before the retry: the store now prices at $2.00.
+    save_provider_settings(
+        &router,
+        &session_token,
+        connection_id.as_str(),
+        &[("use_coinmarketcap", "on"), ("position_coinmarketcap", "1")],
+    )
+    .await;
     let (status, retry) = post(order("wc:9:25.00", "25.00")).await;
     assert_eq!(status, StatusCode::CREATED, "{retry}");
     assert_eq!(retry["order_id"], first["order_id"]);
     assert_eq!(retry["address"], first["address"]);
+    assert_eq!(retry["xmr_amount_piconero"], first["xmr_amount_piconero"]);
 
     let (status, other) = post(order("wc:9:30.00", "30.00")).await;
     assert_eq!(status, StatusCode::CREATED, "{other}");

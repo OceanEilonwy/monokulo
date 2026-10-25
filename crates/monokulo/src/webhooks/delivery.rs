@@ -107,7 +107,7 @@ impl WebhookClient {
 
 /// The system resolver, with every answer checked before it is connected
 /// to. An IP literal in a URL never reaches a resolver (the connector
-/// parses it first): [`check_ip_literal`] checks those.
+/// parses it first): [`check_host`] checks those.
 struct CheckingResolver {
     allow_private: Arc<AtomicBool>,
 }
@@ -116,6 +116,11 @@ impl reqwest::dns::Resolve for CheckingResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let allow_private = self.allow_private.load(Ordering::Relaxed);
         Box::pin(async move {
+            // An onion name is never looked up (RFC 7686): asking DNS for it
+            // would tell the resolver the address, and find nothing.
+            if crate::onion::is_onion_host(name.as_str()) {
+                return Err(BoxError::from(DeliveryError::OnionHost));
+            }
             // Port 0: the connector sets the URL's port on each address.
             let addrs: Vec<std::net::SocketAddr> =
                 tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
@@ -142,12 +147,18 @@ pub enum DeliveryError {
     UnresolvableHost(String),
     #[error("the URL is, or resolves to, a private or loopback address")]
     PrivateAddress,
+    #[error("the URL is on an onion address, and webhooks aren't sent over Tor")]
+    OnionHost,
 }
 
-/// Refuses a URL whose host is an IP literal of a private, loopback or
+/// Refuses a URL on an onion address, so not even a proxy is asked for
+/// it, and one whose host is an IP literal of a private, loopback or
 /// link-local address (unless `allow_private`): the half of the check a
 /// resolver never sees.
-fn check_ip_literal(url: &url::Url, allow_private: bool) -> Result<(), DeliveryError> {
+fn check_host(url: &url::Url, allow_private: bool) -> Result<(), DeliveryError> {
+    if url.host_str().is_some_and(crate::onion::is_onion_host) {
+        return Err(DeliveryError::OnionHost);
+    }
     if allow_private {
         return Ok(());
     }
@@ -255,7 +266,7 @@ async fn send(
 ) -> Result<(u16, String), String> {
     let url = url::Url::parse(&delivery.url).map_err(|e| format!("not a valid URL: {e}"))?;
     let allow_private = client.allows_private();
-    check_ip_literal(&url, allow_private).map_err(|e| e.to_string())?;
+    check_host(&url, allow_private).map_err(|e| e.to_string())?;
     let http = if allow_private {
         &client.private_client
     } else {
@@ -548,6 +559,20 @@ mod tests {
             addrs.iter().all(|addr| addr.port() == 0),
             "the connector sets the URL's port: {addrs:?}"
         );
+
+        // An onion name is refused as one, whatever the setting, before any
+        // lookup: a lookup would have failed with the system resolver's own
+        // error, after asking its DNS for the name.
+        for onion in [
+            "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
+            "SHOP.2GZYXA5IHM7NSGGFXNU52RCK2VV4RVMDLKIU3ZZUI5DU4XYCLEN53WID.ONION.",
+        ] {
+            let refused = match resolver.resolve(name(onion)).await {
+                Err(e) => e.to_string(),
+                Ok(_) => panic!("{onion} must not be resolved"),
+            };
+            assert!(refused.contains("onion address"), "{onion}: {refused}");
+        }
     }
 
     /// An IP literal never reaches the resolver, so it is classified on
@@ -565,16 +590,20 @@ mod tests {
         ] {
             assert!(
                 matches!(
-                    check_ip_literal(&url(private), false),
+                    check_host(&url(private), false),
                     Err(DeliveryError::PrivateAddress)
                 ),
                 "{private}"
             );
         }
-        check_ip_literal(&url("https://[2606:4700:4700::1111]/hook"), false).unwrap();
-        check_ip_literal(&url("https://1.1.1.1/hook"), false).unwrap();
-        check_ip_literal(&url("https://shop.example/hook"), false).unwrap();
-        check_ip_literal(&url("http://[::1]/hook"), true).unwrap();
+        check_host(&url("https://[2606:4700:4700::1111]/hook"), false).unwrap();
+        check_host(&url("https://1.1.1.1/hook"), false).unwrap();
+        check_host(&url("https://shop.example/hook"), false).unwrap();
+        check_host(&url("http://[::1]/hook"), true).unwrap();
+        assert!(matches!(
+            check_host(&url("http://shop.example.onion/hook"), true),
+            Err(DeliveryError::OnionHost)
+        ));
     }
 
     /// The waits between attempts: 1 minute after the first failure,

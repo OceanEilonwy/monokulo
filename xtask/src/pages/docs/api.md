@@ -15,7 +15,7 @@ no URL has the store in it.
 | --- | --- | --- |
 | `sk_` | The shop's server: the store's secret key, which a [plugin](../plugins/) gets when it connects. | Everything about the store's orders and events, send a plugin's logs, and send the store's webhooks a test delivery (`send-test-webhook`, see [Webhooks](../webhooks/#test-it)). |
 | `ak_` | A [connected app](../apps/): its own key, made when it connects. | The same as the secret key, and read or disconnect its own connection. |
-| `pk_` | A browser page: the store's public key. It proves nothing. | Make an order and read it. A store that takes orders only from its verified websites refuses one from anywhere else. |
+| `pk_` | A browser page: the store's public key. It proves nothing. | Make an order and read it. A store that takes orders only from its verified websites refuses one from anywhere else. Its `idempotency_key`s are its own: they never name an order made with `sk_` or `ak_`, so make them unguessable. |
 
 `GET /api/v1` takes no key, so a client can check it found a Monokulo. A
 route that needs a key answers `401` without one, and `403` with one that

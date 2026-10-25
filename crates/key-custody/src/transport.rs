@@ -13,8 +13,9 @@
 //! [`verify_bundle`]: the report was signed by a genuine AMD chip, through
 //! AMD's chain up to the pinned root ([`Anchor::Amd`]); the guest can't be
 //! debugged; it was launched with an ID block signed by the trusted ID key and
-//! is at least the minimum security version ([`TrustPolicy`]); and the public
-//! key is the one in the report. Then [`seal`] encrypts the keys to it with
+//! is at least the minimum security version ([`TrustPolicy`], raised to this
+//! release's own, [`release_min_guest_svn`]); and the public key is the one
+//! in the report. Then [`seal`] encrypts the keys to it with
 //! HPKE (RFC 9180: X25519, HKDF-SHA256, AES-256-GCM), binding the challenge,
 //! action and store as associated data, into an [`Envelope`].
 //!
@@ -249,6 +250,24 @@ pub fn effective_tcb_floor(product: Product, policy: &TrustPolicy) -> TcbFloor {
     policy.min_tcb.max(release_tcb_floor(product))
 }
 
+/// The lowest engine image security version this release trusts, whatever
+/// a [`TrustPolicy`] says (`src/release_guest_svn_floor.txt`): built into the
+/// engine image, so its host can't lower it, and into every client.
+pub fn release_min_guest_svn() -> u32 {
+    include_str!("release_guest_svn_floor.txt")
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .and_then(|line| line.parse().ok())
+        .expect("release_guest_svn_floor.txt names a security version")
+}
+
+/// The lowest security version a report is held to under `policy`: the
+/// policy's, raised to this release's.
+pub fn effective_min_guest_svn(policy: &TrustPolicy) -> u32 {
+    policy.min_guest_svn.max(release_min_guest_svn())
+}
+
 /// The digest of the official ID key, the one release builds of the engine
 /// image are signed with, if this build has one (see
 /// `src/official_id_key_digest.txt`).
@@ -344,8 +363,8 @@ pub fn report_data_for(public_key: &[u8; 32]) -> [u8; 64] {
 }
 
 /// The parts of a guest's identity [`TrustPolicy`] decides on, checked on a
-/// report from `product` already known to be genuine. Its firmware is held
-/// to this release's floor as well as the policy's.
+/// report from `product` already known to be genuine. Its security version
+/// and firmware are held to this release's floors as well as the policy's.
 pub fn check_identity(
     product: Product,
     report: &AttestationReport,
@@ -371,10 +390,11 @@ pub fn check_identity(
             want: hex::encode(policy.id_key_digest),
         });
     }
-    if report.guest_svn < policy.min_guest_svn {
+    let min_guest_svn = effective_min_guest_svn(policy);
+    if report.guest_svn < min_guest_svn {
         return Err(TransportError::SvnTooLow {
             got: report.guest_svn,
-            min: policy.min_guest_svn,
+            min: min_guest_svn,
         });
     }
     let floor = effective_tcb_floor(product, policy);
@@ -841,8 +861,9 @@ mod tests {
         );
     }
 
-    /// Every product has a release floor, and a report below it is refused
-    /// even under a policy with no floor of its own.
+    /// Every product has a release firmware floor, and the image a release
+    /// security version floor: a report below either is refused even under
+    /// a policy with no floor of its own.
     #[test]
     fn firmware_below_the_release_floor_is_refused_whatever_the_policy() {
         for product in [Product::Milan, Product::Genoa, Product::Turin] {
@@ -883,6 +904,35 @@ mod tests {
             TcbFloor {
                 bootloader: 1,
                 ..release_tcb_floor(Product::Genoa)
+            }
+        );
+
+        // The image's security version has a release floor too.
+        let floor = release_min_guest_svn();
+        assert!(floor > 0);
+        let old_image = TestGuest::new(
+            [1; 32],
+            TestIdentity {
+                guest_svn: floor - 1,
+                ..TestIdentity::default()
+            },
+        );
+        let bundle = bundle_from(&old_image, &receiver, Action::Create, None);
+        let refused = verify_bundle(
+            &bundle,
+            &TrustPolicy {
+                min_guest_svn: 0,
+                ..policy(&old_image)
+            },
+            &Anchor::Vcek(old_image.vcek()),
+            NOW,
+        )
+        .unwrap_err();
+        assert_eq!(
+            refused,
+            TransportError::SvnTooLow {
+                got: floor - 1,
+                min: floor,
             }
         );
     }

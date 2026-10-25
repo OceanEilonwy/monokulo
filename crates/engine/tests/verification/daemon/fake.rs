@@ -1,6 +1,6 @@
 use super::{
-    ChainBlock, ChainHeader, ChainTip, DaemonError, DifficultyHeader, FetchedTx, KeyImageStatus,
-    MoneroDaemonClient, PoolOutlook, ScanTx, Transaction, TxLocation,
+    ChainBlock, ChainHeader, ChainTip, DaemonError, DifficultyHeader, FetchedTx, IdBinding,
+    KeyImageStatus, MoneroDaemonClient, PoolOutlook, ScanTx, Transaction, TxLocation,
 };
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -68,6 +68,9 @@ struct State {
     /// Weights a test gives blocks in place of their real size, so a
     /// block can be "large" without the bytes (`set_block_weight`).
     weights: HashMap<u64, u64>,
+    /// Bodies blocks send in place of the transaction named, by its id
+    /// (`send_in_blocks_as`).
+    listed: HashMap<String, Transaction>,
 }
 
 #[derive(Default)]
@@ -194,6 +197,15 @@ impl FakeDaemonClient {
     /// not a one-block lag but a daemon simply asserting something untrue.
     pub fn report_height(&self, height: u64) {
         self.state.lock().height_override = Some(height);
+    }
+
+    /// Has every block holding transaction `txid` send `body` under its id
+    /// instead. Every block transaction comes [`IdBinding::Listed`], as
+    /// monerod's `get_blocks.bin` sends them (pruned, without the hash of
+    /// the part left out), so a lying node can send any body there; fetched
+    /// by its id, the transaction is still the one the block holds.
+    pub fn send_in_blocks_as(&self, txid: &str, body: Transaction) {
+        self.state.lock().listed.insert(txid.to_owned(), body);
     }
 
     pub fn set_mempool(&self, txs: Vec<Transaction>) {
@@ -414,13 +426,20 @@ impl MoneroDaemonClient for FakeDaemonClient {
                 .checked_sub(1)
                 .and_then(|p| state.blocks.get(&p))
                 .map_or_default(|b| b.hash.clone());
+            let listed = |tx: &Transaction| state.listed.get(&tx_id_hex(tx));
             out.push(ChainBlock {
                 height,
                 hash: block.hash.clone(),
                 prev_hash,
                 timestamp: block.timestamp,
-                txs: block.txs.iter().map(ScanTx::of).collect(),
+                txs: block
+                    .txs
+                    .iter()
+                    .map(|tx| ScanTx::of(listed(tx).unwrap_or(tx)))
+                    .collect(),
                 txids: block.txs.iter().map(tx_id_hex).collect(),
+                // As monerod sends them: nothing ties a body to its id.
+                bindings: vec![IdBinding::Listed; block.txs.len()],
                 wire_bytes: block
                     .txs
                     .iter()

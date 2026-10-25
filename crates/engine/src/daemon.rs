@@ -36,6 +36,13 @@ pub enum DaemonError {
     /// The answer was larger than the cap: a smaller request may succeed.
     #[error("daemon response too large: {0}")]
     TooLarge(String),
+    /// A transaction that came with a block under the id the block lists
+    /// ([`IdBinding::Listed`]) isn't what the node sends by that id, or
+    /// the node won't send it by its id
+    /// ([`MoneroDaemonClient::confirm_listed`]): its blocks can't be
+    /// scanned for payments.
+    #[error("daemon sent a block transaction it doesn't back by its id: {0}")]
+    Unconfirmed(String),
 }
 
 impl DaemonError {
@@ -115,6 +122,10 @@ pub struct ChainBlock {
     /// the block: a pruned transaction can't be hashed to its id
     /// (`shared::monero_tx`).
     pub txids: Vec<String>,
+    /// How each of `txs` is tied to its id, in order. A payment is never
+    /// taken from an [`IdBinding::Listed`] one as it came: the scan fetches
+    /// it again by its id first (`work::blocks`).
+    pub bindings: Vec<IdBinding>,
     /// The block's size as it came from the node, in bytes: what block
     /// requests are sized and the block cache is counted by.
     pub wire_bytes: u64,
@@ -131,6 +142,18 @@ impl ChainBlock {
             tx_count: Some(self.txs.len() as u64),
         }
     }
+}
+
+/// How a transaction body is tied to the id it came under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdBinding {
+    /// The id was computed from the body: the transaction whole, or pruned
+    /// together with the hash of the part left out.
+    Computed,
+    /// The body came pruned without the hash of the part left out, under
+    /// the id its block lists. The block's id covers the list, but nothing
+    /// ties the body to the id in it: a node can send any body under it.
+    Listed,
 }
 
 /// What the scan keeps of one transaction.
@@ -245,8 +268,10 @@ pub struct ChainTip {
 }
 
 /// A transaction with its id, as a node gave it
-/// ([`MoneroDaemonClient::get_transactions_with_ids`]). The transaction may
-/// be pruned, which is why the id comes with it.
+/// ([`MoneroDaemonClient::get_transactions_with_ids`]).
+///
+/// The transaction may be pruned, which is why the id comes with it; the id
+/// was computed from it all the same ([`IdBinding::Computed`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FetchedTx {
     pub txid: String,
@@ -451,13 +476,43 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// Several transactions by txid, each with its id, in any order; ones
     /// the node doesn't have are left out. The id comes with each because
     /// the transaction may be pruned (`RpcDaemonClient` fetches them so),
-    /// and then can't be hashed to it.
+    /// and then can't be hashed to it alone; each is checked against its id
+    /// all the same (with the hash of the pruned part), and one that can't
+    /// be is left out.
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],
     ) -> Result<Vec<FetchedTx>, DaemonError>;
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
+
+    /// Whether `tx`, the body that came with a block under `txid` as
+    /// [`IdBinding::Listed`], is that transaction: fetched again by its id
+    /// ([`Self::get_transactions_with_ids`], where a body is checked against
+    /// its id), it must be what the scan read.
+    ///
+    /// A node that doesn't send it, or sends another, has failed
+    /// ([`DaemonError::Unconfirmed`]): a client of several nodes moves on
+    /// from it as from any other failure.
+    async fn confirm_listed(&self, txid: &str, tx: &ScanTx) -> Result<(), DaemonError> {
+        let fetched = self
+            .get_transactions_with_ids(std::slice::from_ref(&txid.to_owned()))
+            .await?;
+        if fetched
+            .iter()
+            .any(|fetched| fetched.txid == txid && ScanTx::of(&fetched.tx) == *tx)
+        {
+            return Ok(());
+        }
+        Err(DaemonError::Unconfirmed(format!(
+            "transaction {txid}, fetched by its id, {}",
+            if fetched.is_empty() {
+                "didn't come"
+            } else {
+                "isn't the body that came with its block"
+            }
+        )))
+    }
 
     /// A second opinion on a [`Self::locate_transaction`] answer of
     /// `NotFound`, for the one question where a node's *absence* answer has

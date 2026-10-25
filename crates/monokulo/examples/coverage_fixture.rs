@@ -645,11 +645,10 @@ async fn seed_webhooks(
             let event = LoggedEvent {
                 seq,
                 event_id: format!("evt_fixture{seq}"),
-                event_type: "order.paid".to_string(),
+                kind: "order.paid".into(),
                 created_at: at,
                 tenant_public_key: control.public_key.clone(),
                 order_id: shared::ids::OrderId::new(format!("{seq:032x}")),
-                status: Some("paid".to_string()),
                 txid: None,
                 merchant_order_id: None,
                 description: None,
@@ -798,11 +797,10 @@ async fn seed_webhooks(
             let event = LoggedEvent {
                 seq,
                 event_id: format!("evt_fixture{seq}"),
-                event_type: (*event_type).to_string(),
+                kind: (*event_type).into(),
                 created_at: at - 60 * i64::from(*attempts),
                 tenant_public_key: public_key.clone(),
                 order_id: shared::ids::OrderId::new(*order),
-                status: event_type.strip_prefix("order.").map(str::to_string),
                 txid: None,
                 merchant_order_id: Some("gm-1042".to_string()),
                 description: None,
@@ -1083,21 +1081,22 @@ fn record_order(
     order_id: &shared::ids::OrderId,
     source: Option<&str>,
 ) -> Result<(), monokulo::db::DbError> {
-    db.create_order_currency_metadata(
-        &shared::ids::ConnectionId::new("coverage-store"),
+    db.create_order_currency_metadata(&monokulo::db::NewOrderRecord {
+        connection_id: &shared::ids::ConnectionId::new("coverage-store"),
         order_id,
-        "XMR",
-        "0.001",
-        shared::xmr_amount::Piconero(1_000_000_000_000),
-        "fixed",
-        monokulo::now_unix(),
-        "XMR",
-        None,
-        1,
-        true,
+        currency: "XMR",
+        amount: "0.001",
+        piconero_per_unit: shared::xmr_amount::Piconero(1_000_000_000_000),
+        provider: "fixed",
+        created_at: monokulo::now_unix(),
+        base_currency: "XMR",
+        base_currency_piconero_per_unit: None,
+        confirmations_required_applied: 1,
+        created_with_key: true,
         source,
-        true,
-    )
+        show_merchant_order_id: true,
+    })
+    .map(drop)
 }
 
 #[tokio::main]
@@ -1208,7 +1207,6 @@ async fn main() {
     db.insert_pos_order(
         &shared::ids::ConnectionId::new("coverage-store"),
         &order.order_id,
-        None,
         Some("Fixture order"),
         // Recorded as the order is made, as the POS does: the time left to
         // pay runs from here.

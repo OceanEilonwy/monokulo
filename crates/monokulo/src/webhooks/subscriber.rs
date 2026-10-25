@@ -11,13 +11,17 @@
 //! it fails or ends. If the engine no longer holds events after the saved
 //! position (monokulo was away longer than `order_events.retention_days`,
 //! or the engine's database was replaced), the engine says so and this logs
-//! it as an error: those events' webhooks were never sent.
+//! it as an error: those events' webhooks were never sent. So is an event
+//! this monokulo can't read (a damaged row, or a newer engine's shape): it
+//! is skipped, logged once, and the events after it carry on. A kind it
+//! doesn't know but can read is passed on to the webhooks as it is named.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt as _;
 use serde::Deserialize;
+use shared::order_event::ReadOrderEventKind;
 
 use crate::apps::AppEvents;
 use crate::db::{Database, DbError, LoggedEvent};
@@ -37,12 +41,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(45);
 #[derive(Deserialize)]
 struct WireEvent {
     event_id: String,
-    event: String,
+    event: ReadOrderEventKind,
     created_at: i64,
     tenant: String,
     order_id: String,
-    #[serde(default)]
-    status: Option<String>,
     #[serde(default)]
     txid: Option<String>,
     #[serde(default)]
@@ -59,22 +61,24 @@ struct WireLost {
     resume_after: i64,
 }
 
-/// One `order_event`, from its `id:` and data.
-pub fn parse_event(id: &str, data: &str) -> Result<LoggedEvent, String> {
-    let seq = id
-        .trim()
+/// An `order_event`'s position in the log, from its `id:`.
+fn parse_seq(id: &str) -> Result<i64, String> {
+    id.trim()
         .parse::<i64>()
-        .map_err(|_| format!("an order event's id isn't a number: {id:?}"))?;
+        .map_err(|_| format!("an order event's id isn't a number: {id:?}"))
+}
+
+/// The `order_event` at `seq`, from its data.
+pub fn parse_event(seq: i64, data: &str) -> Result<LoggedEvent, String> {
     let wire: WireEvent =
         serde_json::from_str(data).map_err(|e| format!("an order event can't be read: {e}"))?;
     Ok(LoggedEvent {
         seq,
         event_id: wire.event_id,
-        event_type: wire.event,
+        kind: wire.event,
         created_at: wire.created_at,
         tenant_public_key: wire.tenant,
         order_id: crate::db::OrderId::new(wire.order_id),
-        status: wire.status,
         txid: wire.txid,
         merchant_order_id: wire.merchant_order_id,
         description: wire.description,
@@ -144,13 +148,31 @@ async fn handle(
 ) -> Result<(), FollowError> {
     match event.event.as_str() {
         "order_event" => {
-            let logged = parse_event(&event.id, &event.data).map_err(FollowError::Malformed)?;
+            let seq = parse_seq(&event.id).map_err(FollowError::Malformed)?;
             let now = clock.now();
-            let (seq, order_id, event_type) = (
-                logged.seq,
-                logged.order_id.clone(),
-                logged.event_type.clone(),
-            );
+            let logged = match parse_event(seq, &event.data) {
+                Ok(logged) => logged,
+                Err(error) => {
+                    // It comes first again from the same position however
+                    // often the log is opened: stopping on it would stop
+                    // every store's webhooks behind it. Its own are lost.
+                    tracing::error!(
+                        order_events.seq = seq,
+                        order_events.data = %event.data,
+                        error = %error,
+                        "an order event can't be read, so its webhooks were never sent; the ones after it carry on"
+                    );
+                    db.write(move |db| {
+                        if seq > db.order_event_position()? {
+                            db.skip_order_events_to(seq, now)?;
+                        }
+                        Ok::<(), DbError>(())
+                    })
+                    .await?;
+                    return Ok(());
+                }
+            };
+            let (order_id, kind) = (logged.order_id.clone(), logged.kind.clone());
             let for_apps = apps.watched().then(|| logged.clone());
             let bases = addresses.now();
             let queued = db
@@ -166,7 +188,7 @@ async fn handle(
             tracing::debug!(
                 order_events.seq = seq,
                 order.id = %order_id,
-                webhook.event = %event_type,
+                webhook.event = %kind,
                 webhook.deliveries = queued,
                 "order event read"
             );
