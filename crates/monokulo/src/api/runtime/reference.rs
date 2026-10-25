@@ -6,13 +6,13 @@
 //! - `examples.json`: one recorded exchange of each kind
 //!   (`super::examples`);
 //! - `openapi.json`: the OpenAPI document with those examples
-//!   (`super::openapi`);
+//!   (`super::openapi`), which the docs site's API explorer, `/api/`, is
+//!   drawn from;
 //! - `reference.json`: every resource (its description, methods, who may
 //!   call them, body schema, forms, a stream's events, a page's who it's
 //!   offered to, and examples), every onion link's relation (`mk:onion-…`),
 //!   the handshakes and every problem, which `cargo xtask pages api` turns
-//!   into the docs site's `/api/reference/`, `/rels/{rel}/` and
-//!   `/problems/{slug}/` pages.
+//!   into the docs site's `/rels/{rel}/` and `/problems/{slug}/` pages.
 //!
 //! The recording makes the exchanges against a real engine and checks what
 //! it writes: the document is OpenAPI 3.1, every example fits its schema,

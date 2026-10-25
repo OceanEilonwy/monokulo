@@ -212,7 +212,7 @@ pub(super) fn render(github_url: &str) -> Markup {
                             p { "Make an order with your store’s public key and show the checkout where you want it. Your server ships when the signed webhook says it’s paid." }
                             div.actions {
                                 (ui::LinkButton::new("Accept your first payment", "guide/"))
-                                (ui::LinkButton::new("Read the API reference", "api/"))
+                                (ui::LinkButton::new("Try the API in your browser", "api/"))
                             }
                         }
                         pre { code { (SAMPLE) } }

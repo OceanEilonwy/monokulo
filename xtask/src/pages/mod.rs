@@ -13,6 +13,7 @@
 //! (`badge.json`). Only one engine build of the property and fuzz runs is
 //! shown (ZMQ unless told otherwise): they run each build separately.
 
+mod api_explorer;
 mod api_reference;
 mod docs;
 mod fetch;
@@ -83,15 +84,17 @@ pub(crate) const HELP: &str = "\
         pages docs --site DIR [--site-url URL] [--github-url URL]\n\
                       Build the docs into the site DIR from xtask/src/pages/docs/*.md and the install\n\
                       pages (xtask/src/pages/install/): /introduction/, a folder per page beside it,\n\
-                      /api/, the Geomart sample shop (examples/geomart/) under /geomart/, and a redirect\n\
+                      the Geomart sample shop (examples/geomart/) under /geomart/, and a redirect\n\
                       from each page's old address under /docs/. DIR holds the OpenWrt apk repositories\n\
                       under openwrt/, which the router's page names, at --site-url\n\
                       (https://docs.monokulo.com by default), and publishes the key that signs them;\n\
                       the install pages' releases and every page's edit link are --github-url's\n\
-        pages api --site DIR\n\
+        pages api --site DIR [--from DIR]\n\
                       Build the HTTP API's reference into the site DIR, generated from the code and\n\
                       from exchanges recorded against a test engine (runs monokulo's api_reference example):\n\
-                      /api/reference/, /rels/{rel}/, /problems/{slug}/ and /api/v1/openapi.json\n\
+                      the explorer at /api/ (and a redirect to it from /api/reference/), /rels/{rel}/,\n\
+                      /problems/{slug}/ and /api/v1/openapi.json; --from builds it from a reference\n\
+                      generated already instead (reference.json and openapi.json in DIR)\n\
         serve DIR [PORT]\n\
                       Serve DIR on http://127.0.0.1:PORT (8000) to look at a built site as Pages serves it";
 

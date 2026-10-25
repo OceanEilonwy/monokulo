@@ -1,0 +1,346 @@
+{
+  "components": {
+    "schemas": {
+      "OrdersInput": {
+        "properties": {
+          "amount": {
+            "description": "The price.",
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/app": {
+      "delete": {
+        "description": "Disconnect this app.",
+        "operationId": "app.delete",
+        "responses": {
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Disconnect this app.",
+        "tags": [
+          "app"
+        ],
+        "x-monokulo-keys": [
+          "ak"
+        ]
+      }
+    },
+    "/api/v1/orders": {
+      "post": {
+        "description": "Make an order.",
+        "operationId": "orders.create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "amount": "0.25",
+                "currency": "XMR"
+              },
+              "schema": {
+                "$ref": "#/components/schemas/OrdersInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/prs.hal-forms+json": {
+                "examples": {
+                  "sk": {
+                    "summary": "With the secret key",
+                    "value": {
+                      "order_id": "order_2"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "examples": {
+                  "invalid-amount": {
+                    "value": {
+                      "detail": "<b>no</b>",
+                      "status": 400,
+                      "title": "Nope",
+                      "type": "https://docs.monokulo.com/problems/invalid-amount"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "A problem: [`invalid-amount`](https://docs.monokulo.com/problems/invalid-amount)."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Make an order.",
+        "tags": [
+          "orders"
+        ],
+        "x-monokulo-keys": [
+          "pk",
+          "sk"
+        ]
+      }
+    },
+    "/api/v1/orders/{order_id}": {
+      "get": {
+        "description": "Read one order. Any key of the store.\n\nWith every link the key may follow.",
+        "operationId": "order.get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/prs.hal-forms+json": {
+                "examples": {
+                  "pk": {
+                    "summary": "With the public key",
+                    "value": {
+                      "note": "<script>alert(1)</script>",
+                      "order_id": "order_1"
+                    }
+                  },
+                  "sk": {
+                    "summary": "With the secret key",
+                    "value": {
+                      "amount": "0.25",
+                      "order_id": "order_1",
+                      "paid": false
+                    }
+                  }
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "examples": {
+                  "not-found": {
+                    "value": {
+                      "detail": "<b>no</b>",
+                      "status": 404,
+                      "title": "Nope",
+                      "type": "https://docs.monokulo.com/problems/not-found"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "A problem: [`not-found`](https://docs.monokulo.com/problems/not-found)."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Read one order. Any key of the store.",
+        "tags": [
+          "order"
+        ],
+        "x-monokulo-keys": [
+          "pk",
+          "sk",
+          "ak"
+        ]
+      }
+    },
+    "/api/v1/orders/{order_id}/events": {
+      "get": {
+        "description": "Follow one order.",
+        "operationId": "order-events.get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "order_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "example": "event: order\ndata: {\"order_id\":\"order_1\"}\n\n",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The stream"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Follow one order.",
+        "tags": [
+          "order-events"
+        ],
+        "x-monokulo-keys": [
+          "sk"
+        ]
+      }
+    },
+    "/apps/connect": {
+      "post": {
+        "description": "Connect an app.",
+        "operationId": "app-connect.redeem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "token": "ct_1"
+              },
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "examples": {
+                  "invalid-connect-code": {
+                    "value": {
+                      "detail": "<b>no</b>",
+                      "status": 401,
+                      "title": "Nope",
+                      "type": "https://docs.monokulo.com/problems/invalid-connect-code"
+                    }
+                  }
+                }
+              }
+            },
+            "description": "A problem: [`invalid-connect-code`](https://docs.monokulo.com/problems/invalid-connect-code)."
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "Connect an app.",
+        "tags": [
+          "handshakes"
+        ]
+      }
+    },
+    "/stores/{id}/orders/{order_id}": {
+      "get": {
+        "description": "The order's page.",
+        "operationId": "dashboard-order.get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The page."
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "The order's page.",
+        "tags": [
+          "pages"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "{monokulo}",
+      "variables": {
+        "monokulo": {
+          "default": "https://www.monokulo.com"
+        }
+      }
+    }
+  ],
+  "tags": [
+    {
+      "description": "One order.\n\nWhat the payer was asked for.",
+      "externalDocs": {
+        "url": "https://docs.monokulo.com/rels/order"
+      },
+      "name": "order"
+    },
+    {
+      "description": "The store's orders.",
+      "externalDocs": {
+        "url": "https://docs.monokulo.com/rels/orders"
+      },
+      "name": "orders"
+    },
+    {
+      "description": "One order's changes.",
+      "externalDocs": {
+        "url": "https://docs.monokulo.com/rels/order-events"
+      },
+      "name": "order-events"
+    },
+    {
+      "description": "The connected app.",
+      "name": "app"
+    },
+    {
+      "description": "Pages for people.",
+      "name": "pages"
+    },
+    {
+      "description": "How a plugin gets its key.",
+      "externalDocs": {
+        "url": "https://docs.monokulo.com/plugins/"
+      },
+      "name": "handshakes"
+    }
+  ]
+}

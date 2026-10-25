@@ -23,7 +23,8 @@ it can never move your coins.
 - Running a shop on WooCommerce or another platform:
   [Shop plugins](../plugins/).
 - Writing your own integration: [the API reference](../api/), with a
-  recorded request and answer for every route.
+  recorded request and answer for every route, and Try it, which sends
+  each request to your own Monokulo from the page.
 
 ## Test first
 
