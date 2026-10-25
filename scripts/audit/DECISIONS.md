@@ -34,6 +34,12 @@ audit database (`target/code-audit/audit.db`).
   raising with the Monero developers.
 - **Merging:** Claude merges each fix PR once CI is green and it has
   reviewed the diff.
+- **Startup data writes go through the migration system.** #175 drops its
+  startup backfill of SEV-SNP key checks (a check is stored only when a
+  wrap is written). The firmware-update rewrap, which already rewrote the
+  wrap at start outside migrations, moves into the migration system as
+  tracked code steps run after unseal, one per firmware version, in its own
+  PR after #175.
 - **#175's guest-SVN-0 break:** accepted; no instance uses SEV-SNP yet.
 - **Fix order:** critical groups first, then high, then the cross-crate type
   groups, then medium, then low bundles; one pull request per fix group.
