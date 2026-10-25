@@ -24,5 +24,6 @@ export const islands: Record<string, () => Promise<Attach>> = {
   SaveBar: () => import('./SaveBar').then(module => module.attachSaveBar),
   Toast: () => import('./Toast').then(module => module.attachToast),
   Menu: () => import('./Menu').then(module => module.attachMenu),
+  NavMenu: () => import('./NavMenu').then(module => module.attachNavMenu),
   StatusDot: () => import('./StatusDot').then(module => module.attachStatusDot),
 };

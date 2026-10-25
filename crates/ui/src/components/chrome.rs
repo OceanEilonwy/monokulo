@@ -1,4 +1,4 @@
-use crate::{component, Attrs, Slot, UiEnum};
+use crate::{component, Attrs, Slot, UiEnum, UiRecord};
 
 /// How wide a page's column is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, UiEnum)]
@@ -9,13 +9,21 @@ pub enum PageWidth {
     Wide,
     /// Room for rows of data: the Logs and Query pages.
     Full,
+    /// The whole window: the project site's docs, whose map runs down its
+    /// left edge.
+    Window,
 }
 
 component! {
     /// The site's bar: the brand on the left, then the links, the status
     /// dot and the account menu. On a phone the links fold into a menu
-    /// behind a hamburger, a checkbox and its label: no JavaScript.
+    /// behind a hamburger, a checkbox and its label: no JavaScript. A bar
+    /// with `actions` (the project site's) keeps its links beside the
+    /// brand and the actions at its right end.
     pub struct SiteNav {
+        /// Before the brand: the button that opens the page's own map on a
+        /// narrow screen (the docs').
+        lead: Option<Slot>,
         /// The brand: the logo and the name.
         brand: Slot,
         /// The links, and the account menu once signed in.
@@ -25,6 +33,9 @@ component! {
         home: String,
         /// Beside the hamburger, in sight on a phone: the status dot.
         status: Option<Slot>,
+        /// At the bar's right end, in sight on a phone too: search, a link
+        /// out, the page's one call to action.
+        actions: Option<Slot>,
         /// The width of the page under it, which its row lines up with.
         #[default(PageWidth::Normal)]
         width: PageWidth,
@@ -36,11 +47,13 @@ component! {
     html {
         nav class="site-nav" data-width=(width) if width != PageWidth::Normal {
             div class="wrap site-nav-row" {
+                @if let Some(lead) = lead { (lead) }
                 a href=(home) class="site-nav-brand" { (brand) }
                 @if let Some(status) = status { (status) }
                 input type="checkbox" id=(toggle_id) class="nav-toggle-checkbox";
                 label for=(toggle_id) class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" { (links) }
+                @if let Some(actions) = actions { div class="site-nav-actions" { (actions) } }
             }
         }
     }
@@ -105,6 +118,75 @@ component! {
             }
         }
     }
+}
+
+/// A link of a [`NavMenu`].
+#[derive(Clone, Debug, UiRecord)]
+pub struct NavMenuLink {
+    pub href: String,
+    /// In its tile: an inline SVG (`assets::icons::PACKAGE`).
+    pub icon: Slot,
+    pub title: String,
+    /// What is there, in a line.
+    pub line: String,
+}
+
+component! {
+    /// A menu of links in the site's bar, behind its name ("Resources"):
+    /// a `details`, so it opens and closes without JavaScript. Each link
+    /// has an icon in a tile, a title and a line saying what is there. In
+    /// a phone's folded list it opens in place. Once its island attaches,
+    /// a click outside it or Escape closes it too, as a `Menu`'s.
+    pub struct NavMenu {
+        /// Its name, on its button.
+        label: String,
+        links: Vec<NavMenuLink>,
+    }
+    behaviour "nav-menu.behaviour.ts" {
+        uses(),
+        ref root,
+    }
+    html {
+        details class="nav-menu" ref=root {
+            summary class="nav-menu-button" { (label) }
+            div class="nav-menu-list" {
+                @for link in links {
+                    a class="nav-menu-link" href=(link.href) {
+                        span class="nav-menu-icon" { (link.icon) }
+                        span class="nav-menu-text" {
+                            span class="nav-menu-title" { (link.title) }
+                            span class="nav-menu-line" { (link.line) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(super) fn nav_menu_examples() -> Vec<(&'static str, NavMenu)> {
+    // Examples are components and text, so Solid renders them too: a
+    // glyph stands in for the icon the site gives each link.
+    let link = |icon: &str, title: &str, line: &str| NavMenuLink {
+        href: "#component-nav-menu".into(),
+        icon: Slot::from(icon),
+        title: title.into(),
+        line: line.into(),
+    };
+    vec![(
+        "The project site's Resources",
+        NavMenu::new(
+            "Resources",
+            vec![
+                link("↓", "Releases", "Downloads and what changed in each"),
+                link(
+                    "!",
+                    "Report an issue",
+                    "Bugs and feature requests on GitHub",
+                ),
+            ],
+        ),
+    )]
 }
 
 pub(super) fn menu_item_examples() -> Vec<(&'static str, MenuItem)> {
