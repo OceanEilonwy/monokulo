@@ -40,6 +40,11 @@ audit database (`target/code-audit/audit.db`).
   wrap at start outside migrations, moves into the migration system as
   tracked code steps run after unseal, one per firmware version, in its own
   PR after #175.
+- **PR 183's migration approved:** it drops `dashboard_order_requests`
+  and rebuilds `pos_orders` without `request_key`; retry keys from before
+  the upgrade are not carried over (a retry across the deploy gets the
+  engine's order unless the rate moved; a website retry makes a second
+  order, as pk_ now has its own namespace).
 - **#175's guest-SVN-0 break:** accepted; no instance uses SEV-SNP yet.
 - **Fix order:** critical groups first, then high, then the cross-crate type
   groups, then medium, then low bundles; one pull request per fix group.
