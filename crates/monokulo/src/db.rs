@@ -183,6 +183,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         49,
         include_str!("../migrations/0049_wallets_user_engine_wallet.sql"),
     ),
+    (50, include_str!("../migrations/0050_pos_orders_closed.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -365,6 +366,45 @@ impl Db {
             }
         }
         Ok(rows)
+    }
+
+    /// The store's POS orders not yet known to be closed
+    /// ([`Self::close_pos_orders`]), newest first: the only ones the
+    /// terminal's Active tab asks the engine about.
+    pub fn unclosed_pos_orders(&self, connection_id: &ConnectionId) -> Result<Vec<PosOrderRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT order_id, backgrounded, created_at_utc FROM pos_orders
+             WHERE connection_id = ?1 AND closed_at_utc IS NULL
+             ORDER BY created_at_utc DESC, order_id DESC",
+        )?;
+        let rows = stmt.query_map(params![connection_id], |row| {
+            Ok(PosOrderRow {
+                order_id: row.get(0)?,
+                backgrounded: row.get(1)?,
+                created_at: row.get(2)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(DbError::from)
+    }
+
+    /// Records that the engine has finished with `order_ids` (final, and no
+    /// longer watched for a late payment, or unknown to it), so they are
+    /// never asked about again.
+    pub fn close_pos_orders(
+        &self,
+        connection_id: &ConnectionId,
+        order_ids: &[OrderId],
+        now: i64,
+    ) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            "UPDATE pos_orders SET closed_at_utc = ?3
+             WHERE connection_id = ?1 AND order_id = ?2 AND closed_at_utc IS NULL",
+        )?;
+        for order_id in order_ids {
+            stmt.execute(params![connection_id, order_id, now])?;
+        }
+        Ok(())
     }
 
     /// The source of each of `order_ids` monokulo knows anything about;

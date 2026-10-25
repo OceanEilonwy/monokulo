@@ -70,6 +70,9 @@ pub struct CheckoutViewModel {
     /// sets after load (this page has none - see this module's own doc
     /// comment).
     pub progress_percent: u8,
+    /// Whether the order can't change any more
+    /// (`engine_client::OrderView::is_final`): an expired or cancelled one
+    /// the engine still watches isn't, and the page keeps following it.
     pub is_terminal: bool,
     /// When a double spend was detected: gates the banner, which shows the
     /// time with `clock`.
@@ -89,9 +92,12 @@ pub struct CheckoutViewModel {
     pub created_at: i64,
     pub expires_at: i64,
     /// `Some` once a customer (or their storefront, on their behalf) has set
-    /// one via the form below - shown read-only from then on. `None` shows
-    /// the form instead.
+    /// one via the form below, which shows it saved and can still change it
+    /// until `refund_address_locked`.
     pub refund_address: Option<String>,
+    /// The order has received money and has an address on record, which the
+    /// engine keeps from then on: shown read-only, with no form.
+    pub refund_address_locked: bool,
     /// Set only when the refund-address form below was just rejected (empty
     /// submission, or a real engine failure) - `None` on a plain page load.
     pub refund_address_error: Option<String>,
@@ -349,7 +355,18 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                 div class="pay-col-secondary" {
                     (live_progress(data))
 
-                    @if data.refund_enabled { div class="section" {
+                    @if data.refund_enabled && data.refund_address_locked { div class="section" {
+                        // Not the form's ids: `checkout.js` leaves this alone.
+                        label for="refund-address-fixed" { "Refund address" }
+                        (ui::Input::new("refund_address")
+                            .id("refund-address-fixed")
+                            .value(data.refund_address.as_deref().unwrap_or(""))
+                            .readonly(true)
+                            .autocomplete("off")
+                            .attr("spellcheck", "false"))
+                        (ui::FieldNote::new(html! { "Recorded for the merchant to use if this order needs a refund. "
+                            "It can't be changed now that a payment has arrived." }))
+                    } } @else if data.refund_enabled { div class="section" {
                         form method="post" id="refund-form" action=(format!("{}{}", refund_url(&data.order_id), data.query_suffix))
                             fx-action=(format!("{}{}", refund_url(&data.order_id), data.query_suffix))
                             fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors
@@ -429,11 +446,23 @@ fn awaiting_payment(data: &CheckoutViewModel) -> bool {
     matches!(data.status, OrderStatus::Pending | OrderStatus::Partial)
 }
 
+/// When a double spend reversed a payment to the order, if that decides what
+/// the payer is told: it does unless another payment covers the order in
+/// full (paid or overpaid; the engine keeps the flag set either way), when
+/// the stage follows the status and only a note mentions the reversal.
+/// While a covering payment still confirms, the page stays cautious. The
+/// stage ([`stage_steps`], [`stage_message`], [`live_status`]) and the
+/// status event's message (`http::checkout`) all decide by this.
+pub fn reversed_at(status: OrderStatus, double_spend_detected_at: Option<i64>) -> Option<i64> {
+    double_spend_detected_at
+        .filter(|_| !matches!(status, OrderStatus::Paid | OrderStatus::Overpaid))
+}
+
 /// The track: Send, Confirm, Paid - without Confirm when the store counts a
 /// payment as soon as it's seen (`confirmations_required == 0`).
 fn stage_steps(data: &CheckoutViewModel) -> Vec<ui::ProgressStep> {
     use ui::StepProgress as Step;
-    let [send, confirm, paid] = if data.double_spend_detected_at.is_some()
+    let [send, confirm, paid] = if reversed_at(data.status, data.double_spend_detected_at).is_some()
         && !awaiting_payment(data)
     {
         [Step::Fail, Step::Todo, Step::Todo]
@@ -474,8 +503,9 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
     let received = super::trim_xmr(&data.amount_received_xmr);
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
-    if let Some(at) = data.double_spend_detected_at {
-        let when = html! { span id="double-spend-time" { @if data.local_times { (data.clock.time_local(at)) } @else { (data.clock.time(at)) } } };
+    let when = |at: i64| html! { span id="double-spend-time" { @if data.local_times { (data.clock.time_local(at)) } @else { (data.clock.time(at)) } } };
+    if let Some(at) = reversed_at(data.status, data.double_spend_detected_at) {
+        let when = when(at);
         return if awaiting_payment(data) {
             (
                 "A payment was reversed".to_string(),
@@ -488,6 +518,10 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
             )
         };
     }
+    // Covered anyway: the paid stage, with a note of the reversed payment.
+    let reversed_note = data.double_spend_detected_at.map(|at| {
+        html! { " A double spend was detected at " (when(at)) ", so that payment doesn't count; another one covers this order." }
+    });
     match data.status {
         OrderStatus::Pending => (
             "Send the exact amount below".to_string(),
@@ -507,25 +541,30 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
         ),
         OrderStatus::Paid => (
             "Paid".to_string(),
-            html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." },
+            html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." @if let Some(note) = &reversed_note { (note) } },
         ),
         OrderStatus::Overpaid => (
             "Paid, with extra".to_string(),
             html! {
                 @if let Some(message) = &data.payment_error { (message) } @else { "Don't send more. Contact the merchant about the extra amount." }
+                @if let Some(note) = &reversed_note { (note) }
             },
         ),
+        // Not final yet (`is_terminal`): the engine still watches the order,
+        // so a payment already sent can still arrive and count.
         OrderStatus::Expired => (
             "This payment expired".to_string(),
             html! {
-                @if received == "0" { "Nothing arrived in time. Don't send to this address; go back to the shop to start again." }
+                @if received == "0" && !data.is_terminal { "Don't send to this address. If you already sent it, keep this page open: it updates when the payment arrives." }
+                @else if received == "0" { "Nothing arrived in time. Don't send to this address; go back to the shop to start again." }
                 @else { (received) " XMR arrived before it expired. Don't send more; contact the merchant about it." }
             },
         ),
         OrderStatus::Cancelled => (
             "This order was cancelled".to_string(),
             html! {
-                @if received == "0" { "Don't send to this address; ask the merchant for a new order if you still want to pay." }
+                @if received == "0" && !data.is_terminal { "Don't send to this address. If you already sent it, keep this page open: it updates when the payment arrives." }
+                @else if received == "0" { "Don't send to this address; ask the merchant for a new order if you still want to pay." }
                 @else { (received) " XMR arrived after it was cancelled. Don't send more; contact the merchant about a refund." }
             },
         ),
@@ -538,7 +577,7 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
     let steps = stage_steps(data);
     let (title, message) = stage_message(data);
     let shown = super::order_state(data.status).1;
-    let state = if data.double_spend_detected_at.is_some() {
+    let state = if reversed_at(data.status, data.double_spend_detected_at).is_some() {
         ui::OrderState::DoubleSpend
     } else {
         shown
@@ -915,6 +954,7 @@ mod tests {
             created_at: -1800,
             expires_at: 1800,
             refund_address: None,
+            refund_address_locked: false,
             refund_address_error: None,
             is_compact: false,
             refund_enabled: true,
@@ -1219,5 +1259,35 @@ mod tests {
                 && html.contains(r#"<div class="qr-wrap is-spent">"#),
             "{html}"
         );
+        // Another payment covers it in full: paid, with a note of the
+        // reversed one, not the reversed stage (the engine keeps the flag).
+        data.amount_received_xmr = "0.500000000000".to_string();
+        data.confirmations = 10;
+        data.is_terminal = true;
+        for (status, title) in [
+            (OrderStatus::Paid, "<strong>Paid.</strong>"),
+            (OrderStatus::Overpaid, "<strong>Paid, with extra.</strong>"),
+        ] {
+            data.status = status;
+            let html = checkout_page(&chrome(), &data).into_string();
+            assert!(html.contains(title), "{status}: {html}");
+            assert_eq!(
+                html.matches(r#"<li class="step-done">"#).count(),
+                3,
+                "{status}: every step done, got: {html}"
+            );
+            assert!(
+                !html.contains("step-fail")
+                    && !html.contains("Payment reversed")
+                    && !html.contains("state-double-spend"),
+                "{status}: {html}"
+            );
+            assert!(
+                html.contains("so that payment doesn&#39;t count; another one covers this order.")
+                    || html
+                        .contains("so that payment doesn't count; another one covers this order."),
+                "{status}: {html}"
+            );
+        }
     }
 }

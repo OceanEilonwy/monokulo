@@ -137,9 +137,8 @@ pub enum Problem {
     /// or is empty.
     #[problem(status = 400, title = "Not a refund address for this store")]
     InvalidRefundAddress,
-    /// The order is settled (paid, overpaid or expired) and already has a
-    /// refund address, which can no longer be changed: a refund may be on
-    /// its way to it.
+    /// The order has received a payment and already has a refund address,
+    /// which can no longer be changed: a refund may be on its way to it.
     #[problem(status = 409, title = "The refund address can't be changed")]
     RefundAddressLocked,
 }

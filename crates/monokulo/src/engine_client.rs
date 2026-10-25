@@ -1359,6 +1359,24 @@ pub struct OrderView {
     pub currently_scanning: bool,
 }
 
+impl OrderView {
+    /// Whether whatever shows the order may stop following it. Paid and
+    /// overpaid are final. Expired and cancelled are only once the engine
+    /// stops watching the order (`currently_scanning`): until then a
+    /// payment that arrives late is still found, and turns the order paid.
+    pub fn is_final(&self) -> bool {
+        use engine_protocol::order_status::OrderStatus;
+        match self.status {
+            OrderStatus::Paid | OrderStatus::Overpaid => true,
+            OrderStatus::Expired | OrderStatus::Cancelled => !self.currently_scanning,
+            OrderStatus::Pending
+            | OrderStatus::Unconfirmed
+            | OrderStatus::Confirming
+            | OrderStatus::Partial => false,
+        }
+    }
+}
+
 /// Mirrors the engine's own `PaymentView`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PaymentView {

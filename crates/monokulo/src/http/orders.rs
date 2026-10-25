@@ -435,6 +435,7 @@ async fn order_detail_data(
                 None => "—".to_string(),
             };
             let from_pos = matches!(pos_order, Ok(Some(_)));
+            let is_final = detail.order.is_final();
             Ok(Some(OrderDetailData {
                 from_pos,
                 order_id: detail.order.order_id,
@@ -449,6 +450,7 @@ async fn order_detail_data(
                 xmr_amount_piconero: detail.order.xmr_amount_piconero,
                 amount_received_piconero: detail.order.amount_received_piconero,
                 status: detail.order.status,
+                is_final,
                 confirmations: detail.order.confirmations,
                 confirmations_required_display,
                 base_currency_display,
@@ -539,7 +541,7 @@ pub async fn order_detail_events(
                 let order = order_detail_data(&state, &row, &sk, &order_id, payment_link)
                     .await
                     .ok()??;
-                let (_, _, terminal) = crate::views::order_state(order.status);
+                let terminal = order.is_final;
                 let html = views::orders::live_fragment(&order, &clock).into_string();
                 let mut events = vec![axum::response::sse::Event::default()
                     .event(r##"{"target":"#order-live","swap":"outerHTML"}"##)
@@ -5199,6 +5201,7 @@ mod tests {
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 500_000_000_000,
             status: engine_protocol::order_status::OrderStatus::Paid,
+            is_final: true,
             confirmations: 10,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),

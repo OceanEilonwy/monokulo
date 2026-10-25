@@ -1420,7 +1420,8 @@ pub(super) struct SetRefundAddressRequest {
 /// no public route for it. Like every other free-text field here the value
 /// is stored verbatim: a human reviews it before any refund is sent. The
 /// tenant comes from the `sk_` alone, so an `order_id` belonging to another
-/// tenant is simply not found.
+/// tenant is simply not found. An order that has received money and already
+/// has an address keeps it: `409` (`Store::set_refund_address`).
 pub(super) async fn set_order_refund_address(
     AuthedTenant(tenant): AuthedTenant,
     Path(order_id): Path<crate::store::OrderId>,

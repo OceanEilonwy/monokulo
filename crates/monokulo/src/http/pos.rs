@@ -436,37 +436,53 @@ pub struct PosListQuery {
     state: Option<String>,
 }
 
-/// Every POS order of this store that is still open: the engine's open
-/// orders (web orders included; a cancelled one is closed) narrowed to the
-/// POS's own.
+/// Every POS order of this store that is still open, newest first. Starts
+/// from the POS's own rows, so the store's web orders cost nothing here:
+/// the engine is asked only about the POS orders not yet known to be
+/// closed. Those it has finished with (final and no longer watched, or
+/// unknown to it) are recorded as closed, so each is asked about only until
+/// then.
 async fn active_pos_orders(
     state: &AppState,
     connection_id: &crate::db::ConnectionId,
     sk: &credentials::auth::RawToken,
 ) -> Result<Vec<PosOrderData>, EngineClientError> {
-    let open = state.engine.client.list_open_orders(sk).await?;
-    let ids: Vec<crate::db::OrderId> = open.iter().map(|order| order.order_id.clone()).collect();
     let store_id = connection_id.clone();
     let rows = state
         .db
-        .read(move |db| db.get_pos_orders(&store_id, &ids))
+        .read(move |db| db.unclosed_pos_orders(&store_id))
         .await
         .unwrap_or_default();
+    let ids: Vec<crate::db::OrderId> = rows.iter().map(|row| row.order_id.clone()).collect();
+    let mut orders = engine_orders(state, sk, &ids).await?;
+    let (open, closed): (Vec<_>, Vec<_>) = rows.into_iter().partition(|row| {
+        orders
+            .get(&row.order_id)
+            .is_some_and(|order| order.status.is_open() || order.currently_scanning)
+    });
+    if !closed.is_empty() {
+        let store_id = connection_id.clone();
+        let closed: Vec<crate::db::OrderId> = closed.into_iter().map(|row| row.order_id).collect();
+        // Only saves asking again: a failure here is retried next time.
+        let _ = state
+            .db
+            .write(move |db| db.close_pos_orders(&store_id, &closed, crate::now_unix()))
+            .await;
+    }
     let mut metadata = order_metadata(
         state,
         connection_id,
-        rows.iter().map(|row| row.order_id.clone()).collect(),
+        open.iter().map(|row| row.order_id.clone()).collect(),
     )
     .await;
-    let mut rows: HashMap<crate::db::OrderId, crate::db::PosOrderRow> = rows
-        .into_iter()
-        .map(|row| (row.order_id.clone(), row))
-        .collect();
     Ok(open
         .into_iter()
-        .filter_map(|order| {
-            rows.remove(&order.order_id)
-                .map(|row| pos_order_view(metadata.remove(&row.order_id), row, &order))
+        .filter_map(|row| {
+            let order = orders.remove(&row.order_id)?;
+            order
+                .status
+                .is_open()
+                .then(|| pos_order_view(metadata.remove(&row.order_id), row, &order))
         })
         .collect())
 }
@@ -738,12 +754,12 @@ async fn pos_status(
 ) -> PosStatusResponse {
     let confirmations_required =
         resolve_confirmations_required(state, connection_id, sk, &order.order_id).await;
-    // `order_state`'s own `is_terminal` already accounts for a
-    // 0-conf-trusted order: the engine only ever reports `"paid"`
-    // once *that order's own* `confirmations_required` (however it
-    // was resolved at creation - possibly `0`) has actually been
-    // met, so there's no separate threshold check to fold in here.
-    let (_, _, is_terminal) = crate::views::order_state(order.status);
+    // `is_final` already accounts for a 0-conf-trusted order: the engine
+    // only ever reports `"paid"` once *that order's own*
+    // `confirmations_required` (however it was resolved at creation -
+    // possibly `0`) has actually been met, so there's no separate
+    // threshold check to fold in here.
+    let is_terminal = order.is_final();
     PosStatusResponse {
         status: order.status,
         updated_at: order.updated_at,
@@ -1917,14 +1933,16 @@ mod tests {
         }
         let status = store.status(&order).await;
         assert_eq!(status["status"], "cancelled");
-        assert_eq!(status["is_terminal"], true);
+        // The engine still watches it for a payment sent anyway.
+        assert_eq!(status["is_terminal"], false);
     }
 
     /// A POS cancellation is the engine's, so every surface that shows the
     /// order says so: the checkout live (its stream) and on a reload with
-    /// no JavaScript (no address to copy, no more refreshing), the order's
-    /// dashboard page and the orders list, the API's order and its event
-    /// stream.
+    /// no JavaScript (no address to copy), the order's dashboard page and
+    /// the orders list, the API's order and its event stream. None of them
+    /// treats it as final while the engine still watches it for a payment
+    /// sent anyway: the checkout keeps refreshing.
     #[tokio::test]
     async fn a_pos_cancellation_shows_on_the_checkout_dashboard_and_api() {
         let store = LiveStore::new("pos-cancel-everywhere@example.com").await;
@@ -2003,7 +2021,7 @@ mod tests {
             }
         };
         assert_eq!(live["status"], "cancelled");
-        assert_eq!(live["is_terminal"], true);
+        assert_eq!(live["is_terminal"], false);
         assert!(fragments.contains("This order was cancelled"), "told live");
         assert!(
             fragments.contains("data-void"),
@@ -2012,9 +2030,10 @@ mod tests {
         let api_live =
             next_named(&mut api_events, &mut api_pending, &mut api_parser, "order").await;
         assert_eq!(api_live["status"], "cancelled");
-        assert_eq!(api_live["is_final"], true);
+        assert_eq!(api_live["is_final"], false);
 
-        // Reloaded, with no JavaScript: told, nothing to pay, no refresh.
+        // Reloaded, with no JavaScript: told, nothing to pay, and still
+        // refreshing for a late payment.
         let page = text(get(format!("/checkout/{order}"), false).await.unwrap()).await;
         assert!(
             page.contains("This order was cancelled"),
@@ -2023,8 +2042,8 @@ mod tests {
         assert!(page.contains("qr-wrap is-spent"), "the code faded");
         assert!(page.contains("data-void"), "the address struck through");
         assert!(
-            !page.contains(r#"id="checkout-refresh""#),
-            "no more refreshing"
+            page.contains(r#"id="checkout-refresh""#),
+            "refreshes while the engine watches"
         );
 
         let detail = text(
@@ -2049,7 +2068,7 @@ mod tests {
 
         let body = body_json(api(format!("/api/v1/orders/{order}")).await.unwrap()).await;
         assert_eq!(body["status"], "cancelled");
-        assert_eq!(body["is_final"], true);
+        assert_eq!(body["is_final"], false);
         assert_eq!(
             body["cancelled_at"],
             live_cancelled_at(&store, &order).await
