@@ -245,6 +245,9 @@ pub struct OrderDetailData {
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
     pub status: OrderStatus,
+    /// Whether the page may stop following the order
+    /// (`engine_client::OrderView::is_final`).
+    pub is_final: bool,
     pub confirmations: u64,
     pub confirmations_required_display: String,
     pub base_currency_display: String,
@@ -667,6 +670,7 @@ mod tests {
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 0,
             status: engine_protocol::order_status::OrderStatus::Pending,
+            is_final: false,
             confirmations: 0,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),
@@ -744,6 +748,7 @@ mod tests {
         ] {
             let order = OrderDetailData {
                 status,
+                is_final: false,
                 cancelled_at: Some(1_200),
                 amount_received_piconero: amount,
                 payments: vec![payment("late", amount, 1_300)],
@@ -778,6 +783,7 @@ mod tests {
         };
         let order = OrderDetailData {
             status: engine_protocol::order_status::OrderStatus::Partial,
+            is_final: false,
             amount_received_piconero: 200_000_000_000,
             payments: vec![reversed, payment("bbbb2222", 200_000_000_000, 1200)],
             ..test_order_detail_data(None)

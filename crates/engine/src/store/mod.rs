@@ -2518,6 +2518,14 @@ impl Store {
 
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Records
     /// only - nothing in this system ever sends to a refund address.
+    ///
+    /// Once anything has been received, an address already on record is
+    /// fixed: a refund of that money may go to it, and anyone who later
+    /// comes by the order's checkout link must not be able to redirect it.
+    /// The rule is in the statement itself, so a payment recorded between a
+    /// caller's read and this write still counts. A fixed address is
+    /// [`StoreError::Refused`]; `Ok(false)` is an order this tenant doesn't
+    /// have.
     pub fn set_refund_address(
         &self,
         tenant_id: &TenantId,
@@ -2525,13 +2533,20 @@ impl Store {
         refund_address: &str,
     ) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE orders SET refund_address = ?3 WHERE id = ?1 AND tenant_id = ?2",
+            "UPDATE orders SET refund_address = ?3 WHERE id = ?1 AND tenant_id = ?2
+               AND (refund_address IS NULL OR amount_received_piconero = 0)",
             params![order_id, tenant_id, refund_address],
         )?;
         if changed > 0 {
             self.publish_order_change(tenant_id, order_id);
+            return Ok(true);
         }
-        Ok(changed > 0)
+        if self.get_order(tenant_id, order_id)?.is_some() {
+            return Err(StoreError::Refused(
+                "the order has received a payment and already has a refund address, which can no longer be changed".to_owned(),
+            ));
+        }
+        Ok(false)
     }
 
     // -- Payments / reorg bookkeeping --------------------------------------
@@ -4420,6 +4435,52 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(refetched.double_spend_detected_at.is_some());
+    }
+
+    #[test]
+    fn a_refund_address_is_fixed_once_money_is_received() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let tenant_id = &tenant.tenant.id;
+
+        // Nothing received: the address can be set, and changed.
+        let unpaid = new_order(&store, tenant_id.as_str(), 1);
+        assert!(store
+            .set_refund_address(tenant_id, &unpaid.id, "first")
+            .unwrap());
+        assert!(store
+            .set_refund_address(tenant_id, &unpaid.id, "second")
+            .unwrap());
+
+        // Something received, each way an order holds money: with no address
+        // yet one can be set, once.
+        let cases = [
+            (OrderStatus::Partial, 40, Some(50), 59, 1600),
+            (OrderStatus::Unconfirmed, 100, None, 59, 1600),
+            (OrderStatus::Confirming, 100, Some(50), 52, 1600),
+            (OrderStatus::Paid, 100, Some(50), 59, 1600),
+            (OrderStatus::Expired, 40, Some(50), 59, 2500),
+        ];
+        for (index, (status, amount, height, tip, now)) in cases.into_iter().enumerate() {
+            let order = new_order(&store, tenant_id.as_str(), 10 + index as u32);
+            store
+                .record_payment_match(&order.id, "tx", 0, amount, "[]", 1500, height, None)
+                .unwrap();
+            let (_, reached) = store.recompute_order_status(&order.id, tip, now).unwrap();
+            assert_eq!(reached, status);
+            assert!(store
+                .set_refund_address(tenant_id, &order.id, "first")
+                .unwrap());
+            assert!(
+                matches!(
+                    store.set_refund_address(tenant_id, &order.id, "second"),
+                    Err(StoreError::Refused(_))
+                ),
+                "{status}: an address on record with money received is fixed"
+            );
+            let kept = store.get_order(tenant_id, &order.id).unwrap().unwrap();
+            assert_eq!(kept.refund_address.as_deref(), Some("first"), "{status}");
+        }
     }
 
     fn drain_changes(

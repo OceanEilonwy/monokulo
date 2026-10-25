@@ -499,24 +499,21 @@ pub fn logo_mark(size: u32, class: &str) -> Markup {
     }
 }
 
-/// An order status's words and its `.state-*` colour class, and whether the
-/// order can still change. The checkout, the POS and the dashboard show a
-/// status with the same words and colours.
-pub fn order_state(status: OrderStatus) -> (&'static str, ui::OrderState, bool) {
+/// An order status's words and its `.state-*` colour class. The checkout,
+/// the POS and the dashboard show a status with the same words and colours.
+/// Whether the order can still change is not the status's alone
+/// (`engine_client::OrderView::is_final`).
+pub fn order_state(status: OrderStatus) -> (&'static str, ui::OrderState) {
     use OrderStatus::*;
     match status {
-        Pending => ("Waiting for payment", ui::OrderState::Pending, false),
-        Unconfirmed => (
-            "Payment seen, unconfirmed",
-            ui::OrderState::Unconfirmed,
-            false,
-        ),
-        Confirming => ("Confirming", ui::OrderState::Confirming, false),
-        Partial => ("Partial payment received", ui::OrderState::Partial, false),
-        Paid => ("Paid", ui::OrderState::Paid, true),
-        Overpaid => ("Overpaid", ui::OrderState::Overpaid, true),
-        Expired => ("Expired", ui::OrderState::Expired, true),
-        OrderStatus::Cancelled => ("Cancelled", ui::OrderState::Cancelled, true),
+        Pending => ("Waiting for payment", ui::OrderState::Pending),
+        Unconfirmed => ("Payment seen, unconfirmed", ui::OrderState::Unconfirmed),
+        Confirming => ("Confirming", ui::OrderState::Confirming),
+        Partial => ("Partial payment received", ui::OrderState::Partial),
+        Paid => ("Paid", ui::OrderState::Paid),
+        Overpaid => ("Overpaid", ui::OrderState::Overpaid),
+        Expired => ("Expired", ui::OrderState::Expired),
+        OrderStatus::Cancelled => ("Cancelled", ui::OrderState::Cancelled),
     }
 }
 
@@ -534,7 +531,7 @@ pub fn order_state_short(status: OrderStatus) -> &'static str {
 /// An order's status as a badge ([`order_state`]): the full words, and the
 /// short ones that replace them on a narrow screen (`.label-short`).
 pub fn state_badge(status: OrderStatus) -> Markup {
-    let (label, state, _) = order_state(status);
+    let (label, state) = order_state(status);
     let short = order_state_short(status);
     let tag = ui::Tag::new(label).state(state);
     html! { (if short == label { tag } else { tag.short(short) }) }

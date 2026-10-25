@@ -27,7 +27,9 @@ struct Body {
     order_id: OrderId,
     /// Where the payment is.
     status: OrderStatus,
-    /// Whether the status can still change.
+    /// Whether the status can still change. An `expired` or `cancelled`
+    /// order isn't final while Monokulo still watches it for a payment that
+    /// arrived late, which turns it paid.
     is_final: bool,
     /// The Monero address to pay: a subaddress of the store's wallet, this
     /// order's alone.
@@ -91,7 +93,7 @@ pub(crate) fn of(
     confirmations_required: u64,
     onion: Option<&str>,
 ) -> Body {
-    let (_, _, is_final) = crate::views::order_state(order.status);
+    let is_final = order.is_final();
     let order_id = order.order_id.clone();
     Body {
         order_id: order_id.clone(),

@@ -43,9 +43,6 @@ use crate::api::runtime::problem::{internal, Problem};
 
 /// Customer-facing amount guidance; POS keeps its own merchant-facing alerts.
 fn checkout_payment_message(order: &OrderView) -> Option<String> {
-    if order.double_spend_detected_at.is_some() {
-        return super::pos::derive_payment_error(order);
-    }
     // Amounts without trailing zeros: this is read by the customer.
     let xmr = |piconero: u64| {
         crate::views::trim_xmr(&pricing::exchange_rate::format_piconero_as_xmr(piconero))
@@ -53,6 +50,20 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
     };
     let requested = xmr(order.xmr_amount_piconero);
     let received = xmr(order.amount_received_piconero);
+    // The same rule as the page's stage: a reversed payment matters only
+    // while nothing else covers the order.
+    if views::checkout::reversed_at(order.status, order.double_spend_detected_at).is_some() {
+        return Some(
+            if matches!(order.status, OrderStatus::Pending | OrderStatus::Partial) {
+                let due = xmr(order
+                    .xmr_amount_piconero
+                    .saturating_sub(order.amount_received_piconero));
+                format!("A payment to this order was reversed, so it doesn't count. Send {due} XMR to pay this order.")
+            } else {
+                "A payment to this order was reversed, so it doesn't count. Contact the merchant before sending anything.".to_string()
+            },
+        );
+    }
     match order.status {
         OrderStatus::Partial => {
             let remaining = xmr(order
@@ -66,7 +77,12 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
                 .saturating_sub(order.xmr_amount_piconero));
             Some(format!("{received} XMR received for a {requested} XMR order ({extra} XMR extra). Do not send more. Contact the merchant about the extra amount."))
         }
-        _ => super::pos::derive_payment_error(order),
+        OrderStatus::Expired => Some("This payment expired before it was completed.".to_string()),
+        OrderStatus::Pending
+        | OrderStatus::Unconfirmed
+        | OrderStatus::Confirming
+        | OrderStatus::Paid
+        | OrderStatus::Cancelled => None,
     }
 }
 
@@ -105,6 +121,26 @@ enum LoadError {
     /// The engine is busy or can't be reached: worth retrying (`503`).
     EngineUnavailable,
     Internal,
+}
+
+impl LoadError {
+    /// What the checkout page, or its refund form, answers instead: a page
+    /// or a bare status for a browser, `problem+json` for the auto-save
+    /// (`wants_json`).
+    fn response(self, wants_json: bool) -> Response {
+        match (self, wants_json) {
+            (LoadError::NotFound, true) => Problem::NotFound
+                .detail("There's no such order.")
+                .into_response(),
+            (LoadError::NotFound, false) => not_found_response(),
+            (LoadError::EngineUnavailable, true) => ApiError::EngineUnavailable.into_response(),
+            (LoadError::EngineUnavailable, false) => {
+                StatusCode::SERVICE_UNAVAILABLE.into_response()
+            }
+            (LoadError::Internal, true) => internal().into_response(),
+            (LoadError::Internal, false) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        }
+    }
 }
 
 /// The store a checkout request is about: the one its order belongs to,
@@ -282,11 +318,7 @@ pub async fn checkout_page(
     options.onion = on.kind == NetworkKind::Onion;
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
-        Err(LoadError::NotFound) => return not_found_response(),
-        Err(LoadError::EngineUnavailable) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(error) => return error.response(false),
     };
     if must_open_from_shop(&state, &row, &order_id, &headers).await {
         return open_from_shop_response(&order_id);
@@ -445,7 +477,11 @@ async fn build_checkout_view(
         None => ("—".to_string(), "".to_string()),
     };
 
-    let (status_text, _, is_terminal) = crate::views::order_state(detail.order.status);
+    let (status_text, _) = crate::views::order_state(detail.order.status);
+    // The page and its stream both stop following the order only once it
+    // can't change: an expired or cancelled one still turns paid if a late
+    // payment is found while the engine watches it.
+    let is_terminal = detail.order.is_final();
     // Computed server-side so the progress bar is correct in the initial
     // HTML and after a status refresh. `confirmations_required ==
     // 0` (zero-conf trusted) means any receipt already counts as done.
@@ -502,6 +538,10 @@ async fn build_checkout_view(
         created_at: detail.order.created_at,
         expires_at: detail.order.expires_at,
         refund_address: detail.order.refund_address.clone(),
+        // The engine's own rule (`Store::set_refund_address`), so the page
+        // doesn't offer an edit it would refuse.
+        refund_address_locked: detail.order.refund_address.is_some()
+            && detail.order.amount_received_piconero > 0,
         refund_address_error,
         is_compact: options.is_compact(),
         refund_enabled: options.refund_enabled(),
@@ -605,89 +645,46 @@ pub async fn set_refund_address(
     };
     let (row, sk, detail) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
-        Err(LoadError::NotFound) if wants_json => {
-            return Problem::NotFound
-                .detail("There's no such order.")
-                .into_response()
-        }
-        Err(LoadError::NotFound) => return not_found_response(),
-        Err(LoadError::EngineUnavailable) if wants_json => {
-            return ApiError::EngineUnavailable.into_response()
-        }
-        Err(LoadError::EngineUnavailable) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(LoadError::Internal) if wants_json => return internal().into_response(),
-        Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(error) => return error.response(wants_json),
     };
-
-    // Once the order is settled (paid, overpaid, expired or cancelled) a refund
-    // address already on record is locked: a refund may be on its way to
-    // it, and anyone who comes by the order URL later (a shared link, a
-    // browser history) must not be able to redirect it. An order with
-    // nothing received and no address yet can still have one set.
-    let settled = matches!(
-        detail.order.status,
-        engine_protocol::order_status::OrderStatus::Paid
-            | engine_protocol::order_status::OrderStatus::Overpaid
-            | engine_protocol::order_status::OrderStatus::Expired
-            | engine_protocol::order_status::OrderStatus::Cancelled
-    );
-    if settled && detail.order.refund_address.is_some() {
+    // The one way out for a rejected address.
+    let (page_state, page_options) = (&state, &options);
+    let reject = |rejection: RefundRejection,
+                  row: Arc<StoreConnectionRow>,
+                  sk: credentials::auth::RawToken,
+                  detail: OrderDetailResponse| async move {
         if wants_json {
-            return Problem::RefundAddressLocked
-                .detail("The refund address for this order can no longer be changed.")
+            return rejection
+                .problem()
+                .detail(rejection.message())
                 .into_response();
         }
-        return render_checkout_page(
-            &state,
+        render_checkout_page(
+            page_state,
             row,
             sk,
             detail,
-            Some("The refund address for this order can no longer be changed.".to_string()),
-            &options,
+            Some(rejection.message().to_string()),
+            page_options,
         )
-        .await;
-    }
+        .await
+    };
 
     let refund_address = form.refund_address.trim();
     if refund_address.is_empty() {
-        if wants_json {
-            return Problem::InvalidRefundAddress
-                .detail("Enter a refund address.")
-                .into_response();
-        }
-        return render_checkout_page(
-            &state,
-            row,
-            sk,
-            detail,
-            Some("Enter a refund address.".to_string()),
-            &options,
-        )
-        .await;
+        return reject(RefundRejection::Empty, row, sk, detail).await;
     }
 
     let parsed = monero::Address::from_str(refund_address);
     let payment_address = monero::Address::from_str(&detail.order.address);
     if !matches!((&parsed, &payment_address), (Ok(refund), Ok(payment)) if refund.network == payment.network)
     {
-        if wants_json {
-            return Problem::InvalidRefundAddress
-                .detail("Enter a valid Monero address for this store's network.")
-                .into_response();
-        }
-        return render_checkout_page(
-            &state,
-            row,
-            sk,
-            detail,
-            Some("Enter a valid Monero address for this store's network.".to_string()),
-            &options,
-        )
-        .await;
+        return reject(RefundRejection::Invalid, row, sk, detail).await;
     }
 
+    // The engine keeps an address already on record once the order has
+    // received money, in the same statement as the write
+    // (`Store::set_refund_address`), and says so with a `409`.
     match state
         .engine
         .client
@@ -702,22 +699,47 @@ pub async fn set_refund_address(
             },
             options.suffix()
         )),
+        Err(EngineClientError::EngineError { status, .. })
+            if status == reqwest::StatusCode::CONFLICT =>
+        {
+            reject(RefundRejection::Locked, row, sk, detail).await
+        }
         Err(e) => {
             tracing::error!(order.id = %order_id, store.id = %row.id, error = %e, "failed to set a refund address");
-            if wants_json {
-                return Problem::EngineUnavailable
-                    .detail("Something went wrong saving that. Please try again.")
-                    .into_response();
-            }
-            render_checkout_page(
-                &state,
-                row,
-                sk,
-                detail,
-                Some("Something went wrong saving that. Please try again.".to_string()),
-                &options,
-            )
-            .await
+            reject(RefundRejection::SaveFailed, row, sk, detail).await
+        }
+    }
+}
+
+/// Why a refund address was turned away. Its one message answers the
+/// auto-save as `problem+json` and, without JavaScript, shows on the
+/// re-rendered page.
+#[derive(Clone, Copy)]
+enum RefundRejection {
+    /// The order has received money and already has an address.
+    Locked,
+    Empty,
+    /// Not a Monero address on the store's network.
+    Invalid,
+    /// The engine failed to save it.
+    SaveFailed,
+}
+
+impl RefundRejection {
+    fn problem(self) -> Problem {
+        match self {
+            Self::Locked => Problem::RefundAddressLocked,
+            Self::Empty | Self::Invalid => Problem::InvalidRefundAddress,
+            Self::SaveFailed => Problem::EngineUnavailable,
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Locked => "The refund address for this order can no longer be changed.",
+            Self::Empty => "Enter a refund address.",
+            Self::Invalid => "Enter a valid Monero address for this store's network.",
+            Self::SaveFailed => "Something went wrong saving that. Please try again.",
         }
     }
 }
@@ -1059,10 +1081,13 @@ mod tests {
         order.amount_received_piconero = 600_000_000_000;
         assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 
+        // A reversed payment the extra still covers changes nothing; one
+        // that leaves the order uncovered is the message, in the payer's
+        // words rather than the till's.
         order.double_spend_detected_at = Some(123);
-        assert!(checkout_payment_message(&order)
-            .unwrap()
-            .contains("Double-spend"));
+        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
+        order.status = engine_protocol::order_status::OrderStatus::Unconfirmed;
+        assert_eq!(checkout_payment_message(&order).as_deref(), Some("A payment to this order was reversed, so it doesn't count. Contact the merchant before sending anything."));
     }
 
     // `"XMR"`, not a fiat currency - this module's tests are about the
@@ -1549,8 +1574,15 @@ mod tests {
             "correct horse battery staple",
         )
         .await;
-        let pk = create_connection(&router, &state, &session_token).await;
-        let order_id = create_order(&router, &pk, "10.00").await;
+        let store = crate::http::test_support::store_with_keys(
+            &router,
+            &state,
+            &session_token,
+            "shop.example.com",
+            "XMR",
+        )
+        .await;
+        let order_id = create_order(&router, &store.public_key, "10.00").await;
 
         let response = router
             .clone()
@@ -1605,7 +1637,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(event, "status");
-        assert!(status.contains("Double-spend"), "got: {status}");
+        assert!(status.contains("was reversed"), "got: {status}");
+
+        // Cancelled, but the engine still watches it for a late payment:
+        // the stream keeps going, and the payment reaches the open page.
+        let order = engine_protocol::ids::OrderId::new(order_id.to_string());
+        engine_client
+            .cancel_order(
+                &credentials::auth::RawToken::presented(&store.secret_key),
+                &order,
+            )
+            .await
+            .unwrap();
+        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
+        assert_eq!(event, "fragment");
+        assert!(fragment.contains("state-cancelled"), "got: {fragment}");
+        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+            .await
+            .unwrap();
+        assert_eq!(event, "status");
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], "cancelled");
+        assert_eq!(status["is_terminal"], false, "{status}");
+        engine.mark_order_paid(&order_id).unwrap();
+        let status = loop {
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
+                .await
+                .unwrap();
+            if event == "status" {
+                break serde_json::from_str::<serde_json::Value>(&data).unwrap();
+            }
+        };
+        assert_eq!(status["status"], "paid");
+        assert_eq!(status["is_terminal"], true);
 
         drop(body);
         assert_eq!(
