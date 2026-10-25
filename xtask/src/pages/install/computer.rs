@@ -16,6 +16,9 @@ const UNIX_KEY: &str = "umask 077\nopenssl rand -hex 32 > monokulo.key\nchmod +x
 /// The start command for Linux and macOS.
 const UNIX_START: &str = "MONOKULO_ENCRYPTION_KEY=\"$(cat monokulo.key)\" ./monokulo";
 
+/// The page under its title and lead: where to download a release (from
+/// the given repository), a tab per operating system with its key and
+/// start commands, and what to do in the browser once it runs.
 pub(in crate::pages) fn render(site: &Site) -> Markup {
     let github_url = &site.github_url;
     let start = || {

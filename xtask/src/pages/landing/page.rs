@@ -9,7 +9,8 @@
 //! `#openwrt`. Links to those still land here: `#install` is the band that
 //! links both guides, and its two buttons are `#desktop` and `#openwrt`, so
 //! a reader without scripts lands on the link to follow. With a script,
-//! `#desktop` and `#openwrt` go straight on to their guide ([`OLD_ANCHORS`]).
+//! `#desktop` and `#openwrt` go straight on to their guide, on arriving or
+//! when the open page's address changes to one ([`OLD_ANCHORS`]).
 
 use crate::pages::site_assets;
 use crate::pages::site_header::{self, Section, GITHUB_MARK};
@@ -152,8 +153,8 @@ pub(super) fn render(github_url: &str) -> Markup {
                 title { "Monokulo: self-hosted Monero payments" }
                 meta name="description" content="Monokulo is a self-hosted Monero payment gateway for Linux, macOS, Windows and OpenWrt routers like the GL.iNet Flint 2. Watch-only: it never holds a spend key.";
                 // An old link to an install guide that has its own page now
-                // goes on to it.
-                script { (PreEscaped(format!("var to={{{old_anchors}}}[location.hash];if(to)location.replace(to);"))) }
+                // goes on to it, as does one followed on the open page.
+                script { (PreEscaped(format!("(()=>{{const to={{{old_anchors}}};const go=()=>{{const page=to[location.hash];if(page)location.replace(page);}};go();addEventListener(\"hashchange\",go);}})();"))) }
                 // Colours come only from monokulo's own theme (crates/ui/web/tokens.css,
                 // copied here at build time): light or dark follows the OS.
                 (site_assets::head(""))

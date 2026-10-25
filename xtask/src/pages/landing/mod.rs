@@ -61,7 +61,7 @@ mod tests {
             "monokulo-0.1.0-r1.apk",
         );
         write(&site, "https://github.com/Owner/monokulo").unwrap();
-        docs::write(root, &site, "https://docs.monokulo.com").unwrap();
+        docs::write(root, &site, "https://docs.monokulo.com", GITHUB_URL).unwrap();
         let page = fs::read_to_string(site.join("index.html")).unwrap();
         (site, page)
     }

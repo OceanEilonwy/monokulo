@@ -108,7 +108,7 @@ jobs:
       # The router's install page names the apk repositories the first step
       # put in the site, and this publishes the key that signs them.
       - name: Build the docs beside the landing page
-        run: cargo xtask pages docs --site target/pages/site
+        run: cargo xtask pages docs --site target/pages/site --github-url "https://github.com/$GITHUB_REPOSITORY"
       # The HTTP API's reference beside the docs' /api/ page, generated here
       # from the code and from real exchanges: it runs monokulo's
       # api_reference example (no tests, no browser code), which records them

@@ -71,10 +71,10 @@ main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--sp
 .actions{display:flex;gap:var(--space-md);flex-wrap:wrap;margin-top:var(--space-xl)}
 .actions .mk-btn svg{width:18px;height:18px;flex:none}
 .hero{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:var(--space-3xl);align-items:center}
-.eyebrow{margin-bottom:var(--space-sm);font-size:13px;font-weight:700;color:var(--muted)}
+.eyebrow{margin-bottom:var(--space-sm);font-size:var(--text-sm);font-weight:700;color:var(--muted)}
 .hero h1{font-size:clamp(34px,5vw,54px);letter-spacing:-.02em;margin-bottom:var(--space-lg)}
 .hero .lead{font-size:var(--text-lg);color:var(--muted)}
-.chips{display:flex;flex-wrap:wrap;gap:var(--space-sm);margin:var(--space-xl) 0 0;padding:0;list-style:none;font-size:13px;font-weight:700;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:var(--space-sm);margin:var(--space-xl) 0 0;padding:0;list-style:none;font-size:var(--text-sm);font-weight:700;color:var(--muted)}
 .chips li{padding:var(--pill-pad-y) var(--pill-pad-x);border:1px solid var(--line);border-radius:999px;background:var(--paper-raised)}
 /* The order's life: the ui's steps, upright, on its neutral card. */
 .flow .mk-stage{margin:0}
@@ -84,8 +84,8 @@ main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--sp
 .home-section h2{font-size:clamp(24px,3.4vw,32px);margin-bottom:var(--space-sm)}
 .home-section>p{color:var(--muted);max-width:60ch;margin:0 0 var(--space-xl)}
 .features{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-lg)}
-.features h3{font-size:17px;margin-bottom:var(--space-sm)}
-.features p{color:var(--muted);font-size:15px}
+.features h3{font-size:var(--text-lg);margin-bottom:var(--space-sm)}
+.features p{color:var(--muted);font-size:var(--text-sm)}
 .ways{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--space-lg)}
 .ways a{display:flex;flex-direction:column;gap:var(--space-xs);padding:var(--space-lg) var(--space-xl);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper-raised);text-decoration:none}
 .ways a:hover{border-color:var(--line-strong);color:var(--ink)}
@@ -96,7 +96,7 @@ main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--sp
 .dev .home-section>p{margin-bottom:0}
 .dev pre{padding:var(--space-lg);border-radius:var(--radius-lg);background:var(--paper-raised)}
 .install-band{display:flex;flex-wrap:wrap;gap:var(--space-md);align-items:center;justify-content:space-between;padding:var(--space-xl);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--surface-sunken)}
-.install-band h2{font-size:22px}
+.install-band h2{font-size:var(--text-xl)}
 .install-band p{margin-top:var(--space-xs);color:var(--muted)}
 .install-band .actions{margin-top:0}
 .home-foot{display:flex;flex-wrap:wrap;gap:var(--space-xl);justify-content:space-between;padding-top:var(--space-xl);border-top:1px solid var(--line);font-size:var(--text-sm);color:var(--muted)}

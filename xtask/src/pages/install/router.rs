@@ -14,6 +14,10 @@ pub(in crate::pages) const TITLE: &str = "Install on an OpenWrt router";
 pub(in crate::pages) const LEAD: &str =
     "About ten minutes. You can do it all from the router’s web interface.";
 
+/// The page under its title and lead: what the router needs and the
+/// version picker, the steps in LuCI and over SSH (the repository lines
+/// once per apk repository the site holds), opening it to customers on the
+/// internet, and each repository's package files.
 pub(in crate::pages) fn render(site: &Site) -> Markup {
     let (repos, site_url) = (&site.repos, &site.site_url);
     let releases = distinct(repos.iter().map(|r| r.release.clone()), " / ");

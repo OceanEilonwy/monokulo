@@ -281,12 +281,14 @@ const GEOMART: [&str; 2] = ["index.html", "done.html"];
 /// `webhooks::vectors` keeps them true), beside the plugins page.
 const VECTORS: &str = "webhook-vectors.json";
 
-/// `cargo xtask pages docs --site DIR [--site-url URL]`. The site's
-/// address is where routers fetch the apk repositories from:
-/// docs.monokulo.com unless a fork publishes its own.
+/// `cargo xtask pages docs --site DIR [--site-url URL] [--github-url URL]`.
+/// The site's address is where routers fetch the apk repositories from,
+/// and the repository's where the install pages download releases from and
+/// each page is edited: monokulo's own unless a fork publishes its own.
 pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
     let bad = |what: &str| io::Error::new(io::ErrorKind::InvalidInput, what.to_string());
-    let (mut site, mut site_url) = (None, SITE_URL.to_string());
+    let (mut site, mut site_url, mut github_url) =
+        (None, SITE_URL.to_string(), GITHUB_URL.to_string());
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let value = rest
@@ -295,26 +297,28 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
         match *flag {
             "--site" => site = Some(PathBuf::from(value)),
             "--site-url" => site_url = value.trim_end_matches('/').to_string(),
+            "--github-url" => github_url = value.trim_end_matches('/').to_string(),
             _ => return Err(bad(&format!("unknown option {flag}"))),
         }
     }
     let site = site.ok_or_else(|| bad("pages docs needs --site DIR"))?;
-    write(root, &site, &site_url)?;
+    write(root, &site, &site_url, &github_url)?;
     eprintln!("docs in {}: {} page(s)", site.display(), PAGES.len());
     Ok(Exit::SUCCESS)
 }
 
 /// Writes every page, the sample shop and the old addresses' redirects into
 /// the site's folder `site`, and the assets they use into its `assets/`;
-/// the router's page tells routers to fetch from `site_url`.
-pub(super) fn write(root: &Path, site: &Path, site_url: &str) -> io::Result<()> {
+/// the router's page tells routers to fetch from `site_url`, and the pages
+/// link releases and their sources in the repository at `github_url`.
+pub(super) fn write(root: &Path, site: &Path, site_url: &str, github_url: &str) -> io::Result<()> {
     let put = |path: PathBuf, contents: String| {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir).map_err(|e| at(dir, e))?;
         }
         fs::write(&path, contents).map_err(|e| at(&path, e))
     };
-    let held = Site::load(root, site, site_url, GITHUB_URL)?;
+    let held = Site::load(root, site, site_url, github_url)?;
     let mut found = Vec::new();
     for page in &PAGES {
         let (title, words) = match &page.source {
@@ -338,7 +342,7 @@ pub(super) fn write(root: &Path, site: &Path, site_url: &str) -> io::Result<()> 
         };
         put(
             site.join(page.dir).join("index.html"),
-            render(page, &title, &words).0,
+            render(page, &title, &words, &held.github_url).0,
         )?;
         found.extend(index(page, &title, &words));
     }
@@ -449,7 +453,8 @@ fn markdown_title<'a>(page: &'a Page, markdown: &'a str) -> &'a str {
 /// A page called `title`, its words `words` (its `h1` and what follows), in
 /// the shell, with Previous and Next in the map's order. Every page is a
 /// folder at the site's top level, so the site's root is `../` from each.
-pub(super) fn render(page: &Page, title: &str, words: &Markup) -> Markup {
+/// Its source is edited in the repository at `github_url`.
+pub(super) fn render(page: &Page, title: &str, words: &Markup, github_url: &str) -> Markup {
     let up = "../";
     let at = PAGES.iter().position(|p| p.dir == page.dir);
     let neighbour = |i: Option<usize>| {
@@ -471,7 +476,7 @@ pub(super) fn render(page: &Page, title: &str, words: &Markup) -> Markup {
         article,
         previous: neighbour(at.and_then(|i| i.checked_sub(1))),
         next: neighbour(at.map(|i| i + 1)),
-        edit: Some(format!("{GITHUB_URL}/edit/main/{}", page.source.file())),
+        edit: Some(format!("{github_url}/edit/main/{}", page.source.file())),
     })
 }
 
@@ -609,7 +614,7 @@ mod tests {
             "aarch64_cortex-a53",
             "monokulo-0.1.0-r1.apk",
         );
-        write(root, scratch.path(), SITE_URL).unwrap();
+        write(root, scratch.path(), SITE_URL, GITHUB_URL).unwrap();
         scratch
     }
 
@@ -815,7 +820,8 @@ mod tests {
     /// The router's page installs from the newest release's repository,
     /// offers every repository in its picker (the newest first), writes
     /// each version's steps and package files, and links files the site
-    /// holds; a fork's address is the one routers are told to fetch from.
+    /// holds; a fork's address is the one routers are told to fetch from,
+    /// and its repository the one releases and edits go to.
     #[test]
     fn the_router_page_installs_from_the_newest_release_and_lists_every_repository() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
@@ -834,7 +840,13 @@ mod tests {
             "aarch64_cortex-a53",
             "monokulo-0.2.0-r50.apk",
         );
-        write(root, site, "https://fork.example/").unwrap();
+        write(
+            root,
+            site,
+            "https://fork.example/",
+            "https://github.com/Fork/monokulo/",
+        )
+        .unwrap();
         let page = fs::read_to_string(site.join("install-router/index.html")).unwrap();
 
         // The picker: every repository, the newest release first, so the
@@ -888,6 +900,30 @@ mod tests {
         for file in files {
             assert!(site.join(file).is_file(), "{file}");
         }
+        // The fork's own releases to download, and its sources to edit.
+        let computer = fs::read_to_string(site.join("install-computer/index.html")).unwrap();
+        let github = regex::Regex::new(r#"href="(https://github\.com/[^"]+)""#).unwrap();
+        let releases: Vec<&str> = github
+            .captures_iter(&computer)
+            .map(|c| c.get(1).unwrap().as_str())
+            .filter(|href| href.contains("/releases/"))
+            .collect();
+        assert_eq!(
+            releases,
+            [
+                "https://github.com/Fork/monokulo/releases/latest",
+                "https://github.com/Fork/monokulo/releases/tag/latest-main"
+            ]
+        );
+        let edit = github
+            .captures_iter(&page)
+            .map(|c| c.get(1).unwrap().as_str().to_owned())
+            .find(|href| href.contains("/edit/"))
+            .unwrap();
+        assert_eq!(
+            edit,
+            "https://github.com/Fork/monokulo/edit/main/xtask/src/pages/install/router.rs"
+        );
     }
 
     /// A site without an apk repository has nothing for the router's page
@@ -897,7 +933,7 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let scratch = Scratch::new("docs-no-repo");
         fs::create_dir_all(scratch.join("openwrt")).unwrap();
-        let error = write(root, scratch.path(), SITE_URL).unwrap_err();
+        let error = write(root, scratch.path(), SITE_URL, GITHUB_URL).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(!scratch.join("install-router").exists());
     }

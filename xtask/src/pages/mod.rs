@@ -80,13 +80,14 @@ pub(crate) const HELP: &str = "\
                       into DIR, with DIR/sources.json naming their runs (needs the gh CLI)\n\
         pages landing --site DIR [--github-url URL]\n\
                       Build the landing page (GitHub Pages /), about the product, into DIR\n\
-        pages docs --site DIR [--site-url URL]\n\
+        pages docs --site DIR [--site-url URL] [--github-url URL]\n\
                       Build the docs into the site DIR from xtask/src/pages/docs/*.md and the install\n\
                       pages (xtask/src/pages/install/): /introduction/, a folder per page beside it,\n\
                       /api/, the Geomart sample shop (examples/geomart/) under /geomart/, and a redirect\n\
                       from each page's old address under /docs/. DIR holds the OpenWrt apk repositories\n\
                       under openwrt/, which the router's page names, at --site-url\n\
-                      (https://docs.monokulo.com by default), and publishes the key that signs them\n\
+                      (https://docs.monokulo.com by default), and publishes the key that signs them;\n\
+                      the install pages' releases and every page's edit link are --github-url's\n\
         pages api --site DIR\n\
                       Build the HTTP API's reference into the site DIR, generated from the code and\n\
                       from exchanges recorded against a test engine (runs monokulo's api_reference example):\n\

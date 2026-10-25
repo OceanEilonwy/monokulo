@@ -10,6 +10,10 @@ pub(in crate::pages) const CONFIG_TITLE: &str = "Config and data";
 pub(in crate::pages) const CONFIG_LEAD: &str =
     "Where Monokulo keeps its settings, its databases and the key that encrypts them.";
 
+/// Config and data under its title and lead: the config file and data
+/// folder on each desktop system and how to choose others, then OpenWrt's
+/// settings, data and the secrets file to copy somewhere safe. The same on
+/// every site.
 pub(in crate::pages) fn config(_: &Site) -> Markup {
     html! {
         h2 id="on-a-computer" { "On a computer" }
@@ -100,6 +104,9 @@ pub(in crate::pages) const BACKUPS_TITLE: &str = "Backups and updates";
 pub(in crate::pages) const BACKUPS_LEAD: &str =
     "What to keep a copy of, and how to update or remove Monokulo without losing it.";
 
+/// Backups and updates under its title and lead: what to back up and how to
+/// update on a computer, then updating and removing the OpenWrt package.
+/// The same on every site.
 pub(in crate::pages) fn backups(_: &Site) -> Markup {
     html! {
         h2 id="on-a-computer" { "On a computer" }
