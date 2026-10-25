@@ -44,7 +44,6 @@ pub(crate) mod node_test_support;
 #[cfg(any(test, feature = "fuzzing"))]
 #[path = "../tests/verification/notifications/model.rs"]
 pub(crate) mod notification_exploration;
-pub mod pow;
 pub mod proof;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]

@@ -362,7 +362,7 @@ mod tests {
     fn under_checking_only_a_proven_block_settles_a_conflict() {
         let (store, order) = shop(1);
         store.enable_proof(NET, 1).unwrap();
-        let block = |height: u64| crate::pow::ProvenBlock {
+        let block = |height: u64| engine_pow::ProvenBlock {
             height,
             id: [7; 32],
             timestamp: height,

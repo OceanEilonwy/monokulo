@@ -91,12 +91,9 @@ fn block_blob(
     for tx in txs {
         blob.extend_from_slice(&tx.hash().0);
     }
-    #[cfg_attr(
-        not(test),
-        expect(
-            clippy::expect_used,
-            reason = "test support: the blob is built right above"
-        )
+    #[expect(
+        clippy::expect_used,
+        reason = "test support: the blob is built right above"
     )]
     monero::consensus::deserialize(&blob).expect("a test block decodes")
 }
@@ -156,10 +153,7 @@ impl TestChain {
         &self.blocks
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(clippy::expect_used, reason = "test support: a chain is never empty")
-    )]
+    #[expect(clippy::expect_used, reason = "test support: a chain is never empty")]
     pub fn tip(&self) -> &TestBlock {
         self.blocks.last().expect("a test chain has blocks")
     }
@@ -205,10 +199,7 @@ impl TestChain {
 
     /// The next block at `timestamp`, its proof meeting its difficulty or
     /// (`valid` false) not.
-    #[cfg_attr(
-        not(test),
-        expect(clippy::expect_used, reason = "test support: hashing can't fail here")
-    )]
+    #[expect(clippy::expect_used, reason = "test support: hashing can't fail here")]
     pub fn push(
         &mut self,
         txs: Vec<monero::Transaction>,
@@ -253,33 +244,5 @@ impl TestChain {
         let mut chain = self.clone();
         chain.blocks.retain(|b| b.height <= height);
         chain
-    }
-
-    /// Puts this chain's blocks from `from` up into `node` (replacing what
-    /// it had there and above), with their blobs and difficulties for
-    /// proof checking, and the made-up keys below the chain.
-    pub fn install(&self, node: &crate::daemon::fake::FakeDaemonClient, from: u64) {
-        let blocks: Vec<&TestBlock> = self.blocks.iter().filter(|b| b.height >= from).collect();
-        node.replace_from(
-            from,
-            blocks
-                .iter()
-                .map(|b| crate::daemon::fake::ProofBlock {
-                    height: b.height,
-                    hash: b.id_hex(),
-                    timestamp: b.timestamp,
-                    txs: b.txs.clone(),
-                    blob: b.blob.clone(),
-                    difficulty: b.difficulty,
-                    cumulative_difficulty: b.cumulative_difficulty,
-                })
-                .collect(),
-        );
-        let first = self.blocks.first().map_or(0, |b| b.height);
-        let mut keys: Vec<u64> = blocks.iter().map(|b| seed_height(b.height)).collect();
-        keys.dedup();
-        for key_height in keys.into_iter().filter(|h| *h < first) {
-            node.seed_key_block(key_height, &hex::encode(made_up_key(key_height)));
-        }
     }
 }

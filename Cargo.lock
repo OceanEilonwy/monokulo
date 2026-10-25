@@ -1767,6 +1767,7 @@ dependencies = [
  "axum",
  "clap",
  "credentials",
+ "engine-pow",
  "engine-protocol",
  "futures-util",
  "hex",
@@ -1779,7 +1780,6 @@ dependencies = [
  "parking_lot",
  "proptest",
  "rand 0.10.2",
- "randomx-rs",
  "rate-limit",
  "reqwest",
  "rusqlite",
@@ -1801,6 +1801,20 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "engine-pow"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "monero",
+ "randomx-rs",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -3678,6 +3692,7 @@ dependencies = [
  "credentials",
  "dns-client",
  "engine",
+ "engine-pow",
  "engine-protocol",
  "engine-test-support",
  "engine-view",

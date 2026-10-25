@@ -22,7 +22,7 @@ const MERCHANT_FLOW: &str = "a whole merchant flow, with several saves and reloa
 pub(crate) const SLOW: &[(&str, &str)] = &[
     // Rust.
     ("engine › proof::", RANDOMX),
-    ("engine › pow::", RANDOMX),
+    ("engine-pow › ", RANDOMX),
     ("engine › work::tests::every_sql_failure_", SQL_SWEEP),
     (
         "engine › work::tests::boundaries::every_recorded_ringct_variant_runs_complete_money_histories",

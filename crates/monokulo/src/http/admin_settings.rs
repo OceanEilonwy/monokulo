@@ -2083,7 +2083,7 @@ mod tests {
         {
             let store = engine.store().lock();
             store.enable_proof(monero::Network::Mainnet, 1).unwrap();
-            let block = |height: u64| engine::pow::ProvenBlock {
+            let block = |height: u64| engine_pow::ProvenBlock {
                 height,
                 id: [height as u8; 32],
                 timestamp: height,

@@ -4438,7 +4438,7 @@ async fn forgetting_a_proof_anchor_keeps_checking_on() {
     {
         let store = store.lock();
         store.enable_proof(Network::Mainnet, 1).unwrap();
-        let block = |height: u64| crate::pow::ProvenBlock {
+        let block = |height: u64| engine_pow::ProvenBlock {
             height,
             id: [height as u8; 32],
             timestamp: height,

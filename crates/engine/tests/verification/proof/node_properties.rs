@@ -25,7 +25,7 @@ fn config() -> proptest::test_runner::Config {
 fn replace_nodes(world: &mut World, chain: &TestChain) -> Vec<Arc<AdversarialNode>> {
     let nodes: Vec<_> = std::iter::repeat_with(|| {
         let node = Arc::new(AdversarialNode::new());
-        chain.install(&node.fake, 0);
+        node.fake.install_chain(chain, 0);
         node
     })
     .take(world.nodes.len())
@@ -69,9 +69,9 @@ async fn verifier_history(count: usize, phases: Vec<[u8; 5]>, restart: bool) {
                 ..Behavior::default()
             };
             if phase[i] == 3 {
-                forged.install(&node.fake, anchor.height + 1);
+                node.fake.install_chain(&forged, anchor.height + 1);
             } else {
-                chain.install(&node.fake, anchor.height + 1);
+                node.fake.install_chain(&chain, anchor.height + 1);
             }
         }
         tokio::time::timeout(Duration::from_secs(30), world.round())
@@ -105,7 +105,7 @@ async fn verifier_history(count: usize, phases: Vec<[u8; 5]>, restart: bool) {
     }
     for node in &nodes {
         *node.behavior.lock() = Behavior::default();
-        chain.install(&node.fake, anchor.height + 1);
+        node.fake.install_chain(&chain, anchor.height + 1);
     }
     for _ in 0..4 {
         world.round().await;
