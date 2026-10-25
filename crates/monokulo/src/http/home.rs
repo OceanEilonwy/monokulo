@@ -40,12 +40,11 @@ pub async fn home(State(state): State<AppState>, headers: HeaderMap) -> Response
 
 /// The dashboard (`GET /`, signed in): every store the user has
 /// connected, a merged recent-orders feed across all of them, and a
-/// total-received figure. There is no dedicated "dashboard summary" engine
-/// endpoint to call - this is real aggregation over each connection's own
-/// `EngineClient::get_tenant`/`list_orders` calls, done sequentially here
-/// (the expected number of stores per user is small; this is not the place
-/// to add concurrency complexity for a case with no evidence it matters
-/// yet).
+/// total-received figure, from each connection's own
+/// `EngineClient::get_tenant`/`order_totals`/`list_orders` calls, made
+/// sequentially here (the expected number of stores per user is small;
+/// this is not the place to add concurrency complexity for a case with no
+/// evidence it matters yet).
 async fn dashboard(state: &AppState, user: &UserRow) -> Response {
     let user_id = user.id.clone();
     let (rows, wallets) = match state
@@ -98,18 +97,17 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
             last_order_at: None,
         };
 
-        if let Ok(orders) = state.engine.client.list_orders(&sk).await {
-            let day_ago = crate::now_unix() - 24 * 3600;
-            let mut received: u128 = 0;
-            for o in &orders {
-                received += o.amount_received_piconero as u128;
-                if o.created_at >= day_ago {
-                    store.orders_last_day += 1;
-                }
-                store.last_order_at = store.last_order_at.max(Some(o.created_at));
-            }
+        // The figures are the engine's sums over every order, not over the
+        // page of latest orders listed below.
+        let day_ago = crate::now_unix() - 24 * 3600;
+        if let Ok(totals) = state.engine.client.order_totals(&sk, day_ago).await {
+            let received = u128::from(totals.received_piconero);
+            store.orders_last_day = totals.orders_since;
             store.received_xmr = format_piconero_as_xmr(received);
             total_received_piconero += received;
+        }
+        if let Ok(orders) = state.engine.client.list_orders(&sk).await {
+            store.last_order_at = orders.iter().map(|o| o.created_at).max();
             for o in orders {
                 // Filled in below for the orders that make the list.
                 all_orders.push(HomeOrderRow {

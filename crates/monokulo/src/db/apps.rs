@@ -6,11 +6,12 @@ use shared::auth::TokenHash;
 use shared::sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
+pub use shared::ids::AppId;
 
 /// A device connected to a store with a key of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConnection {
-    pub id: String,
+    pub id: AppId,
     pub store_id: ConnectionId,
     /// What the app calls itself in URLs and headers (`monokular`).
     pub slug: String,
@@ -41,7 +42,7 @@ pub struct NewApp<'a> {
 pub struct AppOrder {
     pub order_id: OrderId,
     pub store_id: ConnectionId,
-    pub app_id: String,
+    pub app_id: AppId,
     pub device_name: String,
     pub amount: String,
     pub currency: String,
@@ -50,6 +51,20 @@ pub struct AppOrder {
     pub merchant_order_id: Option<String>,
     pub expires_at: i64,
     pub created_at: i64,
+}
+
+/// An app [`Db::delete_app`] took off its store. Only made there, so an
+/// app's open streams are ended (`AppEvents::disconnected`) only once it
+/// really was disconnected from the store that asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeletedApp {
+    app_id: AppId,
+}
+
+impl DeletedApp {
+    pub fn app_id(&self) -> &AppId {
+        &self.app_id
+    }
 }
 
 fn app_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppConnection> {
@@ -120,7 +135,7 @@ impl Db {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let id = format!("app_{}", uuid::Uuid::new_v4().simple());
+        let id = AppId::new(format!("app_{}", uuid::Uuid::new_v4().simple()));
         let spent = tx.execute(
             "UPDATE app_connect_tokens SET consumed_at_utc = ?1, app_id = ?4
              WHERE token_hash = ?2 AND consumed_at_utc IS NULL AND created_at_utc >= ?3",
@@ -203,17 +218,23 @@ impl Db {
     }
 
     /// Disconnects one of a store's apps: its key stops working at once.
-    /// `false` when the store has no such app.
-    pub fn delete_app(&self, store_id: &ConnectionId, app_id: &str) -> Result<bool> {
+    /// `None` when the store has no such app.
+    pub fn delete_app(
+        &self,
+        store_id: &ConnectionId,
+        app_id: &AppId,
+    ) -> Result<Option<DeletedApp>> {
         let deleted = self.conn.execute(
             "DELETE FROM app_connections WHERE store_id = ?1 AND id = ?2",
             params![store_id, app_id],
         )?;
-        Ok(deleted > 0)
+        Ok((deleted > 0).then(|| DeletedApp {
+            app_id: app_id.clone(),
+        }))
     }
 
     /// An app made an order (or connected) now, with this version.
-    pub fn app_seen(&self, app_id: &str, version: &str, at: i64) -> Result<()> {
+    pub fn app_seen(&self, app_id: &AppId, version: &str, at: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE app_connections SET last_seen_at_utc = ?2,
                  version = CASE WHEN ?3 = '' THEN version ELSE ?3 END

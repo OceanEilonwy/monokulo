@@ -363,6 +363,30 @@ async fn an_app_disconnects_itself_and_its_key_is_only_its_stores() {
     );
     assert_eq!(read(&router, &uri, &key).await.0, StatusCode::NOT_FOUND);
 
+    // The other store can't disconnect this store's app: nothing is
+    // deleted, and the app's key still works.
+    let app_id = app["app_id"].as_str().unwrap();
+    let elsewhere = router
+        .clone()
+        .oneshot(form_post(
+            &format!("/stores/{}/settings/apps/{app_id}/disconnect", other.id),
+            Some(&cookie),
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(elsewhere.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        state
+            .db
+            .lock()
+            .list_apps(&shared::ids::ConnectionId::new(id.clone()))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(read(&router, "/api/v1/app", &key).await.0, StatusCode::OK);
+
     let delete = |key: String| {
         let router = router.clone();
         async move {
