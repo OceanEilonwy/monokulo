@@ -45,6 +45,11 @@ audit database (`target/code-audit/audit.db`).
   the upgrade are not carried over (a retry across the deploy gets the
   engine's order unless the rate moved; a website retry makes a second
   order, as pk_ now has its own namespace).
+- **Other startup writes:** monokulo's `fill_secret_key_hashes` and
+  `import_existing_domains` become recorded code steps (PR 190's
+  `run_code_step`). Turning proof checking off no longer deletes the
+  network's proof rows, so turning it back on resumes from them.
+- **Expiry scope lookback (PR 181):** capped at 7 days.
 - **#175's guest-SVN-0 break:** accepted; no instance uses SEV-SNP yet.
 - **Fix order:** critical groups first, then high, then the cross-crate type
   groups, then medium, then low bundles; one pull request per fix group.
