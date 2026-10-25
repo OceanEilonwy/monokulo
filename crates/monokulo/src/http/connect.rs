@@ -1492,6 +1492,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        // A stream the plugin's key opened before it is disconnected.
+        let events = |key: String| {
+            let router = router.clone();
+            async move {
+                router
+                    .oneshot(crate::http::test_support::api_request(
+                        "GET",
+                        "/api/v1/events",
+                        Some(&key),
+                        None,
+                    ))
+                    .await
+                    .unwrap()
+            }
+        };
+        let opened = events(old_sk.expose().to_owned()).await;
+        assert_eq!(opened.status(), StatusCode::OK);
+        let mut old_stream = opened.into_body();
         let done = router
             .clone()
             .oneshot(form_request(
@@ -1522,6 +1540,20 @@ mod tests {
             .unwrap();
         let new_sk = super::super::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
         assert_ne!(new_sk.expose(), old_sk.expose());
+        // The old key's open stream ends with it, so it hears of no more
+        // sales; the new key opens one.
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            use http_body_util::BodyExt as _;
+            while let Some(frame) = old_stream.frame().await {
+                frame.unwrap();
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "the old key's stream should end");
+        assert_eq!(
+            events(new_sk.expose().to_owned()).await.status(),
+            StatusCode::OK
+        );
         assert!(state.db.lock().list_webhooks(&id).unwrap().is_empty());
         let rows = state.db.lock().list_integrations(&id).unwrap();
         assert!(rows[0].disconnected_at.is_some());

@@ -15,7 +15,7 @@ use shared::order_event::OrderEventKind;
 use shared::order_status::OrderStatus;
 use tokio::sync::broadcast;
 
-use crate::db::{AppId, AppOrder, DeletedApp, LoggedEvent};
+use crate::db::{AppOrder, LoggedEvent};
 
 /// How long a connect code can be redeemed after the dashboard showed it.
 pub const CONNECT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
@@ -154,15 +154,12 @@ pub struct StoreSaleEvent {
 /// app orders instead (`http::apps::events`).
 pub struct AppEvents {
     sender: broadcast::Sender<Arc<StoreSaleEvent>>,
-    /// Apps just disconnected, by id: their open streams end.
-    disconnected: broadcast::Sender<AppId>,
 }
 
 impl Default for AppEvents {
     fn default() -> Self {
         Self {
             sender: broadcast::channel(CHANNEL_CAPACITY).0,
-            disconnected: broadcast::channel(CHANNEL_CAPACITY).0,
         }
     }
 }
@@ -184,15 +181,6 @@ impl AppEvents {
 
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<StoreSaleEvent>> {
         self.sender.subscribe()
-    }
-
-    /// Ends the open streams of the app just deleted: its key no longer works.
-    pub fn disconnected(&self, app: &DeletedApp) {
-        let _ = self.disconnected.send(app.app_id().clone());
-    }
-
-    pub fn subscribe_disconnects(&self) -> broadcast::Receiver<AppId> {
-        self.disconnected.subscribe()
     }
 }
 

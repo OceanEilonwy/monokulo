@@ -523,18 +523,23 @@ pub async fn status_events(
         },
         None => None,
     };
-    let admin = super::resolve_authed_user(&state, &headers)
-        .await
-        .is_some_and(|(user, _)| user.is_admin);
+    // An admin's session, held: once it ends (a password change, say) the
+    // stream goes on with the public view.
+    let admin = match super::resolve_authed_user(&state, &headers).await {
+        Some((user, session)) if user.is_admin => super::hold_session(&state, &session).await,
+        _ => None,
+    };
     let stream = futures_util::stream::unfold(
         (state, None::<String>, true),
         move |(state, last, first)| {
             // Held by the stream, so the slot frees when it ends.
             let _permit = &permit;
+            let admin = admin.clone();
             async move {
                 if !first {
                     tokio::time::sleep(cache_ttl(&state.engine)).await;
                 }
+                let admin = admin.is_some_and(|session| !session.is_revoked());
                 let html =
                     views::status::live_fragment(&status_view(&state, admin).await).into_string();
                 if last.as_deref() == Some(html.as_str()) {

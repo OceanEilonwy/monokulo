@@ -292,6 +292,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         log_store,
         webhooks,
         apps,
+        revocations: Default::default(),
         tor: tor.clone(),
         engine,
     };

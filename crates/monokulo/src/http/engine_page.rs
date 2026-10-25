@@ -253,10 +253,13 @@ pub async fn page(
 
 pub async fn events(
     State(state): State<AppState>,
-    AuthedAdmin(_, _): AuthedAdmin,
+    AuthedAdmin(_, session): AuthedAdmin,
     extensions: axum::http::Extensions,
     Query(query): Query<NetworkQuery>,
 ) -> Response {
+    let Some(session) = super::hold_session(&state, &session).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
         Some(client) => match state.abuse.streams.try_acquire(client, "engine") {
             Some(permit) => Some(permit),
@@ -332,7 +335,8 @@ pub async fn events(
             }
         },
     );
-    crate::live::sse(stream::once(async move { Ok(first) }).chain(follow))
+    // It ends with the admin's session.
+    crate::live::sse(session.bound(stream::once(async move { Ok(first) }).chain(follow)))
 }
 
 pub async fn at(

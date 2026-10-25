@@ -667,6 +667,31 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
         !text.contains("the page test failed"),
         "older lines aren't sent again: {text}"
     );
+
+    // The admin's session ends: the stream ends with it, and a line logged
+    // after never reaches it.
+    let out = s
+        .router
+        .clone()
+        .oneshot(form("/logout", &[], Some(&s.cookie)))
+        .await
+        .unwrap();
+    assert_eq!(out.status(), StatusCode::FOUND);
+    tracing::dispatcher::with_default(&s.dispatch, || {
+        tracing::warn!("a line after the session ended")
+    });
+    let rest = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut rest = String::new();
+        while let Some(frame) = body.frame().await {
+            if let Some(data) = frame.unwrap().data_ref() {
+                rest.push_str(std::str::from_utf8(data).unwrap());
+            }
+        }
+        rest
+    })
+    .await
+    .expect("the stream ends with the session");
+    assert!(!rest.contains("a line after the session ended"), "{rest}");
 }
 
 /// A POS session sent through the real route, out of order and partly

@@ -226,8 +226,9 @@ pub async fn disconnect_submit(
         .write(move |db| db.delete_app(&store_id, &app_id))
         .await
     {
+        // Its open streams end.
         Ok(Some(deleted)) => {
-            state.apps.disconnected(&deleted);
+            state.revocations.revoke(deleted.key_hash());
             crate::base::see_other(format!("/stores/{id}/settings?tab=connections#card-apps"))
         }
         // Not one of this store's apps: nothing to disconnect.

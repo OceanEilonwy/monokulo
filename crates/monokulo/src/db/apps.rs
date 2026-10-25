@@ -54,16 +54,22 @@ pub struct AppOrder {
 }
 
 /// An app [`Db::delete_app`] took off its store. Only made there, so an
-/// app's open streams are ended (`AppEvents::disconnected`) only once it
-/// really was disconnected from the store that asked.
+/// app's open streams are ended (its key revoked, `crate::revocation`) only
+/// once it really was disconnected from the store that asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletedApp {
     app_id: AppId,
+    key_hash: TokenHash,
 }
 
 impl DeletedApp {
     pub fn app_id(&self) -> &AppId {
         &self.app_id
+    }
+
+    /// The hash of the key it held.
+    pub fn key_hash(&self) -> &TokenHash {
+        &self.key_hash
     }
 }
 
@@ -218,19 +224,26 @@ impl Db {
     }
 
     /// Disconnects one of a store's apps: its key stops working at once.
-    /// `None` when the store has no such app.
+    /// What it held, to end what it has open (`crate::revocation`); `None`
+    /// when the store has no such app.
     pub fn delete_app(
         &self,
         store_id: &ConnectionId,
         app_id: &AppId,
     ) -> Result<Option<DeletedApp>> {
-        let deleted = self.conn.execute(
-            "DELETE FROM app_connections WHERE store_id = ?1 AND id = ?2",
-            params![store_id, app_id],
-        )?;
-        Ok((deleted > 0).then(|| DeletedApp {
-            app_id: app_id.clone(),
-        }))
+        self.conn
+            .query_row(
+                "DELETE FROM app_connections WHERE store_id = ?1 AND id = ?2 RETURNING key_hash",
+                params![store_id, app_id],
+                |row| {
+                    Ok(DeletedApp {
+                        app_id: app_id.clone(),
+                        key_hash: row.get(0)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     /// An app made an order (or connected) now, with this version.

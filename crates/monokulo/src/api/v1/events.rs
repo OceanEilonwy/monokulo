@@ -10,14 +10,13 @@ use super::order;
 use crate::api::runtime::auth;
 use crate::api::{self, prelude::*};
 use crate::apps::{SaleEvent, SaleKind};
-use crate::http::store_key::Credential;
 use crate::now_unix;
 
 api::resource!(
     "/api/v1/events",
     rel = "events",
     kind = stream,
-    doc = "The store's sale events, as server-sent events: one stream for the orders its connected apps make.\n\nIt starts with `ready`; then each change to such an order is an `event:` named after it (`sale.waiting`, `sale.paid`, `sale.expired`, ...) with the sale as its JSON data, linking its order (`mk:order`). `lagged` means some were missed: read the orders again. A comment arrives every 25 seconds while nothing happens. A connected app's stream ends when the app is disconnected."
+    doc = "The store's sale events, as server-sent events: one stream for the orders its connected apps make.\n\nIt starts with `ready`; then each change to such an order is an `event:` named after it (`sale.waiting`, `sale.paid`, `sale.expired`, ...) with the sale as its JSON data, linking its order (`mk:order`). `lagged` means some were missed: read the orders again. A comment arrives every 25 seconds while nothing happens. The stream ends once its key stops working: a connected app disconnected, or the store's secret key replaced."
 );
 
 /// The comment an open stream sends while nothing happens, inside common
@@ -141,46 +140,39 @@ async fn get(
     slot: StreamSlot,
 ) -> api::Result<EventStream<SaleEvents>> {
     let state = instance.0;
-    let caller = caller.0;
     let receiver = state.apps.subscribe();
-    let disconnects = state.apps.subscribe_disconnects();
-    let pk = caller.store.tenant_public_key.clone();
-    let app_id = match caller.credential {
-        Credential::App(app) => Some(app.id),
-        _ => None,
-    };
+    let pk = caller.0.store.tenant_public_key.clone();
     // Each event is written later, as this request's answer.
     let context = auth::context();
-    let permit = slot.0;
     let ready = event("ready", &Ready { at: now_unix() });
     let events = stream::unfold(
-        (receiver, disconnects, pk, app_id, permit, context),
-        |(mut receiver, mut disconnects, pk, app_id, permit, context)| async move {
+        (receiver, pk, context),
+        |(mut receiver, pk, context)| async move {
             loop {
-                tokio::select! {
-                    gone = disconnects.recv() => match gone {
-                        Ok(gone) if Some(&gone) == app_id.as_ref() => return None,
-                        Ok(_) | Err(RecvError::Lagged(_)) => {}
-                        Err(RecvError::Closed) => return None,
-                    },
-                    announced = receiver.recv() => match announced {
-                        Ok(announced) if announced.public_key == pk => {
-                            let sale = Sale::of(&announced.event);
-                            let event = auth::as_caller(context.clone(), || event(announced.event.event.as_str(), &sale));
-                            return Some((Ok::<_, Infallible>(event), (receiver, disconnects, pk, app_id, permit, context)));
-                        }
-                        Ok(_) => {}
-                        Err(RecvError::Lagged(missed)) => {
-                            let event = event("lagged", &Lagged { missed });
-                            return Some((Ok(event), (receiver, disconnects, pk, app_id, permit, context)));
-                        }
-                        Err(RecvError::Closed) => return None,
-                    },
+                match receiver.recv().await {
+                    Ok(announced) if announced.public_key == pk => {
+                        let sale = Sale::of(&announced.event);
+                        let event = auth::as_caller(context.clone(), || {
+                            event(announced.event.event.as_str(), &sale)
+                        });
+                        return Some((Ok::<_, Infallible>(event), (receiver, pk, context)));
+                    }
+                    Ok(_) => {}
+                    Err(RecvError::Lagged(missed)) => {
+                        let event = event("lagged", &Lagged { missed });
+                        return Some((Ok(event), (receiver, pk, context)));
+                    }
+                    Err(RecvError::Closed) => return None,
                 }
             }
         },
     );
-    let events = futures_util::StreamExt::chain(stream::once(async { Ok(ready) }), events);
+    // It ends once its key stops working: the app disconnected, or the
+    // store's secret key replaced.
+    let events = slot.bound(futures_util::StreamExt::chain(
+        stream::once(async { Ok(ready) }),
+        events,
+    ));
     Ok(EventStream::new(
         Sse::new(events)
             .keep_alive(KeepAlive::new().interval(KEEP_ALIVE))

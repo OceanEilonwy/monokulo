@@ -764,7 +764,7 @@ pub async fn syntax_page(
 /// event form), with the newest row's cursor as its id.
 pub async fn tail(
     State(state): State<AppState>,
-    AuthedAdmin(admin, _): AuthedAdmin,
+    AuthedAdmin(admin, session): AuthedAdmin,
     tz: Timezone,
     headers: HeaderMap,
     Query(params): Query<LogsParams>,
@@ -784,6 +784,9 @@ pub async fn tail(
             service: String::new(),
             id: 0,
         });
+    let Some(session) = super::hold_session(&state, &session).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
     let Some(slot) = TailSlot::take() else {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -935,7 +938,8 @@ pub async fn tail(
     let opened = futures_util::stream::once(async {
         Ok(axum::response::sse::Event::default().comment("live"))
     });
-    crate::live::sse(opened.chain(stream))
+    // It ends with the admin's session.
+    crate::live::sse(session.bound(opened.chain(stream)))
 }
 
 /// `GET /admin/logs/trace/{trace_id}`.

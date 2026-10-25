@@ -290,13 +290,17 @@ pub async fn login_form(
 /// and redirects to the login page.
 pub async fn logout_submit(
     State(db): State<Database>,
+    State(revocations): State<std::sync::Arc<crate::revocation::Revocations>>,
     on: crate::network::OnNetwork,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Response {
     // The cookie goes either way; a session row that stays is logged, as
     // it would still work for whoever has the token.
-    if let Err(e) = db.write(move |db| db.delete_session(&token_hash)).await {
-        tracing::error!(error = %e, "logging out failed to delete the session");
+    let session = token_hash.clone();
+    match db.write(move |db| db.delete_session(&session)).await {
+        // What the session has open ends with it.
+        Ok(_) => revocations.revoke(&token_hash),
+        Err(e) => tracing::error!(error = %e, "logging out failed to delete the session"),
     }
     let mut cookie = super::session_cookie(on.secure, String::new());
     cookie.set_max_age(time::Duration::ZERO);
