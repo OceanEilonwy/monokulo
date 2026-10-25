@@ -708,6 +708,20 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             abuse::site_middleware,
+        ))
+        // A signed-in page or download (query results, logs, a payer's
+        // refund address on an order) is never kept by a browser to show
+        // again on Back after logout, and neither is a challenge. Outside
+        // the abuse layer so its answers are covered too; static files
+        // are added below and keep their own policy.
+        .layer(middleware::map_response(
+            |mut response: Response| async move {
+                response
+                    .headers_mut()
+                    .entry(header::CACHE_CONTROL)
+                    .or_insert(axum::http::HeaderValue::from_static("no-store"));
+                response
+            },
         ));
 
     let router = router.merge(api_and_checkout);

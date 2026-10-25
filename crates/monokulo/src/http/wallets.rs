@@ -9,7 +9,7 @@
 //! (`http::setup`): the helpers here take the [`Flow`] they're in.
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Form;
 use maud::html;
@@ -394,12 +394,9 @@ async fn render_create(
         Flow::Account => "/account/wallets/new",
     };
     let chrome = super::page_chrome(state, Some(user), path).await;
-    (
-        // Never kept: a reload makes a different wallet.
-        [(header::CACHE_CONTROL, "no-store")],
-        views::wallets::create_page(&chrome, flow, &data),
-    )
-        .into_response()
+    // Never kept (the site's no-store default, `http::build_router`): a reload
+    // makes a different wallet.
+    views::wallets::create_page(&chrome, flow, &data).into_response()
 }
 
 /// The create screens, unless the name chosen can't be used: then the
