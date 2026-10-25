@@ -52,7 +52,7 @@ async fn delete(app: ConnectedApp, apps: Apps) -> api::Result<NoContent> {
             // Gone already (disconnected from the dashboard meanwhile): its
             // streams were ended then.
             if let Some(deleted) = &deleted {
-                state.apps.disconnected(deleted);
+                state.revocations.revoke(deleted.key_hash());
             }
             tracing::info!(store.id = %app.store_id, app.id = %app.id, "an app disconnected itself");
             Ok(NoContent)

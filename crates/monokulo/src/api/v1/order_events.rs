@@ -47,19 +47,14 @@ async fn get(
     }
     // Each event is written later, as this request's answer.
     let context = auth::context();
-    let subscription =
-        orders
-            .state
-            .engine
-            .client
-            .subscribe_order(&orders.store.id, &orders.sk, &order_id);
+    let subscription = orders.state.engine.client.subscribe_order(
+        &orders.state.store_keys(),
+        &orders.store.id,
+        &order_id,
+    );
     let shared = subscription.shared_detail();
-    let permit = slot.0;
-    Ok(EventStream::new(crate::live::live_events(
-        subscription,
-        Duration::from_secs(30),
-        move || {
-            let _permit = &permit;
+    let snapshots =
+        crate::live::snapshot_stream(subscription, Duration::from_secs(30), move || {
             let (orders, order_id, shared, context) = (
                 orders.clone(),
                 order_id.clone(),
@@ -67,6 +62,7 @@ async fn get(
                 context.clone(),
             );
             async move {
+                let orders = orders.current().await?;
                 let order = match order::load(&orders, &order_id, Some(&shared)).await {
                     Ok(Some(order)) => order,
                     Ok(None) => {
@@ -85,6 +81,7 @@ async fn get(
                     terminal: order.is_final,
                 })
             }
-        },
-    )))
+        });
+    // It ends once its key stops working.
+    Ok(EventStream::new(crate::live::sse(slot.bound(snapshots))))
 }

@@ -232,6 +232,25 @@ impl FromRequestParts<AppState> for Orders {
     }
 }
 
+impl Orders {
+    /// The store's orders with its key as it is now, for a stream re-reading
+    /// them long after the request: the key may have been replaced since.
+    /// `None` when the store couldn't be read, or is gone.
+    pub async fn current(&self) -> Option<Orders> {
+        let (store, sk) = self
+            .state
+            .store_keys()
+            .current(&self.store.id)
+            .await
+            .ok()??;
+        Some(Orders {
+            state: self.state.clone(),
+            store: Arc::new(store),
+            sk,
+        })
+    }
+}
+
 impl ApiParam for Orders {
     fn describe(operation: &mut OperationDoc<'_>) {
         operation.problem(Problem::Unauthorized);
@@ -321,8 +340,29 @@ impl<S: Send + Sync> FromRequestParts<S> for Client {
 impl ApiParam for Client {}
 
 /// A slot for one more open stream for this client on the store: one
-/// client may hold only so many at once (`crate::abuse::streams`).
-pub struct StreamSlot(pub Option<crate::abuse::streams::StreamPermit>);
+/// client may hold only so many at once (`crate::abuse::streams`). It holds
+/// the request's key too: the stream ends once the key stops working
+/// ([`StreamSlot::bound`]).
+pub struct StreamSlot {
+    permit: Option<crate::abuse::streams::StreamPermit>,
+    held: crate::revocation::Hold,
+}
+
+impl StreamSlot {
+    /// `stream`, holding this slot while it runs and ending once the
+    /// request's key stops working (`crate::revocation`).
+    pub fn bound<S>(self, stream: S) -> impl futures_util::Stream<Item = S::Item> + Send + 'static
+    where
+        S: futures_util::Stream + Send + 'static,
+    {
+        let permit = self.permit;
+        self.held
+            .bound(futures_util::StreamExt::map(stream, move |item| {
+                let _permit = &permit;
+                item
+            }))
+    }
+}
 
 impl FromRequestParts<AppState> for StreamSlot {
     type Rejection = ProblemDetails;
@@ -331,21 +371,25 @@ impl FromRequestParts<AppState> for StreamSlot {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, ProblemDetails> {
-        let store = caller(parts)?.store.clone();
+        let caller = caller(parts)?;
+        let held = caller.held.clone();
         // The client `http::abuse` identified; absent only when a test
         // drives the router without a connection, which fails open.
-        match parts.extensions.get::<crate::abuse::ClientIdentity>() {
+        let permit = match parts.extensions.get::<crate::abuse::ClientIdentity>() {
             Some(client) => match state
                 .abuse
                 .streams
-                .try_acquire(client, &store.tenant_public_key)
+                .try_acquire(client, &caller.store.tenant_public_key)
             {
-                Some(permit) => Ok(StreamSlot(Some(permit))),
-                None => Err(Problem::TooManyStreams
-                    .detail("Too many open update streams. Close one and try again.")),
+                Some(permit) => Some(permit),
+                None => {
+                    return Err(Problem::TooManyStreams
+                        .detail("Too many open update streams. Close one and try again."))
+                }
             },
-            None => Ok(StreamSlot(None)),
-        }
+            None => None,
+        };
+        Ok(StreamSlot { permit, held })
     }
 }
 

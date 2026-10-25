@@ -724,6 +724,18 @@ pub struct CheckoutStatusResponse {
     pub error: Option<String>,
 }
 
+/// The order (or its store) is gone, or never was this store's: one last
+/// event and the checkout stream ends, rather than staying open for good.
+fn gone() -> crate::live::LiveSnapshot {
+    crate::live::LiveSnapshot {
+        events: vec![axum::response::sse::Event::default()
+            .event("done")
+            .data("not_found")],
+        fingerprint: "not_found".to_string(),
+        terminal: true,
+    }
+}
+
 /// `GET /checkout/{order_id}/events` - the order's status as a
 /// Server-Sent Events stream that sends it again
 /// only when it changes (`crate::live`) and ends once the order is terminal.
@@ -746,7 +758,7 @@ pub async fn checkout_events(
     extensions: axum::http::Extensions,
 ) -> Response {
     options.onion = on.kind == NetworkKind::Onion;
-    let (row, sk, _) = match load_order(&state, &store, &order_id).await {
+    let (row, _, _) = match load_order(&state, &store, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),
         Err(LoadError::EngineUnavailable) => return ApiError::EngineUnavailable.into_response(),
@@ -769,7 +781,12 @@ pub async fn checkout_events(
         },
         None => None,
     };
-    let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
+    let keys = state.store_keys();
+    let subscription = state
+        .engine
+        .client
+        .subscribe_order(&keys, &row.id, &order_id);
+    let store_id = row.id.clone();
     // One engine read per change for this order, however many streams
     // watch it.
     let shared = subscription.shared_detail();
@@ -786,29 +803,27 @@ pub async fn checkout_events(
             let sent = sent.clone();
             // Held by the stream, so the slot frees when the stream ends.
             let _permit = &permit;
-            let (state, row, order_id, options, shared) = (
+            let (state, keys, store_id, order_id, options, shared) = (
                 state.clone(),
-                row.clone(),
+                keys.clone(),
+                store_id.clone(),
                 order_id.clone(),
                 options.clone(),
                 shared.clone(),
             );
             async move {
+                // The store as it is now, not as the stream opened: its
+                // secret key may have been replaced since.
+                let row = match keys.row(&store_id).await {
+                    Ok(Some(row)) => Arc::new(row),
+                    Ok(None) => return Some(gone()),
+                    Err(()) => return None,
+                };
                 let (row, sk, detail) =
                     match load_order_with(&state, row, &order_id, Some(&shared)).await {
                         Ok(loaded) => loaded,
-                        // The order is gone (or never was this store's): one
-                        // last event and the stream ends, rather than staying
-                        // open for good. An unreachable engine waits instead.
-                        Err(LoadError::NotFound) => {
-                            return Some(crate::live::LiveSnapshot {
-                                events: vec![axum::response::sse::Event::default()
-                                    .event("done")
-                                    .data("not_found")],
-                                fingerprint: "not_found".to_string(),
-                                terminal: true,
-                            })
-                        }
+                        Err(LoadError::NotFound) => return Some(gone()),
+                        // An unreachable engine waits for the next change.
                         Err(LoadError::EngineUnavailable | LoadError::Internal) => return None,
                     };
                 let view = build_checkout_view(&state, &row, &sk, detail, None, &options).await;

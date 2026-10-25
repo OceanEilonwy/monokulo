@@ -3659,6 +3659,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-socks",
+ "tokio-util",
  "tor-cell",
  "tor-hsservice",
  "tor-keymgr",

@@ -129,12 +129,13 @@ impl OrderSubscription {
 
 impl LiveHub {
     /// `engine` is the client whose events stream is opened for this store if
-    /// nobody is watching it yet; `sk` authenticates it.
+    /// nobody is watching it yet; `keys` gives the store's secret key that
+    /// authenticates it, read again on every reconnect.
     pub fn subscribe(
         self: &Arc<Self>,
         engine: &EngineClient,
+        keys: &crate::http::store_key::StoreKeys,
         connection_id: &crate::db::ConnectionId,
-        sk: &shared::auth::RawToken,
         order_id: &crate::db::OrderId,
     ) -> OrderSubscription {
         let mut stores = self.stores.lock();
@@ -145,8 +146,8 @@ impl LiveHub {
                 upstream: tokio::spawn(run_upstream(
                     Arc::downgrade(self),
                     engine.clone(),
+                    keys.clone(),
                     connection_id.clone(),
-                    sk.clone(),
                 )),
             });
         let order = store
@@ -297,23 +298,48 @@ impl Drop for OrderChangeWatch {
 }
 
 /// Holds only a weak reference to the hub: the hub owns (and aborts) this
-/// task, so a strong one would keep both alive forever.
+/// task, so a strong one would keep both alive forever. Holds no key
+/// either: each (re)connect reads the store's current one, and a key
+/// replaced while connected ends the connection, so the next one opens
+/// with the new key.
 async fn run_upstream(
     hub: std::sync::Weak<LiveHub>,
     engine: EngineClient,
+    keys: crate::http::store_key::StoreKeys,
     connection_id: crate::db::ConnectionId,
-    sk: shared::auth::RawToken,
 ) {
     let mut delay = Duration::from_secs(1);
     loop {
-        let opened = engine.open_order_events(&sk).await;
+        let opened = match keys.held(&connection_id).await {
+            Ok(Some((sk, held))) => engine
+                .open_order_events(&sk)
+                .await
+                .map(|events| (events, held))
+                .map_err(|e| e.to_string()),
+            Ok(None) => Err("the store is gone".to_owned()),
+            Err(()) => Err("the store's secret key could not be read".to_owned()),
+        };
         if let Err(e) = &opened {
-            tracing::warn!(store.id = %connection_id, error = %e, retry_in = ?delay, "could not open the engine's order event stream");
+            shared::throttled!(
+                format!("live-upstream:{connection_id}"),
+                warn,
+                store.id = %connection_id,
+                error = %e,
+                retry_in = ?delay,
+                "could not open the engine's order event stream"
+            );
         }
-        if let Ok(mut events) = opened {
+        if let Ok((mut events, held)) = opened {
             let mut parser = SseParser::default();
             loop {
-                let chunk = match tokio::time::timeout(UPSTREAM_READ_TIMEOUT, events.next()).await {
+                let next = tokio::select! {
+                    () = held.revoked() => {
+                        tracing::debug!(store.id = %connection_id, "the store's secret key was replaced; reconnecting with the new one");
+                        break;
+                    }
+                    next = tokio::time::timeout(UPSTREAM_READ_TIMEOUT, events.next()) => next,
+                };
+                let chunk = match next {
                     Ok(Some(Ok(chunk))) => chunk,
                     Ok(None) => {
                         tracing::debug!(store.id = %connection_id, "the engine closed the order event stream");
@@ -728,16 +754,17 @@ mod tests {
         let hub = Arc::new(LiveHub::default());
         // Nothing listens here; the upstream task just keeps retrying.
         let engine = EngineClient::for_tests("http://127.0.0.1:9");
+        let keys = crate::http::AppState::for_tests().store_keys();
         let a = hub.subscribe(
             &engine,
+            &keys,
             &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
             &shared::ids::OrderId::new("o1"),
         );
         let b = hub.subscribe(
             &engine,
+            &keys,
             &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
             &shared::ids::OrderId::new("o2"),
         );
         assert_eq!(hub.upstream_count(), 1);
@@ -751,16 +778,17 @@ mod tests {
     async fn wake_reaches_only_the_named_order() {
         let hub = Arc::new(LiveHub::default());
         let engine = EngineClient::for_tests("http://127.0.0.1:9");
+        let keys = crate::http::AppState::for_tests().store_keys();
         let mut a = hub.subscribe(
             &engine,
+            &keys,
             &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
             &shared::ids::OrderId::new("o1"),
         );
         let mut b = hub.subscribe(
             &engine,
+            &keys,
             &shared::ids::ConnectionId::new("conn"),
-            &shared::auth::RawToken::presented("sk_x"),
             &shared::ids::OrderId::new("o2"),
         );
         a.changed.mark_unchanged();

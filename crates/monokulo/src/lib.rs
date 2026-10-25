@@ -31,6 +31,7 @@ pub mod onion;
 pub mod orders;
 pub mod plugins;
 pub mod qr;
+pub mod revocation;
 pub mod settings;
 pub mod stores;
 pub mod templates;
