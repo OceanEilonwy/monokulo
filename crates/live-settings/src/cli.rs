@@ -103,6 +103,41 @@ pub fn with_settings(
         .after_long_help(join(list(true), after_long))
 }
 
+/// `command` still accepting the option of each `(key, since)` in
+/// `retired`, a setting removed on `since`, hidden from the help: a
+/// service file that still passes one doesn't stop the process.
+/// [`retired_given`] names the ones given.
+pub fn with_retired(mut command: Command, retired: &[(&'static str, &'static str)]) -> Command {
+    for (key, _) in retired {
+        command = command.arg(
+            Arg::new(*key)
+                .long(cli_flag(key))
+                .value_name("VALUE")
+                .hide(true),
+        );
+    }
+    command
+}
+
+/// One line for each retired option ([`with_retired`]) the command line
+/// gave, saying it does nothing now and can be removed: for the process to
+/// log at start.
+pub fn retired_given(
+    matches: &ArgMatches,
+    retired: &[(&'static str, &'static str)],
+) -> Vec<String> {
+    retired
+        .iter()
+        .filter(|(key, _)| matches.contains_id(key) && matches.get_one::<String>(key).is_some())
+        .map(|(key, since)| {
+            format!(
+                "--{} was retired on {since} and does nothing now: remove it from the command line",
+                cli_flag(key)
+            )
+        })
+        .collect()
+}
+
 /// Where the options file is when `--options` doesn't say:
 /// `~/.config/monokulo/<file>` (XDG), or `<file>` in the working directory
 /// if that can't be used.
