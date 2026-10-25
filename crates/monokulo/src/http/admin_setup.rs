@@ -31,14 +31,6 @@ use super::login;
 use super::signup::{self, CreateAccountError};
 use super::AppState;
 
-/// Minimum password length enforced here - deliberately longer than
-/// whatever (if any) minimum the plain merchant signup form enforces: this
-/// one account can reconfigure every setting on the instance, scanner
-/// settings included, so it gets its own, stricter floor rather than
-/// inheriting a merchant-signup default that was never chosen with that in
-/// mind.
-const MIN_ADMIN_PASSWORD_LEN: usize = 12;
-
 #[derive(Deserialize)]
 pub struct SetupForm {
     pub email: String,
@@ -94,11 +86,14 @@ pub async fn setup_submit(
     if form.password != form.confirm_password {
         return render_setup_form(&state, Some("Passwords do not match."), &form.email).await;
     }
-    if form.password.len() < MIN_ADMIN_PASSWORD_LEN {
+    // The admin's own, stricter floor (`signup::min_password_len`), checked
+    // here too only to say so on this form.
+    if !signup::password_long_enough(&form.password, true) {
         return render_setup_form(
             &state,
             Some(&format!(
-                "Password must be at least {MIN_ADMIN_PASSWORD_LEN} characters."
+                "Password must be at least {} characters.",
+                signup::min_password_len(true)
             )),
             &form.email,
         )
