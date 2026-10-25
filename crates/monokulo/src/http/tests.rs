@@ -1352,7 +1352,7 @@ async fn a_store_can_use_a_wallet_already_added_but_only_your_own() {
 // -- `next`-redirect support on auth::login_submit ---------------------------
 //
 // The pure open-redirect-rejection proof lives in `auth.rs`'s own
-// `#[cfg(test)] mod tests` (`is_safe_redirect_path`'s direct unit tests) -
+// `#[cfg(test)] mod tests` (`safe_redirect_path`'s direct unit tests) -
 // these are the HTTP-level complement: a real login request carrying a
 // malicious `next` must not redirect anywhere attacker-controlled, and a
 // real login with no `next` at all must behave exactly as it always has

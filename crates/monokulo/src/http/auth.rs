@@ -58,7 +58,7 @@ pub struct LoginForm {
     /// Carried through from `GET /login?next=...`'s hidden form
     /// field (see `LoginQuery`/`login_form` below) - `None` when there was
     /// no `next`. Never trusted as a redirect target as-is - see
-    /// [`is_safe_redirect_path`].
+    /// [`safe_redirect_path`].
     pub next: Option<String>,
 }
 
@@ -66,7 +66,7 @@ pub struct LoginForm {
 /// optional `next` value the generic connect flow (`http/connect.rs`)
 /// redirects here with when the browser has no session yet. Rendered
 /// straight into the login page's hidden `next` field, unvalidated - see
-/// [`is_safe_redirect_path`]'s own doc comment on why validating it only
+/// [`safe_redirect_path`]'s own doc comment on why validating it only
 /// matters, and only happens, at the point it's actually used as a redirect
 /// location (`login_submit`), not here at render time.
 #[derive(Deserialize)]
@@ -81,30 +81,40 @@ pub struct LoginQuery {
 /// `/login?next=<anything>`, not just the connect flow that
 /// legitimately sets it).
 ///
-/// Requires `next` to be a same-origin, relative path:
-/// - starts with exactly one `/` (a bare relative path);
-/// - never starts with `//` - a protocol-relative URL (`//evil.example.com`
-///   resolves, in every browser, to `https://evil.example.com`) is the
-///   classic bypass a plain "starts with /" check misses entirely;
-/// - never contains a backslash - some browsers normalize a leading
-///   backslash to a forward slash while parsing a URL, so `/\evil.example.com`
-///   can behave identically to `//evil.example.com` even though it doesn't
-///   start with two literal `/` characters;
-/// - never contains a `:` before the first `/`, `?`, or `#` - rules out a
-///   `next` value that is actually an absolute URL carrying its own scheme
-///   (`https://evil.example.com`, `javascript:...`), which wouldn't be
-///   caught by the checks above since those only look at the very start of
-///   the string.
+/// Rather than guess at how a browser reads the value, `next` is parsed the
+/// way a browser parses a `Location` (the WHATWG URL rules the `url` crate
+/// implements), resolved against a placeholder origin, and kept only if it
+/// is still on that origin. That refuses every way of leaving the site at
+/// once: a protocol-relative `//evil.example.com`, an absolute URL with its
+/// own scheme, a backslash browsers read as a slash (`/\evil.example.com`),
+/// and tabs or newlines browsers strip before parsing (`/<TAB>/evil.example`
+/// becomes `//evil.example`). What is kept is the parsed path, query and
+/// fragment, so anything the parser would strip or percent-encode is
+/// already gone or encoded in what we send. `next` must also start with
+/// `/`, so a bare relative value isn't read against the page it came from.
 ///
-/// A `next` that fails any of these is not an error - the caller
-/// (`login_submit`) just falls back to its existing default behavior, same
-/// as if `next` had never been provided at all.
-fn is_safe_redirect_path(next: &str) -> bool {
-    if !next.starts_with('/') || next.starts_with("//") || next.contains('\\') {
-        return false;
+/// A `next` that fails is not an error - the caller (`login_submit`) just
+/// falls back to its existing default behavior, same as if `next` had
+/// never been provided at all.
+fn safe_redirect_path(next: &str) -> Option<String> {
+    if !next.starts_with('/') {
+        return None;
     }
-    let path_part = next.split(['?', '#']).next().unwrap_or(next);
-    !path_part.contains(':')
+    let placeholder = url::Url::parse("https://placeholder.invalid/").ok()?;
+    let joined = placeholder.join(next).ok()?;
+    if joined.origin() != placeholder.origin() {
+        return None;
+    }
+    let mut path = joined.path().to_string();
+    if let Some(query) = joined.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    if let Some(fragment) = joined.fragment() {
+        path.push('#');
+        path.push_str(fragment);
+    }
+    Some(path)
 }
 
 /// A path on this site, safe to send a browser to: made only by
@@ -113,9 +123,10 @@ fn is_safe_redirect_path(next: &str) -> bool {
 pub(crate) struct SafePath(String);
 
 impl SafePath {
-    /// `next`, if [`is_safe_redirect_path`] accepts it.
+    /// The path [`safe_redirect_path`] makes of `next`, if it stays on this
+    /// site.
     pub(crate) fn parse(next: &str) -> Option<Self> {
-        is_safe_redirect_path(next).then(|| SafePath(next.to_string()))
+        safe_redirect_path(next).map(SafePath)
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -325,7 +336,7 @@ fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
 /// `migrations/0017_user_theme.sql` for why this is server-side per-user
 /// state rather than client storage), then redirects back to wherever the
 /// form was submitted from - the same validated-`next` pattern
-/// `login_submit` uses (see [`is_safe_redirect_path`]), falling back to `/`
+/// `login_submit` uses (see [`safe_redirect_path`]), falling back to `/`
 /// for anything that doesn't validate. No CSRF token needed beyond what
 /// `logout_submit` above relies on (`SameSite=Lax`, `http::csrf`).
 pub async fn theme_submit(
@@ -345,7 +356,7 @@ pub async fn theme_submit(
 }
 
 /// `POST /login`. If a *validated* `next` was carried through the form
-/// (see [`is_safe_redirect_path`]), a successful login redirects there -
+/// (see [`safe_redirect_path`]), a successful login redirects there -
 /// this is what lets the connect flow (`http/connect.rs`) send a browser
 /// with no session to log in and land back where it started. Otherwise
 /// (no `next`, or one that fails validation) it goes to the home page.
@@ -361,7 +372,7 @@ pub async fn login_submit(
             let jar = CookieJar::new().add(cookie);
 
             // A validated `next` wins over the home page - see this
-            // function's own doc comment and [`is_safe_redirect_path`].
+            // function's own doc comment and [`safe_redirect_path`].
             if let Some(next) = form.next.as_deref().and_then(SafePath::parse) {
                 return (jar, redirect_to(&next)).into_response();
             }
@@ -390,7 +401,7 @@ pub async fn login_submit(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_safe_redirect_path, SafePath};
+    use super::SafePath;
 
     /// A redirect target from a request exists only once checked: a path
     /// on this site, never anything a browser could take elsewhere. These
@@ -398,16 +409,23 @@ mod tests {
     /// after a real login.
     #[test]
     fn a_safe_path_is_made_only_from_a_path_on_this_site() {
-        assert_eq!(
-            SafePath::parse("/account/wallets").map(|p| p.as_str().to_string()),
-            Some("/account/wallets".to_string())
-        );
+        let made = |next: &str| SafePath::parse(next).map(|p| p.as_str().to_string());
         for accepted in [
             "/plugins/connect/woocommerce",
             "/plugins/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc",
             "/account/wallets",
+            "/account/wallets#keys",
         ] {
-            assert!(is_safe_redirect_path(accepted), "{accepted}");
+            assert_eq!(made(accepted).as_deref(), Some(accepted));
+        }
+        // Still on this site, as the path a browser would read: a colon in
+        // the path is only a path, and a space is encoded rather than left
+        // for a browser to read.
+        for (next, path) in [
+            ("/javascript:alert(1)", "/javascript:alert(1)"),
+            ("/ /evil", "/%20/evil"),
+        ] {
+            assert_eq!(made(next).as_deref(), Some(path), "{next}");
         }
         for refused in [
             // Protocol-relative.
@@ -419,13 +437,18 @@ mod tests {
             // Some browsers read a leading backslash as a slash, which
             // makes this `//evil.example.com`.
             "/\\evil.example.com",
-            "/javascript:alert(1)",
+            // Browsers strip tabs and newlines from a URL before parsing
+            // it, which makes each of these `//evil.example`.
+            "/\t/evil.example",
+            "/\n/evil.example",
+            "/\r\n/evil.example",
+            "/\t\t/evil.example",
             // No leading slash.
             "evil.example.com",
             "account/wallets",
+            " //evil.example",
         ] {
-            assert!(!is_safe_redirect_path(refused), "{refused}");
-            assert!(SafePath::parse(refused).is_none(), "{refused}");
+            assert!(made(refused).is_none(), "{refused:?}");
         }
     }
 }
