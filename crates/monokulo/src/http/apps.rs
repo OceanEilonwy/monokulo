@@ -3,7 +3,8 @@
 //! an app uses the API (`crate::api`) with its own key.
 //!
 //! ```text
-//! dashboard: Connect an app ──▶ code: {public_uri}/apps/connect#token=ct_…
+//! dashboard: Connect an app ──▶ code: {address}/apps/connect#token=ct_…
+//!            (the web or onion address, whichever the merchant is on)
 //! app:       POST /apps/connect {token, slug, name, …} ──▶ {app_key, api: "/api/v1", onion_api?}
 //!            GET  /api/v1                     (Authorization: Bearer ak_…): links
 //!            GET  /api/v1/store, /api/v1/app, POST /api/v1/orders, GET /api/v1/events, …
@@ -108,6 +109,7 @@ pub async fn connect_submit(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<ConnectionId>,
+    extensions: axum::http::Extensions,
     Form(form): Form<ConnectForm>,
 ) -> Response {
     let path = format!("/stores/{id}/settings/apps/connect");
@@ -122,13 +124,20 @@ pub async fn connect_submit(
         )
             .into_response()
     };
-    // The code is a link on this instance's public address, so an app can
-    // reach the store from it.
-    let Some(public_uri) = state.settings.public_uri() else {
-        return refuse(
+    // The code is a link on this instance's address on the merchant's own
+    // network, so an app can reach the store from it: on the onion address
+    // for a merchant on Tor, whose phone must never be sent to the web
+    // address unasked.
+    let network = state.network(&extensions);
+    let onion = network.kind() == crate::network::NetworkKind::Onion;
+    let Some(public_uri) = network.public_uri() else {
+        return refuse(if onion {
+            "This Monokulo's onion address isn't known yet, so an app couldn't reach it over Tor. \
+             Try again in a minute."
+        } else {
             "This Monokulo has no public address yet, so an app couldn't reach it. \
-             An admin can set one under Settings.",
-        );
+             An admin can set one under Settings."
+        });
     };
     let raw = shared::auth::generate_app_connect_token();
     let hash = raw.hash();
@@ -156,7 +165,7 @@ pub async fn connect_submit(
         }
     };
     let status_path = status_path(&row.id, &hash);
-    crate::views::connected_apps::code_page(&chrome, &view, &link, &qr, &status_path)
+    crate::views::connected_apps::code_page(&chrome, &view, &link, &qr, &status_path, onion)
         .into_response()
 }
 
@@ -306,8 +315,8 @@ static CONNECT_HANDSHAKE: crate::api::runtime::catalog::Handshake =
 /// - `invalid-request` (400) / `unsupported-media-type` (415) /
 ///   `too-large` (413): the body isn't the JSON this takes, or `slug`
 ///   isn't a slug;
-/// - `no-public-address` (503): the instance has no public address yet,
-///   before the code is spent, so the same code still works once an admin
+/// - `no-public-address` (503): the instance has no public address yet on
+///   the network the app called over, before the code is spent, so the same code still works once an admin
 ///   sets one;
 /// - `invalid-connect-code` (401): the code is unknown, used or expired,
 ///   all alike;
@@ -327,7 +336,7 @@ pub async fn redeem(
             "slug must be a lowercase letter, then 1 to 31 lowercase letters, digits or hyphens.",
         ));
     };
-    if state.settings.public_uri().is_none() {
+    if state.network(&extensions).public_uri().is_none() {
         return Err(Problem::NoPublicAddress
             .detail("This Monokulo has no public address yet. Ask its admin to set one."));
     }
