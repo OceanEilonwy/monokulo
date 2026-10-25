@@ -115,6 +115,10 @@ pub struct ChainBlock {
     /// the block: a pruned transaction can't be hashed to its id
     /// (`shared::monero_tx`).
     pub txids: Vec<String>,
+    /// How each of `txs` is tied to its id, in order. A payment is never
+    /// taken from an [`IdBinding::Listed`] one as it came: the scan fetches
+    /// it again by its id first (`work::blocks`).
+    pub bindings: Vec<IdBinding>,
     /// The block's size as it came from the node, in bytes: what block
     /// requests are sized and the block cache is counted by.
     pub wire_bytes: u64,
@@ -131,6 +135,18 @@ impl ChainBlock {
             tx_count: Some(self.txs.len() as u64),
         }
     }
+}
+
+/// How a transaction body is tied to the id it came under.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdBinding {
+    /// The id was computed from the body: the transaction whole, or pruned
+    /// together with the hash of the part left out.
+    Computed,
+    /// The body came pruned without the hash of the part left out, under
+    /// the id its block lists. The block's id covers the list, but nothing
+    /// ties the body to the id in it: a node can send any body under it.
+    Listed,
 }
 
 /// What the scan keeps of one transaction.
@@ -245,8 +261,10 @@ pub struct ChainTip {
 }
 
 /// A transaction with its id, as a node gave it
-/// ([`MoneroDaemonClient::get_transactions_with_ids`]). The transaction may
-/// be pruned, which is why the id comes with it.
+/// ([`MoneroDaemonClient::get_transactions_with_ids`]).
+///
+/// The transaction may be pruned, which is why the id comes with it; the id
+/// was computed from it all the same ([`IdBinding::Computed`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FetchedTx {
     pub txid: String,
@@ -451,7 +469,9 @@ pub trait MoneroDaemonClient: Send + Sync {
     /// Several transactions by txid, each with its id, in any order; ones
     /// the node doesn't have are left out. The id comes with each because
     /// the transaction may be pruned (`RpcDaemonClient` fetches them so),
-    /// and then can't be hashed to it.
+    /// and then can't be hashed to it alone; each is checked against its id
+    /// all the same (with the hash of the pruned part), and one that can't
+    /// be is left out.
     async fn get_transactions_with_ids(
         &self,
         txids: &[String],

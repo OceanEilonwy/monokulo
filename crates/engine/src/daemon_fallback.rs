@@ -1400,6 +1400,7 @@ mod tests {
                 timestamp: 0,
                 txs: Vec::new(),
                 txids: Vec::new(),
+                bindings: Vec::new(),
                 wire_bytes: 0,
             }])
         }

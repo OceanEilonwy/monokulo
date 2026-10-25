@@ -111,6 +111,7 @@ fn empty_blocks(prefix: &str, start_height: u64, count: u64) -> Vec<ChainBlock> 
         timestamp: 0,
         txs: vec![],
         txids: vec![],
+        bindings: vec![],
         wire_bytes: 0,
     }]
 }
@@ -1305,6 +1306,7 @@ mod tests {
                         timestamp: 0,
                         txs: vec![],
                         txids: vec![],
+                        bindings: vec![],
                         wire_bytes: 0,
                     })
                     .collect())
