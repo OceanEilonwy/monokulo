@@ -39,10 +39,16 @@ pub(super) struct World {
     known: RefCell<Vec<monero::Transaction>>,
     pruned: Cell<bool>,
     pub(super) now: Cell<i64>,
+    /// When the history started: no order closed before it.
+    pub(super) start: i64,
+    /// The grace closed orders are still scanned for.
+    pub(super) grace: Cell<i64>,
     pub(super) ceiling: Cell<u64>,
     pub(super) mismatch: Cell<bool>,
     expected_events: RefCell<BTreeMap<String, String>>,
     last_status: RefCell<BTreeMap<crate::store::OrderId, (i64, String)>>,
+    /// The last event already checked for an expiry the ledger allows.
+    expiries_checked: Cell<i64>,
     pub(super) hits: RefCell<BTreeMap<String, u64>>,
 }
 impl World {
@@ -58,6 +64,7 @@ impl World {
                 })
                 .collect(),
         );
+        let now = crate::now_unix();
         Self {
             client,
             nodes,
@@ -65,11 +72,14 @@ impl World {
             proven: RefCell::default(),
             known: RefCell::default(),
             pruned: Cell::new(false),
-            now: Cell::new(crate::now_unix()),
+            now: Cell::new(now),
+            start: now,
+            grace: Cell::new(100_000),
             ceiling: Cell::new(0),
             mismatch: Cell::new(false),
             expected_events: RefCell::default(),
             last_status: RefCell::default(),
+            expiries_checked: Cell::new(0),
             hits: RefCell::default(),
         }
     }
@@ -477,17 +487,38 @@ impl World {
         self.hit("all-node-outage-preserves-money-and-cursors");
         self.healthy();
     }
-    pub(super) fn check_events(&self, store: &Store, invoices: &[Invoice]) {
+    /// Checks the order-event log against the ledger. An `order.expired`
+    /// logged since the last check must be for an invoice in `may_expire`:
+    /// one the ledger has expired, or one with a payment that may follow
+    /// its expiry (from the pool, late, or restored after a void). Never
+    /// for an order whose payment was mined, on time, in a block not yet
+    /// scanned.
+    pub(super) fn check_events(
+        &self,
+        store: &Store,
+        invoices: &[Invoice],
+        may_expire: &std::collections::BTreeSet<crate::store::OrderId>,
+    ) {
         let mut last_status = self.last_status.borrow_mut();
         // The log's order is its sequence, not any timestamp: fast scans
         // use wall time while history rounds deliberately use virtual UTC.
         let events = store.order_events_for_test().unwrap();
+        let checked = self.expiries_checked.get();
         for d in events {
             // Orders outside the ledger (a store's second address) have
             // events too; the ledger checks its own invoices.
             let Some(invoice) = invoices.iter().find(|i| i.id == d.order_id) else {
                 continue;
             };
+            if d.seq > checked {
+                self.expiries_checked
+                    .set(self.expiries_checked.get().max(d.seq));
+                assert!(
+                    d.event_type != "order.expired" || may_expire.contains(&invoice.id),
+                    "BOUNDARY: expiry-before-an-on-time-payment; {}",
+                    invoice.id.as_str()
+                );
+            }
             assert_eq!(d.tenant_id, invoice.tenant);
             let v: serde_json::Value = serde_json::from_str(&d.payload_json).unwrap();
             assert_eq!(v["order_id"], invoice.id.as_str());

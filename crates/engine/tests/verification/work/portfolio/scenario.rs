@@ -39,6 +39,12 @@ pub(crate) enum Command {
     FastPass,
     /// The wallet's custody handle replaced by a new registration.
     ReplaceCustody(u8),
+    /// An outage: `after % 16` blocks, then one with `transaction`, mined
+    /// while no round runs, and time running on past every deadline.
+    Outage {
+        transaction: u8,
+        after: u8,
+    },
 }
 impl Command {
     pub(crate) const fn family(&self) -> &'static str {
@@ -71,6 +77,10 @@ impl Command {
             } => "Rebuild",
             Self::FastPass => "FastPass",
             Self::ReplaceCustody(_) => "ReplaceCustody",
+            Self::Outage {
+                transaction: _,
+                after: _,
+            } => "Outage",
         }
     }
 }
@@ -93,7 +103,7 @@ impl Scenario {
             .map(|c| {
                 let a = c.get(1).copied().unwrap_or_default();
                 let b = c.get(2).copied().unwrap_or_default();
-                match c[0] % 15 {
+                match c[0] % 16 {
                     0 => Command::Arrive(a),
                     1 => Command::Mine(a),
                     2 => Command::Extend(a),
@@ -121,7 +131,11 @@ impl Scenario {
                         slot: (b >> 2) % 4,
                     },
                     13 => Command::FastPass,
-                    _ => Command::ReplaceCustody(a),
+                    14 => Command::ReplaceCustody(a),
+                    _ => Command::Outage {
+                        transaction: a,
+                        after: b,
+                    },
                 }
             })
             .collect();
@@ -160,6 +174,7 @@ impl Scenario {
                 } => (12, transaction, (place % 4) | ((slot % 4) << 2)),
                 Command::FastPass => (13, 0, 0),
                 Command::ReplaceCustody(w) => (14, w, 0),
+                Command::Outage { transaction, after } => (15, transaction, after),
             };
             bytes.extend([op, a, b, 0]);
         }
@@ -192,6 +207,8 @@ pub(crate) fn strategy() -> impl proptest::strategy::Strategy<Value = Scenario> 
         }),
         Just(Command::FastPass),
         any::<u8>().prop_map(Command::ReplaceCustody),
+        (any::<u8>(), 0u8..16)
+            .prop_map(|(transaction, after)| Command::Outage { transaction, after }),
     ];
     (
         prop::collection::vec(any::<u8>(), SETUP_BYTES),
@@ -328,6 +345,22 @@ pub(crate) mod reviewed {
         }
     }
 
+    /// An outage longer than the grace (none): the paying transaction
+    /// mined, on time, a dozen blocks into it, so the first round after
+    /// it reaches the order's deadline before its block.
+    pub(crate) fn outage_longer_than_grace() -> Scenario {
+        let mut setup = vec![0; SETUP_BYTES];
+        // Bits 2 and 3 of setup byte 3: no grace.
+        setup[3] = 3 << 2;
+        Scenario {
+            setup,
+            commands: vec![Outage {
+                transaction: 0,
+                after: 12,
+            }],
+        }
+    }
+
     /// Every reviewed seed, by file name.
     pub(crate) fn seeds() -> Vec<(String, Scenario)> {
         let mut seeds = vec![
@@ -339,6 +372,10 @@ pub(crate) mod reviewed {
                 },
             ),
             ("partial-payments".to_owned(), combined(1, 1)),
+            (
+                "outage-longer-than-grace".to_owned(),
+                outage_longer_than_grace(),
+            ),
         ];
         for worker in 0..=1 {
             seeds.push((format!("combined-worker-{worker}"), combined(worker, 0)));
