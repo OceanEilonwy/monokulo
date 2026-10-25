@@ -24,7 +24,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 pub use identity::{ClientIdentity, TrustedProxies};
-pub use limiter::{Limits, Tier};
+pub use limiter::{Limits, Pass, PassGrant, RouteClass, Tier};
 
 use crate::settings;
 
@@ -170,15 +170,21 @@ impl AbuseProtection {
         *self.config.write() = config;
     }
 
-    /// Counts one request from `client` and says what it may do.
+    /// Counts one request of `class` from `client` and says what it may do.
     /// `challengeable` is false for requests that can't be challenged
     /// (streams, form posts): those are never forced past soft by
     /// under-attack mode.
-    pub fn check(&self, client: &ClientIdentity, challengeable: bool, now: i64) -> Tier {
+    pub fn check(
+        &self,
+        client: &ClientIdentity,
+        class: RouteClass,
+        challengeable: bool,
+        now: i64,
+    ) -> Tier {
         let config = self.config();
         let force_soft = challengeable && config.under_attack && !client.is_authenticated();
         self.limiter
-            .check(client, config.limits_for(client), force_soft, now)
+            .check(client, config.limits_for(client), force_soft, class, now)
     }
 
     /// Counts one log report from `client`. `Err(retry_after_secs)` past
@@ -194,6 +200,7 @@ impl AbuseProtection {
                 hard_per_min: per_min,
             },
             false,
+            RouteClass::Logs,
             now,
         ) {
             Tier::Blocked { retry_after_secs } => Err(retry_after_secs),
