@@ -19,10 +19,15 @@ audit database (`target/code-audit/audit.db`).
   deletes the stored row.
 - **Severities:** #39 and #99 raised to critical, #17 to high; #107 lowered
   to low.
-- **Onion Monero node host:** refused when a node setting is saved; an
-  existing one still starts, with a boot warning and a status-page note
-  (it would leak the onion name to the system DNS; monerod over Tor is
-  out of scope).
+- **Onion Monero node host:** refused when saved, and (changed 2026-10-26)
+  an existing one stops the engine at boot like any invalid setting; the
+  earlier boot-warning special case was a mistake. Same for a bad
+  `tor.hidden_service_dir` (PR 213): refused on save, stops the process at
+  boot. An instance with either must fix it before it starts.
+- **Merging behind main:** the user turned off "must be up to date"; the
+  merge queue merges one PR at a time and checks main's release build and
+  lint after each, stopping on a failure (after PRs 193 and 194 met and
+  broke main's build, fixed by PR 206).
 - **#4 and #161, how block bodies are verified:** only bodies that matched
   a store are fetched again through `/get_transactions` and checked against
   their ids (PR 173). Verifying every body from `get_blocks.bin` was the
