@@ -1757,7 +1757,14 @@ body:not([data-view="home"]) .get-started{display:none}
 .mk-track[data-orientation="vertical"]>li{grid-template-columns:auto minmax(0,1fr);justify-items:start;align-items:start;column-gap:var(--space-md);font-size:var(--text-sm)}
 .mk-track[data-orientation="vertical"] .mk-track-name{padding-top:.3em;font-size:var(--text-base)}
 .mk-track[data-orientation="vertical"] .mk-track-name small{display:block;margin-top:2px;font-size:var(--text-sm);font-weight:500;opacity:.85}
-.flow-stage .mk-stage-msg{padding-top:var(--space-md);border-top:1px solid color-mix(in srgb,currentColor 25%,transparent)}
+.flow-stage .mk-stage-msg{display:flex;align-items:center;gap:var(--space-sm);padding-top:var(--space-md);border-top:1px solid var(--line)}
+/* Each step in its order state's colour: a new order in the brand's orange,
+   then waiting (pending), seen (confirming) and paid. */
+.flow-stage .state-new{--state-border:var(--accent-text)}
+.flow-stage .mk-track>li .mk-track-dot{background:var(--state-border);border-color:var(--state-border);color:var(--paper-raised)}
+.flow-stage .mk-track-dot .mk-icon{width:1.15em;height:1.15em}
+.mk-track[data-orientation="vertical"]::before,.mk-track[data-orientation="vertical"]:has(> li:nth-child(2):last-child)::before{display:none}
+.mk-track[data-orientation="vertical"]>li:not(:last-child)::after{content:"";position:absolute;left:calc(1.065em - 1px);top:2.3em;bottom:calc(-1 * var(--space-xl) + .2em);width:2px;background:var(--line-strong)}
 .hsec h2{font-size:clamp(24px,3.4vw,32px);margin-bottom:var(--space-sm)}
 .hsec>p{color:var(--muted);max-width:60ch;margin:0 0 var(--space-xl)}
 .feat{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-lg)}
@@ -2025,14 +2032,14 @@ function showHome() {
         <div class="actions"><a class="mk-btn" data-variant="primary" href="#introduction">Get started<svg class="mk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m14 5 7 7-7 7M3 12h18"/></svg></a><a class="mk-btn" href="https://github.com/OceanEilonwy/monokulo">${GH} View on GitHub</a></div>
         <div class="chips"><span>Linux</span><span>macOS</span><span>Windows</span><span>OpenWrt</span><span>Open source</span></div>
       </div>
-      <div class="mk-stage state-paid flow-stage">
+      <div class="mk-stage flow-stage">
         <ol class="mk-track" data-orientation="vertical" aria-label="An order, start to finish">
-          <li class="step-done"><span class="mk-track-dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"></path></svg></span><span class="mk-track-name">Your customer checks out<small>Your page asks Monokulo for an order.</small><span class="visually-hidden">, done</span></span></li>
-          <li class="step-done"><span class="mk-track-dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"></path></svg></span><span class="mk-track-name">They pay in Monokulo's checkout<small>The amount, the address and its QR code, in your page or its own.</small><span class="visually-hidden">, done</span></span></li>
-          <li class="step-done"><span class="mk-track-dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"></path></svg></span><span class="mk-track-name">Seen in about a second<small>Then confirmed as blocks arrive, straight to your own wallet.</small><span class="visually-hidden">, done</span></span></li>
-          <li class="step-done"><span class="mk-track-dot" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"></path></svg></span><span class="mk-track-name">Your server hears <code>order.paid</code><small>A signed webhook, so you ship on Monokulo's word, not the browser's.</small><span class="visually-hidden">, done</span></span></li>
+          <li class="step-done state-new"><span class="mk-track-dot" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 3h9l4 4v14H6z"/><path d="M12.5 10v6M9.5 13h6"/></svg></span><span class="mk-track-name">Your customer checks out<small>Your page asks Monokulo for an order.</small><span class="visually-hidden">, new order</span></span></li>
+          <li class="step-done state-pending"><span class="mk-track-dot" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5M3 12h18"/></svg></span><span class="mk-track-name">They pay in Monokulo's checkout<small>The amount, the address and its QR code, in your page or its own.</small><span class="visually-hidden">, waiting for payment</span></span></li>
+          <li class="step-done state-confirming"><span class="mk-track-dot" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></span><span class="mk-track-name">Seen in about a second<small>Then confirmed as blocks arrive, straight to your own wallet.</small><span class="visually-hidden">, confirming</span></span></li>
+          <li class="step-done state-paid"><span class="mk-track-dot" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" class="mk-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m4 12 5 5L20 6"/></svg></span><span class="mk-track-name">Your server hears <code>order.paid</code><small>A signed webhook, so you ship on Monokulo's word, not the browser's.</small><span class="visually-hidden">, paid</span></span></li>
         </ol>
-        <p class="mk-stage-msg" role="status"><strong>Paid.</strong> Ship the order.</p>
+        <p class="mk-stage-msg" role="status"><span class="tag state-paid">Paid</span> Ship the order.</p>
       </div>
     </section>
     <section class="hsec">

@@ -114,8 +114,12 @@ switches), `tag`, `mk-status-banner`, `settings-dialog`, and `mk-stage` and
 `mk-track` (the progress steps). It needs three additions to `crates/ui`:
 
 - `ProgressSteps` stood upright: a `data-orientation="vertical"` on
-  `mk-track`, with a detail line under each step's name. The mockup's CSS
-  for it is under "ProgressSteps upright".
+  `mk-track`, with a detail line under each step's name, an icon in each
+  dot, and each step in its order state's colour on a neutral card. The
+  homepage's steps are a new order (the brand's orange, `order-new`),
+  waiting for payment (pending, `scan`), seen (confirming, `eye`) and paid
+  (paid, `check`). The mockup's CSS for it is under "ProgressSteps
+  upright".
 - Icons for Releases (a package), Design system (a palette) and Report an
   issue (a bug), drawn like the others in `crates/ui/web/icons`. Test
   reports uses the existing `flask.svg`.
