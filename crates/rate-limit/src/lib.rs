@@ -91,6 +91,12 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
     /// Returns `true` if this request is allowed, having consumed one unit of the
     /// caller's budget for the current window; `false` if the window is exhausted.
     pub fn check(&self, key: K, now: i64) -> bool {
+        self.check_with_retry(key, now).is_ok()
+    }
+
+    /// As [`Self::check`], but a refusal says how many seconds are left in
+    /// the caller's window: at least 1, so waiting that long always helps.
+    pub fn check_with_retry(&self, key: K, now: i64) -> Result<(), u64> {
         let mut state = self.state.lock();
         // Opportunistic rather than on a timer: this map is only ever touched from
         // inside this lock, so a sweep here needs no background task and no second
@@ -121,10 +127,11 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
                 .limit_per_minute
                 .load(std::sync::atomic::Ordering::Relaxed)
         {
-            false
+            let left = WINDOW_SECONDS - now.saturating_sub(entry.1);
+            Err(u64::try_from(left.max(1)).unwrap_or(1))
         } else {
             entry.0 += 1;
-            true
+            Ok(())
         }
     }
 
@@ -149,6 +156,20 @@ mod tests {
             !limiter.check(ip, 1000),
             "fourth request in the same window must be rejected"
         );
+    }
+
+    /// A refusal says how long until the caller's window ends, counted from
+    /// its first request; another key has its own window.
+    #[test]
+    fn a_refusal_says_how_long_is_left_in_the_window() {
+        let limiter: RateLimiter<String> = RateLimiter::new(2);
+        let (bakery, florist) = ("bakery".to_string(), "florist".to_string());
+        assert_eq!(limiter.check_with_retry(bakery.clone(), 1000), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), 1015), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), 1015), Err(45));
+        assert_eq!(limiter.check_with_retry(bakery.clone(), 1059), Err(1));
+        assert_eq!(limiter.check_with_retry(florist, 1059), Ok(()));
+        assert_eq!(limiter.check_with_retry(bakery, 1060), Ok(()));
     }
 
     #[test]
