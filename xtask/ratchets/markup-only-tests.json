@@ -8,7 +8,6 @@
   "crates/monokulo/src/views/admin.rs › tests::the_other_tab_shows_only_with_something_in_it": 1,
   "crates/monokulo/src/views/checkout.rs › tests::a_fiat_price_sent_with_padding_reads_in_its_currencys_usual_decimals": 1,
   "crates/monokulo/src/views/checkout.rs › tests::checkout_page_auto_refresh_toggle_turns_the_meta_refresh_off_and_back_on": 1,
-  "crates/monokulo/src/views/checkout.rs › tests::checkout_page_shows_the_double_spend_stage_only_when_one_was_detected": 1,
   "crates/monokulo/src/views/checkout.rs › tests::checkout_page_stops_meta_refreshing_once_the_order_is_terminal": 1,
   "crates/monokulo/src/views/checkout.rs › tests::refund_flag_hides_the_entire_refund_section": 1,
   "crates/monokulo/src/views/connect.rs › tests::a_plugins_name_is_shown_as_text": 1,
