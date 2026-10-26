@@ -122,6 +122,20 @@ pub(super) struct Page {
     pub(super) label: &'static str,
     pub(super) group: Group,
     pub(super) old: Option<&'static str>,
+    pub(super) layout: Layout,
+}
+
+/// How a page lays out its words.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Layout {
+    /// An article at a reading width, "On this page" beside it.
+    Guide,
+    /// The API explorer's look, for a Markdown page that documents code
+    /// (`reference_html`): each section two columns, its words on the left
+    /// and its code blocks and tables beside them on the right; a table
+    /// headed `Name` is a list of fields. Its sections are under it in the
+    /// map, in place of "On this page", an `h2`'s `h3`s under the `h2`.
+    Reference,
 }
 
 /// The docs, in the map's order, which is also Previous and Next's: each
@@ -134,6 +148,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Introduction",
         group: Group::GetStarted,
         old: None,
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Rust {
@@ -146,6 +161,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Install on a computer",
         group: Group::GetStarted,
         old: None,
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Rust {
@@ -158,6 +174,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Install on a router",
         group: Group::GetStarted,
         old: None,
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Markdown("index.md"),
@@ -165,6 +182,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Accept your first payment",
         group: Group::GetStarted,
         old: Some("docs"),
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Markdown("walkthrough-geomart.md"),
@@ -172,13 +190,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Walkthrough: Geomart",
         group: Group::GetStarted,
         old: Some("docs/walkthrough-geomart"),
-    },
-    Page {
-        source: Source::Markdown("js-library.md"),
-        dir: "js-library",
-        label: "JS library",
-        group: Group::TakePayments,
-        old: Some("docs/js-library"),
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Markdown("paid.md"),
@@ -186,6 +198,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "When is it paid?",
         group: Group::TakePayments,
         old: Some("docs/paid"),
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Markdown("webhooks.md"),
@@ -193,6 +206,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Webhooks",
         group: Group::TakePayments,
         old: Some("docs/webhooks"),
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Markdown("plugins.md"),
@@ -200,13 +214,23 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Shop plugins",
         group: Group::Integrations,
         old: Some("docs/plugins"),
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Markdown("apps.md"),
         dir: "apps",
-        label: "Connected apps",
+        label: "Custom apps",
         group: Group::Integrations,
         old: Some("docs/apps"),
+        layout: Layout::Guide,
+    },
+    Page {
+        source: Source::Markdown("js-library.md"),
+        dir: "js-library",
+        label: "Webpages",
+        group: Group::Integrations,
+        old: Some("docs/js-library"),
+        layout: Layout::Reference,
     },
     Page {
         source: Source::Rust {
@@ -219,6 +243,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Config and data",
         group: Group::RunMonokulo,
         old: None,
+        layout: Layout::Guide,
     },
     Page {
         source: Source::Rust {
@@ -231,6 +256,7 @@ pub(super) const PAGES: [Page; 12] = [
         label: "Backups and updates",
         group: Group::RunMonokulo,
         old: None,
+        layout: Layout::Guide,
     },
 ];
 
@@ -301,10 +327,12 @@ pub(super) fn write(root: &Path, site: &Path, site_url: &str, github_url: &str) 
             Source::Markdown(file) => {
                 let source = root.join("xtask/src/pages/docs").join(file);
                 let markdown = fs::read_to_string(&source).map_err(|e| at(&source, e))?;
-                (
-                    markdown_title(page, &markdown).to_owned(),
-                    markdown_html(&site_assets::linked(&markdown, "../")),
-                )
+                let markdown = site_assets::linked(&markdown, "../");
+                let words = match page.layout {
+                    Layout::Guide => markdown_html(&markdown),
+                    Layout::Reference => reference_html(&markdown, crumbs(page)),
+                };
+                (markdown_title(page, &markdown).to_owned(), words)
             }
             Source::Rust {
                 title,
@@ -388,17 +416,26 @@ pub(super) fn redirect(old: &str, new: &str) -> Markup {
     }
 }
 
-/// The docs' map, from a page `up` from the site's root, `current` marked.
-pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
+/// The docs' map, from a page `up` from the site's root, `current` marked
+/// with `sections` (its own, a reference page's) under it.
+pub(super) fn map(up: &str, current: Option<&str>, mut sections: Vec<Link>) -> Vec<MapGroup> {
     Group::ALL
         .into_iter()
         .map(|group| {
-            let pages = PAGES.iter().filter(|p| p.group == group).map(|p| Link {
-                label: html! { (p.label) },
-                href: format!("{up}{}/", p.dir),
-                current: Mark::page_if(current == Some(p.dir)),
-                file: false,
-                nested: false,
+            let pages = PAGES.iter().filter(|p| p.group == group).map(|p| {
+                let here = current == Some(p.dir);
+                Link {
+                    label: html! { (p.label) },
+                    href: format!("{up}{}/", p.dir),
+                    current: Mark::page_if(here),
+                    file: false,
+                    nested: false,
+                    children: if here {
+                        std::mem::take(&mut sections)
+                    } else {
+                        Vec::new()
+                    },
+                }
             });
             let links = LINKS
                 .iter()
@@ -409,6 +446,7 @@ pub(super) fn map(up: &str, current: Option<&str>) -> Vec<MapGroup> {
                     current: None,
                     file: *file,
                     nested: false,
+                    children: Vec::new(),
                 });
             MapGroup {
                 title: group.title().to_owned(),
@@ -439,9 +477,14 @@ pub(super) fn render(page: &Page, title: &str, words: &Markup, github_url: &str)
         i.and_then(|i| PAGES.get(i))
             .map(|p| (p.label.to_owned(), format!("{up}{}/", p.dir)))
     };
-    let article = html! {
-        p.crumbs { span { "Docs" } span { (page.group.title()) } }
-        (words)
+    // A reference page draws its crumbs in its first section.
+    let (article, sections, layout) = match page.layout {
+        Layout::Guide => (
+            html! { (crumbs(page)) (words) },
+            Vec::new(),
+            shell::Layout::Article,
+        ),
+        Layout::Reference => (words.clone(), outline(&words.0), shell::Layout::Wide),
     };
     shell::render(shell::Page {
         up,
@@ -450,14 +493,51 @@ pub(super) fn render(page: &Page, title: &str, words: &Markup, github_url: &str)
         description:
             "How to install Monokulo, self-hosted Monero payments, and add it to your own website.",
         map_label: "Docs",
-        map: map(up, Some(page.dir)),
+        map: map(up, Some(page.dir), sections),
         article,
         previous: neighbour(at.and_then(|i| i.checked_sub(1))),
         next: neighbour(at.map(|i| i + 1)),
         edit: Some(format!("{github_url}/edit/main/{}", page.source.file())),
-        layout: shell::Layout::Article,
+        layout,
         script: None,
     })
+}
+
+/// Where a page is: the docs, then its group.
+fn crumbs(page: &Page) -> Markup {
+    html! { p.crumbs { span { "Docs" } span { (page.group.title()) } } }
+}
+
+/// A reference page's sections as the map lists them under it: each `h2`,
+/// the `h3`s after it under it.
+fn outline(html: &str) -> Vec<Link> {
+    static HEADING: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let heading = HEADING.get_or_init(|| {
+        regex::Regex::new(r#"(?s)<h([23]) id="([^"]+)"[^>]*>(.*?)</h[23]>"#).unwrap()
+    });
+    let mut sections: Vec<Link> = Vec::new();
+    for c in heading.captures_iter(html) {
+        let link = Link {
+            label: PreEscaped(strip_tags(&c[3])),
+            href: format!("#{}", &c[2]),
+            current: None,
+            file: false,
+            nested: true,
+            children: Vec::new(),
+        };
+        match (&c[1], sections.last_mut()) {
+            ("3", Some(parent)) => parent.children.push(link),
+            _ => sections.push(link),
+        }
+    }
+    sections
+}
+
+/// `html` without its tags: a heading's words, still escaped.
+fn strip_tags(html: &str) -> String {
+    static TAG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tag = TAG.get_or_init(|| regex::Regex::new(r"<[^>]*>").unwrap());
+    tag.replace_all(html, "").trim().to_owned()
 }
 
 /// What search finds on a page: the page, and each of its sections.
@@ -496,6 +576,35 @@ fn anchor(text: &str) -> String {
     slug.trim_end_matches('-').to_owned()
 }
 
+/// A heading's words, read from `events` up to its end, as HTML with its
+/// anchor.
+fn heading_html<'a>(level: HeadingLevel, events: &mut impl Iterator<Item = Event<'a>>) -> String {
+    let mut inner = Vec::new();
+    let mut text = String::new();
+    for event in events {
+        match event {
+            Event::End(TagEnd::Heading(_)) => break,
+            Event::Text(t) => {
+                text.push_str(&t);
+                inner.push(Event::Text(t));
+            }
+            Event::Code(t) => {
+                text.push_str(&t);
+                inner.push(Event::Code(t));
+            }
+            other => inner.push(other),
+        }
+    }
+    let mut html_inner = String::new();
+    pulldown_cmark::html::push_html(&mut html_inner, inner.into_iter());
+    let tag = level.to_string();
+    format!(
+        "<{tag} id=\"{}\">{}</{tag}>",
+        anchor(&text),
+        html_inner.trim()
+    )
+}
+
 /// A fenced `diff` block: a `# file` line names the file, `+` lines are
 /// added, the rest are kept.
 fn diff_block(code: &str) -> Markup {
@@ -523,33 +632,7 @@ pub(super) fn markdown_html(markdown: &str) -> Markup {
     while let Some(event) = parser.next() {
         match event {
             Event::Start(Tag::Heading { level, .. }) if level != HeadingLevel::H1 => {
-                let mut inner = Vec::new();
-                let mut text = String::new();
-                for event in parser.by_ref() {
-                    match event {
-                        Event::End(TagEnd::Heading(_)) => break,
-                        Event::Text(t) => {
-                            text.push_str(&t);
-                            inner.push(Event::Text(t));
-                        }
-                        Event::Code(t) => {
-                            text.push_str(&t);
-                            inner.push(Event::Code(t));
-                        }
-                        other => inner.push(other),
-                    }
-                }
-                let mut html_inner = String::new();
-                pulldown_cmark::html::push_html(&mut html_inner, inner.into_iter());
-                let tag = level.to_string();
-                events.push(Event::Html(
-                    format!(
-                        "<{tag} id=\"{}\">{}</{tag}>",
-                        anchor(&text),
-                        html_inner.trim()
-                    )
-                    .into(),
-                ));
+                events.push(Event::Html(heading_html(level, &mut parser).into()));
             }
             Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang))) if &*lang == "diff" => {
                 let mut code = String::new();
@@ -576,6 +659,194 @@ pub(super) fn markdown_html(markdown: &str) -> Markup {
     let mut out = String::new();
     pulldown_cmark::html::push_html(&mut out, events.into_iter());
     PreEscaped(out)
+}
+
+/// A reference page's Markdown, laid out as the API explorer lays out its
+/// own: what comes before the first `h2` (the title and the line under it,
+/// after `crumbs`) across the width, then a section per `h2` and per `h3`,
+/// its words on the left and its code blocks and tables in panels beside
+/// them. An `h2` with `h3`s after it heads them, as a resource heads its
+/// operations. A code block's info string after its language is its
+/// panel's title (```` ```js Example ````). A table headed `Name` (`Name`,
+/// `Type`, `Default`, `Description`, `Note`) is a list of fields in the
+/// words: its `Default` says `required`, `optional` or the value.
+pub(super) fn reference_html(markdown: &str, crumbs: Markup) -> Markup {
+    struct Section<'a> {
+        level: u8,
+        heading: String,
+        words: Vec<Event<'a>>,
+        panels: Vec<Markup>,
+    }
+    let mut sections = vec![Section {
+        level: 1,
+        heading: String::new(),
+        words: Vec::new(),
+        panels: Vec::new(),
+    }];
+    let mut parser = Parser::new_ext(markdown, Options::ENABLE_TABLES);
+    while let Some(event) = parser.next() {
+        let here = sections.last_mut().unwrap();
+        match event {
+            Event::Start(Tag::Heading { level, .. })
+                if matches!(level, HeadingLevel::H2 | HeadingLevel::H3) =>
+            {
+                sections.push(Section {
+                    level: if level == HeadingLevel::H2 { 2 } else { 3 },
+                    heading: heading_html(level, &mut parser),
+                    words: Vec::new(),
+                    panels: Vec::new(),
+                });
+            }
+            Event::Start(Tag::Heading { level, .. }) if level != HeadingLevel::H1 => {
+                here.words
+                    .push(Event::Html(heading_html(level, &mut parser).into()));
+            }
+            Event::Start(Tag::CodeBlock(kind)) => {
+                let info = match kind {
+                    CodeBlockKind::Fenced(info) => info.into_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                let mut code = String::new();
+                for event in parser.by_ref() {
+                    match event {
+                        Event::End(TagEnd::CodeBlock) => break,
+                        Event::Text(t) => code.push_str(&t),
+                        _ => {}
+                    }
+                }
+                let (lang, title) = info.split_once(' ').unwrap_or((&info, ""));
+                let title = if title.trim().is_empty() {
+                    "Example"
+                } else {
+                    title.trim()
+                };
+                here.panels.push(html! {
+                    div.api-panel {
+                        div.api-panel-head { span.api-panel-title { (title) } }
+                        pre { code class=[(!lang.is_empty()).then(|| format!("language-{lang}"))] { (code) } }
+                    }
+                });
+            }
+            Event::Start(Tag::Table(_)) => {
+                let mut table = vec![event];
+                for event in parser.by_ref() {
+                    let end = matches!(event, Event::End(TagEnd::Table));
+                    table.push(event);
+                    if end {
+                        break;
+                    }
+                }
+                match fields(&table) {
+                    Some(list) => here.words.push(Event::Html(list.0.into())),
+                    None => {
+                        let mut out = String::new();
+                        pulldown_cmark::html::push_html(&mut out, table.into_iter());
+                        here.panels.push(html! {
+                            div.api-panel { div.tbl { (PreEscaped(out)) } }
+                        });
+                    }
+                }
+            }
+            other => here.words.push(other),
+        }
+    }
+    let heads =
+        |i: usize| sections[i].level == 2 && sections.get(i + 1).is_some_and(|s| s.level == 3);
+    let mut classes = Vec::new();
+    for (i, section) in sections.iter().enumerate() {
+        let mut class = vec!["api-sec"];
+        if section.panels.is_empty() {
+            class.push("api-wide");
+        }
+        match section.level {
+            1 => class.push("api-intro"),
+            2 if heads(i) => class.push("api-resource"),
+            3 => class.push("api-op"),
+            _ => {}
+        }
+        classes.push(class.join(" "));
+    }
+    html! {
+        article.reference {
+            @for (section, class) in sections.into_iter().zip(classes) {
+                @let words = {
+                    let mut out = String::new();
+                    pulldown_cmark::html::push_html(&mut out, section.words.into_iter());
+                    out
+                };
+                section class=(class) {
+                    div.api-main.prose {
+                        @if section.level == 1 { (crumbs) }
+                        (PreEscaped(&section.heading))
+                        (PreEscaped(words))
+                    }
+                    @if !section.panels.is_empty() {
+                        div.api-side {
+                            @for panel in &section.panels { (panel) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A table headed `Name`, as a list of fields (`reference_html`); none for
+/// any other table.
+fn fields(table: &[Event]) -> Option<Markup> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut cell: Option<Vec<Event>> = None;
+    for event in table {
+        match event {
+            Event::Start(Tag::TableHead | Tag::TableRow) => rows.push(Vec::new()),
+            Event::Start(Tag::TableCell) => cell = Some(Vec::new()),
+            Event::End(TagEnd::TableCell) => {
+                let mut out = String::new();
+                pulldown_cmark::html::push_html(&mut out, cell.take()?.into_iter());
+                rows.last_mut()?.push(out.trim().to_owned());
+            }
+            event => {
+                if let Some(cell) = &mut cell {
+                    cell.push(event.clone());
+                }
+            }
+        }
+    }
+    let (head, rows) = rows.split_first()?;
+    let column = |name: &str| head.iter().position(|h| strip_tags(h) == name);
+    if column("Name")? != 0 {
+        return None;
+    }
+    let (kind, default, description, note) = (
+        column("Type")?,
+        column("Default")?,
+        column("Description")?,
+        column("Note"),
+    );
+    let at = |row: &Vec<String>, i: usize| row.get(i).cloned().unwrap_or_default();
+    Some(html! {
+        ul.api-fields {
+            @for row in rows {
+                @let presence = at(row, default);
+                @let note = note.map(|i| at(row, i)).filter(|n| !n.is_empty());
+                li {
+                    p.api-field-head {
+                        (PreEscaped(at(row, 0)))
+                        span.api-field-type { (PreEscaped(at(row, kind))) }
+                        @match strip_tags(&presence).as_str() {
+                            "required" => { span.api-field-required { "required" } }
+                            "" | "optional" => { span.api-field-type { "optional" } }
+                            _ => { span.api-field-type { "default " (PreEscaped(&presence)) } }
+                        }
+                    }
+                    div.api-field-text { (PreEscaped(at(row, description))) }
+                    @if let Some(note) = note {
+                        p.api-field-note { (PreEscaped(note)) }
+                    }
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -607,7 +878,7 @@ mod tests {
         let site = scratch.path();
         for page in &PAGES {
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
-            assert!(html.contains(r#"<article class="prose">"#), "{}", page.dir);
+            assert!(html.contains(article_tag(page)), "{}", page.dir);
         }
         let walkthrough = fs::read_to_string(site.join("walkthrough-geomart/index.html")).unwrap();
         assert!(
@@ -654,6 +925,15 @@ mod tests {
         }
     }
 
+    /// Where a page's words start: a guide's article, or a reference
+    /// page's sections.
+    fn article_tag(page: &Page) -> &'static str {
+        match page.layout {
+            Layout::Guide => r#"<article class="prose">"#,
+            Layout::Reference => r#"<article class="reference">"#,
+        }
+    }
+
     /// The links in a page's map, in order: (link, whether it's marked as
     /// the page).
     fn map_links(html: &str) -> Vec<(String, bool)> {
@@ -670,13 +950,15 @@ mod tests {
     /// Every page's map lists every page, in `PAGES`' order, grouped as
     /// `PAGES` says, and marks the page itself; Previous and Next go to the
     /// pages either side; "On this page" lists the page's sections, which
-    /// are every `h2` it has.
+    /// are every `h2` it has, or on a reference page the map lists them
+    /// under it, folded, each `h2`'s `h3`s under it.
     #[test]
     fn every_page_is_in_the_map_and_lists_its_sections() {
         let scratch = built("docs-shell");
         let site = scratch.path();
         let h2 = regex::Regex::new(r"<h2[ >]").unwrap();
         let toc_link = regex::Regex::new(r##"<li><a href="#([^"]+)">"##).unwrap();
+        let toc_section = regex::Regex::new(r##"<a href="#([^"]+)""##).unwrap();
         for (i, page) in PAGES.iter().enumerate() {
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
             let links = map_links(&html);
@@ -747,8 +1029,9 @@ mod tests {
                 ),
                 None => assert!(!pager.contains(r#"class="next""#), "{}", page.dir),
             }
-            // On this page: every h2 of the article, by its id, in order.
-            let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();
+            // On this page (a reference page's map): every h2 of the
+            // article, by its id, in order.
+            let article = html.split(article_tag(page)).nth(1).unwrap();
             let article = article.split(r#"<nav class="pager""#).next().unwrap();
             let sections = shell::sections(article);
             assert_eq!(
@@ -757,14 +1040,31 @@ mod tests {
                 "{}: an h2 without an id",
                 page.dir
             );
-            let toc = html
-                .split(r#"<aside class="toc""#)
-                .nth(1)
-                .unwrap_or_default();
-            let listed: Vec<&str> = toc_link
-                .captures_iter(toc)
-                .map(|c| c.get(1).unwrap().as_str())
-                .collect();
+            let toc = match page.layout {
+                Layout::Guide => html.split(r#"<aside class="toc""#).nth(1),
+                Layout::Reference => html.split(r#"<div class="wide-foot">"#).nth(1),
+            }
+            .unwrap_or_default();
+            let listed: Vec<&str> = match page.layout {
+                Layout::Guide => toc_link
+                    .captures_iter(toc)
+                    .map(|c| c.get(1).unwrap().as_str())
+                    .collect(),
+                Layout::Reference => {
+                    // The page folds its sections under it, the only
+                    // links in the map to a part of a page.
+                    let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
+                    let map = map.split(r#"<div class="map-foot">"#).next().unwrap();
+                    let here =
+                        format!(r#"<summary><a href="../{}/" aria-current="page""#, page.dir);
+                    let under = map.split(&here).nth(1).unwrap();
+                    toc_section
+                        .captures_iter(under)
+                        .map(|c| c.get(1).unwrap().as_str())
+                        .filter(|id| sections.iter().any(|s| s.id == *id))
+                        .collect()
+                }
+            };
             let ids: Vec<&str> = sections.iter().map(|s| s.id.as_str()).collect();
             assert_eq!(listed, ids, "{}", page.dir);
             let edit = format!("/edit/main/{}", page.source.file());
@@ -772,6 +1072,77 @@ mod tests {
             let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
             assert!(root.join(page.source.file()).is_file(), "{edit}");
         }
+    }
+
+    /// The Webpages page is a reference page: its sections in the
+    /// explorer's two columns, code and tables beside the words, its
+    /// parameters as fields, and its sections folded under it in the map
+    /// (createOrder and mount under JS reference) with no "On this page".
+    /// Other pages' maps fold nothing.
+    #[test]
+    fn the_webpages_page_lays_out_its_reference_as_the_api_explorer_does() {
+        let scratch = built("docs-reference");
+        let site = scratch.path();
+        let html = fs::read_to_string(site.join("js-library/index.html")).unwrap();
+        let article = html.split(r#"<article class="reference">"#).nth(1).unwrap();
+        let article = article.split("</article>").next().unwrap();
+
+        // Its sections: the title across the width, then each two columns
+        // where it has panels; JS reference heads its functions.
+        let section = regex::Regex::new(r#"<section class="([^"]+)">"#).unwrap();
+        let classes: Vec<&str> = section
+            .captures_iter(article)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                "api-sec api-wide api-intro",
+                "api-sec",
+                "api-sec",
+                "api-sec",
+                "api-sec",
+                "api-sec api-wide api-resource",
+                "api-sec api-op",
+                "api-sec api-op",
+            ]
+        );
+        assert!(article.contains(
+            r#"<p class="crumbs"><span>Docs</span><span>Integrations</span></p><h1>Webpages</h1>"#
+        ));
+        // A code block is a panel named by its info string, beside the
+        // words; the statuses table too.
+        assert!(article.contains(r#"<span class="api-panel-title">Signature</span>"#));
+        assert!(article
+            .contains(r#"<code class="language-js">const order = await Monokulo.createOrder({"#));
+        let statuses = article.split(r#"id="order-statuses""#).nth(1).unwrap();
+        let statuses = statuses.split("<section").next().unwrap();
+        let side = statuses.split(r#"<div class="api-side">"#).nth(1).unwrap();
+        assert!(side.contains("<td><code>cancelled</code></td>"), "{side}");
+        // Parameters are fields: required, optional or their default, a
+        // note under the description.
+        let create = article.split(r#"id="createorder""#).nth(1).unwrap();
+        let create = create.split("<section").next().unwrap();
+        let main = create.split(r#"<div class="api-side">"#).next().unwrap();
+        assert!(!main.contains("<table"), "{main}");
+        assert!(main.contains(r#"<code>publicKey</code><span class="api-field-type">string</span><span class="api-field-required">required</span>"#), "{main}");
+        assert!(main.contains(r#"<span class="api-field-type">optional</span>"#));
+        assert!(main.contains(r#"<span class="api-field-type">default <code>true</code></span>"#));
+        assert!(main.contains(
+            r#"<p class="api-field-note">Public: anyone with the payment link can read it.</p>"#
+        ));
+
+        // The map folds its sections under it, and JS reference's under
+        // that; nothing says "On this page".
+        let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
+        let map = map.split("</nav>").next().unwrap();
+        assert!(map.contains(r##"<li><details open><summary><a href="../js-library/" aria-current="page">Webpages</a></summary><ul><li><a href="#quick-start" data-nested>Quick start</a></li>"##), "{map}");
+        assert!(map.contains(r##"<li><details open><summary><a href="#js-reference" data-nested>JS reference</a></summary><ul><li><a href="#createorder" data-nested>createOrder</a></li><li><a href="#mount" data-nested>mount</a></li></ul></details></li>"##), "{map}");
+        assert!(!html.contains(r#"<aside class="toc""#));
+
+        let webhooks = fs::read_to_string(site.join("webhooks/index.html")).unwrap();
+        let map = webhooks.split(r#"<nav class="map""#).nth(1).unwrap();
+        assert!(!map.split("</nav>").next().unwrap().contains("<details"));
     }
 
     /// Search finds every page and every section of each, at its address.
@@ -787,7 +1158,7 @@ mod tests {
         for page in &PAGES {
             assert!(has("Guide", &format!("{}/", page.dir)), "{}", page.dir);
             let html = fs::read_to_string(site.join(page.dir).join("index.html")).unwrap();
-            let article = html.split(r#"<article class="prose">"#).nth(1).unwrap();
+            let article = html.split(article_tag(page)).nth(1).unwrap();
             let sections = shell::sections(article.split("</article>").next().unwrap());
             for section in sections {
                 let href = format!("{}/#{}", page.dir, section.id);
@@ -932,11 +1303,11 @@ mod tests {
     const PUBLISHED_UNDER_DOCS: [&str; 9] = [
         "docs/index.html",
         "docs/walkthrough-geomart/index.html",
-        "docs/js-library/index.html",
         "docs/paid/index.html",
         "docs/webhooks/index.html",
         "docs/plugins/index.html",
         "docs/apps/index.html",
+        "docs/js-library/index.html",
         "docs/geomart/index.html",
         "docs/geomart/done.html",
     ];
