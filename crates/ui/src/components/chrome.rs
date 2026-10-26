@@ -87,10 +87,12 @@ component! {
 
 component! {
     /// One row of a `Menu`: a link, a form's button (Log out, a POST), or
-    /// a row holding a control (the theme switch). A `note` sits at its
-    /// right: a count, "change".
+    /// a row holding a control (the theme switch). An `icon` sits before
+    /// its name, a `note` at its right: a count, "change".
     pub struct MenuItem {
         children: Slot,
+        /// Before the name: an inline SVG (`assets::icons::WALLET`).
+        icon: Option<Slot>,
         href: Option<String>,
         /// Posts here when chosen.
         post_to: Option<String>,
@@ -102,17 +104,17 @@ component! {
     html {
         @if let Some(href) = href {
             a class="menu-item" href=(href) title=[title] ..rest {
-                span { (children) }
+                span class="menu-label" { @if let Some(icon) = icon { (icon) } (children) }
                 @if let Some(note) = note { span class="menu-note" { (note) } }
             }
         } @else {
             @if let Some(post_to) = post_to {
                 form method="post" action=(post_to) class="menu-form" ..rest {
-                    button type="submit" class="menu-item" title=[title] { span { (children) } }
+                    button type="submit" class="menu-item" title=[title] { span class="menu-label" { @if let Some(icon) = icon { (icon) } (children) } }
                 }
             } @else {
                 div class="menu-item" title=[title] ..rest {
-                    span { (children) }
+                    span class="menu-label" { @if let Some(icon) = icon { (icon) } (children) }
                     @if let Some(note) = note { (note) }
                 }
             }
@@ -190,10 +192,12 @@ pub(super) fn nav_menu_examples() -> Vec<(&'static str, NavMenu)> {
 }
 
 pub(super) fn menu_item_examples() -> Vec<(&'static str, MenuItem)> {
+    // A glyph stands in for the icon, as in the NavMenu's examples.
     vec![
         (
             "A link with a note",
             MenuItem::new("Wallets")
+                .icon("▤")
                 .href("#component-menu-item")
                 .note("1"),
         ),

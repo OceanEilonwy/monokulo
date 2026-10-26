@@ -16,6 +16,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 use crate::assets;
 use crate::db::{Theme, UserRow};
+use ui::assets::icons;
 
 /// The project's site (docs.monokulo.com, GitHub Pages): the docs, built
 /// and published with it (`cargo xtask pages docs`), each page a folder at
@@ -751,13 +752,13 @@ pub fn account_menu(chrome: &PageChrome) -> Markup {
     };
     let items = html! {
         div class="acct-who" { strong { (chrome.email) } small { (role) } }
-        (ui::MenuItem::new("Account").href(crate::base::url("/account")))
-        (ui::MenuItem::new("Wallets").href(crate::base::url("/account?tab=wallets")).note(chrome.wallet_count.to_string()))
+        (ui::MenuItem::new("Account").icon(html! { (PreEscaped(icons::USER)) }).href(crate::base::url("/account")))
+        (ui::MenuItem::new("Wallets").icon(html! { (PreEscaped(icons::WALLET)) }).href(crate::base::url("/account?tab=wallets")).note(chrome.wallet_count.to_string()))
         hr;
-        (ui::MenuItem::new("Theme").note(theme_toggle(chrome)))
-        (ui::MenuItem::new(html! { "Times in " (zone) }).href(crate::base::url("/account#card-time")).note("change").title(zone_title))
+        (ui::MenuItem::new("Theme").icon(html! { (PreEscaped(icons::PALETTE)) }).note(theme_toggle(chrome)))
+        (ui::MenuItem::new(html! { "Times in " (zone) }).icon(html! { (PreEscaped(icons::CLOCK)) }).href(crate::base::url("/account#card-time")).note("change").title(zone_title))
         hr;
-        (ui::MenuItem::new("Log out").post_to(crate::base::url("/logout")))
+        (ui::MenuItem::new("Log out").icon(html! { (PreEscaped(icons::LOG_OUT)) }).post_to(crate::base::url("/logout")))
     };
     ui::Menu::new("Account menu", account_icon(), items)
         .title(chrome.email.clone())

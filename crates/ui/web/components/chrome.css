@@ -61,12 +61,16 @@
 .acct > summary:hover, .acct[open] > summary { border-color: var(--ink); background: var(--btn-hover-bg); }
 .acct > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .acct-icon { width: 1.15em; height: 1.15em; display: block; }
-.acct-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; width: 17rem; padding: var(--space-xs); background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: 0 6px 24px var(--popup-shadow); }
+/* As wide as the longest line (the email, usually) so it reads on one
+   line, up to 28rem; a longer email still wraps. */
+.acct-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 25; width: max-content; min-width: 17rem; max-width: min(28rem, calc(100vw - 2rem)); padding: var(--space-xs); background: var(--paper-raised); color: var(--ink); border: 1px solid var(--line); border-radius: var(--radius-md); box-shadow: 0 6px 24px var(--popup-shadow); }
 .acct-who { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--line); margin-bottom: var(--space-xs); overflow-wrap: anywhere; }
 .acct-who small { display: block; color: var(--muted); }
 .menu-item { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); width: 100%; margin: 0; padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); font-weight: 500; color: var(--ink); text-align: left; text-decoration: none; }
 :is(a, button).menu-item:hover { background: var(--surface-sunken); color: var(--ink); text-decoration: none; }
 .menu-note { color: var(--muted); font-size: var(--text-sm); }
+.menu-label { display: inline-flex; align-items: center; gap: var(--space-sm); }
+.menu-label > :is(svg, .mk-icon) { width: 1.1em; height: 1.1em; flex: none; color: var(--muted); }
 .acct-menu hr { border: 0; border-top: 1px solid var(--line); margin: var(--space-xs) 0; }
 .acct-menu .theme-toggle { margin: 0; }
 .menu-form { display: block; margin: 0; }
@@ -181,7 +185,7 @@ button.menu-item { border: 0; background: none; font: inherit; cursor: pointer; 
      menu. */
   .site-nav-links .acct { margin-left: 0; }
   .site-nav-links .acct > summary { margin: var(--space-sm) 0; }
-  .site-nav-links .acct-menu { position: static; width: auto; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; color: inherit; }
+  .site-nav-links .acct-menu { position: static; width: auto; min-width: 0; max-width: none; padding: 0; border: 0; border-radius: 0; box-shadow: none; background: none; color: inherit; }
   .site-nav-links .acct-who { padding-left: 0; padding-right: 0; }
   .site-nav-links .acct-menu .menu-item { padding: 0; border-radius: 0; border-bottom: 1px solid var(--line); color: var(--chrome-ink); font-weight: 600; }
   .site-nav-links .acct-menu hr { display: none; }

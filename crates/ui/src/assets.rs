@@ -77,6 +77,8 @@ pub mod icons {
     pub const ORDER_NEW: &str = include_str!("../web/icons/order-new.svg").trim_ascii();
     pub const POS: &str = include_str!("../web/icons/pos.svg").trim_ascii();
     pub const SHARE: &str = include_str!("../web/icons/share.svg").trim_ascii();
+    pub const USER: &str = include_str!("../web/icons/user.svg").trim_ascii();
+    pub const LOG_OUT: &str = include_str!("../web/icons/log-out.svg").trim_ascii();
     pub const WALLET: &str = include_str!("../web/icons/wallet.svg").trim_ascii();
     pub const EXTERNAL: &str = include_str!("../web/icons/external.svg").trim_ascii();
     // The project site's bar: its Resources menu and its search.
