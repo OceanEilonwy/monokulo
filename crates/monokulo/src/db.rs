@@ -708,24 +708,28 @@ fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomai
     })
 }
 
-/// A `store_connections` row, from a query selecting `id, user_id, site,
-/// tenant_public_key, tenant_secret_token_encrypted, created_at_utc,
-/// fx_providers, base_currency, fx_provider_settings, wallet_id, name,
-/// payment_description` in that order.
+/// What a query reading whole stores selects, for [`store_from_row`].
+const STORE_COLUMNS: &str = "id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description";
+
+/// A `store_connections` row, from a query selecting [`STORE_COLUMNS`].
+/// Each is read by its name, so a list that leaves one out fails rather
+/// than hand one column's value to another of the same type.
 fn store_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreConnectionRow> {
     Ok(StoreConnectionRow {
-        id: row.get(0)?,
-        user_id: row.get(1)?,
-        site: Site::stored(&row.get::<_, String>(2)?),
-        tenant_public_key: row.get(3)?,
-        tenant_secret_token_encrypted: row.get(4)?,
-        created_at: row.get(5)?,
-        fx_providers: parse_fx_providers(&row.get::<_, String>(6)?),
-        base_currency: row.get(7)?,
-        fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(8)?),
-        wallet_id: row.get(9)?,
-        name: row.get(10)?,
-        payment_description: row.get(11)?,
+        id: row.get("id")?,
+        user_id: row.get("user_id")?,
+        site: Site::stored(&row.get::<_, String>("site")?),
+        tenant_public_key: row.get("tenant_public_key")?,
+        tenant_secret_token_encrypted: row.get("tenant_secret_token_encrypted")?,
+        created_at: row.get("created_at_utc")?,
+        fx_providers: parse_fx_providers(&row.get::<_, String>("fx_providers")?),
+        base_currency: row.get("base_currency")?,
+        fx_provider_settings: FxProviderSettings::parse(
+            &row.get::<_, String>("fx_provider_settings")?,
+        ),
+        wallet_id: row.get("wallet_id")?,
+        name: row.get("name")?,
+        payment_description: row.get("payment_description")?,
     })
 }
 
@@ -1736,8 +1740,9 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
-                 FROM store_connections WHERE secret_key_hash = ?1",
+                &format!(
+                    "SELECT {STORE_COLUMNS} FROM store_connections WHERE secret_key_hash = ?1"
+                ),
                 params![secret_key_hash],
                 store_from_row,
             )
@@ -1755,9 +1760,10 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT s.id, s.user_id, s.site, s.tenant_public_key, s.tenant_secret_token_encrypted, s.created_at_utc, s.fx_providers, s.base_currency, s.fx_provider_settings, s.wallet_id, s.name, s.payment_description
-                 FROM order_currency_metadata m JOIN store_connections s ON s.id = m.connection_id
-                 WHERE m.order_id = ?1",
+                &format!(
+                    "SELECT {STORE_COLUMNS} FROM store_connections
+                     WHERE id IN (SELECT connection_id FROM order_currency_metadata WHERE order_id = ?1)"
+                ),
                 params![order_id],
                 store_from_row,
             )
@@ -2165,12 +2171,9 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
-                 FROM store_connections WHERE id = ?1",
+                &format!("SELECT {STORE_COLUMNS} FROM store_connections WHERE id = ?1"),
                 params![id],
-                |row| {
-                    store_from_row(row)
-                },
+                store_from_row,
             )
             .optional()
             .map_err(DbError::from)
@@ -2207,10 +2210,10 @@ impl Db {
         &self,
         user_id: &UserId,
     ) -> Result<Vec<StoreConnectionRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
-             FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {STORE_COLUMNS} FROM store_connections
+             WHERE user_id = ?1 ORDER BY created_at_utc DESC"
+        ))?;
         let rows = stmt
             .query_map(params![user_id], store_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2407,12 +2410,11 @@ impl Db {
     ) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
-                 FROM store_connections WHERE tenant_public_key = ?1",
+                &format!(
+                    "SELECT {STORE_COLUMNS} FROM store_connections WHERE tenant_public_key = ?1"
+                ),
                 params![tenant_public_key],
-                |row| {
-                    store_from_row(row)
-                },
+                store_from_row,
             )
             .optional()
             .map_err(DbError::from)
@@ -2423,8 +2425,7 @@ impl Db {
     pub fn find_store_by_site(&self, site: &Site) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
-                 FROM store_connections WHERE site = ?1",
+                &format!("SELECT {STORE_COLUMNS} FROM store_connections WHERE site = ?1"),
                 params![site.as_str()],
                 store_from_row,
             )
@@ -2747,10 +2748,9 @@ impl Db {
     /// Stores whose own site domain hasn't been copied
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, site, tenant_public_key, tenant_secret_token_encrypted, created_at_utc, fx_providers, base_currency, fx_provider_settings, wallet_id, name, payment_description
-             FROM store_connections WHERE domains_imported = 0",
-        )?;
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {STORE_COLUMNS} FROM store_connections WHERE domains_imported = 0"
+        ))?;
         let rows = stmt.query_map([], store_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(DbError::from)
