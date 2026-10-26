@@ -86,8 +86,8 @@ pub(super) struct Api<'a> {
     intro: String,
     resources: Vec<Resource<'a>>,
     /// The onion links' relations, from the reference.
-    onion: &'a [Value],
-    problems: &'a [Value],
+    onion: &'a [api_reference::Rel],
+    problems: &'a [api_reference::Problem],
     /// The schemas the operations' bodies refer to.
     schemas: &'a Value,
     /// Where requests go until the reader names their own Monokulo: the
@@ -127,7 +127,7 @@ struct Operation<'a> {
 impl<'a> Api<'a> {
     /// The API, from the OpenAPI document and the reference (for the onion
     /// links and the problems).
-    pub(super) fn new(openapi: &'a Value, reference: &'a Value) -> Api<'a> {
+    pub(super) fn new(openapi: &'a Value, reference: &'a api_reference::Reference) -> Api<'a> {
         let mut operations: Vec<(&str, Operation)> = Vec::new();
         if let Some(paths) = openapi["paths"].as_object() {
             for (path, methods) in paths {
@@ -203,8 +203,8 @@ impl<'a> Api<'a> {
         Api {
             intro: markdown_html(&local(INTRO, "../")).into_string(),
             resources,
-            onion: list(reference, "rels"),
-            problems: list(reference, "problems"),
+            onion: &reference.rels,
+            problems: &reference.problems,
             schemas: &openapi["components"]["schemas"],
             server,
         }
@@ -958,9 +958,9 @@ fn onion_links(api: &Api) -> Markup {
                     tbody {
                         @for rel in api.onion {
                             tr {
-                                td { a href={ "../rels/" (text(rel, "rel")) "/" } { code { (text(rel, "key")) } } }
-                                td { code { (text(rel, "template")) } }
-                                td { (text(rel, "title")) }
+                                td { a href={ "../rels/" (rel.rel) "/" } { code { (rel.key) } } }
+                                td { code { (rel.template) } }
+                                td { (rel.title) }
                             }
                         }
                     }
@@ -984,11 +984,11 @@ fn problems(api: &Api) -> Markup {
                     thead { tr { th { "Status" } th { "Type" } th { "Title" } } }
                     tbody {
                         @for problem in api.problems {
-                            @let slug = text(problem, "slug");
+                            @let slug = &problem.slug;
                             tr id={ "problem-" (slug) } {
-                                td { (ui::HttpStatusTag::of(problem["status"].to_string())) }
+                                td { (ui::HttpStatusTag::of(problem.status.to_string())) }
                                 td { a href={ "../problems/" (slug) "/" } { code { (slug) } } }
-                                td { (text(problem, "title")) }
+                                td { (problem.title) }
                             }
                         }
                     }
@@ -1185,10 +1185,10 @@ pub(super) fn search(api: &Api) -> Vec<Entry> {
     }
     for problem in api.problems {
         entries.push(Entry {
-            title: text(problem, "title").to_owned(),
-            sub: format!("{} · {}", problem["status"], text(problem, "slug")),
+            title: problem.title.clone(),
+            sub: format!("{} · {}", problem.status, problem.slug),
             kind: "Problem",
-            href: format!("api/#problem-{}", text(problem, "slug")),
+            href: format!("api/#problem-{}", problem.slug),
             method: None,
         });
     }

@@ -23,6 +23,12 @@
       "problems": [
         "invalid-connect-code"
       ],
+      "request": {
+        "type": "object"
+      },
+      "response": {
+        "type": "object"
+      },
       "template": "/apps/connect",
       "title": "Connect an app."
     }
@@ -84,6 +90,7 @@
         "type": "object"
       },
       "description": "One order.\n\nWhat the payer was asked for.",
+      "events": [],
       "examples": [
         {
           "key": "sk",
@@ -120,9 +127,11 @@
           ],
           "method": "GET",
           "name": "show",
+          "problems": [],
           "template": null
         }
       ],
+      "offered_to": null,
       "page": "https://docs.monokulo.com/rels/order",
       "rel": "order",
       "template": "/api/v1/orders/{order_id}",
@@ -131,6 +140,7 @@
     {
       "body": null,
       "description": "The store's orders.",
+      "events": [],
       "examples": [],
       "key": "mk:orders",
       "media_type": "application/prs.hal-forms+json",
@@ -159,6 +169,7 @@
           }
         }
       ],
+      "offered_to": null,
       "page": "https://docs.monokulo.com/rels/orders",
       "rel": "orders",
       "template": "/api/v1/orders",
@@ -206,6 +217,7 @@
           ],
           "method": "GET",
           "name": "get",
+          "problems": [],
           "template": null
         }
       ],

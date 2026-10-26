@@ -9,32 +9,9 @@
 //! each time they're generated. So an example is always something the API
 //! really said.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-/// One request and its answer.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct Exchange {
-    pub method: String,
-    /// The route's template.
-    pub route: String,
-    /// The path asked for.
-    pub path: String,
-    /// The key it carried: `pk`, `sk`, `ak`, or none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    /// Whether the Monokulo it was made with has an onion address (its
-    /// answers then carry the onion links too). Most have none.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub onion: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request: Option<Value>,
-    pub status: u16,
-    /// The answer's JSON; for a stream, the events read from it, each
-    /// `{"event", "data"}`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub response: Option<Value>,
-}
+/// One request and its answer, as the reference keeps it
+/// (`api_reference::Exchange`, which the docs build reads).
+pub use api_reference::Exchange;
 
 /// Checks each JSON answer against the OpenAPI document
 /// (`super::openapi::check_response`). Around the API's routes under test.

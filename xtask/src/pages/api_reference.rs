@@ -24,6 +24,7 @@ use super::shell::{self, Entry};
 use super::site_assets;
 use super::site_header::{self, Section};
 use crate::support::{at, Exit};
+use api_reference::{Method, Problem, Reference, Rel, Resource};
 use maud::{html, Markup};
 use serde_json::Value;
 use std::{
@@ -68,7 +69,9 @@ pub(crate) fn build(root: &Path, args: &[&str]) -> io::Result<Exit> {
     Ok(Exit::SUCCESS)
 }
 
-fn read_json(path: &Path) -> io::Result<Value> {
+/// `path`'s JSON, read as a `T`: a field missing, misnamed or unknown is
+/// an error naming the file, not a page that says something else.
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> io::Result<T> {
     let text = fs::read_to_string(path).map_err(|e| at(path, e))?;
     serde_json::from_str(&text).map_err(|e| at(path, io::Error::other(e)))
 }
@@ -77,10 +80,10 @@ fn read_json(path: &Path) -> io::Result<Value> {
 /// `generated` reference and document, into `site`; returns how many
 /// pages.
 pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
-    let reference = read_json(&generated.join("reference.json"))?;
+    let reference: Reference = read_json(&generated.join("reference.json"))?;
     points_here(&reference)?;
     let openapi_path = generated.join("openapi.json");
-    let openapi = read_json(&openapi_path)?;
+    let openapi: Value = read_json(&openapi_path)?;
     let api = Api::new(&openapi, &reference);
     let put = |path: PathBuf, contents: String| -> io::Result<()> {
         if let Some(dir) = path.parent() {
@@ -94,25 +97,23 @@ pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
         docs::redirect(OLD_INDEX, "api/").into_string(),
     )?;
     let mut pages = 1;
-    for resource in list(&reference, "resources") {
-        let rel = text(resource, "rel");
+    for resource in &reference.resources {
         put(
-            site.join("rels").join(rel).join("index.html"),
+            site.join("rels").join(&resource.rel).join("index.html"),
             resource_page(resource, &reference, &api).into_string(),
         )?;
         pages += 1;
     }
-    for rel in list(&reference, "rels") {
+    for rel in &reference.rels {
         put(
-            site.join("rels").join(text(rel, "rel")).join("index.html"),
+            site.join("rels").join(&rel.rel).join("index.html"),
             onion_rel_page(rel, &api).into_string(),
         )?;
         pages += 1;
     }
-    for problem in list(&reference, "problems") {
-        let slug = text(problem, "slug");
+    for problem in &reference.problems {
         put(
-            site.join("problems").join(slug).join("index.html"),
+            site.join("problems").join(&problem.slug).join("index.html"),
             problem_page(problem, &reference, &api).into_string(),
         )?;
         pages += 1;
@@ -126,14 +127,14 @@ pub(super) fn write(generated: &Path, site: &Path) -> io::Result<usize> {
 }
 
 /// What search finds: the explorer's sections, and each onion link's page.
-fn search(api: &Api, reference: &Value) -> Vec<Entry> {
+fn search(api: &Api, reference: &Reference) -> Vec<Entry> {
     let mut entries = api_explorer::search(api);
-    for rel in list(reference, "rels") {
+    for rel in &reference.rels {
         entries.push(Entry {
-            title: text(rel, "key").to_owned(),
-            sub: text(rel, "title").to_owned(),
+            title: rel.key.clone(),
+            sub: rel.title.clone(),
             kind: "Resource",
-            href: format!("rels/{}/", text(rel, "rel")),
+            href: format!("rels/{}/", rel.rel),
             method: None,
         });
     }
@@ -189,35 +190,27 @@ fn in_explorer(section: &str, what: &str) -> Markup {
 
 /// The `mk` curie and each problem's `type` point at the pages this site
 /// publishes: a reference that names another site isn't published.
-fn points_here(reference: &Value) -> io::Result<()> {
+fn points_here(reference: &Reference) -> io::Result<()> {
     let wrong = |what: &str, found: &str, expected: String| {
         io::Error::other(format!(
             "{what} points at {found}, not {expected} where this site publishes it"
         ))
     };
-    let resources = list(reference, "resources").iter();
-    for resource in resources.chain(list(reference, "rels")) {
-        let expected = format!("{}/rels/{}", site_header::SITE_URL, text(resource, "rel"));
-        if text(resource, "page") != expected {
-            return Err(wrong(
-                text(resource, "rel"),
-                text(resource, "page"),
-                expected,
-            ));
+    let pages = reference
+        .resources
+        .iter()
+        .map(|resource| (&resource.rel, &resource.page))
+        .chain(reference.rels.iter().map(|rel| (&rel.rel, &rel.page)));
+    for (rel, page) in pages {
+        let expected = format!("{}/rels/{rel}", site_header::SITE_URL);
+        if *page != expected {
+            return Err(wrong(rel, page, expected));
         }
     }
-    for problem in list(reference, "problems") {
-        let expected = format!(
-            "{}/problems/{}",
-            site_header::SITE_URL,
-            text(problem, "slug")
-        );
-        if text(problem, "type") != expected {
-            return Err(wrong(
-                text(problem, "slug"),
-                text(problem, "type"),
-                expected,
-            ));
+    for problem in &reference.problems {
+        let expected = format!("{}/problems/{}", site_header::SITE_URL, problem.slug);
+        if problem.type_uri != expected {
+            return Err(wrong(&problem.slug, &problem.type_uri, expected));
         }
     }
     Ok(())
@@ -232,10 +225,9 @@ pub(super) fn text<'a>(value: &'a Value, key: &str) -> &'a str {
 }
 
 /// The keys a page's link is offered to, in words.
-fn offered(keys: &[Value]) -> String {
+fn offered(keys: &[String]) -> String {
     keys.iter()
-        .filter_map(Value::as_str)
-        .map(|key| match key {
+        .map(|key| match key.as_str() {
             "session" => "the merchant's own session".to_owned(),
             key => format!("the {key}_ key"),
         })
@@ -244,17 +236,14 @@ fn offered(keys: &[Value]) -> String {
 }
 
 /// Who may call a method, in words.
-fn who(method: &Value) -> String {
-    let keys: Vec<&str> = list(method, "keys")
+fn who(method: &Method) -> String {
+    let mut names: Vec<String> = method
+        .keys
         .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    let mut names: Vec<String> = keys
-        .iter()
-        .filter(|k| **k != "session")
+        .filter(|k| *k != "session")
         .map(|k| format!("{k}_"))
         .collect();
-    if method["anyone"].as_bool() == Some(true) {
+    if method.anyone {
         names.insert(0, "no key".to_owned());
     }
     names.join(", ")
@@ -321,25 +310,26 @@ fn json_block(value: &Value) -> Markup {
     html! { pre { code { (serde_json::to_string_pretty(value).unwrap_or_default()) } } }
 }
 
-fn resource_page(resource: &Value, reference: &Value, api: &Api) -> Markup {
+fn resource_page(resource: &Resource, reference: &Reference, api: &Api) -> Markup {
     let up = "../../";
-    let section = api.anchor_of(text(resource, "rel"));
-    let definitions = &reference["definitions"];
-    let body = &resource["body"];
+    let section = api.anchor_of(&resource.rel);
+    let definitions = Value::Object(reference.definitions.clone());
+    let definitions = &definitions;
+    let body = resource.body.as_ref().unwrap_or(&Value::Null);
     let links: Vec<(&String, &Value)> = body["properties"]["_links"]["properties"]
         .as_object()
         .map(|links| links.iter().filter(|(k, _)| *k != "curies").collect())
         .unwrap_or_default();
     let markup = html! {
-        h1 { code { (text(resource, "key")) } }
-        p.lede { (text(resource, "title")) }
+        h1 { code { (resource.key) } }
+        p.lede { (resource.title) }
         (in_explorer(&section, "Its routes, with Try it,"))
-        (markdown_html(text(resource, "description").split_once("\n\n").map_or("", |(_, rest)| rest)))
+        (markdown_html(resource.description.split_once("\n\n").map_or("", |(_, rest)| rest)))
         h2 id="url" { "URL" }
-        p { code { (text(resource, "template")) } " · " code { (text(resource, "media_type")) } }
-        @if list(resource, "methods").is_empty() {
+        p { code { (resource.template) } " · " code { (resource.media_type) } }
+        @if resource.methods.is_empty() {
             h2 id="who-gets-the-link" { "Who gets the link" }
-            @if let Some(keys) = resource["offered_to"].as_array() {
+            @if let Some(keys) = &resource.offered_to {
                 p { "Only " (offered(keys)) ". Anyone else's answer leaves the link out." }
             } @else {
                 p { "Anyone who reads something that links it: the page is open to whoever has its URL." }
@@ -347,21 +337,20 @@ fn resource_page(resource: &Value, reference: &Value, api: &Api) -> Markup {
         } @else {
             h2 id="methods" { "Methods" }
         }
-        @for method in list(resource, "methods") {
-            h3 id=(text(method, "name")) { code { (text(method, "method")) } " · " (who(method)) }
-            (markdown_html(text(method, "doc")))
-            @let problems = list(method, "problems");
-            @if !problems.is_empty() {
+        @for method in &resource.methods {
+            h3 id=(method.name) { code { (method.method) } " · " (who(method)) }
+            (markdown_html(&method.doc))
+            @if !method.problems.is_empty() {
                 p {
                     "Problems it may answer: "
-                    @for slug in problems.iter().filter_map(Value::as_str) {
+                    @for slug in &method.problems {
                         a href=(format!("{up}problems/{slug}/")) { code { (slug) } } " "
                     }
                 }
             }
-            @if let Some(form) = method["form"].as_str() {
+            @if let Some(form) = &method.form {
                 p { "Offered as the form " code { (form) } " in " code { "_templates" } ", to a key that may use it." }
-                @if let Some(fields) = method["template"]["properties"].as_array().filter(|f| !f.is_empty()) {
+                @if let Some(fields) = method.template.as_ref().and_then(|t| t["properties"].as_array()).filter(|f| !f.is_empty()) {
                     div.tbl { table {
                         thead { tr { th { "Field" } th { "Required" } th { "Rules" } th { "What it is" } } }
                         tbody {
@@ -381,7 +370,7 @@ fn resource_page(resource: &Value, reference: &Value, api: &Api) -> Markup {
                 }
             }
         }
-        @let events = list(resource, "events");
+        @let events = &resource.events;
         @if !events.is_empty() {
             h2 id="events" { "Events" }
             p { "Each event is an " code { "event:" } " line with its name, then a " code { "data:" } " line." }
@@ -390,9 +379,9 @@ fn resource_page(resource: &Value, reference: &Value, api: &Api) -> Markup {
                 tbody {
                     @for event in events {
                         tr {
-                            td { code { (text(event, "name")) } }
-                            td { (type_name(&event["data"], definitions)) }
-                            td { (markdown_html(text(event, "doc"))) }
+                            td { code { (event.name) } }
+                            td { (type_name(&event.data, definitions)) }
+                            td { (markdown_html(&event.doc)) }
                         }
                     }
                 }
@@ -418,86 +407,76 @@ fn resource_page(resource: &Value, reference: &Value, api: &Api) -> Markup {
                 p { "A link the caller's key may not follow is left out." }
             }
         }
-        @let examples = list(resource, "examples");
+        @let examples = &resource.examples;
         @if !examples.is_empty() {
             h2 id="examples" { "Examples" }
             p { "Real exchanges, recorded against a test engine (ids, keys, addresses and times made stable)." }
             @for example in examples {
                 h3 {
-                    code { (text(example, "method")) " " (text(example, "path")) }
-                    @if let Some(key) = example["key"].as_str() { " with a " code { (key) "_" } " key" } @else { " with no key" }
-                    @if example["onion"] == true { ", on a Monokulo with an onion address" }
-                    " → " (example["status"])
+                    code { (example.method) " " (example.path) }
+                    @if let Some(key) = &example.key { " with a " code { (key) "_" } " key" } @else { " with no key" }
+                    @if example.onion { ", on a Monokulo with an onion address" }
+                    " → " (example.status)
                 }
-                @if !example["request"].is_null() { (json_block(&example["request"])) }
-                @if !example["response"].is_null() { (json_block(&example["response"])) }
+                @if let Some(request) = &example.request { (json_block(request)) }
+                @if let Some(response) = &example.response { (json_block(response)) }
             }
         }
     };
-    page(
-        api,
-        &section,
-        text(resource, "key"),
-        text(resource, "title"),
-        markup,
-    )
+    page(api, &section, &resource.key, &resource.title, markup)
 }
 
 /// The page of an onion link's relation (`mk:onion-…`).
-fn onion_rel_page(rel: &Value, api: &Api) -> Markup {
+fn onion_rel_page(rel: &Rel, api: &Api) -> Markup {
     let up = "../../";
-    let target = &rel["target"];
-    let section = api.anchor_of(text(rel, "rel"));
+    let target = &rel.target;
+    let section = api.anchor_of(&rel.rel);
     let markup = html! {
-        h1 { code { (text(rel, "key")) } }
-        p.lede { (text(rel, "title")) }
+        h1 { code { (rel.key) } }
+        p.lede { (rel.title) }
         (in_explorer(&section, "Every onion link"))
-        (markdown_html(text(rel, "description").split_once("\n\n").map_or("", |(_, rest)| rest)))
+        (markdown_html(rel.description.split_once("\n\n").map_or("", |(_, rest)| rest)))
         h2 id="url" { "URL" }
         p {
-            code { (text(rel, "template")) } " · " code { (text(rel, "media_type")) }
+            code { (rel.template) } " · " code { (rel.media_type) }
             ": the same resource as "
-            a href=(format!("{up}rels/{}/", text(target, "rel"))) { code { (text(target, "key")) } }
-            " (" code { (text(target, "template")) } "), absolute, on the onion address."
+            a href=(format!("{up}rels/{}/", target.rel)) { code { (target.key) } }
+            " (" code { (target.template) } "), absolute, on the onion address."
         }
         p { "Present only while this Monokulo has an onion address; absent otherwise. A link the caller's key may not follow is left out." }
     };
-    page(api, &section, text(rel, "key"), text(rel, "title"), markup)
+    page(api, &section, &rel.key, &rel.title, markup)
 }
 
-fn problem_page(problem: &Value, reference: &Value, api: &Api) -> Markup {
-    let slug = text(problem, "slug");
-    let example = list(reference, "resources")
+fn problem_page(problem: &Problem, reference: &Reference, api: &Api) -> Markup {
+    let slug = &problem.slug;
+    let example = reference
+        .resources
         .iter()
-        .chain(list(reference, "handshakes"))
-        .flat_map(|r| list(r, "examples"))
+        .flat_map(|r| &r.examples)
+        .chain(reference.handshakes.iter().flat_map(|h| &h.examples))
         .find(|e| {
-            e["response"]["type"]
-                .as_str()
+            e.response
+                .as_ref()
+                .and_then(|r| r["type"].as_str())
                 .is_some_and(|t| t.ends_with(&format!("/problems/{slug}")))
         });
     let markup = html! {
-        h1 { (text(problem, "title")) }
-        p { code { (text(problem, "type")) } " · HTTP " (problem["status"]) }
+        h1 { (problem.title) }
+        p { code { (problem.type_uri) } " · HTTP " (problem.status) }
         (in_explorer(&format!("problem-{slug}"), "Every problem"))
-        (markdown_html(text(problem, "doc")))
+        (markdown_html(&problem.doc))
         p {
             "Answered as " code { "application/problem+json" } " (RFC 9457): "
             code { "type" } ", " code { "title" } ", " code { "status" } " and " code { "detail" } ", which says what went wrong this time."
         }
         @if let Some(example) = example {
             h2 id="example" { "Example" }
-            p { code { (text(example, "method")) " " (text(example, "path")) } }
-            (json_block(&example["response"]))
+            p { code { (example.method) " " (example.path) } }
+            @if let Some(response) = &example.response { (json_block(response)) }
         }
     };
-    page(
-        api,
-        "problems",
-        text(problem, "title"),
-        text(problem, "title"),
-        markup,
-    )
+    page(api, "problems", &problem.title, &problem.title, markup)
 }
 
 #[cfg(test)]
@@ -505,8 +484,9 @@ mod tests {
     use super::*;
     use crate::support::Scratch;
 
-    /// A fixture of `api_fixture/`, its links pointed at `site`.
-    fn fixture(json: &str, site: &str) -> Value {
+    /// A fixture of `api_fixture/`, its links pointed at `site`, read as
+    /// the build reads it.
+    fn fixture<T: serde::de::DeserializeOwned>(json: &str, site: &str) -> T {
         serde_json::from_str(&json.replace(site_header::SITE_URL, site)).unwrap()
     }
 
@@ -514,8 +494,9 @@ mod tests {
     /// browser tests build the explorer from too): API resources, a page, a
     /// stream, an onion link's relation, a handshake and problems.
     /// Monokulo's own recording checks the real one has every resource and
-    /// problem; this one checks each gets its page.
-    fn reference(site: &str) -> Value {
+    /// problem; this one checks each gets its page. Read through the type
+    /// monokulo writes it with, so the fixture can't drift from it.
+    fn reference(site: &str) -> Reference {
         fixture(include_str!("api_fixture/reference.json"), site)
     }
 
@@ -527,10 +508,14 @@ mod tests {
         fixture(include_str!("api_fixture/openapi.json"), site)
     }
 
-    fn generated(scratch: &Scratch, reference: &Value) -> PathBuf {
+    fn generated(scratch: &Scratch, reference: &Reference) -> PathBuf {
         let dir = scratch.path().join("generated");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("reference.json"), reference.to_string()).unwrap();
+        fs::write(
+            dir.join("reference.json"),
+            serde_json::to_string(reference).unwrap(),
+        )
+        .unwrap();
         fs::write(
             dir.join("openapi.json"),
             openapi(site_header::SITE_URL).to_string(),
@@ -605,7 +590,7 @@ mod tests {
 
     /// The ids of the operations in the fixture's document.
     fn operation_ids() -> Vec<String> {
-        let openapi = openapi(site_header::SITE_URL);
+        let openapi: Value = openapi(site_header::SITE_URL);
         let mut ids = Vec::new();
         for (_, methods) in openapi["paths"].as_object().unwrap() {
             for (_, op) in methods.as_object().unwrap() {
@@ -663,8 +648,8 @@ mod tests {
         }
         // The introduction's sections are api.md's.
         assert!(ids.iter().any(|id| id == "keys"));
-        for problem in list(&reference(site_header::SITE_URL), "problems") {
-            let slug = text(problem, "slug");
+        for problem in &reference(site_header::SITE_URL).problems {
+            let slug = &problem.slug;
             assert!(ids.contains(&format!("problem-{slug}")), "{slug}");
             assert!(
                 resolves(&site, "api/index.html", &format!("../problems/{slug}/")),
@@ -680,7 +665,7 @@ mod tests {
     fn every_recorded_example_is_reachable_without_javascript() {
         let (_scratch, site) = site("api-explorer-examples");
         let html = read(&site, "api/index.html");
-        let openapi = openapi(site_header::SITE_URL);
+        let openapi: Value = openapi(site_header::SITE_URL);
         let details = regex::Regex::new(
             r#"(?s)<details class="api-example" data-status="(\w+)"( open)?>(.*?)</details>"#,
         )
@@ -818,14 +803,12 @@ mod tests {
         assert_eq!(written, 8);
         let into_explorer = regex::Regex::new(r#"href="(\.\./\.\./api/#[^"]+)""#).unwrap();
         let mut pages = Vec::new();
-        for resource in list(&reference, "resources")
-            .iter()
-            .chain(list(&reference, "rels"))
-        {
-            pages.push(format!("rels/{}/index.html", text(resource, "rel")));
+        let rels = reference.resources.iter().map(|r| &r.rel);
+        for rel in rels.chain(reference.rels.iter().map(|r| &r.rel)) {
+            pages.push(format!("rels/{rel}/index.html"));
         }
-        for problem in list(&reference, "problems") {
-            pages.push(format!("problems/{}/index.html", text(problem, "slug")));
+        for problem in &reference.problems {
+            pages.push(format!("problems/{}/index.html", problem.slug));
         }
         for page in &pages {
             let html = read(&site, page);
@@ -900,11 +883,8 @@ mod tests {
         }
         assert_eq!(explorer.matches(r#"<aside class="toc""#).count(), 0);
         let mut pages: Vec<(String, String)> = Vec::new();
-        for resource in list(&reference, "resources")
-            .iter()
-            .chain(list(&reference, "rels"))
-        {
-            let rel = text(resource, "rel");
+        let rels = reference.resources.iter().map(|r| r.rel.as_str());
+        for rel in rels.chain(reference.rels.iter().map(|r| r.rel.as_str())) {
             let section = match rel {
                 "dashboard-order" => "dashboard-order-get",
                 "onion-order" => "onion-links",
@@ -912,9 +892,9 @@ mod tests {
             };
             pages.push((format!("rels/{rel}/index.html"), section.to_owned()));
         }
-        for problem in list(&reference, "problems") {
+        for problem in &reference.problems {
             pages.push((
-                format!("problems/{}/index.html", text(problem, "slug")),
+                format!("problems/{}/index.html", problem.slug),
                 "problems".to_owned(),
             ));
         }
@@ -969,7 +949,7 @@ mod tests {
         let index: Vec<Value> = serde_json::from_str(&read(&site, "search/api.json")).unwrap();
         let has =
             |kind: &str, href: &str| index.iter().any(|e| e["kind"] == kind && e["href"] == href);
-        let openapi = openapi(site_header::SITE_URL);
+        let openapi: Value = openapi(site_header::SITE_URL);
         for tag in list(&openapi, "tags") {
             let href = format!("api/#{}", text(tag, "name"));
             assert!(has("Resource", &href), "{href}");
@@ -986,11 +966,11 @@ mod tests {
             }
         }
         let reference = reference(site_header::SITE_URL);
-        for rel in list(&reference, "rels") {
-            assert!(has("Resource", &format!("rels/{}/", text(rel, "rel"))));
+        for rel in &reference.rels {
+            assert!(has("Resource", &format!("rels/{}/", rel.rel)));
         }
-        for problem in list(&reference, "problems") {
-            let href = format!("api/#problem-{}", text(problem, "slug"));
+        for problem in &reference.problems {
+            let href = format!("api/#problem-{}", problem.slug);
             assert!(has("Problem", &href), "{href}");
         }
         assert!(has("Guide", "api/"));
