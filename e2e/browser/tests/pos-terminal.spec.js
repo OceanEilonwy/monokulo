@@ -135,14 +135,21 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
 });
 
 /** What the customer's checkout must show once the order is cancelled:
- * told so, nothing to pay (the code faded, the address struck through), and
- * no more refreshing for a browser without JavaScript. */
-async function expectCancelledCheckout(checkout) {
+ * told so, nothing to pay (the code faded, the address struck through). A
+ * just-cancelled order is still watched by the engine for a payment sent
+ * anyway, so the page keeps following it: its event stream with
+ * JavaScript, its once-a-minute refresh without. */
+async function expectCancelledCheckout(checkout, { javaScript = true } = {}) {
   await expect(checkout.locator('#checkout-root')).toHaveAttribute('data-status', 'cancelled');
   await expect(checkout.locator('#live-status .mk-stage')).toContainText('This order was cancelled.');
+  await expect(checkout.locator('#live-status .mk-stage')).toContainText('keep this page open');
   await expect(checkout.locator('#live-pay .qr-wrap.is-spent')).toHaveCount(1);
   await expect(checkout.locator('#live-address [data-void]')).toHaveCount(1);
-  await expect(checkout.locator('#checkout-refresh')).toHaveCount(0);
+  if (javaScript) {
+    await expect(checkout.locator('#checkout-stream')).toHaveCount(1);
+  } else {
+    await expect(checkout.locator('#checkout-refresh')).toHaveCount(1);
+  }
 }
 
 test('cancelling on the POS reaches the customer\'s checkout live, after a reload, and without JavaScript', async ({ page, context, browser }) => {
@@ -170,7 +177,7 @@ test('cancelling on the POS reaches the customer\'s checkout live, after a reloa
   try {
     const plain = await noJs.newPage();
     await plain.goto(checkoutUrl);
-    await expectCancelledCheckout(plain);
+    await expectCancelledCheckout(plain, { javaScript: false });
   } finally { await noJs.close(); }
 });
 
