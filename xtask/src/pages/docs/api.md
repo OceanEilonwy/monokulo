@@ -1,7 +1,7 @@
 # HTTP API
 
 Monokulo's HTTP API lets a shop's server, a shop plugin, a connected app
-or a page with the [JS library](../js-library/) make orders and follow
+or a page with the [JS library](../webpages/) make orders and follow
 them: `/api/v1` on your Monokulo's own address. Below this introduction
 is every resource and route, with real recorded answers and Try it, which
 sends a request to your own Monokulo from this page; the

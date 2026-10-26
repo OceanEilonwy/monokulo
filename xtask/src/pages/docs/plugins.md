@@ -69,7 +69,7 @@ It answers once per token:
 `onion_api` is there only while the Monokulo has an onion address, and
 `webhook_signing_secret` only when you sent a `webhook_url`. Keep them all. `secret_token` is the store's key for your server, in
 `Authorization: Bearer` on the [HTTP API](../api/); `public_key` is for the
-shop's pages, if they embed the checkout with the [JS library](../js-library/).
+shop's pages, if they embed the checkout with the [JS library](../webpages/).
 `api` is the API's entry, a path (`/api/v1`, or `/monokulo/api/v1` for a
 Monokulo served [under a path](../api/#under-a-path)): resolve it against
 the address you called `/finish` at, and keep the result.
@@ -148,7 +148,7 @@ Monokulo's onion address, never to `mk:checkout` resolved against the web
 address you called. Tell them apart by the host their request came to. If
 the order has no `mk:onion-checkout`, the Monokulo has no onion address;
 say so to the merchant rather than sending a Tor customer to the web.
-The [JS library](../js-library/) can mount it too. Read the order again with
+The [JS library](../webpages/) can mount it too. Read the order again with
 its `self` link (`GET /api/v1/orders/{order_id}`), or follow its changes on
 `mk:order-events`; but mark the shop's order paid from the webhook.
 

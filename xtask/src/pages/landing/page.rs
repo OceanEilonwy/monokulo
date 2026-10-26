@@ -67,7 +67,7 @@ const WAYS: [(&str, &str, &str, &str, &str); 4] = [
         icons::CODE,
         "Checkout on your site",
         "A script tag and two calls put the checkout in your page, even on a static site.",
-        "js-library/",
+        "webpages/",
         "Webpages",
     ),
     (
@@ -82,7 +82,7 @@ const WAYS: [(&str, &str, &str, &str, &str); 4] = [
         "Point of sale",
         "A till or app connects with its own key and takes payments in person.",
         "apps/",
-        "Custom apps",
+        "Connected apps",
     ),
     (
         icons::SERVER,
