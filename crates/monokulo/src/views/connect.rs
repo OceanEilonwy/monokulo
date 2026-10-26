@@ -16,7 +16,7 @@ use ui::{Choice, Select};
 
 /// One key custody backend a new wallet's keys can go to (part 5).
 pub struct CustodyChoice {
-    pub backend: String,
+    pub backend: engine_protocol::custody::CustodyBackend,
     pub label: String,
     pub selected: bool,
 }
@@ -32,7 +32,7 @@ pub(crate) fn custody_select(choices: &[CustodyChoice]) -> Markup {
                     "key_custody_backend",
                     choices
                         .iter()
-                        .map(|choice| Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                        .map(|choice| Choice::new(choice.backend.as_str(), &choice.label).selected(choice.selected))
                         .collect::<Vec<_>>(),
                 ))
                 (ui::FieldNote::new(html! { "Where this wallet's view key is kept. You can move it later from a store's settings, "

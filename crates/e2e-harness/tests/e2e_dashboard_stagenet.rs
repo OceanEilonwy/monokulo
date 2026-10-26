@@ -205,7 +205,6 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         settings: engine::engine_settings::EngineSettings::defaults(),
         custody: engine::http::Custody {
             backends: Arc::clone(&key_custody),
-            default_backend: "plain".to_owned(),
             wallet_handles: Arc::clone(&wallet_handles),
             snp: None,
         },

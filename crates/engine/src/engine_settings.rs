@@ -25,10 +25,8 @@ use crate::store::SharedStore;
 use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
 use engine_daemon::rpc::RpcDaemonClient;
 
-choice_value! {
-    /// Where tenants' view keys are held.
-    pub enum CustodyBackend { Plain = "plain", Snp = "snp" }
-}
+/// Where tenants' view keys are held.
+pub use engine_protocol::custody::CustodyBackend;
 
 choice_value! {
     /// The AMD EPYC generation an SEV-SNP engine runs on: which of AMD's
@@ -861,8 +859,8 @@ impl CustodyReloadable {
 /// What `CustodyReloadable::prepare` built: the router's next backends and
 /// default.
 pub struct PreparedCustody {
-    backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>,
-    default: String,
+    backends: HashMap<CustodyBackend, Arc<dyn crate::key_custody::KeyCustody>>,
+    default: CustodyBackend,
     /// The snp backend could start and hasn't yet: started on install, not
     /// here, since starting it makes and stores its master key, and a check
     /// (or a save refused after preparing) must leave nothing behind.
@@ -880,13 +878,13 @@ impl live_settings::Reloadable for CustodyReloadable {
         _old: &CustodyConfig,
     ) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
         let current = self.router.backends();
-        let mut backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>> = HashMap::new();
+        let mut backends: HashMap<CustodyBackend, Arc<dyn crate::key_custody::KeyCustody>> =
+            HashMap::new();
         let mut warnings = Vec::new();
         let mut start_snp = false;
-        for backend in &new.enabled {
-            let name = backend.as_str().to_owned();
+        for &backend in &new.enabled {
             let custody: Arc<dyn crate::key_custody::KeyCustody> = match backend {
-                CustodyBackend::Plain => match current.get(&name) {
+                CustodyBackend::Plain => match current.get(&backend) {
                     Some(existing) => Arc::clone(existing),
                     None => Arc::new(crate::key_custody::PlainKeyCustody::default()),
                 },
@@ -912,11 +910,11 @@ impl live_settings::Reloadable for CustodyReloadable {
                     }
                 },
             };
-            backends.insert(name, custody);
+            backends.insert(backend, custody);
         }
         let prepared = PreparedCustody {
             backends,
-            default: new.default.as_str().to_owned(),
+            default: new.default,
             start_snp,
         };
         Ok((prepared, warnings))
@@ -938,9 +936,9 @@ impl live_settings::Reloadable for CustodyReloadable {
                     )))
                 }
             };
-            backends.insert(CustodyBackend::Snp.as_str().to_owned(), snp);
+            backends.insert(CustodyBackend::Snp, snp);
         }
-        let dropped = self.router.replace(backends, &default);
+        let dropped = self.router.replace(backends, default);
         crate::key_custody::router::free_handles(dropped);
     }
 
@@ -1573,7 +1571,10 @@ mod tests {
             .seal(&WalletMaterial::new([1; 32], spend.to_bytes()))
             .await
             .unwrap();
-        let store = router.unseal_and_register_in("snp", &sealed).await.unwrap();
+        let store = router
+            .unseal_and_register_in(CustodyBackend::Snp, &sealed)
+            .await
+            .unwrap();
 
         let snp_default = CustodyConfig {
             default: CustodyBackend::Snp,
@@ -1581,10 +1582,10 @@ mod tests {
         };
         save(&reloadable, &snp_default, &both).await;
         assert!(Arc::ptr_eq(&snp, &slot.backend().unwrap()));
-        assert_eq!(router.backend_of(store).as_deref(), Some("snp"));
-        assert_eq!(router.default_backend(), "snp");
-        assert!(!router.takes_raw_keys_in("snp"));
-        assert!(router.takes_raw_keys_in("plain"));
+        assert_eq!(router.backend_of(store), Some(CustodyBackend::Snp));
+        assert_eq!(router.default_backend(), CustodyBackend::Snp);
+        assert!(!router.takes_raw_keys_in(CustodyBackend::Snp));
+        assert!(router.takes_raw_keys_in(CustodyBackend::Plain));
     }
 
     /// An snp backend that can't start (here: no product set) is enabled as
@@ -1610,8 +1611,8 @@ mod tests {
             1
         );
         let health = router.backend_health().await;
-        assert_eq!(health[0], ("plain".to_owned(), None));
-        assert_eq!(health[1].0, "snp");
+        assert_eq!(health[0], (CustodyBackend::Plain, None));
+        assert_eq!(health[1].0, CustodyBackend::Snp);
         assert!(
             health[1].1.as_deref().unwrap().contains("snp_product"),
             "{health:?}"

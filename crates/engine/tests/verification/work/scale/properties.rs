@@ -36,7 +36,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
         let tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: crate::store::CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: format!("scale-{index}"),
                     network: "mainnet".into(),

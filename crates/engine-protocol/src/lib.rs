@@ -4,6 +4,7 @@
 //! here, so a field or a status can't mean one thing to the engine and
 //! another to monokulo.
 //!
+//! - [`custody`]: the key custody backends a store's keys can be held in.
 //! - [`ids`]: store, order and other identifiers as types of their own.
 //! - [`network`]: Monero network names where they cross a text boundary.
 //! - [`order_status`]: an order's status, as the engine decides it, and
@@ -14,6 +15,7 @@
 
 pub mod activity;
 pub mod announcements;
+pub mod custody;
 pub mod ids;
 pub mod network;
 pub mod order_event;

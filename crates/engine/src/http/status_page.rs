@@ -185,7 +185,7 @@ pub(super) struct EngineStatusResponse {
     pub key_custody: Vec<CustodyBackendStatus>,
     /// The backend a new store's keys go to unless it asks for another;
     /// `None` when there's no choice (a single backend).
-    pub key_custody_default: Option<String>,
+    pub key_custody_default: Option<crate::key_custody::CustodyBackend>,
     /// Which engine images the `snp` backend trusts with keys, when it is
     /// set up: monokulo's key entry forms check bundles against a policy of
     /// their own, and alert when the two disagree.
@@ -197,7 +197,7 @@ pub(super) struct EngineStatusResponse {
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 pub(super) struct CustodyBackendStatus {
-    pub backend: String,
+    pub backend: crate::key_custody::CustodyBackend,
     pub error: Option<String>,
 }
 
@@ -409,7 +409,7 @@ pub(super) async fn status_page(
         loop_restarts,
         unserved_tenants,
         key_custody_default: (!key_custody.is_empty())
-            .then(|| state.settings.custody.load().default.as_str().to_owned()),
+            .then(|| state.settings.custody.load().default),
         key_custody,
         key_custody_snp_trust: state
             .custody

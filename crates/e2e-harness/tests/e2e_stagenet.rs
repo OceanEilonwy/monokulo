@@ -163,7 +163,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
         .lock()
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".to_owned(),
+                key_custody_backend: engine::store::CustodyBackend::Plain,
                 sealed_key_material: sealed,
                 primary_address: merchant.address.clone(),
                 network: network_str(Network::Stagenet).to_owned(),
@@ -208,7 +208,6 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
         ),
         custody: engine::http::Custody {
             backends: Arc::clone(&key_custody),
-            default_backend: "plain".to_owned(),
             wallet_handles,
             snp: None,
         },

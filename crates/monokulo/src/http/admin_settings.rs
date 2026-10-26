@@ -1006,9 +1006,11 @@ async fn check_snp_entry_against_engine(
     // on (or off) and setting this site's policy to match go in one save.
     let has_snp = super::status_page::engine_has_snp(&status);
     let will_have_snp = engine_backends.map_or(has_snp, |backends| {
-        backends
-            .split(',')
-            .any(|b| super::key_entry::takes_keys_encrypted(b.trim()))
+        backends.split(',').any(|b| {
+            b.trim()
+                .parse::<engine_protocol::custody::CustodyBackend>()
+                .is_ok_and(engine_protocol::custody::CustodyBackend::takes_keys_encrypted)
+        })
     });
     let problems = super::status_page::snp_policy_problems_for(&proposed, &status, will_have_snp);
     if problems.is_empty() {
@@ -2793,7 +2795,7 @@ mod tests {
         assert!(crate::http::key_entry::snp_unusable(&state).is_some());
         assert_eq!(
             crate::http::key_entry::usable_custody_backends(&state),
-            vec!["plain".to_owned()]
+            vec![engine_protocol::custody::CustodyBackend::Plain]
         );
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;

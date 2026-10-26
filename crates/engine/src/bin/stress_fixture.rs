@@ -452,7 +452,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             .await?;
         let created = store.create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: engine::store::CustodyBackend::Plain,
                 sealed_key_material: sealed,
                 primary_address: address.to_string(),
                 network: NETWORK.into(),
@@ -587,7 +587,6 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         settings: EngineSettings::defaults(),
         custody: engine::http::Custody {
             backends: Arc::clone(&custody),
-            default_backend: "plain".into(),
             wallet_handles: Arc::clone(&handles),
             snp: None,
         },

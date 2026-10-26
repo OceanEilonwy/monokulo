@@ -66,13 +66,9 @@ use rate_limit::{instance_rate_limit_middleware, store_rate_limit_middleware, Ap
 /// Key custody as the API uses it.
 #[derive(Clone)]
 pub struct Custody {
+    /// Which backend new stores use is the `key_custody.default_backend`
+    /// setting, read on each use (`admin::chosen_backend`).
     pub backends: Arc<dyn KeyCustody>,
-    /// The `[key_custody].backend` value new tenants' keys are sealed in, so
-    /// `admin::create_tenant` records which backend actually holds a new
-    /// tenant's keys (`tenants.key_custody_backend`). Configured, not
-    /// derived: nothing about `Arc<dyn KeyCustody>` says which
-    /// implementation it is, by design.
-    pub default_backend: String,
     /// Each registered tenant's wallet handle, and the lock per tenant row
     /// that whatever reads the row's wallet and acts on it holds.
     pub wallet_handles: Arc<WalletHandles>,
@@ -166,7 +162,6 @@ impl AppState {
             ),
             custody: Custody {
                 backends: Arc::new(crate::key_custody::PlainKeyCustody::default()),
-                default_backend: "plain".to_owned(),
                 wallet_handles: Arc::default(),
                 snp: None,
             },
@@ -688,7 +683,7 @@ pub(crate) async fn resolve_wallet_handle_held(
     let handle = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         state.custody.backends.unseal_and_register_in_idempotent(
-            &tenant.key_custody_backend,
+            tenant.key_custody_backend,
             &tenant.sealed_key_material,
             tenant.id.as_str(),
         ),

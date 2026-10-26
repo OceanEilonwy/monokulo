@@ -339,7 +339,7 @@ fn refused(errors: &[live_settings::FieldError]) -> axum::response::Response {
 /// start, or doesn't answer.
 #[derive(Serialize)]
 pub struct UnavailableBackend {
-    backend: String,
+    backend: crate::key_custody::CustodyBackend,
     error: String,
 }
 

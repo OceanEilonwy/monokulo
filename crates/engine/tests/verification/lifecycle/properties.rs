@@ -135,7 +135,7 @@ proptest! {
                 db: crate::store::Database::inline(Arc::clone(&store)),rate_limits:limiter,log_store:None,
                 engine_token:Arc::new(credentials::auth::RawToken::presented(crate::http::TEST_ENGINE_TOKEN).hash()),
                 settings:Arc::clone(&settings),
-                custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),default_backend:"plain".into(),wallet_handles:Arc::clone(&wallet_handles) },
+                custody:crate::http::Custody { snp:None,backends:Arc::clone(&custody),wallet_handles:Arc::clone(&wallet_handles) },
                 networks:crate::http::Networks { daemons:daemons.clone(),scanner_status:Arc::clone(&status) },
                 activity_stream:crate::activity::StreamTuning::DEFAULT,
             };

@@ -42,6 +42,7 @@ use serde_json::json;
 
 use crate::engine_client::{EngineClientError, EngineStatusResponse, NetworkStatus};
 use crate::views;
+use engine_protocol::custody::CustodyBackend;
 
 use super::{AppState, Engine};
 
@@ -222,7 +223,7 @@ pub fn known_slow_blocks(engine: &Engine) -> Vec<String> {
 /// site doesn't offer now (`key_entry::usable_custody_backends`). Empty
 /// unless more than one is left, so forms only show the choice when there
 /// is one to make.
-fn known_custody_choices(state: &AppState) -> Vec<String> {
+fn known_custody_choices(state: &AppState) -> Vec<CustodyBackend> {
     let choices = super::key_entry::usable_custody_backends(state);
     if choices.len() < 2 {
         return Vec::new();
@@ -254,7 +255,7 @@ pub fn engine_has_snp(status: &EngineStatusResponse) -> bool {
     status
         .key_custody
         .iter()
-        .any(|b| super::key_entry::takes_keys_encrypted(&b.backend))
+        .any(|b| b.backend.takes_keys_encrypted())
 }
 
 /// [`snp_policy_problems`] as if the engine's SEV-SNP backend were
@@ -319,15 +320,12 @@ pub fn known_status_is_fresh(engine: &Engine) -> bool {
 
 /// Every key custody backend the engine has enabled, the default first.
 /// Empty when the engine offers no choice or its status isn't known.
-pub fn known_enabled_custody_backends(engine: &Engine) -> Vec<String> {
+pub fn known_enabled_custody_backends(engine: &Engine) -> Vec<CustodyBackend> {
     with_known_status(engine, |status| {
-        let mut choices: Vec<String> = status
-            .key_custody
-            .iter()
-            .map(|b| b.backend.clone())
-            .collect();
-        if let Some(default) = &status.key_custody_default {
-            if let Some(at) = choices.iter().position(|b| b == default) {
+        let mut choices: Vec<CustodyBackend> =
+            status.key_custody.iter().map(|b| b.backend).collect();
+        if let Some(default) = status.key_custody_default {
+            if let Some(at) = choices.iter().position(|b| *b == default) {
                 let default = choices.remove(at);
                 choices.insert(0, default);
             }
@@ -345,25 +343,23 @@ pub fn custody_choice_views(
 ) -> Vec<crate::views::connect::CustodyChoice> {
     let choices = known_custody_choices(state);
     let selected = selected
-        .filter(|s| choices.iter().any(|c| c == s))
-        .or(choices.first().map(String::as_str))
-        .map(str::to_string);
+        .and_then(|s| choices.iter().copied().find(|c| c.as_str() == s))
+        .or(choices.first().copied());
     choices
         .iter()
-        .map(|backend| crate::views::connect::CustodyChoice {
-            backend: backend.clone(),
+        .map(|&backend| crate::views::connect::CustodyChoice {
+            backend,
             label: custody_backend_label(backend),
-            selected: selected.as_deref() == Some(backend.as_str()),
+            selected: selected == Some(backend),
         })
         .collect()
 }
 
 /// What a key custody backend is, for a store owner choosing one.
-pub fn custody_backend_label(backend: &str) -> String {
+pub fn custody_backend_label(backend: CustodyBackend) -> String {
     match backend {
-        "plain" => "In the engine (simplest)".to_string(),
-        "snp" => "Sealed in the engine's AMD SEV-SNP confidential machine (sent there encrypted; this site never sees them)".to_string(),
-        other => other.to_string(),
+        CustodyBackend::Plain => "In the engine (simplest)".to_string(),
+        CustodyBackend::Snp => "Sealed in the engine's AMD SEV-SNP confidential machine (sent there encrypted; this site never sees them)".to_string(),
     }
 }
 

@@ -176,7 +176,7 @@ fn fixture_tenant_rows(
     let tenant = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: crate::store::CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4fixture".into(),
                 network: "mainnet".into(),
