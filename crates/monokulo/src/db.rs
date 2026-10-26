@@ -860,16 +860,14 @@ pub struct WalletRow {
     pub id: WalletId,
     pub user_id: UserId,
     pub name: String,
-    pub network: String,
+    pub network: monero::Network,
     pub primary_address: String,
     pub engine_wallet_id: EngineWalletId,
     pub origin: WalletOrigin,
-    /// How the recovery phrase of a created wallet was saved
-    /// (`crate::wallets::Backup`).
-    pub backup: Option<String>,
-    /// For a brought-in wallet: the wallet app its owner said it's in
-    /// (`crate::wallets::is_known_app`).
-    pub app: Option<String>,
+    /// How the recovery phrase of a created wallet was saved.
+    pub backup: Option<crate::wallets::Backup>,
+    /// For a brought-in wallet: the wallet app its owner said it's in.
+    pub app: Option<crate::wallets::BroughtFrom>,
     pub created_at: i64,
     /// When it was retired: its keys deleted, offered nowhere.
     pub retired_at: Option<i64>,
@@ -879,12 +877,12 @@ pub struct NewWalletRow<'a> {
     pub id: &'a WalletId,
     pub user_id: &'a UserId,
     pub name: &'a str,
-    pub network: &'a str,
+    pub network: monero::Network,
     pub primary_address: &'a str,
     pub engine_wallet_id: &'a EngineWalletId,
     pub origin: WalletOrigin,
-    pub backup: Option<&'a str>,
-    pub app: Option<&'a str>,
+    pub backup: Option<crate::wallets::Backup>,
+    pub app: Option<crate::wallets::BroughtFrom>,
     pub created_at: i64,
 }
 
@@ -1791,7 +1789,7 @@ impl Db {
                 new.id,
                 new.user_id,
                 new.name,
-                new.network,
+                engine_protocol::network::SqlNetwork(new.network),
                 new.primary_address,
                 new.engine_wallet_id,
                 new.origin.as_str(),
@@ -1811,7 +1809,10 @@ impl Db {
                 },
                 // How a made wallet was backed up, or which app a brought-in
                 // one is in.
-                new.backup.or(new.app).unwrap_or(""),
+                new.backup
+                    .map(crate::wallets::Backup::as_str)
+                    .or(new.app.map(crate::wallets::BroughtFrom::as_str))
+                    .unwrap_or(""),
             ],
         )?;
         tx.commit()?;
@@ -1823,7 +1824,9 @@ impl Db {
             id: row.get("id")?,
             user_id: row.get("user_id")?,
             name: row.get("name")?,
-            network: row.get("network")?,
+            network: row
+                .get::<_, engine_protocol::network::SqlNetwork>("network")?
+                .0,
             primary_address: row.get("primary_address")?,
             engine_wallet_id: row.get("engine_wallet_id")?,
             origin: WalletOrigin::parse(&row.get::<_, String>("origin")?),
@@ -3168,7 +3171,7 @@ pub(crate) mod test_rows {
             id: &wallet,
             user_id,
             name: &format!("Wallet for {}", id.as_str()),
-            network: "mainnet",
+            network: monero::Network::Mainnet,
             primary_address: &format!("4address-of-{}", id.as_str()),
             engine_wallet_id: &EngineWalletId::new(format!("wl_{}", id.as_str())),
             origin: WalletOrigin::Imported,
@@ -3877,6 +3880,130 @@ mod tests {
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].unit_amount, "50.00");
             assert_eq!(rows[0].confirmations_required, 20);
+        }
+
+        // A wallet reads back with how it was backed up, which app it's in
+        // and its network, each kept in the words rows already in use have,
+        // so those still load.
+        {
+            use crate::wallets::{AppKey, Backup, BroughtFrom};
+            use monero::Network;
+            let db = Db::open_in_memory().unwrap();
+            let user = engine_protocol::ids::UserId::new("user-w");
+            db.create_user(&user, "w@example.com", "hash", false, 1000)
+                .unwrap();
+            let kinds = [
+                (
+                    Network::Mainnet,
+                    Some(Backup::Paper),
+                    None,
+                    "mainnet",
+                    "paper",
+                    "",
+                ),
+                (
+                    Network::Stagenet,
+                    Some(Backup::Skipped),
+                    None,
+                    "stagenet",
+                    "skipped",
+                    "",
+                ),
+                (
+                    Network::Testnet,
+                    Some(Backup::App(AppKey::Cake)),
+                    None,
+                    "testnet",
+                    "cake",
+                    "",
+                ),
+                (
+                    Network::Mainnet,
+                    Some(Backup::App(AppKey::Stack)),
+                    None,
+                    "mainnet",
+                    "stack",
+                    "",
+                ),
+                (
+                    Network::Mainnet,
+                    None,
+                    Some(BroughtFrom::App(AppKey::Feather)),
+                    "mainnet",
+                    "",
+                    "feather",
+                ),
+                (
+                    Network::Mainnet,
+                    None,
+                    Some(BroughtFrom::App(AppKey::Gui)),
+                    "mainnet",
+                    "",
+                    "gui",
+                ),
+                (
+                    Network::Mainnet,
+                    None,
+                    Some(BroughtFrom::Other),
+                    "mainnet",
+                    "",
+                    "other",
+                ),
+                (Network::Mainnet, None, None, "mainnet", "", ""),
+            ];
+            for (i, (network, backup, app, network_text, backup_text, app_text)) in
+                kinds.into_iter().enumerate()
+            {
+                let id = WalletId::new(format!("w_{i}"));
+                db.create_wallet(&NewWalletRow {
+                    id: &id,
+                    user_id: &user,
+                    name: &format!("Wallet {i}"),
+                    network,
+                    primary_address: &format!("addr{i}"),
+                    engine_wallet_id: &EngineWalletId::new(format!("e_{i}")),
+                    origin: if backup.is_some() {
+                        WalletOrigin::Created
+                    } else {
+                        WalletOrigin::Imported
+                    },
+                    backup,
+                    app,
+                    created_at: 1,
+                })
+                .unwrap();
+                let row = db.get_wallet(&user, &id).unwrap().unwrap();
+                assert_eq!((row.network, row.backup, row.app), (network, backup, app));
+                let stored: (String, String, String) = db
+                    .conn
+                    .query_row(
+                        "SELECT network, coalesce(backup, ''), coalesce(app, '') FROM wallets WHERE id = ?1",
+                        params![id],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    stored,
+                    (
+                        network_text.to_owned(),
+                        backup_text.to_owned(),
+                        app_text.to_owned()
+                    )
+                );
+            }
+            // Monero.com had a key of its own before it shared Cake
+            // Wallet's tab: a row kept from then reads as Cake's.
+            db.conn
+                .execute(
+                    "UPDATE wallets SET backup = 'monerocom' WHERE id = 'w_2'",
+                    [],
+                )
+                .unwrap();
+            let row = db
+                .get_wallet(&user, &WalletId::new("w_2"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(row.backup, Some(Backup::App(AppKey::Cake)));
         }
     }
 
@@ -5568,7 +5695,7 @@ mod tests {
                 id: &WalletId::new(format!("w_{i}")),
                 user_id: &user,
                 name,
-                network,
+                network: engine_protocol::network::parse_network(network).unwrap(),
                 primary_address: &format!("addr{i}"),
                 engine_wallet_id: &EngineWalletId::new(format!("e_{i}")),
                 origin: WalletOrigin::Imported,

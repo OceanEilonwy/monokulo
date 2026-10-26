@@ -1014,24 +1014,26 @@ async fn seed_wallets(
     let feather = "5B8s3obCY2ETeQB3GNAGPK2zRGen5UeW1WzegSizVsmf6z5NvM2GLoN6zzk1vHyzGAAfA8pGhuYAeCFZjHAp59jRVQkunGS";
     let pos = "56heRv2ANffW1Py2kBkJDy8xnWqZsSrgjLygwjua2xc8Wbksead1NK1ehaYpjQhymGK4S8NPL9eLuJ16CuEJDag8Hq3RbPV";
     let lab = "9wviCeWe2D8XS82k2ovp5EUYLzBt9pYNW2LXUFsZiv8S3Mt21FZ5qQaAroko1enzw3eGr9qC7X1D7Geoo2RrAotYPwq9Gm8";
+    use monero::Network::{Mainnet, Stagenet, Testnet};
+    use monokulo::wallets::{AppKey, Backup, BroughtFrom};
     // The store's own wallet, w_cake, is made with the store.
     // Who, id, name, network, address, origin, backup, app.
     type Seeded<'a> = (
         &'a UserId,
         &'a str,
         &'a str,
-        &'a str,
+        monero::Network,
         String,
         WalletOrigin,
-        Option<&'a str>,
-        Option<&'a str>,
+        Option<Backup>,
+        Option<BroughtFrom>,
     );
     let wallets: [Seeded; 5] = [
-        (&merchant, "w_savings", "Savings", "mainnet", savings.primary_address.clone(), WalletOrigin::Created, Some("paper"), None),
-        (&merchant, "w_pos", "POS trial", "stagenet", pos.to_owned(), WalletOrigin::Created, Some("skipped"), None),
-        (&merchant, "w_feather", "Feather test", "stagenet", feather.to_owned(), WalletOrigin::Imported, None, Some("feather")),
-        (&merchant, "w_lab", "Lab", "testnet", lab.to_owned(), WalletOrigin::Imported, None, None),
-        (&merchant, "w_old", "Old till", "mainnet", "47Vmj6BXSRPax69cVdqVP5APVLkcxxjjXdcP9fJWZdNc5mEpn3fXQY1CFmJDvyUXzj2Fy9XafvUgMbW91ZoqwqmQ6RjbVtp".to_owned(), WalletOrigin::Created, Some("stack"), None),
+        (&merchant, "w_savings", "Savings", Mainnet, savings.primary_address.clone(), WalletOrigin::Created, Some(Backup::Paper), None),
+        (&merchant, "w_pos", "POS trial", Stagenet, pos.to_owned(), WalletOrigin::Created, Some(Backup::Skipped), None),
+        (&merchant, "w_feather", "Feather test", Stagenet, feather.to_owned(), WalletOrigin::Imported, None, Some(BroughtFrom::App(AppKey::Feather))),
+        (&merchant, "w_lab", "Lab", Testnet, lab.to_owned(), WalletOrigin::Imported, None, None),
+        (&merchant, "w_old", "Old till", Mainnet, "47Vmj6BXSRPax69cVdqVP5APVLkcxxjjXdcP9fJWZdNc5mEpn3fXQY1CFmJDvyUXzj2Fy9XafvUgMbW91ZoqwqmQ6RjbVtp".to_owned(), WalletOrigin::Created, Some(Backup::App(AppKey::Stack)), None),
     ];
     for (user, id, name, network, address, origin, backup, app) in &wallets {
         let engine_id = match *id {
@@ -1042,7 +1044,7 @@ async fn seed_wallets(
             id: &WalletId::new(*id),
             user_id: user,
             name,
-            network,
+            network: *network,
             primary_address: address,
             engine_wallet_id: &engine_id,
             origin: *origin,
@@ -1176,12 +1178,15 @@ async fn main() {
         id: &monokulo::db::WalletId::new("w_cake"),
         user_id: &engine_protocol::ids::UserId::new("coverage-merchant"),
         name: "Cake – shop takings",
-        network: &view.network,
+        network: engine_protocol::network::parse_network(&view.network)
+            .expect("the tenant's network"),
         primary_address: &view.primary_address,
         engine_wallet_id: view.wallet_id.as_ref().expect("fixture tenant's wallet"),
         origin: monokulo::db::WalletOrigin::Imported,
         backup: None,
-        app: Some("cake"),
+        app: Some(monokulo::wallets::BroughtFrom::App(
+            monokulo::wallets::AppKey::Cake,
+        )),
         created_at: 1,
     })
     .expect("create fixture wallet");

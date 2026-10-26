@@ -381,7 +381,8 @@ async fn start_monokulo(
         id: &wallet,
         user_id: &engine_protocol::ids::UserId::new("u1"),
         name: "Tor test wallet",
-        network: &view.network,
+        network: engine_protocol::network::parse_network(&view.network)
+            .expect("the tenant's network"),
         primary_address: &view.primary_address,
         engine_wallet_id: view.wallet_id.as_ref().expect("the tenant's wallet"),
         origin: monokulo::db::WalletOrigin::Imported,

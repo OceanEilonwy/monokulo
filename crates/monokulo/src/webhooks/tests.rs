@@ -97,7 +97,7 @@ fn add_store(db: &Database, id: &str, name: &str) -> ConnectionId {
         id: &wallet,
         user_id: &user,
         name: id,
-        network: "mainnet",
+        network: monero::Network::Mainnet,
         primary_address: &format!("4{id}"),
         engine_wallet_id: &engine_protocol::ids::EngineWalletId::new(format!("ew_{id}")),
         origin: crate::db::WalletOrigin::Imported,

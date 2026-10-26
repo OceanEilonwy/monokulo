@@ -402,7 +402,7 @@ async fn make_store(
                 store.flow(),
                 String::new(),
                 None,
-                wallet.network.clone(),
+                engine_protocol::network::network_str(wallet.network).to_owned(),
                 Some(message),
             )
             .await
@@ -414,7 +414,7 @@ async fn make_store(
                 store.flow(),
                 String::new(),
                 None,
-                wallet.network.clone(),
+                engine_protocol::network::network_str(wallet.network).to_owned(),
                 Some("The store couldn't be made right now. Try again in a minute.".to_owned()),
             )
             .await
@@ -612,10 +612,10 @@ pub async fn done(
         wallet_name: wallet.as_ref().map(|w| w.name.clone()).unwrap_or_default(),
         wallet_network: wallet
             .as_ref()
-            .map(|w| w.network.clone())
+            .map(|w| engine_protocol::network::network_str(w.network).to_owned())
             .unwrap_or_default(),
         skipped_backup: query.skipped.is_some()
-            && wallet.as_ref().and_then(|w| w.backup.as_deref()) == Some("skipped"),
+            && wallet.as_ref().and_then(|w| w.backup) == Some(crate::wallets::Backup::Skipped),
         plugin,
         name: row.name,
     };

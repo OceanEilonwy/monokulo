@@ -89,7 +89,10 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
             health_label,
             wallet: row.wallet_id.as_ref().and_then(|id| {
                 let w = wallets.iter().find(|w| &w.wallet.id == id)?;
-                Some((w.wallet.name.clone(), w.wallet.network.clone()))
+                Some((
+                    w.wallet.name.clone(),
+                    engine_protocol::network::network_str(w.wallet.network).to_owned(),
+                ))
             }),
             received_xmr: "0".to_string(),
             orders_last_day: 0,
