@@ -327,20 +327,52 @@ pub struct AdminScalarFieldView {
     pub pending_restart: bool,
     /// Why the value in effect isn't the one set, if it isn't.
     pub problem: Option<String>,
-    /// Why the page can't change it, if it can't (given on the command
-    /// line or in the environment, or kept in an options file that can't
-    /// be written): shown, with a padlock and this reason, but not
-    /// editable or sent with the form.
-    pub locked: Option<String>,
+    /// What the page can do with it.
+    pub access: Access,
     /// The saved value, when `value` is one a save just refused (shown
     /// again to fix): with JavaScript the setting is then still unsaved,
     /// and Discard goes back to this.
     pub saved_value: Option<String>,
+}
+
+/// What the admin settings page can do with a setting, worked out once
+/// from where it may be set ([`Access::of`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Access {
+    /// Shown, changed in place and sent with the form.
+    #[default]
+    Editable,
     /// A secret the page may set (`sources: [Database, Env]`: the
     /// CoinMarketCap API key). Write-only: the page says whether one is
     /// set, never what it is, and offers a box to replace it and a box to
     /// remove it ([`secret_remove_name`]).
-    pub stored_secret: bool,
+    WriteOnlySecret,
+    /// Can't be changed here (given on the command line or in the
+    /// environment, or kept in an options file that can't be written):
+    /// shown, with a padlock and this reason, but not editable or sent with
+    /// the form.
+    Locked(String),
+    /// Any other secret: it comes from the environment only, is never
+    /// shown and can't be changed here.
+    EnvSecret,
+}
+
+impl Access {
+    /// `locked` is why the page can't change it, if it can't; a lock wins
+    /// over everything else.
+    pub fn of(locked: Option<String>, kind: &SettingKindView, stored_secret: bool) -> Self {
+        match locked {
+            Some(reason) => Access::Locked(reason),
+            None if stored_secret => Access::WriteOnlySecret,
+            None if *kind == SettingKindView::Secret => Access::EnvSecret,
+            None => Access::Editable,
+        }
+    }
+
+    /// Whether the page can change it at all.
+    pub fn changeable(&self) -> bool {
+        matches!(self, Access::Editable | Access::WriteOnlySecret)
+    }
 }
 
 /// The name of the box that removes the secret setting `key` on save.
@@ -1291,7 +1323,8 @@ fn scalar_field_needing(field: &AdminScalarFieldView, needs: Option<(String, boo
     let help_text = field.help.as_ref().map(|help| html! { (help) });
     let control_id = field_id(field.form_name());
     let group_id = format!("{control_id}-label");
-    let list = matches!(field.kind, SettingKindView::ChoiceList { .. }) && field.locked.is_none();
+    let list = matches!(field.kind, SettingKindView::ChoiceList { .. })
+        && !matches!(field.access, Access::Locked(_));
     let mut setting = if list {
         Field::group(&field.label, &group_id)
     } else {
@@ -1304,18 +1337,19 @@ fn scalar_field_needing(field: &AdminScalarFieldView, needs: Option<(String, boo
     setting.render(html! {
         @if list {
             div class="setting-choices" { (scalar_input(field)) }
-        // A secret the page may set is asked for, never shown.
-        } @else if field.locked.is_none() && field.stored_secret {
-            (secret_input(field))
-        // Any other secret comes from the environment only, and is never
-        // shown: always locked.
-        } @else if field.locked.is_some() || field.kind == SettingKindView::Secret {
-            (locked_input(field))
         } @else {
-            (scalar_input_needing(field, needs))
-        }
-        @if let Some(reason) = &field.locked {
-            (ui::FieldNote::new(reason))
+            @match &field.access {
+                Access::Editable => (scalar_input_needing(field, needs)),
+                // A secret the page may set is asked for, never shown.
+                Access::WriteOnlySecret => (secret_input(field)),
+                Access::Locked(reason) => {
+                    (locked_input(field))
+                    (ui::FieldNote::new(reason))
+                }
+                // Any other secret comes from the environment only, and is
+                // never shown: always locked.
+                Access::EnvSecret => (locked_input(field)),
+            }
         }
         (field_status(field))
     })
@@ -1876,9 +1910,7 @@ fn settings_card(data: &AdminSettingsViewModel, group: Group) -> Markup {
     if fields.is_empty() {
         return html! {};
     }
-    let readonly = fields
-        .iter()
-        .all(|f| f.locked.is_some() || f.kind == SettingKindView::Secret);
+    let readonly = fields.iter().all(|f| !f.access.changeable());
     let backend = match group {
         Group::Custody(backend) => Some(backend.name()),
         _ => None,
@@ -2723,10 +2755,10 @@ mod tests {
         );
         let on = scalar_field(&field(SettingKindView::Bool, "true")).into_string();
         assert!(on.contains("checked"), "{on}");
-        let secret = scalar_field(&field(
-            SettingKindView::Secret,
-            "\u{2022}\u{2022}\u{2022}\u{2022}",
-        ))
+        let secret = scalar_field(&AdminScalarFieldView {
+            access: Access::EnvSecret,
+            ..field(SettingKindView::Secret, "\u{2022}\u{2022}\u{2022}\u{2022}")
+        })
         .into_string();
         assert!(
             secret.contains(r#"type="password" value="locked""#) && secret.contains("disabled"),
@@ -2827,7 +2859,6 @@ mod tests {
             label: "logging dev mode until".into(),
             value: "0".into(),
             saved_value: Some((now + 600).to_string()),
-            stored_secret: false,
             kind: SettingKindView::TimeLimit {
                 now,
                 until_label: "1 Jan, 00:00".into(),

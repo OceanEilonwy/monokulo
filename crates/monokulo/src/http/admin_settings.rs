@@ -49,7 +49,7 @@ use crate::admin_nodes::{self, NodeForm};
 use crate::db::UserRow;
 use crate::views;
 use crate::views::admin::{
-    AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Failure, Group,
+    Access, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Failure, Group,
     NodeRowView, NodeStatusView, Notice, OptionsFileView, SaveOutcome, SettingKindView,
     SettingOwner, SettingSourceView, SettingsTab, Toast, ToastKind,
 };
@@ -105,7 +105,6 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 .locked
                 .or_else(|| only_for_a_remote_engine(state, view.key))
                 .or_else(|| read_only.clone().filter(|_| view.sources.toml));
-            let stored_secret = crate::settings::is_stored_secret(view.key);
             // A key CoinMarketCap refused since it was saved, beside it.
             let problem = view.problem.map(|p| p.message).or_else(|| {
                 (view.key == crate::settings::EXCHANGE_RATE_COINMARKETCAP_API_KEY.key
@@ -113,21 +112,21 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 .then(|| state.exchange_rate.coinmarketcap_key_problem())
                 .flatten()
             });
+            let kind = SettingKindView::from(view.kind);
             AdminScalarFieldView {
+                access: Access::of(locked, &kind, crate::settings::is_stored_secret(view.key)),
                 key: view.key.to_string(),
                 name: String::new(),
                 label: humanize_key(view.key),
                 value: view.value,
                 source: live_source(view.source),
                 help: Some(view.description.to_string()),
-                kind: SettingKindView::from(view.kind),
+                kind,
                 example: view.example.map(str::to_string),
                 restart_only: view.applies == live_settings::Applies::Restart,
                 pending_restart: view.pending_restart,
                 problem,
-                locked,
                 saved_value: None,
-                stored_secret,
             }
         })
         .collect()
@@ -230,6 +229,7 @@ async fn fetch_engine_settings(
         .map(|(key, s)| {
             let words = views::admin::engine_setting_words(&key);
             AdminScalarFieldView {
+                access: Access::of(s.locked, &s.kind, false),
                 label: words.map_or_else(|| humanize_key(&key), |(name, _)| name.to_string()),
                 name: engine_form_name(&key),
                 help: words
@@ -243,9 +243,7 @@ async fn fetch_engine_settings(
                 restart_only: s.applies.as_deref() == Some("restart"),
                 pending_restart: s.pending_restart,
                 problem: s.problem,
-                locked: s.locked,
                 saved_value: None,
-                stored_secret: false,
             }
         })
         .collect();
@@ -665,8 +663,7 @@ fn split_tab(
     engine_fields: &[AdminScalarFieldView],
 ) -> SubmittedTab {
     let mut tab = SubmittedTab::default();
-    let editable =
-        |f: &&AdminScalarFieldView| f.locked.is_none() && f.kind != SettingKindView::Secret;
+    let editable = |f: &&AdminScalarFieldView| f.access == Access::Editable;
     for (name, value) in form {
         if name == "tab" || admin_nodes::is_node_field(name) {
             continue;
