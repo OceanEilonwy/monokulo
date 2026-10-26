@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use engine_protocol::activity::ActivityPage;
+use engine_protocol::activity::{ActivityPage, StreamPosition};
 use futures_util::StreamExt as _;
 use parking_lot::Mutex;
 use tokio::sync::{broadcast, RwLock};
@@ -166,7 +166,7 @@ impl Upstream {
     async fn open(
         client: &EngineClient,
         network: &str,
-        from: Option<u64>,
+        from: Option<&StreamPosition>,
     ) -> Result<Self, EngineClientError> {
         Ok(Self {
             body: client.open_engine_activity(network, from).await?,
@@ -371,8 +371,16 @@ impl Relay {
                         return;
                     }
                 }
-                let from = channel.history.read().await.as_ref().map(History::next);
-                match Upstream::open(&self.client, &channel.network, from).await {
+                let from = channel
+                    .history
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|history| StreamPosition {
+                        epoch: history.epoch().to_owned(),
+                        seq: history.next(),
+                    });
+                match Upstream::open(&self.client, &channel.network, from.as_ref()).await {
                     Ok(upstream) => break upstream,
                     Err(error) => {
                         telemetry::throttled!(

@@ -7,7 +7,7 @@
 //! The engine sends no webhook itself: monokulo holds the merchant's side of
 //! an order (its price, its store) and delivers them.
 
-use engine_protocol::order_event::OrderEventKind;
+use engine_protocol::order_event::{LogPosition, OrderEventKind};
 use rusqlite::{params, OptionalExtension as _};
 
 use super::{OrderId, Result, Store, StoreError, TenantId};
@@ -84,16 +84,23 @@ pub enum ResumePoint {
     /// Every event after `after` is still in the log.
     Complete,
     /// Some events after `after` were pruned (it's older than the log), or
-    /// `after` is past the newest event this log ever had (it isn't this
-    /// log's position: the engine's database was replaced). The reader
-    /// carries on after `resume_after` and has missed the rest.
+    /// `after` isn't this log's position: it is past the newest event this
+    /// log ever had, or this log's event at it isn't the one the reader read
+    /// (the engine's database was replaced, perhaps by a backup of itself).
+    /// The reader carries on after `resume_after` and has missed the rest.
     Lost { resume_after: i64 },
 }
 
 impl OrderEventSpan {
-    /// Whether the events after `after` are all still here.
-    pub fn resume(&self, after: i64) -> ResumePoint {
-        if after > self.latest {
+    /// Whether the events after `after` are all still here. `kept` is the
+    /// id of the event this log holds at `after.seq`, if it holds one.
+    pub fn resume(&self, after: &LogPosition, kept: Option<&str>) -> ResumePoint {
+        let another_events = matches!(
+            (after.event_id.as_deref(), kept),
+            (Some(read), Some(kept)) if read != kept
+        );
+        let after = after.seq;
+        if after > self.latest || another_events {
             return ResumePoint::Lost {
                 resume_after: self.oldest.map_or(self.latest, |oldest| oldest - 1),
             };
@@ -191,6 +198,15 @@ impl Store {
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
+    /// The id of the event at `seq`, if the log still holds it.
+    pub fn order_event_id_at(&self, seq: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .prepare_cached("SELECT event_id FROM order_events WHERE seq = ?1")?
+            .query_row(params![seq], |row| row.get(0))
+            .optional()?)
+    }
+
     /// Which events the log holds.
     pub fn order_event_span(&self) -> Result<OrderEventSpan> {
         let oldest = self
@@ -238,29 +254,64 @@ mod tests {
     #[test]
     fn a_resume_point_is_lost_only_when_events_after_it_are_gone() {
         // A new log, and a reader that has read everything.
-        assert_eq!(span(None, 0).resume(0), ResumePoint::Complete);
-        assert_eq!(span(Some(1), 10).resume(0), ResumePoint::Complete);
-        assert_eq!(span(Some(1), 10).resume(10), ResumePoint::Complete);
-        // Events 1-4 pruned: a reader at 4 or later has missed nothing.
-        assert_eq!(span(Some(5), 10).resume(4), ResumePoint::Complete);
         assert_eq!(
-            span(Some(5), 10).resume(2),
+            span(None, 0).resume(&LogPosition::at(0), None),
+            ResumePoint::Complete
+        );
+        assert_eq!(
+            span(Some(1), 10).resume(&LogPosition::at(0), None),
+            ResumePoint::Complete
+        );
+        assert_eq!(
+            span(Some(1), 10).resume(&LogPosition::at(10), None),
+            ResumePoint::Complete
+        );
+        // Events 1-4 pruned: a reader at 4 or later has missed nothing.
+        assert_eq!(
+            span(Some(5), 10).resume(&LogPosition::at(4), None),
+            ResumePoint::Complete
+        );
+        assert_eq!(
+            span(Some(5), 10).resume(&LogPosition::at(2), None),
             ResumePoint::Lost { resume_after: 4 }
         );
         // Everything pruned: a reader at the newest missed nothing.
-        assert_eq!(span(None, 10).resume(10), ResumePoint::Complete);
         assert_eq!(
-            span(None, 10).resume(3),
+            span(None, 10).resume(&LogPosition::at(10), None),
+            ResumePoint::Complete
+        );
+        assert_eq!(
+            span(None, 10).resume(&LogPosition::at(3), None),
             ResumePoint::Lost { resume_after: 10 }
         );
         // A position past anything this log handed out.
         assert_eq!(
-            span(Some(1), 10).resume(50),
+            span(Some(1), 10).resume(&LogPosition::at(50), None),
             ResumePoint::Lost { resume_after: 0 }
         );
         assert_eq!(
-            span(None, 0).resume(50),
+            span(None, 0).resume(&LogPosition::at(50), None),
             ResumePoint::Lost { resume_after: 0 }
+        );
+        // A position within this log's numbers, but another log's event
+        // there: a database restored from a backup, which went on to hand
+        // the same numbers out again.
+        let read = |event_id: &str| LogPosition {
+            seq: 7,
+            event_id: Some(event_id.to_owned()),
+        };
+        assert_eq!(
+            span(Some(1), 10).resume(&read("evt_old"), Some("evt_new")),
+            ResumePoint::Lost { resume_after: 0 }
+        );
+        assert_eq!(
+            span(Some(1), 10).resume(&read("evt_new"), Some("evt_new")),
+            ResumePoint::Complete
+        );
+        // This log no longer holds the event to tell by.
+        assert_eq!(
+            span(Some(8), 10).resume(&read("evt_old"), None),
+            ResumePoint::Complete
         );
     }
 }

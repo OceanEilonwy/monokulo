@@ -226,10 +226,16 @@ async fn upkeep_prunes_order_events_older_than_the_retention() {
     assert_eq!(left, vec![kept], "only the event past the retention went");
     let span = store.order_event_span().unwrap();
     assert_eq!(
-        span.resume(old - 1),
+        span.resume(
+            &engine_protocol::order_event::LogPosition::at(old - 1),
+            None
+        ),
         crate::store::ResumePoint::Lost { resume_after: old }
     );
-    assert_eq!(span.resume(old), crate::store::ResumePoint::Complete);
+    assert_eq!(
+        span.resume(&engine_protocol::order_event::LogPosition::at(old), None),
+        crate::store::ResumePoint::Complete
+    );
 }
 
 /// With no time at all, each tier with work still completes one unit a

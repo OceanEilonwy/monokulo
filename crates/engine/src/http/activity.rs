@@ -1,17 +1,19 @@
 //! A network's activity record, streamed to monokulo's engine page.
 //! The engine token only, like the logs API.
 //!
-//! `GET /api/v1/admin/engine/activity/stream?network=stagenet&from=812`:
+//! `GET /api/v1/admin/engine/activity/stream?network=stagenet&epoch=e&from=812`:
 //! server-sent events, each an `activity` whose data is one
-//! `engine_protocol::activity::ActivityPage` (JSON) and whose `id:` is the sequence
-//! number of the last event in it (none when it has no events).
+//! `engine_protocol::activity::ActivityPage` (JSON) and whose `id:` is the
+//! record's epoch and the sequence number of the last event in it,
+//! `epoch:seq` (none when it has no events).
 //!
 //! - The first message comes at once: the events from sequence number
-//!   `from` on, or, without `from` (or when it has left the record, or
-//!   belongs to an engine since restarted), everything from the oldest
-//!   snapshot kept, with `gap` set when `from` was given but couldn't be
-//!   followed, so the reader starts over. `Last-Event-ID: n` (as an
-//!   `EventSource` reconnecting sends) means `from=n+1`.
+//!   `from` of `epoch` on, or, without them (or when `from` has left the
+//!   record, or `epoch` is an engine run since restarted, whose numbers
+//!   mean nothing in this one's record), everything from the oldest
+//!   snapshot kept, with `gap` set when a position was given but couldn't
+//!   be followed, so the reader starts over. `Last-Event-ID: epoch:n` (as
+//!   an `EventSource` reconnecting sends) means `epoch` and `from=n+1`.
 //! - Then each event as the scan loop records it, woken by the record
 //!   ([`Activity::subscribe`]): no polling. Events recorded within
 //!   [`StreamTuning::coalesce`] of the first go in one message, so a burst
@@ -31,7 +33,7 @@ use std::sync::Arc;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
-use engine_protocol::activity::{ActivityPage, Tier, Tuning};
+use engine_protocol::activity::{ActivityPage, StreamPosition, Tier, Tuning};
 use futures_util::Stream;
 use serde::Deserialize;
 use tokio::sync::mpsc;
@@ -44,19 +46,36 @@ use crate::work::{millis, ScanTuning};
 #[derive(Debug, Deserialize)]
 pub(super) struct StreamQuery {
     network: String,
+    epoch: Option<String>,
     from: Option<u64>,
 }
 
-/// Where the reader is: just after `Last-Event-ID`, else `?from=`.
-fn position(headers: &HeaderMap, query: &StreamQuery) -> Result<Option<u64>, ApiError> {
+/// Where the reader is: just after `Last-Event-ID`, else `?epoch=&from=`.
+fn position(headers: &HeaderMap, query: &StreamQuery) -> Result<Option<StreamPosition>, ApiError> {
     match headers.get("last-event-id") {
         Some(value) => value
             .to_str()
             .ok()
-            .and_then(|text| text.trim().parse::<u64>().ok())
-            .map(|seq| Some(seq.saturating_add(1)))
+            .and_then(|text| text.trim().rsplit_once(':'))
+            .and_then(|(epoch, seq)| {
+                Some(StreamPosition {
+                    epoch: epoch.to_owned(),
+                    seq: seq.parse::<u64>().ok()?.saturating_add(1),
+                })
+            })
+            .map(Some)
             .ok_or_else(|| ApiError::BadRequest("Last-Event-ID must be an event's id".into())),
-        None => Ok(query.from),
+        None => match (&query.epoch, query.from) {
+            (Some(epoch), Some(seq)) => Ok(Some(StreamPosition {
+                epoch: epoch.clone(),
+                seq,
+            })),
+            (None, None) => Ok(None),
+            _ => Err(ApiError::BadRequest(
+                "from and epoch go together: a sequence number means nothing without its epoch"
+                    .into(),
+            )),
+        },
     }
 }
 
@@ -84,8 +103,8 @@ pub(super) async fn stream(
     // missed.
     let mut appended = activity.subscribe();
     appended.mark_unchanged();
-    let page = activity.page(from);
-    let next = page.next;
+    let page = activity.page(from.as_ref());
+    let next = activity.position(page.next);
     let first = message(&state.settings, network, &activity, page)
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let (messages, received) = mpsc::channel(tuning.buffer);
@@ -116,8 +135,8 @@ struct Follower {
     /// Keeps the network watched while the stream is open.
     _watching: crate::activity::Watching,
     appended: tokio::sync::watch::Receiver<u64>,
-    /// The sequence number to send from next.
-    next: u64,
+    /// Where to send from next.
+    next: StreamPosition,
     messages: mpsc::Sender<SseEvent>,
     tuning: StreamTuning,
     settings: Arc<EngineSettings>,
@@ -142,11 +161,11 @@ impl Follower {
                 () = self.messages.closed() => return,
             }
             self.appended.mark_unchanged();
-            let page = self.activity.page(Some(self.next));
+            let page = self.activity.page(Some(&self.next));
             if page.events.is_empty() && !page.gap {
                 continue;
             }
-            self.next = page.next;
+            self.next.seq = page.next;
             let Ok(message) = message(&self.settings, self.network, &self.activity, page) else {
                 return;
             };
@@ -190,7 +209,7 @@ fn message(
     };
     let event = SseEvent::default().event("activity").json_data(&page)?;
     Ok(match last {
-        Some(seq) => event.id(seq.to_string()),
+        Some(seq) => event.id(format!("{}:{seq}", activity.epoch())),
         None => event,
     })
 }
@@ -239,10 +258,14 @@ mod tests {
                             .map(str::trim)
                     };
                     assert_eq!(field("event:"), Some("activity"), "{block}");
-                    return Some(Sent::Page {
-                        id: field("id:").map(|id| id.parse().unwrap()),
-                        page: serde_json::from_str(field("data:").unwrap()).unwrap(),
+                    let page: ActivityPage = serde_json::from_str(field("data:").unwrap()).unwrap();
+                    // `epoch:seq`, of the page's epoch.
+                    let id = field("id:").map(|id| {
+                        let (epoch, seq) = id.rsplit_once(':').unwrap();
+                        assert_eq!(epoch, page.epoch);
+                        seq.parse().unwrap()
                     });
+                    return Some(Sent::Page { id, page });
                 }
                 let chunk = tokio::time::timeout(Duration::from_secs(10), self.body.next())
                     .await
@@ -283,12 +306,16 @@ mod tests {
         (state, activity)
     }
 
-    async fn open(state: &AppState, uri: &str, last_event_id: Option<u64>) -> (StatusCode, Reader) {
+    async fn open(
+        state: &AppState,
+        uri: &str,
+        last_event_id: Option<StreamPosition>,
+    ) -> (StatusCode, Reader) {
         let mut request = Request::builder()
             .uri(uri)
             .header(credentials::auth::ENGINE_TOKEN_HEADER, TEST_ENGINE_TOKEN);
         if let Some(id) = last_event_id {
-            request = request.header("last-event-id", id.to_string());
+            request = request.header("last-event-id", format!("{}:{}", id.epoch, id.seq));
         }
         let response = build_router(state.clone(), 1_000_000)
             .oneshot(request.body(Body::empty()).unwrap())
@@ -326,7 +353,10 @@ mod tests {
         }
         let (status, mut reader) = open(
             &state,
-            "/api/v1/admin/engine/activity/stream?network=stagenet&from=1",
+            &format!(
+                "/api/v1/admin/engine/activity/stream?network=stagenet&epoch={}&from=1",
+                activity.epoch()
+            ),
             None,
         )
         .await;
@@ -356,8 +386,8 @@ mod tests {
     }
 
     /// Without `from`, the record from its oldest snapshot; with a `from`
-    /// that has left the record (or another engine's numbering), the same,
-    /// flagged so the reader starts over.
+    /// that has left the record, or another engine run's, the same, flagged
+    /// so the reader starts over.
     #[tokio::test]
     async fn a_from_that_left_the_record_starts_over_from_the_oldest_snapshot() {
         let (state, activity) = state(TEST_TUNING);
@@ -369,12 +399,16 @@ mod tests {
         let (id, page) = fresh.page().await;
         assert_eq!((seqs(&page), id, page.gap), (vec![1, 2], Some(2), false));
 
-        let (_, mut behind) = open(&state, &format!("{uri}&from=99"), None).await;
+        let epoch = activity.epoch();
+        let (_, mut behind) = open(&state, &format!("{uri}&epoch={epoch}&from=99"), None).await;
         let (_, page) = behind.page().await;
+        assert_eq!((seqs(&page), page.gap), (vec![1, 2], true));
+        let (_, mut restarted) = open(&state, &format!("{uri}&epoch=another&from=2"), None).await;
+        let (_, page) = restarted.page().await;
         assert_eq!((seqs(&page), page.gap), (vec![1, 2], true));
 
         // An `EventSource` reconnecting says where it got to by id.
-        let (_, mut resumed) = open(&state, uri, Some(1)).await;
+        let (_, mut resumed) = open(&state, uri, Some(activity.position(1))).await;
         let (_, page) = resumed.page().await;
         assert_eq!((seqs(&page), page.gap), (vec![2], false));
     }
@@ -441,7 +475,7 @@ mod tests {
             "the buffer's two messages, then the end"
         );
 
-        let (_, mut again) = open(&state, uri, last).await;
+        let (_, mut again) = open(&state, uri, last.map(|seq| activity.position(seq))).await;
         let (_, page) = again.page().await;
         assert!(!page.gap);
         seen.extend(seqs(&page));
@@ -489,6 +523,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(not_an_id.status(), StatusCode::BAD_REQUEST);
+        let (status, _) = open(&state, &format!("{base}?network=stagenet&from=1"), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a from without its epoch");
         let unauthenticated = build_router(state, 1_000_000)
             .oneshot(
                 Request::builder()

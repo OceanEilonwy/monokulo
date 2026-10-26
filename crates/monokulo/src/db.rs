@@ -184,6 +184,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0049_wallets_user_engine_wallet.sql"),
     ),
     (50, include_str!("../migrations/0050_pos_orders_closed.sql")),
+    (
+        51,
+        include_str!("../migrations/0051_order_event_position_event_id.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

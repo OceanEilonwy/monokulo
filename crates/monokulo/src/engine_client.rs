@@ -561,14 +561,29 @@ impl EngineClient {
             .await
     }
 
-    /// `GET /api/v1/admin/order-events?after=` — the engine's order-event
-    /// log from just after `after`: every kept event since, then each new
-    /// one as it happens, as never-ending server-sent events
-    /// (`crate::webhooks::subscriber` reads it).
-    pub async fn open_order_event_log(&self, after: i64) -> Result<EventStream, EngineClientError> {
+    /// `GET /api/v1/admin/order-events?after=&event_id=` — the engine's
+    /// order-event log from just after `after`: every kept event since,
+    /// then each new one as it happens, as never-ending server-sent events
+    /// (`crate::webhooks::subscriber` reads it). The id of the event at
+    /// `after`, when there is one, lets the engine tell its own log from
+    /// another that numbers events the same.
+    pub async fn open_order_event_log(
+        &self,
+        after: &engine_protocol::order_event::LogPosition,
+    ) -> Result<EventStream, EngineClientError> {
+        #[derive(Serialize)]
+        struct Query<'a> {
+            after: i64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            event_id: Option<&'a str>,
+        }
         self.target()
-            .stream(Call::get(format!(
-                "/api/v1/admin/order-events?after={after}"
+            .stream(Call::get(with_query(
+                "/api/v1/admin/order-events",
+                &Query {
+                    after: after.seq,
+                    event_id: after.event_id.as_deref(),
+                },
             )))
             .await
     }
@@ -1054,25 +1069,32 @@ impl EngineClient {
     /// `GET /api/v1/admin/engine/activity/stream` — `network`'s activity
     /// record as never-ending server-sent events, each an `activity` whose
     /// data is a `engine_protocol::activity::ActivityPage`: first the record from
-    /// sequence number `from` on (without `from`, or when the engine can't
-    /// follow it, everything from the oldest snapshot it keeps), then what
+    /// `from` on (without `from`, or when the engine can't follow it, as
+    /// when it has restarted since, everything from the oldest snapshot it
+    /// keeps), then what
     /// the engine records next, as it records it
     /// (`crate::engine_relay` reads it).
     pub async fn open_engine_activity(
         &self,
         network: &str,
-        from: Option<u64>,
+        from: Option<&engine_protocol::activity::StreamPosition>,
     ) -> Result<EventStream, EngineClientError> {
         #[derive(Serialize)]
         struct Query<'a> {
             network: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            epoch: Option<&'a str>,
             #[serde(skip_serializing_if = "Option::is_none")]
             from: Option<u64>,
         }
         self.target()
             .stream(Call::get(with_query(
                 "/api/v1/admin/engine/activity/stream",
-                &Query { network, from },
+                &Query {
+                    network,
+                    epoch: from.map(|from| from.epoch.as_str()),
+                    from: from.map(|from| from.seq),
+                },
             )))
             .await
     }
@@ -2059,7 +2081,10 @@ mod contract_tests {
         ));
 
         engine.mark_order_expired(order.order_id.as_str()).unwrap();
-        let mut log = client.open_order_event_log(0).await.unwrap();
+        let mut log = client
+            .open_order_event_log(&engine_protocol::order_event::LogPosition::default())
+            .await
+            .unwrap();
         let first = tokio::time::timeout(std::time::Duration::from_secs(10), log.next())
             .await
             .expect("the log replays its event within 10 s")
@@ -2135,7 +2160,13 @@ mod contract_tests {
         let pushed = next_activity(&mut activity).await;
         drop(activity);
         let mut resumed = client
-            .open_engine_activity("mainnet", Some(1))
+            .open_engine_activity(
+                "mainnet",
+                Some(&engine_protocol::activity::StreamPosition {
+                    epoch: first.epoch.clone(),
+                    seq: 1,
+                }),
+            )
             .await
             .unwrap();
         let resumed = next_activity(&mut resumed).await;
