@@ -471,14 +471,67 @@ fn report_json(report: &live_settings::SaveReport) -> serde_json::Value {
     })
 }
 
-/// A save's answer: what changed, its warnings, the networks stores use
-/// that it left without a node that answers, and the key custody backends
-/// it turned on that can't run.
-fn saved(
+/// A save's or a reload's answer: what changed, its warnings, the networks
+/// stores use that it left without a node that answers, and the key custody
+/// backends it turned on that can't run.
+async fn saved(
     report: &live_settings::SaveReport,
-    unserved: &[UnservedNetwork],
-    unavailable: &[UnavailableBackend],
+    db: &Database,
+    networks: &Networks,
+    custody: &super::Custody,
 ) -> axum::response::Response {
+    // Networks stores use that have no node now, or whose just-saved (or
+    // just-reloaded) nodes don't answer (task 2.2, decision D2). Only
+    // changed networks are probed, each node briefly, all at once.
+    let counts = db
+        .read(super::super::store::Store::count_tenants_by_network)
+        .await
+        .unwrap_or_default();
+    let saved_networks: Vec<&str> = NETWORKS
+        .iter()
+        .filter(|(_, setting)| report.changed.contains(&setting.key))
+        .map(|(n, _)| *n)
+        .collect();
+    let mut unserved = Vec::new();
+    for (network, tenants) in counts {
+        if tenants == 0 {
+            continue;
+        }
+        let Ok(parsed) = crate::network::parse_network(&network) else {
+            continue;
+        };
+        let reachable = match networks.daemons.get(parsed) {
+            None => false,
+            Some(_) if !saved_networks.contains(&network.as_str()) => true,
+            Some(daemon) => {
+                let probes = daemon.nodes().iter().map(|node| {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        node.client.get_height(),
+                    )
+                });
+                futures_util::future::join_all(probes)
+                    .await
+                    .into_iter()
+                    .any(|r| matches!(r, Ok(Ok(_))))
+            }
+        };
+        if !reachable {
+            unserved.push(UnservedNetwork { network, tenants });
+        }
+    }
+    unserved.sort_by(|a, b| a.network.cmp(&b.network));
+    // A backend this save or reload turned on is started when it is
+    // installed, after it was checked: one that then failed says so.
+    let custody_changed = report
+        .changed
+        .iter()
+        .any(|key| key.starts_with("key_custody."));
+    let unavailable = if custody_changed {
+        backends_that_cannot_run(custody).await
+    } else {
+        Vec::new()
+    };
     let mut body = report_json(report);
     body["warnings"]["unserved_networks"] = json!(unserved);
     body["warnings"]["unavailable_backends"] = json!(unavailable);
@@ -511,61 +564,7 @@ pub async fn update_settings(
         Err(refusal) => return refusal.into_response(),
     };
     match registry.save(changes).await {
-        Ok(report) => {
-            // Networks stores use that have no node now, or whose just-saved
-            // nodes don't answer (task 2.2, decision D2). Only saved
-            // networks are probed, each node briefly, all at once.
-            let counts = db
-                .read(super::super::store::Store::count_tenants_by_network)
-                .await
-                .unwrap_or_default();
-            let saved_networks: Vec<&str> = NETWORKS
-                .iter()
-                .filter(|(_, setting)| report.changed.contains(&setting.key))
-                .map(|(n, _)| *n)
-                .collect();
-            let mut unserved = Vec::new();
-            for (network, tenants) in counts {
-                if tenants == 0 {
-                    continue;
-                }
-                let Ok(parsed) = crate::network::parse_network(&network) else {
-                    continue;
-                };
-                let reachable = match networks.daemons.get(parsed) {
-                    None => false,
-                    Some(_) if !saved_networks.contains(&network.as_str()) => true,
-                    Some(daemon) => {
-                        let probes = daemon.nodes().iter().map(|node| {
-                            tokio::time::timeout(
-                                std::time::Duration::from_secs(3),
-                                node.client.get_height(),
-                            )
-                        });
-                        futures_util::future::join_all(probes)
-                            .await
-                            .into_iter()
-                            .any(|r| matches!(r, Ok(Ok(_))))
-                    }
-                };
-                if !reachable {
-                    unserved.push(UnservedNetwork { network, tenants });
-                }
-            }
-            unserved.sort_by(|a, b| a.network.cmp(&b.network));
-            // A backend this save turned on is started when the save is
-            // installed, after it was checked: one that then failed says so.
-            let custody_changed = report
-                .changed
-                .iter()
-                .any(|key| key.starts_with("key_custody."));
-            let unavailable = if custody_changed {
-                backends_that_cannot_run(&custody).await
-            } else {
-                Vec::new()
-            };
-            saved(&report, &unserved, &unavailable)
-        }
+        Ok(report) => saved(&report, &db, &networks, &custody).await,
         Err(e) => save_refused(e),
     }
 }
@@ -660,32 +659,20 @@ pub async fn forget_anchor(
 /// What changed in it is applied as a save would: all of it, or, when
 /// anything in it is wrong, none of it, with every problem named by line.
 ///
-/// The response says what changed and what needs a restart.
+/// The response is a save's: what changed, what needs a restart, and the
+/// networks and key custody backends it left unable to work.
 pub async fn reload_settings(
+    State(db): State<Database>,
+    State(networks): State<Networks>,
     State(settings): State<Arc<EngineSettings>>,
+    State(custody): State<super::Custody>,
 ) -> axum::response::Response {
-    let Some(registry) = settings.registry.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "settings are not available on this engine" })),
-        )
-            .into_response();
+    let registry = match registry_of(&settings) {
+        Ok(registry) => registry,
+        Err(refusal) => return refusal.into_response(),
     };
     match registry.reload().await {
-        Ok(report) => (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "changed": report.changed,
-                "warnings": {
-                    "restart_required": report.restart_required,
-                    "env_overridden": report.env_overridden,
-                    "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
-                    "unserved_networks": Vec::<UnservedNetwork>::new(),
-                },
-            })),
-        )
-            .into_response(),
+        Ok(report) => saved(&report, &db, &networks, &custody).await,
         Err(e) => save_refused(e),
     }
 }
