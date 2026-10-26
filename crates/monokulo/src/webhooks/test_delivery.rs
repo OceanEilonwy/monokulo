@@ -14,10 +14,6 @@
 //! the API together: each is a request to a URL the merchant chose, made by
 //! this Monokulo.
 
-use std::collections::HashMap;
-
-use parking_lot::Mutex;
-
 use super::body::{self, LinkBases, TEST_EVENT};
 use super::delivery::{attempt_delivery, backoff_seconds, log_attempt};
 use crate::db::{
@@ -28,32 +24,12 @@ use crate::db::{
 /// Most test deliveries a store may send in a minute.
 pub const TESTS_PER_MINUTE: u32 = 6;
 
-/// How many test deliveries each store has sent in the current minute.
-#[derive(Default)]
-pub struct Limiter {
-    /// Each store's minute (Unix seconds / 60) and its count in it.
-    minutes: Mutex<HashMap<ConnectionId, (i64, u32)>>,
-}
+/// How many test deliveries each store has sent in its current minute.
+pub struct Limiter(rate_limit::RateLimiter<ConnectionId>);
 
-impl Limiter {
-    /// Counts one test delivery for `store` at `now`, or, when it has sent
-    /// [`TESTS_PER_MINUTE`] this minute already, the seconds until the next.
-    pub fn take(&self, store: &ConnectionId, now: i64) -> Result<(), u64> {
-        let minute = now.div_euclid(60);
-        let mut minutes = self.minutes.lock();
-        // Only this minute's counts matter: drop the rest as they pile up.
-        if minutes.len() > 1024 {
-            minutes.retain(|_, (at, _)| *at == minute);
-        }
-        let (at, count) = minutes.entry(store.clone()).or_insert((minute, 0));
-        if *at != minute {
-            (*at, *count) = (minute, 0);
-        }
-        if *count >= TESTS_PER_MINUTE {
-            return Err(u64::try_from(60 - now.rem_euclid(60)).unwrap_or(60));
-        }
-        *count += 1;
-        Ok(())
+impl Default for Limiter {
+    fn default() -> Self {
+        Limiter(rate_limit::RateLimiter::new(TESTS_PER_MINUTE))
     }
 }
 
@@ -89,7 +65,8 @@ pub async fn send(
     state
         .webhooks
         .tests
-        .take(&store.id, state.abuse.now())
+        .0
+        .check_with_retry(store.id.clone(), state.abuse.now())
         .map_err(|retry_after| TestError::RateLimited { retry_after })?;
     let config = state.settings.webhooks.load();
     let client = state.webhooks.client().await.map_err(|e| {
@@ -179,25 +156,4 @@ pub async fn send(
         })?;
     // Deleted in between (the webhook, by another tab): sent, not kept.
     delivery.ok_or_else(|| TestError::Failed("the webhook was deleted".into()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Six a minute for a store, the seventh told how long until the next
-    /// minute; another store has its own six; a new minute starts over.
-    #[test]
-    fn a_store_sends_six_tests_a_minute() {
-        let limiter = Limiter::default();
-        let (bakery, florist) = (ConnectionId::new("bakery"), ConnectionId::new("florist"));
-        let minute = 1_767_225_600;
-        for _ in 0..TESTS_PER_MINUTE {
-            assert_eq!(limiter.take(&bakery, minute + 15), Ok(()));
-        }
-        assert_eq!(limiter.take(&bakery, minute + 15), Err(45));
-        assert_eq!(limiter.take(&bakery, minute + 59), Err(1));
-        assert_eq!(limiter.take(&florist, minute + 59), Ok(()));
-        assert_eq!(limiter.take(&bakery, minute + 60), Ok(()));
-    }
 }
