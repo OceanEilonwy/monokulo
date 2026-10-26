@@ -97,7 +97,7 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
                 key_custody_backend: engine::store::CustodyBackend::Plain,
                 sealed_key_material: vec![0u8; 64],
                 primary_address: "4backup_restore_test_addr".into(),
-                network: "mainnet".into(),
+                network: monero::Network::Mainnet,
                 confirmations_required: None,
                 order_expiry_seconds: None,
             },

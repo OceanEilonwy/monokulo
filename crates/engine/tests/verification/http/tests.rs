@@ -4027,7 +4027,7 @@ fn a_disabled_store_can_not_be_moved() {
                 key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![1],
                 primary_address: "4x".into(),
-                network: "mainnet".into(),
+                network: Network::Mainnet,
                 confirmations_required: None,
                 order_expiry_seconds: None,
             },
@@ -4636,7 +4636,10 @@ async fn two_stores_on_one_wallet_never_hand_out_the_same_address() {
     );
 
     let s = store.lock();
-    let wallet_row = s.get_wallet(wallet_id).unwrap().unwrap();
+    let wallet_row = s
+        .get_wallet(&crate::store::EngineWalletId::from(wallet_id))
+        .unwrap()
+        .unwrap();
     assert_eq!(
         wallet_row.next_minor_index, 6,
         "five orders claimed indices 1..=5"
@@ -4761,7 +4764,7 @@ async fn a_retired_wallet_has_its_keys_deleted_everywhere_and_comes_back_only_wi
     {
         let s = store.lock();
         assert!(s
-            .get_wallet(wallet_id)
+            .get_wallet(&crate::store::EngineWalletId::from(wallet_id))
             .unwrap()
             .unwrap()
             .sealed_key_material
@@ -5092,7 +5095,7 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
             subaddress_index: crate::key_custody::SubaddressIndex { major: 0, minor: 1 },
             amount_piconero: Some(1),
         }],
-        wallet_id: wallet_id.to_owned(),
+        wallet_id: wallet_id.to_owned().into(),
         txid: "aa".repeat(32),
         key_images_json: "[]".into(),
         output_keys: HashMap::new(),
@@ -5102,7 +5105,7 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
     let with_old_keys = crate::scanner::record_scan_match(
         &locked,
         &row.id,
-        &found(&old_wallet),
+        &found(old_wallet.as_str()),
         seen_after_the_change,
         None,
     )
@@ -5115,7 +5118,7 @@ async fn a_scan_from_before_a_wallet_change_is_not_recorded_against_the_store() 
     let current = crate::scanner::record_scan_match(
         &locked,
         &row.id,
-        &found(&row.wallet_id),
+        &found(row.wallet_id.as_str()),
         seen_after_the_change,
         None,
     )
@@ -5131,7 +5134,7 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
     let tenant = create_tenant(&router, 52).await;
     let own = tenant_row(&store, &tenant).wallet_id;
 
-    let response = change_wallet(&router, &tenant, &own).await;
+    let response = change_wallet(&router, &tenant, own.as_str()).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert_eq!(
         change_wallet(&router, &tenant, "wl_nope").await.status(),
@@ -5145,12 +5148,12 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
                 key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![1],
                 primary_address: "5stagenet".into(),
-                network: "stagenet".into(),
+                network: Network::Stagenet,
             },
             crate::now_unix(),
         )
         .unwrap();
-    let response = change_wallet(&router, &tenant, &stagenet.id).await;
+    let response = change_wallet(&router, &tenant, stagenet.id.as_str()).await;
     assert_eq!(response.status(), StatusCode::CONFLICT);
     let body = body_json(response).await;
     assert!(body.to_string().contains("network"), "{body}");
@@ -5205,11 +5208,11 @@ async fn a_wallet_left_with_open_orders_is_only_retired_once_they_closed() {
     .unwrap()
     .remove(0);
 
-    let delete = || retire_request(&old_wallet);
+    let delete = || retire_request(old_wallet.as_str());
     let response = router.clone().oneshot(delete()).await.unwrap();
     assert_eq!(response.status(), StatusCode::CONFLICT);
     assert!(body_json(response).await.to_string().contains("order"));
-    let status = wallet_status(&router, &old_wallet).await;
+    let status = wallet_status(&router, old_wallet.as_str()).await;
     assert_eq!(
         (status["stores"].as_u64(), status["payable_orders"].as_u64()),
         (Some(0), Some(1))
@@ -5244,7 +5247,10 @@ async fn a_wallet_left_with_open_orders_is_only_retired_once_they_closed() {
         .await
         .to_string()
         .contains("not yet scanned"));
-    assert_eq!(wallet_status(&router, &old_wallet).await["scans_behind"], 1);
+    assert_eq!(
+        wallet_status(&router, old_wallet.as_str()).await["scans_behind"],
+        1
+    );
     catch_up(100);
     assert_eq!(
         router.clone().oneshot(delete()).await.unwrap().status(),
@@ -5277,7 +5283,12 @@ async fn a_store_changing_back_and_forth_keeps_one_scan_row_per_wallet_it_left()
         .unwrap()
         .to_owned();
     let mut addresses = vec![new_order(&router, &tenant).await["address"].clone()];
-    for wallet in [&second, &first, &second, &first] {
+    for wallet in [
+        second.as_str(),
+        first.as_str(),
+        second.as_str(),
+        first.as_str(),
+    ] {
         assert_eq!(
             change_wallet(&router, &tenant, wallet).await.status(),
             StatusCode::OK
@@ -5296,7 +5307,7 @@ async fn a_store_changing_back_and_forth_keeps_one_scan_row_per_wallet_it_left()
     let watchers = store.lock().watchers_of(&row.id).unwrap();
     let mut wallets: Vec<_> = watchers.iter().map(|w| w.wallet_id.clone()).collect();
     wallets.sort();
-    let mut expected = vec![first.clone(), second.clone()];
+    let mut expected = vec![first.clone(), second.clone().into()];
     expected.sort();
     assert_eq!(wallets, expected, "one scan row per wallet left");
     assert_eq!(row.wallet_id, first);

@@ -23,24 +23,24 @@ use std::ops::Range;
 /// not recorded (a store records only what its own wallet's keys found).
 pub(crate) fn unrecorded(handle: WalletHandle) -> LiveWallet {
     LiveWallet {
-        wallet_id: String::new(),
+        wallet_id: crate::store::EngineWalletId::default(),
         handle,
     }
 }
 
 /// A store, or a shared one, whose stores' wallets can be read.
 pub(crate) trait WalletsOf {
-    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String;
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> crate::store::EngineWalletId;
 }
 
 impl WalletsOf for Store {
-    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> crate::store::EngineWalletId {
         self.wallet_of(tenant_id).unwrap().unwrap()
     }
 }
 
 impl WalletsOf for crate::store::SharedStore {
-    fn wallet(&self, tenant_id: &crate::store::TenantId) -> String {
+    fn wallet(&self, tenant_id: &crate::store::TenantId) -> crate::store::EngineWalletId {
         self.lock().wallet(tenant_id)
     }
 }
@@ -179,7 +179,7 @@ fn fixture_tenant_rows(
                 key_custody_backend: crate::store::CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4fixture".into(),
-                network: "mainnet".into(),
+                network: Network::Mainnet,
                 confirmations_required: Some(10),
                 order_expiry_seconds: None,
             },

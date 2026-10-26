@@ -435,7 +435,7 @@ mod properties {
                 let other=monero::ViewPair { view:PrivateKey::from_slice(&other_view).unwrap(), spend:PublicKey::from_private_key(&PrivateKey::from_slice(&valid_scalar_bytes(42)).unwrap()) };
                 let at=|minor| monero::cryptonote::subaddress::get_subaddress(&other,crate::key_custody::SubaddressIndex{major:0,minor},Some(Network::Mainnet)).to_string();
                 let sealed=w.custody.inner.seal(&crate::key_custody::WalletMaterial::new(other_view,other.spend.to_bytes())).await.unwrap();
-                let wallet=w.store.lock().create_wallet(&crate::store::NewWallet{key_custody_backend:CustodyBackend::Plain,sealed_key_material:sealed,primary_address:at(0),network:"mainnet".into()},1).unwrap();
+                let wallet=w.store.lock().create_wallet(&crate::store::NewWallet{key_custody_backend:CustodyBackend::Plain,sealed_key_material:sealed,primary_address:at(0),network: Network::Mainnet},1).unwrap();
                 w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=5 WHERE id=?1",[&wallet.id]).unwrap();
                 w.custody.mode.store(2,Ordering::Relaxed);
                 let task=tokio::spawn(request(w.router.clone(),w.tenants[0].secret_token.clone(),body(Some("disabled".to_owned()),amount,0,None)));

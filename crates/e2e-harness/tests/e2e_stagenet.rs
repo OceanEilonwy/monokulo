@@ -166,7 +166,7 @@ async fn live_stagenet_payment_is_detected_end_to_end() {
                 key_custody_backend: engine::store::CustodyBackend::Plain,
                 sealed_key_material: sealed,
                 primary_address: merchant.address.clone(),
-                network: network_str(Network::Stagenet).to_owned(),
+                network: Network::Stagenet,
                 confirmations_required: Some(e2e_fixture::PAYMENT_CONFIRMATIONS_REQUIRED),
                 order_expiry_seconds: Some(e2e_fixture::PAYMENT_ORDER_EXPIRY_MINUTES * 60),
             },

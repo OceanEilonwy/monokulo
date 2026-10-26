@@ -39,7 +39,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
                     key_custody_backend: crate::store::CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: format!("scale-{index}"),
-                    network: "mainnet".into(),
+                    network: monero::Network::Mainnet,
                     confirmations_required: Some(1),
                     order_expiry_seconds: None,
                 },

@@ -11,8 +11,8 @@ use crate::key_custody::{KeyCustodyError, SubaddressIndex};
 use crate::store::{NewOrder, NextIndex, Tenant};
 
 use super::{
-    forget_wallet_handle, now_unix, parse_network, resolve_wallet_handle_held, ApiError, AppState,
-    AuthedTenant, UNKNOWN_WALLET_RETRIES,
+    forget_wallet_handle, now_unix, resolve_wallet_handle_held, ApiError, AppState, AuthedTenant,
+    UNKNOWN_WALLET_RETRIES,
 };
 
 /// XMR-only: this process has no concept of fiat
@@ -115,11 +115,7 @@ async fn create_order_for_tenant(
     let _using = state.custody.wallet_handles.using(&tenant.id).await;
     let mut live = resolve_wallet_handle_held(&state, &tenant).await?;
     let mut retries = 0;
-    // tenant.network was validated against a configured node at tenant-creation
-    // time - a parse failure here means the stored value is corrupt, not that the
-    // customer did anything wrong.
-    let network = parse_network(&tenant.network)
-        .map_err(|e| ApiError::Internal(format!("tenant has an invalid stored network: {e}")))?;
+    let network = tenant.network;
 
     // Peek at the index, derive its address, then claim the index and insert the
     // order together in one lock hold - never allocate first and insert later.

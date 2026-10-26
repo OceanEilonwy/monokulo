@@ -533,7 +533,7 @@ mod tests {
                     key_custody_backend: crate::store::CustodyBackend::Plain,
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4db".into(),
-                    network: "mainnet".into(),
+                    network: monero::Network::Mainnet,
                     confirmations_required: Some(1),
                     order_expiry_seconds: None,
                 },

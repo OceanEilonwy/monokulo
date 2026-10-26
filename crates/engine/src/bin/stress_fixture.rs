@@ -455,7 +455,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
                 key_custody_backend: engine::store::CustodyBackend::Plain,
                 sealed_key_material: sealed,
                 primary_address: address.to_string(),
-                network: NETWORK.into(),
+                network: Network::Mainnet,
                 confirmations_required: Some(10),
                 order_expiry_seconds: Some(3600),
             },

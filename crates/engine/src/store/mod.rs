@@ -18,11 +18,12 @@ use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::sync::Arc;
 
+use engine_protocol::network::SqlNetwork;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
 pub use engine_protocol::custody::CustodyBackend;
-pub use engine_protocol::ids::{OrderId, TenantId};
+pub use engine_protocol::ids::{EngineWalletId, OrderId, TenantId};
 
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
 use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
@@ -524,7 +525,7 @@ pub struct WalletChange {
 /// (`Store::peek_next_minor_index`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NextIndex {
-    pub wallet_id: String,
+    pub wallet_id: EngineWalletId,
     pub minor_index: u32,
 }
 
@@ -535,10 +536,10 @@ pub struct Tenant {
     pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
-    pub network: String,
+    pub network: monero::Network,
     /// The wallet this store takes payments into (migration 0028), shared
     /// with any other store on it.
-    pub wallet_id: String,
+    pub wallet_id: EngineWalletId,
     /// The wallet's subaddress counter, mirrored here: every index below it
     /// has been handed out by some store on the wallet.
     pub next_minor_index: u32,
@@ -555,7 +556,7 @@ pub struct NewTenant {
     pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
-    pub network: String,
+    pub network: monero::Network,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
@@ -571,11 +572,11 @@ pub struct TenantConfigPatch {
 /// One set of keys several stores can take payments into (migration 0028).
 #[derive(Debug, Clone)]
 pub struct Wallet {
-    pub id: String,
+    pub id: EngineWalletId,
     pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
-    pub network: String,
+    pub network: monero::Network,
     pub next_minor_index: u32,
     pub created_at: i64,
     /// When it was retired (`Store::retire_wallet`): its keys are gone.
@@ -586,7 +587,7 @@ pub struct NewWallet {
     pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
-    pub network: String,
+    pub network: monero::Network,
 }
 
 #[derive(Debug)]
@@ -1374,7 +1375,7 @@ impl Store {
                 key_custody_backend: new.key_custody_backend,
                 sealed_key_material: new.sealed_key_material.clone(),
                 primary_address: new.primary_address.clone(),
-                network: new.network.clone(),
+                network: new.network,
             },
             now,
         )?;
@@ -1397,7 +1398,7 @@ impl Store {
     /// keys and claims order addresses from the wallet's counter.
     pub fn create_tenant_on_wallet(
         &self,
-        wallet_id: &str,
+        wallet_id: &EngineWalletId,
         confirmations_required: Option<u64>,
         order_expiry_seconds: Option<i64>,
         now: i64,
@@ -1423,7 +1424,7 @@ impl Store {
 
     fn insert_tenant_on_wallet(
         conn: &Connection,
-        wallet_id: &str,
+        wallet_id: &EngineWalletId,
         confirmations_required: Option<u64>,
         order_expiry_seconds: Option<i64>,
         now: i64,
@@ -1463,8 +1464,8 @@ impl Store {
         self.get_wallet(&id)?.ok_or(StoreError::NotFound)
     }
 
-    fn insert_wallet(conn: &Connection, new: &NewWallet, now: i64) -> Result<String> {
-        let id = new_id("wl");
+    fn insert_wallet(conn: &Connection, new: &NewWallet, now: i64) -> Result<EngineWalletId> {
+        let id = EngineWalletId::new(new_id("wl"));
         conn.execute(
             "INSERT INTO wallets (id, key_custody_backend, sealed_key_material, primary_address,
                 network, next_minor_index, created_at_utc)
@@ -1474,7 +1475,7 @@ impl Store {
                 new.key_custody_backend,
                 new.sealed_key_material,
                 new.primary_address,
-                new.network,
+                SqlNetwork(new.network),
                 now,
             ],
         )?;
@@ -1482,7 +1483,7 @@ impl Store {
     }
 
     /// A wallet, deleted or not.
-    pub fn get_wallet(&self, id: &str) -> Result<Option<Wallet>> {
+    pub fn get_wallet(&self, id: &EngineWalletId) -> Result<Option<Wallet>> {
         Ok(self
             .conn
             .query_row("SELECT * FROM wallets WHERE id = ?1", params![id], |row| {
@@ -1491,7 +1492,7 @@ impl Store {
                     key_custody_backend: row.get("key_custody_backend")?,
                     sealed_key_material: row.get("sealed_key_material")?,
                     primary_address: row.get("primary_address")?,
-                    network: row.get("network")?,
+                    network: row.get::<_, SqlNetwork>("network")?.0,
                     next_minor_index: row.get::<_, sqlite::Unsigned<u32>>("next_minor_index")?.0,
                     created_at: row.get("created_at_utc")?,
                     deleted_at: row.get("deleted_at_utc")?,
@@ -1509,7 +1510,7 @@ impl Store {
     /// on-time payment can be in a block not yet read).
     pub fn wallet_in_use(
         &self,
-        id: &str,
+        id: &EngineWalletId,
         now: i64,
         grace_period_seconds: i64,
     ) -> Result<WalletInUse> {
@@ -1574,7 +1575,7 @@ impl Store {
     /// caller drops from key custody.
     pub fn retire_wallet(
         &self,
-        id: &str,
+        id: &EngineWalletId,
         now: i64,
         grace_period_seconds: i64,
     ) -> Result<Vec<TenantId>> {
@@ -1629,7 +1630,7 @@ impl Store {
     /// (`retire_wallet`). The caller has checked they are this wallet's.
     pub fn restore_wallet(
         &self,
-        id: &str,
+        id: &EngineWalletId,
         backend: CustodyBackend,
         sealed: &[u8],
     ) -> Result<Wallet> {
@@ -1654,14 +1655,14 @@ impl Store {
     pub fn change_tenant_wallet(
         &self,
         tenant_id: &TenantId,
-        wallet_id: &str,
+        wallet_id: &EngineWalletId,
         now: i64,
     ) -> Result<WalletChange> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let store: Option<(String, String)> = tx
+        let store: Option<(EngineWalletId, String)> = tx
             .query_row(
                 "SELECT wallet_id, network FROM tenants
                  WHERE id = ?1 AND disabled_at_utc IS NULL AND watches_for IS NULL",
@@ -1678,7 +1679,7 @@ impl Store {
             )
             .optional()?;
         let new_network = new_network.ok_or(StoreError::NotFound)?;
-        if old_wallet == wallet_id {
+        if old_wallet == *wallet_id {
             return Err(StoreError::Refused(
                 "the store already takes payments into this wallet".to_owned(),
             ));
@@ -1765,7 +1766,7 @@ impl Store {
 
     /// The wallet the tenant row takes payments into now, `None` for no
     /// such row.
-    pub fn wallet_of(&self, tenant_id: &TenantId) -> Result<Option<String>> {
+    pub fn wallet_of(&self, tenant_id: &TenantId) -> Result<Option<EngineWalletId>> {
         Ok(self
             .conn
             .query_row(
@@ -1795,7 +1796,7 @@ impl Store {
             key_custody_backend: row.get("key_custody_backend")?,
             sealed_key_material: row.get("sealed_key_material")?,
             primary_address: row.get("primary_address")?,
-            network: row.get("network")?,
+            network: row.get::<_, SqlNetwork>("network")?.0,
             wallet_id: row.get("wallet_id")?,
             next_minor_index: row.get::<_, sqlite::Unsigned<u32>>("next_minor_index")?.0,
             confirmations_required: row
@@ -1815,10 +1816,7 @@ impl Store {
     pub fn tenant_public_keys_on_network(&self, network: monero::Network) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare_cached("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL AND watches_for IS NULL ORDER BY public_key")?;
         let rows = stmt
-            .query_map(
-                params![engine_protocol::network::SqlNetwork(network)],
-                |row| row.get::<_, String>(0),
-            )?
+            .query_map(params![SqlNetwork(network)], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1829,16 +1827,17 @@ impl Store {
             "SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY id",
         )?;
         let rows = stmt
-            .query_map(
-                params![engine_protocol::network::SqlNetwork(network)],
-                |row| row.get::<_, TenantId>(0),
-            )?
+            .query_map(params![SqlNetwork(network)], |row| {
+                row.get::<_, TenantId>(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
     /// Every active tenant's (public key, network, key custody backend).
-    pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, CustodyBackend)>> {
+    pub fn tenant_custody_backends(
+        &self,
+    ) -> Result<Vec<(String, monero::Network, CustodyBackend)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, network, key_custody_backend FROM tenants WHERE disabled_at_utc IS NULL ORDER BY public_key",
         )?;
@@ -1846,7 +1845,7 @@ impl Store {
             .query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
+                    row.get::<_, SqlNetwork>(1)?.0,
                     row.get::<_, CustodyBackend>(2)?,
                 ))
             })?
@@ -1863,15 +1862,12 @@ impl Store {
              ORDER BY public_key",
         )?;
         let rows = stmt
-            .query_map(
-                params![engine_protocol::network::SqlNetwork(network)],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
-                    ))
-                },
-            )?
+            .query_map(params![SqlNetwork(network)], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1887,7 +1883,7 @@ impl Store {
     pub fn update_tenant_key_custody(
         &self,
         tenant_id: &TenantId,
-        expected_wallet: &str,
+        expected_wallet: &EngineWalletId,
         backend: CustodyBackend,
         sealed: &[u8],
     ) -> Result<Vec<TenantId>> {
@@ -1895,7 +1891,7 @@ impl Store {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let wallet_id: Option<String> = tx
+        let wallet_id: Option<EngineWalletId> = tx
             .query_row(
                 "SELECT wallet_id FROM tenants WHERE id = ?1 AND disabled_at_utc IS NULL",
                 params![tenant_id],
@@ -1903,7 +1899,7 @@ impl Store {
             )
             .optional()?;
         let wallet_id = wallet_id.ok_or(StoreError::NotFound)?;
-        if wallet_id != expected_wallet {
+        if wallet_id != *expected_wallet {
             return Err(StoreError::Refused(
                 "the store changed wallet while its keys were being moved".to_owned(),
             ));
@@ -1987,18 +1983,20 @@ impl Store {
 
     /// How many enabled tenants each network has, for the admin page (tasks
     /// 2.2 and 4.4).
-    pub fn count_tenants_by_network(&self) -> Result<std::collections::BTreeMap<String, u64>> {
+    /// By network name.
+    pub fn count_tenants_by_network(&self) -> Result<Vec<(monero::Network, u64)>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL AND watches_for IS NULL GROUP BY network",
+            "SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL AND watches_for IS NULL
+             GROUP BY network ORDER BY network",
         )?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, SqlNetwork>(0)?.0,
                     row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
                 ))
             })?
-            .collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -2199,14 +2197,9 @@ impl Store {
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(
-                params![
-                    engine_protocol::network::SqlNetwork(network),
-                    after,
-                    limit as i64
-                ],
-                |row| row.get(0),
-            )?
+            .query_map(params![SqlNetwork(network), after, limit as i64], |row| {
+                row.get(0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -2296,7 +2289,7 @@ impl Store {
             params![tenant_id],
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, EngineWalletId>(0)?,
                     row.get::<_, sqlite::Unsigned<u32>>(1)?,
                 ))
             },
@@ -2334,7 +2327,7 @@ impl Store {
     /// an order whose address belongs to a wallet its keys don't scan.
     pub fn create_order_claiming_minor_index(
         &self,
-        expected_wallet: &str,
+        expected_wallet: &EngineWalletId,
         expected_index: u32,
         new: &NewOrder,
     ) -> Result<Option<Order>> {
@@ -2547,7 +2540,7 @@ impl Store {
             .query_row(
                 "SELECT network FROM tenants WHERE id = ?1",
                 [tenant_id],
-                |row| row.get::<_, engine_protocol::network::SqlNetwork>(0),
+                |row| row.get::<_, SqlNetwork>(0),
             )
             .optional()?
             .ok_or(StoreError::NotFound)?
@@ -2806,10 +2799,7 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(
-                params![
-                    engine_protocol::network::SqlNetwork(network),
-                    sql_height(height)?
-                ],
+                params![SqlNetwork(network), sql_height(height)?],
                 Self::row_to_payment,
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2830,10 +2820,7 @@ impl Store {
                  JOIN tenants t ON t.id = o.tenant_id
                  WHERE op.block_height > ?2 AND t.network = ?1
                    AND (op.voided_at_utc IS NULL OR op.superseded_by IS NOT NULL))",
-                params![
-                    engine_protocol::network::SqlNetwork(network),
-                    sql_height(height)?
-                ],
+                params![SqlNetwork(network), sql_height(height)?],
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -2855,11 +2842,7 @@ impl Store {
         )?;
         let rows = stmt
             .query_map(
-                params![
-                    engine_protocol::network::SqlNetwork(network),
-                    after_rowid,
-                    limit as i64
-                ],
+                params![SqlNetwork(network), after_rowid, limit as i64],
                 |row| Ok((row.get(0)?, Self::row_to_payment(row)?)),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -3026,7 +3009,7 @@ impl Store {
                 |row| {
                     Ok((
                         row.get::<_, sqlite::Unsigned<u64>>(0)?.0,
-                        row.get::<_, engine_protocol::network::SqlNetwork>(1)?.0,
+                        row.get::<_, SqlNetwork>(1)?.0,
                         row.get::<_, Option<bool>>(2)?.unwrap_or(false),
                     ))
                 },
@@ -3080,7 +3063,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT MAX(height) FROM scanned_blocks WHERE network = ?1",
-                params![engine_protocol::network::SqlNetwork(network)],
+                params![SqlNetwork(network)],
                 |row| row.get::<_, Option<i64>>(0),
             )
             .map(|opt| opt.map(|h| h as u64))
@@ -3110,7 +3093,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT block_hash FROM scanned_blocks WHERE network = ?1 AND height = ?2",
-                params![engine_protocol::network::SqlNetwork(network), height as i64],
+                params![SqlNetwork(network), height as i64],
                 |row| row.get(0),
             )
             .optional()
@@ -3126,11 +3109,7 @@ impl Store {
         self.conn.execute(
             "INSERT INTO scanned_blocks (network, height, block_hash) VALUES (?1, ?2, ?3)
              ON CONFLICT(network, height) DO UPDATE SET block_hash = excluded.block_hash",
-            params![
-                engine_protocol::network::SqlNetwork(network),
-                height as i64,
-                hash
-            ],
+            params![SqlNetwork(network), height as i64, hash],
         )?;
         Ok(())
     }
@@ -3140,7 +3119,7 @@ impl Store {
             "INSERT OR IGNORE INTO partial_block_matches
              (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc, output_key)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![engine_protocol::network::SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
+            params![SqlNetwork(matched.network), matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
                 sqlite::Unsigned(matched.amount), matched.key_images_json, matched.seen_at, matched.output_key],
         )?;
         Ok(())
@@ -3153,11 +3132,11 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-            params![engine_protocol::network::SqlNetwork(network), tenant_id],
+            params![SqlNetwork(network), tenant_id],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-            params![engine_protocol::network::SqlNetwork(network), tenant_id],
+            params![SqlNetwork(network), tenant_id],
         )?;
         Ok(())
     }
@@ -3179,7 +3158,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height >= ?2",
-            params![engine_protocol::network::SqlNetwork(network), height as i64],
+            params![SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -3205,10 +3184,7 @@ impl Store {
     ) -> Result<u64> {
         let deleted = self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
-            params![
-                engine_protocol::network::SqlNetwork(network),
-                min_height as i64
-            ],
+            params![SqlNetwork(network), min_height as i64],
         )?;
         Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
     }
@@ -3225,7 +3201,7 @@ impl Store {
     pub fn anchor_unset_cursors(&self, network: monero::Network, height: u64) -> Result<()> {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height IS NULL",
-            params![engine_protocol::network::SqlNetwork(network), height as i64],
+            params![SqlNetwork(network), height as i64],
         )?;
         Ok(())
     }
@@ -3236,11 +3212,11 @@ impl Store {
         match height {
             Some(h) => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height > ?2",
-                params![engine_protocol::network::SqlNetwork(network), h as i64],
+                params![SqlNetwork(network), h as i64],
             )?,
             None => self.conn.execute(
                 "UPDATE tenants SET scanned_through_height = NULL WHERE network = ?1",
-                params![engine_protocol::network::SqlNetwork(network)],
+                params![SqlNetwork(network)],
             )?,
         };
         Ok(())
@@ -3256,15 +3232,12 @@ impl Store {
              ORDER BY scanned_through_height, id",
         )?;
         let rows = stmt
-            .query_map(
-                params![engine_protocol::network::SqlNetwork(network)],
-                |row| {
-                    Ok((
-                        row.get::<_, TenantId>(0)?,
-                        row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
-                    ))
-                },
-            )?
+            .query_map(params![SqlNetwork(network)], |row| {
+                Ok((
+                    row.get::<_, TenantId>(0)?,
+                    row.get::<_, sqlite::Unsigned<u64>>(1)?.0,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -3275,17 +3248,17 @@ impl Store {
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
-            params![engine_protocol::network::SqlNetwork(network), height as i64],
+            params![SqlNetwork(network), height as i64],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [engine_protocol::network::SqlNetwork(network)],
+            [SqlNetwork(network)],
         )?;
         self.conn.execute(
             "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id IN
              (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
-            [engine_protocol::network::SqlNetwork(network)],
+            [SqlNetwork(network)],
         )?;
         Ok(())
     }
@@ -3826,7 +3799,7 @@ mod tests {
                     key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4addr".into(),
-                    network: "mainnet".into(),
+                    network: monero::Network::Mainnet,
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -5004,7 +4977,7 @@ mod tests {
                     key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
-                    network: "stagenet".into(),
+                    network: monero::Network::Stagenet,
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -5646,7 +5619,7 @@ mod tests {
         assert_eq!(tenant.wallet_id, "wl_tn_old");
         let wallet = store.get_wallet(&tenant.wallet_id).unwrap().unwrap();
         assert_eq!(wallet.next_minor_index, 7);
-        assert_eq!(wallet.network, "stagenet");
+        assert_eq!(wallet.network, monero::Network::Stagenet);
         assert_eq!(wallet.sealed_key_material, vec![1, 2]);
         assert_eq!(store.allocate_minor_index(&tenant.id).unwrap(), 7);
     }
