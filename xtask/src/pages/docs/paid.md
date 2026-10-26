@@ -5,7 +5,7 @@ shipping.
 
 ## In the page: a nicety
 
-`onPaid` and `onStatusChange` ([JS library](../js-library/)) run in the
+`onPaid` and `onStatusChange` ([JS library](../webpages/)) run in the
 customer's browser. Use them to say thanks or move to a "Thanks" page. Never
 ship on them: anyone can call `onPaid` from their browser's console.
 

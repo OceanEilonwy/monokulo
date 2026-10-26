@@ -11,7 +11,7 @@ it can never move your coins.
    [router](../install-router/), and point it at a Monero node it can reach.
 2. **Make a store** on its admin page, with a wallet's view key.
 3. **Take payments**: put the checkout on your site with the
-   [JS library](../js-library/), connect a [shop plugin](../plugins/), or
+   [JS library](../webpages/), connect a [shop plugin](../plugins/), or
    make orders from your server with the [HTTP API](../api/).
 4. **Ship when it's paid**: your server hears `order.paid` from a
    [webhook](../webhooks/).

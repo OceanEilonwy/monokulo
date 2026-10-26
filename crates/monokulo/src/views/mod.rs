@@ -25,7 +25,7 @@ pub const SITE_URL: &str = "https://docs.monokulo.com/";
 /// The docs' front page: the guide for adding Monokulo to a site.
 pub const DOCS_URL: &str = "https://docs.monokulo.com/guide/";
 
-/// A docs page, by its folder under [`SITE_URL`] (`js-library/`).
+/// A docs page, by its folder under [`SITE_URL`] (`webpages/`).
 pub fn docs_url(page: &str) -> String {
     format!("{SITE_URL}{page}")
 }

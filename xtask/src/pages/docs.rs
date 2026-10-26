@@ -219,17 +219,17 @@ pub(super) const PAGES: [Page; 12] = [
     Page {
         source: Source::Markdown("apps.md"),
         dir: "apps",
-        label: "Custom apps",
+        label: "Connected apps",
         group: Group::Integrations,
         old: Some("docs/apps"),
         layout: Layout::Guide,
     },
     Page {
-        source: Source::Markdown("js-library.md"),
-        dir: "js-library",
+        source: Source::Markdown("webpages.md"),
+        dir: "webpages",
         label: "Webpages",
         group: Group::Integrations,
-        old: Some("docs/js-library"),
+        old: None,
         layout: Layout::Reference,
     },
     Page {
@@ -1083,7 +1083,7 @@ mod tests {
     fn the_webpages_page_lays_out_its_reference_as_the_api_explorer_does() {
         let scratch = built("docs-reference");
         let site = scratch.path();
-        let html = fs::read_to_string(site.join("js-library/index.html")).unwrap();
+        let html = fs::read_to_string(site.join("webpages/index.html")).unwrap();
         let article = html.split(r#"<article class="reference">"#).nth(1).unwrap();
         let article = article.split("</article>").next().unwrap();
 
@@ -1136,7 +1136,7 @@ mod tests {
         // that; nothing says "On this page".
         let map = html.split(r#"<nav class="map""#).nth(1).unwrap();
         let map = map.split("</nav>").next().unwrap();
-        assert!(map.contains(r##"<li><details open><summary><a href="../js-library/" aria-current="page">Webpages</a></summary><ul><li><a href="#quick-start" data-nested>Quick start</a></li>"##), "{map}");
+        assert!(map.contains(r##"<li><details open><summary><a href="../webpages/" aria-current="page">Webpages</a></summary><ul><li><a href="#quick-start" data-nested>Quick start</a></li>"##), "{map}");
         assert!(map.contains(r##"<li><details open><summary><a href="#js-reference" data-nested>JS reference</a></summary><ul><li><a href="#createorder" data-nested>createOrder</a></li><li><a href="#mount" data-nested>mount</a></li></ul></details></li>"##), "{map}");
         assert!(!html.contains(r#"<aside class="toc""#));
 
@@ -1298,16 +1298,16 @@ mod tests {
     }
 
     /// Every address the docs were published at under /docs/ before they
-    /// moved to their own domain. A page keeps its old address's redirect
-    /// for as long as it is in `PAGES`.
-    const PUBLISHED_UNDER_DOCS: [&str; 9] = [
+    /// moved to their own domain, that still redirect: a page keeps its old
+    /// address's redirect for as long as it is in `PAGES` under the same
+    /// folder (the JS library's, now Webpages, was dropped with it).
+    const PUBLISHED_UNDER_DOCS: [&str; 8] = [
         "docs/index.html",
         "docs/walkthrough-geomart/index.html",
         "docs/paid/index.html",
         "docs/webhooks/index.html",
         "docs/plugins/index.html",
         "docs/apps/index.html",
-        "docs/js-library/index.html",
         "docs/geomart/index.html",
         "docs/geomart/done.html",
     ];
