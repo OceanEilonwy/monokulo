@@ -60,6 +60,47 @@ impl FromStr for CustodyBackend {
     }
 }
 
+/// A backend as a request names it (the admin API's `key_custody_backend`
+/// and `backend`): one this build knows, or a name it doesn't, which the
+/// engine refuses with its own `400` saying what is enabled rather than
+/// failing to read the request. Its name on the wire either way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestedBackend {
+    Known(CustodyBackend),
+    Unknown(String),
+}
+
+impl RequestedBackend {
+    pub fn name(&self) -> &str {
+        match self {
+            RequestedBackend::Known(backend) => backend.as_str(),
+            RequestedBackend::Unknown(name) => name,
+        }
+    }
+}
+
+impl From<CustodyBackend> for RequestedBackend {
+    fn from(backend: CustodyBackend) -> Self {
+        RequestedBackend::Known(backend)
+    }
+}
+
+impl serde::Serialize for RequestedBackend {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.name())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for RequestedBackend {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(deserializer)?;
+        Ok(match name.parse() {
+            Ok(backend) => RequestedBackend::Known(backend),
+            Err(UnknownCustodyBackend(name)) => RequestedBackend::Unknown(name),
+        })
+    }
+}
+
 /// Stored as its name; an unknown name in a row is an error, not a guess.
 impl rusqlite::ToSql for CustodyBackend {
     fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {

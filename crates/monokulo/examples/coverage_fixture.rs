@@ -913,6 +913,7 @@ async fn status_story(State(control): State<Controls>, Path(story): Path<String>
             height,
             error: error.map(Into::into),
             network: Some("mainnet".into()),
+            rpc: Vec::new(),
             link: None,
         };
     mainnet.nodes = vec![
@@ -1023,7 +1024,7 @@ async fn seed_wallets(
                 spend_pubkey_hex: savings_keys.spend_pubkey_hex.clone(),
                 encrypted_keys: None,
             },
-            network: "mainnet".to_owned(),
+            network: Some("mainnet".to_owned()),
             key_custody_backend: None,
         })
         .await
@@ -1124,6 +1125,7 @@ async fn main() {
                 spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
                 encrypted_keys: None,
             },
+            wallet_id: None,
             network: Some("mainnet".to_string()),
             confirmations_required: Some(1),
             order_expiry_seconds: Some(3600),

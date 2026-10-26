@@ -1871,6 +1871,8 @@ dependencies = [
  "rusqlite",
  "schemars 1.2.3",
  "serde",
+ "serde_json",
+ "service-runtime",
  "thiserror 2.0.20",
 ]
 

@@ -10,6 +10,9 @@ description = "What the engine and monokulo exchange over the engine's admin API
 schemars = ["dep:schemars"]
 # `CustodyBackend` as a choice setting, for the engine's settings.
 live-settings = ["dep:live-settings"]
+# The admin API's and `/status`'s bodies (`admin_api`), for the engine and
+# monokulo's client; not needed by what only names ids or backends.
+admin-api = ["dep:serde_json", "dep:service-runtime"]
 
 [dependencies]
 live-settings = { path = "../live-settings", optional = true }
@@ -18,6 +21,10 @@ monero = "0.22.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 schemars = { version = "1.2.3", optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
+# A key bundle, passed on as it is (`admin_api::KeyBundleResponse`).
+serde_json = { version = "1.0.151", optional = true }
+# The engine's resource report in `/status`.
+service-runtime = { path = "../service-runtime", optional = true }
 thiserror = "2.0.20"
 
 [lints]

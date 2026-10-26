@@ -40,8 +40,11 @@ use std::time::Duration;
 
 use axum::extract::State;
 use axum::response::Json;
+use engine_protocol::admin_api::{
+    CustodyBackendStatus, EngineStatusResponse, ExpiryHeldView, LoopRestarts, NetworkStatus,
+    NodeStatus, ScannerStatusView, SnpTrustStatus, UnservedReason, UnservedTenant,
+};
 use monero::Network;
-use serde::Serialize;
 
 use crate::network::network_str;
 
@@ -56,25 +59,6 @@ const _: () = assert!(
     STATUS_PROBE_BUDGET.as_millis() < super::REQUEST_TIMEOUT.as_millis(),
     "the node probes must leave /status time inside the request timeout"
 );
-
-#[derive(Serialize, Clone)]
-pub(super) struct NodeStatus {
-    pub label: String,
-    pub is_active: bool,
-    /// Skipped for now after failing (task 7.6).
-    pub in_cooldown: bool,
-    pub height: Option<u64>,
-    pub error: Option<String>,
-    /// The network the node says it's on (`get_info`'s `nettype`:
-    /// `"mainnet"`, `"stagenet"`, `"testnet"` or `"fakechain"`), or `None`
-    /// when it didn't say. The admin page shows a node on the wrong one.
-    pub network: Option<String>,
-    /// What the engine has asked this node since the node was configured
-    /// (or the engine started), by endpoint, busiest first.
-    pub rpc: Vec<engine_daemon::EndpointStats>,
-    /// What has been measured of the node's link.
-    pub link: Option<engine_protocol::scaling::LinkSnapshot>,
-}
 
 /// One node's height, the error if it couldn't be read, and its network.
 ///
@@ -109,124 +93,6 @@ async fn probe_node(
         Ok(Err(e)) => (None, Some(e.to_string()), network),
         Err(_) => (None, timed_out(), network),
     }
-}
-
-#[derive(Serialize, Clone)]
-pub(super) struct ScannerStatusView {
-    pub ever_ticked: bool,
-    pub last_tick_started_at: Option<i64>,
-    pub last_tick_finished_at: Option<i64>,
-    pub tick_count: u64,
-    pub tenants_scanned: usize,
-    pub last_tick_ok: bool,
-    pub last_error: Option<String>,
-    /// More than `is_stale`'s own threshold since the last tick finished
-    /// (or never ticked at all) - see that function's doc comment for the
-    /// real formula and why.
-    pub is_stale: bool,
-}
-
-/// [`crate::store::ExpiryHold`], for `/status`.
-#[derive(Serialize, Clone)]
-pub(super) struct ExpiryHeldView {
-    pub orders: u64,
-    /// The earliest of their deadlines.
-    pub overdue_since: i64,
-    /// Some stores are behind the node's tip.
-    pub behind_tip: bool,
-    /// Since when the node has said it isn't synchronized with its peers.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node_unsynchronized_since: Option<i64>,
-    /// Since when a reorg has been reconciled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reorg_open_since: Option<i64>,
-}
-
-#[derive(Serialize, Clone)]
-pub(super) struct NetworkStatus {
-    pub network: String,
-    pub nodes: Vec<NodeStatus>,
-    pub scanner: ScannerStatusView,
-    /// Tenants not yet scanned up to this network's latest scanned block
-    /// (task 5.0): their payments may be detected late until they catch up.
-    pub lagging_tenants: usize,
-    /// How far behind the furthest-behind tenant is, in blocks.
-    pub max_blocks_behind: u64,
-    /// Orders past their deadline that aren't expiring, because blocks
-    /// that may hold their payments aren't scanned yet, and why; absent
-    /// while there are none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiry_held: Option<ExpiryHeldView>,
-    /// How the block scan is going and what limits it.
-    pub scaling: engine_protocol::scaling::NetworkScaling,
-    /// The nodes' ZMQ announcements; absent while no
-    /// node of this network has a `zmq_pub`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub announcements: Option<engine_protocol::announcements::Announcements>,
-    /// Proof-of-work checking; absent while it is
-    /// off on this network.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<engine_protocol::proof::ProofStatus>,
-}
-
-#[derive(Serialize)]
-pub(super) struct EngineStatusResponse {
-    pub networks: Vec<NetworkStatus>,
-    pub poll_interval_secs: u64,
-    pub generated_at: i64,
-    /// How many times each background loop has been restarted after a panic
-    /// or an unexpected return since the engine started (task 7.9). Empty
-    /// while nothing has failed.
-    pub loop_restarts: Vec<LoopRestarts>,
-    /// Every store that can't be scanned right now, and why (task 3.7):
-    /// monokulo shows each one's owner an alert.
-    pub unserved_tenants: Vec<UnservedTenant>,
-    /// Each enabled key custody backend and whether it answers (task 5.5).
-    pub key_custody: Vec<CustodyBackendStatus>,
-    /// The backend a new store's keys go to unless it asks for another;
-    /// `None` when there's no choice (a single backend).
-    pub key_custody_default: Option<crate::key_custody::CustodyBackend>,
-    /// Which engine images the `snp` backend trusts with keys, when it is
-    /// set up: monokulo's key entry forms check bundles against a policy of
-    /// their own, and alert when the two disagree.
-    pub key_custody_snp_trust: Option<SnpTrustStatus>,
-    /// The engine process's CPU and memory over the last hour, and the
-    /// machine it runs on.
-    pub resources: service_runtime::resources::ResourceReport,
-}
-
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub(super) struct CustodyBackendStatus {
-    pub backend: crate::key_custody::CustodyBackend,
-    pub error: Option<String>,
-}
-
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub(super) struct SnpTrustStatus {
-    /// SHA-384 of the ID key images must be signed with, hex.
-    pub id_key_digest: String,
-    pub min_guest_svn: u32,
-    /// `bootloader,tee,snp,microcode`, or empty for no floor.
-    pub min_tcb: String,
-}
-
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
-pub(super) struct UnservedTenant {
-    pub public_key: String,
-    pub network: String,
-    /// `"no_reachable_node"` (its network has no node configured, or none
-    /// answers), `"catching_up"` (it fell behind and is being caught up),
-    /// `"custody_disabled"` (its keys are in a key custody backend that is
-    /// turned off) or `"custody_unavailable"` (that backend doesn't answer).
-    pub reason: &'static str,
-    /// For `catching_up`: how many blocks behind.
-    pub blocks_behind: Option<u64>,
-}
-
-#[derive(Serialize)]
-pub(super) struct LoopRestarts {
-    pub name: &'static str,
-    pub restarts: u64,
 }
 
 /// A network's scan loop is considered stale (not just "last tick failed" -
@@ -372,7 +238,7 @@ pub(super) async fn status_page(
             lagging_tenants,
             max_blocks_behind,
             expiry_held,
-            scaling,
+            scaling: Some(scaling),
             announcements,
             proof,
         });
@@ -380,7 +246,10 @@ pub(super) async fn status_page(
 
     let loop_restarts = service_runtime::supervise::restart_counts()
         .into_iter()
-        .map(|(name, restarts)| LoopRestarts { name, restarts })
+        .map(|(name, restarts)| LoopRestarts {
+            name: name.to_owned(),
+            restarts,
+        })
         .collect();
     let key_custody: Vec<CustodyBackendStatus> = state
         .custody
@@ -421,7 +290,7 @@ pub(super) async fn status_page(
                 min_guest_svn: trust.min_guest_svn,
                 min_tcb: trust.min_tcb.to_text(),
             }),
-        resources: service_runtime::resources::sampler().report(),
+        resources: Some(service_runtime::resources::sampler().report()),
     }))
 }
 
@@ -506,15 +375,14 @@ fn custody_unserved_tenants(
         .into_iter()
         .filter_map(|(public_key, network, backend)| {
             let reason = match health.iter().find(|h| h.backend == backend) {
-                None => "custody_disabled",
-                Some(h) if h.error.is_some() => "custody_unavailable",
+                None => UnservedReason::CustodyDisabled,
+                Some(h) if h.error.is_some() => UnservedReason::CustodyUnavailable,
                 Some(_) => return None,
             };
             Some(UnservedTenant {
                 public_key,
                 network: network_str(network).to_owned(),
                 reason,
-                blocks_behind: None,
             })
         })
         .collect())
@@ -555,8 +423,7 @@ fn unserved_tenants(
                 unserved.push(UnservedTenant {
                     public_key,
                     network: network.clone(),
-                    reason: "no_reachable_node",
-                    blocks_behind: None,
+                    reason: UnservedReason::NoReachableNode,
                 });
             }
             continue;
@@ -569,8 +436,9 @@ fn unserved_tenants(
             unserved.push(UnservedTenant {
                 public_key,
                 network: network.clone(),
-                reason: "catching_up",
-                blocks_behind: Some(high_water.saturating_sub(cursor)),
+                reason: UnservedReason::CatchingUp {
+                    blocks_behind: high_water.saturating_sub(cursor),
+                },
             });
         }
     }
@@ -608,7 +476,7 @@ mod tests {
             lagging_tenants: 0,
             max_blocks_behind: 0,
             expiry_held: None,
-            scaling: engine_protocol::scaling::NetworkScaling {
+            scaling: Some(engine_protocol::scaling::NetworkScaling {
                 scan: crate::scaling::ScanProgress::default().report(0),
                 blocks_behind: 0,
                 catch_up_secs: None,
@@ -618,7 +486,7 @@ mod tests {
                 round_deadline_secs: 10,
                 round_base_secs: 10,
                 slow: None,
-            },
+            }),
             announcements: None,
             proof: None,
         }

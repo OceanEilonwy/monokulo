@@ -3,12 +3,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::value::{whole_number_message, SettingKind, SettingValue};
 
-/// When a saved value reaches the running process.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// When a saved value reaches the running process. Read back by monokulo
+/// from the engine's settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Applies {
     /// Straight away, through the section's `Live` value (and its
@@ -171,8 +172,9 @@ pub struct Setting<T: SettingValue> {
     pub editable: bool,
 }
 
-/// Where a setting's effective value came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Where a setting's effective value came from. Read back by monokulo
+/// from the engine's settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingSource {
     /// The options file.

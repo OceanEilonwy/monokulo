@@ -1846,6 +1846,7 @@ fn status_with(
         networks: vec![],
         poll_interval_secs: 1,
         generated_at: 0,
+        loop_restarts: Vec::new(),
         unserved_tenants: unserved,
         key_custody: vec![],
         key_custody_default: None,
@@ -1863,8 +1864,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "stagenet".into(),
-            reason: "no_reachable_node".into(),
-            blocks_behind: None,
+            reason: crate::engine_client::UnservedReason::NoReachableNode,
         }]),
     );
 
@@ -1921,8 +1921,7 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "mainnet".into(),
-            reason: "catching_up".into(),
-            blocks_behind: Some(12),
+            reason: crate::engine_client::UnservedReason::CatchingUp { blocks_behind: 12 },
         }]),
     );
     let alerts = super::page_chrome(&state, Some(&owner), "/").await.alerts;
@@ -1939,16 +1938,21 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
 async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     for (reason, expected) in [
-        ("custody_disabled", "turned off"),
-        ("custody_unavailable", "isn't answering"),
+        (
+            crate::engine_client::UnservedReason::CustodyDisabled,
+            "turned off",
+        ),
+        (
+            crate::engine_client::UnservedReason::CustodyUnavailable,
+            "isn't answering",
+        ),
     ] {
         crate::http::status_page::seed_status_for_tests(
             &state.engine,
             status_with(vec![crate::engine_client::UnservedTenant {
                 public_key: "pk_shop".into(),
                 network: "mainnet".into(),
-                reason: reason.into(),
-                blocks_behind: None,
+                reason,
             }]),
         );
         let alerts = super::page_chrome(&state, Some(&owner), "/").await.alerts;
