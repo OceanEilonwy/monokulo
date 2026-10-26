@@ -1439,19 +1439,20 @@ impl TorReloadable {
 #[live_settings::async_trait]
 impl live_settings::Reloadable for TorReloadable {
     type Config = TorConfig;
-    type Prepared = tor_service::TorChange;
+    /// The change, and the `tor.state_dir` to report Tor's status in.
+    type Prepared = (tor_service::TorChange, PathBuf);
 
     async fn prepare(
         &self,
         new: &TorConfig,
         _old: &TorConfig,
-    ) -> Result<(tor_service::TorChange, Vec<Warning>), FieldError> {
+    ) -> Result<((tor_service::TorChange, PathBuf), Vec<Warning>), FieldError> {
         let wanted = (new.mode == TorMode::Inside).then(|| tor_service::Wanted {
             state_dir: new.state_dir.clone(),
             hidden_service_dir: new.hidden_service_dir.clone(),
         });
         match self.tor.prepare(wanted) {
-            Ok(change) => Ok((change, Vec::new())),
+            Ok(change) => Ok(((change, new.state_dir.clone()), Vec::new())),
             Err(refused) => {
                 let setting = match refused.field {
                     tor_service::WantedField::StateDir => TOR_STATE_DIR.key,
@@ -1462,7 +1463,9 @@ impl live_settings::Reloadable for TorReloadable {
         }
     }
 
-    async fn install(&self, change: tor_service::TorChange) {
+    async fn install(&self, (change, state_dir): (tor_service::TorChange, PathBuf)) {
+        // Reporting first, so what the change does is reported there too.
+        self.tor.report_in(&state_dir);
         self.tor.install(change);
     }
 
@@ -2380,6 +2383,21 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(refused.key, TOR_HIDDEN_SERVICE_DIR.key);
+
+        // Turned off on the admin page: the state folder's status file,
+        // which the OpenWrt app reads, says so, whatever an earlier run
+        // left there.
+        let state_dir = dir.join("tor");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let status = state_dir.join(tor_service::STATUS_FILE);
+        std::fs::write(&status, "state=running\n").unwrap();
+        let off = TorConfig {
+            state_dir: state_dir.clone(),
+            ..TorConfig::defaults()
+        };
+        let (prepared, _) = reloadable.prepare(&off, &off).await.unwrap();
+        reloadable.install(prepared).await;
+        assert_eq!(std::fs::read_to_string(&status).unwrap(), "state=off\n");
         let _ = std::fs::remove_dir_all(dir);
     }
 

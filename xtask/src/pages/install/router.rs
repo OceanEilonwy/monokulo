@@ -258,9 +258,9 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
             strong { "public URI" }
             " on Monokulo’s admin page (Settings) to the address customers use, for example "
             code { "https://pay.example.com" }
-            ". Behind CGNAT, or to keep your address private, turn on "
-            em { "Onion service" }
-            " instead: Tor runs inside Monokulo and customers on Tor reach the checkout with no port opened, even with "
+            ". Behind CGNAT, or to keep your address private, turn on Tor there instead ("
+            span.path.inline { (path(&["Settings", "Tor"])) }
+            "): Tor runs inside Monokulo and customers on Tor reach the checkout with no port opened, even with "
             em { "Listen on" }
             " set to "
             em { "This router only" }

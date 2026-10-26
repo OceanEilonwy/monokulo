@@ -126,6 +126,62 @@ async fn a_start_asked_for_before_the_router_exists_waits_for_it() {
     assert_eq!(tor.running_with(), None);
 }
 
+#[test]
+fn the_status_file_follows_what_tor_does_and_says_off_where_nothing_reports() {
+    let dir = tempfile_dir("tor-status");
+    let read = |dir: &Path| std::fs::read_to_string(dir.join(STATUS_FILE)).ok();
+    let address = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion";
+
+    // Tor never ran in a folder that doesn't exist: nothing is written.
+    let tor = Tor::default();
+    let missing = dir.join("missing");
+    tor.report_in(&missing);
+    assert!(!missing.exists());
+
+    // Off is reported, over whatever an earlier run left.
+    let state_dir = dir.join("tor");
+    prepare_state_dir(&state_dir).unwrap();
+    std::fs::write(
+        state_dir.join(STATUS_FILE),
+        format!("state=running\naddress={address}\n"),
+    )
+    .unwrap();
+    tor.report_in(&state_dir);
+    assert_eq!(read(&state_dir).as_deref(), Some("state=off\n"));
+
+    tor.set_status(TorStatus::Starting {
+        percent: 40,
+        doing: "Loading the directory".to_string(),
+    });
+    assert_eq!(
+        read(&state_dir).as_deref(),
+        Some("state=starting\npercent=40\n")
+    );
+    tor.set_status(TorStatus::Running {
+        address: address.to_string(),
+        since: 1,
+    });
+    assert_eq!(
+        read(&state_dir),
+        Some(format!("state=running\naddress={address}\n"))
+    );
+    assert!(!state_dir.join(format!("{STATUS_FILE}.partial")).exists());
+
+    // Moved to another folder: the old one no longer hears, so it says off.
+    let moved = dir.join("moved");
+    prepare_state_dir(&moved).unwrap();
+    tor.report_in(&moved);
+    assert_eq!(read(&state_dir).as_deref(), Some("state=off\n"));
+    assert_eq!(
+        read(&moved),
+        Some(format!("state=running\naddress={address}\n"))
+    );
+
+    tor.stop();
+    assert_eq!(read(&moved).as_deref(), Some("state=off\n"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// A fresh folder for one test.
 fn tempfile_dir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("monokulo-{name}-{}", uuid::Uuid::new_v4()));

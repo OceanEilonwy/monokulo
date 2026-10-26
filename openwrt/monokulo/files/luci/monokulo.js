@@ -35,16 +35,16 @@ function state(instances, name) {
 	return i && i.running ? _('Running') : _('Not running');
 }
 
-// The build in the package's version file, or the one procd keeps with the
-// running instance (the init script hands it the same file's values).
-function build(text) {
-	var b = {};
+// A file of key=value lines: the package's version file, or the status
+// file Tor inside monokulo keeps in its state folder.
+function fields(text) {
+	var f = {};
 	(text || '').split('\n').forEach(function(line) {
-		var kv = line.match(/^(version|commit)=(.*)$/);
+		var kv = line.match(/^([a-z]+)=(.*)$/);
 		if (kv)
-			b[kv[1]] = kv[2].trim();
+			f[kv[1]] = kv[2].trim();
 	});
-	return b;
+	return f;
 }
 
 // Where a build's commit link points.
@@ -62,20 +62,22 @@ function describe(b) {
 return view.extend({
 	load: function() {
 		return Promise.all([ uci.load('monokulo'), instances() ]).then(function(data) {
-			// The onion address Tor inside monokulo wrote, once it has one.
+			// What Tor inside monokulo is doing, whether it was turned on on
+			// monokulo's admin page or not: monokulo rewrites this file
+			// whenever that changes, and says "off" in it too.
 			var dir = uci.get('monokulo', 'main', 'data_dir') || '/srv/monokulo';
 			return Promise.all([
-				L.resolveDefault(fs.read(dir + '/tor/hostname'), ''),
+				L.resolveDefault(fs.read(dir + '/tor/status'), ''),
 				L.resolveDefault(fs.read('/usr/share/monokulo/version'), '')
 			]).then(function(files) {
-				return data.concat([ (files[0] || '').trim(), build(files[1]) ]);
+				return data.concat([ fields(files[0]), fields(files[1]) ]);
 			});
 		});
 	},
 
 	render: function(data) {
 		var running = data[1];
-		var onion = data[2];
+		var tor = data[2];
 		var installed = data[3];
 		var m, s, o;
 
@@ -116,15 +118,41 @@ return view.extend({
 		o = s.option(form.DummyValue, '_onion', _('Onion service'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
-			if (uci.get('monokulo', 'main', 'onion') !== '1')
-				return _('Off here: turn on “Onion service” below, or set it on monokulo’s admin page (Tor tab).');
-			if (!(running.monokulo && running.monokulo.running))
-				return _('Starts with monokulo.');
-			if (!onion)
-				return '<strong>' + _('Starting Tor') + '</strong> &middot; ' + _('a first start takes up to a minute; on a slow router, up to three.');
-			return '<strong>' + _('Reachable on Tor') + '</strong> &middot; <code>http://' + onion + '</code><br>' +
-				_('Customers on Tor reach the checkout at this address. No firewall rule or port forward is needed: Tor connects out.');
+			var text = onionStatus();
+			// Set by the option this page had before Tor moved to the
+			// admin page; the init script keeps it on and logs how to move it.
+			if (uci.get('monokulo', 'main', 'onion') === '1')
+				text += '<br>' + _('Turned on by the old <code>onion</code> option in /etc/config/monokulo, so monokulo’s admin page can’t change it. To set Tor there: <code>uci delete monokulo.main.onion; uci commit monokulo; service monokulo restart</code>, then turn Tor on there (the onion address stays the same).');
+			return text;
 		};
+
+		function onionStatus() {
+			var where = _('on monokulo’s admin page (Settings › Tor)');
+			if (!(running.monokulo && running.monokulo.running))
+				return _('Monokulo isn’t running.');
+			var address = /^[a-z2-7]{56}\.onion$/.test(tor.address || '')
+				? '<code>http://' + tor.address + '</code>' : '';
+			switch (tor.state) {
+			case 'starting':
+				return '<strong>' + _('Starting Tor') + '</strong>' +
+					(/^[0-9]+$/.test(tor.percent || '') ? ' &middot; ' + tor.percent + '%' : '') +
+					' &middot; ' + _('a first start takes up to a minute; on a slow router, up to three.');
+			case 'publishing':
+				return '<strong>' + _('Publishing the address') + '</strong> &middot; ' + address + '<br>' +
+					_('Customers on Tor can usually reach it within a minute.');
+			case 'running':
+				return '<strong>' + _('Reachable on Tor') + '</strong> &middot; ' + address + '<br>' +
+					_('Customers on Tor reach the checkout at this address. No firewall rule or port forward is needed: Tor connects out.');
+			case 'degraded':
+				return '<strong>' + _('May be unreachable') + '</strong> &middot; ' + address + '<br>' +
+					_('Tor keeps trying; what it reports is %s.').format(where);
+			case 'failed':
+				return '<strong>' + _('Stopped on an error') + '</strong> &middot; ' +
+					_('it starts again by itself; why it stopped is %s.').format(where);
+			default:
+				return _('Off: Tor isn’t running inside monokulo. Turn it on %s, so customers on Tor can pay without the router being reachable from the internet.').format(where);
+			}
+		}
 
 		o = s.option(form.Button, '_restart', _('Restart'),
 			_('Stops monokulo and starts it again with the settings saved here. Checkouts open in a browser reconnect on their own.'));
@@ -166,12 +194,7 @@ return view.extend({
 		o.value('all', _('All interfaces'));
 		o.value('loopback', _('This router only (127.0.0.1)'));
 		o.default = 'lan';
-		o.description = _('With the onion service on, “This router only” still serves customers on Tor: Tor reaches monokulo inside the process.');
-
-		o = s.option(form.Flag, 'onion', _('Onion service'),
-			_('Run Tor inside monokulo and serve an onion address beside the port above, so customers on Tor can pay without the router being reachable from the internet. Uses about 80 MB of memory, and some CPU while Tor starts. Off: as set on monokulo’s own admin page.'));
-		o.default = '0';
-		o.rmempty = false;
+		o.description = _('With Tor on (monokulo’s admin page, Settings › Tor), “This router only” still serves customers on Tor: Tor reaches monokulo inside the process.');
 
 		o = s.option(form.Value, 'data_dir', _('Data folder'),
 			_('Databases, logs and the options file monokulo’s admin page saves. Must be on storage, not /tmp. Kept across firmware upgrades if left at the default.'));

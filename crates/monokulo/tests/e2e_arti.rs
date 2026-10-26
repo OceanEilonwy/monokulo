@@ -204,6 +204,13 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
     let written =
         std::fs::read_to_string(config.state_dir.join(tor_service::HOSTNAME_FILE)).unwrap();
     assert_eq!(written.trim(), onion);
+    let status =
+        || std::fs::read_to_string(config.state_dir.join(tor_service::STATUS_FILE)).unwrap();
+    assert!(
+        status().contains(&format!("address={onion}\n")),
+        "{}",
+        status()
+    );
 
     // 3. A visitor on Tor reaches it, and gets what a visitor on Tor gets.
     let response = until("reaching monokulo over Tor", || {
@@ -258,7 +265,10 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
         "the shop's file holds the token"
     );
 
-    reloadable.install(tor_service::TorChange::Stop).await;
+    reloadable
+        .install((tor_service::TorChange::Stop, config.state_dir.clone()))
+        .await;
     assert_eq!(tor.status(), TorStatus::Off);
+    assert_eq!(status(), "state=off\n");
     let _ = std::fs::remove_dir_all(&run);
 }

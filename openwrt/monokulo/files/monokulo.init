@@ -130,9 +130,14 @@ start_service() {
 		--engine-server-cpus "$engine_cpus" \
 		--engine-server-nice "$engine_nice" \
 		--tor-state-dir "$data_dir/tor"
-	# The onion service: Tor inside monokulo, reachable with no port open
-	# or forwarded. Off leaves it to monokulo's own admin page.
-	[ "$onion" = 1 ] && procd_append_param command --tor-mode inside
+	# Tor is set on monokulo's own admin page (Settings > Tor). Routers
+	# that turned it on with the old `onion` option keep it on, so their
+	# onion address doesn't vanish on upgrade; the command line locks the
+	# admin page's setting while the option is there.
+	if [ "$onion" = 1 ]; then
+		log "Tor is on from the onion option in /etc/config/monokulo, which has moved to monokulo's admin page (Settings > Tor); that page can't change Tor while the option is set. To set it there: uci delete monokulo.main.onion; uci commit monokulo; service monokulo restart, then turn Tor on there (the onion address stays the same)"
+		procd_append_param command --tor-mode inside
+	fi
 	procd_set_param env MONOKULO_ENCRYPTION_KEY="$(secret MONOKULO_ENCRYPTION_KEY)"
 	procd_set_param user "$RUN_AS"
 	# The build, kept with the instance so `ubus call service list` (and

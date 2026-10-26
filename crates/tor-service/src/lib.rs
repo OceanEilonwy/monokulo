@@ -52,6 +52,12 @@ pub const CTOR_NICKNAME: &str = "monokulo-ctor";
 /// as a C tor writes its HiddenServiceDir's `hostname`.
 pub const HOSTNAME_FILE: &str = "hostname";
 
+/// The file in `tor.state_dir` that says what Tor inside monokulo is doing
+/// ([`TorStatus::report`]), rewritten whenever that changes, for what
+/// watches monokulo from outside (the OpenWrt app). Unlike the hostname
+/// file it also says when Tor is off.
+pub const STATUS_FILE: &str = "status";
+
 /// The file in a C tor HiddenServiceDir that holds the service's key.
 pub const CTOR_SECRET_KEY_FILE: &str = "hs_ed25519_secret_key";
 
@@ -86,6 +92,28 @@ impl TorStatus {
             _ => None,
         }
     }
+
+    /// The [`STATUS_FILE`]'s contents: `state=` (off, starting,
+    /// publishing, running, degraded or failed), with `address=` whenever
+    /// the onion address is known and `percent=` while starting.
+    pub fn report(&self) -> String {
+        let state = match self {
+            TorStatus::Off => "off",
+            TorStatus::Starting { .. } => "starting",
+            TorStatus::Publishing { .. } => "publishing",
+            TorStatus::Running { .. } => "running",
+            TorStatus::Degraded { .. } => "degraded",
+            TorStatus::Failed { .. } => "failed",
+        };
+        let mut report = format!("state={state}\n");
+        if let Some(address) = self.address() {
+            report.push_str(&format!("address={address}\n"));
+        }
+        if let TorStatus::Starting { percent, .. } = self {
+            report.push_str(&format!("percent={percent}\n"));
+        }
+        report
+    }
 }
 
 /// The handle on Tor inside monokulo. Cheap to clone; clones share it.
@@ -97,6 +125,10 @@ pub struct Tor {
 #[derive(Default)]
 struct Inner {
     status: parking_lot::RwLock<Option<TorStatus>>,
+    /// The `tor.state_dir` whose [`STATUS_FILE`] reports the status, once
+    /// the settings named it ([`Tor::report_in`]), and what was last
+    /// written there.
+    reported: parking_lot::Mutex<Option<(PathBuf, String)>>,
     /// The router to serve, once `main` has built it.
     router: OnceLock<axum::Router>,
     /// The running service: dropping it stops it.
@@ -134,7 +166,35 @@ impl Tor {
     }
 
     pub(crate) fn set_status(&self, status: TorStatus) {
+        let report = status.report();
         *self.inner.status.write() = Some(status);
+        let mut reported = self.inner.reported.lock();
+        if let Some((dir, last)) = reported.as_mut() {
+            if *last != report {
+                write_status_file(dir, &report);
+                *last = report;
+            }
+        }
+    }
+
+    /// Reports the status in `state_dir`'s [`STATUS_FILE`] from now on:
+    /// the `tor.state_dir` setting, whatever the mode, so the file says
+    /// "off" too. A folder it reported in before is told "off", since
+    /// nothing reports there any more.
+    pub fn report_in(&self, state_dir: &Path) {
+        // Locked before the status is read: a change made meanwhile waits,
+        // then finds this report and writes over it.
+        let mut reported = self.inner.reported.lock();
+        let report = self.status().report();
+        match reported.as_ref() {
+            Some((dir, last)) if dir == state_dir && *last == report => return,
+            Some((dir, _)) if dir != state_dir => {
+                write_status_file(dir, &TorStatus::Off.report());
+            }
+            _ => {}
+        }
+        write_status_file(state_dir, &report);
+        *reported = Some((state_dir.to_path_buf(), report));
     }
 
     /// Gives Tor the router to serve, starting a service that was asked
@@ -366,6 +426,22 @@ fn prepare_state_dir(dir: &Path) -> Result<(), String> {
         })?;
     }
     Ok(())
+}
+
+/// Replaces `dir`'s [`STATUS_FILE`] with `report` in one step, so a reader
+/// never sees half of it. A folder that doesn't exist is left alone: Tor
+/// never ran there, so there is nothing stale to correct, and only
+/// [`prepare_state_dir`] makes it.
+fn write_status_file(dir: &Path, report: &str) {
+    if !dir.is_dir() {
+        return;
+    }
+    let file = dir.join(STATUS_FILE);
+    let partial = dir.join(format!("{STATUS_FILE}.partial"));
+    let written = std::fs::write(&partial, report).and_then(|()| std::fs::rename(&partial, &file));
+    if let Err(e) = written {
+        tracing::warn!(path = %file.display(), error = %e, "tor: couldn't write Tor's status to a file");
+    }
 }
 
 /// A HiddenServiceDir monokulo can take the key from.
