@@ -363,14 +363,15 @@ async fn snp_for_new_wallet(
     user: &UserRow,
 ) -> Option<views::key_entry::SnpKeyEntry> {
     let backends = super::status_page::known_enabled_custody_backends(&state.engine);
-    if backends.first().map(String::as_str) != Some("snp") {
+    let default = backends.first().copied()?;
+    if !default.takes_keys_encrypted() {
         return None;
     }
     super::key_entry::prepare(
         state,
         &user.id,
         super::key_entry::Purpose::Create,
-        &["snp".to_owned()],
+        &[default],
     )
     .await
 }
@@ -1106,16 +1107,18 @@ pub async fn restore(
         .key_custody_backend
         .as_deref()
         .filter(|b| !b.is_empty());
-    let keys = match super::key_entry::store_keys(
+    let (chosen, keys) = match super::key_entry::store_keys(
         &state,
         backend,
         &form.view_key_hex,
         &form.spend_pubkey_hex,
         form.encrypted_keys.as_deref(),
     ) {
-        Ok((_, keys)) => keys,
+        Ok(chosen) => chosen,
         Err(message) => return render_restore(&state, &user, wallet, Some(message)).await,
     };
+    // The one the form named; none for the engine's default, as before.
+    let backend = backend.and(chosen);
     match state
         .engine
         .client

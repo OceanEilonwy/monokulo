@@ -343,15 +343,22 @@ async fn snp_custody(
     snp.refresh_evidence(&TestEvidence)
         .await
         .expect("test evidence");
-    let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
-        (
-            "plain".to_string(),
-            Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
-        ),
-        ("snp".to_string(), snp as Arc<dyn KeyCustody>),
-    ]);
+    let backends: HashMap<engine::key_custody::CustodyBackend, Arc<dyn KeyCustody>> =
+        HashMap::from([
+            (
+                engine::key_custody::CustodyBackend::Plain,
+                Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>,
+            ),
+            (
+                engine::key_custody::CustodyBackend::Snp,
+                snp as Arc<dyn KeyCustody>,
+            ),
+        ]);
     (
-        Arc::new(engine::key_custody::CustodyRouter::new(backends, "plain")),
+        Arc::new(engine::key_custody::CustodyRouter::new(
+            backends,
+            engine::key_custody::CustodyBackend::Plain,
+        )),
         slot,
         vcek,
     )
@@ -835,7 +842,6 @@ impl TestEngineConfig {
             custody
         };
         let (key_custody, snp_slot, snp_vcek) = custody;
-        let key_custody_backend = "plain";
 
         // Held separately (not just inline in `AppState`) so the background scan loop
         // below can clone the same `Arc` and re-read it fresh every tick, exactly like
@@ -910,7 +916,6 @@ impl TestEngineConfig {
             settings: engine_settings,
             custody: engine::http::Custody {
                 backends: key_custody.clone(),
-                default_backend: key_custody_backend.to_string(),
                 wallet_handles: wallet_handles.clone(),
                 snp: snp_slot,
             },

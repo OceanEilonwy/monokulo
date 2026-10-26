@@ -30,15 +30,8 @@ use crate::api::runtime::problem::Problem;
 use crate::engine_client::{KeyBundleAnswer, StoreKeys};
 use crate::network::NetworkKind;
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
+use engine_protocol::custody::CustodyBackend;
 use engine_protocol::ids::UserId;
-
-/// The backend that takes keys only encrypted to it.
-pub const SNP: &str = "snp";
-
-/// Whether `backend` takes a store's keys only encrypted to it.
-pub fn takes_keys_encrypted(backend: &str) -> bool {
-    backend == SNP
-}
 
 /// How long a bundle is kept to serve to `key-custody-cli`: as long as the
 /// engine accepts its challenge.
@@ -146,10 +139,10 @@ pub async fn prepare(
     state: &AppState,
     user: &UserId,
     purpose: Purpose<'_>,
-    backends: &[String],
+    backends: &[CustodyBackend],
 ) -> Option<SnpKeyEntry> {
     let policy = state.settings.snp_entry.load();
-    if !policy.required && !backends.iter().any(|b| takes_keys_encrypted(b)) {
+    if !policy.required && !backends.iter().any(|b| b.takes_keys_encrypted()) {
         return None;
     }
     let unavailable = || {
@@ -176,8 +169,20 @@ pub async fn prepare(
         return Some(SnpKeyEntry::Limited(TOO_MANY_FORMS.to_owned()));
     }
     let answer = match purpose {
-        Purpose::Create => state.engine.client.create_key_bundle(SNP).await,
-        Purpose::Move(sk) => state.engine.client.move_key_bundle(sk, SNP).await,
+        Purpose::Create => {
+            state
+                .engine
+                .client
+                .create_key_bundle(CustodyBackend::Snp)
+                .await
+        }
+        Purpose::Move(sk) => {
+            state
+                .engine
+                .client
+                .move_key_bundle(sk, CustodyBackend::Snp)
+                .await
+        }
     };
     Some(match answer {
         Ok(answer) => SnpKeyEntry::Ready(Box::new(ready_view(
@@ -279,13 +284,13 @@ pub fn trust_differences(
 /// The key custody backends a store may use from this site's forms: the
 /// engine's, the default first, less `snp` while [`snp_unusable`], and
 /// only `snp` while monokulo requires it.
-pub fn usable_custody_backends(state: &AppState) -> Vec<String> {
+pub fn usable_custody_backends(state: &AppState) -> Vec<CustodyBackend> {
     let required = state.settings.snp_entry.load().required;
     let snp_ok = snp_unusable(state).is_none();
     super::status_page::known_enabled_custody_backends(&state.engine)
         .into_iter()
         .filter(|backend| {
-            if takes_keys_encrypted(backend) {
+            if backend.takes_keys_encrypted() {
                 snp_ok
             } else {
                 !required
@@ -299,11 +304,11 @@ pub fn usable_custody_backends(state: &AppState) -> Vec<String> {
 pub fn offered_backends(
     state: &AppState,
     choices: &[crate::views::connect::CustodyChoice],
-) -> Vec<String> {
+) -> Vec<CustodyBackend> {
     if choices.is_empty() {
         usable_custody_backends(state).into_iter().take(1).collect()
     } else {
-        choices.iter().map(|c| c.backend.clone()).collect()
+        choices.iter().map(|c| c.backend).collect()
     }
 }
 
@@ -441,6 +446,10 @@ fn downloads(template: &str, version: &str) -> Vec<CliDownload> {
         .collect()
 }
 
+/// A form named a key storage that isn't a backend at all.
+pub const NOT_OFFERED: &str =
+    "That key storage isn't one this site offers, so the keys were not sent. Choose another.";
+
 /// The backend a form's keys go to and the keys, in the form it takes.
 /// Refused, with what to do instead, when they came in the clear for a
 /// backend that takes them only encrypted (they are not sent on), or
@@ -455,7 +464,7 @@ pub fn store_keys(
     view_key_hex: &str,
     spend_pubkey_hex: &str,
     encrypted_keys: Option<&str>,
-) -> Result<(Option<String>, StoreKeys), String> {
+) -> Result<(Option<CustodyBackend>, StoreKeys), String> {
     let engine = &state.engine;
     let required = state.settings.snp_entry.load().required;
     let encrypted = encrypted_keys
@@ -465,7 +474,10 @@ pub fn store_keys(
     let not_answering =
         "The engine isn't answering, so this store's keys were not sent. Try again in a minute.";
     let backend = match backend {
-        Some(backend) => Some(backend.to_owned()),
+        Some(name) => Some(
+            name.parse::<CustodyBackend>()
+                .map_err(|_| NOT_OFFERED.to_owned())?,
+        ),
         None if !status_known => {
             // The engine's default can't be known: it might take keys only
             // encrypted, so typed ones aren't sent on.
@@ -480,8 +492,8 @@ pub fn store_keys(
             "No key storage can take this store's keys right now, so they were not sent. Try again later; if it lasts, tell this site's operator.",
         )?),
     };
-    match backend.as_deref() {
-        Some(backend) if takes_keys_encrypted(backend) => {
+    match backend {
+        Some(backend) if backend.takes_keys_encrypted() => {
             if let Some(why) = snp_unusable(state) {
                 tracing::warn!(reason = %why, "keys for SEV-SNP key storage refused");
                 return Err(
@@ -498,7 +510,7 @@ pub fn store_keys(
         }
         _ => {}
     }
-    let encrypted_only = backend.as_deref().is_some_and(takes_keys_encrypted);
+    let encrypted_only = backend.is_some_and(CustodyBackend::takes_keys_encrypted);
     if encrypted_only {
         if !view_key_hex.trim().is_empty() {
             return Err(
@@ -679,8 +691,8 @@ mod tests {
         assert!(store_keys(&state, Some("plain"), &view, &spend, None).is_ok());
         let (backend, keys) = store_keys(&state, None, "", "", Some("{envelope}")).unwrap();
         assert_eq!(
-            backend.as_deref(),
-            Some("snp"),
+            backend,
+            Some(CustodyBackend::Snp),
             "named, not left to the engine"
         );
         assert_eq!(keys.encrypted_keys.as_deref(), Some("{envelope}"));
@@ -708,13 +720,13 @@ mod tests {
             );
             let why = snp_unusable(&state).unwrap();
             assert!(why.contains(differs_in), "{why}");
-            assert_eq!(usable_custody_backends(&state), vec!["plain".to_owned()]);
+            assert_eq!(usable_custody_backends(&state), vec![CustodyBackend::Plain]);
             assert!(super::super::status_page::custody_choice_views(&state, None).is_empty());
             assert!(store_keys(&state, Some("snp"), "", "", Some("{envelope}"))
                 .unwrap_err()
                 .contains("isn't available"));
             let (backend, _) = store_keys(&state, None, &view, &spend, None).unwrap();
-            assert_eq!(backend.as_deref(), Some("plain"));
+            assert_eq!(backend, Some(CustodyBackend::Plain));
         }
 
         super::super::status_page::seed_status_for_tests(
@@ -724,7 +736,7 @@ mod tests {
         assert_eq!(snp_unusable(&state), None);
         assert_eq!(
             usable_custody_backends(&state),
-            vec!["snp".to_owned(), "plain".to_owned()]
+            vec![CustodyBackend::Snp, CustodyBackend::Plain]
         );
     }
 
@@ -755,12 +767,12 @@ mod tests {
                 Some(matching_engine_trust()),
             ),
         );
-        assert_eq!(usable_custody_backends(&state), vec!["snp".to_owned()]);
+        assert_eq!(usable_custody_backends(&state), vec![CustodyBackend::Snp]);
         assert!(store_keys(&state, Some("plain"), &view, &spend, None)
             .unwrap_err()
             .contains("only in SEV-SNP"));
         let (backend, _) = store_keys(&state, None, "", "", Some("{envelope}")).unwrap();
-        assert_eq!(backend.as_deref(), Some("snp"));
+        assert_eq!(backend, Some(CustodyBackend::Snp));
     }
 
     /// The status page's alert: none while the two agree or snp isn't used,
@@ -872,7 +884,7 @@ mod tests {
         crate::http::status_page::get_status_cached(&state.engine)
             .await
             .unwrap();
-        let backends = vec![SNP.to_owned()];
+        let backends = vec![CustodyBackend::Snp];
         let (flooder, other) = (UserId::new("flooder"), UserId::new("other"));
         for _ in 0..2 {
             assert!(matches!(

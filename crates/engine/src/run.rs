@@ -23,7 +23,7 @@ use crate::engine_settings::SnpBootConfig;
 use crate::engine_settings::{Daemons, EngineSettings, ALL, SERVER_TOKEN, STANDALONE_ONLY};
 use crate::http::rate_limit::ApiRateLimits;
 use crate::http::{build_router, AppState};
-use crate::key_custody::{CustodyRouter, KeyCustody, LiveWallet, WalletHandles};
+use crate::key_custody::{CustodyBackend, CustodyRouter, KeyCustody, LiveWallet, WalletHandles};
 #[cfg(feature = "snp")]
 use crate::key_custody::{SnpSlot, StoreWraps};
 use crate::store::{SharedStore, Store, StoreError, TenantId};
@@ -217,7 +217,6 @@ impl Engine {
         tracing::info!(scan_slots, "scans run at most this many at a time");
 
         let key_custody: Arc<dyn KeyCustody> = Arc::<CustodyRouter>::clone(&custody_router);
-        let default_backend = custody_router.default_backend();
         let scanner_status = crate::scanner_status::new_scanner_status_map();
         let wallet_handles = Arc::new(WalletHandles::from(
             register_all_tenants(&store, &key_custody).await,
@@ -238,7 +237,6 @@ impl Engine {
             settings: Arc::clone(&settings),
             custody: crate::http::Custody {
                 backends: Arc::clone(&key_custody),
-                default_backend,
                 wallet_handles: Arc::clone(&wallet_handles),
                 snp: snp.clone(),
             },
@@ -381,14 +379,17 @@ pub fn refuse_standalone_settings(
 fn warn_about_stranded_stores(store: &SharedStore, custody_router: &CustodyRouter) {
     let enabled = custody_router.enabled_backends();
     let tenants = store.lock().tenant_custody_backends().unwrap_or_default();
-    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<CustodyBackend, usize> =
+        std::collections::BTreeMap::new();
     for (_, _, backend) in tenants
         .into_iter()
         .filter(|(_, _, backend)| !enabled.contains(backend))
     {
         *counts.entry(backend).or_default() += 1;
     }
+    let enabled: Vec<&str> = enabled.iter().map(|b| b.as_str()).collect();
     for (backend, count) in counts {
+        let backend = backend.as_str();
         tracing::warn!(
             custody.backend = %backend,
             stores = count,
@@ -442,7 +443,7 @@ async fn register_all_tenants(
         match tokio::time::timeout_at(
             deadline.min(tokio::time::Instant::now() + Duration::from_secs(10)),
             key_custody.unseal_and_register_in_idempotent(
-                &tenant.key_custody_backend,
+                tenant.key_custody_backend,
                 &tenant.sealed_key_material,
                 tenant.id.as_str(),
             ),

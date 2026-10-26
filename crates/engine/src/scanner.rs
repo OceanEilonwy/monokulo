@@ -1349,7 +1349,7 @@ pub async fn register_missing_wallets_reporting(
         match tokio::time::timeout_at(
             pass_end.min(tokio::time::Instant::now() + REGISTRATION_CALL_DEADLINE),
             key_custody.unseal_and_register_in_idempotent(
-                &tenant.key_custody_backend,
+                tenant.key_custody_backend,
                 &tenant.sealed_key_material,
                 tenant.id.as_str(),
             ),

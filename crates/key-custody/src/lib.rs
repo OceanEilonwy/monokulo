@@ -60,6 +60,8 @@ mod wasm;
 #[cfg(feature = "backends")]
 pub use custody::*;
 #[cfg(feature = "backends")]
+pub use engine_protocol::custody::CustodyBackend;
+#[cfg(feature = "backends")]
 pub use plain::{size_scan_slots, PlainKeyCustody};
 #[cfg(feature = "backends")]
 pub use router::CustodyRouter;

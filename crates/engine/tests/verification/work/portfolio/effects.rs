@@ -292,7 +292,7 @@ impl World {
                 let tenant = s
                     .create_tenant(
                         &NewTenant {
-                            key_custody_backend: "plain".into(),
+                            key_custody_backend: crate::store::CustodyBackend::Plain,
                             sealed_key_material: sealed,
                             primary_address: "fault-control".into(),
                             network: "mainnet".into(),

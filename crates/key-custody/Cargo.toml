@@ -16,6 +16,7 @@ default = ["backends", "snp"]
 # The boundary and the `plain` backend (and the router).
 backends = [
     "dep:async-trait",
+    "dep:engine-protocol",
     "dep:monero",
     "dep:parking_lot",
     "dep:tokio",
@@ -55,6 +56,8 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 # Backends.
 aes-gcm = { version = "0.11.1", optional = true }
 async-trait = { version = "0.1.92", optional = true }
+# The backends by name (`CustodyBackend`).
+engine-protocol = { path = "../engine-protocol", optional = true }
 hmac = { version = "0.13.0", optional = true }
 monero = { version = "0.22.0", optional = true }
 parking_lot = { version = "0.12.5", optional = true }

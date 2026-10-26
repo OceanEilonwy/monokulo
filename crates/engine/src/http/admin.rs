@@ -9,8 +9,8 @@ use crate::engine_settings::EngineSettings;
 use crate::key_custody::transport::HandoffAnswer;
 use crate::key_custody::transport::{Action, Bundle, Envelope};
 use crate::key_custody::{
-    remove_wallet_logged, KeyCustodyError, LiveWallet, SubaddressIndex, WalletHandle,
-    WalletMaterial,
+    remove_wallet_logged, CustodyBackend, KeyCustodyError, LiveWallet, SubaddressIndex,
+    WalletHandle, WalletMaterial,
 };
 use crate::status::OrderStatus;
 use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch};
@@ -65,24 +65,28 @@ pub(super) struct CreateTenantRequest {
 }
 
 /// The backend a new or moving store's keys go to: `requested`, or the
-/// default. Refused if it isn't enabled.
-fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, ApiError> {
+/// default. Refused if it isn't a backend, or isn't enabled.
+fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<CustodyBackend, ApiError> {
     let enabled = state.custody.backends.enabled_backends();
-    if enabled.is_empty() {
-        // A single backend, not a router (some tests): it is the only one.
-        return Ok(requested.map_or_else(|| state.custody.default_backend.clone(), str::to_owned));
-    }
-    let backend = requested.map_or_else(
-        || state.settings.custody.load().default.as_str().to_owned(),
-        str::to_owned,
-    );
-    if !enabled.contains(&backend) {
-        return Err(ApiError::BadRequest(format!(
-            "key custody backend {backend:?} is not enabled on this instance (enabled: {})",
-            enabled.join(", ")
-        )));
+    let backend = match requested {
+        Some(name) => name
+            .parse::<CustodyBackend>()
+            .map_err(|unknown| not_enabled(&unknown.0, &enabled))?,
+        None => state.settings.custody.load().default,
+    };
+    // A single backend, not a router (some tests), is the only one there is.
+    if !enabled.is_empty() && !enabled.contains(&backend) {
+        return Err(not_enabled(backend.as_str(), &enabled));
     }
     Ok(backend)
+}
+
+fn not_enabled(backend: &str, enabled: &[CustodyBackend]) -> ApiError {
+    let enabled: Vec<&str> = enabled.iter().map(|b| b.as_str()).collect();
+    ApiError::BadRequest(format!(
+        "key custody backend {backend:?} is not enabled on this instance (enabled: {})",
+        enabled.join(", ")
+    ))
 }
 
 #[derive(Serialize)]
@@ -140,7 +144,7 @@ struct Registered {
 /// keys are at fault. Nothing stays registered if it fails.
 async fn register_keys(
     state: &AppState,
-    backend: &str,
+    backend: CustodyBackend,
     keys: &KeysIn,
     action: Action,
     store: Option<&str>,
@@ -219,7 +223,7 @@ async fn create_tenant_to_completion(
         handle,
         sealed,
         material: _,
-    } = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    } = register_keys(&state, backend, &req.keys, Action::Create, None).await?;
     let primary_address = match state
         .custody
         .backends
@@ -242,7 +246,7 @@ async fn create_tenant_to_completion(
 
     let new_tenant = NewTenant {
         // The backend that sealed these keys and holds them (part 5).
-        key_custody_backend: backend.clone(),
+        key_custody_backend: backend,
         sealed_key_material: sealed,
         primary_address: primary_address.to_string(),
         network: network_str(network).to_owned(),
@@ -355,7 +359,7 @@ async fn create_tenant_on_wallet(
         .custody
         .backends
         .unseal_and_register_in_idempotent(
-            &tenant.key_custody_backend,
+            tenant.key_custody_backend,
             &tenant.sealed_key_material,
             tenant.id.as_str(),
         )
@@ -405,7 +409,7 @@ pub(super) struct WalletView {
     wallet_id: String,
     primary_address: String,
     network: String,
-    key_custody_backend: String,
+    key_custody_backend: CustodyBackend,
 }
 
 pub(super) async fn create_wallet(
@@ -428,7 +432,7 @@ async fn create_wallet_to_completion(
         )));
     }
     let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
-    let registered = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let registered = register_keys(&state, backend, &req.keys, Action::Create, None).await?;
     let (handle, sealed) = (registered.handle, registered.sealed);
     // Registered only to check the keys and work out the address: each
     // store on the wallet registers its own copy when it's made.
@@ -470,7 +474,7 @@ pub(super) struct WalletStatusView {
     wallet_id: String,
     primary_address: String,
     network: String,
-    key_custody_backend: String,
+    key_custody_backend: CustodyBackend,
     /// When it was retired; its keys were deleted then.
     retired_at: Option<i64>,
     /// Enabled stores taking payments into it.
@@ -572,7 +576,7 @@ pub(super) async fn restore_wallet(
         .ok_or(ApiError::NotFound)?;
     let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
     let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
-    let registered = register_keys(&state, &backend, &req.keys, Action::Create, None).await?;
+    let registered = register_keys(&state, backend, &req.keys, Action::Create, None).await?;
     let same = match &registered.material {
         Some(material) => is_same_wallet(material, &wallet.primary_address, network),
         None => {
@@ -596,7 +600,7 @@ pub(super) async fn restore_wallet(
     let sealed = registered.sealed;
     let wallet = state
         .db
-        .write(move |s| s.restore_wallet(&id, &backend, &sealed))
+        .write(move |s| s.restore_wallet(&id, backend, &sealed))
         .await?;
     Ok(Json(WalletView {
         wallet_id: wallet.id,
@@ -670,7 +674,7 @@ pub(super) struct TenantView {
     network: String,
     confirmations_required: u64,
     order_expiry_seconds: i64,
-    key_custody_backend: String,
+    key_custody_backend: CustodyBackend,
 }
 
 impl From<crate::store::Tenant> for TenantView {
@@ -753,7 +757,7 @@ async fn switch_key_custody_to_completion(
         handle,
         sealed,
         material,
-    } = register_keys(&state, &backend, &req.keys, Action::Move, Some(&store)).await?;
+    } = register_keys(&state, backend, &req.keys, Action::Move, Some(&store)).await?;
     // Keys given in the clear are checked against the store's wallet by
     // their keys; keys that only the backend can see, by the address it
     // derives from them.
@@ -774,10 +778,10 @@ async fn switch_key_custody_to_completion(
             "These keys belong to a different wallet from the one this store uses.".to_owned(),
         ));
     }
-    let (id, wallet, chosen) = (tenant.id.clone(), tenant.wallet_id.clone(), backend.clone());
+    let (id, wallet, chosen) = (tenant.id.clone(), tenant.wallet_id.clone(), backend);
     let updated = state
         .db
-        .write(move |s| s.update_tenant_key_custody(&id, &wallet, &chosen, &sealed))
+        .write(move |s| s.update_tenant_key_custody(&id, &wallet, chosen, &sealed))
         .await;
     let others = match updated {
         Ok(others) => others,
@@ -877,7 +881,7 @@ async fn key_bundle(
     let bundle = state
         .custody
         .backends
-        .key_bundle_in(&backend, action, store)
+        .key_bundle_in(backend, action, store)
         .await
         .map_err(|e| match e {
             KeyCustodyError::InvalidKeyMaterial(m) => ApiError::BadRequest(m),
