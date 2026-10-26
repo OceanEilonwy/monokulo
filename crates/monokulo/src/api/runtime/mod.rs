@@ -12,6 +12,7 @@ pub mod openapi;
 pub mod problem;
 #[cfg(any(test, feature = "test-support"))]
 pub mod recording;
+#[cfg(any(test, feature = "test-support"))]
 pub mod reference;
 pub mod scalars;
 #[cfg(test)]

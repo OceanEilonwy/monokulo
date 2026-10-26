@@ -351,7 +351,7 @@ async fn store_with_deliveries(
             crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
         })
         .unwrap();
-        let id = db.recent_deliveries(&created.webhook.id, 1).unwrap()[0].id;
+        let id = db.deliveries_page(&created.webhook.id, 0, 1).unwrap()[0].id;
         for n in 1..=attempts {
             let last = n == attempts;
             db.record_delivery_attempt(

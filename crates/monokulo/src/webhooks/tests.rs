@@ -168,7 +168,7 @@ async fn tick(
 }
 
 fn only_delivery(db: &Database, webhook: &WebhookRow) -> crate::db::DeliveryRow {
-    let mut deliveries = db.lock().recent_deliveries(&webhook.id, 10).unwrap();
+    let mut deliveries = db.lock().deliveries_page(&webhook.id, 0, 10).unwrap();
     assert_eq!(deliveries.len(), 1, "{deliveries:?}");
     deliveries.remove(0)
 }
@@ -366,7 +366,7 @@ async fn send_again_and_retry_failed_start_the_schedule_over() {
     // One attempt each: given up at once.
     let (client, config) = (client(), config(true, 1));
     assert_eq!(tick(&db, &client, &config, &clock).await, 3);
-    let deliveries = db.lock().recent_deliveries(&webhook.id, 10).unwrap();
+    let deliveries = db.lock().deliveries_page(&webhook.id, 0, 10).unwrap();
     assert!(deliveries
         .iter()
         .all(|d| d.state() == DeliveryState::GaveUp));
@@ -668,7 +668,7 @@ impl Shop {
                 .state
                 .db
                 .lock()
-                .recent_deliveries(&webhook.id, 100)
+                .deliveries_page(&webhook.id, 0, 100)
                 .unwrap();
             if deliveries.len() >= count {
                 deliveries.reverse();
@@ -754,7 +754,7 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
         .state
         .db
         .lock()
-        .recent_deliveries(&webhook.id, 100)
+        .deliveries_page(&webhook.id, 0, 100)
         .unwrap();
     assert_eq!(all_again.len(), 3, "nothing queued twice");
     assert_eq!(all[2].order_id.as_ref().unwrap().as_str(), later);
@@ -888,7 +888,8 @@ async fn real_deliveries_have_the_fields_of_their_published_vectors() {
         .unwrap();
     assert_eq!(answer.status(), StatusCode::OK);
     let test = &shop.deliveries(&webhook, delivered.len() + 1).await[delivered.len()];
-    assert!(test.is_test());
+    assert_eq!(test.event_type, "webhook.test");
+    assert_eq!(test.order_id, None, "about no order");
     let body: serde_json::Value = serde_json::from_str(&test.body).unwrap();
     let fields: Vec<String> = body.as_object().unwrap().keys().cloned().collect();
     assert_eq!(
@@ -918,7 +919,7 @@ async fn events_without_webhooks_move_the_position_and_old_events_are_ignored() 
     );
     assert_eq!(queue(&db, &event(3, "s1", "o3", "order.paid"), 0), 1);
     assert_eq!(
-        db.lock().recent_deliveries(&webhook.id, 10).unwrap().len(),
+        db.lock().deliveries_page(&webhook.id, 0, 10).unwrap().len(),
         1
     );
 }
@@ -1041,7 +1042,7 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
     for (seq, (order, delivered, at)) in cases.iter().enumerate() {
         let seq = i64::try_from(seq).unwrap() + 1;
         queue(&db, &event(seq, "s1", order, "order.paid"), at - 60);
-        let id = db.lock().recent_deliveries(&webhook.id, 1).unwrap()[0].id;
+        let id = db.lock().deliveries_page(&webhook.id, 0, 1).unwrap()[0].id;
         db.lock()
             .record_delivery_attempt(
                 id,
@@ -1074,7 +1075,7 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
     assert_eq!(pruned, (1, 1));
     let mut left: Vec<String> = db
         .lock()
-        .recent_deliveries(&webhook.id, 100)
+        .deliveries_page(&webhook.id, 0, 100)
         .unwrap()
         .into_iter()
         .map(|d| d.order_id.as_ref().unwrap().to_string())
@@ -1101,7 +1102,10 @@ async fn old_deliveries_are_pruned_delivered_after_30_days_given_up_after_90() {
         (1, 2)
     );
     assert_eq!(
-        db.lock().recent_deliveries(&webhook.id, 100).unwrap().len(),
+        db.lock()
+            .deliveries_page(&webhook.id, 0, 100)
+            .unwrap()
+            .len(),
         1
     );
 }

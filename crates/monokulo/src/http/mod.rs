@@ -320,7 +320,7 @@ impl AppState {
         }
     }
 
-    /// Settings for tests: no registry, and anyone may sign up (signup is
+    /// Settings for tests: anyone may sign up (signup is
     /// invite-only by default, which would stop every test's ordinary
     /// signups; the invite tests ask for it themselves), with `public_uri`
     /// set or not.
@@ -355,8 +355,6 @@ impl AppState {
     pub async fn save_setting(&self, key: &str, value: &str) {
         self.settings
             .registry
-            .as_ref()
-            .expect("a state from `with_options`")
             .save(vec![(key.to_string(), Some(value.to_string()))])
             .await
             .expect("saving a test setting");

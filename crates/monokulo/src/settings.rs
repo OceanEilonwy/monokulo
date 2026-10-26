@@ -1474,7 +1474,7 @@ impl live_settings::Reloadable for TorReloadable {
 /// monokulo's settings: the registry that saves and describes them, and the
 /// live sections the process reads.
 pub struct MonokuloSettings {
-    pub registry: Option<Registry>,
+    pub registry: Registry,
     /// Where monokulo listens, read once at start.
     pub server: live_settings::Live<ServerConfig>,
     /// Who may sign up and this instance's public address.
@@ -1495,8 +1495,8 @@ pub struct MonokuloSettings {
 }
 
 impl MonokuloSettings {
-    /// No registry and every default, for tests that don't use the admin
-    /// settings page.
+    /// Every default, for tests that don't use the admin settings page.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn defaults() -> Arc<Self> {
         Self::fixed(PerRequest {
             signup_mode: SIGNUP_MODE.default_value(),
@@ -1504,8 +1504,9 @@ impl MonokuloSettings {
         })
     }
 
-    /// No registry, with the given signup mode and public address: for
-    /// tests.
+    /// The given signup mode and public address, every other setting its
+    /// default: for tests.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fixed(per_request: PerRequest) -> Arc<Self> {
         Self::fixed_with_snp_entry(
             per_request,
@@ -1523,9 +1524,13 @@ impl MonokuloSettings {
     }
 
     /// [`Self::fixed`], with the given SEV-SNP key entry policy: for tests.
+    /// Its registry is a real one, over an empty options file and database
+    /// in memory, holding every default: these fixed values aren't its
+    /// sections, so saving through it changes nothing they say.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn fixed_with_snp_entry(per_request: PerRequest, snp_entry: SnpEntryPolicy) -> Arc<Self> {
         Arc::new(MonokuloSettings {
-            registry: None,
+            registry: test_registry(),
             server: live_settings::Live::new(ServerConfig {
                 bind: SERVER_BIND.default_value().0,
                 engine_mode: ENGINE_MODE.default_value(),
@@ -1552,7 +1557,7 @@ impl MonokuloSettings {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_webhooks(&self, webhooks: WebhookConfig) -> Arc<Self> {
         Arc::new(MonokuloSettings {
-            registry: None,
+            registry: self.registry.clone(),
             server: self.server.clone(),
             per_request: self.per_request.clone(),
             cli_links: self.cli_links.clone(),
@@ -1569,7 +1574,7 @@ impl MonokuloSettings {
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_tor(&self, tor: TorConfig) -> Arc<Self> {
         Arc::new(MonokuloSettings {
-            registry: None,
+            registry: self.registry.clone(),
             server: self.server.clone(),
             per_request: self.per_request.clone(),
             cli_links: self.cli_links.clone(),
@@ -1658,7 +1663,7 @@ impl MonokuloSettings {
             tracing::warn!(section = %section, error = %error, "settings: could not be applied at start, carrying on without it");
         }
         Ok(Arc::new(MonokuloSettings {
-            registry: Some(registry),
+            registry,
             server,
             per_request,
             cli_links,
@@ -1669,6 +1674,39 @@ impl MonokuloSettings {
             tor,
         }))
     }
+}
+
+/// A registry over an empty options file and database in memory, every
+/// section read as [`MonokuloSettings::load`] reads them, for the fixed test
+/// settings.
+#[cfg(any(test, feature = "test-support"))]
+fn test_registry() -> Registry {
+    use futures_util::FutureExt as _;
+    let layered = live_settings::LayeredStore::new(
+        live_settings::OptionsFile::in_memory(""),
+        Arc::new(live_settings::MemoryStore::default()),
+        ALL,
+    );
+    let mut builder = Registry::builder_with_env(Arc::new(layered), ALL, test_secrets())
+        .now_or_never()
+        .expect("a store in memory answers at once");
+    builder.section::<ExchangeRateConfig>();
+    builder.section::<AbuseSettings>();
+    builder.section::<OnionListenerConfig>();
+    builder.section::<TorConfig>();
+    builder.section::<PerRequest>();
+    builder.section::<CliLinks>();
+    builder.section::<SnpEntryPolicy>();
+    builder.section::<SnpBundleLimits>();
+    builder.section::<WebhookConfig>();
+    builder.section::<AdminTools>();
+    builder.section::<DatabaseConfig>();
+    builder.section::<BootConfig>();
+    builder.section::<ServerConfig>();
+    builder.section::<LoggingConfig>();
+    builder
+        .build()
+        .expect("building the test settings registry")
 }
 
 /// The two secrets monokulo can't start without, for tests.
@@ -2135,7 +2173,7 @@ mod tests {
     #[tokio::test]
     async fn saved_settings_reach_the_engine_client_exchange_rates_and_abuse_protection() {
         let (settings, rates, abuse) = loaded(None).await;
-        let registry = settings.registry.as_ref().unwrap();
+        let registry = &settings.registry;
         // Loading applied the saved (here: default) settings.
         assert_eq!(
             rates.available_providers(),
@@ -2190,7 +2228,7 @@ mod tests {
         let onion = OnionReloadable::default();
         let (settings, ..) = loaded(Some(onion.clone())).await;
         onion.router_ready(axum::Router::new().route("/", axum::routing::get(|| async { "ok" })));
-        let registry = settings.registry.as_ref().unwrap();
+        let registry = &settings.registry;
 
         let free = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()

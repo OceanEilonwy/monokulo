@@ -151,19 +151,6 @@ pub enum Span {
     Work { what: Work },
 }
 
-impl UnitBar {
-    /// Ran in pass 2, on time left over.
-    pub const fn leftover(&self) -> bool {
-        matches!(
-            self.span,
-            Span::Unit {
-                pass: 2,
-                progress: _
-            }
-        )
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct Finished {
     pub ms: u64,

@@ -1148,7 +1148,7 @@ mod tests {
         /// visitors to the public status page - make one engine request
         /// between them, and all get its answer.
         #[tokio::test]
-        async fn requests_that_arrive_during_a_fetch_share_it() {
+        async fn requests_that_arrive_during_a_fetch_share_it_over_http() {
             use std::sync::atomic::{AtomicUsize, Ordering};
 
             // A real engine's status body, served by a slow fake that
@@ -1156,14 +1156,24 @@ mod tests {
             let real =
                 engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                     .await;
-            let body: String = engine_test_support::engine_http_client()
-                .get(format!("http://{}/status", real.addr))
-                .send()
-                .await
-                .unwrap()
-                .text()
-                .await
-                .unwrap();
+            // Asked in-process, as monokulo asks an embedded engine.
+            let response = tower::ServiceExt::oneshot(
+                real.router(),
+                axum::http::Request::get("/status")
+                    .header(
+                        credentials::auth::ENGINE_TOKEN_HEADER,
+                        credentials::auth::TEST_ENGINE_TOKEN,
+                    )
+                    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                        std::net::Ipv4Addr::LOCALHOST,
+                        0,
+                    ))))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+            let body = crate::http::test_support::body_text(response).await;
             let hits = std::sync::Arc::new(AtomicUsize::new(0));
             let (release_tx, release_rx) = tokio::sync::watch::channel(false);
             let app = {

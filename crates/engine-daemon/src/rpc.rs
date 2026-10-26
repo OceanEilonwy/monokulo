@@ -198,7 +198,7 @@ impl RpcDaemonClient {
 
     /// Other pool timings, for tests: how long an answer is reused, and how
     /// often the plain list of ids replaces what was followed.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     #[must_use = "the client with the timing set is returned, not changed in place"]
     pub fn with_pool_timing(mut self, reuse: Duration, resync: Duration) -> Self {
         self.pool_reuse = reuse;
@@ -209,7 +209,7 @@ impl RpcDaemonClient {
     /// Forgets when the pool was last asked about, so the next poll asks
     /// the node whatever the reuse window: for tests that would otherwise
     /// wait it out.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn forget_pool_answer_time(&self) {
         self.pool.lock().await.polled_at = None;
     }

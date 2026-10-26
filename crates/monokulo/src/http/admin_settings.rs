@@ -85,12 +85,9 @@ fn read_only_file(file: &live_settings::FileInfo, process: &str) -> String {
 }
 
 /// Every monokulo setting as the page shows it, from the registry's
-/// description of them (tasks 4.1, 4.6). Without a registry (a test state),
-/// nothing is listed.
+/// description of them (tasks 4.1, 4.6).
 fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
-    let Some(registry) = state.settings.registry.as_ref() else {
-        return Vec::new();
-    };
+    let registry = &state.settings.registry;
     let read_only = registry
         .options_file()
         .filter(|file| !file.writable)
@@ -414,8 +411,7 @@ async fn build_view_model(
     let options_files = state
         .settings
         .registry
-        .as_ref()
-        .and_then(live_settings::Registry::options_file)
+        .options_file()
         .map(|file| OptionsFileView {
             owner: SettingOwner::Monokulo,
             path: file.path,
@@ -780,11 +776,7 @@ async fn check_monokulo(
     if form.is_empty() {
         return Ok(live_settings::CheckReport::default());
     }
-    let Some(registry) = state.settings.registry.as_ref() else {
-        return Err(Refusal::new(
-            "Settings can't be saved on this instance.".to_string(),
-        ));
-    };
+    let registry = &state.settings.registry;
     // Shown locked; a form that sends it anyway is refused.
     if let Some(why) = form
         .keys()
@@ -903,11 +895,7 @@ async fn commit_monokulo(
     state: &AppState,
     form: &HashMap<String, String>,
 ) -> Result<Vec<SaveNote>, Refusal> {
-    let Some(registry) = state.settings.registry.as_ref() else {
-        return Err(Refusal::new(
-            "Settings can't be saved on this instance.".to_string(),
-        ));
-    };
+    let registry = &state.settings.registry;
     match registry.save(monokulo_changes(form)).await {
         Ok(report) => Ok(monokulo_notes(&report, "Saved")),
         // Stored, but applying them failed: retrying would fail the same way.
@@ -1709,9 +1697,7 @@ fn reload_success(process: &str, changed: Option<&[String]>) -> String {
 /// nothing changed. What it leaves to say is what a save of the same
 /// values would.
 async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), String> {
-    let Some(registry) = state.settings.registry.as_ref() else {
-        return Err("Settings can't be reloaded on this instance.".to_string());
-    };
+    let registry = &state.settings.registry;
     match registry.reload().await {
         Ok(report) => {
             let changed: Vec<String> = report.changed.iter().map(ToString::to_string).collect();
@@ -1939,8 +1925,6 @@ mod tests {
     ) -> (String, live_settings::SettingSource) {
         let view = settings
             .registry
-            .as_ref()
-            .unwrap()
             .describe()
             .into_iter()
             .find(|view| view.key == key)
@@ -4057,7 +4041,7 @@ mod tests {
     ) -> Vec<(String, String)> {
         use crate::views::admin::{Group, SettingOwner};
         let mut form = vec![("tab".to_string(), tab.id().to_string())];
-        for view in state.settings.registry.as_ref().unwrap().describe() {
+        for view in state.settings.registry.describe() {
             if Group::of(view.key, SettingOwner::Monokulo).tab() == tab
                 && view.locked.is_none()
                 && super::only_for_a_remote_engine(state, view.key).is_none()

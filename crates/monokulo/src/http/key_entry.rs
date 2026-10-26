@@ -849,7 +849,7 @@ mod tests {
             },
         );
         let settings = Arc::new(crate::settings::MonokuloSettings {
-            registry: None,
+            registry: base.registry.clone(),
             server: base.server.clone(),
             per_request: base.per_request.clone(),
             snp_entry: base.snp_entry.clone(),

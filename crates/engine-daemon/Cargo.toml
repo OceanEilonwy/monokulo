@@ -46,6 +46,9 @@ engine-pow = { path = "../engine-pow", optional = true, features = ["test-suppor
 test-support = ["dep:engine-pow"]
 
 [dev-dependencies]
+# Turns on `test-support` for this crate's own integration tests: the
+# replay test sets the client's pool timings, which only it has.
+engine-daemon = { path = ".", features = ["test-support"] }
 # Stand-in nodes on loopback for the client's wire tests.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 tokio = { version = "1.53.1", features = ["rt", "macros", "test-util", "net"] }
