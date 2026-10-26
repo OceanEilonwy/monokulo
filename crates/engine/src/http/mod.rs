@@ -47,7 +47,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{FromRef, FromRequestParts};
-use axum::http::{header, request::Parts, StatusCode};
+use axum::http::{header, request::Parts, HeaderMap, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
@@ -61,7 +61,7 @@ use crate::status::OrderStatus;
 use crate::store::{StoreError, Tenant};
 use engine_daemon::DaemonError;
 
-use rate_limit::{admin_rate_limit_middleware, ApiRateLimits};
+use rate_limit::{instance_rate_limit_middleware, store_rate_limit_middleware, ApiRateLimits};
 
 /// Key custody as the API uses it.
 #[derive(Clone)]
@@ -220,11 +220,11 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     );
     let unauthenticated_router = unauthenticated_router.layer(middleware::from_fn_with_state(
         state.clone(),
-        admin_rate_limit_middleware,
+        instance_rate_limit_middleware,
     ));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
-    // `AuthedTenant`), so each store gets its own budget.
+    // `AuthedTenant`), authenticated before its own budget is counted.
     let admin_router = Router::new()
         .route(
             "/api/v1/admin/tenant",
@@ -278,7 +278,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            admin_rate_limit_middleware,
+            store_rate_limit_middleware,
         ));
 
     // The instance-wide settings and logs API: nothing beyond the engine
@@ -312,7 +312,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/logs/attributes", get(logs::attributes))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            admin_rate_limit_middleware,
+            instance_rate_limit_middleware,
         ));
 
     // The long-lived streams (a store's order changes, one per store
@@ -324,18 +324,25 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     let limits = RequestLimits::default();
     let events_router = Router::new()
         .route("/api/v1/admin/tenant/events", get(admin::order_events))
-        .route(
-            "/api/v1/admin/order-events",
-            get(order_events::order_events),
-        )
-        .route(
-            "/api/v1/admin/engine/activity/stream",
-            get(activity::stream),
-        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            admin_rate_limit_middleware,
+            store_rate_limit_middleware,
         ))
+        .merge(
+            Router::new()
+                .route(
+                    "/api/v1/admin/order-events",
+                    get(order_events::order_events),
+                )
+                .route(
+                    "/api/v1/admin/engine/activity/stream",
+                    get(activity::stream),
+                )
+                .layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    instance_rate_limit_middleware,
+                )),
+        )
         .layer(middleware::from_fn_with_state(
             limits.clone(),
             stream_limit_middleware,
@@ -590,6 +597,7 @@ pub fn parse_status_query(s: &str) -> Result<OrderStatus, ApiError> {
 /// This is the structural IDOR fix: there is nothing in a
 /// `/api/v1/admin/tenant/*` route for a leaked or guessed identifier to authorize,
 /// because none of them accept one.
+#[derive(Clone)]
 pub struct AuthedTenant(pub Tenant);
 
 impl FromRequestParts<AppState> for AuthedTenant {
@@ -599,8 +607,18 @@ impl FromRequestParts<AppState> for AuthedTenant {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let header_value = parts
-            .headers
+        // Store routes authenticate before their rate limit
+        // (`rate_limit::store_rate_limit_middleware`), which hands it on.
+        if let Some(authed) = parts.extensions.get::<Self>() {
+            return Ok(authed.clone());
+        }
+        Self::authenticate(&parts.headers, state).await
+    }
+}
+
+impl AuthedTenant {
+    async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<Self, ApiError> {
+        let header_value = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .ok_or(ApiError::Unauthorized)?;

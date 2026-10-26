@@ -718,12 +718,23 @@ async fn with_the_instance_limit_on_calls_without_a_store_key_share_one_budget_o
         rate_limits: Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(3))),
         ..AppState::for_tests()
     };
+    // The store is made outside the limits under test.
+    let unlimited = AppState {
+        rate_limits: Arc::new(super::rate_limit::ApiRateLimits::new(10_000, None)),
+        ..state.clone()
+    };
+    let tenant = create_tenant(&build_router(unlimited, 1_000_000), 1).await;
     let router = build_router(state, 1_000_000);
 
-    for uri in ["/status", "/api/v1/admin/settings", "/status"] {
+    // A made-up store key, a new one each time, changes nothing: the route
+    // picks the budget, not the header.
+    for (i, uri) in ["/status", "/api/v1/admin/settings", "/status"]
+        .into_iter()
+        .enumerate()
+    {
         let response = router
             .clone()
-            .oneshot(limited_request(uri, None))
+            .oneshot(limited_request(uri, Some(&format!("sk_x{i}"))))
             .await
             .unwrap();
         // The settings API has no registry in this state (503): what counts
@@ -732,21 +743,29 @@ async fn with_the_instance_limit_on_calls_without_a_store_key_share_one_budget_o
     }
     let refused = router
         .clone()
-        .oneshot(limited_request("/api/v1/admin/settings", None))
+        .oneshot(limited_request("/api/v1/admin/settings", Some("sk_x3")))
         .await
         .unwrap();
     assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
 
-    // A store's own budget isn't touched by the instance's being spent: an
-    // unknown `sk_` gets through the limiter (to be refused as unknown).
+    // An unknown `sk_` on a store's route is counted on the instance's
+    // budget too, so it can't make a bucket of its own.
+    let unknown = router
+        .clone()
+        .oneshot(limited_request("/api/v1/admin/tenant", Some("sk_x4")))
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // A store's own budget isn't touched by the instance's being spent.
     let store = router
         .oneshot(limited_request(
             "/api/v1/admin/tenant",
-            Some("sk_store_one"),
+            Some(&tenant.secret_token),
         ))
         .await
         .unwrap();
-    assert_eq!(store.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(store.status(), StatusCode::OK);
 }
 
 #[tokio::test]
@@ -757,6 +776,7 @@ async fn with_the_instance_limit_off_calls_without_a_store_key_are_never_refused
         ..AppState::for_tests()
     };
     let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1).await;
 
     for _ in 0..200 {
         let response = router
@@ -766,20 +786,32 @@ async fn with_the_instance_limit_off_calls_without_a_store_key_are_never_refused
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
+    // Nor is a key that is no store's: it is refused as unknown.
+    for _ in 0..3 {
+        let unknown = router
+            .clone()
+            .oneshot(limited_request(
+                "/api/v1/admin/tenant",
+                Some("sk_store_one"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+    }
     // A store still has its limit.
     let first = router
         .clone()
         .oneshot(limited_request(
             "/api/v1/admin/tenant",
-            Some("sk_store_one"),
+            Some(&tenant.secret_token),
         ))
         .await
         .unwrap();
-    assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(first.status(), StatusCode::OK);
     let second = router
         .oneshot(limited_request(
             "/api/v1/admin/tenant",
-            Some("sk_store_one"),
+            Some(&tenant.secret_token),
         ))
         .await
         .unwrap();
@@ -789,28 +821,32 @@ async fn with_the_instance_limit_off_calls_without_a_store_key_are_never_refused
 #[tokio::test]
 async fn each_store_key_has_its_own_budget() {
     // Every store's traffic comes from monokulo, so from one caller: each
-    // `sk_...` must still get a budget of its own.
+    // store must still get a budget of its own.
     let state = AppState {
         rate_limits: Arc::new(super::rate_limit::ApiRateLimits::new(1, Some(10_000))),
         ..AppState::for_tests()
     };
     let router = build_router(state, 1_000_000);
+    let one = create_tenant(&router, 1).await;
+    let two = create_tenant(&router, 3).await;
 
-    // Two different (unknown, so 401 not 200) tokens - both get through the
-    // rate limiter itself, each using its own budget of 1.
-    for token in ["sk_tenant_one", "sk_tenant_two"] {
+    // Each uses its own budget of 1.
+    for tenant in [&one, &two] {
         let response = router
             .clone()
-            .oneshot(limited_request("/api/v1/admin/tenant", Some(token)))
+            .oneshot(limited_request(
+                "/api/v1/admin/tenant",
+                Some(&tenant.secret_token),
+            ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{token}");
+        assert_eq!(response.status(), StatusCode::OK, "{}", tenant.public_key);
     }
-    // Tenant one's second request is over its own budget of 1.
+    // Store one's second request is over its own budget of 1.
     let again = router
         .oneshot(limited_request(
             "/api/v1/admin/tenant",
-            Some("sk_tenant_one"),
+            Some(&one.secret_token),
         ))
         .await
         .unwrap();
@@ -3289,20 +3325,6 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         } }),
     )
     .await;
-    // A store gets seven requests a minute, then is refused.
-    let store_call = || {
-        Request::builder()
-            .uri("/api/v1/admin/tenant")
-            .header("authorization", "Bearer sk_seven")
-            .body(Body::empty())
-            .unwrap()
-    };
-    for _ in 0..7 {
-        let response = router.clone().oneshot(store_call()).await.unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-    let response = router.clone().oneshot(store_call()).await.unwrap();
-    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 
     let big = json_request(
         "POST",
@@ -3374,6 +3396,21 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
         me["confirmations_required"], 3,
         "the saved default, not the old hardcoded 10: {me}"
     );
+    // A store gets seven requests a minute (that was its first), then is
+    // refused.
+    let store_call = || {
+        Request::builder()
+            .uri("/api/v1/admin/tenant")
+            .header("authorization", format!("Bearer {}", tenant.secret_token))
+            .body(Body::empty())
+            .unwrap()
+    };
+    for _ in 0..6 {
+        let response = router.clone().oneshot(store_call()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = router.clone().oneshot(store_call()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 
     {
         // The instance's own limit too, without a restart: settings loaded

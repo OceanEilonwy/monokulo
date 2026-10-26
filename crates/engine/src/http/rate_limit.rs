@@ -9,15 +9,21 @@
 //! inside monokulo there is no address at all. So the limiter never looks
 //! at one. Instead:
 //!
-//! - A request carrying a store's `Authorization: Bearer sk_...` counts
-//!   against that store's own bucket (`server.rate_limit_per_token_per_min`),
-//!   so one busy store can't use up another's.
-//! - Anything else (`/status`, the settings, logs and engine pages, tenant
-//!   creation) counts against one bucket for the whole instance
-//!   (`server.instance_rate_limit_per_min`) when `server.instance_rate_limit`
-//!   is on, and isn't counted when it is off. It is off by default for an
-//!   engine inside monokulo, where nothing but monokulo can call it, and on
-//!   for a standalone one, which anything holding the token can reach.
+//! - A store's routes authenticate the store by its `Authorization: Bearer
+//!   sk_...` first, and count against that store's own bucket
+//!   (`server.rate_limit_per_token_per_min`), keyed on its id, so one busy
+//!   store can't use up another's.
+//! - Everything else (`/status`, the settings, logs and engine pages, tenant
+//!   creation), and a store route whose `sk_` is no store's, counts against
+//!   one bucket for the whole instance (`server.instance_rate_limit_per_min`)
+//!   when `server.instance_rate_limit` is on, and isn't counted when it is
+//!   off. It is off by default for an engine inside monokulo, where nothing
+//!   but monokulo can call it, and on for a standalone one, which anything
+//!   holding the token can reach.
+//!
+//! Which bucket a request uses is decided by its route, never by its
+//! headers: a made-up `sk_` neither escapes the instance's budget nor makes
+//! a bucket of its own.
 //!
 //! A fixed-window counter (`rate_limit::RateLimiter`), not a proper
 //! token bucket: simpler, and enough for "stop one caller hammering the
@@ -27,20 +33,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 use serde_json::json;
 
 use rate_limit::RateLimiter;
 
+use super::{AppState, AuthedTenant};
 use crate::engine_settings::ApiLimits;
+use crate::store::TenantId;
 
-/// The engine API's budgets: one per store, keyed on the hash of the
-/// store's `sk_`, and one for the instance's other calls, which can be
-/// switched off. Every limit changes live (`LimitsReloadable`).
+/// The engine API's budgets: one per store, keyed on its id, and one for
+/// the instance's other calls, which can be switched off. Every limit
+/// changes live (`LimitsReloadable`).
 pub struct ApiRateLimits {
-    store: RateLimiter<String>,
+    store: RateLimiter<TenantId>,
     instance: RateLimiter<()>,
     instance_on: AtomicBool,
 }
@@ -77,48 +85,61 @@ impl ApiRateLimits {
             .store(instance.is_some(), Ordering::Relaxed);
     }
 
-    /// Whether a request with these headers is allowed at `now`, having
-    /// counted it against its bucket.
-    ///
-    /// A store's `sk_` is keyed on its hash, not itself: a fixed-size key,
-    /// so a caller sending junk tokens as long as a header allows can't
-    /// hold gigabytes in the limiter, and no secret sits in memory for a
-    /// minute after its request ended. The token isn't checked here: an
-    /// invalid one uses its own bucket and is refused downstream
-    /// (`AuthedTenant`).
-    pub fn allows(&self, headers: &HeaderMap, now: i64) -> bool {
-        let store_token = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .filter(|token| token.starts_with("sk_"));
-        match store_token {
-            Some(token) => {
-                let key = credentials::auth::RawToken::presented(token)
-                    .hash()
-                    .as_str()
-                    .to_owned();
-                self.store.check(key, now)
-            }
-            None if self.instance_on.load(Ordering::Relaxed) => self.instance.check((), now),
-            None => true,
-        }
+    /// Whether a call on the instance's budget is allowed at `now`, having
+    /// counted it. Always, while the instance limit is off.
+    fn allows_instance(&self, now: i64) -> bool {
+        !self.instance_on.load(Ordering::Relaxed) || self.instance.check((), now)
+    }
+
+    /// Whether a request of the store `id` is allowed at `now`, having
+    /// counted it against that store's budget.
+    fn allows_store(&self, id: &TenantId, now: i64) -> bool {
+        self.store.check(id.clone(), now)
     }
 }
 
-/// Answers 429 to a request over its budget (see the module doc comment
-/// for which budget that is).
-pub async fn admin_rate_limit_middleware(
+fn too_many_requests() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        axum::Json(json!({ "error": "rate limit exceeded" })),
+    )
+        .into_response()
+}
+
+/// For the routes that aren't a store's: answers 429 to a request over the
+/// instance's budget. Its headers aren't looked at.
+pub async fn instance_rate_limit_middleware(
     State(limits): State<Arc<ApiRateLimits>>,
     req: Request,
     next: Next,
 ) -> Response {
-    if !limits.allows(req.headers(), super::now_unix()) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            axum::Json(json!({ "error": "rate limit exceeded" })),
-        )
-            .into_response();
+    if !limits.allows_instance(super::now_unix()) {
+        return too_many_requests();
     }
     next.run(req).await
+}
+
+/// For a store's routes: counts the request against its store's budget.
+///
+/// Authenticates the store by its `sk_` first, handing the store on to the
+/// route's [`AuthedTenant`]. A request no store's `sk_` authenticates is
+/// counted against the instance's budget and refused as unauthenticated.
+pub async fn store_rate_limit_middleware(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let now = super::now_unix();
+    let (mut parts, body) = req.into_parts();
+    match AuthedTenant::authenticate(&parts.headers, &state).await {
+        Ok(authed) => {
+            if !state.rate_limits.allows_store(&authed.0.id, now) {
+                return too_many_requests();
+            }
+            parts.extensions.insert(authed);
+            next.run(Request::from_parts(parts, body)).await
+        }
+        Err(_) if !state.rate_limits.allows_instance(now) => too_many_requests(),
+        Err(rejection) => rejection.into_response(),
+    }
 }
