@@ -368,28 +368,28 @@ pub async fn export(
         }
     };
     let (body, content_type, extension) = if params.format == "json" {
-        let rows: Vec<serde_json::Value> = result
+        // The columns once, then each row's values by position, as the CSV
+        // has them: two columns of one name (`s.id` and `w.id` both read
+        // `id`) are both kept.
+        let rows: Vec<Vec<serde_json::Value>> = result
             .rows
             .iter()
             .map(|row| {
-                serde_json::Value::Object(
-                    row.iter()
-                        .enumerate()
-                        .map(|(i, cell)| {
-                            let json = match cell {
-                                _ if result.columns[i].hidden => serde_json::Value::Null,
-                                Cell::Integer { value } => (*value).into(),
-                                Cell::Real { value } => (*value).into(),
-                                other => value(i, other).into(),
-                            };
-                            (result.columns[i].name.clone(), json)
-                        })
-                        .collect(),
-                )
+                row.iter()
+                    .enumerate()
+                    .map(|(i, cell)| match cell {
+                        _ if result.columns[i].hidden => serde_json::Value::Null,
+                        Cell::Integer { value } => (*value).into(),
+                        Cell::Real { value } => (*value).into(),
+                        other => value(i, other).into(),
+                    })
+                    .collect()
             })
             .collect();
+        let columns: Vec<&str> = result.columns.iter().map(|c| c.name.as_str()).collect();
+        let export = serde_json::json!({ "columns": columns, "rows": rows });
         (
-            serde_json::to_string_pretty(&rows).unwrap_or_default(),
+            serde_json::to_string_pretty(&export).unwrap_or_default(),
             "application/json",
             "json",
         )
