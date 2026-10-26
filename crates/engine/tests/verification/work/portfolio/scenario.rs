@@ -377,6 +377,28 @@ pub(crate) mod reviewed {
         }
     }
 
+    /// The recorded 7 XMR payment mined sixteen blocks into the first of
+    /// six node outages, so the final transition replaces 96 blocks from
+    /// height 3: deeper than the blocks the engine keeps under the default
+    /// reorg check depth (fuzz crash 2eb9bb85c5df01a4).
+    pub(crate) fn replacement_below_default_recorded_blocks() -> Scenario {
+        let mut setup = vec![0; SETUP_BYTES];
+        // The recorded corpus with two wallets, whole bodies.
+        setup[0] = 129;
+        setup[3] = POOL_FIRST;
+        Scenario {
+            setup,
+            commands: vec![
+                Outage {
+                    transaction: 0,
+                    after: 15,
+                    node: true,
+                };
+                6
+            ],
+        }
+    }
+
     /// Every reviewed seed, by file name.
     pub(crate) fn seeds() -> Vec<(String, Scenario)> {
         let mut seeds = vec![
@@ -395,6 +417,10 @@ pub(crate) mod reviewed {
             (
                 "node-outage-longer-than-grace".to_owned(),
                 outage_longer_than_grace(true),
+            ),
+            (
+                "replacement-below-default-recorded-blocks".to_owned(),
+                replacement_below_default_recorded_blocks(),
             ),
         ];
         for worker in 0..=1 {

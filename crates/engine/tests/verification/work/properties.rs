@@ -846,6 +846,19 @@ fn portfolio_outage_longer_than_grace_credits_the_on_time_payment() {
 }
 
 #[test]
+fn portfolio_replacement_below_default_recorded_blocks_moves_the_mined_payment() {
+    use crate::work::portfolio::scenario::reviewed::replacement_below_default_recorded_blocks;
+    let hits =
+        crate::work::portfolio::explore(&replacement_below_default_recorded_blocks().encode());
+    assert!(
+        hits.get("replacement-below-default-recorded-blocks")
+            .copied()
+            .unwrap_or_default()
+            > 0
+    );
+}
+
+#[test]
 fn portfolio_selects_every_sql_operation_class_and_position() {
     use crate::work::portfolio::scenario::{Command, Scenario, SETUP_BYTES};
     for writes in [false, true] {

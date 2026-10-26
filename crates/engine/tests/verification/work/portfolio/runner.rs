@@ -29,6 +29,15 @@ use std::{collections::BTreeMap, time::Duration};
 mod model;
 use model::{Invoice, Ledger, Location, Oracle, Output};
 const NETWORK: monero::Network = monero::Network::Mainnet;
+/// How many recent blocks the engine checks again for a reorg: more than
+/// any history's chain holds (two blocks, then at most sixteen a command,
+/// an outage's, for 32 commands). Rebuild and the final transition replace
+/// every block from height 3, and the engine follows a replacement only
+/// within that many blocks of its tip (`Chain::detect`), keeping four
+/// times as many recorded; under the default 20 a long history's
+/// replacement lands below every block it kept, so it reads the shorter
+/// chain as a node that is behind and keeps the payments where they were.
+const REORG_CHECK_DEPTH: u64 = 2 + 32 * 16;
 struct Bytes<'a>(&'a [u8], usize);
 impl Bytes<'_> {
     fn next(&mut self) -> u8 {
@@ -551,6 +560,9 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
             // Force the most revealing transition even for empty/short inputs:
             // all distinct outputs mined together, then cold state and stable IDs.
             daemon.set_mempool(vec![]);
+            if tip > 3 + 4 * crate::engine_settings::PAYMENT_REORG_CHECK_DEPTH.default_value() {
+                daemon.hit("replacement-below-default-recorded-blocks");
+            }
             epoch += 1;
             let hash = effects::hash(epoch, 3);
             daemon.reorg_from(3, vec![(hash.as_str(), transactions)]);
@@ -717,7 +729,7 @@ fn inputs<'a>(
         daemon: &daemon.client,
         tenants,
         network: NETWORK,
-        reorg_check_depth: 20,
+        reorg_check_depth: REORG_CHECK_DEPTH,
         grace_period_seconds: daemon.grace.get(),
         scan_chunk_memory_budget_mb: 16,
         order_event_retention_secs: crate::store::DEFAULT_ORDER_EVENT_RETENTION_SECS,
