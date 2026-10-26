@@ -107,6 +107,7 @@ pub struct Engine {
     settings: Arc<EngineSettings>,
     stop: tokio::sync::watch::Sender<bool>,
     loops: Vec<tokio::task::JoinHandle<()>>,
+    networks: crate::loops::RunningNetworks,
 }
 
 impl Engine {
@@ -273,10 +274,11 @@ impl Engine {
 
         // One scanner loop per configured network (task 7.4), started and
         // stopped as node settings are saved (task 2.1). Supervised like the
-        // loops it starts: stopping or restarting it drops the network
-        // loops' stop signals, which ends them, and a restart starts them
-        // again.
+        // loops it starts; the networks it started are kept outside it, so
+        // a restart carries on with them and shutdown waits for them.
         let loops_settings = Arc::clone(&settings);
+        let networks = crate::loops::RunningNetworks::default();
+        let manager_networks = networks.clone();
         loops.push(service_runtime::supervise::supervise_until(
             "network loop manager",
             stopped,
@@ -288,6 +290,7 @@ impl Engine {
                     Arc::clone(&wallet_handles),
                     Arc::clone(&scanner_status),
                     Arc::clone(&loops_settings),
+                    manager_networks.clone(),
                 )
             },
         ));
@@ -297,6 +300,7 @@ impl Engine {
             settings,
             stop,
             loops,
+            networks,
         })
     }
 
@@ -319,9 +323,14 @@ impl Engine {
     /// so the next start carries on where they stopped.
     pub async fn shutdown(self, grace: Duration) -> Stopped {
         let _ = self.stop.send(true);
-        let all = futures_util::future::join_all(self.loops);
+        let networks = self.networks;
+        // The manager first, so it starts no network once they are stopped.
+        let all = async move {
+            futures_util::future::join_all(self.loops).await;
+            networks.stopped().await;
+        };
         match tokio::time::timeout(grace, all).await {
-            Ok(_) => Stopped::Cleanly,
+            Ok(()) => Stopped::Cleanly,
             Err(_) => Stopped::TimedOut,
         }
     }
@@ -399,8 +408,9 @@ async fn register_all_tenants(
     key_custody: &Arc<dyn KeyCustody>,
 ) -> HashMap<TenantId, LiveWallet> {
     let deadline = tokio::time::Instant::now() + REGISTRATION_ALLOWANCE;
-    // A database error here must not stop the engine at start: retry with
-    // backoff until the store answers, logging each failure.
+    // A database error here must not stop the engine at start, nor hold it
+    // up: retry with backoff within the allowance, logging each failure,
+    // then leave every store to the scanner, which registers them itself.
     let mut delay = Duration::from_millis(500);
     let tenants = loop {
         // Bound first: the lock must not be held through the retry's sleep.
@@ -412,6 +422,10 @@ async fn register_all_tenants(
         };
         match listed {
             Ok(tenants) => break tenants,
+            Err(e) if tokio::time::Instant::now() + delay >= deadline => {
+                tracing::error!(error = %e, "failed to list tenants at boot; the scanner will register stores once the store answers");
+                return HashMap::new();
+            }
             Err(e) => {
                 tracing::warn!(error = %e, retry_in = ?delay, "failed to list tenants at boot, retrying");
                 tokio::time::sleep(delay).await;
