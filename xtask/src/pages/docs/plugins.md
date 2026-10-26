@@ -9,7 +9,10 @@ works with any Monokulo.
 
 | Shop | Plugin |
 | --- | --- |
-| WooCommerce | [monokulo-woocommerce](https://github.com/OceanEilonwy/monokulo-woocommerce) |
+| <span class="brand"><img src="assets/plugin-woocommerce.svg" alt="" width="20" height="20">WooCommerce</span> | [monokulo-woocommerce](https://github.com/OceanEilonwy/monokulo-woocommerce) |
+| <span class="brand"><img src="assets/plugin-prestashop.svg" alt="" width="20" height="20">PrestaShop</span> | [monokulo-prestashop](https://github.com/OceanEilonwy/monokulo-prestashop) |
+| <span class="brand"><img src="assets/plugin-opencart.png" alt="" width="20" height="20">OpenCart</span> | [monokulo-opencart](https://github.com/OceanEilonwy/monokulo-opencart) |
+| <span class="brand"><img src="assets/plugin-whmcs.png" alt="" width="20" height="20">WHMCS</span> | [monokulo-whmcs](https://github.com/OceanEilonwy/monokulo-whmcs) |
 
 Each plugin's own repository says how to install it and what it needs.
 

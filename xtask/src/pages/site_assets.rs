@@ -15,7 +15,7 @@
 
 use crate::support::{at, root};
 use maud::{html, Markup, PreEscaped};
-use static_assets::{asset, Asset, CSS, JS, SVG, WOFF2};
+use static_assets::{asset, Asset, CSS, JS, PNG, SVG, WOFF2};
 use std::{fs, io, path::Path, process::Command, sync::OnceLock};
 
 /// Every file, the islands script built on first use.
@@ -142,6 +142,11 @@ static BAKED: &[Asset] = &[
     asset!(bytes "manrope-700.woff2", ui::assets::MANROPE_700, WOFF2),
     asset!(bytes "manrope-800.woff2", ui::assets::MANROPE_800, WOFF2),
     asset!(from "favicon.svg", "../crates/monokulo/static/favicon.svg", SVG),
+    // The shop platforms' marks, beside each plugin on the plugins page.
+    asset!(from "plugin-woocommerce.svg", "src/pages/assets/plugins/woocommerce.svg", SVG),
+    asset!(from "plugin-prestashop.svg", "src/pages/assets/plugins/prestashop.svg", SVG),
+    asset!(from "plugin-opencart.png", "src/pages/assets/plugins/opencart.png", PNG),
+    asset!(from "plugin-whmcs.png", "src/pages/assets/plugins/whmcs.png", PNG),
 ];
 
 /// Writes every file into the `assets/` folder of the site at `site` (its
@@ -164,6 +169,20 @@ pub(super) fn url(up: &str, name: &str) -> String {
         "{up}assets/{}",
         static_assets::named(assets(), name).file_name()
     )
+}
+
+/// `markdown` with each file it links as `"assets/{name}"` (an `<img>`'s
+/// `src`) linked at its published name, from a page `up` below the site's
+/// root.
+pub(super) fn linked(markdown: &str, up: &str) -> String {
+    assets()
+        .iter()
+        .fold(markdown.to_owned(), |markdown, asset| {
+            markdown.replace(
+                &format!("\"assets/{}\"", asset.name),
+                &format!("\"{}\"", url(up, asset.name)),
+            )
+        })
 }
 
 /// What every page's `<head>` loads: the icon, the typeface, the colours,
