@@ -5200,7 +5200,7 @@
   },
   {
     "component": "Menu",
-    "html": "<details class=\"acct\" data-mk=\"1\" data-island=\"Menu\" data-props=\"{}\"><summary class=\"acct-button\" aria-label=\"Example account menu\" title=\"alex@example.test\">A</summary><div class=\"acct-menu\"><a class=\"menu-item\" href=\"#component-menu\"><span>Account</span></a><a class=\"menu-item\" href=\"#component-menu\"><span>Wallets</span><span class=\"menu-note\">2</span></a></div></details>",
+    "html": "<details class=\"acct\" data-mk=\"1\" data-island=\"Menu\" data-props=\"{}\"><summary class=\"acct-button\" aria-label=\"Example account menu\" title=\"alex@example.test\">A</summary><div class=\"acct-menu\"><a class=\"menu-item\" href=\"#component-menu\"><span class=\"menu-label\">Account</span></a><a class=\"menu-item\" href=\"#component-menu\"><span class=\"menu-label\">Wallets</span><span class=\"menu-note\">2</span></a></div></details>",
     "props": {
       "button": {
         "$slot": [
@@ -5245,7 +5245,7 @@
   },
   {
     "component": "MenuItem",
-    "html": "<a class=\"menu-item\" href=\"#component-menu-item\"><span>Wallets</span><span class=\"menu-note\">1</span></a>",
+    "html": "<a class=\"menu-item\" href=\"#component-menu-item\"><span class=\"menu-label\">▤Wallets</span><span class=\"menu-note\">1</span></a>",
     "props": {
       "children": {
         "$slot": [
@@ -5253,6 +5253,11 @@
         ]
       },
       "href": "#component-menu-item",
+      "icon": {
+        "$slot": [
+          "▤"
+        ]
+      },
       "note": {
         "$slot": [
           "1"
@@ -5263,7 +5268,7 @@
   },
   {
     "component": "MenuItem",
-    "html": "<form method=\"post\" action=\"#component-menu-item\" class=\"menu-form\"><button type=\"submit\" class=\"menu-item\"><span>Log out</span></button></form>",
+    "html": "<form method=\"post\" action=\"#component-menu-item\" class=\"menu-form\"><button type=\"submit\" class=\"menu-item\"><span class=\"menu-label\">Log out</span></button></form>",
     "props": {
       "children": {
         "$slot": [

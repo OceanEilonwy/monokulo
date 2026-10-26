@@ -6,11 +6,15 @@ import type { JSX } from '@solidjs/web';
 
 /**
  * One row of a `Menu`: a link, a form's button (Log out, a POST), or
- * a row holding a control (the theme switch). A `note` sits at its
- * right: a count, "change".
+ * a row holding a control (the theme switch). An `icon` sits before
+ * its name, a `note` at its right: a count, "change".
  */
-export interface MenuItemProps extends Omit<JSX.IntrinsicElements["div"], "action" | "children" | "class" | "classList" | "href" | "method" | "note" | "post_to" | "style" | "title"> {
+export interface MenuItemProps extends Omit<JSX.IntrinsicElements["div"], "action" | "children" | "class" | "classList" | "href" | "icon" | "method" | "note" | "post_to" | "style" | "title"> {
   children: JSX.Element;
+  /**
+   * Before the name: an inline SVG (`assets::icons::WALLET`).
+   */
+  icon?: JSX.Element;
   href?: string;
   /**
    * Posts here when chosen.
@@ -22,16 +26,23 @@ export interface MenuItemProps extends Omit<JSX.IntrinsicElements["div"], "actio
 
 /**
  * One row of a `Menu`: a link, a form's button (Log out, a POST), or
- * a row holding a control (the theme switch). A `note` sits at its
- * right: a count, "change".
+ * a row holding a control (the theme switch). An `icon` sits before
+ * its name, a `note` at its right: a count, "change".
  */
 export function MenuItem(props: MenuItemProps): JSX.Element {
-  const rest = omit(props, "children", "href", "post_to", "note", "title");
+  const rest = omit(props, "children", "icon", "href", "post_to", "note", "title");
   return (
     <>
       {props.href != null ? (
         <a class="menu-item" href={props.href} title={props.title} {...(rest as object)}>
-          <span>
+          <span class="menu-label">
+            {props.icon != null ? (
+              <>
+                {props.icon}
+              </>
+            ) : (
+              null
+            )}
             {props.children}
           </span>
           {props.note != null ? (
@@ -47,14 +58,28 @@ export function MenuItem(props: MenuItemProps): JSX.Element {
           {props.post_to != null ? (
             <form method="post" action={props.post_to} class="menu-form" {...(rest as object)}>
               <button type="submit" class="menu-item" title={props.title}>
-                <span>
+                <span class="menu-label">
+                  {props.icon != null ? (
+                    <>
+                      {props.icon}
+                    </>
+                  ) : (
+                    null
+                  )}
                   {props.children}
                 </span>
               </button>
             </form>
           ) : (
             <div class="menu-item" title={props.title} {...rest}>
-              <span>
+              <span class="menu-label">
+                {props.icon != null ? (
+                  <>
+                    {props.icon}
+                  </>
+                ) : (
+                  null
+                )}
                 {props.children}
               </span>
               {props.note != null ? (

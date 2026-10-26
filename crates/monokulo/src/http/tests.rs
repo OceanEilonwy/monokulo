@@ -355,7 +355,13 @@ async fn a_signed_out_browser_is_sent_to_log_in_and_back_while_the_api_gets_401(
             .unwrap(),
     )
     .await;
-    assert!(html.contains("<span>Log out</span></button>"), "{html}");
+    assert!(html.contains("Log out</span></button>"), "{html}");
+    // Each of the menu's five entries leads with its icon.
+    assert_eq!(
+        html.matches(r#"<span class="menu-label"><svg"#).count(),
+        5,
+        "{html}"
+    );
     assert!(
         html.contains("<strong>nav-auth-state@example.com</strong>"),
         "{html}"
