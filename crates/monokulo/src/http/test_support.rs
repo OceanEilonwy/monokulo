@@ -321,3 +321,33 @@ pub fn store_made(response: &axum::response::Response) -> String {
         .unwrap()
         .to_owned()
 }
+
+/// Makes an order for the store with `public_key` straight on the engine,
+/// through the state's own engine client and the store's `sk_` decrypted
+/// from monokulo's database, the way monokulo itself reaches the engine.
+/// It bypasses monokulo's own order creation, so the order has no local
+/// currency: 10 XMR, as the engine only knows XMR. Returns its id.
+pub async fn seed_real_order(state: &crate::http::AppState, public_key: &str) -> String {
+    let row = state
+        .db
+        .lock()
+        .get_store_connection_by_public_key(public_key)
+        .unwrap()
+        .expect("connection exists");
+    let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
+    state
+        .engine
+        .client
+        .create_order(
+            &sk,
+            pricing::xmr_amount::Piconero(10_000_000_000_000),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the engine accepts the seeded order")
+        .order_id
+        .to_string()
+}

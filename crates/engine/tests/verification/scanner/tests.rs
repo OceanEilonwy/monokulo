@@ -8898,6 +8898,20 @@ async fn a_transaction_that_can_pay_nobody_is_no_match_not_a_failure() {
     assert!(matches.is_empty());
 }
 
+/// One registration pass over an inline store, as the scan loop runs it,
+/// returning how many stores were registered.
+async fn register(
+    store: &crate::store::SharedStore,
+    custody: &dyn KeyCustody,
+    handles: &WalletHandles,
+    network: Network,
+) -> usize {
+    let db = crate::store::Db::over_shared(Arc::clone(store));
+    register_missing_wallets_reporting(&db, custody, handles, network)
+        .await
+        .registered
+}
+
 #[tokio::test]
 async fn keys_that_failed_to_register_are_registered_by_the_retry() {
     let store = Store::open_in_memory().unwrap();
@@ -8921,26 +8935,17 @@ async fn keys_that_failed_to_register_are_registered_by_the_retry() {
     let store = store.into_shared();
     let handles = WalletHandles::default();
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &custody,
-            &handles,
-            None,
-            Network::Stagenet
-        )
-        .await,
+        register(&store, &custody, &handles, Network::Stagenet).await,
         0,
         "other networks untouched"
     );
     assert_eq!(
-        register_missing_wallets_checking_state(&store, &custody, &handles, None, Network::Mainnet)
-            .await,
+        register(&store, &custody, &handles, Network::Mainnet).await,
         1
     );
     assert!(handles.read().contains_key(&tenant.id));
     assert_eq!(
-        register_missing_wallets_checking_state(&store, &custody, &handles, None, Network::Mainnet)
-            .await,
+        register(&store, &custody, &handles, Network::Mainnet).await,
         0,
         "nothing left to do"
     );
@@ -9677,95 +9682,6 @@ impl KeyCustody for ForgetfulKeyCustody {
 }
 
 #[tokio::test]
-async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_once() {
-    let store = Store::open_in_memory().unwrap();
-    let custody = ForgetfulKeyCustody::default();
-    let sealed = custody
-        .seal(&WalletMaterial::new(
-            fixture_view_key(),
-            fixture_spend_pubkey(),
-        ))
-        .await
-        .unwrap();
-    let mut ids = vec![];
-    for _ in 0..3 {
-        ids.push(
-            store
-                .create_tenant(
-                    &NewTenant {
-                        key_custody_backend: "snp".into(),
-                        sealed_key_material: sealed.clone(),
-                        primary_address: "4x".into(),
-                        network: "mainnet".into(),
-                        confirmations_required: None,
-                        order_expiry_seconds: None,
-                    },
-                    1,
-                )
-                .unwrap()
-                .tenant
-                .id,
-        );
-    }
-    let store = store.into_shared();
-    let handles = WalletHandles::default();
-    let handled_epoch = AtomicU64::new(0);
-    assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &custody,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
-        3
-    );
-    let before: Vec<WalletHandle> = ids.iter().map(|id| handles.read()[id].handle).collect();
-    assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &custody,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
-        0
-    );
-
-    // The backend restarts and loses everything.
-    custody.epoch.store(1, Ordering::SeqCst);
-    assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &custody,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
-        3
-    );
-    for (id, old) in ids.iter().zip(before) {
-        assert_ne!(handles.read()[id].handle, old, "a fresh handle");
-    }
-    // A second network's loop noticing the same epoch doesn't clear again.
-    assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &custody,
-            &handles,
-            Some(&handled_epoch),
-            Network::Stagenet
-        )
-        .await,
-        0
-    );
-    assert_eq!(handles.read().len(), 3);
-}
-
-#[tokio::test]
 async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_enabled_again() {
     use crate::key_custody::{CustodyRouter, PlainKeyCustody};
     use std::sync::Arc;
@@ -9799,16 +9715,8 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
     }
     let store = store.into_shared();
     let handles = WalletHandles::default();
-    let handled_epoch = AtomicU64::new(0);
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         2
     );
     let plain_handle = handles.read()[&ids["plain"]].handle;
@@ -9820,14 +9728,7 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         "plain",
     );
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         0
     );
     assert!(!handles.read().contains_key(&ids["snp"]));
@@ -9836,14 +9737,7 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
     // Turned back on: the store is registered again from its sealed keys.
     router.replace(both, "plain");
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         1
     );
     let snp_handle = handles.read()[&ids["snp"]].handle;
@@ -9890,16 +9784,8 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
         .tenant;
     let store = store.into_shared();
     let handles = WalletHandles::default();
-    let handled_epoch = AtomicU64::new(0);
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         1
     );
 
@@ -9919,14 +9805,7 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
     .await
     .is_err());
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         1
     );
     let handle = handles.read()[&tenant.id].handle;
@@ -9945,14 +9824,7 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
         "plain",
     );
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         1
     );
     let handle = handles.read()[&tenant.id].handle;
@@ -10002,11 +9874,10 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
     let handles = WalletHandles::default();
     for network in ["mainnet", "stagenet"] {
         assert_eq!(
-            register_missing_wallets_checking_state(
+            register(
                 &store,
                 &router,
                 &handles,
-                None,
                 engine_protocol::network::parse_network(network).unwrap()
             )
             .await,
@@ -10024,7 +9895,6 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
         &crate::store::Db::over_shared(Arc::clone(&store)),
         &router,
         &handles,
-        None,
         Network::Mainnet,
     )
     .await;
@@ -10041,8 +9911,7 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
         "still there, so stagenet's loop sees it lost and retries soon"
     );
     assert_eq!(
-        register_missing_wallets_checking_state(&store, &router, &handles, None, Network::Stagenet)
-            .await,
+        register(&store, &router, &handles, Network::Stagenet).await,
         1
     );
     assert!(router.handle_is_live(handles.read()[&ids["stagenet"]].handle));
@@ -10622,16 +10491,9 @@ async fn registration_carries_on_when_the_state_check_fails_or_hangs() {
         let custody = ScriptedCustody::new(check, Behaviour::Answer);
         let (store, _) = stores_with_keys(&custody, 2).await;
         let handles = WalletHandles::default();
-        let epoch = AtomicU64::new(0);
         let db = crate::store::Db::over_shared(Arc::clone(&store));
-        let pass = register_missing_wallets_reporting(
-            &db,
-            &custody,
-            &handles,
-            Some(&epoch),
-            Network::Mainnet,
-        )
-        .await;
+        let pass =
+            register_missing_wallets_reporting(&db, &custody, &handles, Network::Mainnet).await;
         assert_eq!(
             pass,
             Registration {
@@ -10657,8 +10519,7 @@ async fn registration_that_cannot_list_stores_is_retried() {
     let handles = WalletHandles::default();
     let db = crate::store::Db::over_shared(Arc::clone(&store));
     store.lock().fail_nth_access(Some(0));
-    let pass =
-        register_missing_wallets_reporting(&db, &custody, &handles, None, Network::Mainnet).await;
+    let pass = register_missing_wallets_reporting(&db, &custody, &handles, Network::Mainnet).await;
     store.lock().fail_nth_access(None);
     assert_eq!(
         pass,
@@ -10697,8 +10558,7 @@ async fn registrations_fail(register: Behaviour) {
         let db = crate::store::Db::over_shared(Arc::clone(&store));
         let started = tokio::time::Instant::now();
         let pass =
-            register_missing_wallets_reporting(&db, &custody, &handles, None, Network::Mainnet)
-                .await;
+            register_missing_wallets_reporting(&db, &custody, &handles, Network::Mainnet).await;
         assert_eq!(
             pass,
             Registration {
@@ -10750,8 +10610,7 @@ async fn a_registration_that_loses_the_race_is_removed() {
         );
     });
     let db = crate::store::Db::over_shared(Arc::clone(&store));
-    let pass =
-        register_missing_wallets_reporting(&db, &custody, &handles, None, Network::Mainnet).await;
+    let pass = register_missing_wallets_reporting(&db, &custody, &handles, Network::Mainnet).await;
     assert_eq!(
         pass,
         Registration {
@@ -10970,16 +10829,8 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
     }
     let store = store.into_shared();
     let handles = WalletHandles::default();
-    let handled_epoch = AtomicU64::new(0);
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         2
     );
     let (plain_handle, snp_handle) = (
@@ -10989,14 +10840,7 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
 
     forgetful.epoch.store(1, Ordering::SeqCst);
     assert_eq!(
-        register_missing_wallets_checking_state(
-            &store,
-            &router,
-            &handles,
-            Some(&handled_epoch),
-            Network::Mainnet
-        )
-        .await,
+        register(&store, &router, &handles, Network::Mainnet).await,
         1
     );
     assert_eq!(
@@ -11009,7 +10853,11 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
         snp_handle,
         "registered again"
     );
-    assert_eq!(handled_epoch.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        register(&store, &router, &handles, Network::Mainnet).await,
+        0,
+        "once"
+    );
 }
 
 /// The test and tool entry points refuse a network name they don't know.

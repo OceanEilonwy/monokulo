@@ -334,7 +334,7 @@ mod through_settings {
         .await;
         builder.reloadable(LogReloadable::<Logging>::default());
         let registry = builder.build().unwrap();
-        let telemetry = init("telemetry-test", "TELEMETRY_TEST");
+        let telemetry = init_with("telemetry-test", DEFAULT_LEVEL, Format::Json);
         registry.boot().await.unwrap();
         assert_eq!(telemetry.status().effective_filter, "info");
 

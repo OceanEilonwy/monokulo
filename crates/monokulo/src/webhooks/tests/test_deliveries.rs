@@ -155,7 +155,7 @@ async fn the_dashboard_button_sends_a_signed_test_and_shows_it() {
 
     // In the webhook's deliveries: a test, delivered at the first attempt,
     // the body and signature as sent, the receiver's answer kept.
-    assert!(delivery.is_test());
+    assert_eq!(delivery.order_id, None, "about no order");
     assert_eq!(delivery.event_type, "webhook.test");
     assert_eq!(delivery.event_id, event_id);
     assert_eq!(delivery.body, body);
@@ -193,7 +193,7 @@ async fn the_dashboard_button_sends_a_signed_test_and_shows_it() {
         .state
         .db
         .lock()
-        .recent_deliveries(&webhook.id, 10)
+        .deliveries_page(&webhook.id, 0, 10)
         .unwrap()[0];
     assert!(
         block.contains(&format!("deliveries/{}", latest.id)),
@@ -252,7 +252,7 @@ async fn the_api_form_sends_a_signed_test_and_answers_how_it_went() {
     }
     assert_eq!(outcome["_links"]["mk:store"]["href"], "/api/v1/store");
     let delivery = only_delivery(&shop.state.db, &webhook);
-    assert!(delivery.is_test());
+    assert_eq!(delivery.order_id, None, "about no order");
     assert_eq!(delivery.event_id, event_id);
     assert_eq!(delivery.state(), DeliveryState::Delivered);
 
@@ -359,7 +359,7 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
         .state
         .db
         .lock()
-        .recent_deliveries(&webhook.id, 10)
+        .deliveries_page(&webhook.id, 0, 10)
         .unwrap();
     let oldest = first.last().unwrap().clone();
     let clock = ManualClock::at(oldest.next_attempt_at.unwrap());

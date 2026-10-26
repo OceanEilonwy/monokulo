@@ -1640,7 +1640,6 @@ mod tests {
     /// stays free of any network dependency. `pay.rs`'s own tests are the
     /// ones that genuinely exercise a fiat quote.
     const TEST_CURRENCY: &str = "XMR";
-    const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
@@ -1696,51 +1695,6 @@ mod tests {
         )
         .await;
         (store.id, store.public_key)
-    }
-
-    /// Seeds a real order directly on the spawned engine through its admin
-    /// API (`POST /api/v1/admin/tenant/orders`), authenticated with the store's
-    /// own `sk_` decrypted from monokulo's database - the same way monokulo
-    /// itself reaches the engine. Deliberately bypasses monokulo's own order
-    /// creation, so no local currency metadata exists for the order. 10.00 at
-    /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
-    async fn seed_real_order(
-        state: &AppState,
-        engine_addr: std::net::SocketAddr,
-        public_key: &str,
-    ) -> String {
-        let row = state
-            .db
-            .lock()
-            .get_store_connection_by_public_key(public_key)
-            .unwrap()
-            .expect("connection exists");
-        let sk = crate::crypto::decrypt(
-            &state.encryption_key,
-            crate::crypto::Binding::StoreSecret(row.id.as_str()),
-            &row.tenant_secret_token_encrypted,
-        )
-        .unwrap();
-        let response = engine_test_support::engine_http_client()
-            .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
-            .bearer_auth(sk)
-            .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
-            .send()
-            .await
-            .expect("seeding a real order against the engine's admin API failed");
-        assert_eq!(
-            response.status(),
-            reqwest::StatusCode::OK,
-            "expected the engine to accept the seeded order"
-        );
-        let body: serde_json::Value = response.json().await.unwrap();
-        body.as_object()
-            .unwrap()
-            .get("order_id")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string()
     }
 
     #[tokio::test]
@@ -1808,7 +1762,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_orders_list_shows_an_order_and_a_fixi_search_gets_only_its_results() {
-        let (state, engine) = test_state_with_real_engine().await;
+        let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
@@ -1819,7 +1773,7 @@ mod tests {
         .await;
         let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
 
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+        let order_id = crate::http::test_support::seed_real_order(&state, &public_key).await;
 
         let response = router
             .clone()
@@ -1874,7 +1828,7 @@ mod tests {
     /// stream starts with that part, routed to replace itself.
     #[tokio::test]
     async fn order_detail_streams_its_live_part_to_its_owner_only() {
-        let (state, engine) = test_state_with_real_engine().await;
+        let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1883,7 +1837,7 @@ mod tests {
         )
         .await;
         let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+        let order_id = crate::http::test_support::seed_real_order(&state, &public_key).await;
         let get = |uri: String, token: &str| {
             Request::builder()
                 .uri(uri)
@@ -1960,7 +1914,7 @@ mod tests {
     /// absolute, built from the request's host.
     #[tokio::test]
     async fn an_order_without_a_recorded_price_shows_a_dash_never_a_made_up_amount() {
-        let (state, engine) = test_state_with_real_engine().await;
+        let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
@@ -1971,7 +1925,7 @@ mod tests {
         .await;
         let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
 
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+        let order_id = crate::http::test_support::seed_real_order(&state, &public_key).await;
 
         let response = router
             .oneshot(
@@ -2047,7 +2001,7 @@ mod tests {
     /// the same as a store that doesn't exist.
     #[tokio::test]
     async fn a_different_user_hitting_the_first_users_connection_gets_404_not_their_data() {
-        let (state, engine) = test_state_with_real_engine().await;
+        let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
         let owner_token = signed_up_and_logged_in_session_token(
@@ -2057,7 +2011,7 @@ mod tests {
         )
         .await;
         let (connection_id, public_key) = create_connection(&router, &state, &owner_token).await;
-        seed_real_order(&state, engine.addr, &public_key).await;
+        crate::http::test_support::seed_real_order(&state, &public_key).await;
 
         let other_token = signed_up_and_logged_in_session_token(
             &router,
@@ -3124,7 +3078,7 @@ mod tests {
         );
 
         // Still takes orders from its new place.
-        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+        let order_id = crate::http::test_support::seed_real_order(&state, &public_key).await;
         assert!(!order_id.is_empty());
     }
 

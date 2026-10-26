@@ -1209,38 +1209,23 @@ pub async fn run_scan_tick_with(
 /// Registration at boot can fail (a key-custody backend that wasn't up
 /// yet), and until a tenant's keys are registered its payments can't be
 /// detected; this lets the scan loop keep retrying rather than waiting for
-/// an API call to register them lazily. Returns how many were registered.
+/// an API call to register them lazily. Returns how many were registered,
+/// and how many failed.
 ///
 /// Uses the same "first handle in wins" rule as
 /// `http::resolve_wallet_handle`, which may be registering the same tenant
 /// at the same time: the losing registration is removed again.
-/// With `handled_epoch`, first asks the key-custody backend whether it still
-/// holds the wallets registered with it (`KeyCustody::check_state`, task
-/// 5.8). If it has lost them since `handled_epoch` (a backend in another
-/// process that restarted with empty memory), every handle in `wallet_handles` is
-/// useless, so the map is cleared (once per epoch, however many network
-/// loops notice) and this network's tenants are registered again from their
-/// sealed material. Nobody has to enter keys again.
-pub async fn register_missing_wallets_checking_state(
-    store: &crate::store::SharedStore,
-    key_custody: &dyn KeyCustody,
-    wallet_handles: &WalletHandles,
-    handled_epoch: Option<&std::sync::atomic::AtomicU64>,
-    network: monero::Network,
-) -> usize {
-    let db = crate::store::Db::over_shared(Arc::clone(store));
-    register_missing_wallets_reporting(&db, key_custody, wallet_handles, handled_epoch, network)
-        .await
-        .registered
-}
-
-/// [`register_missing_wallets_checking_state`], also saying how many
-/// registrations failed.
+///
+/// First asks key custody whether it still holds the wallets registered
+/// with it (`KeyCustody::check_state`, task 5.8). The router forgets the
+/// handles of a backend that has lost them (one in another process that
+/// restarted with empty memory), and `handle_is_live` below then drops
+/// them from `wallet_handles`, so those stores are registered again from
+/// their sealed material. Nobody has to enter keys again.
 pub async fn register_missing_wallets_reporting(
     db: &crate::store::Db,
     key_custody: &dyn KeyCustody,
     wallet_handles: &WalletHandles,
-    handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: monero::Network,
 ) -> Registration {
     const REGISTRATION_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -1250,32 +1235,15 @@ pub async fn register_missing_wallets_reporting(
         parking_lot::Mutex<HashMap<String, usize>>,
     > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
     let pass_end = tokio::time::Instant::now() + REGISTRATION_PASS_DEADLINE;
-    if let Some(handled_epoch) = handled_epoch {
-        match tokio::time::timeout_at(
-            pass_end.min(tokio::time::Instant::now() + REGISTRATION_CALL_DEADLINE),
-            key_custody.check_state(),
-        ).await {
-            Ok(Ok(epoch)) => {
-                // Whichever loop moves the handled epoch up acts on it; the
-                // others see it already there.
-                if handled_epoch.fetch_max(epoch, std::sync::atomic::Ordering::SeqCst) < epoch {
-                    // A single backend can't say which handles it lost, so
-                    // they all go; a router forgets just the lost backend's
-                    // (`handle_is_live` below).
-                    if key_custody.enabled_backends().is_empty() {
-                        let dropped = {
-                            let mut handles = wallet_handles.write();
-                            let n = handles.len();
-                            handles.clear();
-                            n
-                        };
-                        tracing::warn!(stores = dropped, "key custody lost its wallets: registering them all again from their sealed keys");
-                    }
-                }
-            }
-            Ok(Err(e)) => tracing::warn!("checking the key custody backend's state failed (retried later): {e}"),
-            Err(_) => tracing::warn!("checking the key custody backend's state exceeded {REGISTRATION_CALL_DEADLINE:?} (retried later)"),
-        }
+    match tokio::time::timeout_at(
+        pass_end.min(tokio::time::Instant::now() + REGISTRATION_CALL_DEADLINE),
+        key_custody.check_state(),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!("checking the key custody backend's state failed (retried later): {e}"),
+        Err(_) => tracing::warn!("checking the key custody backend's state exceeded {REGISTRATION_CALL_DEADLINE:?} (retried later)"),
     }
     // On the database worker: this runs from the async scanner loop.
     let listed = db

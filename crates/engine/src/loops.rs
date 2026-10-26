@@ -366,10 +366,6 @@ pub async fn run_scanner_loop(
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
 ) {
-    // Shared by every network's loop, so the handle map is cleared once per
-    // lost-state epoch of the key-custody backend, not once per network.
-    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
     // Keys that failed to register (at boot, or since) are retried here at
     // most once a minute, so a tenant whose key-custody backend comes back
     // is scanned again without anyone having to call the API for it.
@@ -411,7 +407,6 @@ pub async fn run_scanner_loop(
                     &db,
                     key_custody.as_ref(),
                     &wallet_handles,
-                    Some(&HANDLED_CUSTODY_EPOCH),
                     network,
                 )
                 .instrument(tick.clone())

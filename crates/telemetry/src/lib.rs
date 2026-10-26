@@ -1,7 +1,7 @@
 //! Structured logging for monokulo and the engine
 //! (structured_logging.md part 1).
 //!
-//! Each process calls [`init`] once, first thing in `main`. That installs a
+//! Each process calls [`init_with`] once, first thing in `main`. That installs a
 //! `tracing` subscriber with:
 //!
 //! - a level filter that can be changed while running ([`Telemetry::apply`],
@@ -76,21 +76,6 @@ pub enum Format {
 }
 
 impl Format {
-    /// `<PREFIX>_LOG_FORMAT` (`json` or `pretty`) if set, otherwise pretty
-    /// at a terminal and JSON everywhere else.
-    pub fn from_env(env_prefix: &str) -> Format {
-        let chosen = match std::env::var(format!("{env_prefix}_LOG_FORMAT"))
-            .ok()
-            .as_deref()
-            .map(str::trim)
-        {
-            Some("json") => LogFormat::Json,
-            Some("pretty") => LogFormat::Pretty,
-            _ => LogFormat::Auto,
-        };
-        Format::chosen(chosen)
-    }
-
     /// The format `choice` names; `auto` is pretty at a terminal and JSON
     /// everywhere else.
     pub fn chosen(choice: LogFormat) -> Format {
@@ -237,24 +222,12 @@ pub struct Telemetry {
 static GLOBAL: OnceLock<Arc<Telemetry>> = OnceLock::new();
 
 /// Installs the process-wide subscriber and returns its controls. `service`
-/// names the process in every line (`engine`, `monokulo`). `env_prefix` names its environment variables:
-/// `<PREFIX>_LOG` sets the starting level (it is also the level setting's
-/// variable, so it keeps winning after the settings load) and
-/// `<PREFIX>_LOG_FORMAT` picks the format.
+/// names the process in every line (`engine`, `monokulo`). The engine and
+/// monokulo read the starting level and format from their settings
+/// (`logging.level` and `logging.format`), so an invalid value is reported
+/// by the settings like any other rather than quietly replaced.
 ///
 /// Calling it again (tests) returns the first process-wide controls.
-pub fn init(service: &'static str, env_prefix: &str) -> Arc<Telemetry> {
-    let level = std::env::var(format!("{env_prefix}_LOG"))
-        .ok()
-        .filter(|l| check_level(l).is_ok())
-        .unwrap_or_else(|| DEFAULT_LEVEL.to_string());
-    init_with(service, &level, Format::from_env(env_prefix))
-}
-
-/// [`init`] with the starting level and format already read, as the engine
-/// and monokulo do through their settings (`logging.level` and
-/// `logging.format`), so an invalid value is reported by the settings like
-/// any other rather than quietly replaced.
 pub fn init_with(service: &'static str, level: &str, format: Format) -> Arc<Telemetry> {
     if let Some(existing) = GLOBAL.get() {
         return existing.clone();
@@ -268,7 +241,7 @@ pub fn init_with(service: &'static str, level: &str, format: Format) -> Arc<Tele
     GLOBAL.get_or_init(|| telemetry).clone()
 }
 
-/// The process-wide controls, once [`init`] has run.
+/// The process-wide controls, once [`init_with`] has run.
 pub fn global() -> Option<Arc<Telemetry>> {
     GLOBAL.get().cloned()
 }

@@ -655,7 +655,7 @@ async fn seed_webhooks(
             })
             .map_err(failed)?;
             let id = db
-                .recent_deliveries(&created.webhook.id, 1)
+                .deliveries_page(&created.webhook.id, 0, 1)
                 .map_err(failed)?[0]
                 .id;
             db.record_delivery_attempt(
@@ -808,11 +808,11 @@ async fn seed_webhooks(
             })
             .map_err(failed)?;
             for other in &earlier {
-                let copy = db.recent_deliveries(&other.id, 1).map_err(failed)?[0].id;
+                let copy = db.deliveries_page(&other.id, 0, 1).map_err(failed)?[0].id;
                 db.delete_delivery_for_test(copy);
             }
             let id = db
-                .recent_deliveries(&created.webhook.id, 1)
+                .deliveries_page(&created.webhook.id, 0, 1)
                 .map_err(failed)?[0]
                 .id;
             for n in 1..=*attempts {

@@ -209,8 +209,6 @@ mod tests {
 
         use super::super::super::{build_router, AppState};
 
-        const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
-
         async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle)
         {
             let engine = engine_test_support::TestEngineConfig::new()
@@ -228,48 +226,6 @@ mod tests {
         use crate::http::test_support::body_text;
 
         use crate::http::test_support::{signed_up_and_logged_in_session_token, store_with_keys};
-
-        /// Seeds a real order directly on the spawned engine through its admin
-        /// API (`POST /api/v1/admin/tenant/orders`), authenticated with the store's
-        /// own `sk_` decrypted from monokulo's database - the same way monokulo
-        /// itself reaches the engine. Deliberately bypasses monokulo's own order
-        /// creation, so no local currency metadata exists for the order. 10.00 at
-        /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
-        async fn seed_real_order(
-            state: &AppState,
-            engine_addr: std::net::SocketAddr,
-            public_key: &str,
-        ) -> String {
-            let row = state
-                .db
-                .lock()
-                .get_store_connection_by_public_key(public_key)
-                .unwrap()
-                .expect("connection exists");
-            let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
-            let response = engine_test_support::engine_http_client()
-                .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
-                .bearer_auth(sk.expose())
-                .json(
-                    &serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }),
-                )
-                .send()
-                .await
-                .expect("seeding a real order against the engine's admin API failed");
-            assert_eq!(
-                response.status(),
-                reqwest::StatusCode::OK,
-                "expected the engine to accept the seeded order"
-            );
-            let body: serde_json::Value = response.json().await.unwrap();
-            body.as_object()
-                .unwrap()
-                .get("order_id")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_string()
-        }
 
         /// `/` is the dashboard: someone not signed in is sent to log in.
         #[tokio::test]
@@ -290,7 +246,7 @@ mod tests {
 
         #[tokio::test]
         async fn dashboard_with_a_connected_store_and_a_real_order_shows_the_real_total_received() {
-            let (state, engine) = test_state_with_real_engine().await;
+            let (state, _engine) = test_state_with_real_engine().await;
             let router = build_router(state.clone());
             let session_token = signed_up_and_logged_in_session_token(
                 &router,
@@ -301,7 +257,7 @@ mod tests {
             let store =
                 store_with_keys(&router, &state, &session_token, "shop.example.com", "XMR").await;
             let (connection_id, public_key) = (store.id, store.public_key);
-            let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+            let order_id = crate::http::test_support::seed_real_order(&state, &public_key).await;
             let (metadata_connection, metadata_order) = (
                 crate::db::ConnectionId::new(connection_id.clone()),
                 crate::db::OrderId::new(order_id.clone()),

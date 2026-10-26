@@ -108,11 +108,6 @@ impl DeliveryRow {
             DeliveryState::Retrying
         }
     }
-
-    /// Whether it's a test delivery (`webhook.test`), about no order.
-    pub fn is_test(&self) -> bool {
-        self.order_id.is_none()
-    }
 }
 
 /// A stored `order_id` as a delivery has it: none for a test delivery's
@@ -569,15 +564,6 @@ impl Db {
                AND EXISTS (SELECT 1 FROM webhooks WHERE id = ?2 AND store_id = ?1)",
             params![store_id, webhook_id, now],
         )?)
-    }
-
-    /// The webhook's latest `limit` deliveries, newest first.
-    pub fn recent_deliveries(
-        &self,
-        webhook_id: &WebhookId,
-        limit: usize,
-    ) -> Result<Vec<DeliveryRow>> {
-        self.deliveries_page(webhook_id, 0, limit)
     }
 
     /// `limit` of the webhook's deliveries, newest first, after skipping
