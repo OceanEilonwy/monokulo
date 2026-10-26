@@ -11,7 +11,9 @@ use maud::{html, Markup, PreEscaped};
 use super::settings::{self, Card, Field, Save, Toast, ToastKind};
 use super::setup::{SetupContext, WalletAt, WalletPath};
 use super::{DialogContent, PageChrome};
-use crate::wallets::{AppMethod, WalletApp, WALLET_APPS};
+use crate::wallets::{AppMethod, Backup, BroughtFrom, WalletApp, WALLET_APPS};
+use engine_protocol::network::network_str;
+use monero::Network;
 use ui::{Choice, Select};
 
 /// Where a wallet is being added: in setup's Wallet step, on the way to
@@ -128,12 +130,13 @@ pub(super) fn regenerate_icon() -> Markup {
 /// The setup flow's network dropdown: each network as its badge
 /// (`views::network_badge`), `[Stagenet]` without JavaScript.
 fn network_select(selected: &str) -> Markup {
-    let networks = ["mainnet", "stagenet", "testnet"]
-        .iter()
+    let networks = [Network::Mainnet, Network::Stagenet, Network::Testnet]
+        .into_iter()
+        .map(network_str)
         .map(|network| {
             Choice::new(network, "")
                 .network(network)
-                .selected(*network == selected)
+                .selected(network == selected)
         })
         .collect::<Vec<_>>();
     html! { (Select::new("network", networks).id("wallet-network")) }
@@ -237,7 +240,7 @@ pub fn choice_page(chrome: &PageChrome, flow: Flow<'_>, data: &ChoiceViewModel) 
                                 .map(|w| {
                                     Choice::new(&w.wallet.id, &w.wallet.name)
                                         .detail(super::short_address_text(&w.wallet.primary_address))
-                                        .network(&w.wallet.network)
+                                        .network(network_str(w.wallet.network))
                                         .note(stores_label(w.store_count))
                                 })
                                 .collect::<Vec<_>>(),
@@ -676,7 +679,7 @@ pub struct WalletListItem {
     pub name: String,
     pub kind: &'static str,
     pub address: String,
-    pub network: String,
+    pub network: Network,
     pub stores: u64,
 }
 
@@ -706,7 +709,7 @@ pub fn key_gone_icon(size: u32) -> Markup {
 /// are folded below it, the fold open when there's no mainnet wallet.
 pub fn list_section(wallets: &[WalletListItem], retired: &[RetiredListItem]) -> Markup {
     let (main, test): (Vec<&WalletListItem>, Vec<&WalletListItem>) =
-        wallets.iter().partition(|w| w.network == "mainnet");
+        wallets.iter().partition(|w| w.network == Network::Mainnet);
     html! {
             p { "Where your stores' payments go. Monokulo holds watch-only keys for each." }
             @if wallets.is_empty() {
@@ -764,7 +767,7 @@ fn wallets_table(wallets: &[&WalletListItem], with_network: bool) -> Markup {
     };
     let rows = wallets.iter().map(|w| {
         let network = with_network.then(|| {
-            ui::Slot::from(ui::Cell::new(super::network_icon(&w.network)).part(ui::CellPart::Meta))
+            ui::Slot::from(ui::Cell::new(super::network_icon(network_str(w.network))).part(ui::CellPart::Meta))
         });
         ui::Row::new(ui::Slot::many(
             network.into_iter().chain([
@@ -963,7 +966,7 @@ pub fn detail_page(chrome: &PageChrome, data: &DetailViewModel) -> Markup {
     let w = &data.wallet;
     let header = ui::PageHeader::new(w.name.as_str())
         .crumbs(super::crumbs(&[("/account?tab=wallets", "Wallets")]))
-        .aside(super::network_badge(&w.network));
+        .aside(super::network_badge(network_str(w.network)));
     let body = html! {
         @if let Some(at) = w.retired_at {
             p class="wallet-meta" {
@@ -1037,22 +1040,21 @@ fn kind_label(w: &crate::db::WalletRow) -> &'static str {
 pub fn where_banner(w: &crate::db::WalletRow) -> Markup {
     use crate::db::WalletOrigin;
     const WATCHES: &str = "Monokulo only watches this wallet; it can never spend from it.";
-    let app = |key: &str| crate::wallets::wallet_app(key);
-    let (icon, title, text, warn) = match (w.origin, w.backup.as_deref(), w.app.as_deref()) {
-        (WalletOrigin::Created, Some("paper"), _) => (
+    let (icon, title, text, warn) = match (w.origin, w.backup, w.app) {
+        (WalletOrigin::Created, Some(Backup::Paper), _) => (
             paper_glyph(),
             "Backed up on paper".to_owned(),
             format!("Its recovery phrase is the words you wrote down: keep them safe, they're the only copy. {WATCHES}"),
             false,
         ),
-        (WalletOrigin::Created, Some("skipped"), _) => (
+        (WalletOrigin::Created, Some(Backup::Skipped), _) => (
             warning_glyph(),
             "Backup skipped".to_owned(),
             "Its recovery phrase wasn't saved, so money paid into it can't be spent. Consider taking payments into a wallet you've backed up.".to_owned(),
             true,
         ),
-        (WalletOrigin::Created, Some(key), _) if app(key).is_some() => {
-            let app = app(key).expect("checked");
+        (WalletOrigin::Created, Some(Backup::App(app)), _) => {
+            let app = app.app();
             (
                 app_logo(app.key, 40, None),
                 format!("Backed up to {}", app.name),
@@ -1060,14 +1062,14 @@ pub fn where_banner(w: &crate::db::WalletRow) -> Markup {
                 false,
             )
         }
-        (WalletOrigin::Created, _, _) => (
+        (WalletOrigin::Created, None, _) => (
             muted_glyph(),
             "Made in Monokulo".to_owned(),
             format!("Its keys and recovery phrase live wherever you saved them. {WATCHES}"),
             false,
         ),
-        (WalletOrigin::Imported, _, Some(key)) if app(key).is_some() => {
-            let app = app(key).expect("checked");
+        (WalletOrigin::Imported, _, Some(BroughtFrom::App(app))) => {
+            let app = app.app();
             (
                 app_logo(app.key, 40, None),
                 format!("Brought in from {}", app.name),
@@ -1075,13 +1077,13 @@ pub fn where_banner(w: &crate::db::WalletRow) -> Markup {
                 false,
             )
         }
-        (WalletOrigin::Imported, _, Some("other")) => (
+        (WalletOrigin::Imported, _, Some(BroughtFrom::Other)) => (
             muted_glyph(),
             "Brought in from another app".to_owned(),
             format!("Its keys and recovery phrase live in your wallet app. {WATCHES}"),
             false,
         ),
-        (WalletOrigin::Imported, _, _) => (
+        (WalletOrigin::Imported, _, None) => (
             muted_glyph(),
             "Brought in · app not recorded".to_owned(),
             format!("Its keys and recovery phrase live in your wallet app. {WATCHES}"),
@@ -1414,7 +1416,7 @@ mod tests {
             name: name.to_owned(),
             kind: "Brought in",
             address: format!("{name}-address-0123456789abcdef"),
-            network: network.to_owned(),
+            network: engine_protocol::network::parse_network(network).unwrap(),
             stores,
         }
     }
@@ -1545,7 +1547,7 @@ mod tests {
                 id: crate::db::WalletId::new(format!("w_{name}")),
                 user_id: crate::db::UserId::new("u1"),
                 name: name.to_owned(),
-                network: network.to_owned(),
+                network: engine_protocol::network::parse_network(network).unwrap(),
                 primary_address: "5B8s3obCY2ETeQB3GNAGPK2zRGen5UeW1WzegSizVsmf6z5NvM2GLoN6zzk1vHyzGAAfA8pGhuYAeCFZjHAp59jRVQkunGS".to_owned(),
                 engine_wallet_id: crate::db::EngineWalletId::new("e"),
                 origin: crate::db::WalletOrigin::Imported,

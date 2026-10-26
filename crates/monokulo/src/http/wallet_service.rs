@@ -20,9 +20,11 @@ pub(crate) struct AddWallet {
     pub network: String,
     pub key_custody_backend: Option<String>,
     pub origin: WalletOrigin,
+    /// How a made wallet's recovery phrase was saved, as the form sent it
+    /// (`crate::wallets::Backup`).
     pub backup: Option<String>,
-    /// For a brought-in wallet: which app it's in, if said
-    /// (`crate::wallets::is_known_app`).
+    /// For a brought-in wallet: which app it's in, if said, as the form
+    /// sent it (`crate::wallets::BroughtFrom`).
     pub app: Option<String>,
     /// For a wallet made in the browser: the address the page worked out
     /// from the phrase, which must be the one the engine derives from the
@@ -46,26 +48,21 @@ pub(crate) async fn add_wallet(
     req: AddWallet,
 ) -> Result<WalletRow, AddWalletError> {
     let name = crate::wallets::clean_name(&req.name).map_err(AddWalletError::Invalid)?;
-    if engine_protocol::network::parse_network(&req.network).is_err() {
-        return Err(AddWalletError::Invalid(format!(
-            "{:?} is not a Monero network",
-            req.network
-        )));
-    }
-    if let Some(backup) = req.backup.as_deref() {
-        if !crate::wallets::is_known_backup(backup) {
-            return Err(AddWalletError::Invalid(
-                "That backup method isn't one this page offers.".to_owned(),
-            ));
-        }
-    }
-    if let Some(app) = req.app.as_deref() {
-        if !crate::wallets::is_known_app(app) {
-            return Err(AddWalletError::Invalid(
-                "That wallet app isn't one this page offers.".to_owned(),
-            ));
-        }
-    }
+    let network = engine_protocol::network::parse_network(&req.network).map_err(|_| {
+        AddWalletError::Invalid(format!("{:?} is not a Monero network", req.network))
+    })?;
+    let backup = match req.backup.as_deref() {
+        Some(backup) => Some(crate::wallets::Backup::parse(backup).ok_or_else(|| {
+            AddWalletError::Invalid("That backup method isn't one this page offers.".to_owned())
+        })?),
+        None => None,
+    };
+    let app = match req.app.as_deref() {
+        Some(app) => Some(crate::wallets::BroughtFrom::parse(app).ok_or_else(|| {
+            AddWalletError::Invalid("That wallet app isn't one this page offers.".to_owned())
+        })?),
+        None => None,
+    };
     // As for a store: the engine's default key storage decides how the
     // keys may travel, so its status is read first if it isn't known.
     if req.key_custody_backend.is_none() {
@@ -126,8 +123,6 @@ pub(crate) async fn add_wallet(
     let user_id = user.id.clone();
     let row_id = id.clone();
     let origin = req.origin;
-    let backup = req.backup.clone();
-    let app = req.app.clone();
     // Whether the account has it already, and adding it, in one write: two
     // submissions of the same wallet at once find the first's row, not a
     // unique violation taken for the name's.
@@ -150,12 +145,12 @@ pub(crate) async fn add_wallet(
                 id: &row_id,
                 user_id: &user_id,
                 name: &name,
-                network: &created.network,
+                network,
                 primary_address: &created.primary_address,
                 engine_wallet_id: &created.wallet_id,
                 origin,
-                backup: backup.as_deref(),
-                app: app.as_deref(),
+                backup,
+                app,
                 created_at: now_unix(),
             })?;
             Ok::<_, crate::db::DbError>(Ok(name))
@@ -223,6 +218,10 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
         let Some(engine_wallet) = tenant.wallet_id.clone() else {
             continue;
         };
+        let Ok(tenant_network) = engine_protocol::network::parse_network(&tenant.network) else {
+            tracing::warn!(store = %store.id, network = %tenant.network, "a store made before wallets is on a network monokulo doesn't know; left unlinked");
+            continue;
+        };
         let (user_id, on_it, network, address) = (
             user.id.clone(),
             engine_wallet.clone(),
@@ -281,7 +280,7 @@ pub(crate) async fn adopt_unlinked_stores(state: &AppState, user: &UserRow) {
                             id: &id,
                             user_id: &user_id,
                             name: &crate::wallets::friendly_name(&taken),
-                            network: &tenant.network,
+                            network: tenant_network,
                             primary_address: &tenant.primary_address,
                             engine_wallet_id: &engine_wallet,
                             origin: WalletOrigin::Imported,

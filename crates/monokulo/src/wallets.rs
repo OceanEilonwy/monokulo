@@ -105,38 +105,192 @@ impl AppMethod {
     }
 }
 
+/// A wallet app the backup screen offers, and a brought-in wallet can be
+/// in: [`AppKey::app`] says which.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppKey {
+    Cake,
+    Stack,
+    Feather,
+    Gui,
+}
+
+impl AppKey {
+    /// Every app, in the order of the backup screen's tabs.
+    pub const ALL: [AppKey; 4] = [AppKey::Cake, AppKey::Stack, AppKey::Feather, AppKey::Gui];
+
+    pub const fn app(self) -> &'static WalletApp {
+        match self {
+            AppKey::Cake => &CAKE,
+            AppKey::Stack => &STACK,
+            AppKey::Feather => &FEATHER,
+            AppKey::Gui => &GUI,
+        }
+    }
+
+    /// Its key, as the forms send it and `wallets` keeps it.
+    pub fn key(self) -> &'static str {
+        self.app().key
+    }
+
+    /// The app a form names.
+    pub fn parse(key: &str) -> Option<Self> {
+        AppKey::ALL.into_iter().find(|app| app.key() == key)
+    }
+
+    /// The app a stored row names: as [`Self::parse`], and `monerocom`,
+    /// Monero.com's own key before it shared Cake Wallet's tab (the same
+    /// team's app), as Cake's.
+    fn stored(key: &str) -> Option<Self> {
+        Self::parse(key).or((key == "monerocom").then_some(AppKey::Cake))
+    }
+}
+
+/// How a made wallet's recovery phrase was saved (`wallets.backup`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backup {
+    App(AppKey),
+    /// The words written down.
+    Paper,
+    Skipped,
+}
+
+impl Backup {
+    /// As the backup screen sends it and `wallets.backup` keeps it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Backup::App(app) => app.key(),
+            Backup::Paper => "paper",
+            Backup::Skipped => "skipped",
+        }
+    }
+
+    /// The backup a form names: one of the apps' keys, `paper`, or
+    /// `skipped`.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "paper" => Some(Backup::Paper),
+            "skipped" => Some(Backup::Skipped),
+            key => AppKey::parse(key).map(Backup::App),
+        }
+    }
+
+    fn stored(text: &str) -> Option<Self> {
+        Self::parse(text).or_else(|| AppKey::stored(text).map(Backup::App))
+    }
+
+    /// What it is called on a wallet's page.
+    pub fn label(self) -> String {
+        match self {
+            Backup::Paper => "Written down".to_owned(),
+            Backup::Skipped => "Not backed up".to_owned(),
+            Backup::App(app) => format!("Saved in {}", app.app().name),
+        }
+    }
+}
+
+/// Which app a brought-in wallet is in, as its owner said (`wallets.app`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BroughtFrom {
+    App(AppKey),
+    /// An app the page doesn't list.
+    Other,
+}
+
+impl BroughtFrom {
+    /// As the form sends it and `wallets.app` keeps it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BroughtFrom::App(app) => app.key(),
+            BroughtFrom::Other => "other",
+        }
+    }
+
+    /// The app a form names: one of the apps' keys, or `other`.
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "other" => Some(BroughtFrom::Other),
+            key => AppKey::parse(key).map(BroughtFrom::App),
+        }
+    }
+
+    fn stored(text: &str) -> Option<Self> {
+        Self::parse(text).or_else(|| AppKey::stored(text).map(BroughtFrom::App))
+    }
+}
+
+/// A stored value no variant has: the row is refused rather than read as
+/// something else.
+fn unknown(column: &str, text: &str) -> rusqlite::types::FromSqlError {
+    rusqlite::types::FromSqlError::Other(format!("unknown wallets.{column} {text:?}").into())
+}
+
+impl rusqlite::types::FromSql for Backup {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let text = value.as_str()?;
+        Backup::stored(text).ok_or_else(|| unknown("backup", text))
+    }
+}
+
+impl rusqlite::types::ToSql for Backup {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
+impl rusqlite::types::FromSql for BroughtFrom {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let text = value.as_str()?;
+        BroughtFrom::stored(text).ok_or_else(|| unknown("app", text))
+    }
+}
+
+impl rusqlite::types::ToSql for BroughtFrom {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
+}
+
 /// The wallet apps the backup screen offers, in the order of its tabs
 /// (writing the words on paper is the last tab, `paper`).
-pub const WALLET_APPS: &[WalletApp] = &[
-    WalletApp {
-        key: "cake",
-        name: "Cake Wallet",
-        tab: "Cake / Monero.com",
-        logos: &["cake", "monerocom"],
-        title: "Enter into Cake Wallet",
-        method: AppMethod::ScanRestoreLink,
-        restore_steps: &[
-            "Open Cake Wallet (or Monero.com, by the same team) and choose Restore wallet.",
-            "Pick Scan QR code and point your phone at the code here.",
-            "Check the wallet has this wallet's name, then set a PIN.",
-        ],
-        done_check: "Cake Wallet opened the wallet from this QR.",
-    },
-    WalletApp {
-        key: "stack",
-        name: "Stack Wallet",
-        tab: "Stack",
-        logos: &["stack"],
-        title: "Enter into Stack Wallet",
-        method: AppMethod::ScanWordList,
-        restore_steps: &[
-            "Tap Add wallet, choose Monero, then Restore, and the 16-word phrase length.",
-            "Tap the QR icon above the word boxes and scan the code here.",
-            "Set the restore date to today: the wallet is new.",
-        ],
-        done_check: "Stack Wallet opened the wallet from this QR.",
-    },
-    WalletApp {
+pub const WALLET_APPS: [&WalletApp; 4] = [
+    AppKey::Cake.app(),
+    AppKey::Stack.app(),
+    AppKey::Feather.app(),
+    AppKey::Gui.app(),
+];
+
+const CAKE: WalletApp = WalletApp {
+    key: "cake",
+    name: "Cake Wallet",
+    tab: "Cake / Monero.com",
+    logos: &["cake", "monerocom"],
+    title: "Enter into Cake Wallet",
+    method: AppMethod::ScanRestoreLink,
+    restore_steps: &[
+        "Open Cake Wallet (or Monero.com, by the same team) and choose Restore wallet.",
+        "Pick Scan QR code and point your phone at the code here.",
+        "Check the wallet has this wallet's name, then set a PIN.",
+    ],
+    done_check: "Cake Wallet opened the wallet from this QR.",
+};
+
+const STACK: WalletApp = WalletApp {
+    key: "stack",
+    name: "Stack Wallet",
+    tab: "Stack",
+    logos: &["stack"],
+    title: "Enter into Stack Wallet",
+    method: AppMethod::ScanWordList,
+    restore_steps: &[
+        "Tap Add wallet, choose Monero, then Restore, and the 16-word phrase length.",
+        "Tap the QR icon above the word boxes and scan the code here.",
+        "Set the restore date to today: the wallet is new.",
+    ],
+    done_check: "Stack Wallet opened the wallet from this QR.",
+};
+
+const FEATHER: WalletApp = WalletApp {
         key: "feather",
         name: "Feather",
         tab: "Feather",
@@ -148,51 +302,21 @@ pub const WALLET_APPS: &[WalletApp] = &[
             "Choose Restore wallet from seed, seed type Polyseed, and type the 16 words. Feather reads the wallet's birthday from them.",
         ],
         done_check: "Feather opened the wallet with these words.",
-    },
-    WalletApp {
-        key: "gui",
-        name: "Monero GUI / CLI",
-        tab: "Monero GUI / CLI",
-        logos: &["gui"],
-        title: "25-word phrase",
-        method: AppMethod::TypeLegacyWords,
-        restore_steps: &[
-            "These apps only read 25-word phrases: this is the same wallet in that older format.",
-            "Type the 25 words, then the restore height shown with them.",
-        ],
-        done_check: "The Monero GUI or CLI opened the wallet with these 25 words.",
-    },
-];
+    };
 
-/// How a created wallet's recovery phrase was saved: one of the apps'
-/// keys, `paper`, or `skipped`. Anything else isn't recorded.
-pub fn is_known_backup(backup: &str) -> bool {
-    backup == "paper" || backup == "skipped" || WALLET_APPS.iter().any(|app| app.key == backup)
-}
-
-/// Which app a brought-in wallet is in, as its owner said: one of the
-/// apps' keys, or `other`. Anything else isn't recorded.
-pub fn is_known_app(app: &str) -> bool {
-    app == "other" || WALLET_APPS.iter().any(|a| a.key == app)
-}
-
-/// The app with this key.
-pub fn wallet_app(key: &str) -> Option<&'static WalletApp> {
-    WALLET_APPS.iter().find(|app| app.key == key)
-}
-
-/// What a backup is called on a wallet's page.
-pub fn backup_label(backup: &str) -> String {
-    match backup {
-        "paper" => "Written down".to_owned(),
-        "skipped" => "Not backed up".to_owned(),
-        key => WALLET_APPS
-            .iter()
-            .find(|app| app.key == key)
-            .map(|app| format!("Saved in {}", app.name))
-            .unwrap_or_else(|| key.to_owned()),
-    }
-}
+const GUI: WalletApp = WalletApp {
+    key: "gui",
+    name: "Monero GUI / CLI",
+    tab: "Monero GUI / CLI",
+    logos: &["gui"],
+    title: "25-word phrase",
+    method: AppMethod::TypeLegacyWords,
+    restore_steps: &[
+        "These apps only read 25-word phrases: this is the same wallet in that older format.",
+        "Type the 25 words, then the restore height shown with them.",
+    ],
+    done_check: "The Monero GUI or CLI opened the wallet with these 25 words.",
+};
 
 #[cfg(test)]
 mod tests {
@@ -231,16 +355,17 @@ mod tests {
 
     #[test]
     fn backups_are_the_apps_paper_or_skipped() {
-        for app in WALLET_APPS {
-            assert!(is_known_backup(app.key));
+        for app in AppKey::ALL {
+            assert_eq!(Backup::parse(app.key()), Some(Backup::App(app)));
+            assert_eq!(BroughtFrom::parse(app.key()), Some(BroughtFrom::App(app)));
         }
-        assert!(is_known_backup("paper") && is_known_backup("skipped"));
-        assert!(!is_known_backup("dropbox"));
-        assert_eq!(backup_label("cake"), "Saved in Cake Wallet");
-        for app in WALLET_APPS {
-            assert!(is_known_app(app.key));
+        assert_eq!(Backup::parse("paper"), Some(Backup::Paper));
+        assert_eq!(Backup::parse("skipped"), Some(Backup::Skipped));
+        assert_eq!(Backup::parse("dropbox"), None);
+        assert_eq!(Backup::App(AppKey::Cake).label(), "Saved in Cake Wallet");
+        assert_eq!(BroughtFrom::parse("other"), Some(BroughtFrom::Other));
+        for not_an_app in ["paper", "skipped", ""] {
+            assert_eq!(BroughtFrom::parse(not_an_app), None);
         }
-        assert!(is_known_app("other"));
-        assert!(!is_known_app("paper") && !is_known_app("skipped") && !is_known_app(""));
     }
 }

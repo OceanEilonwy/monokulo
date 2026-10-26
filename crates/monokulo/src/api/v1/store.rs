@@ -60,7 +60,7 @@ async fn get(store: Store, instance: Instance) -> api::Result<Body> {
         base_currency: store.base_currency,
         wallet: wallet.map(|wallet| Wallet {
             name: wallet.name,
-            network: wallet.network,
+            network: engine_protocol::network::network_str(wallet.network).to_owned(),
             address: wallet.primary_address,
         }),
         orders: Link::new(orders::Path {}),

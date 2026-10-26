@@ -635,10 +635,10 @@ async fn render_detail(
             let what = match event.kind.as_str() {
                 "created" => html! {
                     "Made in this browser"
-                    @if !event.detail.is_empty() { ", " (crate::wallets::backup_label(&event.detail).to_lowercase()) }
+                    @if let Some(backup) = crate::wallets::Backup::parse(&event.detail) { ", " (backup.label().to_lowercase()) }
                 },
-                "imported" => match crate::wallets::wallet_app(&event.detail) {
-                    Some(app) => html! { "Brought in from " (app.name) },
+                "imported" => match crate::wallets::AppKey::parse(&event.detail) {
+                    Some(app) => html! { "Brought in from " (app.app().name) },
                     None => html! { "Brought in" },
                 },
                 "renamed" => html! { "Renamed from \u{201c}" (event.detail) "\u{201d}" },
@@ -759,7 +759,7 @@ pub async fn detail(
         )),
         (None, None) => None,
     };
-    let error = (query.skipped.is_some() && wallet.backup.as_deref() == Some("skipped")).then(|| {
+    let error = (query.skipped.is_some() && wallet.backup == Some(crate::wallets::Backup::Skipped)).then(|| {
         "This wallet's recovery phrase was not backed up. Payments to it can't be spent unless you have it."
             .to_owned()
     });
@@ -1322,7 +1322,12 @@ mod tests {
             .unwrap();
         assert_eq!(added.status(), StatusCode::SEE_OTHER);
         let wallet = wallets_of(&state, "app@example.com").remove(0).wallet;
-        assert_eq!(wallet.app.as_deref(), Some("feather"));
+        assert_eq!(
+            wallet.app,
+            Some(crate::wallets::BroughtFrom::App(
+                crate::wallets::AppKey::Feather
+            ))
+        );
         assert_eq!(wallet.backup, None);
         let ready = body_text(get(&router, &location(&added), &cookie).await).await;
         assert!(ready.contains("Brought in from Feather"), "{ready}");
@@ -1451,8 +1456,8 @@ mod tests {
             .unwrap()
             .wallet;
         assert_eq!(
-            made.backup.as_deref(),
-            Some("feather"),
+            made.backup,
+            Some(crate::wallets::Backup::App(crate::wallets::AppKey::Feather)),
             "Feather is recorded as Feather"
         );
     }
@@ -1554,7 +1559,10 @@ mod tests {
         let recorded = &wallets_of(&state, "maker@example.com")[0].wallet;
         assert_eq!(recorded.primary_address, wallet.address);
         assert_eq!(recorded.origin, crate::db::WalletOrigin::Created);
-        assert_eq!(recorded.backup.as_deref(), Some("cake"));
+        assert_eq!(
+            recorded.backup,
+            Some(crate::wallets::Backup::App(crate::wallets::AppKey::Cake))
+        );
     }
 
     #[tokio::test]
@@ -2303,7 +2311,7 @@ mod tests {
                 id: &stagenet,
                 user_id: &user.id,
                 name: "Quiet Lantern",
-                network: "stagenet",
+                network: monero::Network::Stagenet,
                 primary_address: "5stagenetaddress",
                 engine_wallet_id: &crate::db::EngineWalletId::new("wl_x".to_owned()),
                 origin: crate::db::WalletOrigin::Imported,

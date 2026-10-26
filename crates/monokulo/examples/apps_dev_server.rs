@@ -127,12 +127,15 @@ async fn main() {
         id: &monokulo::db::WalletId::new("w_dev"),
         user_id: &user,
         name: "Shop takings",
-        network: &view.network,
+        network: engine_protocol::network::parse_network(&view.network)
+            .expect("the tenant's network"),
         primary_address: &view.primary_address,
         engine_wallet_id: view.wallet_id.as_ref().unwrap(),
         origin: monokulo::db::WalletOrigin::Imported,
         backup: None,
-        app: Some("cake"),
+        app: Some(monokulo::wallets::BroughtFrom::App(
+            monokulo::wallets::AppKey::Cake,
+        )),
         created_at: 1,
     })
     .unwrap();
