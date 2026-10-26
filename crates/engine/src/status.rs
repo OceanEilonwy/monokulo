@@ -51,27 +51,8 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
         .iter()
         .fold(0u64, |sum, p| sum.saturating_add(p.amount_piconero));
 
-    if total >= inputs.xmr_amount_piconero {
-        // The order is judged by the payments that cover its amount, deepest
-        // first: a later payment to the same address (dust, or a second
-        // overpayment still in the pool) never walks a paid order back to
-        // `confirming`, and no `order.confirming` follows an `order.paid`.
-        let mut by_depth: Vec<&PaymentView> = payments.iter().collect();
-        by_depth.sort_by(|a, b| {
-            b.confirmations
-                .cmp(&a.confirmations)
-                .then(a.is_zero_conf.cmp(&b.is_zero_conf))
-        });
-        let mut covered = 0u64;
-        let mut covering = Vec::with_capacity(by_depth.len());
-        for payment in by_depth {
-            covering.push(payment);
-            covered = covered.saturating_add(payment.amount_piconero);
-            if covered >= inputs.xmr_amount_piconero {
-                break;
-            }
-        }
-        let min_confirmations = covering.iter().map(|p| p.confirmations).min().unwrap_or(0);
+    if let Some(covering) = covering(payments, inputs.xmr_amount_piconero) {
+        let min_confirmations = least_confirmed(covering.iter().copied());
         let all_zero_conf = !covering.is_empty() && covering.iter().all(|p| p.is_zero_conf);
         let sufficiently_confirmed = min_confirmations >= inputs.confirmations_required;
 
@@ -96,6 +77,56 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
     } else {
         OrderStatus::Partial
     }
+}
+
+/// The confirmations an order shows.
+///
+/// Those of the payments its status is judged by ([`derive_status`]), so a later payment to the same address
+/// never lowers the count of one that covers it. Short of the amount,
+/// every payment counts.
+pub fn order_confirmations(payments: &[PaymentView], xmr_amount_piconero: u64) -> u64 {
+    match covering(payments, xmr_amount_piconero) {
+        Some(covering) => least_confirmed(covering),
+        None => least_confirmed(payments),
+    }
+}
+
+/// The payments that cover `amount`, deepest first: a later payment to the
+/// same address (dust, or a second overpayment still in the pool) never
+/// walks a paid order back to `confirming`, and no `order.confirming`
+/// follows an `order.paid`. `None` while the payments are short of it.
+fn covering(payments: &[PaymentView], amount: u64) -> Option<Vec<&PaymentView>> {
+    // Saturating, as in `derive_status`.
+    let total = payments
+        .iter()
+        .fold(0u64, |sum, p| sum.saturating_add(p.amount_piconero));
+    if total < amount {
+        return None;
+    }
+    let mut by_depth: Vec<&PaymentView> = payments.iter().collect();
+    by_depth.sort_by(|a, b| {
+        b.confirmations
+            .cmp(&a.confirmations)
+            .then(a.is_zero_conf.cmp(&b.is_zero_conf))
+    });
+    let mut covered = 0u64;
+    let mut covering = Vec::with_capacity(by_depth.len());
+    for payment in by_depth {
+        covering.push(payment);
+        covered = covered.saturating_add(payment.amount_piconero);
+        if covered >= amount {
+            break;
+        }
+    }
+    Some(covering)
+}
+
+fn least_confirmed<'a>(payments: impl IntoIterator<Item = &'a PaymentView>) -> u64 {
+    payments
+        .into_iter()
+        .map(|p| p.confirmations)
+        .min()
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
