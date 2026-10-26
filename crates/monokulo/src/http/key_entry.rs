@@ -366,10 +366,7 @@ fn ready_view(
         bundle_json: json,
         bundle_path: path,
         bundle_is_file: public.is_none(),
-        trust_id_key: (!official).then(|| digest.clone()),
-        // The official key is the one built into the browser's checker: it
-        // isn't told which key to trust then.
-        id_key_digest: (!official).then(|| digest.clone()),
+        custom_id_key: (!official).then_some(digest),
         min_guest_svn: trust.min_guest_svn,
         min_tcb,
         command,
