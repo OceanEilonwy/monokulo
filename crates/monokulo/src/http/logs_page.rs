@@ -891,6 +891,7 @@ pub async fn tail(
             local: cursor,
         }
     });
+    let stopping = state.stopping.clone();
     let Some(session) = super::hold_session(&state, &session).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
@@ -1052,7 +1053,7 @@ pub async fn tail(
         Ok(axum::response::sse::Event::default().comment("live"))
     });
     // It ends with the admin's session.
-    crate::live::sse(session.bound(opened.chain(stream)))
+    crate::live::sse(&stopping, session.bound(opened.chain(stream)))
 }
 
 /// `GET /admin/logs/trace/{trace_id}`.

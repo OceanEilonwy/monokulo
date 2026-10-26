@@ -42,6 +42,7 @@ async fn get(
     slot: StreamSlot,
 ) -> api::Result<EventStream<OrderEvents>> {
     let order_id = path.order_id;
+    let stopping = orders.state.stopping.clone();
     if order::load(&orders, &order_id, None).await?.is_none() {
         return Err(not_found());
     }
@@ -83,5 +84,8 @@ async fn get(
             }
         });
     // It ends once its key stops working.
-    Ok(EventStream::new(crate::live::sse(slot.bound(snapshots))))
+    Ok(EventStream::new(crate::live::sse(
+        &stopping,
+        slot.bound(snapshots),
+    )))
 }

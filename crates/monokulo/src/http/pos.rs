@@ -837,6 +837,7 @@ pub async fn order_events(
         .into_response();
     }
 
+    let stopping = state.stopping.clone();
     let Some(session) = super::hold_session(&state, &session).await else {
         return ApiError::Unauthorized.into_response();
     };
@@ -856,62 +857,71 @@ pub async fn order_events(
     let connection_id = row.id.clone();
     // One engine read per change for every watched order together: the
     // engine rate-limits each store, and a busy counter watches many orders.
-    crate::live::sse(session.bound(crate::live::batch_snapshot_stream(
-        subscriptions,
-        std::time::Duration::from_secs(60),
-        move |ids| {
-            let (state, keys, connection_id) = (state.clone(), keys.clone(), connection_id.clone());
-            async move {
-                // The store's key as it is now: it may have been replaced
-                // since the stream opened.
-                let (_, sk) = keys.current(&connection_id).await.ok()??;
-                let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
-                // Without its POS row a backgrounded order would be sent as
-                // in the foreground: a failed read waits for the next change.
-                let (store_id, wanted) = (connection_id.clone(), ids.clone());
-                let pos_rows: HashMap<_, _> = state
-                    .db
-                    .read(move |db| db.get_pos_orders(&store_id, &wanted))
-                    .await
-                    .ok()?
-                    .into_iter()
-                    .map(|row| (row.order_id.clone(), row))
-                    .collect();
-                let mut snapshots = Vec::with_capacity(ids.len());
-                for order_id in ids {
-                    let Some(order) = views.remove(&order_id) else {
-                        // Not this store's order: nothing to watch.
+    crate::live::sse(
+        &stopping,
+        session.bound(crate::live::batch_snapshot_stream(
+            subscriptions,
+            std::time::Duration::from_secs(60),
+            move |ids| {
+                let (state, keys, connection_id) =
+                    (state.clone(), keys.clone(), connection_id.clone());
+                async move {
+                    // The store's key as it is now: it may have been replaced
+                    // since the stream opened.
+                    let (_, sk) = keys.current(&connection_id).await.ok()??;
+                    let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
+                    // Without its POS row a backgrounded order would be sent as
+                    // in the foreground: a failed read waits for the next change.
+                    let (store_id, wanted) = (connection_id.clone(), ids.clone());
+                    let pos_rows: HashMap<_, _> = state
+                        .db
+                        .read(move |db| db.get_pos_orders(&store_id, &wanted))
+                        .await
+                        .ok()?
+                        .into_iter()
+                        .map(|row| (row.order_id.clone(), row))
+                        .collect();
+                    let mut snapshots = Vec::with_capacity(ids.len());
+                    for order_id in ids {
+                        let Some(order) = views.remove(&order_id) else {
+                            // Not this store's order: nothing to watch.
+                            snapshots.push((
+                                order_id,
+                                crate::live::LiveSnapshot {
+                                    events: Vec::new(),
+                                    fingerprint: String::new(),
+                                    terminal: true,
+                                },
+                            ));
+                            continue;
+                        };
+                        let status = pos_status(
+                            &state,
+                            &connection_id,
+                            &sk,
+                            &order,
+                            pos_rows.get(&order_id),
+                        )
+                        .await;
+                        let mut json = serde_json::to_value(&status).ok()?;
+                        json["order_id"] = serde_json::Value::String(order_id.to_string());
+                        let data = json.to_string();
                         snapshots.push((
                             order_id,
                             crate::live::LiveSnapshot {
-                                events: Vec::new(),
-                                fingerprint: String::new(),
-                                terminal: true,
+                                events: vec![axum::response::sse::Event::default()
+                                    .event("status")
+                                    .data(data.clone())],
+                                fingerprint: data,
+                                terminal: status.is_terminal,
                             },
                         ));
-                        continue;
-                    };
-                    let status =
-                        pos_status(&state, &connection_id, &sk, &order, pos_rows.get(&order_id))
-                            .await;
-                    let mut json = serde_json::to_value(&status).ok()?;
-                    json["order_id"] = serde_json::Value::String(order_id.to_string());
-                    let data = json.to_string();
-                    snapshots.push((
-                        order_id,
-                        crate::live::LiveSnapshot {
-                            events: vec![axum::response::sse::Event::default()
-                                .event("status")
-                                .data(data.clone())],
-                            fingerprint: data,
-                            terminal: status.is_terminal,
-                        },
-                    ));
+                    }
+                    Some(snapshots)
                 }
-                Some(snapshots)
-            }
-        },
-    )))
+            },
+        )),
+    )
 }
 
 #[cfg(test)]

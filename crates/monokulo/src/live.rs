@@ -30,6 +30,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_util::{Stream, StreamExt as _};
 use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
 
 use crate::engine_client::{EngineClient, OrderDetailResponse};
 
@@ -476,6 +477,7 @@ pub struct LiveSnapshot {
 /// the last one. `snapshot` returning `None` (the engine briefly
 /// unreachable) sends nothing and waits for the next wake.
 pub fn live_events<F, Fut>(
+    stopping: &CancellationToken,
     subscription: OrderSubscription,
     refresh_every: Duration,
     snapshot: F,
@@ -484,16 +486,35 @@ where
     F: FnMut() -> Fut + Send + 'static,
     Fut: Future<Output = Option<LiveSnapshot>> + Send + 'static,
 {
-    sse(snapshot_stream(subscription, refresh_every, snapshot))
+    sse(
+        stopping,
+        snapshot_stream(subscription, refresh_every, snapshot),
+    )
 }
 
 /// An SSE response over `stream`, with the keep-alive every live stream here uses.
-pub fn sse<S>(stream: S) -> Response
+/// It ends when the process starts to stop (`stopping`, `AppState::stopping`).
+pub fn sse<S>(stopping: &CancellationToken, stream: S) -> Response
 where
     S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
 {
+    sse_with_keep_alive(stopping, stream, DOWNSTREAM_KEEP_ALIVE)
+}
+
+/// [`sse`], with a keep-alive comment every `keep_alive`: every event
+/// stream monokulo serves is made here, so each ends when the process
+/// starts to stop.
+pub fn sse_with_keep_alive<S>(
+    stopping: &CancellationToken,
+    stream: S,
+    keep_alive: Duration,
+) -> Response
+where
+    S: Stream<Item = Result<Event, Infallible>> + Send + 'static,
+{
+    let stream = stream.take_until(stopping.clone().cancelled_owned());
     Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(DOWNSTREAM_KEEP_ALIVE))
+        .keep_alive(KeepAlive::new().interval(keep_alive))
         .into_response()
 }
 

@@ -271,6 +271,8 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         &engine,
         monokulo_settings.server.load().status_cache,
     );
+    // Cancelled on the stop signal: it ends every event stream.
+    let stopping = tokio_util::sync::CancellationToken::new();
     let app_state = AppState {
         db,
         encryption_key,
@@ -282,6 +284,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         webhooks,
         apps,
         revocations: Default::default(),
+        stopping: stopping.clone(),
         tor: tor.clone(),
         engine,
     };
@@ -329,6 +332,10 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     .with_graceful_shutdown(service_runtime::shutdown::signal());
     let served = tokio::spawn(async move { server.await });
     service_runtime::shutdown::signal().await;
+    // Event streams never finish by themselves: ended now, so the grace
+    // period is for ordinary requests, and running past it means one of
+    // those is stuck.
+    stopping.cancel();
     tracing::info!(grace = ?service_runtime::shutdown::GRACE, "shutting down: finishing requests in flight");
     match tokio::time::timeout(service_runtime::shutdown::GRACE, served).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),

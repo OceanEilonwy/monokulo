@@ -521,6 +521,7 @@ pub async fn status_events(
         }
         _ => None,
     };
+    let stopping = state.stopping.clone();
     let stream = futures_util::stream::unfold(
         (state, None::<String>, true),
         move |(state, last, first)| {
@@ -551,7 +552,7 @@ pub async fn status_events(
             }
         },
     );
-    crate::live::sse(stream)
+    crate::live::sse(&stopping, stream)
 }
 
 /// The status page's content; abuse figures only for an admin.
