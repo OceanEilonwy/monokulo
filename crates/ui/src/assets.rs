@@ -86,4 +86,12 @@ pub mod icons {
     pub const BUG: &str = include_str!("../web/icons/bug.svg").trim_ascii();
     pub const SEARCH: &str = include_str!("../web/icons/search.svg").trim_ascii();
     pub const MENU: &str = include_str!("../web/icons/menu.svg").trim_ascii();
+    // The project site's landing page: what Monokulo is good at, the ways to
+    // take payments and the install guides.
+    pub const BOLT: &str = include_str!("../web/icons/bolt.svg").trim_ascii();
+    pub const ROUTER: &str = include_str!("../web/icons/router.svg").trim_ascii();
+    pub const SHIELD: &str = include_str!("../web/icons/shield.svg").trim_ascii();
+    pub const CODE: &str = include_str!("../web/icons/code.svg").trim_ascii();
+    pub const SERVER: &str = include_str!("../web/icons/server.svg").trim_ascii();
+    pub const MONITOR: &str = include_str!("../web/icons/monitor.svg").trim_ascii();
 }

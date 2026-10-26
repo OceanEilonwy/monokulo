@@ -95,6 +95,7 @@ main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--sp
 .features{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--space-lg)}
 .features h3{font-size:var(--text-lg);margin-bottom:var(--space-sm)}
 .features p{color:var(--muted);font-size:var(--text-sm)}
+.features .mk-icon,.ways .mk-icon{width:28px;height:28px;margin-bottom:var(--space-sm);color:var(--accent-text)}
 .ways{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--space-lg)}
 .ways a{display:flex;flex-direction:column;gap:var(--space-xs);padding:var(--space-lg) var(--space-xl);border:1px solid var(--line);border-radius:var(--radius-lg);background:var(--paper-raised);text-decoration:none}
 .ways a:hover{border-color:var(--line-strong);color:var(--ink)}
