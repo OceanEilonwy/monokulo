@@ -27,61 +27,75 @@ pub(super) const INSTALL_ROUTER: &str = "install-router/";
 pub(super) const OLD_ANCHORS: [(&str, &str); 2] =
     [("desktop", INSTALL_COMPUTER), ("openwrt", INSTALL_ROUTER)];
 
-/// What Monokulo is good at: (heading, words).
-const FEATURES: [(&str, &str); 6] = [
+/// What Monokulo is good at: (icon, heading, words).
+const FEATURES: [(&str, &str, &str); 6] = [
     (
+        icons::EYE,
         "Watch-only",
         "Each store gives Monokulo its view key, never its spend key. Payments go straight to the store’s own wallet; Monokulo just sees them arrive.",
     ),
     (
+        icons::GLOBE,
         "Checkout that works anywhere",
         "A hosted checkout page and embed for static sites, a point-of-sale screen, and webhooks when an order is paid. The checkout works without JavaScript.",
     ),
     (
+        icons::BOLT,
         "Fast detection",
         "Payments show up within about a second of reaching the network, and are confirmed as blocks arrive.",
     ),
     (
+        icons::ROUTER,
         "Easy on the router",
         "One static program and SQLite. The engine runs inside Monokulo on threads of its own, kept to two of the Flint 2’s four cores at low priority, so routing comes first. Checking each block’s proof of work (on by default for mainnet) takes about 256 MB of memory; turn it off on the admin page if you run your own node.",
     ),
     (
+        icons::SETTINGS,
         "Settings in your browser",
         "Manage stores, nodes and payment settings on Monokulo’s admin page. On OpenWrt, LuCI also controls start, stop, port, listen address and the engine’s CPUs under Services → Monokulo.",
     ),
     (
+        icons::SHIELD,
         "Survives upgrades",
         "Its settings, keys and databases are kept across OpenWrt firmware upgrades.",
     ),
 ];
 
-/// The ways to take payments: (heading, words, the docs page, its name).
-const WAYS: [(&str, &str, &str, &str); 4] = [
+/// The ways to take payments: (icon, heading, words, the docs page, its name).
+const WAYS: [(&str, &str, &str, &str, &str); 4] = [
     (
+        icons::CODE,
         "Checkout on your site",
         "A script tag and two calls put the checkout in your page, even on a static site.",
         "js-library/",
         "JS library",
     ),
     (
+        icons::STORE,
         "Shop plugins",
         "Connect WooCommerce or another shop with a code from the dashboard.",
         "plugins/",
         "Shop plugins",
     ),
     (
+        icons::POS,
         "Point of sale",
         "A till or app connects with its own key and takes payments in person.",
         "apps/",
         "Connected apps",
     ),
     (
+        icons::SERVER,
         "Your own server",
         "Make and follow orders over HTTP, with every route documented beside a recorded example.",
         "api/",
         "API reference",
     ),
 ];
+
+/// OpenWrt's mark, for the router's install guide: the Simple Icons drawing
+/// (CC0), filled with the text colour.
+const OPENWRT_MARK: &str = r#"<svg class="openwrt-mark" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false"><path d="m12 0c-3.906 0-7.4465 1.5949-10.006 4.1543l1.6953 1.6953c2.1278-2.1278 5.069-3.4395 8.3105-3.4395 3.2416 0 6.1833 1.3122 8.3105 3.4395l1.6953-1.6953c-2.56-2.5594-6.0999-4.1543-10.006-4.1543zm0 4.3203c-2.7091 0-5.1685 1.1138-6.9473 2.8926l1.6953 1.6953c1.346-1.346 3.2079-2.1777 5.252-2.1777 2.0435 0 3.9053 0.83172 5.252 2.1777l1.6953-1.6953c-1.7782-1.7782-4.2381-2.8926-6.9473-2.8926zm-7.7285 3.7559c-1.3295 1.6792-2.1113 3.7906-2.1113 6.084 0 5.4189 4.4216 9.8398 9.8398 9.8398 5.4183 0 9.8398-4.4209 9.8398-9.8398 0-2.2934-0.79833-4.4048-2.1113-6.084l-1.7129 1.7129c0.8974 1.2298 1.4297 2.7427 1.4297 4.3711 0 4.1053-3.34 7.4473-7.4453 7.4473-4.1052 0-7.4473-3.342-7.4473-7.4473 0-1.6284 0.53174-3.1413 1.4297-4.3711l-1.7109-1.7129zm7.7285 0.56641c-1.5128 0-2.8928 0.61633-3.9062 1.6133l1.6953 1.6953c1.2219-1.2195 3.2006-1.2195 4.4219 0l1.6953-1.6953c-1.0354-1.0361-2.4416-1.6176-3.9062-1.6133zm0 3.8887c-0.8997 0-1.6289 0.72911-1.6289 1.6289 0 0.8992 0.72921 1.6289 1.6289 1.6289 0.8998 0 1.6289-0.72971 1.6289-1.6289-0.0019-0.8992-0.72971-1.6277-1.6289-1.6289z"/></svg>"#;
 
 /// The two calls, as the JS library's page has them.
 const SAMPLE: &str = r##"// on your checkout page, after monokulo-client.js
@@ -188,8 +202,8 @@ pub(super) fn render(github_url: &str) -> Markup {
                         h2 id="why" { "Why Monokulo" }
                         p { "One program with the payment engine inside it, a dashboard in your browser, and a Monero node it can reach." }
                         div.features {
-                            @for (heading, words) in FEATURES {
-                                (ui::Panel::new(html! { h3 { (heading) } p { (words) } }).look(ui::PanelLook::Tile))
+                            @for (icon, heading, words) in FEATURES {
+                                (ui::Panel::new(html! { (PreEscaped(icon)) h3 { (heading) } p { (words) } }).look(ui::PanelLook::Tile))
                             }
                         }
                     }
@@ -197,8 +211,9 @@ pub(super) fn render(github_url: &str) -> Markup {
                         h2 id="ways" { "Ways to take payments" }
                         p { "Start with the one that fits your shop. They all end in the same webhook." }
                         div.ways {
-                            @for (heading, words, href, name) in WAYS {
+                            @for (icon, heading, words, href, name) in WAYS {
                                 a href=(href) {
+                                    (PreEscaped(icon))
                                     strong { (heading) }
                                     span { (words) }
                                     span.way-link { (name) " →" }
@@ -223,8 +238,8 @@ pub(super) fn render(github_url: &str) -> Markup {
                             p { "On Linux, macOS or Windows, or on an OpenWrt router." }
                         }
                         div.actions {
-                            (ui::LinkButton::new("Install on a computer", INSTALL_COMPUTER).attr("id", "desktop"))
-                            (ui::LinkButton::new("Install on a router", INSTALL_ROUTER).attr("id", "openwrt"))
+                            (ui::LinkButton::new(html! { (PreEscaped(icons::MONITOR)) "Install on a computer" }, INSTALL_COMPUTER).attr("id", "desktop"))
+                            (ui::LinkButton::new(html! { (PreEscaped(OPENWRT_MARK)) "Install on a router" }, INSTALL_ROUTER).attr("id", "openwrt"))
                         }
                     }
                     footer.home-foot {
