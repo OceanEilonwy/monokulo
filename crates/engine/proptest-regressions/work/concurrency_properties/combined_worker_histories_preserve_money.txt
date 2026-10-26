@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 4584dc95332281340e7e17d27aa9422d12bac05ee8a77b79d85c7c5dabb1ea5a # shrinks to ordering = 0, cancelled = 0, change = 0, repeats = 1
+cc 0f5ac56c81056dab977696fdad8de370b433e9886afd0382ec7de724cd2ba5a5 # shrinks to ordering = 0, cancelled = 0, change = 3, repeats = 2

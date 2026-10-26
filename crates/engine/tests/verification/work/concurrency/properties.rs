@@ -256,7 +256,24 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         .await
         .unwrap();
         let edited = edited.unwrap();
-        assert_eq!(edited.status(), StatusCode::OK);
+        // Changes 1 and 3 set the refund address. From the second round the
+        // order holds money (it is paid by the end of the first, reorg or
+        // not), so the address set then is fixed and a change is refused
+        // (`Store::set_refund_address`).
+        let sets_refund = change == 1 || change == 3;
+        let refund_fixed = sets_refund && iteration > 0;
+        assert_eq!(
+            edited.status(),
+            if refund_fixed {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::OK
+            }
+        );
+        if sets_refund {
+            let kept = store.lock().get_order(&tenant, &order).unwrap().unwrap();
+            assert_eq!(kept.refund_address.as_deref(), Some("refund-0"));
+        }
         if change == 0 {
             let bytes = axum::body::to_bytes(edited.into_body(), 1 << 20)
                 .await
