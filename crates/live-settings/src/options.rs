@@ -248,12 +248,13 @@ impl OptionsFile {
         self.read_values(declared)
     }
 
-    /// Sets (or, for `None`, removes) each key in place. Refused if the
-    /// file changed since it was last read or written.
+    /// Sets (or, for `None`, removes) each key in place, and gives back the
+    /// text it replaced, for [`Self::restore`]. Refused if the file changed
+    /// since it was last read or written.
     fn write_values(
         &self,
         changes: &[(&'static dyn AnySetting, Option<String>)],
-    ) -> Result<(), StoreError> {
+    ) -> Result<String, StoreError> {
         // The page locks what this file holds when it can't be written;
         // this refuses a save that comes anyway (a hand-made form, the API).
         if let Place::Disk(path) = &self.shared.place {
@@ -290,6 +291,15 @@ impl OptionsFile {
         let text = doc.to_string();
         self.write_text(&text)?;
         *loaded = text;
+        Ok(current)
+    }
+
+    /// Puts back the text a [`Self::write_values`] replaced, when the rest
+    /// of its save failed.
+    fn restore(&self, previous: &str) -> Result<(), StoreError> {
+        let mut loaded = self.shared.loaded.lock();
+        self.write_text(previous)?;
+        *loaded = previous.to_string();
         Ok(())
     }
 }
@@ -372,11 +382,25 @@ impl SettingsStore for LayeredStore {
                 None => return Err(StoreError::new(format!("there is no setting called {key}"))),
             }
         }
-        if !to_file.is_empty() {
-            self.file.write_values(&to_file)?;
-        }
+        // The file first, then the database; when the database refuses,
+        // the file goes back to what it was, so the save is all or nothing.
+        let previous = if to_file.is_empty() {
+            None
+        } else {
+            Some(self.file.write_values(&to_file)?)
+        };
         if !to_database.is_empty() {
-            self.runtime.write_all(to_database).await?;
+            if let Err(e) = self.runtime.write_all(to_database).await {
+                if let Some(previous) = previous {
+                    if let Err(restore) = self.file.restore(&previous) {
+                        return Err(StoreError::new(format!(
+                            "{e}; and {} could not be put back ({restore}), so it holds the new values: reload it.",
+                            self.file.name()
+                        )));
+                    }
+                }
+                return Err(e);
+            }
         }
         Ok(())
     }
