@@ -496,8 +496,8 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn inline(db: SharedDb) -> Self {
         Database {
-            reads: Pool::Inline(db.clone()),
-            writes: Pool::Inline(db),
+            reads: Pool::inline(db.clone()),
+            writes: Pool::inline(db),
             order_changes: Default::default(),
         }
     }
@@ -553,7 +553,7 @@ impl Database {
     #[cfg(any(test, feature = "test-support"))]
     pub fn lock(&self) -> parking_lot::MutexGuard<'_, Db> {
         match &self.writes {
-            Pool::Inline(db) => db.lock(),
+            Pool::Inline { shared, .. } => shared.lock(),
             Pool::Threads { .. } => panic!("Database::lock is only for an inline test database"),
         }
     }

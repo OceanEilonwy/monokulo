@@ -297,13 +297,6 @@ fn check_answer(
 /// Checks the proof of work of a random sample of the window's blocks
 /// (always the anchor itself) against the difficulty claimed for each,
 /// fetched from the agreeing nodes in turn.
-#[cfg_attr(
-    not(test),
-    expect(
-        clippy::cfg_not_test,
-        reason = "production samples must remain unpredictable"
-    )
-)]
 async fn sample(
     nodes: &[NodeRef<'_>],
     members: &[usize],
@@ -314,21 +307,13 @@ async fn sample(
     hasher: &Hasher,
 ) -> Result<(), AnchorProblem> {
     let last = window.len() - 1;
-    // Production sampling remains unpredictable. Tests use a replayable seed.
-    #[cfg(not(test))]
+    // Unpredictable unless the tuning names a seed (tests, to replay one).
     let mut rng = {
         use rand::SeedableRng as _;
-        rand::rngs::StdRng::from_rng(&mut rand::rng())
-    };
-    #[cfg(test)]
-    let seed = std::env::var("PROPTEST_RNG_SEED")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(47);
-    #[cfg(test)]
-    let mut rng = {
-        use rand::SeedableRng as _;
-        rand::rngs::StdRng::seed_from_u64(seed)
+        match tuning.sample_seed {
+            Some(seed) => rand::rngs::StdRng::seed_from_u64(seed),
+            None => rand::rngs::StdRng::from_rng(&mut rand::rng()),
+        }
     };
     let mut picked: BTreeSet<usize> = rand::seq::index::sample(
         &mut rng,
@@ -338,26 +323,11 @@ async fn sample(
     .into_iter()
     .collect();
     picked.insert(last);
-    #[cfg(test)]
-    {
-        fn record_sample(seed: u64, heights: &[u64]) {
-            // Direct stderr writes survive libtest capture in nextest failure output.
-            use std::io::Write as _;
-            let heights = heights
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "anchor sample seed={seed}, heights=[{heights}]"
-            );
-        }
-        record_sample(
-            seed,
-            &picked.iter().map(|&i| window[i].height).collect::<Vec<_>>(),
-        );
-    }
+    tracing::debug!(
+        seed = tuning.sample_seed,
+        heights = ?picked.iter().map(|&i| window[i].height).collect::<Vec<_>>(),
+        "anchor sample"
+    );
     let start = window[0].height;
     let key_of = |height: u64| -> Option<[u8; 32]> {
         let at = engine_pow::seed_height(height);

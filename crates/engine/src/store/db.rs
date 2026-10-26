@@ -37,11 +37,7 @@ impl Class {
 }
 
 /// Longest an inline job waits for the shared store's lock.
-const INLINE_LOCK_WAIT: Duration = if cfg!(test) {
-    Duration::from_millis(200)
-} else {
-    Duration::from_secs(30)
-};
+const INLINE_LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// Faults a test injects into one worker; production starts with none.
 #[derive(Clone, Copy, Default)]
@@ -93,8 +89,13 @@ enum Inner {
     },
     /// Jobs run on the caller, on the store everything else shares. With
     /// `yields`, the caller first yields to the executor, as it does when
-    /// it sends a job to the worker.
-    Inline { store: SharedStore, yields: bool },
+    /// it sends a job to the worker. `lock_wait` is how long a job waits
+    /// for the store's lock ([`INLINE_LOCK_WAIT`]).
+    Inline {
+        store: SharedStore,
+        yields: bool,
+        lock_wait: Duration,
+    },
 }
 
 impl Db {
@@ -115,6 +116,7 @@ impl Db {
             inner: Inner::Inline {
                 store,
                 yields: false,
+                lock_wait: INLINE_LOCK_WAIT,
             },
             counters: Arc::new(Counters::default()),
         }
@@ -129,6 +131,7 @@ impl Db {
             inner: Inner::Inline {
                 store,
                 yields: true,
+                lock_wait: INLINE_LOCK_WAIT,
             },
             counters: Arc::new(Counters::default()),
         }
@@ -190,11 +193,15 @@ impl Db {
     {
         use Inner::Inline;
         let (senders, wake) = match &self.inner {
-            Inline { store, yields } => {
+            Inline {
+                store,
+                yields,
+                lock_wait,
+            } => {
                 if *yields {
                     tokio::task::yield_now().await;
                 }
-                let guard = lock_inline(store)?;
+                let guard = lock_inline(store, *lock_wait)?;
                 let started = Instant::now();
                 let result = f(&guard);
                 record(&self.counters, started, started);
@@ -234,6 +241,7 @@ impl Db {
             Inner::Inline {
                 store: _,
                 yields: _,
+                lock_wait: _,
             } => 0,
         }
     }
@@ -250,10 +258,13 @@ impl Db {
 /// The shared store's lock, for an inline job. Bounded: a caller that
 /// (wrongly) holds the lock while calling gets an error instead of a
 /// deadlock.
-fn lock_inline(store: &SharedStore) -> Result<parking_lot::MutexGuard<'_, Store>> {
-    store.try_lock_for(INLINE_LOCK_WAIT).ok_or_else(|| {
+fn lock_inline(
+    store: &SharedStore,
+    lock_wait: Duration,
+) -> Result<parking_lot::MutexGuard<'_, Store>> {
+    store.try_lock_for(lock_wait).ok_or_else(|| {
         StoreError::WorkerUnavailable(format!(
-            "the store stayed locked for {INLINE_LOCK_WAIT:?} (is the caller holding it?)"
+            "the store stayed locked for {lock_wait:?} (is the caller holding it?)"
         ))
     })
 }
@@ -330,7 +341,15 @@ mod tests {
     #[expect(clippy::await_holding_lock, reason = "holding it is the point")]
     async fn an_inline_job_on_a_held_store_fails_instead_of_deadlocking() {
         let shared = Store::open_in_memory().unwrap().into_shared();
-        let db = Db::over_shared(Arc::clone(&shared));
+        // The production wait is 30 seconds; this one is short so the test is.
+        let db = Db {
+            inner: Inner::Inline {
+                store: Arc::clone(&shared),
+                yields: false,
+                lock_wait: Duration::from_millis(200),
+            },
+            counters: Arc::default(),
+        };
         let held = shared.lock();
         let result = db.run(Class::Admin, Store::count_tenants).await;
         assert!(

@@ -58,16 +58,26 @@ fn builder() -> Hasher {
 /// claim difficulty 1 (test chains' windows are unmined), keeping only
 /// what that needs, and letting a caught node back as soon as it serves
 /// the proven chain (`a_caught_node_stays_out_for_a_while` has the real
-/// wait).
+/// wait). Its anchor samples are replayable: picked with
+/// `PROPTEST_RNG_SEED` (each CI run's own), or 47.
 pub(crate) fn tuning() -> ProofTuning {
     ProofTuning {
         anchor_depth: 10,
         keep_blocks: 0,
         caught_for: Duration::ZERO,
         anchor_samples: 8,
+        sample_seed: Some(sample_seed()),
         min_difficulty_mainnet: 1,
         ..ProofTuning::DEFAULT
     }
+}
+
+/// The seed test anchors are sampled with.
+pub(crate) fn sample_seed() -> u64 {
+    std::env::var("PROPTEST_RNG_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(47)
 }
 
 /// A test chain's window, then 12 mined blocks: an anchor is taken at
@@ -427,6 +437,7 @@ async fn an_anchor_below_the_floor_or_with_a_failing_proof_is_refused() {
         &chain,
         ProofTuning {
             anchor_depth: 10,
+            sample_seed: Some(sample_seed()),
             ..ProofTuning::DEFAULT
         },
     );

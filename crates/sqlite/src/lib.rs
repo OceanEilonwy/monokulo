@@ -155,11 +155,7 @@ const QUEUE_CAPACITY: usize = 256;
 /// Longest an inline job waits for the shared connection's lock: a caller
 /// that (wrongly) holds it gets an error instead of a deadlock.
 #[cfg(any(test, feature = "test-support"))]
-const INLINE_LOCK_WAIT: Duration = if cfg!(test) {
-    Duration::from_millis(200)
-} else {
-    Duration::from_secs(30)
-};
+const INLINE_LOCK_WAIT: Duration = Duration::from_secs(30);
 
 type Job<T> = Box<dyn FnOnce(&T) + Send + 'static>;
 
@@ -175,8 +171,12 @@ pub enum Pool<T> {
     /// tests only (their in-memory databases can't be opened twice, and a
     /// paused test clock would jump ahead while a task waits on another
     /// thread): the lock wait and the job both hold a runtime thread.
+    /// `lock_wait` is how long a job waits for the lock ([`Pool::inline`]).
     #[cfg(any(test, feature = "test-support"))]
-    Inline(Arc<parking_lot::Mutex<T>>),
+    Inline {
+        shared: Arc<parking_lot::Mutex<T>>,
+        lock_wait: Duration,
+    },
 }
 
 impl<T> Clone for Pool<T> {
@@ -187,12 +187,25 @@ impl<T> Clone for Pool<T> {
                 jobs: jobs.clone(),
             },
             #[cfg(any(test, feature = "test-support"))]
-            Pool::Inline(shared) => Pool::Inline(shared.clone()),
+            Pool::Inline { shared, lock_wait } => Pool::Inline {
+                shared: shared.clone(),
+                lock_wait: *lock_wait,
+            },
         }
     }
 }
 
 impl<T: Send + 'static> Pool<T> {
+    /// Jobs run on the caller, on `shared` (`Pool::Inline`), each waiting
+    /// at most [`INLINE_LOCK_WAIT`] for its lock.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn inline(shared: Arc<parking_lot::Mutex<T>>) -> Self {
+        Pool::Inline {
+            shared,
+            lock_wait: INLINE_LOCK_WAIT,
+        }
+    }
+
     /// Starts one thread per value in `values`, named `{name}-{n}`.
     pub fn start(name: &'static str, values: Vec<T>) -> std::io::Result<Self> {
         let (jobs, receiver) = tokio::sync::mpsc::channel::<Job<T>>(QUEUE_CAPACITY);
@@ -211,7 +224,7 @@ impl<T: Send + 'static> Pool<T> {
     pub fn is_inline(&self) -> bool {
         match self {
             #[cfg(any(test, feature = "test-support"))]
-            Pool::Inline(_) => true,
+            Pool::Inline { .. } => true,
             Pool::Threads { .. } => false,
         }
     }
@@ -228,10 +241,8 @@ impl<T: Send + 'static> Pool<T> {
     {
         let (name, jobs) = match self {
             #[cfg(any(test, feature = "test-support"))]
-            Pool::Inline(shared) => {
-                let guard = shared
-                    .try_lock_for(INLINE_LOCK_WAIT)
-                    .ok_or(PoolError::Locked)?;
+            Pool::Inline { shared, lock_wait } => {
+                let guard = shared.try_lock_for(*lock_wait).ok_or(PoolError::Locked)?;
                 return f(&guard);
             }
             Pool::Threads { name, jobs } => (*name, jobs),
@@ -385,7 +396,11 @@ mod tests {
     )]
     async fn inline_runs_on_the_shared_value_and_refuses_a_held_lock() {
         let shared = Arc::new(parking_lot::Mutex::new(5));
-        let pool = Pool::Inline(shared.clone());
+        // The production wait is 30 seconds; this one is short so the test is.
+        let pool = Pool::Inline {
+            shared: shared.clone(),
+            lock_wait: Duration::from_millis(200),
+        };
         assert_eq!(pool.run(|v| Ok::<_, Error>(*v)).await, Ok(5));
         let _held = shared.lock();
         assert_eq!(
