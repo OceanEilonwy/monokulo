@@ -811,6 +811,7 @@ pub async fn checkout_events(
         None => None,
     };
     let keys = state.store_keys();
+    let stopping = state.stopping.clone();
     let subscription = state
         .engine
         .client
@@ -826,6 +827,7 @@ pub async fn checkout_events(
     let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<&'static str, String>>> =
         Default::default();
     crate::live::live_events(
+        &stopping,
         subscription,
         std::time::Duration::from_secs(30),
         move || {

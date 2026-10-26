@@ -509,6 +509,7 @@ pub async fn order_detail_events(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    let stopping = state.stopping.clone();
     let Some(session) = super::hold_session(&state, &session).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
@@ -561,7 +562,7 @@ pub async fn order_detail_events(
             }
         },
     );
-    crate::live::sse(session.bound(snapshots))
+    crate::live::sse(&stopping, session.bound(snapshots))
 }
 
 /// The link a customer is sent to pay order `order_id`: on the address

@@ -257,6 +257,7 @@ pub async fn events(
     extensions: axum::http::Extensions,
     Query(query): Query<NetworkQuery>,
 ) -> Response {
+    let stopping = state.stopping.clone();
     let Some(session) = super::hold_session(&state, &session).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
@@ -336,7 +337,10 @@ pub async fn events(
         },
     );
     // It ends with the admin's session.
-    crate::live::sse(session.bound(stream::once(async move { Ok(first) }).chain(follow)))
+    crate::live::sse(
+        &stopping,
+        session.bound(stream::once(async move { Ok(first) }).chain(follow)),
+    )
 }
 
 pub async fn at(
