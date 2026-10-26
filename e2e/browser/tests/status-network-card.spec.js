@@ -85,14 +85,14 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await expect(card(page).locator('.pline')).toHaveText('Orders settle on blocks up to 3,412,878, proven by the engine itself. 3 behind the tip');
   await expect(card(page).locator('.pips .pip')).toHaveCount(30);
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(3);
-  await expect(card(page).locator('[data-pip-anchor]')).toHaveText('Anchored at block 3,412,160, 2d ago: every block since then is checked.');
+  await expect(card(page).locator('[data-pip-anchor]')).toHaveText('Anchored at block 3,412,160, 2 days ago: every block since then is checked.');
   await expectRingClear(page);
   await captureCoverageStage(page, 'status-network-card-following', test.info(), { group: GROUP, shapes: SHAPES });
 
   const facts = card(page).locator('details[data-proof-facts]');
   await facts.locator('summary').click();
   await expect(facts.locator('dt')).toHaveText(['Anchor', 'Checked', 'RandomX keys', 'Last checked']);
-  await expect(facts.locator('dd').first()).toHaveText('Block 3,412,160, 2 of 3 nodes agreed, 2d ago');
+  await expect(facts.locator('dd').first()).toHaveText('Block 3,412,160, 2 of 3 nodes agreed, 2 days ago');
   await captureCoverageStage(page, 'status-network-card-how-its-checked', test.info(), { group: GROUP, shapes: SHAPES });
 
   // The card follows the engine live, the new markup swapped in whole: the
