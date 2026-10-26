@@ -60,8 +60,8 @@ pub const CTOR_SECRET_KEY_FILE: &str = "hs_ed25519_secret_key";
 pub enum TorStatus {
     /// Not running: Tor is off or external.
     Off,
-    /// Joining the Tor network: how far, out of 100, and what it is on.
-    Starting { percent: u8, doing: String },
+    /// Joining the Tor network: how far, out of 100.
+    Starting { percent: u8 },
     /// The service runs at `address` and Tor is publishing it: usually
     /// reachable within a minute, though Arti only calls it running once
     /// every directory has it, which can take minutes. The address is fixed
@@ -171,10 +171,7 @@ impl Tor {
             return;
         };
         let (stop, stopped) = tokio::sync::watch::channel(false);
-        self.set_status(TorStatus::Starting {
-            percent: 0,
-            doing: "Starting".to_string(),
-        });
+        self.set_status(TorStatus::Starting { percent: 0 });
         self.spawn(wanted.clone(), router, stopped);
         *self.inner.running.lock() = Some(Running {
             wanted,

@@ -523,3 +523,8 @@ table[data-table="wallets"] .card-unit { display: none; }
 .check-spinner { flex: none; width: 1.6rem; height: 1.6rem; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: check-spin .9s linear infinite; }
 @keyframes check-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .check-spinner { animation: none; } }
+
+/* The Tor tab's start progress (views::admin::tor_steps): the setup strip,
+   inside the status alert, with the alert's own spacing. */
+#tor-status .mk-wizard-steps { margin: var(--space-md) 0; }
+.tor-progress-note { margin: 0; font-size: var(--text-sm); }

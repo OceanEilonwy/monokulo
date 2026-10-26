@@ -389,6 +389,21 @@ fn show_posted(field: &mut AdminScalarFieldView, posted: &HashMap<String, String
     }
 }
 
+/// What the Tor tab says about the onion service; `None` while Tor is off.
+fn tor_panel(state: &AppState) -> Option<views::admin::TorPanel> {
+    let config = state.settings.tor.load();
+    match config.mode {
+        crate::settings::TorMode::Inside => {
+            Some(views::admin::TorPanel::Inside(state.tor.status()))
+        }
+        crate::settings::TorMode::External => config
+            .onion_uri
+            .clone()
+            .map(|onion_uri| views::admin::TorPanel::External { onion_uri }),
+        crate::settings::TorMode::Off => None,
+    }
+}
+
 async fn build_view_model(
     state: &AppState,
     admin: &UserRow,
@@ -432,19 +447,7 @@ async fn build_view_model(
         })
         .into_iter()
         .collect();
-    let tor = {
-        let config = state.settings.tor.load();
-        match config.mode {
-            crate::settings::TorMode::Inside => {
-                Some(crate::views::admin::TorPanel::Inside(state.tor.status()))
-            }
-            crate::settings::TorMode::External => config
-                .onion_uri
-                .clone()
-                .map(|onion_uri| crate::views::admin::TorPanel::External { onion_uri }),
-            crate::settings::TorMode::Off => None,
-        }
-    };
+    let tor = tor_panel(state);
     let mut view = AdminSettingsViewModel {
         tab,
         notices,
@@ -616,6 +619,21 @@ pub async fn page(
             .into_response();
     }
     render(&state, &admin_user, view).await
+}
+
+/// `GET /admin/settings/tor-status` - the Tor tab's status block on its
+/// own, which the block asks for (fixi) every couple of seconds while Tor
+/// starts. Without fixi, the Tor tab.
+pub async fn tor_status(
+    State(state): State<AppState>,
+    AuthedAdmin(_, _): AuthedAdmin,
+    fx: FxRequest,
+) -> Response {
+    if !fx.0 {
+        return crate::base::redirect(SettingsTab::Tor.href());
+    }
+    axum::response::Html(views::admin::tor_status(tor_panel(&state).as_ref()).into_string())
+        .into_response()
 }
 
 /// The submitted form by name. A list of choices sends each one ticked

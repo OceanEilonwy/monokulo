@@ -15,6 +15,12 @@
 //                    Last-Event-ID, and pause it while the tab is hidden;
 //                    a named "done" event ends it for good. While a stream
 //                    is open, the page's Reload button ([data-reload]) is hidden.
+//   fx-poll="ms"     send "fx:poll" to the element this long after fixi
+//                    sets it up (with fx-trigger="fx:poll", it asks again),
+//                    waiting while the tab is hidden. A response swapped in
+//                    with fx-poll polls on; one without it stops. A failed
+//                    poll keeps the element as it is and tries again later;
+//                    being signed out stops it.
 // and on a form:
 //   fx-submit-on-change  submit when a select, checkbox or date changes.
 //
@@ -143,7 +149,30 @@
     }
   });
 
+  // fx-poll: fixi's "fx:inited" doesn't bubble, so it's caught on the way
+  // down.
+  function poll(elt) {
+    var wait = parseInt(elt.getAttribute("fx-poll"), 10);
+    if (!(wait > 0)) return;
+    setTimeout(function send() {
+      if (!elt.isConnected) return;
+      if (document.hidden) {
+        document.addEventListener("visibilitychange", send, { once: true });
+        return;
+      }
+      elt.dispatchEvent(new CustomEvent("fx:poll"));
+    }, wait);
+  }
+  document.addEventListener("fx:inited", function (evt) { poll(evt.target); }, true);
+  document.addEventListener("fx:after", function (evt) {
+    var elt = evt.target, response = evt.detail.cfg.response;
+    if (!elt.hasAttribute("fx-poll") || !response || response.ok) return;
+    evt.preventDefault();
+    if (response.status !== 401 && response.status !== 403) poll(elt);
+  });
+
   document.addEventListener("fx:error", function (evt) {
+    if (evt.target.hasAttribute("fx-poll")) poll(evt.target);
     var error = evt.detail.error;
     if ((error && error.name === "AbortError") || evt.target.hasAttribute("fx-own-errors")) return;
     banner("Couldn't reach the server. Check your connection and try again.");

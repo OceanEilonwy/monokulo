@@ -73,10 +73,7 @@ pub async fn run(
             () = tokio::time::sleep(RETRY) => {}
             _ = stopped.changed() => return,
         }
-        tor.set_status(TorStatus::Starting {
-            percent: 0,
-            doing: "Starting again".to_string(),
-        });
+        tor.set_status(TorStatus::Starting { percent: 0 });
     }
 }
 
@@ -173,9 +170,9 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
         let mut events = client.bootstrap_events();
         AbortOnDrop(tokio::spawn(async move {
             while let Some(status) = events.next().await {
+                tracing::debug!(%status, "tor: joining the network");
                 tor.set_status(TorStatus::Starting {
                     percent: (status.as_frac() * 100.0).clamp(0.0, 100.0) as u8,
-                    doing: status.to_string(),
                 });
             }
         }))
