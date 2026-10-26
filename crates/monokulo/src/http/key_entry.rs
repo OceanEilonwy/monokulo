@@ -27,7 +27,7 @@ use axum::response::{IntoResponse, Response};
 
 use super::AppState;
 use crate::api::runtime::problem::Problem;
-use crate::engine_client::{KeyBundleAnswer, StoreKeys};
+use crate::engine_client::{KeyBundleResponse, StoreKeys};
 use crate::network::NetworkKind;
 use crate::views::key_entry::{CliDownload, SnpKeyEntry, SnpReady};
 use engine_protocol::custody::CustodyBackend;
@@ -330,7 +330,7 @@ fn ready_view(
     state: &AppState,
     user: &UserId,
     per_user: usize,
-    answer: &KeyBundleAnswer,
+    answer: &KeyBundleResponse,
     trust: &key_custody::transport::TrustPolicy,
     official: bool,
 ) -> SnpReady {

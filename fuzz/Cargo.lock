@@ -866,6 +866,8 @@ dependencies = [
  "monero",
  "rusqlite",
  "serde",
+ "serde_json",
+ "service-runtime",
  "thiserror 2.0.21",
 ]
 

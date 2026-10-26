@@ -26,7 +26,7 @@ use crate::db::{
     AppOrder, ConnectionId, Db, NewOrderRecord, OrderId, OrderPrice, Reserved, StoreConnectionRow,
 };
 use crate::engine_client::{
-    EngineClientError, ENGINE_MAX_IDEMPOTENCY_KEY_CHARS, MAX_CALLER_IDEMPOTENCY_KEY_CHARS,
+    EngineClientError, MAX_CALLER_IDEMPOTENCY_KEY_CHARS, MAX_IDEMPOTENCY_KEY_CHARS,
 };
 use crate::exchange_rate_config::{ExchangeRateLookupError, RatesUnavailable};
 use crate::http::store_key::Credential;
@@ -85,7 +85,7 @@ const LONGEST_PREFIX: usize = {
 // A caller's longest key, with the longest prefix, is still one the engine
 // takes.
 const _: () =
-    assert!(MAX_CALLER_IDEMPOTENCY_KEY_CHARS + LONGEST_PREFIX <= ENGINE_MAX_IDEMPOTENCY_KEY_CHARS);
+    assert!(MAX_CALLER_IDEMPOTENCY_KEY_CHARS + LONGEST_PREFIX <= MAX_IDEMPOTENCY_KEY_CHARS);
 
 /// Who is making an order: what its record says made it, and its key's
 /// scope.

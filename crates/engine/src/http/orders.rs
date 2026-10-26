@@ -5,7 +5,7 @@
 
 use axum::extract::State;
 use axum::response::Json;
-use serde::{Deserialize, Serialize};
+use engine_protocol::admin_api::{CreateOrderRequest, CreateOrderResponse};
 
 use crate::key_custody::{KeyCustodyError, SubaddressIndex};
 use crate::store::{NewOrder, NextIndex, Piconero, Tenant};
@@ -15,40 +15,8 @@ use super::{
     UNKNOWN_WALLET_RETRIES,
 };
 
-/// XMR-only: this process has no concept of fiat
-/// or exchange rates at all any more. The caller (monokulo) supplies the exact
-/// `xmr_amount_piconero` an order is worth; this engine only ever watches the
-/// chain for that amount arriving. Any fiat
-/// display a customer sees is entirely the monokulo's responsibility, backed by
-/// its own local `order_fiat_metadata` record - this engine's `orders` table no
-/// longer stores fiat fields at all (see migration `0005_drop_order_fiat_columns.sql`).
-#[derive(Deserialize)]
-pub(super) struct CreateOrderRequest {
-    merchant_order_id: Option<String>,
-    xmr_amount_piconero: Piconero,
-    /// What the order is for, shown to the payer on monokulo's checkout.
-    /// Kept as given: monokulo checks it (one line, at most 140
-    /// characters) before calling here.
-    description: Option<String>,
-    /// A per-order confirmation-count override. Set by monokulo's
-    /// amount-tiered "Confirmation Thresholds" feature, which resolves the
-    /// right value itself before ever calling here - this engine has no
-    /// concept of currency or amount tiers, it only ever locks in the
-    /// single number it's given. Same validation bound as the tenant-level
-    /// setting (`http::admin::validate_tenant_settings`).
-    #[serde(default)]
-    confirmations_required: Option<u64>,
-    /// The caller's key for this one purchase. A request repeating a key
-    /// this store already used gets the order that was made with it (the
-    /// caller retrying after a timeout or a lost answer), never a second
-    /// order with a second address; the same key with a different amount,
-    /// reference or confirmation count is refused with `409`.
-    #[serde(default)]
-    idempotency_key: Option<String>,
-}
-
 /// Longest idempotency key accepted.
-pub(super) const MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
+pub(super) use engine_protocol::admin_api::MAX_IDEMPOTENCY_KEY_CHARS;
 
 /// A key is 1..=128 visible ASCII characters (no spaces or controls).
 fn valid_idempotency_key(key: &str) -> bool {
@@ -62,14 +30,6 @@ fn valid_idempotency_key(key: &str) -> bool {
 /// `i64::MAX` would be stored negative and compared as such). Monokulo
 /// refuses a larger price before asking; this is the backstop.
 pub(super) use engine_protocol::amount::MAX_ORDER_PICONERO;
-
-#[derive(Serialize)]
-pub(super) struct CreateOrderResponse {
-    order_id: crate::store::OrderId,
-    address: String,
-    xmr_amount_piconero: Piconero,
-    expires_at: i64,
-}
 
 pub(super) async fn create_order_for_admin(
     AuthedTenant(tenant): AuthedTenant,

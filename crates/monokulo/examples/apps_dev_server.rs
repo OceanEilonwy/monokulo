@@ -105,6 +105,7 @@ async fn main() {
                 spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
                 encrypted_keys: None,
             },
+            wallet_id: None,
             network: Some("mainnet".to_string()),
             confirmations_required: Some(1),
             order_expiry_seconds: Some(900),

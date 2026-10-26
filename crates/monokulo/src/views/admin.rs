@@ -366,17 +366,6 @@ pub enum SettingSourceView {
 }
 
 impl SettingSourceView {
-    /// From the name the registry and the engine's API give a source.
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "toml" => SettingSourceView::OptionsFile,
-            "database" => SettingSourceView::Runtime,
-            "cli" => SettingSourceView::CommandLine,
-            "env" => SettingSourceView::Environment,
-            _ => SettingSourceView::Default,
-        }
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             SettingSourceView::Default => "Default",

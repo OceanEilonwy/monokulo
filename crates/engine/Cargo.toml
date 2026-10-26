@@ -40,7 +40,7 @@ sha2 = "0.11.0"
 subtle = "2.6.1"
 # TCP keepalive on the ZMQ subscriber's socket, which tokio cannot set.
 socket2 = "0.6.5"
-engine-protocol = { path = "../engine-protocol", features = ["live-settings"] }
+engine-protocol = { path = "../engine-protocol", features = ["admin-api", "live-settings"] }
 # Monero's proof-of-work rules and the RandomX hasher the proof follower
 # checks blocks with.
 engine-pow = { path = "../engine-pow" }

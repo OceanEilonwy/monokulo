@@ -248,7 +248,10 @@ async fn perform_payment_lookup(
         )),
         Ok(PaymentLookupView::Matched { order_ids }) => Ok((
             "Match found and recorded.".to_string(),
-            order_ids.into_iter().next(),
+            order_ids
+                .into_iter()
+                .next()
+                .map(engine_protocol::ids::OrderId::into_string),
         )),
         Err(EngineClientError::EngineError { status, message })
             if status == reqwest::StatusCode::BAD_REQUEST =>

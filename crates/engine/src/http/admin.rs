@@ -1,22 +1,30 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::sync::Arc;
 
 use crate::engine_settings::EngineSettings;
+use crate::key_custody::transport::{Action, Envelope};
 #[cfg(feature = "snp")]
-use crate::key_custody::transport::HandoffAnswer;
-use crate::key_custody::transport::{Action, Bundle, Envelope};
+use crate::key_custody::transport::{Bundle, HandoffAnswer};
 use crate::key_custody::{
     remove_wallet_logged, CustodyBackend, KeyCustodyError, LiveWallet, SubaddressIndex,
     WalletHandle, WalletMaterial,
 };
 use crate::status::OrderStatus;
 use crate::store::{
-    Database, EngineWalletId, NewTenant, Order, OrderPaymentRow, Piconero, TenantConfigPatch,
+    Database, EngineWalletId, NewTenant, Order, OrderPaymentRow, TenantConfigPatch,
 };
 use engine_daemon::MoneroDaemonClient as _;
+use engine_protocol::admin_api::{
+    ChangeWalletRequest, CreateTenantRequest, CreateTenantResponse, CreateWalletRequest,
+    KeyBundleRequest, KeyBundleResponse, Keys, LookupPaymentRequest, OrderDetailResponse,
+    OrderTotalsView, OrderView, PatchTenantRequest, PaymentLookupView, PaymentView,
+    RestoreWalletRequest, RetiredView, RotateSecretResponse, SetRefundAddressRequest, StoreKeys,
+    SwitchKeyCustodyRequest, TenantView, WalletChangeView, WalletStatusView, WalletView,
+};
+use engine_protocol::custody::RequestedBackend;
 
 use super::{
     network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle,
@@ -45,35 +53,16 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
     }
 }
 
-/// No `allowed_origins` any more: the engine is private and keeps no
-/// per-tenant origin list (embedding policy is monokulo's). Like every
-/// request body here, unknown fields are ignored, so an old caller still
-/// sending one is not refused.
-#[derive(Deserialize)]
-pub(super) struct CreateTenantRequest {
-    #[serde(flatten)]
-    keys: KeysIn,
-    /// An existing wallet the new store takes payments into
-    /// (`POST /api/v1/admin/wallets`), instead of `keys`: its keys are not
-    /// sent again, and it shares the wallet's address counter with the
-    /// wallet's other stores.
-    wallet_id: Option<EngineWalletId>,
-    network: Option<String>,
-    confirmations_required: Option<u64>,
-    order_expiry_seconds: Option<i64>,
-    /// Which key custody backend holds this store's keys (part 5); the
-    /// instance's default when absent.
-    key_custody_backend: Option<String>,
-}
-
 /// The backend a new or moving store's keys go to: `requested`, or the
 /// default. Refused if it isn't a backend, or isn't enabled.
-fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<CustodyBackend, ApiError> {
+fn chosen_backend(
+    state: &AppState,
+    requested: Option<&RequestedBackend>,
+) -> Result<CustodyBackend, ApiError> {
     let enabled = state.custody.backends.enabled_backends();
     let backend = match requested {
-        Some(name) => name
-            .parse::<CustodyBackend>()
-            .map_err(|unknown| not_enabled(&unknown.0, &enabled))?,
+        Some(RequestedBackend::Known(backend)) => *backend,
+        Some(RequestedBackend::Unknown(name)) => return Err(not_enabled(name, &enabled)),
         None => state.settings.custody.load().default,
     };
     // A single backend, not a router (some tests), is the only one there is.
@@ -89,13 +78,6 @@ fn not_enabled(backend: &str, enabled: &[CustodyBackend]) -> ApiError {
         "key custody backend {backend:?} is not enabled on this instance (enabled: {})",
         enabled.join(", ")
     ))
-}
-
-#[derive(Serialize)]
-pub(super) struct CreateTenantResponse {
-    tenant_id: crate::store::TenantId,
-    public_key: String,
-    secret_token: String,
 }
 
 /// Runs `work` to its end even if the request it serves is dropped (the
@@ -119,20 +101,6 @@ pub(super) async fn create_tenant(
     to_completion(create_tenant_to_completion(state, req)).await
 }
 
-/// A store's keys as a request carries them: in the clear, for a backend
-/// that takes them that way (`plain`), or encrypted to the backend
-/// (`encrypted_keys`, an envelope from `key-custody-cli` or the key entry
-/// form) for one that takes them only that way (`snp`).
-#[derive(Deserialize, Default)]
-pub(super) struct KeysIn {
-    #[serde(default)]
-    view_key_hex: String,
-    #[serde(default)]
-    spend_pubkey_hex: String,
-    #[serde(default)]
-    encrypted_keys: Option<String>,
-}
-
 /// A store's keys, registered: the handle, the sealed bytes to store, and
 /// (keys given in the clear) the keys themselves, for the caller's checks.
 struct Registered {
@@ -147,22 +115,25 @@ struct Registered {
 async fn register_keys(
     state: &AppState,
     backend: CustodyBackend,
-    keys: &KeysIn,
+    keys: &StoreKeys,
     action: Action,
     store: Option<&str>,
 ) -> Result<Registered, ApiError> {
     let custody = state.custody.backends.as_ref();
-    let encrypted = keys
-        .encrypted_keys
-        .as_deref()
-        .filter(|e| !e.trim().is_empty());
+    let keys = keys
+        .read()
+        .map_err(|e| ApiError::BadRequest(e.to_owned()))?;
     if custody.takes_raw_keys_in(backend) {
-        if encrypted.is_some() {
+        let Keys::Plain {
+            view_key_hex,
+            spend_pubkey_hex,
+        } = keys
+        else {
             return Err(ApiError::BadRequest(format!(
                 "the {backend} key custody backend takes keys as they are, not encrypted"
             )));
-        }
-        let material = WalletMaterial::from_hex(&keys.view_key_hex, &keys.spend_pubkey_hex)
+        };
+        let material = WalletMaterial::from_hex(view_key_hex, spend_pubkey_hex)
             .map_err(|e| ApiError::BadRequest(e.to_string()))?;
         let handle = custody
             .register_wallet_in(backend, material.clone())
@@ -180,17 +151,27 @@ async fn register_keys(
             }
         };
     }
-    if !keys.view_key_hex.trim().is_empty() {
-        return Err(ApiError::BadRequest(format!(
-            "the {backend} key custody backend takes keys only encrypted to it (key-custody-cli or the key entry form); the keys sent in the clear were not used"
-        )));
-    }
-    let envelope = Envelope::from_text(encrypted.ok_or_else(|| {
-        ApiError::BadRequest(format!(
-            "the {backend} key custody backend needs the store's keys encrypted to it (encrypted_keys)"
-        ))
-    })?)
-    .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let encrypted = match keys {
+        Keys::Encrypted(encrypted) => encrypted,
+        Keys::Plain {
+            view_key_hex: _,
+            spend_pubkey_hex: _,
+        } if keys.is_none() => {
+            return Err(ApiError::BadRequest(format!(
+                "the {backend} key custody backend needs the store's keys encrypted to it (encrypted_keys)"
+            )))
+        }
+        Keys::Plain {
+            view_key_hex: _,
+            spend_pubkey_hex: _,
+        } => {
+            return Err(ApiError::BadRequest(format!(
+                "the {backend} key custody backend takes keys only encrypted to it (key-custody-cli or the key entry form); the keys sent in the clear were not used"
+            )))
+        }
+    };
+    let envelope =
+        Envelope::from_text(encrypted).map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let (handle, sealed) = custody
         .register_envelope_in(backend, &envelope, action, store)
         .await
@@ -219,7 +200,7 @@ async fn create_tenant_to_completion(
     }
 
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
-    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let backend = chosen_backend(&state, req.key_custody_backend.as_ref())?;
 
     let Registered {
         handle,
@@ -306,13 +287,7 @@ async fn create_tenant_on_wallet(
     wallet_id: EngineWalletId,
     req: CreateTenantRequest,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
-    if !req.keys.view_key_hex.trim().is_empty()
-        || req
-            .keys
-            .encrypted_keys
-            .as_deref()
-            .is_some_and(|e| !e.trim().is_empty())
-    {
+    if !req.keys.read().is_ok_and(|keys| keys.is_none()) {
         return Err(ApiError::BadRequest(
             "give either a wallet_id or keys, not both".to_owned(),
         ));
@@ -395,25 +370,6 @@ async fn create_tenant_on_wallet(
     }))
 }
 
-/// `POST /api/v1/admin/wallets`: one wallet's keys, registered once, for any
-/// number of stores to take payments into (`wallet_id` on
-/// `POST /api/v1/admin/tenants`). Keys come in as for a store.
-#[derive(Deserialize)]
-pub(super) struct CreateWalletRequest {
-    #[serde(flatten)]
-    keys: KeysIn,
-    network: Option<String>,
-    key_custody_backend: Option<String>,
-}
-
-#[derive(Serialize)]
-pub(super) struct WalletView {
-    wallet_id: EngineWalletId,
-    primary_address: String,
-    network: String,
-    key_custody_backend: CustodyBackend,
-}
-
 pub(super) async fn create_wallet(
     State(state): State<AppState>,
     Json(req): Json<CreateWalletRequest>,
@@ -433,7 +389,7 @@ async fn create_wallet_to_completion(
             network_str(network)
         )));
     }
-    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let backend = chosen_backend(&state, req.key_custody_backend.as_ref())?;
     let registered = register_keys(&state, backend, &req.keys, Action::Create, None).await?;
     let (handle, sealed) = (registered.handle, registered.sealed);
     // Registered only to check the keys and work out the address: each
@@ -469,26 +425,6 @@ async fn create_wallet_to_completion(
         network: network_str(wallet.network).to_owned(),
         key_custody_backend: wallet.key_custody_backend,
     }))
-}
-
-#[derive(Serialize)]
-pub(super) struct WalletStatusView {
-    wallet_id: EngineWalletId,
-    primary_address: String,
-    network: String,
-    key_custody_backend: CustodyBackend,
-    /// When it was retired; its keys were deleted then.
-    retired_at: Option<i64>,
-    /// Enabled stores taking payments into it.
-    stores: u64,
-    /// Orders on it that can still be paid.
-    payable_orders: u64,
-    /// The latest an order on it could still be paid, as far as the
-    /// engine can tell.
-    payable_until: Option<i64>,
-    /// Rows scanning it still behind the chain: a block not yet read for
-    /// them could hold a payment to an order on it.
-    scans_behind: u64,
 }
 
 /// `GET /api/v1/admin/wallets/{id}`: the wallet, and what its retirement
@@ -529,11 +465,6 @@ fn grace_period(state: &AppState) -> i64 {
         .expired_order_grace_period_seconds
 }
 
-#[derive(Serialize)]
-pub(super) struct RetiredView {
-    retired_at: i64,
-}
-
 /// `POST /api/v1/admin/wallets/{id}/retire`: no store can use the wallet
 /// again, and its keys are deleted, from the database and from key
 /// custody. `409` while a store uses it, an order on it can still be
@@ -554,13 +485,6 @@ pub(super) async fn retire_wallet(
     Ok(Json(RetiredView { retired_at: now }))
 }
 
-#[derive(Deserialize)]
-pub(super) struct RestoreWalletRequest {
-    #[serde(flatten)]
-    keys: KeysIn,
-    key_custody_backend: Option<String>,
-}
-
 /// `POST /api/v1/admin/wallets/{id}/restore`: a retired wallet back, with
 /// its keys entered again. They must be this wallet's: checked by the
 /// address they make, compared by keys. `400` for other keys.
@@ -577,7 +501,7 @@ pub(super) async fn restore_wallet(
         .filter(|w| w.deleted_at.is_some())
         .ok_or(ApiError::NotFound)?;
     let network = wallet.network;
-    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
+    let backend = chosen_backend(&state, req.key_custody_backend.as_ref())?;
     let registered = register_keys(&state, backend, &req.keys, Action::Create, None).await?;
     let same = match &registered.material {
         Some(material) => is_same_wallet(material, &wallet.primary_address, network),
@@ -667,38 +591,19 @@ fn validate_tenant_settings(
     Ok(())
 }
 
-#[derive(Serialize)]
-pub(super) struct TenantView {
-    tenant_id: crate::store::TenantId,
-    public_key: String,
-    wallet_id: EngineWalletId,
-    primary_address: String,
-    network: String,
-    confirmations_required: u64,
-    order_expiry_seconds: i64,
-    key_custody_backend: CustodyBackend,
-}
-
 impl From<crate::store::Tenant> for TenantView {
     fn from(t: crate::store::Tenant) -> Self {
         Self {
             tenant_id: t.id,
             public_key: t.public_key,
-            wallet_id: t.wallet_id,
+            wallet_id: Some(t.wallet_id),
             primary_address: t.primary_address,
             network: network_str(t.network).to_owned(),
             confirmations_required: t.confirmations_required,
             order_expiry_seconds: t.order_expiry_seconds,
-            key_custody_backend: t.key_custody_backend,
+            key_custody_backend: Some(t.key_custody_backend),
         }
     }
-}
-
-#[derive(Deserialize)]
-pub(super) struct SwitchKeyCustodyRequest {
-    backend: String,
-    #[serde(flatten)]
-    keys: KeysIn,
 }
 
 /// Whether `material` is the wallet `primary_address` belongs to, on
@@ -862,20 +767,9 @@ async fn derives_primary_address(
         && derived.public_view == stored.public_view)
 }
 
-#[derive(Deserialize, Default)]
-pub(super) struct KeyBundleRequest {
-    /// The backend the keys are for; the default when absent.
-    backend: Option<String>,
-}
-
-#[derive(Serialize)]
-pub(super) struct KeyBundleResponse {
-    bundle: Bundle,
-}
-
 async fn key_bundle(
     state: &AppState,
-    backend: Option<&str>,
+    backend: Option<&RequestedBackend>,
     action: Action,
     store: Option<&str>,
 ) -> Result<Json<KeyBundleResponse>, ApiError> {
@@ -891,6 +785,8 @@ async fn key_bundle(
             | KeyCustodyError::BackendUnavailable(_)
             | KeyCustodyError::ScanFailed(_)) => other.into(),
         })?;
+    let bundle = serde_json::to_value(bundle)
+        .map_err(|e| ApiError::Internal(format!("a key bundle didn't serialize: {e}")))?;
     Ok(Json(KeyBundleResponse { bundle }))
 }
 
@@ -902,7 +798,7 @@ pub(super) async fn create_key_bundle(
     State(state): State<AppState>,
     Json(req): Json<KeyBundleRequest>,
 ) -> Result<Json<KeyBundleResponse>, ApiError> {
-    key_bundle(&state, req.backend.as_deref(), Action::Create, None).await
+    key_bundle(&state, req.backend.as_ref(), Action::Create, None).await
 }
 
 /// `POST /api/v1/admin/tenant/key-custody/bundle` - as `create_key_bundle`,
@@ -914,7 +810,7 @@ pub(super) async fn move_key_bundle(
     Json(req): Json<KeyBundleRequest>,
 ) -> Result<Json<KeyBundleResponse>, ApiError> {
     let store = tenant.id.as_str().to_owned();
-    key_bundle(&state, req.backend.as_deref(), Action::Move, Some(&store)).await
+    key_bundle(&state, req.backend.as_ref(), Action::Move, Some(&store)).await
 }
 
 /// `POST /api/v1/admin/key-custody/handoff` - an upgraded engine asking this
@@ -948,12 +844,6 @@ pub(super) async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<T
     Json(TenantView::from(tenant))
 }
 
-#[derive(Deserialize, Default)]
-pub(super) struct PatchTenantRequest {
-    confirmations_required: Option<u64>,
-    order_expiry_seconds: Option<i64>,
-}
-
 pub(super) async fn patch_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(db): State<Database>,
@@ -973,11 +863,6 @@ pub(super) async fn patch_own_tenant(
         .await?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
-}
-
-#[derive(Serialize)]
-pub(super) struct RotateSecretResponse {
-    secret_token: String,
 }
 
 pub(super) async fn rotate_secret(
@@ -1042,19 +927,6 @@ async fn forget_handles(
             .await;
         }
     }
-}
-
-#[derive(Deserialize)]
-pub(super) struct ChangeWalletRequest {
-    wallet_id: EngineWalletId,
-}
-
-#[derive(Serialize)]
-pub(super) struct WalletChangeView {
-    tenant: TenantView,
-    /// The store's orders on the wallet it left, still watched with that
-    /// wallet's keys.
-    orders_on_previous_wallet: u64,
 }
 
 /// `PUT /api/v1/admin/tenant/wallet` - changes the wallet the store takes
@@ -1144,37 +1016,6 @@ pub(super) async fn change_wallet(
     }))
 }
 
-#[derive(Serialize)]
-pub(super) struct OrderView {
-    order_id: crate::store::OrderId,
-    merchant_order_id: Option<String>,
-    /// What the order is for, as monokulo created it; `None` when it gave
-    /// none.
-    description: Option<String>,
-    address: String,
-    xmr_amount_piconero: Piconero,
-    amount_received_piconero: Piconero,
-    status: String,
-    confirmations: u64,
-    double_spend_detected_at: Option<i64>,
-    /// When the merchant cancelled it (`Store::cancel_order`), if it was.
-    cancelled_at: Option<i64>,
-    refund_address: Option<String>,
-    created_at: i64,
-    expires_at: i64,
-    updated_at: i64,
-    /// Mirrors `Order::first_scanned_height`/`last_scanned_height` unchanged.
-    first_scanned_height: Option<i64>,
-    last_scanned_height: Option<i64>,
-    /// Computed, not a stored column - `true` if this order is presently examined
-    /// by anything at all (`Store::is_order_currently_scanning`): the live
-    /// scanner's own in-scope set (non-terminal, or `Expired` within its grace
-    /// window), *or* a currently-`running` manual rescan. One engine-computed
-    /// boolean rather than a caller re-deriving the same scope logic itself from
-    /// the raw fields above.
-    currently_scanning: bool,
-}
-
 /// Builds an `OrderView`, including the one field (`currently_scanning`)
 /// that isn't a column: it depends on wall-clock time (the grace window),
 /// which is why this isn't a plain `From<Order>`.
@@ -1187,7 +1028,7 @@ fn build_order_view(order: Order, now: i64, grace_period_seconds: i64) -> OrderV
         address: order.address,
         xmr_amount_piconero: order.xmr_amount_piconero,
         amount_received_piconero: order.amount_received_piconero,
-        status: order.status.as_str().to_owned(),
+        status: order.status,
         confirmations: order.confirmations,
         double_spend_detected_at: order.double_spend_detected_at,
         cancelled_at: order.cancelled_at,
@@ -1336,12 +1177,6 @@ pub(super) struct OrderTotalsQuery {
     since: i64,
 }
 
-#[derive(Serialize)]
-pub(super) struct OrderTotalsView {
-    received_piconero: Piconero,
-    orders_since: u64,
-}
-
 /// `GET /api/v1/admin/tenant/orders/totals?since=` - what all the
 /// authenticated tenant's orders received, and how many were made since
 /// `since`, summed over every order.
@@ -1359,19 +1194,6 @@ pub(super) async fn order_totals(
     }))
 }
 
-#[derive(Serialize)]
-pub(super) struct PaymentView {
-    txid: String,
-    output_index: i64,
-    amount_piconero: Piconero,
-    first_seen_at: i64,
-    block_height: Option<i64>,
-    voided_at: Option<i64>,
-    /// Voided because another payment of the same output (its one-time key)
-    /// is the one credited, not as a double spend.
-    superseded: bool,
-}
-
 impl From<OrderPaymentRow> for PaymentView {
     fn from(p: OrderPaymentRow) -> Self {
         Self {
@@ -1384,13 +1206,6 @@ impl From<OrderPaymentRow> for PaymentView {
             superseded: p.superseded_by.is_some(),
         }
     }
-}
-
-#[derive(Serialize)]
-pub(super) struct OrderDetailResponse {
-    #[serde(flatten)]
-    order: OrderView,
-    payments: Vec<PaymentView>,
 }
 
 pub(super) async fn get_order_detail(
@@ -1458,11 +1273,6 @@ pub(super) async fn cancel_order(
     }
 }
 
-#[derive(Deserialize)]
-pub(super) struct SetRefundAddressRequest {
-    refund_address: String,
-}
-
 /// `POST /api/v1/admin/tenant/orders/{order_id}/refund-address` - records
 /// where a refund for one of the authenticated tenant's orders should go.
 /// Monokulo's checkout calls this on the customer's behalf (after checking
@@ -1489,11 +1299,6 @@ pub(super) async fn set_order_refund_address(
     }
 }
 
-#[derive(Deserialize)]
-pub(super) struct LookupPaymentRequest {
-    txid: String,
-}
-
 /// The direct replacement for the manual chain-rescan feature above: no block-range walk, no
 /// background job, no per-tenant "one at a time" guardrail to enforce - one
 /// daemon call for the transaction and where it is (`find_transaction`), one
@@ -1501,25 +1306,7 @@ pub(super) struct LookupPaymentRequest {
 /// `scan_transaction`/`record_scan_match` primitives the live scanner already
 /// uses, narrowed to nothing (this scans the tenant's *whole* address range,
 /// not one order's `minor_index` - see below for why).
-#[derive(Serialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub(super) enum PaymentLookupView {
-    /// The daemon has no record of this txid at all, in a block or the pool.
-    NotFoundOnChain,
-    /// The transaction is real and was decoded, but none of its outputs
-    /// decrypt against this tenant's wallet - a genuine, honest "not yours"
-    /// rather than a guess.
-    NoMatchingOrder,
-    /// At least one output matched one of this tenant's orders and was
-    /// recorded (idempotently - looking up an already-applied txid a second
-    /// time is a safe no-op that still reports the same match). A list, not a
-    /// single id: a transaction can in principle pay more than one of a
-    /// tenant's subaddresses in one output set.
-    Matched {
-        order_ids: Vec<crate::store::OrderId>,
-    },
-}
-
+///
 /// `POST /api/v1/admin/tenant/payments/lookup`. Unlike the rescan trigger above, this is scoped
 /// to the whole tenant (`0..tenant.next_minor_index`), not one specific
 /// order's `minor_index`: a merchant who has a customer's txid doesn't

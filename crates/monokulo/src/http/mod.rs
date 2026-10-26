@@ -89,7 +89,7 @@ use axum_extra::extract::CookieJar;
 use axum_extra::routing::RouterExt;
 
 use crate::db::{Database, UserRow};
-use crate::engine_client::EngineClient;
+use crate::engine_client::{EngineClient, UnservedReason};
 use credentials::auth::{RawToken, TokenHash};
 
 /// A store connection the signed-in user owns: made only by checking the
@@ -1199,20 +1199,22 @@ fn store_alerts(
             .iter()
             .filter(|u| u.public_key == store.tenant_public_key)
         {
-            alerts.push(match problem.reason.as_str() {
-                "catching_up" => format!(
-                    "{name}: payments are being checked late - the engine is catching up {} block(s) it couldn't check for this store. They'll show up once it has.",
-                    problem.blocks_behind.unwrap_or(0)
+            alerts.push(match problem.reason {
+                UnservedReason::CatchingUp { blocks_behind } => format!(
+                    "{name}: payments are being checked late - the engine is catching up {blocks_behind} block(s) it couldn't check for this store. They'll show up once it has."
                 ),
-                "custody_disabled" => format!(
+                UnservedReason::CustodyDisabled => format!(
                     "{name}: payments aren't being detected - this store's keys are in a key storage backend the instance admin has turned off. Move the store to another one under Key storage in its settings, or ask the admin to turn it back on."
                 ),
-                "custody_unavailable" => format!(
+                UnservedReason::CustodyUnavailable => format!(
                     "{name}: payments aren't being detected - the key storage backend holding this store's keys isn't answering. The instance admin needs to check it; payments are found once it's back."
                 ),
-                _ => format!(
+                UnservedReason::NoReachableNode => format!(
                     "{name}: payments aren't being detected - the {} network has no Monero node that answers. The instance admin needs to set one on the admin settings page.",
                     problem.network
+                ),
+                UnservedReason::Unknown => format!(
+                    "{name}: payments aren't being detected right now - the engine can't scan this store. The instance admin can see why on the engine's status."
                 ),
             });
         }

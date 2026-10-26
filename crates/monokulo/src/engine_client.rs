@@ -33,12 +33,24 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use credentials::auth::RawToken;
-use engine_protocol::amount::Piconero;
 use engine_protocol::custody::CustodyBackend;
 use engine_protocol::ids::EngineWalletId;
 use futures_util::{Stream, StreamExt as _};
 use reqwest::{Method, StatusCode};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+
+/// The engine's admin API and `/status` bodies, as the engine itself
+/// defines them.
+pub use engine_protocol::admin_api::{
+    ChangeWalletRequest, CreateOrderRequest, CreateOrderResponse, CreateTenantRequest,
+    CreateTenantResponse, CreateWalletRequest, CustodyBackendStatus, EngineStatusResponse,
+    KeyBundleRequest, KeyBundleResponse, LookupPaymentRequest, NetworkStatus, NodeStatus,
+    OrderDetailResponse, OrderTotalsView, OrderView, PatchTenantRequest, PaymentLookupView,
+    PaymentView, RestoreWalletRequest, RetiredView, RotateSecretResponse, ScannerStatusView,
+    SetRefundAddressRequest, SnpTrustStatus, StoreKeys, SwitchKeyCustodyRequest, TenantView,
+    UnservedReason, UnservedTenant, WalletChangeView, WalletStatusView, WalletView,
+    MAX_IDEMPOTENCY_KEY_CHARS,
+};
 
 /// Longest one engine call may take, the order-event stream excepted. The
 /// engine refuses a request of its own after 30 s; a few seconds more
@@ -634,7 +646,7 @@ impl EngineClient {
     pub async fn create_tenant(
         &self,
         req: CreateTenantRequest,
-    ) -> Result<CreateTenantResponse, EngineClientError> {
+    ) -> Result<CreateTenantResponse<RawToken>, EngineClientError> {
         self.send(Call::post("/api/v1/admin/tenants").json(&req))
             .await?
             .parsed()
@@ -645,7 +657,7 @@ impl EngineClient {
     pub async fn create_wallet(
         &self,
         req: CreateWalletRequest,
-    ) -> Result<EngineWallet, EngineClientError> {
+    ) -> Result<WalletView, EngineClientError> {
         self.send(Call::post("/api/v1/admin/wallets").json(&req))
             .await?
             .parsed()
@@ -656,8 +668,8 @@ impl EngineClient {
     /// come from the wallet's one counter, so no two stores on it share one.
     pub async fn create_tenant_on_wallet(
         &self,
-        req: CreateTenantOnWalletRequest,
-    ) -> Result<CreateTenantResponse, EngineClientError> {
+        req: CreateTenantRequest,
+    ) -> Result<CreateTenantResponse<RawToken>, EngineClientError> {
         self.send(Call::post("/api/v1/admin/tenants").json(&req))
             .await?
             .parsed()
@@ -668,7 +680,7 @@ impl EngineClient {
     pub async fn wallet_status(
         &self,
         id: &EngineWalletId,
-    ) -> Result<WalletStatus, EngineClientError> {
+    ) -> Result<WalletStatusView, EngineClientError> {
         self.send(Call::get(format!("/api/v1/admin/wallets/{}", id.as_str())))
             .await?
             .parsed()
@@ -680,16 +692,12 @@ impl EngineClient {
     /// behind the chain; `404` for an unknown or already retired one. When,
     /// as unix seconds.
     pub async fn retire_wallet(&self, id: &EngineWalletId) -> Result<i64, EngineClientError> {
-        #[derive(Deserialize)]
-        struct Retired {
-            retired_at: i64,
-        }
         self.send(Call::post(format!(
             "/api/v1/admin/wallets/{}/retire",
             id.as_str()
         )))
         .await?
-        .parsed::<Retired>()
+        .parsed::<RetiredView>()
         .map(|r| r.retired_at)
     }
 
@@ -700,19 +708,14 @@ impl EngineClient {
         id: &EngineWalletId,
         keys: &StoreKeys,
         key_custody_backend: Option<CustodyBackend>,
-    ) -> Result<EngineWallet, EngineClientError> {
-        #[derive(Serialize)]
-        struct Restore<'a> {
-            #[serde(flatten)]
-            keys: &'a StoreKeys,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            key_custody_backend: Option<CustodyBackend>,
-        }
+    ) -> Result<WalletView, EngineClientError> {
         self.send(
-            Call::post(format!("/api/v1/admin/wallets/{}/restore", id.as_str())).json(&Restore {
-                keys,
-                key_custody_backend,
-            }),
+            Call::post(format!("/api/v1/admin/wallets/{}/restore", id.as_str())).json(
+                &RestoreWalletRequest {
+                    keys: keys.clone(),
+                    key_custody_backend: key_custody_backend.map(Into::into),
+                },
+            ),
         )
         .await?
         .parsed()
@@ -724,10 +727,11 @@ impl EngineClient {
     pub async fn create_key_bundle(
         &self,
         backend: CustodyBackend,
-    ) -> Result<KeyBundleAnswer, EngineClientError> {
+    ) -> Result<KeyBundleResponse, EngineClientError> {
         self.send(
-            Call::post("/api/v1/admin/key-custody/bundle")
-                .json(&serde_json::json!({ "backend": backend })),
+            Call::post("/api/v1/admin/key-custody/bundle").json(&KeyBundleRequest {
+                backend: Some(backend.into()),
+            }),
         )
         .await?
         .parsed()
@@ -739,11 +743,13 @@ impl EngineClient {
         &self,
         sk: &RawToken,
         backend: CustodyBackend,
-    ) -> Result<KeyBundleAnswer, EngineClientError> {
+    ) -> Result<KeyBundleResponse, EngineClientError> {
         self.send(
             Call::post("/api/v1/admin/tenant/key-custody/bundle")
                 .store(sk)
-                .json(&serde_json::json!({ "backend": backend })),
+                .json(&KeyBundleRequest {
+                    backend: Some(backend.into()),
+                }),
         )
         .await?
         .parsed()
@@ -761,7 +767,10 @@ impl EngineClient {
         self.send(
             Call::new(Method::PUT, "/api/v1/admin/tenant/key-custody")
                 .store(sk)
-                .json(&SwitchKeyCustodyRequest { backend, keys }),
+                .json(&SwitchKeyCustodyRequest {
+                    backend: backend.into(),
+                    keys: keys.clone(),
+                }),
         )
         .await?
         .parsed()
@@ -775,11 +784,13 @@ impl EngineClient {
         &self,
         sk: &RawToken,
         wallet_id: &EngineWalletId,
-    ) -> Result<WalletChangeAnswer, EngineClientError> {
+    ) -> Result<WalletChangeView, EngineClientError> {
         self.send(
             Call::new(Method::PUT, "/api/v1/admin/tenant/wallet")
                 .store(sk)
-                .json(&serde_json::json!({ "wallet_id": wallet_id.as_str() })),
+                .json(&ChangeWalletRequest {
+                    wallet_id: wallet_id.clone(),
+                }),
         )
         .await?
         .parsed()
@@ -834,7 +845,7 @@ impl EngineClient {
         &self,
         sk: &RawToken,
         since: i64,
-    ) -> Result<OrderTotals, EngineClientError> {
+    ) -> Result<OrderTotalsView, EngineClientError> {
         self.send(
             Call::get(with_query(
                 "/api/v1/admin/tenant/orders/totals",
@@ -929,11 +940,7 @@ impl EngineClient {
     /// `POST /api/v1/admin/tenant/rotate-secret` — gives `sk`'s tenant a new
     /// secret key; `sk` stops working at once. The new key.
     pub async fn rotate_secret(&self, sk: &RawToken) -> Result<RawToken, EngineClientError> {
-        #[derive(Deserialize)]
-        struct Rotated {
-            secret_token: RawToken,
-        }
-        let rotated: Rotated = self
+        let rotated: RotateSecretResponse<RawToken> = self
             .send(Call::post("/api/v1/admin/tenant/rotate-secret").store(sk))
             .await?
             .parsed()?;
@@ -957,6 +964,7 @@ impl EngineClient {
                 .store(sk)
                 .json(&PatchTenantRequest {
                     confirmations_required: Some(confirmations_required),
+                    order_expiry_seconds: None,
                 }),
         )
         .await?
@@ -1208,387 +1216,11 @@ impl EngineClientError {
     }
 }
 
-/// Mirrors the engine's own `CreateTenantRequest` (`src/http/admin.rs` at the
-/// repo root) field-for-field. There is no origin list: embedding policy is
-/// monokulo's alone (`crate::embed_domains`).
-#[derive(Serialize)]
-pub struct CreateTenantRequest {
-    #[serde(flatten)]
-    pub keys: StoreKeys,
-    pub network: Option<String>,
-    pub confirmations_required: Option<u64>,
-    pub order_expiry_seconds: Option<i64>,
-    /// The engine's default when `None` (part 5).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_custody_backend: Option<CustodyBackend>,
-}
-
-/// A store's keys as the engine takes them: in the clear (`plain`), or
-/// encrypted to the backend (`encrypted_keys`, for `snp`), never both.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct StoreKeys {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub view_key_hex: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub spend_pubkey_hex: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub encrypted_keys: Option<String>,
-}
-
-#[derive(Serialize)]
-struct SwitchKeyCustodyRequest<'a> {
-    backend: CustodyBackend,
-    #[serde(flatten)]
-    keys: &'a StoreKeys,
-}
-
-/// Mirrors the engine's own `KeyBundleResponse`: the bundle, passed on to
-/// the browser or `key-custody-cli` as it is. Which images to trust is
-/// monokulo's own policy (`settings::SnpEntryPolicy`), not the engine's.
-#[derive(Debug, Clone, Deserialize)]
-pub struct KeyBundleAnswer {
-    pub bundle: serde_json::Value,
-}
-
-/// A wallet's keys, for `create_wallet`: given like a store's.
-#[derive(Debug, Serialize)]
-pub struct CreateWalletRequest {
-    #[serde(flatten)]
-    pub keys: StoreKeys,
-    pub network: String,
-    /// The engine's default when `None`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_custody_backend: Option<CustodyBackend>,
-}
-
-/// Mirrors the engine's `WalletStatusView`.
-#[derive(Debug, Deserialize)]
-pub struct WalletStatus {
-    pub retired_at: Option<i64>,
-    pub stores: u64,
-    pub payable_orders: u64,
-    pub payable_until: Option<i64>,
-    /// Rows scanning it still behind the chain.
-    pub scans_behind: u64,
-}
-
-/// Mirrors the engine's `WalletView`.
-#[derive(Debug, Deserialize)]
-pub struct EngineWallet {
-    pub wallet_id: EngineWalletId,
-    pub primary_address: String,
-    pub network: String,
-    pub key_custody_backend: CustodyBackend,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CreateTenantOnWalletRequest {
-    pub wallet_id: EngineWalletId,
-    pub confirmations_required: Option<u64>,
-    pub order_expiry_seconds: Option<i64>,
-}
-
-/// Mirrors the engine's own `CreateTenantResponse`.
-#[derive(Debug, Deserialize)]
-pub struct CreateTenantResponse {
-    pub tenant_id: String,
-    pub public_key: String,
-    pub secret_token: RawToken,
-}
-
-/// Mirrors the engine's own `TenantView`.
-#[derive(Debug, Deserialize)]
-pub struct TenantView {
-    pub tenant_id: String,
-    pub public_key: String,
-    /// The engine's wallet this store takes payments into.
-    #[serde(default)]
-    pub wallet_id: Option<EngineWalletId>,
-    pub primary_address: String,
-    pub network: String,
-    pub confirmations_required: u64,
-    pub order_expiry_seconds: i64,
-    /// Which key custody backend holds this store's keys. Absent from an
-    /// engine older than part 5.
-    #[serde(default)]
-    pub key_custody_backend: Option<CustodyBackend>,
-}
-
-/// Mirrors the engine's own `WalletChangeView`.
-#[derive(Debug, Deserialize)]
-pub struct WalletChangeAnswer {
-    pub tenant: TenantView,
-    /// The store's orders on the wallet it left, still watched there.
-    pub orders_on_previous_wallet: u64,
-}
-
-/// What a store's orders add up to ([`EngineClient::order_totals`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-pub struct OrderTotals {
-    pub received_piconero: Piconero,
-    /// Orders made at or after the time asked about.
-    pub orders_since: u64,
-}
-
-/// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
-/// root) field-for-field. No fiat fields -
-/// any fiat display comes from monokulo's own local
-/// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
-#[derive(Debug, Clone, Deserialize)]
-pub struct OrderView {
-    pub order_id: engine_protocol::ids::OrderId,
-    pub merchant_order_id: Option<String>,
-    /// What the order is for, as it was created; `None` when it was given
-    /// none.
-    #[serde(default)]
-    pub description: Option<String>,
-    pub address: String,
-    pub xmr_amount_piconero: Piconero,
-    pub amount_received_piconero: Piconero,
-    pub status: engine_protocol::order_status::OrderStatus,
-    pub confirmations: u64,
-    pub double_spend_detected_at: Option<i64>,
-    /// When the merchant cancelled it (the POS's Cancel), if it was.
-    pub cancelled_at: Option<i64>,
-    pub refund_address: Option<String>,
-    pub created_at: i64,
-    pub expires_at: i64,
-    pub updated_at: i64,
-    /// The block range scanned for this order so far; mirrors the engine's
-    /// own `OrderView` field-for-field.
-    pub first_scanned_height: Option<i64>,
-    pub last_scanned_height: Option<i64>,
-    pub currently_scanning: bool,
-}
-
-impl OrderView {
-    /// Whether whatever shows the order may stop following it. Paid and
-    /// overpaid are final. Expired and cancelled are only once the engine
-    /// stops watching the order (`currently_scanning`): until then a
-    /// payment that arrives late is still found, and turns the order paid.
-    pub fn is_final(&self) -> bool {
-        use engine_protocol::order_status::OrderStatus;
-        match self.status {
-            OrderStatus::Paid | OrderStatus::Overpaid => true,
-            OrderStatus::Expired | OrderStatus::Cancelled => !self.currently_scanning,
-            OrderStatus::Pending
-            | OrderStatus::Unconfirmed
-            | OrderStatus::Confirming
-            | OrderStatus::Partial => false,
-        }
-    }
-}
-
-/// Mirrors the engine's own `PaymentView`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PaymentView {
-    pub txid: String,
-    pub output_index: i64,
-    pub amount_piconero: Piconero,
-    pub first_seen_at: i64,
-    pub block_height: Option<i64>,
-    pub voided_at: Option<i64>,
-    /// Voided because another payment of the same output is the one
-    /// credited, not as a double spend.
-    #[serde(default)]
-    pub superseded: bool,
-}
-
-#[derive(Serialize)]
-struct LookupPaymentRequest {
-    txid: String,
-}
-
-/// Mirrors the engine's own `PaymentLookupView` (`src/http/admin.rs` at the
-/// repo root) field-for-field, including its `#[serde(tag = "outcome", ...)]`
-/// shape.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "outcome", rename_all = "snake_case")]
-pub enum PaymentLookupView {
-    NotFoundOnChain,
-    NoMatchingOrder,
-    Matched { order_ids: Vec<String> },
-}
-
-/// Mirrors the engine's own `OrderDetailResponse` — a flattened `OrderView`
-/// plus its `payments` list, matching the engine's own
-/// `#[serde(flatten)] order: OrderView` wire shape exactly.
-#[derive(Debug, Clone, Deserialize)]
-pub struct OrderDetailResponse {
-    #[serde(flatten)]
-    pub order: OrderView,
-    pub payments: Vec<PaymentView>,
-}
-
-/// A partial mirror of the engine's own `PatchTenantRequest`
-/// (`src/http/admin.rs` at the repo root, which has one more `Option`
-/// field this client has no caller for yet - `order_expiry_seconds`).
-/// Every field left `None` is safe to omit from the JSON body: serde
-/// treats a struct's `Option<T>` fields as optional automatically (a
-/// missing JSON key deserializes to `None`, no `#[serde(default)]`
-/// needed), so the engine sees exactly "leave everything not set here
-/// unchanged" - the same "unchanged vs. set to a value" contract
-/// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo
-/// root) describes.
-#[derive(Serialize)]
-struct PatchTenantRequest {
-    confirmations_required: Option<u64>,
-}
-
-/// Mirrors the engine's own `orders::CreateOrderRequest`.
-#[derive(Serialize)]
-struct CreateOrderRequest {
-    xmr_amount_piconero: Piconero,
-    merchant_order_id: Option<String>,
-    /// What the order is for, shown to the payer on the checkout.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    /// Mirrors the engine's own `public::CreateOrderRequest::confirmations_required` -
-    /// `None` for every caller that doesn't need one (the engine's own
-    /// tenant-level default still applies). Set by monokulo's own
-    /// amount-tiered "Confirmation Thresholds" feature, which resolves the
-    /// right value itself before ever calling here.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    confirmations_required: Option<u64>,
-    /// The engine's own `idempotency_key`: a retry with the same key gets
-    /// the order the first attempt made. Namespaced by where the request
-    /// came from (`crate::orders::IdempotencyScope`), so keys from
-    /// different callers of one store never collide.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    idempotency_key: Option<String>,
-}
-
-/// The longest `idempotency_key` the engine takes.
-pub const ENGINE_MAX_IDEMPOTENCY_KEY_CHARS: usize = 128;
-
 /// Longest key a caller may pass through monokulo (`IdempotencyKey`): the
-/// engine's limit less room for monokulo's own prefix, which
-/// `crate::orders` holds it to.
+/// engine's limit ([`MAX_IDEMPOTENCY_KEY_CHARS`]) less room for monokulo's
+/// own prefix, which `crate::orders` holds it to.
 pub const MAX_CALLER_IDEMPOTENCY_KEY_CHARS: usize = 100;
-
-/// Mirrors the engine's own `public::CreateOrderResponse`.
-#[derive(Debug, Deserialize)]
-pub struct CreateOrderResponse {
-    pub order_id: engine_protocol::ids::OrderId,
-    pub address: String,
-    pub xmr_amount_piconero: Piconero,
-    pub expires_at: i64,
-}
-
-/// Mirrors the engine's own `public::SetRefundAddressRequest`.
-#[derive(Serialize)]
-struct SetRefundAddressRequest {
-    refund_address: String,
-}
-
-/// Mirrors the engine's own `NodeStatus` (`src/http/status_page.rs` at the
-/// repo root) field-for-field. `Clone` so `http::status_page`'s short-TTL
-/// cache (see its own module doc comment) can hand out copies without
-/// holding its lock across an `.await`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct NodeStatus {
-    pub label: String,
-    pub is_active: bool,
-    /// Skipped for now after failing. Absent from an older engine.
-    #[serde(default)]
-    pub in_cooldown: bool,
-    pub height: Option<u64>,
-    pub error: Option<String>,
-    /// The network the node says it's on (`"mainnet"`, `"stagenet"`,
-    /// `"testnet"`, `"fakechain"`), or `None` when it didn't say. Absent
-    /// from an older engine.
-    #[serde(default)]
-    pub network: Option<String>,
-    /// What the engine has measured of the node's link
-    /// (its latency and throughput).
-    #[serde(default)]
-    pub link: Option<engine_protocol::scaling::LinkSnapshot>,
-}
-
-/// Mirrors the engine's own `ScannerStatusView`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ScannerStatusView {
-    pub ever_ticked: bool,
-    pub last_tick_started_at: Option<i64>,
-    pub last_tick_finished_at: Option<i64>,
-    pub tick_count: u64,
-    pub tenants_scanned: usize,
-    pub last_tick_ok: bool,
-    pub last_error: Option<String>,
-    pub is_stale: bool,
-}
-
-/// Mirrors the engine's own `NetworkStatus`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct NetworkStatus {
-    pub network: String,
-    pub nodes: Vec<NodeStatus>,
-    pub scanner: ScannerStatusView,
-    /// How the block scan is going and what limits it.
-    #[serde(default)]
-    pub scaling: Option<engine_protocol::scaling::NetworkScaling>,
-    /// The nodes' ZMQ announcements; absent while no
-    /// node of this network has a `zmq_pub`.
-    #[serde(default)]
-    pub announcements: Option<engine_protocol::announcements::Announcements>,
-    /// Proof-of-work checking; absent while it is
-    /// off on this network.
-    #[serde(default)]
-    pub proof: Option<engine_protocol::proof::ProofStatus>,
-}
-
-/// Mirrors the engine's own `EngineStatusResponse` — the whole body of
-/// `GET {base_url}/status`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EngineStatusResponse {
-    pub networks: Vec<NetworkStatus>,
-    pub poll_interval_secs: u64,
-    pub generated_at: i64,
-    /// Stores the engine can't scan right now (admin_settings_v2.md task
-    /// 3.7). Absent from an older engine.
-    #[serde(default)]
-    pub unserved_tenants: Vec<UnservedTenant>,
-    /// Each enabled key custody backend and whether it answers (part 5).
-    /// Empty from an older engine, or one with a single backend.
-    #[serde(default)]
-    pub key_custody: Vec<CustodyBackendStatus>,
-    #[serde(default)]
-    pub key_custody_default: Option<CustodyBackend>,
-    /// Which images the engine's `snp` backend trusts with keys, when it
-    /// is set up: compared with monokulo's own policy.
-    #[serde(default)]
-    pub key_custody_snp_trust: Option<SnpTrustStatus>,
-    /// The engine process's CPU and memory over the last hour.
-    #[serde(default)]
-    pub resources: Option<service_runtime::resources::ResourceReport>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct CustodyBackendStatus {
-    pub backend: CustodyBackend,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct SnpTrustStatus {
-    /// SHA-384 of the ID key images must be signed with, hex.
-    pub id_key_digest: String,
-    pub min_guest_svn: u32,
-    /// `bootloader,tee,snp,microcode`, or empty for no floor.
-    #[serde(default)]
-    pub min_tcb: String,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct UnservedTenant {
-    pub public_key: String,
-    pub network: String,
-    /// `"no_reachable_node"`, `"catching_up"`, `"custody_disabled"` or
-    /// `"custody_unavailable"`.
-    pub reason: String,
-    #[serde(default)]
-    pub blocks_behind: Option<u64>,
-}
+const _: () = assert!(MAX_CALLER_IDEMPOTENCY_KEY_CHARS < MAX_IDEMPOTENCY_KEY_CHARS);
 
 #[cfg(test)]
 mod tests {
@@ -1642,6 +1274,7 @@ mod tests {
                 spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
                 encrypted_keys: None,
             },
+            wallet_id: None,
             network: Some("mainnet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,
@@ -1925,6 +1558,7 @@ mod contract_tests {
                     spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
                     encrypted_keys: None,
                 },
+                wallet_id: None,
                 network: Some("mainnet".to_string()),
                 confirmations_required: None,
                 order_expiry_seconds: None,
@@ -1940,16 +1574,17 @@ mod contract_tests {
                     spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
                     encrypted_keys: None,
                 },
-                network: "mainnet".to_string(),
+                network: Some("mainnet".to_string()),
                 key_custody_backend: None,
             })
             .await
             .unwrap();
         let on_wallet = client
-            .create_tenant_on_wallet(CreateTenantOnWalletRequest {
-                wallet_id: wallet.wallet_id.clone(),
+            .create_tenant_on_wallet(CreateTenantRequest {
+                wallet_id: Some(wallet.wallet_id.clone()),
                 confirmations_required: None,
                 order_expiry_seconds: None,
+                ..CreateTenantRequest::default()
             })
             .await
             .unwrap();
@@ -2207,7 +1842,7 @@ mod contract_tests {
             "retiring it once unused: ok",
             "confirmations now 3",
             "the same idempotency key gives the same order: true",
-            "listed 1, page 1, open 1, by ids 1, totals OrderTotals { received_piconero: Piconero(0), orders_since: 1 }",
+            "listed 1, page 1, open 1, by ids 1, totals OrderTotalsView { received_piconero: Piconero(0), orders_since: 1 }",
             "detail: Some(\"m-1\") Pending refund Some(\"4refund\"), 0 payments",
             "unknown order: 404 Not Found",
             "an id that names another route: 404 Not Found: not a valid id",
@@ -2242,6 +1877,7 @@ mod contract_tests {
                     spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
                     encrypted_keys: None,
                 },
+                wallet_id: None,
                 network: Some("mainnet".to_string()),
                 confirmations_required: None,
                 order_expiry_seconds: None,
@@ -2308,6 +1944,7 @@ mod contract_tests {
                     spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
                     encrypted_keys: None,
                 },
+                wallet_id: None,
                 network: Some("mainnet".to_string()),
                 confirmations_required: None,
                 order_expiry_seconds: None,

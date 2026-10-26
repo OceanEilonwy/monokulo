@@ -9,6 +9,19 @@ use serde::{Deserialize, Serialize};
 /// status page shows it yellow and says why.
 pub const SLOW_BLOCK_SECS: i64 = 120;
 
+/// Requests made to one endpoint of a node (a path, or a JSON-RPC method),
+/// and the bytes they cost (`MoneroDaemonClient::rpc_stats`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointStats {
+    pub endpoint: String,
+    /// Requests sent, answered or not.
+    pub requests: u64,
+    /// Request body bytes.
+    pub bytes_sent: u64,
+    /// Response body bytes read.
+    pub bytes_received: u64,
+}
+
 /// What has been measured of one node's link.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LinkSnapshot {

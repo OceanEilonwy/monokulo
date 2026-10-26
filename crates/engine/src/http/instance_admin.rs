@@ -48,7 +48,7 @@ pub struct ScalarSettingView {
     value: String,
     /// `"toml"` (the options file), `"database"`, `"cli"`, `"env"`, or
     /// `"default"`.
-    source: &'static str,
+    source: live_settings::SettingSource,
     /// How it is given from outside: its environment variable and/or
     /// command-line option, as its sources allow.
     set_with: String,
@@ -66,22 +66,12 @@ pub struct ScalarSettingView {
     problem: Option<String>,
 }
 
-fn source_str(source: live_settings::SettingSource) -> &'static str {
-    match source {
-        live_settings::SettingSource::Toml => "toml",
-        live_settings::SettingSource::Cli => "cli",
-        live_settings::SettingSource::Env => "env",
-        live_settings::SettingSource::Database => "database",
-        live_settings::SettingSource::Default => "default",
-    }
-}
-
 /// One network's node setting as the admin page shows it.
 #[derive(Serialize)]
 pub struct NetworkView {
     description: &'static str,
     example: Option<&'static str>,
-    source: &'static str,
+    source: live_settings::SettingSource,
     /// Enabled stores on this network (task 4.4's confirmation).
     tenant_count: u64,
 }
@@ -140,7 +130,7 @@ pub async fn get_settings(
                 NetworkView {
                     description: view.description,
                     example: view.example,
-                    source: source_str(view.source),
+                    source: view.source,
                     tenant_count: tenant_counts
                         .iter()
                         .find(|(n, _)| crate::network::network_str(*n) == network)
@@ -169,7 +159,7 @@ pub async fn get_settings(
             view.key.to_owned(),
             ScalarSettingView {
                 value: view.value,
-                source: source_str(view.source),
+                source: view.source,
                 set_with,
                 locked: view.locked.or_else(|| {
                     // Kept in the options file, which can't be written.
