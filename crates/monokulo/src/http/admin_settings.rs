@@ -3618,10 +3618,7 @@ mod tests {
         )
         .await;
         assert_eq!(first.status(), StatusCode::SEE_OTHER);
-        engine_client
-            .create_tenant(stagenet_tenant())
-            .await
-            .unwrap();
+        stagenet_store(&engine_client).await;
 
         let restart = post_settings(
             &router,
@@ -4793,10 +4790,7 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
         let node = spawn_node_on("stagenet").await.to_string();
         post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &node, None)).await;
-        engine_client
-            .create_tenant(stagenet_tenant())
-            .await
-            .unwrap();
+        stagenet_store(&engine_client).await;
 
         let page = body_text(get(&router, "/admin/settings?tab=nodes", Some(&cookie)).await).await;
         assert!(
@@ -4821,20 +4815,31 @@ mod tests {
         assert!(saved_nodes(&engine, "stagenet").await.is_empty());
     }
 
-    fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {
-        crate::engine_client::CreateTenantRequest {
-            keys: crate::engine_client::StoreKeys {
-                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707"
-                    .to_string(),
-                spend_pubkey_hex:
-                    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
-                encrypted_keys: None,
-            },
-            wallet_id: None,
-            network: Some("stagenet".to_string()),
-            confirmations_required: None,
-            order_expiry_seconds: None,
-            key_custody_backend: None,
-        }
+    /// A store on stagenet, on a wallet of its own, made as monokulo makes
+    /// stores.
+    async fn stagenet_store(engine_client: &crate::engine_client::EngineClient) {
+        let wallet = engine_client
+            .create_wallet(crate::engine_client::CreateWalletRequest {
+                keys: crate::engine_client::StoreKeys {
+                    view_key_hex:
+                        "0707070707070707070707070707070707070707070707070707070707070707"
+                            .to_string(),
+                    spend_pubkey_hex:
+                        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90"
+                            .to_string(),
+                    encrypted_keys: None,
+                },
+                network: Some("stagenet".to_string()),
+                key_custody_backend: None,
+            })
+            .await
+            .unwrap();
+        engine_client
+            .create_tenant_on_wallet(crate::engine_client::CreateTenantRequest {
+                wallet_id: Some(wallet.wallet_id),
+                ..crate::engine_client::CreateTenantRequest::default()
+            })
+            .await
+            .unwrap();
     }
 }
