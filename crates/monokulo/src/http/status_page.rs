@@ -63,6 +63,9 @@ pub struct StatusCacheState {
     /// A background refresh started by [`known_health`] is in flight, so a
     /// burst of page loads starts one, not one each.
     refreshing: bool,
+    /// Counts [`invalidate_status_cache`] calls: a fetch that began before
+    /// one doesn't store its answer, which may be from before the change.
+    generation: u64,
 }
 
 /// The cache, and the one fetch from the engine that may be in flight.
@@ -113,6 +116,19 @@ pub(crate) fn status_cache(engine: &Engine) -> parking_lot::MutexGuard<'_, Statu
 /// How old a cached status may be and still be rendered into a page as the
 /// status indicator's known state; anything older shows as unknown.
 const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
+
+/// `f` of the cached status, when it is a successful one no older than
+/// [`KNOWN_STATUS_MAX_AGE`], without waiting on the engine: the one rule
+/// every `known_*` reader goes by.
+fn with_known_status<T>(engine: &Engine, f: impl FnOnce(&EngineStatusResponse) -> T) -> Option<T> {
+    let cache = status_cache(engine);
+    cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
+        .and_then(|cached| cached.result.as_ref().ok())
+        .map(f)
+}
 
 /// The health every page's status indicator is rendered with: whatever the
 /// cache last learned, without waiting on the engine. A page load that finds
@@ -198,14 +214,7 @@ pub fn slow_block_messages(status: &EngineStatusResponse, show_node: bool) -> Ve
 /// The slow-block sentences from the cached status, for an operator's
 /// alert bar; nothing while the status isn't known.
 pub fn known_slow_blocks(engine: &Engine) -> Vec<String> {
-    let cache = status_cache(engine);
-    cache
-        .cached
-        .as_ref()
-        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
-        .and_then(|cached| cached.result.as_ref().ok())
-        .map(|status| slow_block_messages(status, true))
-        .unwrap_or_default()
+    with_known_status(engine, |status| slow_block_messages(status, true)).unwrap_or_default()
 }
 
 /// The key custody backends a new store may choose from, with the default
@@ -225,13 +234,7 @@ fn known_custody_choices(state: &AppState) -> Vec<String> {
 /// [`known_health`]: `None` while the status isn't known, `Some(None)`
 /// when the engine has no `snp` backend set up.
 pub fn known_snp_trust(engine: &Engine) -> Option<Option<crate::engine_client::SnpTrustStatus>> {
-    let cache = status_cache(engine);
-    cache
-        .cached
-        .as_ref()
-        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
-        .and_then(|cached| cached.result.as_ref().ok())
-        .map(|status| status.key_custody_snp_trust.clone())
+    with_known_status(engine, |status| status.key_custody_snp_trust.clone())
 }
 
 /// What an operator must fix for SEV-SNP key entry, from `status` and this
@@ -304,46 +307,34 @@ pub fn snp_policy_alert(
 /// [`snp_policy_alert`] from the cached status, for an operator's alert
 /// bar; nothing while the status isn't known.
 pub fn known_snp_policy_alert(state: &AppState) -> Option<String> {
-    let cache = status_cache(&state.engine);
-    let status = cache
-        .cached
-        .as_ref()
-        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
-        .and_then(|cached| cached.result.as_ref().ok())?;
-    snp_policy_alert(&state.settings.snp_entry.load(), status)
+    with_known_status(&state.engine, |status| {
+        snp_policy_alert(&state.settings.snp_entry.load(), status)
+    })?
 }
 
 /// Whether a fresh, successful engine status is known.
 pub fn known_status_is_fresh(engine: &Engine) -> bool {
-    status_cache(engine).cached.as_ref().is_some_and(|cached| {
-        cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE && cached.result.is_ok()
-    })
+    with_known_status(engine, |_| ()).is_some()
 }
 
 /// Every key custody backend the engine has enabled, the default first.
 /// Empty when the engine offers no choice or its status isn't known.
 pub fn known_enabled_custody_backends(engine: &Engine) -> Vec<String> {
-    let cache = status_cache(engine);
-    let Some(status) = cache
-        .cached
-        .as_ref()
-        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
-        .and_then(|cached| cached.result.as_ref().ok())
-    else {
-        return Vec::new();
-    };
-    let mut choices: Vec<String> = status
-        .key_custody
-        .iter()
-        .map(|b| b.backend.clone())
-        .collect();
-    if let Some(default) = &status.key_custody_default {
-        if let Some(at) = choices.iter().position(|b| b == default) {
-            let default = choices.remove(at);
-            choices.insert(0, default);
+    with_known_status(engine, |status| {
+        let mut choices: Vec<String> = status
+            .key_custody
+            .iter()
+            .map(|b| b.backend.clone())
+            .collect();
+        if let Some(default) = &status.key_custody_default {
+            if let Some(at) = choices.iter().position(|b| b == default) {
+                let default = choices.remove(at);
+                choices.insert(0, default);
+            }
         }
-    }
-    choices
+        choices
+    })
+    .unwrap_or_default()
 }
 
 /// [`known_custody_choices`] as form options, `selected` (or the default)
@@ -380,7 +371,9 @@ pub fn custody_backend_label(backend: &str) -> String {
 /// after a change that the status reflects (a store moving its keys, the
 /// engine address changing).
 pub fn invalidate_status_cache(engine: &Engine) {
-    status_cache(engine).cached = None;
+    let mut cache = status_cache(engine);
+    cache.cached = None;
+    cache.generation += 1;
 }
 
 /// Puts `status` in the cache as if just fetched, for tests of pages that
@@ -411,14 +404,7 @@ pub fn hold_status_for_tests(engine: &Engine, status: EngineStatusResponse) {
 /// cache as [`known_health`], without waiting on the engine. Empty when
 /// nothing is known yet.
 pub fn known_unserved(engine: &Engine) -> Vec<crate::engine_client::UnservedTenant> {
-    let cache = status_cache(engine);
-    cache
-        .cached
-        .as_ref()
-        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
-        .and_then(|cached| cached.result.as_ref().ok())
-        .map(|status| status.unserved_tenants.clone())
-        .unwrap_or_default()
+    with_known_status(engine, |status| status.unserved_tenants.clone()).unwrap_or_default()
 }
 
 /// `healthy: false` covers both "the engine is unreachable" and "the engine
@@ -459,6 +445,7 @@ async fn get_status_and_busy(engine: &Engine) -> (Result<EngineStatusResponse, S
     if let Some(fresh) = fresh_status(engine) {
         return fresh;
     }
+    let generation = status_cache(engine).generation;
     let fetched = engine.client.get_status().await;
     let busy = matches!(
         &fetched,
@@ -466,11 +453,18 @@ async fn get_status_and_busy(engine: &Engine) -> (Result<EngineStatusResponse, S
             if *status == reqwest::StatusCode::TOO_MANY_REQUESTS
     );
     let result = fetched.map_err(|e| describe_engine_error(&e));
-    status_cache(engine).cached = Some(CachedStatus {
-        fetched_at: Instant::now(),
-        result: result.clone(),
-        busy,
-    });
+    // Not kept when the cache was invalidated while this one was asking:
+    // the answer may be from before the change, and requests waiting on
+    // this fetch then find the cache empty and ask again.
+    let mut cache = status_cache(engine);
+    if cache.generation == generation {
+        cache.cached = Some(CachedStatus {
+            fetched_at: Instant::now(),
+            result: result.clone(),
+            busy,
+        });
+    }
+    drop(cache);
     (result, busy)
 }
 
@@ -720,14 +714,15 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
         .collect();
 
     let scanner = network.scanner;
-    let (status_label, status_tag_class) = if !scanner.ever_ticked {
-        ("not scanned yet", "tag-unknown")
+    use views::status::ScannerState;
+    let state = if !scanner.ever_ticked {
+        ScannerState::NotYet
     } else if scanner.is_stale {
-        ("stale", "tag-error")
+        ScannerState::Stale
     } else if !scanner.last_tick_ok {
-        ("tick failing", "tag-error")
+        ScannerState::Failing
     } else {
-        ("scanning", "tag-ok")
+        ScannerState::Scanning
     };
 
     views::status::StatusNetworkView {
@@ -735,8 +730,7 @@ fn build_network_view(network: NetworkStatus, now: i64) -> views::status::Status
         nodes,
         scanner: views::status::StatusScannerView {
             ever_ticked: scanner.ever_ticked,
-            status_label: status_label.to_string(),
-            status_tag_class: status_tag_class.to_string(),
+            state,
             last_tick_display: scanner
                 .last_tick_finished_at
                 .map(|t| relative_time(now, t))
@@ -1410,22 +1404,14 @@ mod tests {
                 key_custody_snp_trust: None,
                 resources: None,
             });
-            let labels: Vec<(&str, &str)> = view
-                .networks
-                .iter()
-                .map(|n| {
-                    (
-                        n.scanner.status_label.as_str(),
-                        n.scanner.status_tag_class.as_str(),
-                    )
-                })
-                .collect();
+            use crate::views::status::ScannerState;
+            let states: Vec<ScannerState> = view.networks.iter().map(|n| n.scanner.state).collect();
             assert_eq!(
-                labels,
+                states,
                 vec![
-                    ("scanning", "tag-ok"),
-                    ("stale", "tag-error"),
-                    ("tick failing", "tag-error")
+                    ScannerState::Scanning,
+                    ScannerState::Stale,
+                    ScannerState::Failing
                 ]
             );
             assert_eq!(
