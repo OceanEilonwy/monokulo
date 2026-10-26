@@ -17,6 +17,7 @@ use crate::embed_domains::{self, DomainState};
 use crate::templates::{format_duration_since, format_duration_until};
 use crate::views::domains::{DomainStatus, DomainView, StoreRef};
 use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning, Proof};
+use crate::views::time::Clock;
 
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
@@ -128,20 +129,12 @@ pub async fn embed_policy_middleware(
     response
 }
 
-/// "3h 20m ago", or "just now" under a minute.
-fn ago(then: i64, now: i64) -> String {
-    if now - then < 60 {
-        "just now".to_string()
-    } else {
-        format!("{} ago", format_duration_until(now, then))
-    }
-}
-
 /// One of a store's domains as its card and its pages show it; `wait` is
 /// the seconds left before it may be checked again, when a check was asked
 /// for too soon.
 pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> DomainView {
-    let checked = row.last_checked_at.map(|at| ago(at, now));
+    let clock = Clock::utc(now);
+    let checked = row.last_checked_at.map(|at| clock.relative(at));
     // An onion shop is proved by a file it serves over Tor, never by DNS.
     let onion = embed_domains::is_onion(&row.domain);
     let (proof, publish) = if onion {
@@ -162,7 +155,7 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
             DomainStatus::Waiting,
             format!(
                 "Added {} · {}",
-                ago(row.created_at, now),
+                clock.relative(row.created_at),
                 checked.map_or_else(
                     || "not checked yet".to_string(),
                     |at| format!("checked {at}")

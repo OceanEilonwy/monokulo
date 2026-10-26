@@ -39,16 +39,10 @@ pub fn display_scan_range(
     }
 }
 
-/// A moment.js-style relative duration until `target_unix` ("12h", "4h
-/// 15m", "2d 4h") - at most the two largest non-zero units (days, hours,
-/// minutes), a zero unit skipped rather than shown ("1d 30m", never "1d 0h
-/// 30m" or "1d 0h"). `"any moment"` once `target_unix` has passed.
-///
-/// Computed here, server-side, rather than by client JavaScript from a raw
-/// timestamp: the checkout page, which must stay fully meaningful with
-/// JavaScript disabled, shows it as the time left to pay.
-/// How long ago `then` was, in the same units as [`format_duration_until`]:
-/// `"<1m"` under a minute, never `"any moment"`.
+/// How long it has been since `then`, as a span ("missing for 5h 20m"), in
+/// the same units as [`format_duration_until`]: `"<1m"` under a minute,
+/// never `"any moment"`. A moment in the past on its own ("2 min ago") is
+/// [`crate::views::time::Clock::relative`]'s.
 pub fn format_duration_since(then_unix: i64, now_unix: i64) -> String {
     if now_unix - then_unix < 60 {
         "<1m".to_string()
@@ -57,6 +51,14 @@ pub fn format_duration_since(then_unix: i64, now_unix: i64) -> String {
     }
 }
 
+/// A moment.js-style relative duration until `target_unix` ("12h", "4h
+/// 15m", "2d 4h") - at most the two largest non-zero units (days, hours,
+/// minutes), a zero unit skipped rather than shown ("1d 30m", never "1d 0h
+/// 30m" or "1d 0h"). `"any moment"` once `target_unix` has passed.
+///
+/// Computed here, server-side, rather than by client JavaScript from a raw
+/// timestamp: the checkout page, which must stay fully meaningful with
+/// JavaScript disabled, shows it as the time left to pay.
 pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
     let seconds_left = target_unix - now_unix;
     if seconds_left <= 0 {
