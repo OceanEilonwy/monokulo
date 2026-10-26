@@ -1108,18 +1108,8 @@ impl State {
         let settled = transitions
             .iter()
             .any(|t| matches!(t.to, OrderStatus::Paid | OrderStatus::Overpaid));
-        match transitions {
-            [] => {}
-            [only] => out.mark(
-                Tier::Settlement,
-                settled,
-                MarkKind::Recomputed {
-                    orders: 1,
-                    from: only.from,
-                    to: only.to,
-                },
-            ),
-            [first, ..] => out.mark(
+        if let Some(first) = transitions.first() {
+            out.mark(
                 Tier::Settlement,
                 settled,
                 MarkKind::Recomputed {
@@ -1127,7 +1117,7 @@ impl State {
                     from: first.from,
                     to: first.to,
                 },
-            ),
+            );
         }
     }
 
