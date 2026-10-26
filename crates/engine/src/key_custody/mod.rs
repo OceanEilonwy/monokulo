@@ -124,7 +124,7 @@ impl KeyCustody for Unstarted {
 /// still belongs to the row is a comparison of wallets, never of clocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveWallet {
-    pub wallet_id: String,
+    pub wallet_id: engine_protocol::ids::EngineWalletId,
     pub handle: WalletHandle,
 }
 

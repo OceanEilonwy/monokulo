@@ -87,7 +87,7 @@ pub struct ScanResult {
     pub matches: Vec<MatchedOutput>,
     /// The wallet whose keys found `matches`: an index names an order only
     /// on that wallet.
-    pub wallet_id: String,
+    pub wallet_id: engine_protocol::ids::EngineWalletId,
     pub txid: String,
     pub key_images_json: String,
     /// The one-time key (hex) of each matched output, by output index: what
@@ -105,7 +105,7 @@ impl ScanResult {
     fn of(
         txid: &str,
         tx: &engine_daemon::ScanTx,
-        wallet_id: &str,
+        wallet_id: &engine_protocol::ids::EngineWalletId,
         mut matches: Vec<MatchedOutput>,
     ) -> Self {
         let prefix = tx.input.prefix();
@@ -133,7 +133,7 @@ impl ScanResult {
             .collect();
         Self {
             matches,
-            wallet_id: wallet_id.to_owned(),
+            wallet_id: wallet_id.clone(),
             txid: txid.to_owned(),
             key_images_json: key_images_json_of(tx),
             output_keys,
@@ -296,9 +296,7 @@ fn stale_after_wallet_change(
     tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
 ) -> Result<bool> {
-    if scan.matches.is_empty()
-        || store.wallet_of(tenant_id)?.as_deref() == Some(scan.wallet_id.as_str())
-    {
+    if scan.matches.is_empty() || store.wallet_of(tenant_id)?.as_ref() == Some(&scan.wallet_id) {
         return Ok(false);
     }
     tracing::info!(
@@ -1257,7 +1255,7 @@ pub async fn register_missing_wallets_reporting(
                 let active = tenants.iter().map(|t| t.id.clone()).collect();
                 let on_network = tenants
                     .into_iter()
-                    .filter(|t| t.network == crate::network::network_str(network))
+                    .filter(|t| t.network == network)
                     .collect();
                 (on_network, active)
             }

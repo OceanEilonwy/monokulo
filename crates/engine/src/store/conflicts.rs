@@ -215,7 +215,7 @@ mod tests {
                     key_custody_backend: crate::store::CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
-                    network: "mainnet".into(),
+                    network: monero::Network::Mainnet,
                     confirmations_required: Some(confirmations),
                     order_expiry_seconds: None,
                 },
