@@ -530,7 +530,7 @@ mod tests {
         let tenant = store
             .create_tenant(
                 &crate::store::NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: crate::store::CustodyBackend::Plain,
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4db".into(),
                     network: "mainnet".into(),

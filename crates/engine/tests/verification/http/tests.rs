@@ -17,7 +17,7 @@ use monero::consensus::encode::deserialize;
 use monero::{Network, PrivateKey, PublicKey, Transaction};
 use tower::ServiceExt as _;
 
-use crate::key_custody::{KeyCustody, PlainKeyCustody};
+use crate::key_custody::{CustodyBackend, KeyCustody, PlainKeyCustody};
 use crate::store::Store;
 use engine_daemon::fake::FakeDaemonClient;
 use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
@@ -3545,10 +3545,10 @@ fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>,
     let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let router = crate::key_custody::CustodyRouter::new(
         HashMap::from([
-            ("plain".to_owned(), Arc::clone(&plain)),
-            ("snp".to_owned(), Arc::clone(&snp)),
+            (CustodyBackend::Plain, Arc::clone(&plain)),
+            (CustodyBackend::Snp, Arc::clone(&snp)),
         ]),
-        "plain",
+        CustodyBackend::Plain,
     );
     let mut state = AppState::for_tests();
     state.custody.backends = Arc::new(router);
@@ -3716,7 +3716,7 @@ async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_
         .into_iter()
         .find(|t| t.public_key == tenant.public_key)
         .unwrap();
-    assert_eq!(tenant_row.key_custody_backend, "snp");
+    assert_eq!(tenant_row.key_custody_backend, CustodyBackend::Snp);
     assert_eq!(
         tenant_row.primary_address,
         before["primary_address"].as_str().unwrap()
@@ -3754,7 +3754,11 @@ async fn moving_a_store_needs_the_keys_of_its_own_wallet() {
         .into_iter()
         .find(|t| t.public_key == tenant.public_key)
         .unwrap();
-    assert_eq!(tenant_row.key_custody_backend, "plain", "nothing changed");
+    assert_eq!(
+        tenant_row.key_custody_backend,
+        CustodyBackend::Plain,
+        "nothing changed"
+    );
     assert_eq!(
         create_order_for(&router, &tenant.secret_token)
             .await
@@ -3862,10 +3866,10 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
     let snp: Arc<dyn KeyCustody> = Arc::new(UnansweringKeyCustody::default());
     let router_custody = Arc::new(crate::key_custody::CustodyRouter::new(
         HashMap::from([
-            ("plain".to_owned(), Arc::clone(&plain)),
-            ("snp".to_owned(), snp),
+            (CustodyBackend::Plain, Arc::clone(&plain)),
+            (CustodyBackend::Snp, snp),
         ]),
-        "plain",
+        CustodyBackend::Plain,
     ));
     let mut state = AppState::for_tests();
     state.custody.backends =
@@ -3916,7 +3920,10 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
     );
     assert!(!reasons.iter().any(|(key, _)| key == &on_plain.public_key));
 
-    router_custody.replace(HashMap::from([("plain".to_owned(), plain)]), "plain");
+    router_custody.replace(
+        HashMap::from([(CustodyBackend::Plain, plain)]),
+        CustodyBackend::Plain,
+    );
     let status = get_status_json(router.clone()).await;
     assert_eq!(
         status["unserved_tenants"][0]["reason"], "custody_disabled",
@@ -3977,8 +3984,8 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
     let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let custody = Arc::new(crate::key_custody::CustodyRouter::new(
-        HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
-        "plain",
+        HashMap::from([(CustodyBackend::Plain, plain), (CustodyBackend::Snp, snp)]),
+        CustodyBackend::Plain,
     ));
     let mut state = AppState::for_tests();
     state.custody.backends = Arc::<crate::key_custody::router::CustodyRouter>::clone(&custody);
@@ -4007,10 +4014,7 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
             .find(|t| t.public_key == tenant.public_key)
             .unwrap();
         let handle = wallet_handles.read()[&row.id].handle;
-        assert_eq!(
-            custody.backend_of(handle).as_deref(),
-            Some(row.key_custody_backend.as_str())
-        );
+        assert_eq!(custody.backend_of(handle), Some(row.key_custody_backend));
     }
 }
 
@@ -4020,7 +4024,7 @@ fn a_disabled_store_can_not_be_moved() {
     let tenant = store
         .create_tenant(
             &crate::store::NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![1],
                 primary_address: "4x".into(),
                 network: "mainnet".into(),
@@ -4033,7 +4037,7 @@ fn a_disabled_store_can_not_be_moved() {
         .tenant;
     store.disable_tenant(&tenant.id, 2).unwrap();
     assert!(matches!(
-        store.update_tenant_key_custody(&tenant.id, &tenant.wallet_id, "snp", &[2]),
+        store.update_tenant_key_custody(&tenant.id, &tenant.wallet_id, CustodyBackend::Snp, &[2]),
         Err(crate::store::StoreError::NotFound)
     ));
 }
@@ -4364,12 +4368,12 @@ async fn a_backend_that_cannot_run_is_a_problem_on_the_setting_that_enables_it()
     let snp: Arc<dyn KeyCustody> = Arc::new(Unstarted(
         "the snp backend can't start: no security processor".into(),
     ));
-    let backends = HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]);
+    let backends = HashMap::from([(CustodyBackend::Plain, plain), (CustodyBackend::Snp, snp)]);
     // An engine with settings, as `settings_router`'s.
     let (base, _daemon) = test_app_state_with_real_daemon().await;
     let state = AppState {
         custody: crate::http::Custody {
-            backends: Arc::new(CustodyRouter::new(backends, "plain")),
+            backends: Arc::new(CustodyRouter::new(backends, CustodyBackend::Plain)),
             ..base.custody.clone()
         },
         ..base
@@ -5138,7 +5142,7 @@ async fn a_wallet_change_is_refused_to_the_same_wallet_an_unknown_one_or_another
         .lock()
         .create_wallet(
             &crate::store::NewWallet {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![1],
                 primary_address: "5stagenet".into(),
                 network: "stagenet".into(),

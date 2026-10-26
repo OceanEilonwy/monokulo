@@ -169,7 +169,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                 let created = store
                     .create_tenant(
                         &NewTenant {
-                            key_custody_backend: "plain".into(),
+                            key_custody_backend: crate::store::CustodyBackend::Plain,
                             sealed_key_material: sealed,
                             primary_address: "portfolio".into(),
                             network: "mainnet".into(),

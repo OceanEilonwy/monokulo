@@ -122,7 +122,9 @@ fn stored_key_image_evidence_must_be_parseable_and_nonempty() {
         vec![image]
     );
 }
-use crate::key_custody::{Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
+use crate::key_custody::{
+    CustodyBackend, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial,
+};
 use crate::store::{NewOrder, NewTenant};
 use engine_daemon::fake::{tx_id_hex, FakeDaemonClient};
 use engine_daemon::fallback::{FallbackDaemonClient, FallbackNode};
@@ -624,7 +626,7 @@ async fn setup_with_confirmations_override(
     let created = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4fixture".into(),
                 network: "mainnet".into(),
@@ -704,7 +706,7 @@ async fn setup_with_expiry(
     let created = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4fixture".into(),
                 network: "mainnet".into(),
@@ -1559,7 +1561,7 @@ async fn tenant_with_pending_order(
     let tenant = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4x".into(),
                 network: "mainnet".into(),
@@ -1642,7 +1644,7 @@ async fn run_scan_tick_never_calls_key_custody_for_a_tenant_with_no_pending_orde
     let tenant_b = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4b".into(),
                 network: "mainnet".into(),
@@ -1706,7 +1708,7 @@ async fn run_scan_tick_never_scans_a_tenant_on_a_different_network_even_if_inclu
     let stagenet_tenant = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "5stagenet".into(),
                 network: "stagenet".into(),
@@ -7735,7 +7737,7 @@ async fn a_lagging_tenants_order_does_not_expire_until_it_has_caught_up() {
         let tenant = s
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: "4fixture".into(),
                     network: "mainnet".into(),
@@ -7921,7 +7923,7 @@ async fn a_tenant_with_nothing_in_scope_is_never_reported_as_lagging() {
     let tenant = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: vec![],
                 primary_address: "4idle".into(),
                 network: "mainnet".into(),
@@ -7995,7 +7997,7 @@ fn a_new_tenant_starts_at_its_networks_scanned_height() {
         store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: "4x".into(),
                     network: network.into(),
@@ -8814,7 +8816,7 @@ fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
         let id = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
                     network: network.into(),
@@ -8907,7 +8909,7 @@ async fn keys_that_failed_to_register_are_registered_by_the_retry() {
     let tenant = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: CustodyBackend::Plain,
                 sealed_key_material: sealed,
                 primary_address: "4x".into(),
                 network: "mainnet".into(),
@@ -9693,7 +9695,7 @@ async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_onc
             store
                 .create_tenant(
                     &NewTenant {
-                        key_custody_backend: "snp".into(),
+                        key_custody_backend: CustodyBackend::Snp,
                         sealed_key_material: sealed.clone(),
                         primary_address: "4x".into(),
                         network: "mainnet".into(),
@@ -9772,19 +9774,19 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
     let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let snp: Arc<dyn KeyCustody> = Arc::new(ForgetfulKeyCustody::default());
     let both = HashMap::from([
-        ("plain".to_owned(), Arc::clone(&plain)),
-        ("snp".to_owned(), Arc::clone(&snp)),
+        (CustodyBackend::Plain, Arc::clone(&plain)),
+        (CustodyBackend::Snp, Arc::clone(&snp)),
     ]);
-    let router = CustodyRouter::new(both.clone(), "plain");
+    let router = CustodyRouter::new(both.clone(), CustodyBackend::Plain);
     let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
     let store = Store::open_in_memory().unwrap();
     let mut ids = HashMap::new();
-    for backend in ["plain", "snp"] {
+    for backend in [CustodyBackend::Plain, CustodyBackend::Snp] {
         let sealed = router.seal_in(backend, &material).await.unwrap();
         let tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: backend.into(),
+                    key_custody_backend: backend,
                     sealed_key_material: sealed,
                     primary_address: "4x".into(),
                     network: "mainnet".into(),
@@ -9811,13 +9813,13 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         .await,
         2
     );
-    let plain_handle = handles.read()[&ids["plain"]].handle;
+    let plain_handle = handles.read()[&ids[&CustodyBackend::Plain]].handle;
 
     // The snp backend is turned off: its store drops out, quietly,
     // and the other store keeps its handle.
     router.replace(
-        HashMap::from([("plain".to_owned(), Arc::clone(&plain))]),
-        "plain",
+        HashMap::from([(CustodyBackend::Plain, Arc::clone(&plain))]),
+        CustodyBackend::Plain,
     );
     assert_eq!(
         register_missing_wallets_checking_state(
@@ -9830,11 +9832,14 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         .await,
         0
     );
-    assert!(!handles.read().contains_key(&ids["snp"]));
-    assert_eq!(handles.read()[&ids["plain"]].handle, plain_handle);
+    assert!(!handles.read().contains_key(&ids[&CustodyBackend::Snp]));
+    assert_eq!(
+        handles.read()[&ids[&CustodyBackend::Plain]].handle,
+        plain_handle
+    );
 
     // Turned back on: the store is registered again from its sealed keys.
-    router.replace(both, "plain");
+    router.replace(both, CustodyBackend::Plain);
     assert_eq!(
         register_missing_wallets_checking_state(
             &store,
@@ -9846,13 +9851,13 @@ async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_en
         .await,
         1
     );
-    let snp_handle = handles.read()[&ids["snp"]].handle;
+    let snp_handle = handles.read()[&ids[&CustodyBackend::Snp]].handle;
     router
         .derive_subaddress(snp_handle, SubaddressIndex::default(), Network::Mainnet)
         .await
         .unwrap();
     assert_eq!(
-        handles.read()[&ids["plain"]].handle,
+        handles.read()[&ids[&CustodyBackend::Plain]].handle,
         plain_handle,
         "never disturbed"
     );
@@ -9867,18 +9872,21 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
     let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let router = CustodyRouter::new(
         HashMap::from([
-            ("plain".to_owned(), Arc::clone(&plain)),
-            ("snp".to_owned(), Arc::clone(&snp)),
+            (CustodyBackend::Plain, Arc::clone(&plain)),
+            (CustodyBackend::Snp, Arc::clone(&snp)),
         ]),
-        "plain",
+        CustodyBackend::Plain,
     );
     let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
     let store = Store::open_in_memory().unwrap();
     let tenant = store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "snp".into(),
-                sealed_key_material: router.seal_in("snp", &material).await.unwrap(),
+                key_custody_backend: CustodyBackend::Snp,
+                sealed_key_material: router
+                    .seal_in(CustodyBackend::Snp, &material)
+                    .await
+                    .unwrap(),
                 primary_address: "4x".into(),
                 network: "mainnet".into(),
                 confirmations_required: None,
@@ -9939,10 +9947,10 @@ async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_th
     let new_snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     router.replace(
         HashMap::from([
-            ("plain".to_owned(), plain),
-            ("snp".to_owned(), Arc::clone(&new_snp)),
+            (CustodyBackend::Plain, plain),
+            (CustodyBackend::Snp, Arc::clone(&new_snp)),
         ]),
-        "plain",
+        CustodyBackend::Plain,
     );
     assert_eq!(
         register_missing_wallets_checking_state(
@@ -9973,19 +9981,22 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
     let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let router = CustodyRouter::new(
         HashMap::from([
-            ("plain".to_owned(), Arc::clone(&plain)),
-            ("snp".to_owned(), snp),
+            (CustodyBackend::Plain, Arc::clone(&plain)),
+            (CustodyBackend::Snp, snp),
         ]),
-        "plain",
+        CustodyBackend::Plain,
     );
     let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
     let store = Store::open_in_memory().unwrap();
     let mut ids = HashMap::new();
-    for (network, backend) in [("mainnet", "plain"), ("stagenet", "snp")] {
+    for (network, backend) in [
+        ("mainnet", CustodyBackend::Plain),
+        ("stagenet", CustodyBackend::Snp),
+    ] {
         let tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: backend.into(),
+                    key_custody_backend: backend,
                     sealed_key_material: router.seal_in(backend, &material).await.unwrap(),
                     primary_address: "4x".into(),
                     network: network.into(),
@@ -10017,8 +10028,8 @@ async fn one_networks_registration_pass_leaves_another_networks_lost_handles_for
     // The stagenet store's backend is replaced; mainnet's loop runs first.
     let snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     router.replace(
-        HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
-        "plain",
+        HashMap::from([(CustodyBackend::Plain, plain), (CustodyBackend::Snp, snp)]),
+        CustodyBackend::Plain,
     );
     let pass = register_missing_wallets_reporting(
         &crate::store::Db::over_shared(Arc::clone(&store)),
@@ -10545,7 +10556,7 @@ impl KeyCustody for ScriptedCustody {
     }
     async fn unseal_and_register_in_idempotent(
         &self,
-        _backend: &str,
+        _backend: CustodyBackend,
         sealed: &[u8],
         registration_id: &str,
     ) -> std::result::Result<WalletHandle, KeyCustodyError> {
@@ -10595,7 +10606,7 @@ async fn stores_with_keys(
         store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: sealed.clone(),
                     primary_address: "4x".into(),
                     network: "mainnet".into(),
@@ -10945,17 +10956,17 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
     let forgetful = Arc::new(ForgetfulKeyCustody::default());
     let snp: Arc<dyn KeyCustody> = Arc::<ForgetfulKeyCustody>::clone(&forgetful);
     let router = CustodyRouter::new(
-        HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
-        "plain",
+        HashMap::from([(CustodyBackend::Plain, plain), (CustodyBackend::Snp, snp)]),
+        CustodyBackend::Plain,
     );
     let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
     let store = Store::open_in_memory().unwrap();
     let mut ids = HashMap::new();
-    for backend in ["plain", "snp"] {
+    for backend in [CustodyBackend::Plain, CustodyBackend::Snp] {
         let tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: backend.into(),
+                    key_custody_backend: backend,
                     sealed_key_material: router.seal_in(backend, &material).await.unwrap(),
                     primary_address: "4x".into(),
                     network: "mainnet".into(),
@@ -10983,8 +10994,8 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
         2
     );
     let (plain_handle, snp_handle) = (
-        handles.read()[&ids["plain"]].handle,
-        handles.read()[&ids["snp"]].handle,
+        handles.read()[&ids[&CustodyBackend::Plain]].handle,
+        handles.read()[&ids[&CustodyBackend::Snp]].handle,
     );
 
     forgetful.epoch.store(1, Ordering::SeqCst);
@@ -11000,12 +11011,12 @@ async fn a_backend_losing_its_wallets_behind_a_router_costs_only_its_stores() {
         1
     );
     assert_eq!(
-        handles.read()[&ids["plain"]].handle,
+        handles.read()[&ids[&CustodyBackend::Plain]].handle,
         plain_handle,
         "untouched"
     );
     assert_ne!(
-        handles.read()[&ids["snp"]].handle,
+        handles.read()[&ids[&CustodyBackend::Snp]].handle,
         snp_handle,
         "registered again"
     );
@@ -11084,7 +11095,7 @@ mod live_node_tests {
         let created = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: "4test".into(),
                     network: "mainnet".into(),

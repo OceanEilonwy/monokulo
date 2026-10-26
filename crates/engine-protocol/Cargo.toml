@@ -8,8 +8,11 @@ description = "What the engine and monokulo exchange over the engine's admin API
 [features]
 # JSON Schemas for ids and order statuses, for monokulo's API (`monokulo::api`).
 schemars = ["dep:schemars"]
+# `CustodyBackend` as a choice setting, for the engine's settings.
+live-settings = ["dep:live-settings"]
 
 [dependencies]
+live-settings = { path = "../live-settings", optional = true }
 monero = "0.22.0"
 # Ids and network names are stored as TEXT (`ToSql`/`FromSql`).
 rusqlite = { version = "0.40.2", features = ["bundled"] }

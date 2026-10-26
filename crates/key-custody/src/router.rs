@@ -20,49 +20,64 @@ use monero::Address;
 use parking_lot::RwLock;
 
 use crate::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
-    TxMatches, WalletHandle, WalletMaterial,
+    CustodyBackend, KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput,
+    SubaddressIndex, TxMatches, WalletHandle, WalletMaterial,
 };
 
-#[derive(Default)]
 pub struct CustodyRouter {
-    backends: RwLock<HashMap<String, Arc<dyn KeyCustody>>>,
+    backends: RwLock<HashMap<CustodyBackend, Arc<dyn KeyCustody>>>,
     /// Which backend issued each live handle.
-    handles: RwLock<HashMap<WalletHandle, String>>,
+    handles: RwLock<HashMap<WalletHandle, CustodyBackend>>,
     /// Each backend's state epoch as last seen (see `KeyCustody::check_state`).
-    epochs: RwLock<HashMap<String, u64>>,
+    epochs: RwLock<HashMap<CustodyBackend, u64>>,
     /// Which backend new wallets go to when a caller doesn't say.
-    default_backend: RwLock<String>,
+    default_backend: RwLock<CustodyBackend>,
+}
+
+/// A router over no backends yet, new wallets going to `plain` until a set
+/// is installed (`replace`).
+impl Default for CustodyRouter {
+    fn default() -> Self {
+        Self {
+            backends: RwLock::default(),
+            handles: RwLock::default(),
+            epochs: RwLock::default(),
+            default_backend: RwLock::new(CustodyBackend::Plain),
+        }
+    }
 }
 
 impl CustodyRouter {
     /// A router over the given backends, `default` taking wallets registered
     /// without a backend name.
-    pub fn new(backends: HashMap<String, Arc<dyn KeyCustody>>, default: &str) -> Self {
+    pub fn new(
+        backends: HashMap<CustodyBackend, Arc<dyn KeyCustody>>,
+        default: CustodyBackend,
+    ) -> Self {
         let router = Self::default();
         *router.backends.write() = backends;
-        default.clone_into(&mut router.default_backend.write());
+        *router.default_backend.write() = default;
         router
     }
 
     /// One in-process backend called `plain`: what tests and a
     /// single-backend engine use.
     pub fn plain() -> Self {
-        let mut backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
+        let mut backends: HashMap<CustodyBackend, Arc<dyn KeyCustody>> = HashMap::new();
         backends.insert(
-            "plain".to_owned(),
+            CustodyBackend::Plain,
             Arc::new(crate::PlainKeyCustody::default()),
         );
-        Self::new(backends, "plain")
+        Self::new(backends, CustodyBackend::Plain)
     }
 
     /// The backend called `name`, if enabled.
-    pub fn backend(&self, name: &str) -> Option<Arc<dyn KeyCustody>> {
-        self.backends.read().get(name).cloned()
+    pub fn backend(&self, name: CustodyBackend) -> Option<Arc<dyn KeyCustody>> {
+        self.backends.read().get(&name).cloned()
     }
 
-    pub fn default_backend(&self) -> String {
-        self.default_backend.read().clone()
+    pub fn default_backend(&self) -> CustodyBackend {
+        *self.default_backend.read()
     }
 
     /// Installs a new set of backends (task 5.2). Handles issued by a
@@ -81,26 +96,26 @@ impl CustodyRouter {
     )]
     pub fn replace(
         &self,
-        backends: HashMap<String, Arc<dyn KeyCustody>>,
-        default: &str,
+        backends: HashMap<CustodyBackend, Arc<dyn KeyCustody>>,
+        default: CustodyBackend,
     ) -> Vec<(Arc<dyn KeyCustody>, WalletHandle)> {
         let old = std::mem::replace(&mut *self.backends.write(), backends.clone());
-        let kept = |name: &str| match (old.get(name), backends.get(name)) {
+        let kept = |name: CustodyBackend| match (old.get(&name), backends.get(&name)) {
             (Some(before), Some(after)) => same_instance(before, after),
             _ => false,
         };
         let mut dropped = Vec::new();
         self.handles.write().retain(|handle, name| {
-            if kept(name) {
+            if kept(*name) {
                 return true;
             }
-            if let Some(before) = old.get(name.as_str()) {
+            if let Some(before) = old.get(name) {
                 dropped.push((Arc::clone(before), *handle));
             }
             false
         });
-        self.epochs.write().retain(|name, _| kept(name));
-        default.clone_into(&mut self.default_backend.write());
+        self.epochs.write().retain(|name, _| kept(*name));
+        *self.default_backend.write() = default;
         dropped
     }
 
@@ -119,7 +134,7 @@ impl CustodyRouter {
     }
 
     /// The backends as they are now, for building the next set from.
-    pub fn backends(&self) -> HashMap<String, Arc<dyn KeyCustody>> {
+    pub fn backends(&self) -> HashMap<CustodyBackend, Arc<dyn KeyCustody>> {
         self.backends.read().clone()
     }
 
@@ -128,15 +143,16 @@ impl CustodyRouter {
             .handles
             .read()
             .get(&handle)
-            .cloned()
+            .copied()
             .ok_or(KeyCustodyError::UnknownWallet)?;
-        self.backend(&name).ok_or(KeyCustodyError::UnknownWallet)
+        self.backend(name).ok_or(KeyCustodyError::UnknownWallet)
     }
 
-    fn named(&self, backend: &str) -> Result<Arc<dyn KeyCustody>, KeyCustodyError> {
+    fn named(&self, backend: CustodyBackend) -> Result<Arc<dyn KeyCustody>, KeyCustodyError> {
         self.backend(backend).ok_or_else(|| {
             KeyCustodyError::BackendUnavailable(format!(
-                "the {backend:?} key custody backend is not enabled"
+                "the {:?} key custody backend is not enabled",
+                backend.as_str()
             ))
         })
     }
@@ -147,28 +163,29 @@ impl CustodyRouter {
     /// again (it will reach the current instance).
     fn remember_if_current(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         custody: Arc<dyn KeyCustody>,
         handle: WalletHandle,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let backends = self.backends.read();
         if backends
-            .get(backend)
+            .get(&backend)
             .is_some_and(|current| same_instance(current, &custody))
         {
-            self.handles.write().insert(handle, backend.to_owned());
+            self.handles.write().insert(handle, backend);
             return Ok(handle);
         }
         drop(backends);
         free_handles(vec![(custody, handle)]);
         Err(KeyCustodyError::BackendUnavailable(format!(
-            "the {backend:?} key custody backend was changed while registering; try again"
+            "the {:?} key custody backend was changed while registering; try again",
+            backend.as_str()
         )))
     }
 
     /// Which backend holds `handle`, if it's live.
-    pub fn backend_of(&self, handle: WalletHandle) -> Option<String> {
-        self.handles.read().get(&handle).cloned()
+    pub fn backend_of(&self, handle: WalletHandle) -> Option<CustodyBackend> {
+        self.handles.read().get(&handle).copied()
     }
 }
 
@@ -179,7 +196,7 @@ impl KeyCustody for CustodyRouter {
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let backend = self.default_backend();
-        self.register_wallet_in(&backend, material).await
+        self.register_wallet_in(backend, material).await
     }
 
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
@@ -193,12 +210,12 @@ impl KeyCustody for CustodyRouter {
 
     async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
         let backend = self.default_backend();
-        self.seal_in(&backend, material).await
+        self.seal_in(backend, material).await
     }
 
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
         let backend = self.default_backend();
-        self.unseal_and_register_in(&backend, sealed).await
+        self.unseal_and_register_in(backend, sealed).await
     }
 
     async fn derive_subaddress(
@@ -248,21 +265,21 @@ impl KeyCustody for CustodyRouter {
     async fn check_state(&self) -> Result<u64, KeyCustodyError> {
         // By name, so which backend's error is reported first doesn't vary.
         let mut backends: Vec<_> = self.backends().into_iter().collect();
-        backends.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        backends.sort_unstable_by_key(|(name, _)| *name);
         let mut total = 0u64;
         let mut first_error = None;
         for (name, custody) in backends {
             match custody.check_state().await {
                 Ok(epoch) => {
                     total = total.saturating_add(epoch);
-                    let previous = self.epochs.write().insert(name.clone(), epoch).unwrap_or(0);
+                    let previous = self.epochs.write().insert(name, epoch).unwrap_or(0);
                     if epoch > previous {
                         // Some handles may have been registered since the
                         // restart and still be live there: free them all
                         // (freeing one the restart already lost is harmless).
                         let mut lost = Vec::new();
                         self.handles.write().retain(|handle, backend| {
-                            let keep = backend != &name;
+                            let keep = *backend != name;
                             if !keep {
                                 lost.push((Arc::clone(&custody), *handle));
                             }
@@ -287,7 +304,7 @@ impl KeyCustody for CustodyRouter {
 
     async fn register_wallet_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let custody = self.named(backend)?;
@@ -297,7 +314,7 @@ impl KeyCustody for CustodyRouter {
 
     async fn unseal_and_register_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         sealed: &[u8],
     ) -> Result<WalletHandle, KeyCustodyError> {
         let custody = self.named(backend)?;
@@ -307,7 +324,7 @@ impl KeyCustody for CustodyRouter {
 
     async fn unseal_and_register_in_idempotent(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         sealed: &[u8],
         registration_id: &str,
     ) -> Result<WalletHandle, KeyCustodyError> {
@@ -320,20 +337,20 @@ impl KeyCustody for CustodyRouter {
 
     async fn seal_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         material: &WalletMaterial,
     ) -> Result<Vec<u8>, KeyCustodyError> {
         self.named(backend)?.seal(material).await
     }
 
-    fn takes_raw_keys_in(&self, backend: &str) -> bool {
+    fn takes_raw_keys_in(&self, backend: CustodyBackend) -> bool {
         self.backend(backend)
             .is_none_or(|custody| custody.takes_raw_keys())
     }
 
     async fn key_bundle_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         action: crate::transport::Action,
         store: Option<&str>,
     ) -> Result<crate::transport::Bundle, KeyCustodyError> {
@@ -342,7 +359,7 @@ impl KeyCustody for CustodyRouter {
 
     async fn register_envelope_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         envelope: &crate::transport::Envelope,
         action: crate::transport::Action,
         store: Option<&str>,
@@ -356,18 +373,18 @@ impl KeyCustody for CustodyRouter {
         self.for_handle(handle).is_ok()
     }
 
-    fn enabled_backends(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.backends.read().keys().cloned().collect();
+    fn enabled_backends(&self) -> Vec<CustodyBackend> {
+        let mut names: Vec<CustodyBackend> = self.backends.read().keys().copied().collect();
         names.sort();
         names
     }
 
     /// Asks each backend directly, with a short deadline, without touching
     /// the epochs the scan loop acts on.
-    async fn backend_health(&self) -> Vec<(String, Option<String>)> {
-        let mut backends: Vec<(String, Arc<dyn KeyCustody>)> =
+    async fn backend_health(&self) -> Vec<(CustodyBackend, Option<String>)> {
+        let mut backends: Vec<(CustodyBackend, Arc<dyn KeyCustody>)> =
             self.backends().into_iter().collect();
-        backends.sort_by(|a, b| a.0.cmp(&b.0));
+        backends.sort_by_key(|(name, _)| *name);
         let mut health = Vec::with_capacity(backends.len());
         for (name, custody) in backends {
             let error = match tokio::time::timeout(
@@ -447,19 +464,22 @@ mod tests {
         let a: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let b: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let mut backends = HashMap::new();
-        backends.insert("plain".to_owned(), Arc::clone(&a));
-        backends.insert("snp".to_owned(), Arc::clone(&b));
-        (CustodyRouter::new(backends, "plain"), a, b)
+        backends.insert(CustodyBackend::Plain, Arc::clone(&a));
+        backends.insert(CustodyBackend::Snp, Arc::clone(&b));
+        (CustodyRouter::new(backends, CustodyBackend::Plain), a, b)
     }
 
     #[tokio::test]
     async fn each_wallet_lives_in_its_own_backend_and_calls_are_routed_by_handle() {
         let (router, a, b) = two_backends();
         let in_a = router
-            .register_wallet_in("plain", material(1))
+            .register_wallet_in(CustodyBackend::Plain, material(1))
             .await
             .unwrap();
-        let in_b = router.register_wallet_in("snp", material(3)).await.unwrap();
+        let in_b = router
+            .register_wallet_in(CustodyBackend::Snp, material(3))
+            .await
+            .unwrap();
         a.derive_subaddress(in_a, SubaddressIndex::default(), Network::Mainnet)
             .await
             .unwrap();
@@ -473,23 +493,28 @@ mod tests {
             .derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet)
             .await
             .unwrap();
-        assert_eq!(router.backend_of(in_b).as_deref(), Some("snp"));
+        assert_eq!(router.backend_of(in_b), Some(CustodyBackend::Snp));
     }
 
     #[tokio::test]
     async fn a_disabled_backend_can_not_take_wallets_and_its_handles_stop_being_live() {
         let (router, a, _) = two_backends();
-        let in_b = router.register_wallet_in("snp", material(3)).await.unwrap();
-        let mut only_plain: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
-        only_plain.insert("plain".to_owned(), a);
-        let dropped = router.replace(only_plain, "plain");
+        let in_b = router
+            .register_wallet_in(CustodyBackend::Snp, material(3))
+            .await
+            .unwrap();
+        let mut only_plain: HashMap<CustodyBackend, Arc<dyn KeyCustody>> = HashMap::new();
+        only_plain.insert(CustodyBackend::Plain, a);
+        let dropped = router.replace(only_plain, CustodyBackend::Plain);
         assert_eq!(dropped.len(), 1);
         assert!(!router.handle_is_live(in_b));
         assert!(matches!(
-            router.register_wallet_in("snp", material(5)).await,
+            router
+                .register_wallet_in(CustodyBackend::Snp, material(5))
+                .await,
             Err(KeyCustodyError::BackendUnavailable(_))
         ));
-        assert_eq!(router.enabled_backends(), vec!["plain".to_owned()]);
+        assert_eq!(router.enabled_backends(), vec![CustodyBackend::Plain]);
     }
 
     #[tokio::test]
@@ -497,17 +522,20 @@ mod tests {
     ) {
         let (router, a, b) = two_backends();
         let in_a = router
-            .register_wallet_in("plain", material(1))
+            .register_wallet_in(CustodyBackend::Plain, material(1))
             .await
             .unwrap();
-        let in_b = router.register_wallet_in("snp", material(3)).await.unwrap();
+        let in_b = router
+            .register_wallet_in(CustodyBackend::Snp, material(3))
+            .await
+            .unwrap();
         let new_snp: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let dropped = router.replace(
             HashMap::from([
-                ("plain".to_owned(), Arc::clone(&a)),
-                ("snp".to_owned(), new_snp),
+                (CustodyBackend::Plain, Arc::clone(&a)),
+                (CustodyBackend::Snp, new_snp),
             ]),
-            "plain",
+            CustodyBackend::Plain,
         );
         assert!(
             router.handle_is_live(in_a),
@@ -539,7 +567,7 @@ mod tests {
     async fn a_handle_its_backend_no_longer_knows_stops_being_live() {
         let (router, a, _) = two_backends();
         let handle = router
-            .register_wallet_in("plain", material(1))
+            .register_wallet_in(CustodyBackend::Plain, material(1))
             .await
             .unwrap();
         a.remove_wallet(handle).await.unwrap(); // lost behind the router's back
@@ -649,14 +677,17 @@ mod tests {
         let restartable = Arc::new(Restartable::default());
         let snp: Arc<dyn KeyCustody> = Arc::<Restartable>::clone(&restartable);
         let router = CustodyRouter::new(
-            HashMap::from([("plain".to_owned(), plain), ("snp".to_owned(), snp)]),
-            "plain",
+            HashMap::from([(CustodyBackend::Plain, plain), (CustodyBackend::Snp, snp)]),
+            CustodyBackend::Plain,
         );
         let in_plain = router
-            .register_wallet_in("plain", material(1))
+            .register_wallet_in(CustodyBackend::Plain, material(1))
             .await
             .unwrap();
-        let in_snp = router.register_wallet_in("snp", material(3)).await.unwrap();
+        let in_snp = router
+            .register_wallet_in(CustodyBackend::Snp, material(3))
+            .await
+            .unwrap();
         router.check_state().await.unwrap();
         assert!(router.handle_is_live(in_snp), "nothing restarted yet");
 
@@ -670,7 +701,10 @@ mod tests {
             "the other backend's stores are untouched"
         );
         router.check_state().await.unwrap();
-        let again = router.register_wallet_in("snp", material(3)).await.unwrap();
+        let again = router
+            .register_wallet_in(CustodyBackend::Snp, material(3))
+            .await
+            .unwrap();
         router.check_state().await.unwrap();
         assert!(
             router.handle_is_live(again),
@@ -739,16 +773,23 @@ mod tests {
         });
         let old: Arc<dyn KeyCustody> = Arc::<Gated>::clone(&gated);
         let router = Arc::new(CustodyRouter::new(
-            HashMap::from([("snp".to_owned(), old)]),
-            "snp",
+            HashMap::from([(CustodyBackend::Snp, old)]),
+            CustodyBackend::Snp,
         ));
         let registering = {
             let router = Arc::clone(&router);
-            tokio::spawn(async move { router.register_wallet_in("snp", material(1)).await })
+            tokio::spawn(async move {
+                router
+                    .register_wallet_in(CustodyBackend::Snp, material(1))
+                    .await
+            })
         };
         gated.entered.notified().await;
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        router.replace(HashMap::from([("snp".to_owned(), fresh)]), "snp");
+        router.replace(
+            HashMap::from([(CustodyBackend::Snp, fresh)]),
+            CustodyBackend::Snp,
+        );
         gated.gate.notify_one();
         assert!(
             matches!(
@@ -770,7 +811,10 @@ mod tests {
             "no copy left behind in the replaced instance"
         );
         assert!(
-            router.register_wallet_in("snp", material(1)).await.is_ok(),
+            router
+                .register_wallet_in(CustodyBackend::Snp, material(1))
+                .await
+                .is_ok(),
             "the retry reaches the current one"
         );
     }

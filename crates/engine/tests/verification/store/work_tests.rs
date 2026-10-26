@@ -17,7 +17,7 @@ fn tenant(store: &Store, network: &str) -> String {
     store
         .create_tenant(
             &NewTenant {
-                key_custody_backend: "plain".into(),
+                key_custody_backend: crate::store::CustodyBackend::Plain,
                 sealed_key_material: vec![0u8; 64],
                 primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
                 network: network.into(),

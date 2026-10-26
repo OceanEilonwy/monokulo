@@ -907,7 +907,7 @@ pub(super) async fn render_store_settings_page_with(
     let key_storage = tenant_result
         .as_ref()
         .ok()
-        .and_then(|t| t.key_custody_backend.clone())
+        .and_then(|t| t.key_custody_backend)
         .and_then(|current| {
             let enabled = super::status_page::known_enabled_custody_backends(&state.engine);
             let usable = super::key_entry::usable_custody_backends(state);
@@ -915,14 +915,14 @@ pub(super) async fn render_store_settings_page_with(
                 .iter()
                 .filter(|b| **b != current)
                 .enumerate()
-                .map(|(i, backend)| views::connect::CustodyChoice {
-                    backend: backend.clone(),
+                .map(|(i, &backend)| views::connect::CustodyChoice {
+                    backend,
                     label: super::status_page::custody_backend_label(backend),
                     selected: i == 0,
                 })
                 .collect();
             (!move_to.is_empty()).then(|| views::store_settings::KeyStorageView {
-                current: super::status_page::custody_backend_label(&current),
+                current: super::status_page::custody_backend_label(current),
                 current_disabled: !enabled.contains(&current),
                 move_to,
                 snp_entry: None,
@@ -930,7 +930,7 @@ pub(super) async fn render_store_settings_page_with(
         });
     let mut key_storage = key_storage;
     if let Some(view) = key_storage.as_mut() {
-        let targets: Vec<String> = view.move_to.iter().map(|c| c.backend.clone()).collect();
+        let targets: Vec<_> = view.move_to.iter().map(|c| c.backend).collect();
         view.snp_entry = super::key_entry::prepare(
             state,
             &user.id,
@@ -1324,15 +1324,21 @@ pub async fn move_key_storage(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let backend = form.backend.trim();
-    let keys = match super::key_entry::store_keys(
+    let keys = super::key_entry::store_keys(
         &state,
-        Some(backend),
+        Some(form.backend.trim()),
         &form.view_key_hex,
         &form.spend_pubkey_hex,
         form.encrypted_keys.as_deref(),
-    ) {
-        Ok((_, keys)) => keys,
+    )
+    .and_then(|(backend, keys)| {
+        Ok((
+            backend.ok_or_else(|| super::key_entry::NOT_OFFERED.to_owned())?,
+            keys,
+        ))
+    });
+    let (backend, keys) = match keys {
+        Ok(chosen) => chosen,
         Err(message) => {
             return render_store_settings_page(
                 &state,
@@ -2937,7 +2943,10 @@ mod tests {
     }
 
     #[cfg(feature = "snp")]
-    async fn engine_backend_of(state: &AppState, public_key: &str) -> Option<String> {
+    async fn engine_backend_of(
+        state: &AppState,
+        public_key: &str,
+    ) -> Option<engine_protocol::custody::CustodyBackend> {
         let row = state
             .db
             .lock()
@@ -3003,8 +3012,8 @@ mod tests {
         .await;
         let (connection_id, public_key) = create_connection(&router, &state, &session_token).await;
         assert_eq!(
-            engine_backend_of(&state, &public_key).await.as_deref(),
-            Some("plain")
+            engine_backend_of(&state, &public_key).await,
+            Some(engine_protocol::custody::CustodyBackend::Plain)
         );
 
         let settings_uri = format!("/stores/{connection_id}/settings");
@@ -3089,8 +3098,8 @@ mod tests {
         let html = body_text(response).await;
         assert!(html.contains("different wallet"), "{html}");
         assert_eq!(
-            engine_backend_of(&state, &public_key).await.as_deref(),
-            Some("plain")
+            engine_backend_of(&state, &public_key).await,
+            Some(engine_protocol::custody::CustodyBackend::Plain)
         );
 
         // The store's own keys, encrypted against the page's new bundle.
@@ -3110,8 +3119,8 @@ mod tests {
             &format!("{settings_uri}?saved=key-storage#card-key-storage")
         );
         assert_eq!(
-            engine_backend_of(&state, &public_key).await.as_deref(),
-            Some("snp")
+            engine_backend_of(&state, &public_key).await,
+            Some(engine_protocol::custody::CustodyBackend::Snp)
         );
 
         // Straight after the move (which empties the status cache), as the
@@ -3204,8 +3213,8 @@ mod tests {
                 .clone()
         };
         assert_eq!(
-            engine_backend_of(&state, &public_key).await.as_deref(),
-            Some("snp")
+            engine_backend_of(&state, &public_key).await,
+            Some(engine_protocol::custody::CustodyBackend::Snp)
         );
     }
 

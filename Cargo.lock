@@ -1865,6 +1865,7 @@ dependencies = [
 name = "engine-protocol"
 version = "0.1.0"
 dependencies = [
+ "live-settings",
  "monero",
  "rusqlite",
  "schemars 1.2.3",
@@ -3157,6 +3158,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
+ "engine-protocol",
  "futures-util",
  "getrandom 0.4.3",
  "hex",

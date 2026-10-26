@@ -488,7 +488,7 @@ fn key_storage_card(store: &StoreSettingsData, key_storage: &KeyStorageView) -> 
                         key_storage
                             .move_to
                             .iter()
-                            .map(|choice| Choice::new(&choice.backend, &choice.label).selected(choice.selected))
+                            .map(|choice| Choice::new(choice.backend.as_str(), &choice.label).selected(choice.selected))
                             .collect::<Vec<_>>(),
                     ))
                 }

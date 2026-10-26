@@ -19,8 +19,9 @@ pub use ::key_custody::snp;
 use ::key_custody::transport::TrustPolicy;
 pub use ::key_custody::{
     remove_wallet_logged, router, size_scan_slots, transport, wallet_matches_address,
-    CustodyRouter, KeyCustody, KeyCustodyError, MatchedOutput, Network, PlainKeyCustody,
-    ScanIndices, ScanInput, SubaddressIndex, TxMatches, WalletHandle, WalletMaterial,
+    CustodyBackend, CustodyRouter, KeyCustody, KeyCustodyError, MatchedOutput, Network,
+    PlainKeyCustody, ScanIndices, ScanInput, SubaddressIndex, TxMatches, WalletHandle,
+    WalletMaterial,
 };
 
 #[cfg(feature = "snp")]

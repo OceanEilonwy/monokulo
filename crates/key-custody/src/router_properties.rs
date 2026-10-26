@@ -41,8 +41,12 @@ async fn assert_model(
         if h.live {
             assert_eq!(answer.unwrap(), expected(h.seed, index, Network::Mainnet));
             assert_eq!(
-                router.backend_of(h.handle).as_deref(),
-                Some(if h.backend == 0 { "a" } else { "b" })
+                router.backend_of(h.handle),
+                Some(if h.backend == 0 {
+                    CustodyBackend::Plain
+                } else {
+                    CustodyBackend::Snp
+                })
             );
         } else {
             assert!(matches!(answer, Err(KeyCustodyError::UnknownWallet)));
@@ -74,13 +78,13 @@ proptest! {
     ) {
         runtime().block_on(async {
             let mut backends=[Arc::new(GateCustody::default()),Arc::new(GateCustody::default())];
-            let router=CustodyRouter::new(HashMap::from([("a".to_owned(),custody_arc(&backends[0])),("b".to_owned(),custody_arc(&backends[1]))]),"a");
+            let router=CustodyRouter::new(HashMap::from([(CustodyBackend::Plain,custody_arc(&backends[0])),(CustodyBackend::Snp,custody_arc(&backends[1]))]),CustodyBackend::Plain);
             let mut enabled=[true,true];let mut handles=Vec::<OwnedHandle>::new();
             // Both backends always begin with a live wallet, so isolation
             // assertions cannot pass merely because one side is empty.
-            for i in 0..2 {let h=router.register_wallet_in(if i==0 {"a"} else {"b"},material(i as u8+1)).await.unwrap();handles.push(OwnedHandle {handle:h,backend:i,seed:i as u8+1,live:true});}
+            for i in 0..2 {let h=router.register_wallet_in(if i==0 {CustodyBackend::Plain} else {CustodyBackend::Snp},material(i as u8+1)).await.unwrap();handles.push(OwnedHandle {handle:h,backend:i,seed:i as u8+1,live:true});}
             for (op,backend,wallet) in events {
-                let name=if backend==0 {"a"} else {"b"};let seed=wallet+3;
+                let name=if backend==0 {CustodyBackend::Plain} else {CustodyBackend::Snp};let seed=wallet+3;
                 match op {
                     0|1=>{
                         let result=if op==0 {router.register_wallet_in(name,material(seed)).await} else {
@@ -92,9 +96,9 @@ proptest! {
                     }
                     2|3=>{
                         let old=Arc::clone(&backends[backend]);let mut map=router.backends();
-                        if op==2 {backends[backend]=Arc::new(GateCustody::default());map.insert(name.to_owned(),custody_arc(&backends[backend]));enabled[backend]=true;}
-                        else {map.remove(name);enabled[backend]=false;}
-                        let dropped=router.replace(map,"a");let expected=handles.iter().filter(|h|h.live&&h.backend==backend).count();assert_eq!(dropped.len(),expected);
+                        if op==2 {backends[backend]=Arc::new(GateCustody::default());map.insert(name,custody_arc(&backends[backend]));enabled[backend]=true;}
+                        else {map.remove(&name);enabled[backend]=false;}
+                        let dropped=router.replace(map,CustodyBackend::Plain);let expected=handles.iter().filter(|h|h.live&&h.backend==backend).count();assert_eq!(dropped.len(),expected);
                         for h in &mut handles {if h.backend==backend {h.live=false;}}
                         free_handles(dropped);wait_empty(&old).await;
                     }
@@ -107,7 +111,7 @@ proptest! {
                             } else {assert!(matches!(router.remove_wallet(h.handle).await,Err(KeyCustodyError::UnknownWallet)));}
                         }
                     }
-                    6=>{assert!(router.replace(router.backends(),"a").is_empty());}
+                    6=>{assert!(router.replace(router.backends(),CustodyBackend::Plain).is_empty());}
                     _=>{assert!(matches!(router.derive_subaddress(WalletHandle::generate(),SubaddressIndex::default(),Network::Mainnet).await,Err(KeyCustodyError::UnknownWallet)));}
                 }
                 assert_model(&router,&backends,&handles,SubaddressIndex {major:0,minor}).await;
@@ -117,7 +121,7 @@ proptest! {
     #[test]
     fn transient_backend_failures_preserve_ownership_until_recovery(calls in 1usize..9,minor in any::<u32>(),network in 0u8..3) {
         runtime().block_on(async {
-            let c=Arc::new(GateCustody::default());let router=CustodyRouter::new(HashMap::from([("a".to_owned(),custody_arc(&c))]),"a");let h=router.register_wallet(material(3)).await.unwrap();
+            let c=Arc::new(GateCustody::default());let router=CustodyRouter::new(HashMap::from([(CustodyBackend::Plain,custody_arc(&c))]),CustodyBackend::Plain);let h=router.register_wallet(material(3)).await.unwrap();
             let network=match network {0=>Network::Mainnet,1=>Network::Testnet,_=>Network::Stagenet};let index=SubaddressIndex {major:0,minor};c.mode.store(1,Ordering::Relaxed);
             for _ in 0..calls {assert!(matches!(router.derive_subaddress(h,index,network).await,Err(KeyCustodyError::BackendUnavailable(_))));assert!(router.handle_is_live(h));}
             c.mode.store(0,Ordering::Relaxed);assert_eq!(router.derive_subaddress(h,index,network).await.unwrap(),expected(3,index,network));assert_eq!(c.inner.wallet_count(),1);
@@ -128,12 +132,12 @@ proptest! {
     fn backend_epoch_changes_invalidate_only_the_restarted_backend(which in 0usize..2,epoch in 1u64..=u64::MAX) {
         runtime().block_on(async {
             let backends=[Arc::new(GateCustody::default()),Arc::new(GateCustody::default())];
-            let router=CustodyRouter::new(HashMap::from([("a".to_owned(),custody_arc(&backends[0])),("b".to_owned(),custody_arc(&backends[1]))]),"a");
-            router.check_state().await.unwrap();let a=router.register_wallet_in("a",material(1)).await.unwrap();let b=router.register_wallet_in("b",material(2)).await.unwrap();let hs=[a,b];
+            let router=CustodyRouter::new(HashMap::from([(CustodyBackend::Plain,custody_arc(&backends[0])),(CustodyBackend::Snp,custody_arc(&backends[1]))]),CustodyBackend::Plain);
+            router.check_state().await.unwrap();let a=router.register_wallet_in(CustodyBackend::Plain,material(1)).await.unwrap();let b=router.register_wallet_in(CustodyBackend::Snp,material(2)).await.unwrap();let hs=[a,b];
             backends[which].epoch.store(epoch,Ordering::Relaxed);router.check_state().await.unwrap();
             assert!(!router.handle_is_live(hs[which]), "assertion failed: BOUNDARY: stale-custody-epoch");
             wait_empty(&backends[which]).await;assert!(router.handle_is_live(hs[1-which]));assert_eq!(backends[1-which].inner.wallet_count(),1);
-            let new=router.register_wallet_in(if which==0 {"a"} else {"b"},material(3)).await.unwrap();router.check_state().await.unwrap();assert!(router.handle_is_live(new),"unchanged epoch invalidated a fresh registration");
+            let new=router.register_wallet_in(if which==0 {CustodyBackend::Plain} else {CustodyBackend::Snp},material(3)).await.unwrap();router.check_state().await.unwrap();assert!(router.handle_is_live(new),"unchanged epoch invalidated a fresh registration");
             backends[1-which].epoch.store(u64::MAX,Ordering::Relaxed);assert_eq!(router.check_state().await.unwrap(),u64::MAX,"combined epochs must not overflow");
         });
     }
@@ -141,11 +145,11 @@ proptest! {
     fn registrations_finishing_after_replacement_are_freed_and_retry_on_the_new_backend(count in 1usize..9) {
         runtime().block_on(async {
             let old=Arc::new(GateCustody::default());old.registration_mode.store(2,Ordering::Relaxed);
-            let router=Arc::new(CustodyRouter::new(HashMap::from([("a".to_owned(),custody_arc(&old))]),"a"));
+            let router=Arc::new(CustodyRouter::new(HashMap::from([(CustodyBackend::Plain,custody_arc(&old))]),CustodyBackend::Plain));
             let mut tasks=vec![];
             for i in 0..count {let r=Arc::clone(&router);tasks.push(tokio::spawn(async move {r.register_wallet(material(i as u8+1)).await}));}
             tokio::time::timeout(std::time::Duration::from_secs(5),async {while old.registrations.load(Ordering::Relaxed)<count {tokio::task::yield_now().await;}}).await.unwrap();assert_eq!(old.inner.wallet_count(),count);
-            let new=Arc::new(GateCustody::default());assert!(router.replace(HashMap::from([("a".to_owned(),custody_arc(&new))]),"a").is_empty());old.registration_release.notify_waiters();
+            let new=Arc::new(GateCustody::default());assert!(router.replace(HashMap::from([(CustodyBackend::Plain,custody_arc(&new))]),CustodyBackend::Plain).is_empty());old.registration_release.notify_waiters();
             for task in tasks {assert!(matches!(task.await.unwrap(),Err(KeyCustodyError::BackendUnavailable(_))));}
             wait_empty(&old).await;
             for i in 0..count {let h=router.register_wallet(material(i as u8+1)).await.unwrap();assert_eq!(router.derive_subaddress(h,SubaddressIndex::default(),Network::Mainnet).await.unwrap(),expected(i as u8+1,SubaddressIndex::default(),Network::Mainnet));}
@@ -156,12 +160,12 @@ proptest! {
     fn cancelled_registration_results_are_recovered_by_the_same_registration_id(seed in 1u8..100,key in "[a-z0-9]{1,128}") {
         runtime().block_on(async {
             let c=Arc::new(GateCustody::default());let sealed=c.inner.seal(&material(seed)).await.unwrap();c.registration_mode.store(2,Ordering::Relaxed);
-            let router=Arc::new(CustodyRouter::new(HashMap::from([("a".to_owned(),custody_arc(&c))]),"a"));let r=Arc::clone(&router);let bytes=sealed.clone();let id=key.clone();
-            let task=tokio::spawn(async move {r.unseal_and_register_in_idempotent("a",&bytes,&id).await});
+            let router=Arc::new(CustodyRouter::new(HashMap::from([(CustodyBackend::Plain,custody_arc(&c))]),CustodyBackend::Plain));let r=Arc::clone(&router);let bytes=sealed.clone();let id=key.clone();
+            let task=tokio::spawn(async move {r.unseal_and_register_in_idempotent(CustodyBackend::Plain,&bytes,&id).await});
             tokio::time::timeout(std::time::Duration::from_secs(5),c.registration_entered.notified()).await.unwrap();assert_eq!(c.inner.wallet_count(),1);task.abort();assert!(task.await.unwrap_err().is_cancelled());
-            c.registration_mode.store(0,Ordering::Relaxed);let h=router.unseal_and_register_in_idempotent("a",&sealed,&key).await.unwrap();assert_eq!(c.inner.wallet_count(),1);
+            c.registration_mode.store(0,Ordering::Relaxed);let h=router.unseal_and_register_in_idempotent(CustodyBackend::Plain,&sealed,&key).await.unwrap();assert_eq!(c.inner.wallet_count(),1);
             assert_eq!(router.derive_subaddress(h,SubaddressIndex::default(),Network::Mainnet).await.unwrap(),expected(seed,SubaddressIndex::default(),Network::Mainnet));
-            assert_eq!(router.unseal_and_register_in_idempotent("a",&sealed,&key).await.unwrap(),h);router.remove_wallet(h).await.unwrap();assert_eq!(c.inner.wallet_count(),0);
+            assert_eq!(router.unseal_and_register_in_idempotent(CustodyBackend::Plain,&sealed,&key).await.unwrap(),h);router.remove_wallet(h).await.unwrap();assert_eq!(c.inner.wallet_count(),0);
         });
     }
 }
@@ -175,10 +179,10 @@ fn two_maximum_backend_epochs_do_not_panic_or_wrap() {
         b.epoch.store(u64::MAX, Ordering::Relaxed);
         let router = CustodyRouter::new(
             HashMap::from([
-                ("a".to_owned(), custody_arc(&a)),
-                ("b".to_owned(), custody_arc(&b)),
+                (CustodyBackend::Plain, custody_arc(&a)),
+                (CustodyBackend::Snp, custody_arc(&b)),
             ]),
-            "a",
+            CustodyBackend::Plain,
         );
         assert_eq!(router.check_state().await.unwrap(), u64::MAX);
     });

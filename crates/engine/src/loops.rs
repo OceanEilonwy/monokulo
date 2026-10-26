@@ -665,7 +665,6 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             settings: Arc::clone(&settings),
             custody: crate::http::Custody {
                 backends: Arc::clone(&key_custody),
-                default_backend: "plain".to_owned(),
                 wallet_handles: Arc::clone(&wallet_handles),
                 snp: None,
             },
@@ -861,15 +860,18 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
     ) {
         let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         let router = Arc::new(CustodyRouter::new(
-            HashMap::from([("plain".to_owned(), plain)]),
-            "plain",
+            HashMap::from([(crate::key_custody::CustodyBackend::Plain, plain)]),
+            crate::key_custody::CustodyBackend::Plain,
         ));
         let store = Store::open_in_memory().unwrap();
         let tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
-                    sealed_key_material: router.seal_in("plain", &material()).await.unwrap(),
+                    key_custody_backend: crate::store::CustodyBackend::Plain,
+                    sealed_key_material: router
+                        .seal_in(crate::key_custody::CustodyBackend::Plain, &material())
+                        .await
+                        .unwrap(),
                     primary_address: "5x".into(),
                     network: "stagenet".into(),
                     confirmations_required: None,
@@ -929,8 +931,11 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
         // The backend is replaced by a new instance: the old handle is gone.
         let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
         router.replace(
-            HashMap::from([("plain".to_owned(), Arc::clone(&fresh))]),
-            "plain",
+            HashMap::from([(
+                crate::key_custody::CustodyBackend::Plain,
+                Arc::clone(&fresh),
+            )]),
+            crate::key_custody::CustodyBackend::Plain,
         );
         eventually("the store to be registered in the new instance", || {
             wallet_handles

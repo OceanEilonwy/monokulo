@@ -33,6 +33,7 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use credentials::auth::RawToken;
+use engine_protocol::custody::CustodyBackend;
 use engine_protocol::ids::EngineWalletId;
 use futures_util::{Stream, StreamExt as _};
 use reqwest::{Method, StatusCode};
@@ -697,14 +698,14 @@ impl EngineClient {
         &self,
         id: &EngineWalletId,
         keys: &StoreKeys,
-        key_custody_backend: Option<&str>,
+        key_custody_backend: Option<CustodyBackend>,
     ) -> Result<EngineWallet, EngineClientError> {
         #[derive(Serialize)]
         struct Restore<'a> {
             #[serde(flatten)]
             keys: &'a StoreKeys,
             #[serde(skip_serializing_if = "Option::is_none")]
-            key_custody_backend: Option<&'a str>,
+            key_custody_backend: Option<CustodyBackend>,
         }
         self.send(
             Call::post(format!("/api/v1/admin/wallets/{}/restore", id.as_str())).json(&Restore {
@@ -721,7 +722,7 @@ impl EngineClient {
     /// encrypted to it). One per key entry form.
     pub async fn create_key_bundle(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
     ) -> Result<KeyBundleAnswer, EngineClientError> {
         self.send(
             Call::post("/api/v1/admin/key-custody/bundle")
@@ -736,7 +737,7 @@ impl EngineClient {
     pub async fn move_key_bundle(
         &self,
         sk: &RawToken,
-        backend: &str,
+        backend: CustodyBackend,
     ) -> Result<KeyBundleAnswer, EngineClientError> {
         self.send(
             Call::post("/api/v1/admin/tenant/key-custody/bundle")
@@ -753,7 +754,7 @@ impl EngineClient {
     pub async fn switch_key_custody(
         &self,
         sk: &RawToken,
-        backend: &str,
+        backend: CustodyBackend,
         keys: &StoreKeys,
     ) -> Result<TenantView, EngineClientError> {
         self.send(
@@ -1218,7 +1219,7 @@ pub struct CreateTenantRequest {
     pub order_expiry_seconds: Option<i64>,
     /// The engine's default when `None` (part 5).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_custody_backend: Option<String>,
+    pub key_custody_backend: Option<CustodyBackend>,
 }
 
 /// A store's keys as the engine takes them: in the clear (`plain`), or
@@ -1235,7 +1236,7 @@ pub struct StoreKeys {
 
 #[derive(Serialize)]
 struct SwitchKeyCustodyRequest<'a> {
-    backend: &'a str,
+    backend: CustodyBackend,
     #[serde(flatten)]
     keys: &'a StoreKeys,
 }
@@ -1256,7 +1257,7 @@ pub struct CreateWalletRequest {
     pub network: String,
     /// The engine's default when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub key_custody_backend: Option<String>,
+    pub key_custody_backend: Option<CustodyBackend>,
 }
 
 /// Mirrors the engine's `WalletStatusView`.
@@ -1276,7 +1277,7 @@ pub struct EngineWallet {
     pub wallet_id: EngineWalletId,
     pub primary_address: String,
     pub network: String,
-    pub key_custody_backend: String,
+    pub key_custody_backend: CustodyBackend,
 }
 
 #[derive(Debug, Serialize)]
@@ -1309,7 +1310,7 @@ pub struct TenantView {
     /// Which key custody backend holds this store's keys. Absent from an
     /// engine older than part 5.
     #[serde(default)]
-    pub key_custody_backend: Option<String>,
+    pub key_custody_backend: Option<CustodyBackend>,
 }
 
 /// Mirrors the engine's own `WalletChangeView`.
@@ -1551,7 +1552,7 @@ pub struct EngineStatusResponse {
     #[serde(default)]
     pub key_custody: Vec<CustodyBackendStatus>,
     #[serde(default)]
-    pub key_custody_default: Option<String>,
+    pub key_custody_default: Option<CustodyBackend>,
     /// Which images the engine's `snp` backend trusts with keys, when it
     /// is set up: compared with monokulo's own policy.
     #[serde(default)]
@@ -1563,7 +1564,7 @@ pub struct EngineStatusResponse {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct CustodyBackendStatus {
-    pub backend: String,
+    pub backend: CustodyBackend,
     pub error: Option<String>,
 }
 

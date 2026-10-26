@@ -3,6 +3,7 @@
 
 use std::ops::Range;
 
+use engine_protocol::custody::CustodyBackend;
 use monero::blockdata::transaction::TransactionPrefix;
 #[cfg(test)]
 use monero::consensus::encode::serialize;
@@ -372,7 +373,7 @@ pub trait KeyCustody: Send + Sync {
     /// `register_wallet`, in the backend called `backend`.
     async fn register_wallet_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         material: WalletMaterial,
     ) -> Result<WalletHandle, KeyCustodyError> {
         let _ = backend;
@@ -382,7 +383,7 @@ pub trait KeyCustody: Send + Sync {
     /// `unseal_and_register`, in the backend called `backend`.
     async fn unseal_and_register_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         sealed: &[u8],
     ) -> Result<WalletHandle, KeyCustodyError> {
         let _ = backend;
@@ -391,7 +392,7 @@ pub trait KeyCustody: Send + Sync {
 
     async fn unseal_and_register_in_idempotent(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         sealed: &[u8],
         registration_id: &str,
     ) -> Result<WalletHandle, KeyCustodyError> {
@@ -403,7 +404,7 @@ pub trait KeyCustody: Send + Sync {
     /// `seal`, by the backend called `backend`.
     async fn seal_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         material: &WalletMaterial,
     ) -> Result<Vec<u8>, KeyCustodyError> {
         let _ = backend;
@@ -421,13 +422,13 @@ pub trait KeyCustody: Send + Sync {
 
     /// The backends enabled right now, by name; empty when this isn't a
     /// router (a single backend, whatever it is called).
-    fn enabled_backends(&self) -> Vec<String> {
+    fn enabled_backends(&self) -> Vec<CustodyBackend> {
         Vec::new()
     }
 
     /// Each enabled backend's health, by name: `None` if it answers, else
     /// why not. Empty when this isn't a router.
-    async fn backend_health(&self) -> Vec<(String, Option<String>)> {
+    async fn backend_health(&self) -> Vec<(CustodyBackend, Option<String>)> {
         Vec::new()
     }
 
@@ -471,7 +472,7 @@ pub trait KeyCustody: Send + Sync {
     }
 
     /// `takes_raw_keys`, of the backend called `backend`.
-    fn takes_raw_keys_in(&self, backend: &str) -> bool {
+    fn takes_raw_keys_in(&self, backend: CustodyBackend) -> bool {
         let _ = backend;
         self.takes_raw_keys()
     }
@@ -479,7 +480,7 @@ pub trait KeyCustody: Send + Sync {
     /// `key_bundle`, from the backend called `backend`.
     async fn key_bundle_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         action: crate::transport::Action,
         store: Option<&str>,
     ) -> Result<crate::transport::Bundle, KeyCustodyError> {
@@ -490,7 +491,7 @@ pub trait KeyCustody: Send + Sync {
     /// `register_envelope`, in the backend called `backend`.
     async fn register_envelope_in(
         &self,
-        backend: &str,
+        backend: CustodyBackend,
         envelope: &crate::transport::Envelope,
         action: crate::transport::Action,
         store: Option<&str>,

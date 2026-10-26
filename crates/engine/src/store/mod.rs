@@ -21,6 +21,7 @@ use std::sync::Arc;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
+pub use engine_protocol::custody::CustodyBackend;
 pub use engine_protocol::ids::{OrderId, TenantId};
 
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
@@ -531,7 +532,7 @@ pub struct NextIndex {
 pub struct Tenant {
     pub id: TenantId,
     pub public_key: String,
-    pub key_custody_backend: String,
+    pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
     pub network: String,
@@ -551,7 +552,7 @@ pub struct Tenant {
 }
 
 pub struct NewTenant {
-    pub key_custody_backend: String,
+    pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
     pub network: String,
@@ -571,7 +572,7 @@ pub struct TenantConfigPatch {
 #[derive(Debug, Clone)]
 pub struct Wallet {
     pub id: String,
-    pub key_custody_backend: String,
+    pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
     pub network: String,
@@ -582,7 +583,7 @@ pub struct Wallet {
 }
 
 pub struct NewWallet {
-    pub key_custody_backend: String,
+    pub key_custody_backend: CustodyBackend,
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
     pub network: String,
@@ -1370,7 +1371,7 @@ impl Store {
         let wallet_id = Self::insert_wallet(
             &tx,
             &NewWallet {
-                key_custody_backend: new.key_custody_backend.clone(),
+                key_custody_backend: new.key_custody_backend,
                 sealed_key_material: new.sealed_key_material.clone(),
                 primary_address: new.primary_address.clone(),
                 network: new.network.clone(),
@@ -1626,7 +1627,12 @@ impl Store {
 
     /// Brings a retired wallet back with its keys, sealed again
     /// (`retire_wallet`). The caller has checked they are this wallet's.
-    pub fn restore_wallet(&self, id: &str, backend: &str, sealed: &[u8]) -> Result<Wallet> {
+    pub fn restore_wallet(
+        &self,
+        id: &str,
+        backend: CustodyBackend,
+        sealed: &[u8],
+    ) -> Result<Wallet> {
         let changed = self.conn.execute(
             "UPDATE wallets SET deleted_at_utc = NULL, key_custody_backend = ?2, sealed_key_material = ?3
              WHERE id = ?1 AND deleted_at_utc IS NOT NULL",
@@ -1832,7 +1838,7 @@ impl Store {
     }
 
     /// Every active tenant's (public key, network, key custody backend).
-    pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, String)>> {
+    pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, CustodyBackend)>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT public_key, network, key_custody_backend FROM tenants WHERE disabled_at_utc IS NULL ORDER BY public_key",
         )?;
@@ -1841,7 +1847,7 @@ impl Store {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, CustodyBackend>(2)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1882,7 +1888,7 @@ impl Store {
         &self,
         tenant_id: &TenantId,
         expected_wallet: &str,
-        backend: &str,
+        backend: CustodyBackend,
         sealed: &[u8],
     ) -> Result<Vec<TenantId>> {
         let tx = rusqlite::Transaction::new_unchecked(
@@ -3817,7 +3823,7 @@ mod tests {
         store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4addr".into(),
                     network: "mainnet".into(),
@@ -4995,7 +5001,7 @@ mod tests {
         let stagenet_tenant = store
             .create_tenant(
                 &NewTenant {
-                    key_custody_backend: "plain".into(),
+                    key_custody_backend: CustodyBackend::Plain,
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
                     network: "stagenet".into(),
@@ -5531,7 +5537,12 @@ mod tests {
         let elsewhere = new_tenant(&store);
 
         let others = store
-            .update_tenant_key_custody(&first.tenant.id, &first.tenant.wallet_id, "snp", &[2])
+            .update_tenant_key_custody(
+                &first.tenant.id,
+                &first.tenant.wallet_id,
+                CustodyBackend::Snp,
+                &[2],
+            )
             .unwrap();
         assert_eq!(others, vec![second.tenant.id.clone()]);
         for id in [&first.tenant.id, &second.tenant.id] {
@@ -5545,13 +5556,13 @@ mod tests {
             );
         }
         let wallet = store.get_wallet(&first.tenant.wallet_id).unwrap().unwrap();
-        assert_eq!(wallet.key_custody_backend, "snp");
+        assert_eq!(wallet.key_custody_backend, CustodyBackend::Snp);
         assert_eq!(wallet.sealed_key_material, vec![2]);
         let untouched = store
             .get_tenant_by_id(&elsewhere.tenant.id)
             .unwrap()
             .unwrap();
-        assert_eq!(untouched.key_custody_backend, "plain");
+        assert_eq!(untouched.key_custody_backend, CustodyBackend::Plain);
 
         // Keys checked against the store's old wallet aren't written onto
         // the one it changed to meanwhile, nor onto the stores on it.
@@ -5560,7 +5571,12 @@ mod tests {
             .change_tenant_wallet(&first.tenant.id, other_wallet, 1002)
             .unwrap();
         assert!(matches!(
-            store.update_tenant_key_custody(&first.tenant.id, &first.tenant.wallet_id, "snp", &[3]),
+            store.update_tenant_key_custody(
+                &first.tenant.id,
+                &first.tenant.wallet_id,
+                CustodyBackend::Snp,
+                &[3]
+            ),
             Err(StoreError::Refused(_))
         ));
         for id in [&first.tenant.id, &elsewhere.tenant.id] {
@@ -5583,7 +5599,7 @@ mod tests {
         );
         // Checked against the wallet it uses now, they move as before.
         let others = store
-            .update_tenant_key_custody(&first.tenant.id, other_wallet, "snp", &[3])
+            .update_tenant_key_custody(&first.tenant.id, other_wallet, CustodyBackend::Snp, &[3])
             .unwrap();
         assert_eq!(others, vec![elsewhere.tenant.id.clone()]);
         let wallet = store.get_wallet(other_wallet).unwrap().unwrap();

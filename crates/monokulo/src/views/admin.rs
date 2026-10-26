@@ -667,30 +667,7 @@ impl SettingsTab {
 }
 
 /// A key custody backend this page knows the settings of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CustodyBackend {
-    Plain,
-    Snp,
-}
-
-impl CustodyBackend {
-    /// The backend a name the engine gives one (`snp`) is, if the page
-    /// knows it.
-    pub fn parse(name: &str) -> Option<CustodyBackend> {
-        match name {
-            "plain" => Some(CustodyBackend::Plain),
-            "snp" => Some(CustodyBackend::Snp),
-            _ => None,
-        }
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            CustodyBackend::Plain => "plain",
-            CustodyBackend::Snp => "snp",
-        }
-    }
-}
+pub use engine_protocol::custody::CustodyBackend;
 
 /// A card on the admin settings page: settings shown, saved and refused
 /// together. Where a setting goes is [`Group::of`]; its tab is
@@ -736,7 +713,10 @@ impl Group {
         let (prefix, rest) = key.split_once('.').unwrap_or((key, ""));
         // `key_custody.<backend>_...`: a setting only that backend uses.
         let backend = || {
-            CustodyBackend::parse(rest.split('_').next().unwrap_or(rest))
+            rest.split('_')
+                .next()
+                .unwrap_or(rest)
+                .parse::<CustodyBackend>()
                 .map_or(Group::Other(owner), Group::Custody)
         };
         match owner {
@@ -824,7 +804,7 @@ impl Group {
             Group::ExchangeRates => "Exchange rates".into(),
             Group::CustodyBackends => "Backends".into(),
             Group::Custody(CustodyBackend::Snp) => "SEV-SNP".into(),
-            Group::Custody(backend) => format!("Key custody: {}", backend.name()),
+            Group::Custody(backend) => format!("Key custody: {}", backend.as_str()),
             Group::CustodyCli => "key-custody-cli downloads".into(),
             Group::AbuseLimits => "Request limits".into(),
             Group::AbuseChallenge => "Challenge".into(),
@@ -894,7 +874,7 @@ impl std::fmt::Display for Group {
             Group::Webhooks => f.write_str("webhooks"),
             Group::ExchangeRates => f.write_str("exchange-rates"),
             Group::CustodyBackends => f.write_str("custody-backends"),
-            Group::Custody(backend) => write!(f, "custody-{}", backend.name()),
+            Group::Custody(backend) => write!(f, "custody-{}", backend.as_str()),
             Group::CustodyCli => f.write_str("custody-cli"),
             Group::AbuseLimits => f.write_str("abuse-limits"),
             Group::AbuseChallenge => f.write_str("abuse-challenge"),
@@ -1523,7 +1503,9 @@ fn tab_groups(data: &AdminSettingsViewModel, tab: SettingsTab) -> Vec<Group> {
         if *fixed == Group::CustodyBackends {
             let mut backends: Vec<Group> = custody_backends(&data.engine_fields)
                 .into_iter()
-                .filter_map(|(backend, _)| CustodyBackend::parse(&backend).map(Group::Custody))
+                .filter_map(|(backend, _)| {
+                    backend.parse::<CustodyBackend>().ok().map(Group::Custody)
+                })
                 .collect();
             for field in &data.monokulo_fields {
                 let group = Group::of(&field.key, SettingOwner::Monokulo);
@@ -1880,7 +1862,7 @@ fn settings_card(data: &AdminSettingsViewModel, group: Group) -> Markup {
         .iter()
         .all(|f| f.locked.is_some() || f.kind == SettingKindView::Secret);
     let backend = match group {
-        Group::Custody(backend) => Some(backend.name()),
+        Group::Custody(backend) => Some(backend.as_str()),
         _ => None,
     };
     let hidden = backend.is_some_and(|backend| {
