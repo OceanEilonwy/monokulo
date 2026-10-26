@@ -219,6 +219,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "api-reference"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "argon2"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3733,6 +3741,7 @@ dependencies = [
  "abuse",
  "aes-gcm",
  "api-macros",
+ "api-reference",
  "axum",
  "axum-extra",
  "brotli",
@@ -8556,6 +8565,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "api-reference",
  "getrandom 0.4.3",
  "hex",
  "image",

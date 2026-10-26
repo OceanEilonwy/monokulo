@@ -46,6 +46,8 @@ axum-extra = { version = "0.12.6", features = ["cookie", "typed-routing"] }
 # (`linkme` gathers them); its schemas (`schemars`) are the OpenAPI
 # document's and its forms', and its scalars check their values (`regex`).
 api-macros = { path = "../api-macros" }
+# reference.json, as the docs build reads it.
+api-reference = { path = "../api-reference" }
 linkme = "0.3.37"
 schemars = "1.2.3"
 regex = "1"

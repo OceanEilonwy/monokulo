@@ -31,6 +31,7 @@ members = [
     "crates/ui",
     "crates/ui-macros",
     "crates/api-macros",
+    "crates/api-reference",
     "xtask",
 ]
 
