@@ -451,6 +451,8 @@ component! {
         listed_in: Option<String>,
         #[default(false)]
         disabled: bool,
+        /// More attributes on the checkbox: a script's hook.
+        rest: Attrs,
     }
     html {
         @if let Some(listed_in) = listed_in {
@@ -458,7 +460,7 @@ component! {
         }
         label class="switch" {
             input type="checkbox" role="switch" name=(name) value="true" id=(id) checked[on]
-                aria-describedby=[described_by] data-saved=[saved] disabled[disabled];
+                aria-describedby=[described_by] data-saved=[saved] disabled[disabled] ..rest;
             span class="switch-track" aria-hidden="true" {}
             span class="switch-on" aria-hidden="true" { "On" }
             span class="switch-off" aria-hidden="true" { "Off" }

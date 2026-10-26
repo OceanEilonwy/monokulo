@@ -211,8 +211,10 @@ impl NodeForm {
     /// applied, blank rows dropped, and every remaining row checked: its
     /// address, and that it isn't listed twice in its network. `order` is
     /// the order networks are shown in; any other network submitted comes
-    /// after them. A checkbox that isn't ticked isn't sent, so a row's boxes
-    /// are ticked only when their field is there.
+    /// after them. A row's switches are on only when sent as on: a switch
+    /// left off is sent as `false` (`views::controls::switch` lists it), and
+    /// `on` is what the checkboxes they replaced sent, from a page loaded
+    /// before.
     pub fn from_form(form: &HashMap<String, String>, order: &[Network]) -> NodeForm {
         let mut by_network: HashMap<Network, Vec<(usize, NodeRow)>> = HashMap::new();
         for (name, value) in form {
@@ -220,7 +222,10 @@ impl NodeForm {
                 continue;
             };
             let name = network_str(network);
-            let ticked = |field: &str| form.contains_key(&format!("node_{name}_{index}_{field}"));
+            let ticked = |field: &str| {
+                form.get(&format!("node_{name}_{index}_{field}"))
+                    .is_some_and(|value| matches!(value.trim(), "true" | "on"))
+            };
             by_network.entry(network).or_default().push((
                 index,
                 NodeRow {
@@ -547,6 +552,26 @@ mod tests {
             .iter()
             .all(|(_, rows)| rows.iter().all(|row| row.error.is_none())));
         assert_eq!(nodes.rows(monero::Network::Testnet), None, "not submitted");
+
+        // A switch left off is sent as `false` (its `switches` listing), one
+        // on as `true`: off stays off, so TLS and self-signed certificates
+        // are never accepted by accident.
+        {
+            let nodes = NodeForm::from_form(
+                &form(&[
+                    ("node_testnet_0_address", "off.example:1"),
+                    ("node_testnet_0_ssl", "false"),
+                    ("node_testnet_0_self_signed", "false"),
+                    ("node_testnet_1_address", "on.example:1"),
+                    ("node_testnet_1_ssl", "true"),
+                    ("node_testnet_1_self_signed", "true"),
+                ]),
+                ORDER,
+            );
+            let rows = nodes.rows(monero::Network::Testnet).unwrap();
+            assert!(!rows[0].ssl && !rows[0].self_signed);
+            assert!(rows[1].ssl && rows[1].self_signed);
+        }
     }
 
     #[test]
