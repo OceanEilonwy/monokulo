@@ -6,14 +6,16 @@
 # would mean bootstrapping a whole Rust toolchain, and monokulo's build also
 # needs Node for the POS app.
 #
-# MONOKULO_VERSION and MONOKULO_RELEASE come from the build script (the
-# crate version, and the commit count so every build upgrades the last).
+# MONOKULO_VERSION, MONOKULO_RELEASE and MONOKULO_COMMIT come from the
+# build script (the crate version, the commit count so every build upgrades
+# the last, and the commit it was built from).
 
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=monokulo
 PKG_VERSION:=$(or $(MONOKULO_VERSION),0.1.0)
 PKG_RELEASE:=$(or $(MONOKULO_RELEASE),1)
+PKG_COMMIT:=$(MONOKULO_COMMIT)
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -52,6 +54,12 @@ define Package/monokulo/install
 	$(INSTALL_BIN) $(CURDIR)/files/monokulo.init $(1)/etc/init.d/monokulo
 	$(INSTALL_CONF) $(CURDIR)/files/monokulo.config $(1)/etc/config/monokulo
 	$(INSTALL_DATA) $(CURDIR)/files/monokulo.keep $(1)/lib/upgrade/keep.d/monokulo
+	# Which build this is: the init script hands it to procd with the
+	# instance it starts, so LuCI shows the version that is running.
+	$(INSTALL_DIR) $(1)/usr/share/monokulo
+	printf 'version=%s\ncommit=%s\n' '$(PKG_VERSION)-r$(PKG_RELEASE)' '$(PKG_COMMIT)' \
+		>$(1)/usr/share/monokulo/version
+	chmod 0644 $(1)/usr/share/monokulo/version
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view
 	$(INSTALL_DATA) $(CURDIR)/files/luci/monokulo.js $(1)/www/luci-static/resources/view/monokulo.js
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d $(1)/usr/share/rpcd/acl.d

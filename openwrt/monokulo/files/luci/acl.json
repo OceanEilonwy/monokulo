@@ -7,7 +7,8 @@
 			},
 			"uci": [ "monokulo" ],
 			"file": {
-				"*/tor/hostname": [ "read" ]
+				"*/tor/hostname": [ "read" ],
+				"/usr/share/monokulo/version": [ "read" ]
 			}
 		},
 		"write": {

@@ -16,6 +16,8 @@ RUN_AS=monokulo
 # from nowhere else).
 SECRETS_DIR=/etc/monokulo
 SECRETS=$SECRETS_DIR/secrets
+# Which build the package installed (its Makefile writes it).
+VERSION_FILE=/usr/share/monokulo/version
 
 log() {
 	logger -t monokulo "$*"
@@ -133,6 +135,12 @@ start_service() {
 	[ "$onion" = 1 ] && procd_append_param command --tor-mode inside
 	procd_set_param env MONOKULO_ENCRYPTION_KEY="$(secret MONOKULO_ENCRYPTION_KEY)"
 	procd_set_param user "$RUN_AS"
+	# The build, kept with the instance so `ubus call service list` (and
+	# LuCI) report the one running, not only the one installed. A new build
+	# changes it, so procd restarts the instance onto the new binary.
+	procd_set_param data \
+		version="$(sed -n 's/^version=//p' "$VERSION_FILE" 2>/dev/null)" \
+		commit="$(sed -n 's/^commit=//p' "$VERSION_FILE" 2>/dev/null)"
 	procd_set_param respawn 3600 5 5
 	procd_set_param stdout 1
 	procd_set_param stderr 1
