@@ -78,11 +78,42 @@ impl PluginName {
 }
 
 /// Characters that change how the text around them reads without showing
-/// themselves: bidirectional overrides and isolates, zero-width spaces and
-/// joiners, the byte order mark. A plugin's name could otherwise reorder
-/// the shop's host printed after it.
+/// themselves: every format character (general category Cf) and every
+/// Default_Ignorable_Code_Point, as Unicode 16 lists them. Among them are
+/// bidirectional marks, overrides and isolates (the Arabic letter mark
+/// too), zero-width spaces and joiners, the soft hyphen, variation
+/// selectors, tag characters and the byte order mark. A plugin's name could
+/// otherwise reorder the shop's host printed after it, or carry text two
+/// names that look the same differ by.
 fn invisible(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{FEFF}')
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{115F}'..='\u{1160}'
+            | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{3164}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{FFA0}'
+            | '\u{FFF0}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}'
+    )
 }
 
 /// A plugin: its slug, and the name it gave, if it gave one. Shown
@@ -182,6 +213,12 @@ mod tests {
             Some("A c m e")
         );
         assert_eq!(clean("\u{202E}\u{2069}"), None);
+        // The Arabic letter mark, a soft hyphen and a tag character are
+        // format characters too.
+        assert_eq!(
+            clean("Acme\u{061C}\u{00AD}\u{E0041}Cart").as_deref(),
+            Some("Acme Cart")
+        );
     }
 
     #[test]
