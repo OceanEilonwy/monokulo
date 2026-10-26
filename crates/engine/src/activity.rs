@@ -16,13 +16,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use engine_protocol::activity::{Event, Recorded};
+/// How far back the record reaches, and the most events it keeps whatever
+/// their age: shared with the engine page's history, which mirrors it.
+pub use engine_protocol::activity::{KEEP, MAX_EVENTS};
 use parking_lot::Mutex;
-
-/// How far back the record reaches.
-pub const KEEP: Duration = Duration::from_mins(30);
-/// The most events kept, whatever their age: a busy network's record stays
-/// bounded (a round records about ten; a catch-up a few per block).
-pub const MAX_EVENTS: usize = 50_000;
 /// How often the scan loop records a snapshot of the state the page draws.
 pub const SNAPSHOT_EVERY: Duration = Duration::from_secs(10);
 /// How often, while someone watches (a stream is open), the node is asked
