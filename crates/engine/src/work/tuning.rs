@@ -209,9 +209,22 @@ impl ScanTuning {
     /// `tier`'s share of a round of `budget`: the round's live length,
     /// which is raised while a large block is scanned in pages.
     pub const fn share_of(&self, tier: Tier, budget: Duration) -> Duration {
-        // Whole nanoseconds; a round would need to run for centuries to
-        // overflow the `u64`.
-        Duration::from_nanos((budget.as_nanos() * self.shares.percent(tier) as u128 / 100) as u64)
+        // floor(budget * percent / 100) in whole nanoseconds, over the full
+        // width of a `Duration`: the hundredths first, then what is left
+        // of them, so nothing is narrowed.
+        let percent = self.shares.percent(tier);
+        let Some(hundredth) = budget.checked_div(100) else {
+            return Duration::ZERO;
+        };
+        // A share is at most the whole round (`validate`).
+        let Some(whole) = hundredth.checked_mul(percent) else {
+            return budget;
+        };
+        let rest = (budget.as_nanos() % 100) as u64 * percent as u64 / 100;
+        match whole.checked_add(Duration::from_nanos(rest)) {
+            Some(share) => share,
+            None => budget,
+        }
     }
 
     /// `tier`'s share of a round of [`Self::round_budget`]: what one of its

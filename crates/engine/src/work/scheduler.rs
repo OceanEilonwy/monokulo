@@ -49,11 +49,7 @@ impl Scheduler {
         tuning.validate()?;
         let mut shares = PerTier::filled(Duration::ZERO);
         for tier in Tier::ALL {
-            // Duration multiplication by a percentage without narrowing nanoseconds.
-            shares[tier] = budget / 100 * tuning.shares.percent(tier)
-                + Duration::from_nanos(
-                    (budget.as_nanos() % 100) as u64 * u64::from(tuning.shares.percent(tier)) / 100,
-                );
+            shares[tier] = tuning.share_of(tier, budget);
         }
         Ok(Self {
             budget,
