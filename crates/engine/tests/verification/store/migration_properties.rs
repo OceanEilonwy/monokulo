@@ -306,12 +306,12 @@ fn upgrade_from(
     let tenant = TenantId::new("tenant");
     let order = OrderId::new("order");
     let saved = store.get_order(&tenant, &order).unwrap().unwrap();
-    assert_eq!(saved.xmr_amount_piconero, amount as u64);
-    assert_eq!(saved.amount_received_piconero, amount as u64);
+    assert_eq!(saved.xmr_amount_piconero, Piconero(amount as u64));
+    assert_eq!(saved.amount_received_piconero, Piconero(amount as u64));
     assert_eq!(saved.minor_index, 1);
     let payments = store.get_all_payments(&order).unwrap();
     assert_eq!(payments.len(), 1);
-    assert_eq!(payments[0].amount_piconero, amount as u64);
+    assert_eq!(payments[0].amount_piconero, Piconero(amount as u64));
     assert_eq!(payments[0].block_height, Some(3));
     assert_order_events_kept(&store, version, payload);
     assert_eq!(
@@ -455,7 +455,7 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
     let store = Store::open_file(&path.0).unwrap();
     assert_eq!(
         store.get_all_payments(&OrderId::new("order")).unwrap()[0].amount_piconero,
-        amount as u64
+        Piconero(amount as u64)
     );
     assert_order_events_kept(&store, version, payload);
     assert_eq!(

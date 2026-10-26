@@ -9,11 +9,14 @@
 //! function that genuinely is about fiat, and stays in that module; it reuses
 //! `parse_scaled`/`AmountError` from here rather than duplicating them.
 
-/// Piconero per whole XMR - the fixed unit conversion factor (1 XMR = 1e12
-/// piconero), used both by this module's own decimal<->piconero conversions
-/// and by `exchange_rate::XmrIdentityProvider` (an XMR-denominated order
-/// needs exactly this, not a looked-up rate).
-pub const PICONERO_PER_XMR: u64 = 1_000_000_000_000;
+/// Piconero per whole XMR, an amount and a rate as types of their own, and
+/// the largest order: shared with the engine (`engine_protocol::amount`).
+/// `PICONERO_PER_XMR` is used both by this module's own decimal<->piconero
+/// conversions and by `exchange_rate::XmrIdentityProvider` (an
+/// XMR-denominated order needs exactly this, not a looked-up rate).
+pub use engine_protocol::amount::{
+    Piconero, PiconeroPerUnit, MAX_ORDER_PICONERO, PICONERO_PER_XMR,
+};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AmountError {
@@ -25,6 +28,9 @@ pub enum AmountError {
     TooManyDecimalPlaces { max: u8 },
     #[error("amount is too large to represent in piconero")]
     TooLarge,
+    /// More than the largest order there can be ([`MAX_ORDER_PICONERO`]).
+    #[error("amount is more than 1,000,000 XMR")]
+    AboveOrderLimit,
 }
 
 /// Splits a decimal string into its (whole, fraction) digit runs, rejecting anything
@@ -66,8 +72,12 @@ const _: () = assert!(AMOUNT_SCALE == PICONERO_PER_XMR as u128);
 /// `amount` times 10^[`MAX_AMOUNT_DECIMALS`], exactly, after dropping the
 /// fraction's trailing zeros. More significant decimals than that is an
 /// error, never a silent truncation of what someone typed; a number too
-/// big for `u128` is [`AmountError::TooLarge`], never a wrap.
-pub(crate) fn parse_scaled(amount: &str) -> Result<u128, AmountError> {
+/// big for `u128` is [`AmountError::TooLarge`], never a wrap. Zero is
+/// returned as it is: whether it is allowed is the caller's to say.
+///
+/// One parser for every decimal amount: an order's, a rate's, and a
+/// confirmation threshold's (monokulo's `ThresholdAmount`).
+pub fn parse_scaled(amount: &str) -> Result<u128, AmountError> {
     let (whole, fraction) = split_decimal(amount)?;
     let fraction = fraction.trim_end_matches('0');
     if fraction.len() > MAX_AMOUNT_DECIMALS as usize {
@@ -118,55 +128,32 @@ pub fn parse_xmr_to_piconero(xmr_amount: &str) -> Result<u64, AmountError> {
 /// `"0.500000000000"`. Deliberately fixed-width rather than trimming trailing
 /// zeros - a customer comparing this against what their wallet shows benefits from
 /// the full precision being visible, not a shortened form that could be misread.
-pub fn format_piconero_as_xmr(piconero: u64) -> String {
-    let whole = piconero / 1_000_000_000_000;
-    let frac = piconero % 1_000_000_000_000;
+pub fn format_piconero_as_xmr(piconero: Piconero) -> String {
+    let piconero = piconero.get();
+    let whole = piconero / PICONERO_PER_XMR;
+    let frac = piconero % PICONERO_PER_XMR;
     format!("{whole}.{frac:012}")
 }
 
-/// An amount of monero in piconero (10^-12 XMR). Its own type so an amount
-/// can't be passed where a confirmation count or height is expected, or the
-/// other way round; stored in SQLite with a checked conversion.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(transparent)]
-pub struct Piconero(pub u64);
-
-impl Piconero {
-    pub fn get(self) -> u64 {
-        self.0
+/// `scaled` (an amount times 10^[`MAX_AMOUNT_DECIMALS`], as
+/// [`parse_scaled`] gives it) as a decimal without trailing zeros, nor a
+/// trailing dot: `1_500_000_000_000` -> `"1.5"`. For totals and settings,
+/// where the shortest spelling reads best; [`parse_scaled`] reads it back.
+pub fn format_scaled_trimmed(scaled: u128) -> String {
+    let whole = scaled / AMOUNT_SCALE;
+    let frac = scaled % AMOUNT_SCALE;
+    if frac == 0 {
+        return whole.to_string();
     }
+    let width = MAX_AMOUNT_DECIMALS as usize;
+    let frac = format!("{frac:0width$}");
+    format!("{whole}.{}", frac.trim_end_matches('0'))
 }
 
-impl std::fmt::Display for Piconero {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl rusqlite::ToSql for Piconero {
-    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
-        let value = i64::try_from(self.0)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        Ok(value.into())
-    }
-}
-
-impl rusqlite::types::FromSql for Piconero {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        sqlite::Unsigned::<u64>::column_result(value).map(|v| Piconero(v.0))
-    }
+/// `piconero` in XMR without trailing zeros (`0.001`, `1`): one piconero is
+/// exactly [`format_scaled_trimmed`]'s last place.
+pub fn format_xmr_trimmed(piconero: Piconero) -> String {
+    format_scaled_trimmed(u128::from(piconero.get()))
 }
 
 #[cfg(test)]
@@ -193,16 +180,38 @@ mod tests {
 
     #[test]
     fn format_piconero_as_xmr_matches_hand_computed_values() {
-        assert_eq!(format_piconero_as_xmr(6_700_000_000), "0.006700000000");
-        assert_eq!(format_piconero_as_xmr(1_000_000_000_000), "1.000000000000");
-        assert_eq!(format_piconero_as_xmr(1), "0.000000000001");
-        assert_eq!(format_piconero_as_xmr(0), "0.000000000000");
+        assert_eq!(
+            format_piconero_as_xmr(Piconero(6_700_000_000)),
+            "0.006700000000"
+        );
+        assert_eq!(
+            format_piconero_as_xmr(Piconero(1_000_000_000_000)),
+            "1.000000000000"
+        );
+        assert_eq!(format_piconero_as_xmr(Piconero(1)), "0.000000000001");
+        assert_eq!(format_piconero_as_xmr(Piconero::ZERO), "0.000000000000");
+    }
+
+    /// Whole amounts have no decimal point, fractions lose their trailing
+    /// zeros, and a single piconero keeps its last digit (moved here from
+    /// monokulo's home page, whose own copy of the formatter is gone).
+    #[test]
+    fn formats_piconero_as_xmr_with_no_trailing_zeros() {
+        for (piconero, xmr) in [
+            (1_000_000_000_000, "1"),
+            (0, "0"),
+            (1_500_000_000_000, "1.5"),
+            (335_000_000, "0.000335"),
+            (1, "0.000000000001"),
+        ] {
+            assert_eq!(format_scaled_trimmed(piconero), xmr);
+        }
     }
 
     #[test]
     fn format_and_parse_xmr_round_trip() {
         for piconero in [1u64, 6_700_000_000, 1_000_000_000_000, 167_500_000_000] {
-            let formatted = format_piconero_as_xmr(piconero);
+            let formatted = format_piconero_as_xmr(Piconero(piconero));
             assert_eq!(
                 parse_xmr_to_piconero(&formatted).unwrap(),
                 piconero,
@@ -211,7 +220,7 @@ mod tests {
         }
         // Zero formats, but is no amount: refused like a fiat zero.
         assert_eq!(
-            parse_xmr_to_piconero(&format_piconero_as_xmr(0)),
+            parse_xmr_to_piconero(&format_piconero_as_xmr(Piconero::ZERO)),
             Err(AmountError::NotPositive)
         );
     }

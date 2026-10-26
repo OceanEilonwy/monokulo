@@ -15,7 +15,7 @@
 
 use engine_protocol::order_event::OrderEventKind;
 use engine_protocol::order_status::OrderStatus;
-use pricing::xmr_amount::Piconero;
+use pricing::xmr_amount::PiconeroPerUnit;
 use serde_json::{json, Value};
 
 use super::body::{body_v2, LinkBases, API_VERSION};
@@ -57,7 +57,7 @@ fn metadata(currency: &str, amount: &str, piconero_per_unit: u64) -> OrderCurren
         order_id: OrderId::new("5f01c9a7d2e14b88a3e0f9c6d1e21b07"),
         currency: currency.into(),
         amount: amount.into(),
-        piconero_per_unit: Piconero(piconero_per_unit),
+        piconero_per_unit: PiconeroPerUnit(piconero_per_unit),
         provider: "coingecko".into(),
         created_at: 0,
         store_base_currency: None,
@@ -81,7 +81,7 @@ fn event(n: u8, kind: OrderEventKind) -> LoggedEvent {
         txid: kind.status().is_none().then(|| "a".repeat(64)),
         merchant_order_id: Some("1042".into()),
         description: Some("Order #1042: Blue mug + 2 more".into()),
-        xmr_amount_piconero: 81_245_310_000,
+        xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
     }
 }
 

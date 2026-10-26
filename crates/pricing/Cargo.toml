@@ -17,10 +17,9 @@ parking_lot = "0.12.5"
 # moving this module here doesn't change its TLS/JSON behavior at all.
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
-# `xmr_amount::Piconero` is stored as an INTEGER (`ToSql`/`FromSql`),
-# checked like every other unsigned value (`sqlite::Unsigned`).
-rusqlite = { version = "0.40.2", features = ["bundled"] }
-sqlite = { path = "../sqlite" }
+# `xmr_amount::Piconero` and `PiconeroPerUnit`, shared with the engine
+# (stored as an INTEGER there, `ToSql`/`FromSql`).
+engine-protocol = { path = "../engine-protocol" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The trace context on every outbound request (`http_client`).

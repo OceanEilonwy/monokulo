@@ -310,7 +310,7 @@ impl World {
                         merchant_order_id: None,
                         minor_index: minor,
                         address: "fault-control".into(),
-                        xmr_amount_piconero: 7,
+                        xmr_amount_piconero: crate::store::Piconero(7),
                         description: None,
                         created_at: 1000,
                         expires_at: i64::MAX,
@@ -466,7 +466,8 @@ impl World {
         let payments = store.lock().get_all_payments(&order).unwrap();
         assert_eq!(payments.len(), 1, "BOUNDARY: fault-recovery-money");
         assert_eq!(
-            payments[0].amount_piconero, 7,
+            payments[0].amount_piconero,
+            crate::store::Piconero(7),
             "BOUNDARY: fault-recovery-money"
         );
         self.hit("engine-fault-payment-recovered");

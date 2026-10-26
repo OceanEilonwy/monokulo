@@ -231,7 +231,7 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: index,
                 address: "fixture".into(),
-                xmr_amount_piconero: 5,
+                xmr_amount_piconero: crate::store::Piconero(5),
                 description: None,
                 created_at: 1000,
                 expires_at: i64::MAX / 2,
@@ -242,7 +242,16 @@ mod tests {
 
     fn pay(store: &Store, order: &OrderId, txid: &str, height: Option<i64>) {
         store
-            .record_payment_match(order, txid, 0, 5, "[]", 1000, height, Some(KEY))
+            .record_payment_match(
+                order,
+                txid,
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                height,
+                Some(KEY),
+            )
             .unwrap();
     }
 
@@ -250,7 +259,7 @@ mod tests {
     fn recompute(store: &Store, order: &OrderId) -> (OrderStatus, u64) {
         store.recompute_order_status(order, 50, 2000).unwrap();
         let order = store.get_order_by_id(order).unwrap().unwrap();
-        (order.status, order.amount_received_piconero)
+        (order.status, order.amount_received_piconero.get())
     }
 
     fn payment(store: &Store, order: &OrderId, txid: &str) -> crate::store::OrderPaymentRow {
@@ -412,12 +421,30 @@ mod tests {
     fn an_unsettled_conflict_holds_an_order_its_other_payments_would_settle() {
         let (store, order) = shop(0);
         store
-            .record_payment_match(&order, "other", 0, 5, "[]", 1000, None, Some("ffff"))
+            .record_payment_match(
+                &order,
+                "other",
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                None,
+                Some("ffff"),
+            )
             .unwrap();
         assert_eq!(recompute(&store, &order), (OrderStatus::Paid, 5));
         let (store, order) = shop(0);
         store
-            .record_payment_match(&order, "other", 0, 5, "[]", 1000, None, Some("ffff"))
+            .record_payment_match(
+                &order,
+                "other",
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                None,
+                Some("ffff"),
+            )
             .unwrap();
         pay(&store, &order, "a", None);
         pay(&store, &order, "b", None);
@@ -432,7 +459,16 @@ mod tests {
         pay(&store, &order, "a", None);
         pay(&store, &order, "a", Some(40));
         store
-            .record_payment_match(&order, "b", 0, 5, "[]", 1000, None, Some("ffff"))
+            .record_payment_match(
+                &order,
+                "b",
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                None,
+                Some("ffff"),
+            )
             .unwrap();
         assert_eq!(recompute(&store, &order), (OrderStatus::Overpaid, 10));
     }

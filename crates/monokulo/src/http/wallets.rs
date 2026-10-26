@@ -679,10 +679,10 @@ async fn render_detail(
             continue;
         };
         let name = store.name.clone();
-        for order in orders
-            .into_iter()
-            .filter(|o| o.amount_received_piconero > 0 && on_this_wallet(o.created_at))
-        {
+        for order in orders.into_iter().filter(|o| {
+            o.amount_received_piconero > pricing::xmr_amount::Piconero::ZERO
+                && on_this_wallet(o.created_at)
+        }) {
             let link = crate::base::url(format!("/stores/{}/orders/{}", store.id, order.order_id));
             history.push((
                 order.updated_at,

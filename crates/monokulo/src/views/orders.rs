@@ -4,7 +4,7 @@
 
 use maud::{html, Markup, PreEscaped};
 
-use pricing::exchange_rate::format_piconero_as_xmr;
+use pricing::xmr_amount::{format_xmr_trimmed, Piconero};
 
 use super::{OrderStatus, PageChrome};
 
@@ -216,7 +216,7 @@ fn urlencoding(value: &str) -> String {
 pub struct PaymentRowViewModel {
     pub txid: String,
     pub output_index: i64,
-    pub amount_piconero: u64,
+    pub amount_piconero: Piconero,
     pub first_seen_at: i64,
     pub block_height_display: maud::Markup,
     pub voided_at: Option<i64>,
@@ -242,8 +242,8 @@ pub struct OrderDetailData {
     pub amount: String,
     pub rate_display: String,
     pub rate_provider: String,
-    pub xmr_amount_piconero: u64,
-    pub amount_received_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
+    pub amount_received_piconero: Piconero,
     pub status: OrderStatus,
     /// Whether the page may stop following the order
     /// (`engine_client::OrderView::is_final`).
@@ -409,7 +409,7 @@ fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
             _ => (
                 "No payments have been made yet",
                 html! {
-                    "This order is waiting for " (super::trim_xmr(&format_piconero_as_xmr(order.xmr_amount_piconero))) " XMR. "
+                    "This order is waiting for " (format_xmr_trimmed(order.xmr_amount_piconero)) " XMR. "
                     "Payments show here as soon as they reach the network; this page updates by itself. "
                     "It expires at " (clock.time(order.expires_at)) "."
                 },
@@ -445,7 +445,7 @@ fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
         };
     }
 
-    let xmr = |piconero: u64| format!("{} XMR", super::trim_xmr(&format_piconero_as_xmr(piconero)));
+    let xmr = |piconero: Piconero| format!("{} XMR", format_xmr_trimmed(piconero));
     // (when, event): sorted newest first below.
     let mut events: Vec<(i64, ui::Event)> = Vec::new();
     events.push((
@@ -497,13 +497,12 @@ fn activity(order: &OrderDetailData, clock: &super::time::Clock) -> Markup {
             .payments
             .iter()
             .filter(|payment| payment.first_seen_at >= at && payment.voided_at.is_none())
-            .fold(0u64, |sum, payment| {
-                sum.saturating_add(payment.amount_piconero)
-            });
+            .map(|payment| payment.amount_piconero)
+            .sum::<Piconero>();
         events.push((
             at,
             ui::Event::new(clock.text(at), "Cancelled")
-                .detail(if late > 0 {
+                .detail(if late > Piconero::ZERO {
                     format!(
                         "{} arrived after it was cancelled: refund it, or keep it and fulfil the order.",
                         xmr(late)
@@ -667,8 +666,8 @@ mod tests {
             amount: "0.5".to_string(),
             rate_display: "1 XMR per 1 XMR".to_string(),
             rate_provider: "xmr".to_string(),
-            xmr_amount_piconero: 500_000_000_000,
-            amount_received_piconero: 0,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(500_000_000_000),
+            amount_received_piconero: pricing::xmr_amount::Piconero::ZERO,
             status: engine_protocol::order_status::OrderStatus::Pending,
             is_final: false,
             confirmations: 0,
@@ -728,7 +727,7 @@ mod tests {
         PaymentRowViewModel {
             txid: txid.to_string(),
             output_index: 1,
-            amount_piconero,
+            amount_piconero: Piconero(amount_piconero),
             first_seen_at,
             block_height_display: maud::html! { "3284108" },
             voided_at: None,
@@ -750,7 +749,7 @@ mod tests {
                 status,
                 is_final: false,
                 cancelled_at: Some(1_200),
-                amount_received_piconero: amount,
+                amount_received_piconero: pricing::xmr_amount::Piconero(amount),
                 payments: vec![payment("late", amount, 1_300)],
                 ..test_order_detail_data(None)
             };
@@ -784,7 +783,7 @@ mod tests {
         let order = OrderDetailData {
             status: engine_protocol::order_status::OrderStatus::Partial,
             is_final: false,
-            amount_received_piconero: 200_000_000_000,
+            amount_received_piconero: pricing::xmr_amount::Piconero(200_000_000_000),
             payments: vec![reversed, payment("bbbb2222", 200_000_000_000, 1200)],
             ..test_order_detail_data(None)
         };

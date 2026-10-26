@@ -161,7 +161,7 @@ impl Ledger<'_> {
                         (
                             p.txid.clone(),
                             p.output_index,
-                            p.amount_piconero,
+                            p.amount_piconero.get(),
                             p.block_height,
                         )
                     })
@@ -268,7 +268,7 @@ impl Ledger<'_> {
             for row in rows {
                 assert_eq!(
                     expected.get(&(row.txid.clone(), row.output_index)),
-                    Some(&(row.amount_piconero, row.block_height)),
+                    Some(&(row.amount_piconero.get(), row.block_height)),
                     "BOUNDARY: independent-output-ledger"
                 );
                 assert_eq!(
@@ -323,7 +323,8 @@ impl Ledger<'_> {
             statuses.insert(invoice.id.as_str().into(), status);
             let actual = s.get_order(&invoice.tenant, &invoice.id).unwrap().unwrap();
             assert_eq!(
-                actual.amount_received_piconero, total,
+                actual.amount_received_piconero,
+                crate::store::Piconero(total),
                 "BOUNDARY: independent-amount-ledger"
             );
             assert_eq!(actual.status, status, "BOUNDARY: independent-status; tip={tip} ceil={} mismatch={} required={} total={total} eligible={eligible} goal={} proof={:?} views={:?}", daemon.ceiling.get(), daemon.mismatch.get(), invoice.threshold, invoice.goal, s.proof_ceiling(NETWORK).unwrap(), s.proven_views(NETWORK, &invoice.id,tip,&std::collections::HashSet::default()).unwrap());

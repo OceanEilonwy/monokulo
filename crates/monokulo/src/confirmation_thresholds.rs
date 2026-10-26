@@ -17,6 +17,7 @@
 use crate::db::{ConfirmationThresholdRow, StoreConnectionRow};
 use crate::exchange_rate_config::ExchangeRateLookupError;
 use crate::http::AppState;
+use pricing::xmr_amount::{Piconero, PiconeroPerUnit, PICONERO_PER_XMR};
 
 /// Held while one store's confirmation policy is read for a new order or
 /// changed ([`lock_policy`]), so an order can't be priced against a policy
@@ -87,57 +88,36 @@ fn policy_lock(pk: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
 
 /// A currency amount in exact units of 10^-12. This covers XMR's precision
 /// and keeps fiat thresholds exact without floating-point boundary errors.
+/// Spelled, read and written as an order's amount is
+/// (`pricing::xmr_amount::parse_scaled`), zero allowed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ThresholdAmount(u128);
 
 impl ThresholdAmount {
-    const SCALE: u128 = 1_000_000_000_000;
-
     pub fn parse(raw: &str) -> Result<Self, &'static str> {
-        let raw = raw.trim();
-        let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
-        let whole = if whole.is_empty() && !fraction.is_empty() {
-            "0"
-        } else {
-            whole
-        };
-        if whole.is_empty()
-            || !whole.bytes().all(|byte| byte.is_ascii_digit())
-            || !fraction.bytes().all(|byte| byte.is_ascii_digit())
-            || fraction.len() > 12
-        {
-            return Err("amount must be a non-negative decimal with at most 12 fractional digits");
+        use pricing::xmr_amount::AmountError;
+        match pricing::xmr_amount::parse_scaled(raw.trim()) {
+            Ok(scaled) => Ok(Self(scaled)),
+            Err(AmountError::TooLarge | AmountError::AboveOrderLimit) => Err("amount is too large"),
+            Err(
+                AmountError::InvalidDecimal
+                | AmountError::NotPositive
+                | AmountError::TooManyDecimalPlaces { .. },
+            ) => Err("amount must be a non-negative decimal with at most 12 fractional digits"),
         }
-        let fraction_digits = fraction.len();
-        let whole: u64 = whole.parse().map_err(|_| "amount is too large")?;
-        let fraction: u64 = if fraction.is_empty() {
-            0
-        } else {
-            fraction.parse().map_err(|_| "invalid fraction")?
-        };
-        Ok(Self(
-            u128::from(whole) * Self::SCALE
-                + u128::from(fraction) * 10u128.pow((12 - fraction_digits) as u32),
-        ))
     }
 
     pub fn canonical(self) -> String {
-        let whole = self.0 / Self::SCALE;
-        let fraction = self.0 % Self::SCALE;
-        if fraction == 0 {
-            whole.to_string()
-        } else {
-            format!(
-                "{whole}.{}",
-                format!("{fraction:012}").trim_end_matches('0')
-            )
-        }
+        pricing::xmr_amount::format_scaled_trimmed(self.0)
     }
 
-    fn is_met_by(self, piconero: u64, piconero_per_unit: u64) -> bool {
-        let order = u128::from(piconero) * Self::SCALE;
+    /// Whether an order of `piconero`, at `rate` piconero per unit, is at
+    /// least this many units.
+    fn is_met_by(self, piconero: Piconero, rate: PiconeroPerUnit) -> bool {
+        // One unit of the scale is one piconero (`parse_scaled`).
+        let order = u128::from(piconero.get()) * u128::from(PICONERO_PER_XMR);
         self.0
-            .checked_mul(u128::from(piconero_per_unit))
+            .checked_mul(u128::from(rate.get()))
             .is_some_and(|boundary| order >= boundary)
     }
 }
@@ -150,13 +130,12 @@ pub const FALLBACK_CONFIRMATIONS: u64 = 10;
 /// Selects the largest qualifying tier using exact integer arithmetic.
 /// Invalid or duplicate stored amounts fail closed instead of falling back.
 pub fn resolve_confirmations_required(
-    piconero: pricing::xmr_amount::Piconero,
-    piconero_per_unit: pricing::xmr_amount::Piconero,
+    piconero: Piconero,
+    piconero_per_unit: PiconeroPerUnit,
     default_confirmations: u64,
     thresholds: &[ConfirmationThresholdRow],
 ) -> Result<u64, &'static str> {
-    let (piconero, piconero_per_unit) = (piconero.get(), piconero_per_unit.get());
-    if piconero_per_unit == 0
+    if piconero_per_unit.get() == 0
         || default_confirmations > engine_protocol::order_status::MAX_CONFIRMATIONS_REQUIRED
     {
         return Err("invalid confirmation policy");
@@ -194,7 +173,7 @@ pub struct Resolution {
     /// currency - no separate conversion (and no separate rate lookup) was
     /// ever needed, so there's no second rate to snapshot alongside the
     /// order's own existing one.
-    pub base_currency_piconero_per_unit: Option<pricing::xmr_amount::Piconero>,
+    pub base_currency_piconero_per_unit: Option<PiconeroPerUnit>,
 }
 
 /// Why an order's confirmations couldn't be resolved.
@@ -260,8 +239,8 @@ pub async fn resolve_for_order(
     policy: &PolicyGuard,
     sk: &credentials::auth::RawToken,
     order_currency: &crate::currencies::KnownCurrency,
-    order_currency_piconero_per_unit: u64,
-    xmr_amount_piconero: u64,
+    order_currency_piconero_per_unit: PiconeroPerUnit,
+    xmr_amount_piconero: Piconero,
 ) -> Result<Resolution, ResolveError> {
     if !policy.covers(&row.tenant_public_key) {
         tracing::error!(store.id = %row.id, "resolving an order's confirmations under another store's policy lock");
@@ -314,8 +293,8 @@ pub async fn resolve_for_order(
             ResolveError::Internal
         })?;
     let confirmations_required = resolve_confirmations_required(
-        pricing::xmr_amount::Piconero(xmr_amount_piconero),
-        pricing::xmr_amount::Piconero(effective_rate),
+        xmr_amount_piconero,
+        effective_rate,
         default_confirmations,
         &thresholds,
     )
@@ -327,8 +306,7 @@ pub async fn resolve_for_order(
     Ok(Resolution {
         confirmations_required,
         base_currency: base_currency.to_string(),
-        base_currency_piconero_per_unit: base_currency_piconero_per_unit
-            .map(pricing::xmr_amount::Piconero),
+        base_currency_piconero_per_unit,
     })
 }
 
@@ -397,7 +375,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(1_000_000),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &[]
             )
@@ -406,8 +384,8 @@ mod tests {
         );
         assert_eq!(
             resolve_confirmations_required(
-                pricing::xmr_amount::Piconero(0),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::Piconero::ZERO,
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &[]
             )
@@ -422,7 +400,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(10),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &thresholds
             )
@@ -437,7 +415,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(50),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &thresholds
             )
@@ -453,7 +431,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(1_000_000),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &thresholds
             )
@@ -470,7 +448,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(75),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &thresholds
             )
@@ -493,7 +471,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(60),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &thresholds
             )
@@ -507,7 +485,7 @@ mod tests {
         let thresholds = vec![threshold("not-a-number", 99), threshold("50.00", 20)];
         assert!(resolve_confirmations_required(
             pricing::xmr_amount::Piconero(1000),
-            pricing::xmr_amount::Piconero(1),
+            pricing::xmr_amount::PiconeroPerUnit(1),
             10,
             &thresholds
         )
@@ -519,8 +497,8 @@ mod tests {
         let thresholds = vec![threshold("0", 5)];
         assert_eq!(
             resolve_confirmations_required(
-                pricing::xmr_amount::Piconero(0),
-                pricing::xmr_amount::Piconero(1),
+                pricing::xmr_amount::Piconero::ZERO,
+                pricing::xmr_amount::PiconeroPerUnit(1),
                 10,
                 &thresholds
             )
@@ -538,7 +516,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(boundary - 1),
-                pricing::xmr_amount::Piconero(rate),
+                pricing::xmr_amount::PiconeroPerUnit(rate),
                 10,
                 &thresholds
             )
@@ -548,7 +526,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(boundary),
-                pricing::xmr_amount::Piconero(rate),
+                pricing::xmr_amount::PiconeroPerUnit(rate),
                 10,
                 &thresholds
             )
@@ -558,7 +536,7 @@ mod tests {
         assert_eq!(
             resolve_confirmations_required(
                 pricing::xmr_amount::Piconero(boundary + 1),
-                pricing::xmr_amount::Piconero(rate),
+                pricing::xmr_amount::PiconeroPerUnit(rate),
                 10,
                 &thresholds
             )
@@ -572,7 +550,7 @@ mod tests {
         let thresholds = vec![threshold("50", 10), threshold("50.0", 0)];
         assert!(resolve_confirmations_required(
             pricing::xmr_amount::Piconero(100),
-            pricing::xmr_amount::Piconero(1),
+            pricing::xmr_amount::PiconeroPerUnit(1),
             10,
             &thresholds
         )

@@ -10,6 +10,7 @@ use serde::Serialize;
 
 use crate::api::runtime::hal::{AbsoluteLinks, OnionLink};
 use crate::db::{LoggedEvent, OrderCurrencyMetadataRow, OrderId, StoreConnectionRow};
+use pricing::xmr_amount::PiconeroPerUnit;
 
 /// The `api_version` this body carries.
 pub const API_VERSION: u8 = 2;
@@ -138,7 +139,7 @@ pub fn body_v2(
         currency: metadata.map(|m| m.currency.as_str()),
         xmr_amount: pricing::xmr_amount::format_piconero_as_xmr(event.xmr_amount_piconero),
         fx_source: fx.map(|m| m.provider.as_str()),
-        fx_rate: fx.and_then(|m| fx_rate(m.piconero_per_unit.get())),
+        fx_rate: fx.and_then(|m| fx_rate(m.piconero_per_unit)),
         store: StoreRef {
             id: store.id.as_str(),
             name: &store.name,
@@ -208,13 +209,13 @@ pub fn test_body(
 /// one unit of it: a decimal string, rounded half up to at most
 /// [`FX_RATE_DECIMALS`] places, without trailing zeros. `None` for a zero
 /// rate.
-pub fn fx_rate(piconero_per_unit: u64) -> Option<String> {
-    if piconero_per_unit == 0 {
+pub fn fx_rate(piconero_per_unit: PiconeroPerUnit) -> Option<String> {
+    if piconero_per_unit.get() == 0 {
         return None;
     }
     let scale = 10u128.pow(FX_RATE_DECIMALS);
     let numerator = 1_000_000_000_000u128 * scale;
-    let denominator = u128::from(piconero_per_unit);
+    let denominator = u128::from(piconero_per_unit.get());
     let scaled = (numerator + denominator / 2) / denominator;
     let whole = scaled / scale;
     let fraction = format!(
@@ -234,7 +235,6 @@ pub fn fx_rate(piconero_per_unit: u64) -> Option<String> {
 mod tests {
     use super::*;
     use crate::db::{ConnectionId, OrderId};
-    use pricing::xmr_amount::Piconero;
 
     fn store() -> StoreConnectionRow {
         StoreConnectionRow {
@@ -264,7 +264,7 @@ mod tests {
             txid: None,
             merchant_order_id: Some("gm-1042".into()),
             description: Some("Two sourdough loaves".into()),
-            xmr_amount_piconero: 81_245_310_000,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
         }
     }
 
@@ -279,7 +279,7 @@ mod tests {
             order_id: OrderId::new("5f01c9a7"),
             currency: currency.into(),
             amount: amount.into(),
-            piconero_per_unit: Piconero(piconero_per_unit),
+            piconero_per_unit: PiconeroPerUnit(piconero_per_unit),
             provider: provider.into(),
             created_at: 0,
             store_base_currency: None,
@@ -464,12 +464,27 @@ mod tests {
 
     #[test]
     fn the_rate_is_one_xmr_in_the_currency_rounded_to_eight_places() {
-        assert_eq!(fx_rate(1_000_000_000_000).as_deref(), Some("1"));
-        assert_eq!(fx_rate(4_000_000_000).as_deref(), Some("250"));
-        assert_eq!(fx_rate(3_000_000_000).as_deref(), Some("333.33333333"));
-        assert_eq!(fx_rate(6_000_000_000).as_deref(), Some("166.66666667"));
+        assert_eq!(
+            fx_rate(PiconeroPerUnit(1_000_000_000_000)).as_deref(),
+            Some("1")
+        );
+        assert_eq!(
+            fx_rate(PiconeroPerUnit(4_000_000_000)).as_deref(),
+            Some("250")
+        );
+        assert_eq!(
+            fx_rate(PiconeroPerUnit(3_000_000_000)).as_deref(),
+            Some("333.33333333")
+        );
+        assert_eq!(
+            fx_rate(PiconeroPerUnit(6_000_000_000)).as_deref(),
+            Some("166.66666667")
+        );
         // A currency worth more than XMR.
-        assert_eq!(fx_rate(400_000_000_000_000).as_deref(), Some("0.0025"));
-        assert_eq!(fx_rate(0), None);
+        assert_eq!(
+            fx_rate(PiconeroPerUnit(400_000_000_000_000)).as_deref(),
+            Some("0.0025")
+        );
+        assert_eq!(fx_rate(PiconeroPerUnit(0)), None);
     }
 }

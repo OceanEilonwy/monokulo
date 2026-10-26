@@ -22,6 +22,7 @@ use engine_protocol::network::SqlNetwork;
 use rusqlite::{params, Connection, OptionalExtension as _};
 use uuid::Uuid;
 
+pub use engine_protocol::amount::Piconero;
 pub use engine_protocol::custody::CustodyBackend;
 pub use engine_protocol::ids::{EngineWalletId, OrderId, TenantId};
 
@@ -507,7 +508,7 @@ pub struct WalletInUse {
 /// What a store's orders add up to (`Store::order_totals`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OrderTotals {
-    pub received_piconero: u64,
+    pub received_piconero: Piconero,
     /// Orders made at or after the time asked about.
     pub orders_since: u64,
 }
@@ -609,8 +610,8 @@ pub struct Order {
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
-    pub xmr_amount_piconero: u64,
-    pub amount_received_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
+    pub amount_received_piconero: Piconero,
     pub status: OrderStatus,
     pub confirmations: u64,
     pub double_spend_detected_at: Option<i64>,
@@ -665,7 +666,7 @@ pub struct NewOrder {
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
     pub description: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
@@ -686,7 +687,7 @@ pub struct OrderPaymentRow {
     pub order_id: OrderId,
     pub txid: String,
     pub output_index: i64,
-    pub amount_piconero: u64,
+    pub amount_piconero: Piconero,
     pub key_images_json: String,
     pub first_seen_at: i64,
     pub block_height: Option<i64>,
@@ -760,7 +761,7 @@ struct StatusFacts<'a> {
 struct StatusPlan {
     status: OrderStatus,
     confirmations: u64,
-    amount_received: u64,
+    amount_received: Piconero,
     next_due_at: Option<i64>,
     next_due_height: Option<i64>,
     /// A settlement had to wait: the recompute obligation stays.
@@ -771,10 +772,7 @@ struct StatusPlan {
 /// and when the order can next change without a payment changing.
 fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
     let order = facts.order;
-    let amount_received = facts
-        .views
-        .iter()
-        .fold(0u64, |sum, v| sum.saturating_add(v.amount_piconero));
+    let amount_received: Piconero = facts.views.iter().map(|v| v.amount_piconero).sum();
     let confirmations = order_confirmations(facts.views, order.xmr_amount_piconero);
     let derived = derive_status(
         facts.views,
@@ -2171,7 +2169,7 @@ impl Store {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         Ok(OrderTotals {
-            received_piconero: received as u64,
+            received_piconero: Piconero(received as u64),
             orders_since: made_since as u64,
         })
     }
@@ -2402,7 +2400,7 @@ impl Store {
                 new.merchant_order_id,
                 new.minor_index,
                 new.address,
-                sqlite::Unsigned(new.xmr_amount_piconero),
+                new.xmr_amount_piconero,
                 new.description,
                 new.created_at,
                 new.expires_at,
@@ -2428,12 +2426,14 @@ impl Store {
             merchant_order_id: row.get("merchant_order_id")?,
             minor_index: row.get::<_, sqlite::Unsigned<u32>>("minor_index")?.0,
             address: row.get("address")?,
-            xmr_amount_piconero: row
-                .get::<_, sqlite::Unsigned<u64>>("xmr_amount_piconero")?
-                .0,
-            amount_received_piconero: row
-                .get::<_, sqlite::Unsigned<u64>>("amount_received_piconero")?
-                .0,
+            xmr_amount_piconero: Piconero(
+                row.get::<_, sqlite::Unsigned<u64>>("xmr_amount_piconero")?
+                    .0,
+            ),
+            amount_received_piconero: Piconero(
+                row.get::<_, sqlite::Unsigned<u64>>("amount_received_piconero")?
+                    .0,
+            ),
             status: status_from_str(&status_str)?,
             confirmations: row.get::<_, sqlite::Unsigned<u64>>("confirmations")?.0,
             double_spend_detected_at: row.get("double_spend_detected_at_utc")?,
@@ -2516,7 +2516,7 @@ impl Store {
         if order.status == OrderStatus::Cancelled {
             return Ok(CancelOrder::AlreadyCancelled);
         }
-        if order.status != OrderStatus::Pending || order.amount_received_piconero > 0 {
+        if order.status != OrderStatus::Pending || order.amount_received_piconero > Piconero::ZERO {
             return Ok(CancelOrder::Refused(order.status));
         }
         self.conn.execute(
@@ -2611,7 +2611,7 @@ impl Store {
         order_id: &OrderId,
         txid: &str,
         output_index: i64,
-        amount_piconero: u64,
+        amount_piconero: Piconero,
         key_images_json: &str,
         first_seen_at: i64,
         block_height: Option<i64>,
@@ -2650,7 +2650,7 @@ impl Store {
                 order_id,
                 txid,
                 output_index,
-                sqlite::Unsigned(amount_piconero),
+                amount_piconero,
                 key_images_json,
                 first_seen_at,
                 block_height,
@@ -2765,7 +2765,7 @@ impl Store {
             order_id: row.get("order_id")?,
             txid: row.get("txid")?,
             output_index: row.get("output_index")?,
-            amount_piconero: row.get::<_, sqlite::Unsigned<u64>>("amount_piconero")?.0,
+            amount_piconero: Piconero(row.get::<_, sqlite::Unsigned<u64>>("amount_piconero")?.0),
             key_images_json: row.get("key_images_json")?,
             first_seen_at: row.get("first_seen_at_utc")?,
             block_height: row.get("block_height")?,
@@ -2951,7 +2951,7 @@ impl Store {
                 // Individual payments can fit SQLite while their total does
                 // not. Fail the write instead of wrapping money negative;
                 // transactional callers then roll the whole update back.
-                sqlite::Unsigned(plan.amount_received),
+                plan.amount_received,
                 now,
                 is_terminal(plan.status),
                 closed_at,
@@ -3363,8 +3363,8 @@ mod tests {
             merchant_order_id: None,
             minor_index: 1,
             address: "a".into(),
-            xmr_amount_piconero: 100,
-            amount_received_piconero: 0,
+            xmr_amount_piconero: Piconero(100),
+            amount_received_piconero: Piconero::ZERO,
             status,
             confirmations: 0,
             double_spend_detected_at: None,
@@ -3383,7 +3383,7 @@ mod tests {
 
     fn mined(amount: u64, confirmations: u64) -> PaymentView {
         PaymentView {
-            amount_piconero: amount,
+            amount_piconero: Piconero(amount),
             confirmations,
             is_zero_conf: false,
         }
@@ -3391,7 +3391,7 @@ mod tests {
 
     fn pooled(amount: u64) -> PaymentView {
         PaymentView {
-            amount_piconero: amount,
+            amount_piconero: Piconero(amount),
             confirmations: 0,
             is_zero_conf: true,
         }
@@ -3654,7 +3654,7 @@ mod tests {
 
         let paid = new_order(&store, tenant.tenant.id.as_str(), 2);
         store
-            .record_payment_match(&paid.id, "tx", 0, 1, "[]", 1500, None, None)
+            .record_payment_match(&paid.id, "tx", 0, Piconero(1), "[]", 1500, None, None)
             .unwrap();
         store.recompute_order_status(&paid.id, 10, 1500).unwrap();
         assert_eq!(
@@ -3812,7 +3812,7 @@ mod tests {
                 merchant_order_id: None,
                 minor_index,
                 address: format!("sub_{minor_index}"),
-                xmr_amount_piconero: 100,
+                xmr_amount_piconero: Piconero(100),
                 description: None,
                 created_at: 1000,
                 expires_at: 2000,
@@ -3928,7 +3928,7 @@ mod tests {
             merchant_order_id: None,
             minor_index: 1,
             address: "x".repeat(4000),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: Piconero(1),
             description: Some("y".repeat(4000)),
             created_at: 1,
             expires_at: 2,
@@ -4052,7 +4052,7 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         store
-            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1), None)
+            .record_payment_match(&order.id, "tx", 0, Piconero(1), "[]", 1000, Some(1), None)
             .unwrap();
         drop(store);
         let store = Store::open_file(path.to_str().unwrap()).unwrap();
@@ -4068,7 +4068,7 @@ mod tests {
             .is_empty());
         store.clear_pending_payment_recompute(&order.id).unwrap();
         store
-            .record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1), None)
+            .record_payment_match(&order.id, "tx", 0, Piconero(1), "[]", 1001, Some(1), None)
             .unwrap();
         assert!(
             store
@@ -4284,10 +4284,10 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         let first = store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None, None)
+            .record_payment_match(&order.id, "txabc", 0, Piconero(100), "[]", 1500, None, None)
             .unwrap();
         let second = store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None, None)
+            .record_payment_match(&order.id, "txabc", 0, Piconero(100), "[]", 1600, None, None)
             .unwrap();
 
         assert!(first);
@@ -4306,7 +4306,16 @@ mod tests {
         assert_eq!(order.status, OrderStatus::Pending);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "txabc",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         let (old, new) = store.recompute_order_status(&order.id, 59, 1600).unwrap(); // 10 confirmations
         assert_eq!(old, OrderStatus::Pending);
@@ -4317,7 +4326,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(refetched.status, OrderStatus::Paid);
-        assert_eq!(refetched.amount_received_piconero, 100);
+        assert_eq!(refetched.amount_received_piconero, Piconero(100));
         assert_eq!(refetched.confirmations, 10);
     }
 
@@ -4345,7 +4354,7 @@ mod tests {
                     merchant_order_id: None,
                     minor_index: minor_index as u32 + 1,
                     address: format!("sub_{minor_index}"),
-                    xmr_amount_piconero: 100,
+                    xmr_amount_piconero: Piconero(100),
                     description: None,
                     created_at: 1000,
                     expires_at: 2000,
@@ -4357,7 +4366,7 @@ mod tests {
                     &order.id,
                     &format!("tx{minor_index}"),
                     0,
-                    100,
+                    Piconero(100),
                     "[]",
                     1500,
                     Some(50),
@@ -4381,10 +4390,28 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "tx_a",
+                0,
+                Piconero(60),
+                "[\"ki_a\"]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         store
-            .record_payment_match(&order.id, "tx_b", 0, 40, "[\"ki_b\"]", 1500, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "tx_b",
+                0,
+                Piconero(40),
+                "[\"ki_b\"]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         let (_, paid) = store.recompute_order_status(&order.id, 59, 1600).unwrap();
         assert_eq!(paid, OrderStatus::Paid);
@@ -4399,7 +4426,7 @@ mod tests {
             .get_order(&tenant.tenant.id, &order.id)
             .unwrap()
             .unwrap();
-        assert_eq!(refetched.amount_received_piconero, 40);
+        assert_eq!(refetched.amount_received_piconero, Piconero(40));
         assert!(refetched.double_spend_detected_at.is_some());
     }
 
@@ -4413,14 +4440,23 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "tx_a", 0, 60, "[\"ki_a\"]", 1500, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "tx_a",
+                0,
+                Piconero(60),
+                "[\"ki_a\"]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         store
             .record_payment_match(
                 &order.id,
                 "tx_c",
                 0,
-                100,
+                Piconero(100),
                 "[\"ki_c\"]",
                 1500,
                 Some(50),
@@ -4471,7 +4507,16 @@ mod tests {
         for (index, (status, amount, height, tip, now)) in cases.into_iter().enumerate() {
             let order = new_order(&store, tenant_id.as_str(), 10 + index as u32);
             store
-                .record_payment_match(&order.id, "tx", 0, amount, "[]", 1500, height, None)
+                .record_payment_match(
+                    &order.id,
+                    "tx",
+                    0,
+                    Piconero(amount),
+                    "[]",
+                    1500,
+                    height,
+                    None,
+                )
                 .unwrap();
             let (_, reached) = store.recompute_order_status(&order.id, tip, now).unwrap();
             assert_eq!(reached, status);
@@ -4519,11 +4564,29 @@ mod tests {
 
         // First sighting in the mempool, then the same sighting again (the ~1s mempool poll).
         store
-            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None, None)
+            .record_payment_match(
+                &order.id,
+                "tx1",
+                0,
+                Piconero(1),
+                "[]",
+                order.created_at,
+                None,
+                None,
+            )
             .unwrap();
         assert_eq!(drain_changes(&mut changes), expected);
         store
-            .record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None, None)
+            .record_payment_match(
+                &order.id,
+                "tx1",
+                0,
+                Piconero(1),
+                "[]",
+                order.created_at,
+                None,
+                None,
+            )
             .unwrap();
         assert!(drain_changes(&mut changes).is_empty());
         // Mined: the height is new information.
@@ -4532,7 +4595,7 @@ mod tests {
                 &order.id,
                 "tx1",
                 0,
-                1,
+                Piconero(1),
                 "[]",
                 order.created_at,
                 Some(90),
@@ -4936,14 +4999,23 @@ mod tests {
         let mined_order = new_order(&store, tenant.tenant.id.as_str(), 2);
         let voided_order = new_order(&store, tenant.tenant.id.as_str(), 3);
         store
-            .record_payment_match(&mempool_order.id, "tx_pool", 0, 100, "[]", 1500, None, None)
+            .record_payment_match(
+                &mempool_order.id,
+                "tx_pool",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                None,
+                None,
+            )
             .unwrap();
         store
             .record_payment_match(
                 &mined_order.id,
                 "tx_mined",
                 0,
-                100,
+                Piconero(100),
                 "[]",
                 1500,
                 Some(50),
@@ -4955,7 +5027,7 @@ mod tests {
                 &voided_order.id,
                 "tx_voided",
                 0,
-                100,
+                Piconero(100),
                 "[]",
                 1500,
                 None,
@@ -4985,7 +5057,7 @@ mod tests {
                 &stagenet_order.id,
                 "tx_stagenet_pool",
                 0,
-                100,
+                Piconero(100),
                 "[]",
                 1500,
                 None,
@@ -5025,7 +5097,7 @@ mod tests {
                     &order.id,
                     &format!("tx_{index}"),
                     0,
-                    100,
+                    Piconero(100),
                     "[]",
                     1500,
                     None,
@@ -5074,7 +5146,7 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         assert!(store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None, None)
+            .record_payment_match(&order.id, "txabc", 0, Piconero(100), "[]", 1500, None, None)
             .unwrap());
         assert_eq!(
             store.get_all_payments(&order.id).unwrap()[0].block_height,
@@ -5083,7 +5155,16 @@ mod tests {
 
         // Same output, now seen inside a block - the row must learn its height.
         assert!(!store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "txabc",
+                0,
+                Piconero(100),
+                "[]",
+                1600,
+                Some(50),
+                None
+            )
             .unwrap());
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(
@@ -5113,10 +5194,19 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "txabc",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1600, None, None)
+            .record_payment_match(&order.id, "txabc", 0, Piconero(100), "[]", 1600, None, None)
             .unwrap();
 
         assert_eq!(
@@ -5136,12 +5226,21 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, None, None)
+            .record_payment_match(&order.id, "txabc", 0, Piconero(100), "[]", 1500, None, None)
             .unwrap();
         assert!(store.void_payment(&order.id, "txabc", 0, 1600).unwrap());
 
         store
-            .record_payment_match(&order.id, "txabc", 0, 100, "[]", 1700, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "txabc",
+                0,
+                Piconero(100),
+                "[]",
+                1700,
+                Some(50),
+                None,
+            )
             .unwrap();
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(payments.len(), 1);
@@ -5167,10 +5266,28 @@ mod tests {
         let order_b = new_order(&store, tenant_b.tenant.id.as_str(), 1);
 
         assert!(store
-            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1500, Some(50), None)
+            .record_payment_match(
+                &order_a.id,
+                "shared_tx",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                Some(50),
+                None
+            )
             .unwrap());
         assert!(store
-            .record_payment_match(&order_b.id, "shared_tx", 0, 100, "[]", 1500, Some(50), None)
+            .record_payment_match(
+                &order_b.id,
+                "shared_tx",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                Some(50),
+                None
+            )
             .unwrap());
 
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
@@ -5178,7 +5295,16 @@ mod tests {
 
         // Within one order it is still an idempotent no-op, exactly as before.
         assert!(!store
-            .record_payment_match(&order_a.id, "shared_tx", 0, 100, "[]", 1600, Some(50), None)
+            .record_payment_match(
+                &order_a.id,
+                "shared_tx",
+                0,
+                Piconero(100),
+                "[]",
+                1600,
+                Some(50),
+                None
+            )
             .unwrap());
         assert_eq!(store.get_all_payments(&order_a.id).unwrap().len(), 1);
     }
@@ -5189,7 +5315,16 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
         store
-            .record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50), None)
+            .record_payment_match(
+                &order.id,
+                "tx_a",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                Some(50),
+                None,
+            )
             .unwrap();
         store.void_payment(&order.id, "tx_a", 0, 1600).unwrap();
         store.mark_double_spend_detected(&order.id, 1600).unwrap();
@@ -5240,7 +5375,7 @@ mod tests {
                     merchant_order_id: None,
                     minor_index: first,
                     address: "sub_1".into(),
-                    xmr_amount_piconero: 100,
+                    xmr_amount_piconero: Piconero(100),
                     description: None,
                     created_at: 1000,
                     expires_at: 2000,
@@ -5267,7 +5402,7 @@ mod tests {
                     merchant_order_id: None,
                     minor_index: first,
                     address: "sub_1_again".into(),
-                    xmr_amount_piconero: 100,
+                    xmr_amount_piconero: Piconero(100),
                     description: None,
                     created_at: 1000,
                     expires_at: 2000,
@@ -5294,7 +5429,7 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: first, // deliberately the already-used index, not `next`
                 address: "sub_collision".into(),
-                xmr_amount_piconero: 100,
+                xmr_amount_piconero: Piconero(100),
                 description: None,
                 created_at: 1000,
                 expires_at: 2000,
@@ -5332,7 +5467,7 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: 1,
                 address: "sub_1".into(),
-                xmr_amount_piconero: 1,
+                xmr_amount_piconero: Piconero(1),
                 description: None,
                 created_at: 1000,
                 expires_at: 2000,
@@ -5422,7 +5557,7 @@ mod tests {
         );
         assert_eq!(payments[0].txid, "tx_from_before_the_upgrade");
         assert_eq!(payments[0].output_index, 2);
-        assert_eq!(payments[0].amount_piconero, 4242);
+        assert_eq!(payments[0].amount_piconero, Piconero(4242));
         assert_eq!(payments[0].key_images_json, "[\"ki_a\"]");
         assert_eq!(payments[0].first_seen_at, 1500);
         assert_eq!(
@@ -5440,7 +5575,7 @@ mod tests {
                 &other_order.id,
                 "tx_from_before_the_upgrade",
                 2,
-                100,
+                Piconero(100),
                 "[]",
                 1700,
                 Some(77),
@@ -5726,7 +5861,16 @@ mod tests {
         let order = new_order(&store, tenant.tenant.id.as_str(), 1);
 
         let result: Result<()> = store.in_transaction(|s| {
-            s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50), None)?;
+            s.record_payment_match(
+                &order.id,
+                "tx_a",
+                0,
+                Piconero(100),
+                "[]",
+                1500,
+                Some(50),
+                None,
+            )?;
             s.mark_double_spend_detected(&order.id, 1600)?;
             Err(StoreError::NotFound)
         });
@@ -5745,7 +5889,16 @@ mod tests {
         // And the successful case commits normally.
         store
             .in_transaction(|s| {
-                s.record_payment_match(&order.id, "tx_a", 0, 100, "[]", 1500, Some(50), None)
+                s.record_payment_match(
+                    &order.id,
+                    "tx_a",
+                    0,
+                    Piconero(100),
+                    "[]",
+                    1500,
+                    Some(50),
+                    None,
+                )
             })
             .unwrap();
         assert_eq!(store.get_all_payments(&order.id).unwrap().len(), 1);

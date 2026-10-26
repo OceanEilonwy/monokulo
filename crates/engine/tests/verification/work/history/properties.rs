@@ -39,7 +39,7 @@ fn outputs_match(s: &Store, h: &Harness, count: usize, amount: u64, height: Opti
             p.block_height == height
                 && p.voided_at.is_none()
                 && p.superseded_by.is_none()
-                && p.amount_piconero == amount
+                && p.amount_piconero == crate::store::Piconero(amount)
         })
         && rows
             .iter()
@@ -47,7 +47,7 @@ fn outputs_match(s: &Store, h: &Harness, count: usize, amount: u64, height: Opti
             .collect::<std::collections::HashSet<_>>()
             .len()
             == count
-        && order.amount_received_piconero == amount * count as u64
+        && order.amount_received_piconero == crate::store::Piconero(amount * count as u64)
         && order.status == OrderStatus::Paid
 }
 
@@ -284,14 +284,32 @@ async fn assert_unrepresentable_amount(excess: u64, aggregate: bool) {
     let before = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
     let result = s.in_transaction(|s| -> Result<(), crate::store::StoreError> {
         if aggregate {
-            s.record_payment_match(&h.order, "large-a", 0, STORED_MAX, "[]", h.now, None, None)?;
-            s.record_payment_match(&h.order, "large-b", 0, excess, "[]", h.now, None, None)?;
+            s.record_payment_match(
+                &h.order,
+                "large-a",
+                0,
+                crate::store::Piconero(STORED_MAX),
+                "[]",
+                h.now,
+                None,
+                None,
+            )?;
+            s.record_payment_match(
+                &h.order,
+                "large-b",
+                0,
+                crate::store::Piconero(excess),
+                "[]",
+                h.now,
+                None,
+                None,
+            )?;
         } else {
             s.record_payment_match(
                 &h.order,
                 "large-a",
                 0,
-                STORED_MAX + excess,
+                crate::store::Piconero(STORED_MAX + excess),
                 "[]",
                 h.now,
                 None,
@@ -426,7 +444,10 @@ async fn crash_history_on(phase: u8, steps: usize, amount: u64, point: Option<&s
             }
             "recompute.after_commit" => {
                 assert_eq!(order.status, OrderStatus::Paid);
-                assert_eq!(order.amount_received_piconero, amount * 3);
+                assert_eq!(
+                    order.amount_received_piconero,
+                    crate::store::Piconero(amount * 3)
+                );
                 assert_eq!(paid, 1, "committed status lost its event");
             }
             "reorg.before_commit" => assert!(s.reorg_job(NETWORK).unwrap().is_some()),
@@ -583,7 +604,10 @@ async fn crash_pipeline(prefix: usize, amount: u64) {
         } else {
             assert_eq!(invoice.status, OrderStatus::Paid);
             assert_eq!(paid, 1);
-            assert_eq!(invoice.amount_received_piconero, amount * 3);
+            assert_eq!(
+                invoice.amount_received_piconero,
+                crate::store::Piconero(amount * 3)
+            );
         }
         if index == 3 {
             assert!(s.settlement_frozen(NETWORK).unwrap());
@@ -707,15 +731,15 @@ mod properties {
                     let minor = s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index;
                     let mut invoice = NewOrder {
                         tenant_id: tenant.clone(), merchant_order_id: None, minor_index: minor,
-                        address: format!("boundary-{minor}"), xmr_amount_piconero: STORED_MAX + excess,
+                        address: format!("boundary-{minor}"), xmr_amount_piconero: crate::store::Piconero(STORED_MAX + excess),
                         description: None, created_at: h.now, expires_at: i64::MAX,
                         confirmations_required_override: Some(0), idempotency_key: Some("boundary-invoice".to_owned()),
                     };
                     s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap_err();
                     assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor);
-                    invoice.xmr_amount_piconero = 1;
+                    invoice.xmr_amount_piconero = crate::store::Piconero(1);
                     let created = s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap().unwrap();
-                    assert_eq!(created.xmr_amount_piconero, 1);
+                    assert_eq!(created.xmr_amount_piconero, crate::store::Piconero(1));
                     assert_eq!(created.minor_index, minor);
                     assert_eq!(s.get_tenant_by_id(tenant).unwrap().unwrap().next_minor_index, minor + 1);
                     let retried = s.create_order_claiming_minor_index(&h.tenants[0].1.wallet_id, minor, &invoice).unwrap().unwrap();
@@ -803,7 +827,7 @@ mod properties {
             h.daemon.set_mempool(vec![tx.clone()]);
             converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
                 let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
-                o.amount_received_piconero == total
+                o.amount_received_piconero == crate::store::Piconero(total)
                     && o.status
                         == money_status(
                             std::iter::once((total, None)),
@@ -823,7 +847,7 @@ mod properties {
             }
             converge(&mut h, &orders, Duration::ZERO, GRACE, |s, h| {
                 let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
-                o.amount_received_piconero == total
+                o.amount_received_piconero == crate::store::Piconero(total)
                     && o.status
                         == money_status(
                             std::iter::once((total, Some(3))),
@@ -873,7 +897,7 @@ mod properties {
                         let o = s.get_order(&h.tenants[0].0, id).unwrap().unwrap();
                         let rows = s.get_all_payments(id).unwrap();
                         o.status == OrderStatus::Paid
-                            && o.amount_received_piconero == 1
+                            && o.amount_received_piconero == crate::store::Piconero(1)
                             && rows.len() == 1
                             && rows[0].block_height == Some(3)
                     })

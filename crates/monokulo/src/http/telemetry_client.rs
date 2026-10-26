@@ -142,7 +142,7 @@ mod tests {
             order_id: &engine_protocol::ids::OrderId::new("o1"),
             currency: "XMR",
             amount: "1",
-            piconero_per_unit: pricing::xmr_amount::Piconero(1),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1),
             provider: "xmr",
             created_at: 0,
             base_currency: "XMR",
