@@ -31,12 +31,32 @@ pub struct StoreDetailData {
     pub wallet: Option<(String, String)>,
 }
 
-/// A verified domain whose DNS record has gone missing
+/// Where a domain's proof is, which a failing domain has lost.
+pub enum Proof {
+    /// A web domain's DNS TXT record, by its name.
+    TxtRecord(String),
+    /// An onion shop's verification file, by its address, fetched over Tor:
+    /// an onion address has no DNS.
+    WellKnownFile(String),
+}
+
+impl Proof {
+    /// The proof `domain` is checked by.
+    pub fn of(domain: &str) -> Self {
+        if crate::embed_domains::is_onion(domain) {
+            Proof::WellKnownFile(crate::embed_domains::well_known_url(domain))
+        } else {
+            Proof::TxtRecord(crate::embed_domains::record_name(domain))
+        }
+    }
+}
+
+/// A verified domain whose proof has gone missing
 /// (`http::embed_domains::store_page_warnings`).
 pub struct FailingDomainWarning {
     pub domain: String,
-    pub record_name: String,
-    /// How long the record has been missing, e.g. "5h 20m".
+    pub proof: Proof,
+    /// How long the proof has been missing, e.g. "5h 20m".
     pub missing_for: String,
     /// Past the grace period, so it no longer counts as verified.
     pub lapsed: bool,
@@ -92,21 +112,36 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
             .block(true))
         }
         @for failing in &warnings.failing {
+            @let missing = match &failing.proof {
+                Proof::TxtRecord(name) => html! {
+                    "The TXT record at " code { (name) } " has been missing for " (failing.missing_for) ". "
+                },
+                Proof::WellKnownFile(url) => html! {
+                    "The file at " code { (url) } " could not be fetched over Tor for " (failing.missing_for) ". "
+                },
+            };
+            @let again = match failing.proof {
+                Proof::TxtRecord(_) => "Publish it again",
+                Proof::WellKnownFile(_) => "Check the shop is up and serves it again",
+            };
             @if failing.lapsed {
                 (ui::Alert::new(html! {
-                    "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
-                    "Publish it again, then " a href=(settings) { "check it in Settings" } "."
+                    (missing)
+                    (again) ", then " a href=(settings) { "check it in Settings" } "."
                 }, ui::Tone::Error)
                 .title(format!("{} is no longer verified", failing.domain))
                 .block(true))
             } @else {
                 (ui::Alert::new(html! {
-                    "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
+                    (missing)
                     "If it isn't back within " (failing.counts_for) ", " (failing.domain) " will stop counting as verified"
                     @if warnings.restricted { " and stop being able to show this checkout" }
                     ". " a href=(settings) { "Check it in Settings" } "."
                 }, ui::Tone::Error)
-                .title(format!("{} failed its DNS check", failing.domain))
+                .title(match failing.proof {
+                    Proof::TxtRecord(_) => format!("{} failed its DNS check", failing.domain),
+                    Proof::WellKnownFile(_) => format!("{} failed its check", failing.domain),
+                })
                 .block(true))
             }
         }

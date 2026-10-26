@@ -16,7 +16,7 @@ use crate::db::StoreDomainRow;
 use crate::embed_domains::{self, DomainState};
 use crate::templates::{format_duration_since, format_duration_until};
 use crate::views::domains::{DomainStatus, DomainView, StoreRef};
-use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning};
+use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning, Proof};
 
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
@@ -142,6 +142,13 @@ fn ago(then: i64, now: i64) -> String {
 /// for too soon.
 pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> DomainView {
     let checked = row.last_checked_at.map(|at| ago(at, now));
+    // An onion shop is proved by a file it serves over Tor, never by DNS.
+    let onion = embed_domains::is_onion(&row.domain);
+    let (proof, publish) = if onion {
+        ("File", "Serve it again")
+    } else {
+        ("Record", "Publish it again")
+    };
     let (status, meta, reason) = match DomainState::of(&row, now) {
         DomainState::Verified => (
             DomainStatus::Verified,
@@ -162,7 +169,11 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
                 )
             ),
             Some(row.last_error.clone().unwrap_or_else(|| {
-                "Not checked yet: publish the record, then check again.".to_string()
+                if onion {
+                    "Not checked yet: serve the file, then check again.".to_string()
+                } else {
+                    "Not checked yet: publish the record, then check again.".to_string()
+                }
             })),
         ),
         DomainState::Failing { since } => {
@@ -172,9 +183,10 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
             );
             (
                 DomainStatus::Failing,
-                format!("Record missing for {missing} · still counts as verified for {left}"),
+                format!("{proof} missing for {missing} · still counts as verified for {left}"),
                 Some(format!(
-                    "The record was there, and went {missing} ago. Publish it again within {left} to keep the domain."
+                    "The {} was there, and went {missing} ago. {publish} within {left} to keep the domain.",
+                    proof.to_lowercase()
                 )),
             )
         }
@@ -182,9 +194,10 @@ pub(super) fn domain_view(row: StoreDomainRow, now: i64, wait: Option<i64>) -> D
             let missing = format_duration_since(since, now);
             (
                 DomainStatus::Lapsed,
-                format!("Record missing for {missing} · it no longer counts"),
+                format!("{proof} missing for {missing} · it no longer counts"),
                 Some(format!(
-                    "The record has been missing for {missing}, so the domain no longer counts. Publish it again and check."
+                    "The {} has been missing for {missing}, so the domain no longer counts. {publish} and check.",
+                    proof.to_lowercase()
                 )),
             )
         }
@@ -236,7 +249,7 @@ pub(super) async fn store_page_warnings(
                 DomainState::Pending | DomainState::Verified => return None,
             };
             Some(FailingDomainWarning {
-                record_name: embed_domains::record_name(&row.domain),
+                proof: Proof::of(&row.domain),
                 domain: row.domain,
                 missing_for: format_duration_since(since, now),
                 lapsed,
