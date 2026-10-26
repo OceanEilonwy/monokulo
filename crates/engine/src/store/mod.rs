@@ -255,7 +255,7 @@ impl ReadStorePool {
     /// connection: for tests and their in-memory databases.
     #[cfg(any(test, feature = "test-support"))]
     pub fn inline(store: SharedStore) -> Self {
-        Self(sqlite::Pool::Inline(store))
+        Self(sqlite::Pool::inline(store))
     }
 
     pub async fn query<T: Send + 'static>(

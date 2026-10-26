@@ -60,6 +60,9 @@ pub struct ProofTuning {
     pub anchor_retry: Duration,
     /// Blocks of an anchor's window whose proof of work is checked.
     pub anchor_samples: usize,
+    /// The seed those blocks are picked with, so a test can replay a
+    /// sample; `None` (production) picks them unpredictably.
+    pub sample_seed: Option<u64>,
     /// Most blocks checked for one node in one round: a catch-up after
     /// downtime is spread over rounds, each committed as it goes. A branch
     /// leaving the proven chain below its tip gets as many as it needs to
@@ -89,6 +92,7 @@ impl ProofTuning {
         caught_for: Duration::from_hours(1),
         anchor_retry: Duration::from_secs(60),
         anchor_samples: 64,
+        sample_seed: None,
         blocks_per_round: 256,
         fetch_concurrency: 8,
         call_timeout: Duration::from_secs(20),
