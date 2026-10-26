@@ -2069,6 +2069,15 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
     }
 }
 
+/// The Tor tab's status block on its own, as it asks for itself again:
+/// empty once Tor has been turned off.
+pub fn tor_status(panel: Option<&TorPanel>) -> Markup {
+    match panel {
+        Some(panel) => tor_panel(panel),
+        None => html! { div id="tor-status" {} },
+    }
+}
+
 /// The onion service's state, above the Tor tab's cards.
 fn tor_panel(panel: &TorPanel) -> Markup {
     use tor_service::TorStatus;
@@ -2091,17 +2100,24 @@ fn tor_panel(panel: &TorPanel) -> Markup {
         .title("Onion service running.")
         .icon(html! { (PreEscaped(ui::assets::icons::CHECK)) }),
         TorPanel::Inside(TorStatus::Publishing { address: onion }) => ui::Alert::new(html! {
-            "Tor is telling the network about " (address(onion)) ". It is usually reachable within a minute; Tor marks it running once every directory has it."
+            (tor_steps(TorStep::Publishing, None))
+            p class="tor-progress-note" {
+                "Tor is telling the network about " (address(onion)) ". It is usually reachable within a minute; Tor marks it running once every directory has it."
+            }
         }, ui::Tone::Notice)
-        .title("Publishing the onion address…")
+        .title("Starting Tor…")
         .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) }),
         TorPanel::Inside(TorStatus::Degraded { address: onion, problem }) => ui::Alert::new(html! {
             "Tor is still trying to keep " (address(onion)) " reachable: " (problem)
         }, ui::Tone::Warning)
         .title("Onion service may be unreachable.")
         .icon(html! { (PreEscaped(ui::assets::icons::WARNING)) }),
-        TorPanel::Inside(TorStatus::Starting { percent, doing }) => ui::Alert::new(html! {
-            (doing) " (" (percent) "%). A first start takes up to a minute; later starts are quicker. The web address isn't affected."
+        TorPanel::Inside(TorStatus::Starting { percent }) => ui::Alert::new(html! {
+            @let (step, done) = TorStep::starting(*percent);
+            (tor_steps(step, Some(done)))
+            p class="tor-progress-note" {
+                "A first start takes up to a minute; later starts are quicker. The web address isn't affected."
+            }
         }, ui::Tone::Notice)
         .title("Starting Tor…")
         .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) }),
@@ -2116,7 +2132,118 @@ fn tor_panel(panel: &TorPanel) -> Markup {
         )
         .title("Tor isn't running yet."),
     };
-    html! { div id="tor-status" { (alert.block(true).quiet(true)) } }
+    // While Tor is on its way up (or starting again after a failure), the
+    // block asks for itself again every couple of seconds (fx-poll,
+    // fx-glue.js), and stops once what it shows can't change by itself.
+    // Without JavaScript, a link loads the tab again.
+    let polls = matches!(
+        panel,
+        TorPanel::Inside(
+            TorStatus::Starting { .. } | TorStatus::Publishing { .. } | TorStatus::Failed { .. }
+        )
+    );
+    let alert = alert.block(true).quiet(true);
+    let alert = if polls {
+        alert.actions(html! {
+            a href=(crate::base::url(SettingsTab::Tor.href())) data-only="no-script" { "Refresh" }
+        })
+    } else {
+        alert
+    };
+    html! {
+        @if polls {
+            div id="tor-status" fx-action=(crate::base::url(TOR_STATUS_PATH)) fx-trigger="fx:poll" fx-swap="outerHTML" fx-poll="2000" fx-own-errors {
+                (alert)
+            }
+        } @else {
+            div id="tor-status" { (alert) }
+        }
+    }
+}
+
+/// Where the Tor tab's status block asks for itself again.
+pub const TOR_STATUS_PATH: &str = "/admin/settings/tor-status";
+
+/// How far Tor inside monokulo has got in starting, as the Tor tab shows
+/// it: a few fixed steps in place of Arti's own words for what it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TorStep {
+    Connecting,
+    LoadingNetwork,
+    Publishing,
+    Running,
+}
+
+impl TorStep {
+    const ALL: [TorStep; 4] = [
+        TorStep::Connecting,
+        TorStep::LoadingNetwork,
+        TorStep::Publishing,
+        TorStep::Running,
+    ];
+
+    /// While Tor joins the network: the step `percent` (out of 100) falls
+    /// in, and how far through that step it is, out of 100. Arti counts
+    /// reaching a relay as the first 15% and loading the network's
+    /// directory as the rest.
+    pub fn starting(percent: u8) -> (TorStep, u8) {
+        const CONNECTED: u16 = 15;
+        let percent = u16::from(percent.min(100));
+        let (step, done) = if percent < CONNECTED {
+            (TorStep::Connecting, percent * 100 / CONNECTED)
+        } else {
+            (
+                TorStep::LoadingNetwork,
+                (percent - CONNECTED) * 100 / (100 - CONNECTED),
+            )
+        };
+        (step, done as u8)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            TorStep::Connecting => "Connecting to Tor",
+            TorStep::LoadingNetwork => "Loading the Tor network",
+            TorStep::Publishing => "Publishing the onion address",
+            TorStep::Running => "Running",
+        }
+    }
+}
+
+/// The steps as a strip of segments: those before `now` full, `now`'s
+/// filled by `done` out of 100 (half, when how far isn't known), the rest
+/// empty.
+fn tor_steps(now: TorStep, done: Option<u8>) -> Markup {
+    let at = TorStep::ALL
+        .iter()
+        .position(|step| *step == now)
+        .unwrap_or(0);
+    let steps: Vec<_> = TorStep::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, step)| {
+            let (detail, done, state) = match i.cmp(&at) {
+                std::cmp::Ordering::Less => ("Complete".to_string(), 100, ui::WizardState::Done),
+                std::cmp::Ordering::Equal => match done {
+                    Some(done) => (
+                        format!("{done}%"),
+                        usize::from(done),
+                        ui::WizardState::Current,
+                    ),
+                    None => ("In progress".to_string(), 50, ui::WizardState::Current),
+                },
+                std::cmp::Ordering::Greater => ("Next".to_string(), 0, ui::WizardState::Next),
+            };
+            ui::WizardStep {
+                label: step.label().to_string(),
+                detail,
+                done,
+                tasks: 100,
+                state,
+            }
+        })
+        .collect();
+    html! { (ui::WizardSteps::new("Tor start progress", steps)) }
 }
 
 /// A tab of settings: its cards in the settings form, and the save bar.
@@ -2215,6 +2342,36 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Arti's percent lands in the right step, and the Tor tab's block
+    /// polls only while what it shows can still change by itself.
+    #[test]
+    fn tor_start_progress_steps_and_polls_until_tor_is_up() {
+        use tor_service::TorStatus;
+        assert_eq!(TorStep::starting(0), (TorStep::Connecting, 0));
+        assert_eq!(TorStep::starting(6), (TorStep::Connecting, 40));
+        assert_eq!(TorStep::starting(15), (TorStep::LoadingNetwork, 0));
+        assert_eq!(TorStep::starting(58), (TorStep::LoadingNetwork, 50));
+        assert_eq!(TorStep::starting(100), (TorStep::LoadingNetwork, 100));
+
+        let html = |status| tor_panel(&TorPanel::Inside(status)).into_string();
+        let loading = html(TorStatus::Starting { percent: 58 });
+        assert!(loading.contains("fx-poll"), "{loading}");
+        assert!(
+            loading.contains("aria-current=\"step\"><span>Loading the Tor network"),
+            "{loading}"
+        );
+        assert!(
+            loading.contains("<li class=\"done\"><span>Connecting to Tor"),
+            "{loading}"
+        );
+        let running = html(TorStatus::Running {
+            address: "example.onion".into(),
+            since: 0,
+        });
+        assert!(!running.contains("fx-poll"), "{running}");
+        assert!(!running.contains("mk-wizard-steps"), "{running}");
+    }
 
     fn chrome() -> PageChrome {
         PageChrome::from_user(None, "/admin/settings")

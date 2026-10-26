@@ -373,6 +373,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::get(admin_settings::page).post(admin_settings::save),
         )
         .route(
+            crate::views::admin::TOR_STATUS_PATH,
+            axum::routing::get(admin_settings::tor_status),
+        )
+        .route(
             "/admin/settings/reload",
             axum::routing::post(admin_settings::reload),
         )
