@@ -170,6 +170,98 @@ pub struct ConnectingPlugin {
     pub site: crate::stores::Site,
 }
 
+/// A plugin finishing its connection to a store: what [`connect`] records.
+pub struct Connecting {
+    pub store_id: crate::db::ConnectionId,
+    pub slug: PluginSlug,
+    /// The name it sent, cleaned. Without one (a plugin built before
+    /// plugins named themselves) it keeps the name it had on this store
+    /// before.
+    pub name: Option<PluginName>,
+    pub site: Option<crate::stores::Site>,
+    pub version: String,
+    /// Where it wants the store's events sent, already checked.
+    pub webhook_url: Option<String>,
+    pub at: i64,
+}
+
+/// What [`connect`] made.
+pub struct Connected {
+    /// The new webhook's signing secret, handed to the plugin once.
+    pub webhook_signing_secret: Option<String>,
+    /// The integration's id, or why it couldn't be recorded: the plugin has
+    /// its key either way, and the store just doesn't show it connected.
+    pub recorded: Result<String, crate::db::DbError>,
+}
+
+/// Connects a plugin to a store: its webhook is made, the webhook of the
+/// plugin connected before goes (so the shop isn't sent each event twice),
+/// and the connection is recorded, closing the earlier one. A store has
+/// one plugin. Fails only when the webhook can't be made.
+pub async fn connect(
+    db: &crate::db::Database,
+    key: &crate::crypto::AtRestKey,
+    connecting: Connecting,
+) -> Result<Connected, crate::webhooks::CreateError> {
+    let Connecting {
+        store_id,
+        slug,
+        name,
+        site,
+        version,
+        webhook_url,
+        at,
+    } = connecting;
+    let (webhook_id, webhook_signing_secret) = match &webhook_url {
+        Some(url) => {
+            let created =
+                crate::webhooks::create(db, key, &store_id, url, &Default::default()).await?;
+            (
+                Some(created.webhook.id.to_string()),
+                Some(created.signing_secret),
+            )
+        }
+        None => (None, None),
+    };
+
+    let id = store_id.clone();
+    let earlier = db
+        .read(move |db| db.active_integration(&id))
+        .await
+        .ok()
+        .flatten()
+        .and_then(|i| i.webhook_id);
+    if let Some(earlier) = earlier {
+        let id = store_id.clone();
+        let earlier = engine_protocol::ids::WebhookId::new(earlier);
+        if let Err(e) = db.write(move |db| db.delete_webhook(&id, &earlier)).await {
+            tracing::warn!(store.id = %store_id, error = %e, "the earlier connection's webhook could not be removed");
+        }
+    }
+
+    let recorded = db
+        .write(move |db| {
+            let name = match name {
+                Some(name) => Some(name),
+                None => db.last_integration_name(&store_id, &slug)?,
+            };
+            db.connect_integration(&crate::db::NewStoreIntegration {
+                store_id: &store_id,
+                plugin: &Plugin::new(slug, name),
+                site: site.as_ref(),
+                version: &version,
+                webhook_id: webhook_id.as_deref(),
+                webhook_url: webhook_url.as_deref(),
+                at,
+            })
+        })
+        .await;
+    Ok(Connected {
+        webhook_signing_secret,
+        recorded,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

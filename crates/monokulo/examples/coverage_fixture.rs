@@ -531,51 +531,31 @@ fn store_secret(control: &Controls) -> Result<credentials::auth::RawToken, Statu
 async fn connect_plugin(
     State(control): State<Controls>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let url = "https://shop.localhost/?wc-api=monokulo";
     let store = engine_protocol::ids::ConnectionId::new("coverage-store");
-    // As connecting again does: the earlier connection's webhook goes.
-    let earlier = control
-        .db
-        .lock()
-        .active_integration(&store)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-        .and_then(|i| i.webhook_id);
-    if let Some(earlier) = earlier {
-        let _ = control
-            .db
-            .lock()
-            .delete_webhook(&store, &engine_protocol::ids::WebhookId::new(earlier));
-    }
-    let webhook_id = monokulo::webhooks::create(
+    let now = monokulo::now_unix();
+    // Connected six days ago, as a plugin's connect finishes.
+    let connected = monokulo::plugins::connect(
         &control.db,
         &ENCRYPTION_KEY,
-        &store,
-        url,
-        &Default::default(),
+        monokulo::plugins::Connecting {
+            store_id: store.clone(),
+            slug: monokulo::plugins::PluginSlug::parse("woocommerce").expect("a plugin slug"),
+            name: monokulo::plugins::PluginName::clean("WooCommerce"),
+            site: monokulo::stores::Site::parse("shop.localhost").ok(),
+            version: "0.4.0".into(),
+            webhook_url: Some("https://shop.localhost/?wc-api=monokulo".into()),
+            at: now - 6 * 86_400,
+        },
     )
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .webhook
-    .id
-    .to_string();
-    let now = monokulo::now_unix();
-    let db = control.db.lock();
-    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
-    let id = db
-        .connect_integration(&monokulo::db::NewStoreIntegration {
-            store_id: &store,
-            plugin: &monokulo::plugins::Plugin::parse("woocommerce", "WooCommerce")
-                .expect("a plugin slug"),
-            site: monokulo::stores::Site::parse("shop.localhost")
-                .ok()
-                .as_ref(),
-            version: "0.4.0",
-            webhook_id: Some(&webhook_id),
-            webhook_url: Some(url),
-            at: now - 6 * 86_400,
-        })
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let id = connected
+        .recorded
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    db.integration_seen(&store, "woocommerce", "0.4.0", now - 3600)
+    control
+        .db
+        .lock()
+        .integration_seen(&store, "woocommerce", "0.4.0", now - 3600)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(serde_json::json!({ "integration_id": id })))
 }
