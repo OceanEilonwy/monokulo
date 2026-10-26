@@ -118,7 +118,7 @@ impl reqwest::dns::Resolve for CheckingResolver {
         Box::pin(async move {
             // An onion name is never looked up (RFC 7686): asking DNS for it
             // would tell the resolver the address, and find nothing.
-            if crate::onion::is_onion_host(name.as_str()) {
+            if tor_service::onion::is_onion_host(name.as_str()) {
                 return Err(BoxError::from(DeliveryError::OnionHost));
             }
             // Port 0: the connector sets the URL's port on each address.
@@ -156,7 +156,10 @@ pub enum DeliveryError {
 /// link-local address (unless `allow_private`): the half of the check a
 /// resolver never sees.
 fn check_host(url: &url::Url, allow_private: bool) -> Result<(), DeliveryError> {
-    if url.host_str().is_some_and(crate::onion::is_onion_host) {
+    if url
+        .host_str()
+        .is_some_and(tor_service::onion::is_onion_host)
+    {
         return Err(DeliveryError::OnionHost);
     }
     if allow_private {

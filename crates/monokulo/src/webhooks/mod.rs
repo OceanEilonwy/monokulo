@@ -47,11 +47,11 @@ pub struct Webhooks {
 #[derive(Clone)]
 pub struct Addresses {
     settings: Arc<crate::settings::MonokuloSettings>,
-    tor: crate::tor::Tor,
+    tor: tor_service::Tor,
 }
 
 impl Addresses {
-    pub fn new(settings: Arc<crate::settings::MonokuloSettings>, tor: crate::tor::Tor) -> Self {
+    pub fn new(settings: Arc<crate::settings::MonokuloSettings>, tor: tor_service::Tor) -> Self {
         Addresses { settings, tor }
     }
 
@@ -110,7 +110,7 @@ pub fn check_url(url: &str) -> Result<String, String> {
     let Some(host) = parsed.host_str() else {
         return Err("A webhook URL needs a host.".to_string());
     };
-    if crate::onion::is_onion_host(host) {
+    if tor_service::onion::is_onion_host(host) {
         return Err(ONION_REFUSED.to_string());
     }
     Ok(url.to_string())

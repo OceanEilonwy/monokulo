@@ -3,7 +3,7 @@
 //! naming the Tor circuit it arrived on (`HiddenServiceExportCircuitID
 //! haproxy` in `torrc`; see `deploy/tor/torrc.snippet`). Used with an
 //! external tor (`tor.mode = external`); Tor inside monokulo hands its
-//! streams over directly (monokulo's `tor::TorListener`).
+//! streams over directly (`tor_service::TorListener`).
 //!
 //! From the tor manual: the header looks like
 //! `PROXY TCP6 fc00:dead:beef:4dad::ffff:ffff ::1 65535 42\r\n`, and the

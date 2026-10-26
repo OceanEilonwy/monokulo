@@ -331,7 +331,7 @@ async fn without_an_onion_address_there_are_no_onion_links() {
 fn over_tor(mut request: Request<Body>) -> Request<Body> {
     request
         .extensions_mut()
-        .insert(ConnectInfo(crate::tor::circuit_peer(7)));
+        .insert(ConnectInfo(tor_service::circuit_peer(7)));
     request
 }
 

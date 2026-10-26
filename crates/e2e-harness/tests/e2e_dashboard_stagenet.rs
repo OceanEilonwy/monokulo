@@ -244,7 +244,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                 "Tor is not available in tests".to_owned(),
             )),
         },
-        tor: monokulo::tor::Tor::default(),
+        tor: tor_service::Tor::default(),
         log_store: None,
         webhooks: Arc::default(),
         apps: Default::default(),

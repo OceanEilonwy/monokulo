@@ -19,6 +19,7 @@ e2e = [
     "dep:engine",
     "dep:engine-daemon",
     "dep:monokulo",
+    "dep:tor-service",
     "dep:cli-wallet",
     "dep:credentials",
     "dep:axum",
@@ -40,6 +41,8 @@ engine = { path = "../engine", optional = true }
 # The node client the harness watches the chain with.
 engine-daemon = { path = "../engine-daemon", optional = true }
 monokulo = { path = "../monokulo", optional = true }
+# The Tor handle monokulo's state holds, with Tor off.
+tor-service = { path = "../tor-service", optional = true }
 # The fast, reliable stagenet test wallet the e2e tests and the harness use
 # to sign and broadcast real payments (see its own crate doc comment).
 cli-wallet = { path = "../cli-wallet", optional = true }

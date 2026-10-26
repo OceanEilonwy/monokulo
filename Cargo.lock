@@ -1652,6 +1652,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tor-service",
  "tower",
 ]
 
@@ -3728,7 +3729,6 @@ dependencies = [
  "abuse",
  "aes-gcm",
  "api-macros",
- "arti-client",
  "axum",
  "axum-extra",
  "brotli",
@@ -3747,8 +3747,6 @@ dependencies = [
  "hmac 0.13.0",
  "http-body",
  "http-body-util",
- "hyper",
- "hyper-util",
  "jiff",
  "jsonschema",
  "key-custody",
@@ -3766,14 +3764,12 @@ dependencies = [
  "reqwest",
  "reqwest-middleware",
  "rusqlite",
- "safelog",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "serde_urlencoded",
  "service-runtime",
  "sha2 0.11.0",
- "sha3",
  "short-id",
  "sqlite",
  "static-assets",
@@ -3784,11 +3780,7 @@ dependencies = [
  "tokio",
  "tokio-socks",
  "tokio-util",
- "tor-cell",
- "tor-hsservice",
- "tor-keymgr",
- "tor-proto",
- "tor-rtcompat",
+ "tor-service",
  "tower",
  "tower-http 0.7.1",
  "tracing",
@@ -7576,6 +7568,33 @@ dependencies = [
  "tracing-test",
  "void",
  "web-time-compat",
+]
+
+[[package]]
+name = "tor-service"
+version = "0.1.0"
+dependencies = [
+ "abuse",
+ "arti-client",
+ "axum",
+ "bytes",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "parking_lot",
+ "safelog",
+ "service-runtime",
+ "sha3",
+ "tokio",
+ "tor-cell",
+ "tor-hsservice",
+ "tor-keymgr",
+ "tor-proto",
+ "tor-rtcompat",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

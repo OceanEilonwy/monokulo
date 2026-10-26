@@ -1,0 +1,57 @@
+[package]
+name = "tor-service"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Tor for monokulo's visitors: Tor inside monokulo (Arti) serving the onion service, the server both onion paths share, and onion address checks"
+
+[features]
+# Tor inside monokulo (`tor.mode = inside`): Arti, the Rust Tor, serves the
+# onion service from this process. Without it only an external tor can
+# serve one. monokulo's `tor` feature (on by default) turns it on.
+arti = ["dep:arti-client", "dep:tor-hsservice", "dep:tor-cell", "dep:tor-proto", "dep:tor-keymgr", "dep:tor-rtcompat", "dep:safelog", "dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:bytes", "dep:futures-util"]
+# `Tor::running_at` and `Tor::with_status`: handles that say what Tor is
+# doing with nothing running, for other crates' tests. Enabled only from
+# [dev-dependencies] and test features (resolver 2 keeps it out of every
+# normal build), never in production.
+test-support = []
+
+[dependencies]
+# Who a visitor on Tor is (`abuse::proxy_protocol::OnionPeer`), and the
+# listeners the server takes visitors from.
+abuse = { path = "../abuse" }
+# The router both onion paths serve, and the listener it is served from.
+axum = "0.8.9"
+parking_lot = "0.12.5"
+# The clock Tor's status is stamped with.
+service-runtime = { path = "../service-runtime" }
+# Onion address checksums (`onion`).
+sha3 = "0.10.9"
+# `onion_uri` values (`onion::validate_onion_uri`).
+url = "2.5.8"
+tokio = { version = "1.53.1", features = ["io-util", "macros", "rt", "sync", "time"] }
+tracing = "0.1.44"
+
+# Arti, the Rust Tor, for the `arti` feature: rustls and the workspace's
+# rusqlite, so no OpenSSL and one SQLite.
+arti-client = { version = "0.47.0", optional = true, default-features = false, features = ["tokio", "rustls", "compression", "onion-service-service", "onion-service-client", "vanguards"] }
+tor-hsservice = { version = "0.47.0", optional = true }
+tor-cell = { version = "0.47.0", optional = true }
+safelog = { version = "0.10.0", optional = true }
+tor-proto = { version = "0.47.0", optional = true, features = ["tokio"] }
+tor-keymgr = { version = "0.47.0", optional = true }
+tor-rtcompat = { version = "0.47.0", optional = true }
+# Arti's status events and each visitor's streams.
+futures-util = { version = "0.3.34", optional = true, default-features = false, features = ["std"] }
+# Fetching an onion shop's verification file over a Tor stream.
+hyper = { version = "1.11.1", optional = true, features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", optional = true, features = ["tokio"] }
+http-body-util = { version = "0.1.5", optional = true }
+bytes = { version = "1.12.1", optional = true }
+
+[dev-dependencies]
+# A fresh folder per test.
+uuid = { version = "1.26.0", features = ["v4"] }
+
+[lints]
+workspace = true
