@@ -43,6 +43,8 @@ PKG=openwrt/monokulo
 # count, so every build from main upgrades the one before it.
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/monokulo/Cargo.toml | head -n 1)
 PKG_RELEASE=$(git rev-list --count HEAD 2>/dev/null || echo 1)
+# The commit, shown with the version on the router's LuCI page.
+COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
 
 key="${APK_SIGNING_KEY:-}"
 if [ -z "$key" ]; then
@@ -104,6 +106,8 @@ rustup target add "$TARGET"
 	# (the static link resolves left to right).
 	export "CARGO_TARGET_${TRIPLE}_RUSTFLAGS=-L native=$static_cxx -C link-arg=-lgcc -C link-arg=-lc"
 	export CARGO_PROFILE_RELEASE_STRIP=symbols
+	# As release.yml builds it: monokulo's links to its source name the commit.
+	export MONOKULO_GIT_COMMIT="$COMMIT"
 	# The engine is built into monokulo (its default `embedded-engine`
 	# feature), so there is one binary to ship, with the engine's default
 	# `zmq` feature: a node's ZMQ announcements wake the scan at once.
@@ -131,7 +135,7 @@ set -- -v "$PWD/openwrt:/feed:ro" -v "$PWD/dist:/dist"
 # The key reaches the container through the environment (-e APK_KEY without a
 # value), never on docker's command line where other local users could see it.
 APK_KEY="$key" docker run --rm -e APK_KEY \
-	-e MONOKULO_VERSION="$VERSION" -e MONOKULO_RELEASE="$PKG_RELEASE" \
+	-e MONOKULO_VERSION="$VERSION" -e MONOKULO_RELEASE="$PKG_RELEASE" -e MONOKULO_COMMIT="$COMMIT" \
 	"$@" "$SDK_IMAGE" sh -euc '
 	[ -x ./setup.sh ] && [ ! -f rules.mk ] && ./setup.sh
 
@@ -152,7 +156,8 @@ APK_KEY="$key" docker run --rm -e APK_KEY \
 	# Rebuild ours from scratch each time; drop earlier versions from the repository.
 	rm -rf bin/packages/*/monokulo build_dir/target-*/monokulo-*
 	make package/monokulo/compile -j"$(nproc)" \
-		MONOKULO_VERSION="$MONOKULO_VERSION" MONOKULO_RELEASE="$MONOKULO_RELEASE"
+		MONOKULO_VERSION="$MONOKULO_VERSION" MONOKULO_RELEASE="$MONOKULO_RELEASE" \
+		MONOKULO_COMMIT="$MONOKULO_COMMIT"
 	# The SDK builds packages unsigned (only the index is signed). Sign them too,
 	# so a downloaded .apk installs directly (apk add, or LuCI Upload Package)
 	# on any router that trusts monokulo.pem.

@@ -35,13 +35,40 @@ function state(instances, name) {
 	return i && i.running ? _('Running') : _('Not running');
 }
 
+// The build in the package's version file, or the one procd keeps with the
+// running instance (the init script hands it the same file's values).
+function build(text) {
+	var b = {};
+	(text || '').split('\n').forEach(function(line) {
+		var kv = line.match(/^(version|commit)=(.*)$/);
+		if (kv)
+			b[kv[1]] = kv[2].trim();
+	});
+	return b;
+}
+
+// Where a build's commit link points.
+var REPOSITORY = 'https://github.com/OceanEilonwy/monokulo';
+
+// A build to read: the version, and the start of its commit linked to it.
+function describe(b) {
+	var text = '<code>' + b.version + '</code>';
+	if (/^[0-9a-f]{40}$/.test(b.commit || ''))
+		text += ' &middot; ' + _('commit') + ' <a href="' + REPOSITORY + '/commit/' + b.commit +
+			'" target="_blank" rel="noreferrer"><code>' + b.commit.substring(0, 12) + '</code></a>';
+	return text;
+}
+
 return view.extend({
 	load: function() {
 		return Promise.all([ uci.load('monokulo'), instances() ]).then(function(data) {
 			// The onion address Tor inside monokulo wrote, once it has one.
 			var dir = uci.get('monokulo', 'main', 'data_dir') || '/srv/monokulo';
-			return L.resolveDefault(fs.read(dir + '/tor/hostname'), '').then(function(hostname) {
-				return data.concat([ (hostname || '').trim() ]);
+			return Promise.all([
+				L.resolveDefault(fs.read(dir + '/tor/hostname'), ''),
+				L.resolveDefault(fs.read('/usr/share/monokulo/version'), '')
+			]).then(function(files) {
+				return data.concat([ (files[0] || '').trim(), build(files[1]) ]);
 			});
 		});
 	},
@@ -49,6 +76,7 @@ return view.extend({
 	render: function(data) {
 		var running = data[1];
 		var onion = data[2];
+		var installed = data[3];
 		var m, s, o;
 
 		m = new form.Map('monokulo', _('Monokulo'),
@@ -67,6 +95,21 @@ return view.extend({
 				var url = 'http://' + window.location.hostname + ':' + port + '/';
 				text += ' &middot; <a href="' + url + '" target="_blank" rel="noreferrer">' + _('Open monokulo') + '</a>';
 			}
+			return text;
+		};
+
+		o = s.option(form.DummyValue, '_version', _('Version'));
+		o.rawhtml = true;
+		o.cfgvalue = function() {
+			var instance = running.monokulo;
+			var current = (instance && instance.running && instance.data) || {};
+			if (!current.version)
+				return installed.version
+					? describe(installed) + ' &middot; ' + _('installed; runs when monokulo starts')
+					: _('Unknown: reinstall the package to see it.');
+			var text = describe(current);
+			if (installed.version && (installed.version !== current.version || installed.commit !== current.commit))
+				text += '<br>' + _('%s is installed: restart monokulo to run it.').format(describe(installed));
 			return text;
 		};
 
