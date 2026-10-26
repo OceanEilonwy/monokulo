@@ -78,7 +78,12 @@ pub fn clean_description(raw: &str) -> Result<Option<String>, DescriptionProblem
 /// one site are one value, and a site can't be mistaken for any other
 /// string. A store without a site has `None`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct Site(String);
+pub struct Site {
+    /// The host and port as kept, `[::1]:8080`.
+    text: String,
+    /// How much of `text` is the host (`[::1]`, brackets and all).
+    host_len: usize,
+}
 
 /// Why something typed can't be a site, said for the field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,38 +130,54 @@ impl Site {
         if host.is_empty() {
             return Err(missing);
         }
-        Ok(Self(match url.port() {
+        let host_len = host.len();
+        let text = match url.port() {
             Some(port) => format!("{host}:{port}"),
             None => host,
-        }))
+        };
+        Ok(Self { text, host_len })
     }
 
     /// A site as monokulo stored it, which it parsed before storing: `''`
     /// is none.
     pub(crate) fn stored(site: &str) -> Option<Self> {
-        (!site.is_empty()).then(|| Self(site.to_owned()))
+        if site.is_empty() {
+            return None;
+        }
+        let host_len = url::Url::parse(&format!("http://{site}"))
+            .ok()
+            .and_then(|url| url.host_str().map(str::len))
+            .unwrap_or(site.len());
+        Some(Self {
+            text: site.to_owned(),
+            host_len,
+        })
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
+    }
+
+    /// The host alone, without its port: `localhost`, `[::1]`.
+    pub fn host(&self) -> &str {
+        &self.text[..self.host_len]
     }
 
     /// A link to the site: `https://` unless it's this machine or an onion
     /// service, which are served over plain http.
     pub fn link(&self) -> String {
-        let site = self.as_str();
-        let host = site.rsplit_once(':').map_or(site, |(host, _)| host);
+        let host = self.host();
         let plain = host == "localhost"
             || host == "127.0.0.1"
             || host == "[::1]"
             || host.ends_with(".onion");
-        format!("{}://{site}", if plain { "http" } else { "https" })
+        format!("{}://{}", if plain { "http" } else { "https" }, self.text)
     }
 }
 
 impl fmt::Display for Site {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.text)
     }
 }
 
