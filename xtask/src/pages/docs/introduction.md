@@ -20,7 +20,8 @@ it can never move your coins.
 
 - New to Monokulo: [install it on your computer](../install-computer/),
   then follow [Accept your first payment](../guide/).
-- Running a shop on WooCommerce or another platform:
+- Running a shop on WooCommerce, PrestaShop, OpenCart, WHMCS or another
+  platform:
   [Shop plugins](../plugins/).
 - Writing your own integration: [the API reference](../api/), with a
   recorded request and answer for every route, and Try it, which sends

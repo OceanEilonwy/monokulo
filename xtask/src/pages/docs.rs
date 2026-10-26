@@ -303,7 +303,7 @@ pub(super) fn write(root: &Path, site: &Path, site_url: &str, github_url: &str) 
                 let markdown = fs::read_to_string(&source).map_err(|e| at(&source, e))?;
                 (
                     markdown_title(page, &markdown).to_owned(),
-                    markdown_html(&markdown),
+                    markdown_html(&site_assets::linked(&markdown, "../")),
                 )
             }
             Source::Rust {
@@ -623,6 +623,16 @@ mod tests {
             plugins.contains(r#"href="webhook-vectors.json""#),
             "{plugins}"
         );
+        // Each plugin's shop shows its mark, at the name it's published at.
+        let linked = site_assets::assert_links_published(&plugins, &site.join("assets"));
+        for mark in [
+            "plugin-woocommerce.svg",
+            "plugin-prestashop.svg",
+            "plugin-opencart.png",
+            "plugin-whmcs.png",
+        ] {
+            assert!(linked.contains(&mark), "{mark}");
+        }
         for dir in ["plugins", "docs/plugins"] {
             let vectors = fs::read_to_string(site.join(dir).join(VECTORS)).unwrap();
             assert!(

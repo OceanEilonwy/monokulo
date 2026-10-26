@@ -65,7 +65,7 @@ const WAYS: [(&str, &str, &str, &str); 4] = [
     ),
     (
         "Shop plugins",
-        "Connect WooCommerce or another shop with a code from the dashboard.",
+        "Connect WooCommerce, PrestaShop, OpenCart, WHMCS or another shop with a code from the dashboard.",
         "plugins/",
         "Shop plugins",
     ),

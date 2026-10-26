@@ -136,6 +136,9 @@ main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--sp
 .prose .target-label{margin:var(--space-sm) 0 var(--space-xs)}
 .target-pick{display:flex;flex-wrap:wrap;align-items:center;gap:var(--space-sm);margin:var(--space-lg) 0}
 .target-pick label{font-weight:700}
+/* A shop platform's mark before its name, on the plugins page. */
+.prose .brand{display:inline-flex;align-items:center;gap:var(--space-sm);white-space:nowrap}
+.prose .brand img{flex:none;width:20px;height:20px}
 
 /* ============================================================
    The bar's actions on every page (xtask/src/pages/site_header.rs):
