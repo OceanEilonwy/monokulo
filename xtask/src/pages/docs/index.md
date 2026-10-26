@@ -37,7 +37,8 @@ for your store's public key.
 
 - [Walkthrough: Geomart](../walkthrough-geomart/): the steps above, one at a
   time, on a small shop that sells shapes.
-- [JS library](../js-library/): everything `monokulo-client.js` does.
+- [Webpages](../js-library/): the checkout in your own page, and
+  everything `monokulo-client.js` does.
 - [When is an order really paid?](../paid/)
 - [Webhooks](../webhooks/): every field, the signature, retries.
 - [HTTP API](../api/): `/api/v1`, for a server, a shop plugin or an app.

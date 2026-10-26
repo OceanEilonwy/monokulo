@@ -1100,6 +1100,7 @@ pub(super) fn map(api: &Api, here: Here) -> Vec<shell::Group> {
         current: (marks == Some(id)).then_some(shell::Mark::Location),
         file: false,
         nested,
+        children: Vec::new(),
     };
     let mut overview = vec![link(html! { "Introduction" }, INTRO_ID, false)];
     overview.extend(

@@ -4,9 +4,10 @@
 //! this page", the page's sections (its `h2`s), with a link to edit the
 //! page. Previous and Next end it. On a narrow screen the map is a menu
 //! behind the bar's Menu button, the site's own links at its top: a
-//! checkbox opens it, so it works without a script. The API explorer is a
-//! wide page instead ([`Layout::Wide`]): its sections across the width,
-//! the map linking each.
+//! checkbox opens it, so it works without a script. The API explorer and a
+//! docs reference page are wide pages instead ([`Layout::Wide`]): their
+//! sections across the width, the map linking each, folded under its page
+//! or section with a caret (`details`).
 //!
 //! Every page reads fully without a script. The site's script
 //! (`assets/site/site.js`) marks the section being read in "On this page"
@@ -63,6 +64,10 @@ pub(super) struct Link {
     /// Under the link before it: a section of the API's introduction, an
     /// operation of a resource.
     pub(super) nested: bool,
+    /// The links folded under it, open: a reference page's sections, and a
+    /// section's own. A caret at the row's right folds them, without a
+    /// script (`details`).
+    pub(super) children: Vec<Link>,
 }
 
 /// What a link in the map is to the page it's on, as `aria-current` says.
@@ -191,11 +196,7 @@ pub(super) fn render(mut page: Page) -> Markup {
                                     (group.title)
                                 }
                                 ul {
-                                    @for link in &group.links {
-                                        li {
-                                            a href=(link.href) aria-current=[link.current.map(Mark::attribute)] data-file[link.file] data-nested[link.nested] { (link.label) }
-                                        }
-                                    }
+                                    @for link in &group.links { (map_link(link)) }
                                 }
                             }
                         }
@@ -207,7 +208,17 @@ pub(super) fn render(mut page: Page) -> Markup {
                     }
                     label.map-scrim for=(MAP_TOGGLE) aria-hidden="true" {}
                     @if page.layout == Layout::Wide {
-                        main.shell-main.shell-wide { (PreEscaped(&article)) }
+                        main.shell-main.shell-wide {
+                            (PreEscaped(&article))
+                            @if page.previous.is_some() || page.next.is_some() || page.edit.is_some() {
+                                div.wide-foot {
+                                    (pager(&page))
+                                    @if let Some(edit) = &page.edit {
+                                        a.edit href=(edit) { "Edit this page on GitHub" }
+                                    }
+                                }
+                            }
+                        }
                     } @else {
                         (article_main(&page, &article))
                     }
@@ -225,16 +236,7 @@ fn article_main(page: &Page, article: &str) -> Markup {
         main.shell-main {
             article.prose {
                 (PreEscaped(article))
-                @if page.previous.is_some() || page.next.is_some() {
-                    nav.pager aria-label="Pages" {
-                        @if let Some((label, href)) = &page.previous {
-                            a.previous href=(href) { small { "Previous" } (label) }
-                        }
-                        @if let Some((label, href)) = &page.next {
-                            a.next href=(href) { small { "Next" } (label) }
-                        }
-                    }
-                }
+                (pager(page))
             }
             @if !toc.is_empty() || page.edit.is_some() {
                 aside.toc aria-label="On this page" {
@@ -248,6 +250,43 @@ fn article_main(page: &Page, article: &str) -> Markup {
                     }
                     @if let Some(edit) = &page.edit {
                         a.edit href=(edit) { "Edit this page on GitHub" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Previous and Next, if the page has either.
+fn pager(page: &Page) -> Markup {
+    html! {
+        @if page.previous.is_some() || page.next.is_some() {
+            nav.pager aria-label="Pages" {
+                @if let Some((label, href)) = &page.previous {
+                    a.previous href=(href) { small { "Previous" } (label) }
+                }
+                @if let Some((label, href)) = &page.next {
+                    a.next href=(href) { small { "Next" } (label) }
+                }
+            }
+        }
+    }
+}
+
+/// A link in the map, and what's folded under it.
+fn map_link(link: &Link) -> Markup {
+    let a = html! {
+        a href=(link.href) aria-current=[link.current.map(Mark::attribute)] data-file[link.file] data-nested[link.nested] { (link.label) }
+    };
+    html! {
+        li {
+            @if link.children.is_empty() {
+                (a)
+            } @else {
+                details open {
+                    summary { (a) }
+                    ul {
+                        @for child in &link.children { (map_link(child)) }
                     }
                 }
             }
