@@ -5,8 +5,8 @@
 //!
 //! **The model**: a store has one default (fallback) confirmation count
 //! (`tenants.confirmations_required`, unchanged, still edited the same way
-//! it always was) plus up to 5 custom thresholds, each pairing a
-//! `unit_amount` (denominated in the store's own `base_currency`) with its
+//! it always was) plus up to [`MAX_CUSTOM_THRESHOLDS`] custom thresholds,
+//! each pairing a `unit_amount` (denominated in the store's own `base_currency`) with its
 //! own confirmation count. An order's effective threshold is whichever
 //! custom threshold has the *largest* `unit_amount` that's still `<=` the
 //! order's own amount converted into that base currency. An order below
@@ -18,6 +18,11 @@ use crate::db::{ConfirmationThresholdRow, StoreConnectionRow};
 use crate::exchange_rate_config::ExchangeRateLookupError;
 use crate::http::AppState;
 use pricing::xmr_amount::{Piconero, PiconeroPerUnit, PICONERO_PER_XMR};
+
+/// The most custom thresholds a store can have: the store settings page
+/// offers no more, the save refuses more, and the database insert holds to
+/// it as well.
+pub const MAX_CUSTOM_THRESHOLDS: u8 = 5;
 
 /// Held while one store's confirmation policy is read for a new order or
 /// changed ([`lock_policy`]), so an order can't be priced against a policy

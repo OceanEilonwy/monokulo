@@ -20,6 +20,7 @@ use maud::{html, Markup};
 
 use super::settings::{plain_card, toast_region, Card, Field, Save, Toast, ToastKind};
 use super::PageChrome;
+use crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS;
 use ui::{Choice, Select};
 
 /// One row of the FX-provider settings dropdown.
@@ -84,10 +85,6 @@ pub struct StoreSettingsData {
     pub base_currency: String,
     pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
     pub confirmation_thresholds: Vec<ConfirmationThresholdView>,
-    /// `true` once this store already has 5 custom thresholds - the
-    /// add-threshold form hides itself rather than accepting a submission
-    /// the server would just reject anyway.
-    pub confirmation_thresholds_at_max: bool,
     /// The store's webhooks and their deliveries (`views::webhooks`),
     /// with a just-made webhook's signing secret, shown that once.
     pub webhooks: super::webhooks::WebhooksCard,
@@ -761,7 +758,11 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
             }
         })
         .collect::<Vec<_>>();
-    let new_row = (!store.confirmation_thresholds_at_max).then(|| {
+    // At the limit the blank row to add a tier goes, rather than accept a
+    // submission the save would refuse.
+    let count = store.confirmation_thresholds.len();
+    let at_max = count >= usize::from(MAX_CUSTOM_THRESHOLDS);
+    let new_row = (!at_max).then(|| {
         html! {
             "From"
             (ui::Input::new("new_unit_amount")
@@ -781,11 +782,10 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
             "confirmations"
         }
     });
-    let count = store.confirmation_thresholds.len();
-    let note = if store.confirmation_thresholds_at_max {
-        "5 of 5 tiers. Remove one to add another.".to_string()
+    let note = if at_max {
+        format!("{count} of {MAX_CUSTOM_THRESHOLDS} tiers. Remove one to add another.")
     } else {
-        format!("{count} of 5 tiers.")
+        format!("{count} of {MAX_CUSTOM_THRESHOLDS} tiers.")
     };
     // The ladder as a picture: the default from nothing, then each tier
     // from its amount.
@@ -850,7 +850,7 @@ fn confirmations_card(store: &StoreSettingsData) -> Markup {
                 .help(Some("confirmation-tiers-help"), html! {
                     "Bigger orders can wait for more blocks before they count as paid. Each tier asks an order of at "
                     "least its amount, in " (store.base_currency) ", for its confirmations; smaller orders take the "
-                    "default. A block comes about every 2 minutes. Up to 5 tiers."
+                    "default. A block comes about every 2 minutes. Up to " (MAX_CUSTOM_THRESHOLDS) " tiers."
                 })
                 .stacked()
                 .render(confirmation_tiers(store)))
@@ -1205,7 +1205,6 @@ mod tests {
             base_currency: "XMR".to_string(),
             base_currency_options: vec![],
             confirmation_thresholds: vec![],
-            confirmation_thresholds_at_max: false,
             webhooks: super::super::webhooks::WebhooksCard {
                 store_id: "conn_1".into(),
                 store_name: "shop.example.com".into(),
@@ -1413,8 +1412,10 @@ mod tests {
             confirmation_thresholds: vec![
                 tier("threshold_2", "500", 30),
                 tier("threshold_1", "50.00", 20),
+                tier("threshold_3", "1000", 40),
+                tier("threshold_4", "2000", 50),
+                tier("threshold_5", "5000", 60),
             ],
-            confirmation_thresholds_at_max: true,
             ..on(StoreTab::Payments)
         };
         let html = render(store);

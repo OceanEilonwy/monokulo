@@ -2870,8 +2870,15 @@ impl Db {
             let changed = tx.execute(
                 "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
                  SELECT ?1, ?2, ?3, ?4, ?5
-                 WHERE (SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?2) < 5",
-                params![id, connection_id, unit_amount, Unsigned(confirmations_required), created_at],
+                 WHERE (SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?2) < ?6",
+                params![
+                    id,
+                    connection_id,
+                    unit_amount,
+                    Unsigned(confirmations_required),
+                    created_at,
+                    crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS
+                ],
             )?;
             if changed == 0 {
                 return Ok(false);

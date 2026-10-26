@@ -977,7 +977,6 @@ pub(super) async fn render_store_settings_page_with(
             confirmations_required: t.confirmations_required,
         })
         .collect::<Vec<_>>();
-    let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
     let now = crate::now_unix();
     let embed_can_restrict = embed_domain_rows
         .iter()
@@ -1012,7 +1011,6 @@ pub(super) async fn render_store_settings_page_with(
             base_currency: row.base_currency,
             base_currency_options,
             confirmation_thresholds,
-            confirmation_thresholds_at_max,
             webhooks,
             outcome,
             sent,
@@ -4082,7 +4080,7 @@ mod tests {
             // The settings page's one form: its "new threshold" fields, and a
             // delete checkbox per existing row.
             let save = format!("/stores/{connection_id}/settings");
-            for i in 1..=5 {
+            for i in 1..=crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS {
                 let response = router
                     .clone()
                     .oneshot(form_post_request(
@@ -4121,7 +4119,10 @@ mod tests {
             );
             let html = body_text(response).await;
             assert!(
-                html.contains("at most 5 custom thresholds"),
+                html.contains(&format!(
+                    "at most {} custom thresholds",
+                    crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS
+                )),
                 "expected a clear rejection message, got: {html}"
             );
 

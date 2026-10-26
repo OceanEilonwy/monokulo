@@ -22,6 +22,7 @@ use axum::extract::{Form, Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
+use crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS;
 use crate::db::UserRow;
 use crate::engine_client::EngineClientError;
 use crate::stores::Site;
@@ -38,6 +39,13 @@ const MAX_CONFIRMATIONS: u64 = 720;
 /// The default a store goes back to when it stops accepting unconfirmed
 /// payments with a default of 0.
 const ORDINARY_DEFAULT: u64 = 10;
+
+/// What a save that would add a threshold past the limit is told.
+fn too_many_thresholds() -> String {
+    format!(
+        "You can define at most {MAX_CUSTOM_THRESHOLDS} custom thresholds. Delete one to add another."
+    )
+}
 
 /// A custom threshold to add: its confirmations, and its amount.
 type NewThreshold = (u64, String);
@@ -385,12 +393,8 @@ async fn plan(
             ));
         }
         if let Some((_, amount)) = &new_threshold {
-            if existing.len() - deleted.len() >= 5 {
-                return Err((
-                    CONFIRMATIONS,
-                    "You can define at most 5 custom thresholds. Delete one to add another."
-                        .to_string(),
-                ));
+            if existing.len() - deleted.len() >= usize::from(MAX_CUSTOM_THRESHOLDS) {
+                return Err((CONFIRMATIONS, too_many_thresholds()));
             }
             if existing
                 .iter()
@@ -566,13 +570,7 @@ async fn apply(
         match written {
             Ok(true) if !saved.contains(&CONFIRMATIONS) => saved.push(CONFIRMATIONS),
             Ok(true) => {}
-            Ok(false) => {
-                return Err((
-                    CONFIRMATIONS,
-                    "You can define at most 5 custom thresholds. Delete one to add another."
-                        .to_string(),
-                ))
-            }
+            Ok(false) => return Err((CONFIRMATIONS, too_many_thresholds())),
             Err(e) if e.is_unique_violation() => {
                 return Err((
                     CONFIRMATIONS,
