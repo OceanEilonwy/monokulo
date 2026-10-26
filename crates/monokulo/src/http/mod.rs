@@ -230,6 +230,10 @@ pub struct AppState {
     pub revocations: Arc<crate::revocation::Revocations>,
     /// Tor inside monokulo (`tor_service`): its status and onion address.
     pub tor: tor_service::Tor,
+    /// Cancelled when the process starts to stop: every event stream ends
+    /// then (`crate::live::sse`), so the graceful shutdown only waits for
+    /// ordinary requests. Browsers reconnect once the next process is up.
+    pub stopping: tokio_util::sync::CancellationToken,
 }
 
 impl AppState {
@@ -307,6 +311,7 @@ impl AppState {
             webhooks: Arc::default(),
             apps: Arc::default(),
             revocations: Arc::default(),
+            stopping: Default::default(),
             tor: tor_service::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",

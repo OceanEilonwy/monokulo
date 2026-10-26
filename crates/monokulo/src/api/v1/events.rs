@@ -1,8 +1,7 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
-use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::IntoResponse;
+use axum::response::sse::Event;
 use futures_util::stream;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -173,9 +172,9 @@ async fn get(
         stream::once(async { Ok(ready) }),
         events,
     ));
-    Ok(EventStream::new(
-        Sse::new(events)
-            .keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
-            .into_response(),
-    ))
+    Ok(EventStream::new(crate::live::sse_with_keep_alive(
+        &state.stopping,
+        events,
+        KEEP_ALIVE,
+    )))
 }
