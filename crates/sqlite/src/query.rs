@@ -96,6 +96,16 @@ pub enum Exposure {
     Secret,
 }
 
+/// SQLite's own tables a query may read whole: the schema (under each of
+/// its names) and the AUTOINCREMENT counters.
+const SQLITE_VISIBLE_TABLES: [&str; 5] = [
+    "sqlite_schema",
+    "sqlite_master",
+    "sqlite_temp_schema",
+    "sqlite_temp_master",
+    "sqlite_sequence",
+];
+
 /// Every column of a database's tables, each with its [`Exposure`]. A
 /// column it doesn't name is treated as secret, and each service has a
 /// test ([`unclassified`]) that fails when a migration adds a column
@@ -107,9 +117,13 @@ pub struct Classification {
 
 impl Classification {
     pub fn exposure(&self, table: &str, column: &str) -> Exposure {
-        // SQLite's own tables (the schema, the AUTOINCREMENT counters) and a
-        // row's id hold nothing secret.
-        if table.to_ascii_lowercase().starts_with("sqlite_")
+        // SQLite's schema tables, its AUTOINCREMENT counters and a row's id
+        // hold nothing secret. Its other tables are named, not matched by
+        // prefix: ANALYZE fills `sqlite_stat4` with sampled index keys, an
+        // index on a secret column among them, so they stay secret.
+        if SQLITE_VISIBLE_TABLES
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(table))
             || column.is_empty()
             || ["rowid", "_rowid_", "oid"].contains(&column.to_ascii_lowercase().as_str())
         {

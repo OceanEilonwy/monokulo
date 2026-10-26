@@ -15,7 +15,9 @@ const CLASSES: Classification = Classification {
 };
 
 /// A database with two users, a note per user and a column nobody has
-/// classified (`users.nickname`), on a connection that can only read.
+/// classified (`users.nickname`), on a connection that can only read. The
+/// secret column is indexed and ANALYZE has run, so `sqlite_stat4` holds
+/// samples of its values, as it would once a service runs PRAGMA optimize.
 fn db() -> Connection {
     let path = std::env::temp_dir().join(format!("sqlite_query_{}.db", uuid::Uuid::new_v4()));
     let path = path.to_string_lossy().into_owned();
@@ -27,7 +29,9 @@ fn db() -> Connection {
              INSERT INTO users VALUES (2, 'bob@example.org', '$argon2id$secret-two', 'bobby');
              CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT, data BLOB);
              INSERT INTO notes VALUES (1, 'hello', x'9f3a1c07');
-             CREATE VIEW user_secrets AS SELECT id, password_hash FROM users;",
+             CREATE VIEW user_secrets AS SELECT id, password_hash FROM users;
+             CREATE INDEX users_by_password_hash ON users (password_hash);
+             ANALYZE;",
         )
         .unwrap();
     crate::open_reader(&path).unwrap()
@@ -161,6 +165,8 @@ fn a_secret_column_reads_as_null_however_it_is_reached() {
         "SELECT id FROM users WHERE password_hash LIKE '$argon2id$secret%'",
         // A column nobody classified counts as secret.
         "SELECT nickname FROM users",
+        // Nor do SQLite's statistics give an index's sampled keys away.
+        "SELECT sample FROM sqlite_stat4",
     ] {
         let result = run_page(&conn, sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
         let shown: Vec<String> = values(&result).into_iter().flatten().flatten().collect();
