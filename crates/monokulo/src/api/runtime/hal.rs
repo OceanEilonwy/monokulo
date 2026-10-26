@@ -406,7 +406,7 @@ pub fn template(handler: &HandlerInfo) -> Template {
     (handler.describe)(&mut operation);
     let body = operation.body.take();
     let definitions = generator.take_definitions(true);
-    // A form on a path with parameters isn't offered; there is none.
+    // The macros refuse a form on a path with parameters.
     let target = format!("{}{}", auth::base(), handler.template);
     Template {
         title: catalog::summary(handler.doc),

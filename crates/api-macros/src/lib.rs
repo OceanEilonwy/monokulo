@@ -240,7 +240,7 @@ fn expand_resource(args: ResourceArgs) -> syn::Result<Tokens> {
     let who = if args.who.is_empty() {
         quote!(::core::option::Option::None)
     } else {
-        let bits = who_bits(&args.who, args.rel.span())?;
+        let bits = who_bits(&args.who, args.rel.span(), Audience::Page)?;
         quote!(::core::option::Option::Some(#p::Who(#bits)))
     };
     let field_names: Vec<&Ident> = args.params.iter().map(|(n, _)| n).collect();
@@ -397,36 +397,59 @@ impl Parse for HandlerArgs {
     }
 }
 
+/// Whose `who` it is: a handler's callers, or the people a page is
+/// offered to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Audience {
+    /// A handler's: a request to the API carries a key or none, never a
+    /// dashboard session, so `session` would admit no one.
+    Handler,
+    /// A page's: a merchant signed in to the dashboard may be offered it.
+    Page,
+}
+
 /// The bits of `who`: see `monokulo::api::Who`.
-fn who_bits(who: &[Ident], span: Span) -> syn::Result<u8> {
+fn who_bits(who: &[Ident], span: Span, audience: Audience) -> syn::Result<u8> {
     const NONE: u8 = 1;
     const PK: u8 = 2;
     const SK: u8 = 4;
     const AK: u8 = 8;
     const SESSION: u8 = 16;
+    let (expected, session) = match audience {
+        Audience::Handler => (
+            "`pk`, `sk`, `ak`, `any_key`, `server`, `app` or `anyone`",
+            0,
+        ),
+        Audience::Page => (
+            "`pk`, `sk`, `ak`, `session`, `any_key`, `server`, `app` or `anyone`",
+            SESSION,
+        ),
+    };
     if who.is_empty() {
         return Err(Error::new(
             span,
-            "say who may call this: `pk`, `sk`, `ak`, `session`, `any_key`, `server`, `app` or `anyone`",
+            format!("say who may call this: {expected}"),
         ));
     }
     let mut bits = 0;
     for ident in who {
-        bits |=
-            match ident.to_string().as_str() {
-                "pk" => PK,
-                "sk" => SK,
-                "ak" => AK,
-                "session" => SESSION,
-                "any_key" => PK | SK | AK,
-                "server" => SK | AK,
-                "app" => AK,
-                "anyone" => NONE | PK | SK | AK | SESSION,
-                _ => return Err(Error::new(
+        bits |= match ident.to_string().as_str() {
+            "pk" => PK,
+            "sk" => SK,
+            "ak" => AK,
+            "session" if audience == Audience::Page => SESSION,
+            "session" => {
+                return Err(Error::new(
                     ident.span(),
-                    "expected `pk`, `sk`, `ak`, `session`, `any_key`, `server`, `app` or `anyone`",
-                )),
-            };
+                    "a request to the API never carries a dashboard session: only a page says `session`, in `who` of its `resource!`",
+                ))
+            }
+            "any_key" => PK | SK | AK,
+            "server" => SK | AK,
+            "app" => AK,
+            "anyone" => NONE | PK | SK | AK | session,
+            _ => return Err(Error::new(ident.span(), format!("expected {expected}"))),
+        };
     }
     Ok(bits)
 }
@@ -471,7 +494,7 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
             "a handler is an `async fn`",
         ));
     }
-    let bits = who_bits(&args.who, name.span())?;
+    let bits = who_bits(&args.who, name.span(), Audience::Handler)?;
     let output = result_type(&function.sig.output)?;
     let mut types = Vec::new();
     for input in &function.sig.inputs {
@@ -499,6 +522,10 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
     let wrapper = format_ident!("api_handler_{}", name);
     let marker_who = format_ident!("ApiWho_{}", name);
     let routing = format_ident!("{}", method.to_ascii_lowercase());
+    // A form's target is its handler's route template, so a form on a path
+    // with parameters would be offered with `{...}` in it: refused when it
+    // compiles.
+    let mut form_check = quote!();
     let form = match &args.form {
         Some(form) => {
             let value = form.value();
@@ -518,6 +545,19 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
                     "a form changes something: it's a `post` or `delete`",
                 ));
             }
+            form_check = quote_spanned! {form.span()=>
+                const _: () = {
+                    let template = Path::TEMPLATE.as_bytes();
+                    let mut i = 0;
+                    while i < template.len() {
+                        ::core::assert!(
+                            template[i] != b'{',
+                            "a form's target is its path, so a form is only on a path without parameters"
+                        );
+                        i += 1;
+                    }
+                };
+            };
             quote!(::core::option::Option::Some(#form))
         }
         None => quote!(::core::option::Option::None),
@@ -533,6 +573,8 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
         .map(|problem| quote_spanned!(problem.span()=> operation.problem(#p::Problem::#problem);));
     Ok(quote! {
         #function
+
+        #form_check
 
         /// This handler as a form target (`api::Form<...>`).
         #[allow(non_camel_case_types, dead_code)]

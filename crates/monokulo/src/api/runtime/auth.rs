@@ -56,10 +56,12 @@ impl Credential {
 }
 
 /// Who may call a handler: a set of keys, and maybe no key at all. Written
-/// in `#[get(...)]` as `pk`, `sk`, `ak`, `session`, or the sets `any_key`
-/// (pk, sk, ak), `server` (sk, ak: a caller that keeps a secret, the shop's
-/// server or a connected app), `app` (ak) and `anyone` (with or without a
-/// key).
+/// in `#[get(...)]` as `pk`, `sk`, `ak`, or the sets `any_key` (pk, sk,
+/// ak), `server` (sk, ak: a caller that keeps a secret, the shop's server
+/// or a connected app), `app` (ak) and `anyone` (with or without a key).
+/// A page's `who` in `resource!` (who it's offered to) may also say
+/// `session`, a merchant signed in to the dashboard; the macros refuse it
+/// on a handler, as no request to the API carries one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Who(pub u8);
 
