@@ -144,9 +144,15 @@ async fn the_rows_download_as_csv_and_json() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let rows: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(rows[0]["email"], crate::db::TEST_ADMIN_EMAIL);
-    assert_eq!(rows[0]["password_hash"], serde_json::Value::Null);
+    let export: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        export["columns"],
+        serde_json::json!(["email", "password_hash", "odd"])
+    );
+    assert_eq!(
+        export["rows"],
+        serde_json::json!([[crate::db::TEST_ADMIN_EMAIL, null, "a,b"]])
+    );
 }
 
 /// Each of the Query page's routes checks for itself: an admin's read
