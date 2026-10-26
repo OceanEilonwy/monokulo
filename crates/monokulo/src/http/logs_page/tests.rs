@@ -1061,7 +1061,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
 fn a_custom_range_that_does_not_parse_is_refused() {
     let zone = jiff::tz::TimeZone::UTC;
     let custom = |from: &str, to: &str| super::LogsParams {
-        range: "custom".into(),
+        range: Some(crate::views::logs::Range::Custom),
         from: from.into(),
         to: to.into(),
         ..Default::default()

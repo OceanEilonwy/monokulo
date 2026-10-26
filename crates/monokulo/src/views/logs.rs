@@ -69,7 +69,7 @@ pub struct FormView {
     pub q: String,
     pub level: String,
     pub service: String,
-    pub range: String,
+    pub range: Range,
     pub from: String,
     pub to: String,
     /// The Logs page's own requests are shown.
@@ -110,16 +110,70 @@ pub struct LogsViewModel {
     pub attribute_names: Vec<String>,
 }
 
-const RANGES: &[(&str, &str)] = &[
-    ("15m", "Last 15 minutes"),
-    ("1h", "Last hour"),
-    ("6h", "Last 6 hours"),
-    ("24h", "Last 24 hours"),
-    ("7d", "Last 7 days"),
-    ("14d", "Last 14 days"),
-    ("all", "Everything kept"),
-    ("custom", "From / to below"),
-];
+/// The search's time range: the form's choices and the URL's `range`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Range {
+    #[serde(rename = "15m")]
+    Minutes15,
+    #[serde(rename = "1h")]
+    Hour,
+    #[serde(rename = "6h")]
+    Hours6,
+    #[default]
+    #[serde(rename = "24h")]
+    Hours24,
+    #[serde(rename = "7d")]
+    Days7,
+    #[serde(rename = "14d")]
+    Days14,
+    /// Everything kept.
+    #[serde(rename = "all")]
+    All,
+    /// The form's from and to.
+    #[serde(rename = "custom")]
+    Custom,
+}
+
+impl Range {
+    /// Every range, in the form's order.
+    pub const ALL: [Range; 8] = [
+        Range::Minutes15,
+        Range::Hour,
+        Range::Hours6,
+        Range::Hours24,
+        Range::Days7,
+        Range::Days14,
+        Range::All,
+        Range::Custom,
+    ];
+
+    /// Its value in the URL, as serde writes it.
+    pub fn value(self) -> &'static str {
+        match self {
+            Range::Minutes15 => "15m",
+            Range::Hour => "1h",
+            Range::Hours6 => "6h",
+            Range::Hours24 => "24h",
+            Range::Days7 => "7d",
+            Range::Days14 => "14d",
+            Range::All => "all",
+            Range::Custom => "custom",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Range::Minutes15 => "Last 15 minutes",
+            Range::Hour => "Last hour",
+            Range::Hours6 => "Last 6 hours",
+            Range::Hours24 => "Last 24 hours",
+            Range::Days7 => "Last 7 days",
+            Range::Days14 => "Last 14 days",
+            Range::All => "Everything kept",
+            Range::Custom => "From / to below",
+        }
+    }
+}
 
 const LEVELS: &[(&str, &str)] = &[
     ("", "Any level"),
@@ -701,7 +755,7 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                 div class="quick" {
                     (select("level", "Level", LEVELS, &vm.form.level))
                     (select("service", "Service", SERVICES, &vm.form.service))
-                    (select("range", "Time range", RANGES, &vm.form.range))
+                    (select("range", "Time range", &Range::ALL.map(|r| (r.value(), r.label())), vm.form.range.value()))
                     label { "From " (ui::Input::new("from").kind(ui::InputType::DatetimeLocal).value(vm.form.from.as_str())) }
                     label { "To " (ui::Input::new("to").kind(ui::InputType::DatetimeLocal).value(vm.form.to.as_str())) }
                     (ui::Checkbox::new()

@@ -32,11 +32,12 @@ use telemetry::store::api::{is_trace_id, HistogramRequest, LogsRequest};
 use telemetry::store::{Cursor, LogRow};
 
 use super::fx::{FxRequest, Timezone};
+use super::pos_logs::ClientTime;
 use super::{AppState, AuthedAdmin};
 use crate::logs::Sources;
 use crate::views::logs::{
     self as view, BarView, FormView, HistogramView, LogsViewModel, PropertyView, QueryErrorView,
-    RowView,
+    Range, RowView,
 };
 
 /// Lines per page.
@@ -94,24 +95,90 @@ pub struct LogsParams {
     pub level: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub service: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub range: String,
+    #[serde(
+        default,
+        deserialize_with = "unset_if_empty",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub range: Option<Range>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub from: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub to: String,
-    /// `show` includes the Logs page's own requests, hidden otherwise
-    /// ([`OWN_REQUESTS`]).
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub logs_requests: String,
+    /// Includes the Logs page's own requests, hidden otherwise
+    /// ([`OWN_REQUESTS`]): `logs_requests=show` in the URL, the form's
+    /// checkbox.
+    #[serde(default, with = "show", skip_serializing_if = "std::ops::Not::not")]
+    pub logs_requests: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub before: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub after: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub part: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub format: String,
+    #[serde(
+        default,
+        deserialize_with = "unset_if_empty",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub part: Option<Part>,
+    #[serde(
+        default,
+        deserialize_with = "unset_if_empty",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub format: Option<ExportFormat>,
+}
+
+/// Which part of the page a request wants, when not all of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Part {
+    /// Only the next page's lines ("Older", appended by fixi).
+    More,
+}
+
+/// A download's format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportFormat {
+    #[default]
+    Ndjson,
+    Csv,
+}
+
+/// A choice from the URL, where an empty value means not set; any other
+/// value it doesn't know is refused.
+fn unset_if_empty<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    use serde::de::IntoDeserializer;
+    let text = String::deserialize(deserializer)?;
+    if text.is_empty() {
+        return Ok(None);
+    }
+    T::deserialize(text.into_deserializer()).map(Some)
+}
+
+/// A checkbox whose value is `show`: on when sent, off when not (or sent
+/// empty).
+mod show {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(on: &bool, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(if *on { "show" } else { "" })
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<bool, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "show" => Ok(true),
+            "" => Ok(false),
+            other => Err(serde::de::Error::invalid_value(
+                serde::de::Unexpected::Str(other),
+                &"show",
+            )),
+        }
+    }
 }
 
 impl LogsParams {
@@ -121,10 +188,10 @@ impl LogsParams {
             q: self.q.clone(),
             level: self.level.clone(),
             service: self.service.clone(),
-            range: self.range.clone(),
+            range: self.range,
             from: self.from.clone(),
             to: self.to.clone(),
-            logs_requests: self.logs_requests.clone(),
+            logs_requests: self.logs_requests,
             ..LogsParams::default()
         }
     }
@@ -142,12 +209,8 @@ impl LogsParams {
         }
     }
 
-    fn range(&self) -> &str {
-        if self.range.is_empty() {
-            "24h"
-        } else {
-            &self.range
-        }
+    fn range(&self) -> Range {
+        self.range.unwrap_or_default()
     }
 }
 
@@ -226,14 +289,14 @@ fn time_range(
         })
     };
     match params.range() {
-        "15m" => back(15 * 60),
-        "1h" => back(3600),
-        "6h" => back(6 * 3600),
-        "7d" => back(7 * 86_400),
-        "14d" => back(14 * 86_400),
-        "all" => Ok((None, None)),
-        "custom" => Ok((end(&params.from, "start")?, end(&params.to, "end")?)),
-        _ => back(86_400),
+        Range::Minutes15 => back(15 * 60),
+        Range::Hour => back(3600),
+        Range::Hours6 => back(6 * 3600),
+        Range::Hours24 => back(86_400),
+        Range::Days7 => back(7 * 86_400),
+        Range::Days14 => back(14 * 86_400),
+        Range::All => Ok((None, None)),
+        Range::Custom => Ok((end(&params.from, "start")?, end(&params.to, "end")?)),
     }
 }
 
@@ -247,7 +310,7 @@ const OWN_REQUESTS: [&str; 2] = ["/admin/logs%", "/api/v1/admin/logs%"];
 fn filters(params: &LogsParams) -> Result<(Option<Expr>, Option<Expr>), ParseError> {
     let user = parse(&params.q)?;
     let mut combined = user.clone();
-    if params.logs_requests != "show" {
+    if !params.logs_requests {
         let own = OWN_REQUESTS
             .map(|pattern| Expr::Like {
                 field: "http.route".into(),
@@ -496,7 +559,7 @@ fn session_url(session: &str) -> String {
     };
     LogsParams {
         q: condition.to_string(),
-        range: "all".into(),
+        range: Some(Range::All),
         ..LogsParams::default()
     }
     .url(LOGS)
@@ -539,7 +602,7 @@ fn histogram_view(
             let start = from + width * i as i64;
             let end = start + width;
             let slice = LogsParams {
-                range: "custom".into(),
+                range: Some(Range::Custom),
                 from: local_input(start, zone),
                 to: local_input(end, zone),
                 ..params.search_only()
@@ -582,10 +645,10 @@ async fn build(
             q: params.q.clone(),
             level: params.level.clone(),
             service: params.service.clone(),
-            range: params.range().to_string(),
+            range: params.range(),
             from: params.from.clone(),
             to: params.to.clone(),
-            logs_requests: params.logs_requests == "show",
+            logs_requests: params.logs_requests,
         },
         query_error: None,
         problems: Vec::new(),
@@ -597,12 +660,12 @@ async fn build(
         refresh_url: search.url(LOGS),
         tail_url: None,
         export_ndjson_url: LogsParams {
-            format: "ndjson".into(),
+            format: Some(ExportFormat::Ndjson),
             ..search.clone()
         }
         .url(&format!("{LOGS}/export")),
         export_csv_url: LogsParams {
-            format: "csv".into(),
+            format: Some(ExportFormat::Csv),
             ..search.clone()
         }
         .url(&format!("{LOGS}/export")),
@@ -676,7 +739,7 @@ async fn build(
             vm.older_url = Some(older.url(LOGS));
             vm.more_url = Some(
                 LogsParams {
-                    part: "more".into(),
+                    part: Some(Part::More),
                     ..older
                 }
                 .url(LOGS),
@@ -733,7 +796,7 @@ pub async fn page(
     Query(params): Query<LogsParams>,
 ) -> Response {
     let vm = build(&state, &admin, &params, &tz).await;
-    if params.part == "more" {
+    if params.part == Some(Part::More) {
         return Html(
             view::more_rows(&vm.rows, vm.more_url.as_deref(), vm.older_url.as_deref())
                 .into_string(),
@@ -758,10 +821,50 @@ pub async fn syntax_page(
     Html(view::syntax_page(&chrome, &names).into_string()).into_response()
 }
 
+/// Where Live has got to in each source: monokulo's own store, and a
+/// remote engine's (`None` when the local store holds the engine's lines
+/// too). Each is read from its own cursor, so neither skips the other's
+/// lines, and a stream's event id carries both, so a reconnect resumes each
+/// where it was.
+#[derive(Debug, Clone, PartialEq)]
+struct TailCursor {
+    local: Cursor,
+    engine: Option<Cursor>,
+}
+
+impl TailCursor {
+    /// `local~engine`, or just `local` (each `Cursor::encode`; a cursor
+    /// holds no `~`).
+    fn encode(&self) -> String {
+        match &self.engine {
+            Some(engine) => format!("{}~{}", self.local.encode(), engine.encode()),
+            None => self.local.encode(),
+        }
+    }
+
+    /// What [`Self::encode`] wrote. One cursor alone stands for both.
+    fn parse(text: &str) -> Option<TailCursor> {
+        match text.split_once('~') {
+            Some((local, engine)) => Some(TailCursor {
+                local: Cursor::parse(local)?,
+                engine: Some(Cursor::parse(engine)?),
+            }),
+            None => {
+                let cursor = Cursor::parse(text)?;
+                Some(TailCursor {
+                    engine: Some(cursor.clone()),
+                    local: cursor,
+                })
+            }
+        }
+    }
+}
+
 /// `GET /admin/logs/tail`: lines newer than `after` (or the
 /// `Last-Event-ID` a reconnecting stream sends), as they arrive. Each event
 /// carries rendered rows routed to the top of `#log-rows` (ssexi's JSON
-/// event form), with the newest row's cursor as its id.
+/// event form), with each source's newest cursor as its id
+/// ([`TailCursor`]).
 pub async fn tail(
     State(state): State<AppState>,
     AuthedAdmin(admin, session): AuthedAdmin,
@@ -776,14 +879,18 @@ pub async fn tail(
     let resume = headers
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
-        .and_then(Cursor::parse);
-    let cursor = resume
-        .or_else(|| Cursor::parse(&params.after))
-        .unwrap_or(Cursor {
+        .and_then(TailCursor::parse);
+    let start = resume.unwrap_or_else(|| {
+        let cursor = Cursor::parse(&params.after).unwrap_or(Cursor {
             ts: now_nanos(),
             service: String::new(),
             id: 0,
         });
+        TailCursor {
+            engine: Some(cursor.clone()),
+            local: cursor,
+        }
+    });
     let Some(session) = super::hold_session(&state, &session).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
@@ -809,8 +916,7 @@ pub async fn tail(
         local: Sources,
         engine: Option<Sources>,
         combined: Option<Expr>,
-        cursor: Cursor,
-        engine_cursor: Cursor,
+        cursor: TailCursor,
         last_engine_read: Option<tokio::time::Instant>,
         engine_problem: Option<String>,
         changed: Option<tokio::sync::watch::Receiver<i64>>,
@@ -830,15 +936,19 @@ pub async fn tail(
             local: sources.local.clone(),
             engine: crate::logs::EngineSource::Unavailable(String::new()),
         },
-        engine,
         combined,
-        engine_cursor: cursor.clone(),
-        cursor,
+        cursor: TailCursor {
+            engine: engine
+                .is_some()
+                .then(|| start.engine.unwrap_or(start.local.clone())),
+            local: start.local,
+        },
         last_engine_read: None,
         engine_problem: None,
         changed,
         first: true,
         _slot: slot,
+        engine,
     };
     let stream = futures_util::stream::unfold(state, move |mut tail| {
         let (params, user, zone) = (params.clone(), user.clone(), zone.clone());
@@ -862,12 +972,12 @@ pub async fn tail(
                         None,
                         None,
                         "",
-                        &tail.cursor.encode(),
+                        &tail.cursor.local.encode(),
                         200,
                     );
                     if let Ok(page) = crate::logs::read(&tail.local, &request).await {
                         if let Some(newest) = page.rows.first() {
-                            tail.cursor = newest.cursor();
+                            tail.cursor.local = newest.cursor();
                         }
                         rows.extend(page.rows);
                     }
@@ -876,19 +986,21 @@ pub async fn tail(
                 let engine_due = tail
                     .last_engine_read
                     .is_none_or(|at| at.elapsed() >= ENGINE_POLL);
-                if let (Some(engine), true) = (&tail.engine, engine_due) {
+                if let (Some(engine), Some(engine_cursor), true) =
+                    (&tail.engine, &tail.cursor.engine, engine_due)
+                {
                     tail.last_engine_read = Some(tokio::time::Instant::now());
                     let request = request(
                         tail.combined.as_ref(),
                         None,
                         None,
                         "",
-                        &tail.engine_cursor.encode(),
+                        &engine_cursor.encode(),
                         200,
                     );
                     if let Ok(page) = crate::logs::read(engine, &request).await {
                         if let Some(newest) = page.rows.first() {
-                            tail.engine_cursor = newest.cursor();
+                            tail.cursor.engine = Some(newest.cursor());
                         }
                         rows.extend(page.rows);
                         // Said once when the engine's lines stop (a 429
@@ -915,11 +1027,12 @@ pub async fn tail(
                         .iter()
                         .map(|row| row_view(row, &params, user.as_ref(), &zone, true))
                         .collect();
-                    // The id resumes the local stream after a reconnect.
+                    // The id resumes both sources after a reconnect, each
+                    // where it was.
                     events.push(
                         axum::response::sse::Event::default()
                             .event(r##"{"target":"#log-rows","swap":"afterbegin"}"##)
-                            .id(tail.cursor.clone().max(tail.engine_cursor.clone()).encode())
+                            .id(tail.cursor.encode())
                             .data(view::live_rows(&views).into_string()),
                     );
                 }
@@ -957,7 +1070,7 @@ pub async fn trace_page(
     let (trace, engine_problem) = crate::logs::trace(&sources, &trace_id).await;
     let search = LogsParams {
         q: format!("trace_id = '{trace_id}'"),
-        range: "all".into(),
+        range: Some(Range::All),
         ..LogsParams::default()
     };
     let user = parse(&search.q).ok().flatten();
@@ -1000,7 +1113,7 @@ pub async fn trace_page(
             left_pct: (span.start - start) as f64 * 100.0 / total,
             width_pct: ((span.end - span.start) as f64 * 100.0 / total).max(0.2),
             duration: format_duration(span.end - span.start),
-            error: span.status == "error",
+            error: span.status == telemetry::store::SpanStatus::Error,
             attributes: span
                 .attributes
                 .iter()
@@ -1223,15 +1336,16 @@ pub async fn pos_timeline(
 
     let (mut offline_ms, mut hidden_ms, mut stream_drops, mut orders_created, mut problems) =
         (0i64, 0i64, 0usize, 0usize, 0usize);
-    let mut previous: Option<i64> = None;
+    let (mut first, mut previous): (Option<ClientTime>, Option<ClientTime>) = (None, None);
     let mut entries = Vec::with_capacity(rows.len());
     for row in &rows {
-        // The tablet's own clock, when it is a plausible one (milliseconds
-        // since 1970, before 2286): the value is the client's, and one
-        // out of range would overflow the arithmetic below.
-        let client_ms = attr_i64(row, "pos.client_ts")
-            .filter(|ms| (0..10_000_000_000_000).contains(ms))
-            .unwrap_or(row.ts / 1_000_000);
+        // The tablet's own clock, when it is a plausible one (lines from
+        // before it was checked where it arrives may hold any value), else
+        // when the line was written.
+        let client = attr_i64(row, "pos.client_ts")
+            .and_then(ClientTime::from_ms)
+            .unwrap_or_else(|| ClientTime::at(row.ts));
+        let client_ms = client.ms();
         let kind = attr_str(row, "pos.kind").unwrap_or("unknown").to_string();
         let detail = attr_str(row, "pos.detail")
             .map(super::pos_logs::detail_pairs)
@@ -1240,13 +1354,13 @@ pub async fn pos_timeline(
             detail
                 .iter()
                 .find(|(k, _)| k == name)
-                .and_then(|(_, v)| v.parse::<i64>().ok())
+                .and_then(|(_, v)| super::pos_logs::period_ms(v))
         };
         let period = if let Some(ms) = number("offline_ms") {
-            offline_ms += ms;
+            offline_ms = offline_ms.saturating_add(ms);
             Some(format!("offline for {}", human_duration(ms)))
         } else if let Some(ms) = number("hidden_ms") {
-            hidden_ms += ms;
+            hidden_ms = hidden_ms.saturating_add(ms);
             Some(format!("hidden for {}", human_duration(ms)))
         } else {
             number("down_ms").map(|ms| format!("live updates down for {}", human_duration(ms)))
@@ -1260,7 +1374,7 @@ pub async fn pos_timeline(
         if severity >= Severity::Warn {
             problems += 1;
         }
-        let since = previous.map(|p| client_ms.saturating_sub(p));
+        let since = previous.map(|p| client_ms - p.ms());
         let gap_before = since
             .filter(|ms| *ms >= 60_000)
             .map(|ms| format!("Nothing recorded for {}", human_duration(ms)));
@@ -1286,8 +1400,8 @@ pub async fn pos_timeline(
             .collect();
         entries.push(view::TimelineEntryView {
             gap_before,
-            time_display: display_time(client_ms * 1_000_000, &zone),
-            time_iso: iso_time(client_ms * 1_000_000),
+            time_display: display_time(client.nanos(), &zone),
+            time_iso: iso_time(client.nanos()),
             since_previous: since
                 .map(|ms| format!("+{}", human_duration(ms)))
                 .unwrap_or_default(),
@@ -1298,18 +1412,16 @@ pub async fn pos_timeline(
             detail: shown_detail,
             late: (late_ms >= 30_000).then(|| format!("sent {} later", human_duration(late_ms))),
         });
-        previous = Some(client_ms);
+        first = first.or(Some(client));
+        previous = Some(client);
     }
-    let first = rows
-        .first()
-        .map(|row| attr_i64(row, "pos.client_ts").unwrap_or(row.ts / 1_000_000));
     let span = match (first, previous) {
-        (Some(first), Some(last)) => human_duration(last - first),
+        (Some(first), Some(last)) => human_duration(last.ms() - first.ms()),
         _ => String::new(),
     };
     let search = LogsParams {
         q: format!("pos.session = '{session}'"),
-        range: "all".into(),
+        range: Some(Range::All),
         ..LogsParams::default()
     };
     let vm = view::PosTimelineViewModel {
@@ -1455,7 +1567,8 @@ pub async fn export(
         }
     }
     rows.truncate(EXPORT_MAX);
-    let (body, content_type, extension) = if params.format == "csv" {
+    let (body, content_type, extension) = if params.format.unwrap_or_default() == ExportFormat::Csv
+    {
         let mut out = String::from("time,level,service,target,message,trace_id,attributes\n");
         for row in &rows {
             out.push_str(&format!(
