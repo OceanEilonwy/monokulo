@@ -163,21 +163,36 @@ fn round_deadline(
 
 /// Owns one network generation. Stopping waits for its supervised futures to
 /// be dropped before another generation starts or its status is removed.
+/// Dropped instead, its stop signal goes with it, which ends them too, but
+/// nothing waits for them.
 struct RunningNetwork {
     stop: tokio::sync::watch::Sender<bool>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 impl RunningNetwork {
-    async fn stopped(mut self) {
+    async fn stopped(self) {
         let _ = self.stop.send(true);
-        for task in std::mem::take(&mut self.tasks) {
+        for task in self.tasks {
             let _ = task.await;
         }
     }
 }
-impl Drop for RunningNetwork {
-    fn drop(&mut self) {
-        let _ = self.stop.send(true);
+
+/// The network generations [`manage_network_loops`] has started.
+///
+/// Held outside it, so a manager restarted after a panic carries on with the
+/// networks already running, and the engine's shutdown can wait for them
+/// once the manager is gone.
+#[derive(Clone, Default)]
+pub struct RunningNetworks(Arc<parking_lot::Mutex<HashMap<Network, RunningNetwork>>>);
+
+impl RunningNetworks {
+    /// Stops every network and waits for its loops to end.
+    pub async fn stopped(&self) {
+        // Taken out first: the lock isn't held while they stop.
+        let generations = std::mem::take(&mut *self.0.lock());
+        futures_util::future::join_all(generations.into_values().map(RunningNetwork::stopped))
+            .await;
     }
 }
 
@@ -192,26 +207,29 @@ pub async fn manage_network_loops(
     wallet_handles: Arc<WalletHandles>,
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
+    running: RunningNetworks,
 ) {
     let mut changed = settings.nodes.subscribe();
-    let mut running: HashMap<Network, RunningNetwork> = HashMap::new();
     loop {
         let networks = daemons.networks();
         let wanted: std::collections::HashSet<Network> = networks.iter().copied().collect();
         let removed: Vec<_> = running
+            .0
+            .lock()
             .keys()
             .copied()
             .filter(|network| !wanted.contains(network))
             .collect();
         for network in removed {
-            if let Some(generation) = running.remove(&network) {
+            let generation = running.0.lock().remove(&network);
+            if let Some(generation) = generation {
                 generation.stopped().await;
             }
             scanner_status.write().remove(&network);
             tracing::info!(network = ?network, "stopped scanning: its node setting was cleared");
         }
         for network in networks {
-            if running.contains_key(&network) {
+            if running.0.lock().contains_key(&network) {
                 continue;
             }
             let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -327,7 +345,10 @@ pub async fn manage_network_loops(
                 },
             ));
             tracing::info!(network = ?network, "scanning");
-            running.insert(network, RunningNetwork { stop, tasks });
+            running
+                .0
+                .lock()
+                .insert(network, RunningNetwork { stop, tasks });
         }
         if changed.changed().await.is_err() {
             return;
@@ -679,6 +700,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             wallet_handles,
             Arc::clone(&status),
             settings,
+            RunningNetworks::default(),
         ));
 
         let save = |body: serde_json::Value| {
