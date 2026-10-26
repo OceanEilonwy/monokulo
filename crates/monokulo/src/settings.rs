@@ -131,7 +131,7 @@ fn check_onion_uri(value: &str) -> Result<(), String> {
     if value.trim().is_empty() {
         Ok(())
     } else {
-        crate::onion::validate_onion_uri(value).map(|_| ())
+        tor_service::onion::validate_onion_uri(value).map(|_| ())
     }
 }
 
@@ -580,7 +580,10 @@ pub fn validate_public_uri(value: &str) -> Result<String, String> {
     let problem =
         "Enter this instance's web address, like https://pay.example.com, or https://example.com/monokulo when a proxy serves it under a path.";
     let parsed = url::Url::parse(value).map_err(|_| problem.to_string())?;
-    if parsed.host_str().is_some_and(crate::onion::is_onion_host) {
+    if parsed
+        .host_str()
+        .is_some_and(tor_service::onion::is_onion_host)
+    {
         return Err("That's an onion address: put it in onion_uri (with tor.mode = external), and set this to the web address or leave it empty.".to_string());
     }
     let ok = matches!(parsed.scheme(), "http" | "https")
@@ -1047,7 +1050,7 @@ impl Section for OnionListenerConfig {
     }
 }
 
-/// How visitors on Tor reach this instance (`crate::tor`, `crate::network`):
+/// How visitors on Tor reach this instance (`tor_service`, `crate::network`):
 /// started, moved and stopped when saved, and read per request for the
 /// onion address and the Onion-Location switch.
 #[derive(Debug, Clone, PartialEq)]
@@ -1095,7 +1098,7 @@ impl Section for TorConfig {
         let mode = snapshot.get(&TOR_MODE);
         let onion_uri = snapshot.get(&ONION_URI);
         let onion_uri = (!onion_uri.trim().is_empty())
-            .then(|| crate::onion::validate_onion_uri(&onion_uri))
+            .then(|| tor_service::onion::validate_onion_uri(&onion_uri))
             .transpose()
             .map_err(|e| vec![FieldError::new(ONION_URI.key, e)])?;
         let listener = !snapshot.get(&ABUSE_ONION_LISTENER).trim().is_empty();
@@ -1106,7 +1109,7 @@ impl Section for TorConfig {
         let mut refuse = |key: &str, why: &str| errors.push(FieldError::new(key, why.to_string()));
         match mode {
             TorMode::Inside => {
-                if !crate::tor::BUILT_IN {
+                if !tor_service::BUILT_IN {
                     refuse(TOR_MODE.key, "This monokulo was built without Tor inside it (its tor feature). Run tor yourself and set tor.mode = external.");
                 }
                 if onion_uri.is_some() {
@@ -1328,7 +1331,7 @@ impl OnionReloadable {
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let address = listener.bound_address();
         tokio::spawn(async move {
-            if let Err(e) = crate::tor::serve(listener, router, stopped).await {
+            if let Err(e) = tor_service::serve(listener, router, stopped).await {
                 tracing::error!(server.address = %address, error = %e, "onion listener stopped");
             }
         });
@@ -1342,7 +1345,7 @@ impl OnionReloadable {
 /// monokulo.
 pub struct OnionServing {
     pub listener: OnionReloadable,
-    pub tor: crate::tor::Tor,
+    pub tor: tor_service::Tor,
 }
 
 /// What saving the onion listener's address does.
@@ -1416,6 +1419,55 @@ impl OnionReloadable {
             let _ = stop.send(true);
         }
         self.inner.waiting.lock().take();
+    }
+}
+
+/// Starts, restarts and stops Tor inside monokulo when the Tor settings are
+/// saved ([`tor_service::Tor::prepare`]). Only a change to what it runs with
+/// (the mode, `tor.state_dir`, `tor.hidden_service_dir`) touches it; the
+/// other Tor settings are read per request.
+pub struct TorReloadable {
+    tor: tor_service::Tor,
+}
+
+impl TorReloadable {
+    pub fn new(tor: tor_service::Tor) -> Self {
+        TorReloadable { tor }
+    }
+}
+
+#[live_settings::async_trait]
+impl live_settings::Reloadable for TorReloadable {
+    type Config = TorConfig;
+    type Prepared = tor_service::TorChange;
+
+    async fn prepare(
+        &self,
+        new: &TorConfig,
+        _old: &TorConfig,
+    ) -> Result<(tor_service::TorChange, Vec<Warning>), FieldError> {
+        let wanted = (new.mode == TorMode::Inside).then(|| tor_service::Wanted {
+            state_dir: new.state_dir.clone(),
+            hidden_service_dir: new.hidden_service_dir.clone(),
+        });
+        match self.tor.prepare(wanted) {
+            Ok(change) => Ok((change, Vec::new())),
+            Err(refused) => {
+                let setting = match refused.field {
+                    tor_service::WantedField::StateDir => TOR_STATE_DIR.key,
+                    tor_service::WantedField::HiddenServiceDir => TOR_HIDDEN_SERVICE_DIR.key,
+                };
+                Err(FieldError::new(setting, refused.message))
+            }
+        }
+    }
+
+    async fn install(&self, change: tor_service::TorChange) {
+        self.tor.install(change);
+    }
+
+    fn boot_policy(&self) -> live_settings::BootPolicy {
+        live_settings::BootPolicy::Exit
     }
 }
 
@@ -1574,7 +1626,7 @@ impl MonokuloSettings {
         let tor = match onion {
             Some(OnionServing { listener, tor }) => {
                 builder.reloadable(listener);
-                builder.reloadable(crate::tor::TorReloadable::new(tor))
+                builder.reloadable(TorReloadable::new(tor))
             }
             None => {
                 builder.section::<OnionListenerConfig>();
@@ -2037,7 +2089,7 @@ mod tests {
             abuse.clone(),
             onion.map(|listener| OnionServing {
                 listener,
-                tor: crate::tor::Tor::default(),
+                tor: tor_service::Tor::default(),
             }),
             test_secrets(),
             live_settings::OptionsFile::in_memory(""),
@@ -2205,5 +2257,99 @@ mod tests {
                 .value,
             ""
         );
+    }
+
+    /// The problem loading `options` reports, or `None` when it loads.
+    async fn problem_loading(options: &str) -> Option<String> {
+        let state = crate::http::AppState::for_tests();
+        MonokuloSettings::load(
+            DbSettings::new(state.db.clone(), crate::http::TEST_ENCRYPTION_KEY),
+            state.exchange_rate.clone(),
+            state.abuse.clone(),
+            None,
+            test_secrets(),
+            live_settings::OptionsFile::in_memory(options),
+        )
+        .await
+        .err()
+    }
+
+    /// The Tor Project's own onion service, as `onion_uri`.
+    const TOR_PROJECT_ONION_URI: &str =
+        "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
+
+    #[tokio::test]
+    async fn each_mode_refuses_what_it_does_not_use_saying_what_to_change() {
+        // An external tor needs its port and its address.
+        let problem = problem_loading("[tor]\nmode = \"external\"\n")
+            .await
+            .unwrap();
+        assert!(problem.contains("set onion_uri"), "{problem}");
+        assert!(problem.contains("set abuse.onion_listener"), "{problem}");
+        let complete = format!(
+            "onion_uri = \"{TOR_PROJECT_ONION_URI}\"\n[tor]\nmode = \"external\"\n[abuse]\nonion_listener = \"127.0.0.1:8082\"\n"
+        );
+        assert_eq!(problem_loading(&complete).await, None);
+
+        // An onion listener left from before tor.mode existed: told to say so.
+        let problem = problem_loading("[abuse]\nonion_listener = \"127.0.0.1:8082\"\n")
+            .await
+            .unwrap();
+        assert!(problem.contains("set tor.mode = external"), "{problem}");
+
+        // Tor inside monokulo makes its own address and needs no port.
+        let problem = problem_loading(&format!(
+            "onion_uri = \"{TOR_PROJECT_ONION_URI}\"\n[tor]\nmode = \"inside\"\n"
+        ))
+        .await
+        .unwrap();
+        assert!(problem.contains("leave onion_uri empty"), "{problem}");
+
+        let problem = problem_loading("[tor]\nhidden_service_dir = \"/srv/hs\"\n")
+            .await
+            .unwrap();
+        assert!(problem.contains("tor.mode = inside"), "{problem}");
+
+        // Saving Tor inside monokulo with a folder that can't hold its
+        // state, or a HiddenServiceDir with no key, names that setting.
+        use live_settings::Reloadable as _;
+        let dir = std::env::temp_dir().join(format!("monokulo-tor-keys-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let not_a_folder = dir.join("a-file");
+        std::fs::write(&not_a_folder, "").unwrap();
+        let reloadable = TorReloadable::new(tor_service::Tor::default());
+        let inside = |state_dir: PathBuf, hidden_service_dir| TorConfig {
+            mode: TorMode::Inside,
+            state_dir,
+            hidden_service_dir,
+            ..TorConfig::defaults()
+        };
+        let refused = reloadable
+            .prepare(
+                &inside(not_a_folder.join("tor"), None),
+                &TorConfig::defaults(),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.key, TOR_STATE_DIR.key);
+        let refused = reloadable
+            .prepare(
+                &inside(dir.join("tor"), Some(dir.clone())),
+                &TorConfig::defaults(),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(refused.key, TOR_HIDDEN_SERVICE_DIR.key);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn an_onion_address_in_public_uri_is_moved_to_onion_uri() {
+        let problem = problem_loading(&format!("public_uri = \"{TOR_PROJECT_ONION_URI}\"\n"))
+            .await
+            .unwrap();
+        assert!(problem.contains("put it in onion_uri"), "{problem}");
     }
 }

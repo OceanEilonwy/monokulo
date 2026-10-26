@@ -183,10 +183,10 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> =
         Arc::new(monokulo::embed_domains::LiveDns::new());
     // Onion shops are proved by a file fetched over Tor inside monokulo.
-    let tor = monokulo::tor::Tor::default();
+    let tor = tor_service::Tor::default();
     let proofs = monokulo::embed_domains::Proofs {
         dns,
-        onion: Arc::new(monokulo::tor::WellKnownOverTor(tor.clone())),
+        onion: Arc::new(monokulo::embed_domains::WellKnownOverTor(tor.clone())),
     };
 
     // Every setting, live (admin_settings_v2.md parts 1 and 3): the engine
@@ -290,7 +290,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // but every connection must start with tor's PROXY header, which names
     // the Tor circuit - each circuit is then its own client.
     onion.router_ready(router.clone());
-    // Tor inside monokulo (`monokulo::tor`): the same router again, each
+    // Tor inside monokulo (`tor_service`): the same router again, each
     // visitor's rendezvous circuit its own client.
     tor.router_ready(router.clone());
 

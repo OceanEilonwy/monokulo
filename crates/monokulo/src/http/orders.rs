@@ -3044,7 +3044,7 @@ mod tests {
             .unwrap();
         over_tor
             .extensions_mut()
-            .insert(axum::extract::ConnectInfo(crate::tor::circuit_peer(7)));
+            .insert(axum::extract::ConnectInfo(tor_service::circuit_peer(7)));
         let response = router.clone().oneshot(over_tor).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let on_tor = body_text(response).await;

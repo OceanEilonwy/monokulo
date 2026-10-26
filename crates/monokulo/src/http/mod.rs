@@ -228,8 +228,8 @@ pub struct AppState {
     /// The keys and sessions open streams were opened with: revoking one
     /// ends its streams (`crate::revocation`).
     pub revocations: Arc<crate::revocation::Revocations>,
-    /// Tor inside monokulo (`crate::tor`): its status and onion address.
-    pub tor: crate::tor::Tor,
+    /// Tor inside monokulo (`tor_service`): its status and onion address.
+    pub tor: tor_service::Tor,
 }
 
 impl AppState {
@@ -307,7 +307,7 @@ impl AppState {
             webhooks: Arc::default(),
             apps: Arc::default(),
             revocations: Arc::default(),
-            tor: crate::tor::Tor::default(),
+            tor: tor_service::Tor::default(),
             engine: crate::http::Engine::new(EngineClient::for_tests(format!(
                 "http://{}",
                 service_runtime::unreachable::address()

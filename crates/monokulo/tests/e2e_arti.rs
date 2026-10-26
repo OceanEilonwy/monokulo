@@ -1,4 +1,4 @@
-//! A real end-to-end check of Tor inside monokulo (`monokulo::tor`), on the
+//! A real end-to-end check of Tor inside monokulo (`tor_service`), on the
 //! live Tor network. Ignored by default (like `e2e_tor.rs`): run it with
 //!
 //! ```sh
@@ -28,11 +28,13 @@ use std::time::{Duration, Instant};
 
 use live_settings::Reloadable as _;
 use monokulo::embed_domains::WellKnownFetch as _;
+use monokulo::embed_domains::WellKnownOverTor;
 use monokulo::http::{build_router, AppState};
+use monokulo::settings::TorReloadable;
 use monokulo::settings::{TorConfig, TorMode};
-use monokulo::tor::{Tor, TorReloadable, TorStatus, WellKnownOverTor};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_socks::tcp::Socks5Stream;
+use tor_service::{Tor, TorStatus};
 
 const TOKEN_LINE: &str = "monokulo-verify=e2e-arti-token";
 const TIMEOUT: Duration = Duration::from_secs(420);
@@ -200,7 +202,7 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
     .await;
     println!("monokulo is at {onion}");
     let written =
-        std::fs::read_to_string(config.state_dir.join(monokulo::tor::HOSTNAME_FILE)).unwrap();
+        std::fs::read_to_string(config.state_dir.join(tor_service::HOSTNAME_FILE)).unwrap();
     assert_eq!(written.trim(), onion);
 
     // 3. A visitor on Tor reaches it, and gets what a visitor on Tor gets.
@@ -256,7 +258,7 @@ async fn live_tor_inside_monokulo_serves_its_onion_address_and_checks_onion_shop
         "the shop's file holds the token"
     );
 
-    reloadable.install(monokulo::tor::TorChange::Stop).await;
+    reloadable.install(tor_service::TorChange::Stop).await;
     assert_eq!(tor.status(), TorStatus::Off);
     let _ = std::fs::remove_dir_all(&run);
 }

@@ -342,7 +342,7 @@ async fn main() {
                 "Tor is not available in tests".to_owned(),
             )),
         },
-        tor: monokulo::tor::Tor::default(),
+        tor: tor_service::Tor::default(),
         log_store: None,
         // Public signup: `signup.mode` defaults to invite-only, which would
         // refuse the plain `/signup` below (a re-rendered `200`

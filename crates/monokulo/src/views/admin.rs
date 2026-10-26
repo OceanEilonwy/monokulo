@@ -559,7 +559,7 @@ pub enum SettingsTab {
     Payments,
     Custody,
     Abuse,
-    /// How visitors on Tor reach this instance (`crate::tor`).
+    /// How visitors on Tor reach this instance (`tor_service`).
     Tor,
     Server,
     Logging,
@@ -1083,7 +1083,7 @@ pub struct AdminSettingsViewModel {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TorPanel {
     /// Tor inside monokulo, and what it is doing.
-    Inside(crate::tor::TorStatus),
+    Inside(tor_service::TorStatus),
     /// An external tor serving `onion_uri`.
     External { onion_uri: String },
 }
@@ -2069,7 +2069,7 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
 
 /// The onion service's state, above the Tor tab's cards.
 fn tor_panel(panel: &TorPanel) -> Markup {
-    use crate::tor::TorStatus;
+    use tor_service::TorStatus;
     let address = |address: &str| {
         let uri = format!("http://{address}");
         html! {

@@ -37,7 +37,7 @@ fn state_with(tor: TorConfig) -> AppState {
 fn over_tor(mut request: Request<Body>) -> Request<Body> {
     request
         .extensions_mut()
-        .insert(ConnectInfo(crate::tor::circuit_peer(7)));
+        .insert(ConnectInfo(tor_service::circuit_peer(7)));
     request
 }
 
@@ -103,8 +103,7 @@ async fn onion_location_is_left_out_when_switched_off_tor_is_off_or_not_up_yet()
 
 #[test]
 fn the_address_is_used_while_tor_publishes_it() {
-    let tor = Tor::default();
-    tor.set_status(crate::tor::TorStatus::Publishing {
+    let tor = Tor::with_status(tor_service::TorStatus::Publishing {
         address: ONION.to_string(),
     });
     let state = AppState {
@@ -258,5 +257,41 @@ async fn signing_in_on_tor_gives_a_cookie_tor_browser_sends_back() {
     assert!(
         !tor.contains("secure"),
         "a Secure cookie over http would be dropped: {tor}"
+    );
+}
+
+/// One HTTP request over a stream handed to a [`tor_service::TorListener`],
+/// as Arti hands a visitor's stream over, and the raw response.
+async fn request_over_tor(router: Router, request: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (connections, listener) = tor_service::TorListener::new();
+    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    tokio::spawn(tor_service::serve(listener, router, stopped));
+    let (mut visitor, server_side) = tokio::io::duplex(64 * 1024);
+    assert!(
+        connections
+            .send(server_side, tor_service::circuit_peer(3))
+            .await
+    );
+    visitor.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    visitor.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
+#[tokio::test]
+async fn a_stream_from_tor_is_served_as_a_visitor_on_the_onion_address() {
+    let response = request_over_tor(
+        build_router(AppState::for_tests()),
+        "GET /login HTTP/1.1\r\nHost: x.onion\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    // Only the onion network says this (`network::Onion`).
+    assert!(
+        response
+            .to_lowercase()
+            .contains("referrer-policy: no-referrer\r\n"),
+        "{response}"
     );
 }

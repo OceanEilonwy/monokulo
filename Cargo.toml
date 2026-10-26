@@ -12,6 +12,7 @@ members = [
     "crates/service-runtime",
     "crates/rate-limit",
     "crates/abuse",
+    "crates/tor-service",
     "crates/pricing",
     "crates/live-settings",
     "crates/telemetry",

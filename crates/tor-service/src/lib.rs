@@ -3,10 +3,11 @@
 //! as the web listener, so visitors on Tor reach the same stores and
 //! checkouts without anything else to install.
 //!
-//! [`TorReloadable`] starts, restarts and stops it when the Tor settings
-//! are saved ([`crate::settings::TorConfig`]); [`Tor`] is the handle the
-//! rest of monokulo reads: what Tor is doing ([`TorStatus`]) and the onion
-//! address, once there is one.
+//! [`Tor::prepare`] and [`Tor::install`] start, restart and stop it when
+//! the Tor settings are saved (monokulo's `settings::TorReloadable`, which
+//! reads `settings::TorConfig` into a [`Wanted`]); [`Tor`] is the handle
+//! the rest of monokulo reads: what Tor is doing ([`TorStatus`]) and the
+//! onion address, once there is one.
 //!
 //! Connections arrive through a [`TorListener`]: Arti's side pushes each
 //! accepted stream into it with the [`OnionPeer`] naming its rendezvous
@@ -17,23 +18,26 @@
 //!
 //! With an external tor (`tor.mode = external`) none of this runs: that
 //! tor connects to the onion listener, and its address is `onion_uri`.
+//! [`serve`] serves both. [`onion`] checks onion addresses.
+//!
+//! Without the `arti` feature (monokulo's `tor`) none of Arti is built:
+//! [`BUILT_IN`] is false, and a service asked for fails saying so.
 
-#[cfg(feature = "tor")]
+#[cfg(feature = "arti")]
 mod arti;
 mod listener;
+pub mod onion;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use live_settings::{FieldError, Warning};
-
 pub use listener::{circuit_peer, TorConnections, TorListener, TorStream};
 
-use crate::settings::{TorConfig, TorMode, TOR_HIDDEN_SERVICE_DIR, TOR_STATE_DIR};
 use abuse::proxy_protocol::OnionPeer;
 
-/// Whether this build can run Tor inside monokulo (its `tor` feature).
-pub const BUILT_IN: bool = cfg!(feature = "tor");
+/// Whether this build can run Tor inside monokulo (monokulo's `tor`
+/// feature, this crate's `arti`).
+pub const BUILT_IN: bool = cfg!(feature = "arti");
 
 /// The one onion service monokulo runs: its name in Arti's key store.
 pub const NICKNAME: &str = "monokulo";
@@ -100,8 +104,8 @@ struct Inner {
     /// A start asked for before the router existed.
     waiting: parking_lot::Mutex<Option<Wanted>>,
     /// The running Tor client, for fetching onion shops' verification
-    /// files (`WellKnownOverTor`).
-    #[cfg(feature = "tor")]
+    /// files ([`Tor::fetch_over_tor`]).
+    #[cfg(feature = "arti")]
     client: parking_lot::Mutex<Option<arti::Client>>,
 }
 
@@ -146,11 +150,18 @@ impl Tor {
     /// running: for tests of what depends on the onion address.
     #[cfg(any(test, feature = "test-support"))]
     pub fn running_at(address: &str) -> Self {
-        let tor = Tor::default();
-        tor.set_status(TorStatus::Running {
+        Tor::with_status(TorStatus::Running {
             address: address.to_string(),
-            since: crate::now_unix(),
-        });
+            since: service_runtime::time::now_unix(),
+        })
+    }
+
+    /// A handle that says Tor is doing `status`, with nothing running: for
+    /// tests of what depends on it.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_status(status: TorStatus) -> Self {
+        let tor = Tor::default();
+        tor.set_status(status);
         tor
     }
 
@@ -171,7 +182,7 @@ impl Tor {
         });
     }
 
-    #[cfg(feature = "tor")]
+    #[cfg(feature = "arti")]
     fn spawn(
         &self,
         wanted: Wanted,
@@ -181,21 +192,22 @@ impl Tor {
         tokio::spawn(arti::run(self.clone(), wanted, router, stopped));
     }
 
-    #[cfg(not(feature = "tor"))]
+    #[cfg(not(feature = "arti"))]
     fn spawn(
         &self,
         _wanted: Wanted,
         _router: axum::Router,
         _stopped: tokio::sync::watch::Receiver<bool>,
     ) {
-        // `TorConfig` refuses `tor.mode = inside` in a build without Tor.
+        // monokulo's `TorConfig` refuses `tor.mode = inside` in a build
+        // without Tor ([`BUILT_IN`]).
         self.set_status(TorStatus::Failed {
             error: "This monokulo was built without Tor inside it.".to_string(),
-            since: crate::now_unix(),
+            since: service_runtime::time::now_unix(),
         });
     }
 
-    #[cfg(feature = "tor")]
+    #[cfg(feature = "arti")]
     pub(crate) fn set_client(&self, client: Option<arti::Client>) {
         *self.inner.client.lock() = client;
     }
@@ -216,34 +228,36 @@ impl Tor {
     }
 }
 
-/// Fetches onion shops' verification files (`embed_domains::Proofs`) over
-/// Tor inside monokulo, never over the web: only while it runs.
-pub struct WellKnownOverTor(pub Tor);
-
 /// Why an onion shop can't be checked without Tor inside monokulo.
 const NO_TOR: &str = "onion shops can be checked only while Tor runs inside monokulo (Admin settings, Tor: tor.mode = inside)";
 
-impl crate::embed_domains::WellKnownFetch for WellKnownOverTor {
-    fn fetch<'a>(
-        &'a self,
+impl Tor {
+    /// `path` on the onion service `domain`, fetched over Tor inside
+    /// monokulo on a circuit of its own, never over the web: only while it
+    /// runs. `Ok(None)` for any answer but a 200 (redirects aren't
+    /// followed) or one bigger than `max_bytes`. What checking an onion
+    /// shop's verification file does (monokulo's
+    /// `embed_domains::WellKnownOverTor`).
+    pub fn fetch_over_tor<'a>(
+        &self,
         domain: &'a str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Option<String>, String>> + Send + 'a>,
-    > {
-        #[cfg(feature = "tor")]
+        path: &'static str,
+        max_bytes: usize,
+    ) -> impl std::future::Future<Output = Result<Option<String>, String>> + Send + 'a {
+        #[cfg(feature = "arti")]
         {
-            let client = self.0.inner.client.lock().clone();
-            Box::pin(async move {
+            let client = self.inner.client.lock().clone();
+            async move {
                 match client {
-                    Some(client) => arti::fetch_well_known(client, domain).await,
+                    Some(client) => arti::fetch(client, domain, path, max_bytes).await,
                     None => Err(NO_TOR.to_string()),
                 }
-            })
+            }
         }
-        #[cfg(not(feature = "tor"))]
+        #[cfg(not(feature = "arti"))]
         {
-            let _ = domain;
-            Box::pin(async { Err(NO_TOR.to_string()) })
+            let _ = (domain, path, max_bytes);
+            async { Err(NO_TOR.to_string()) }
         }
     }
 }
@@ -270,20 +284,6 @@ where
     .await
 }
 
-/// Starts, restarts and stops Tor inside monokulo when the Tor settings are
-/// saved. Only a change to what it runs with (the mode, `tor.state_dir`,
-/// `tor.hidden_service_dir`) touches it; the other Tor settings are read
-/// per request.
-pub struct TorReloadable {
-    tor: Tor,
-}
-
-impl TorReloadable {
-    pub fn new(tor: Tor) -> Self {
-        TorReloadable { tor }
-    }
-}
-
 /// What saving the Tor settings does to Tor inside monokulo.
 pub enum TorChange {
     Keep,
@@ -291,55 +291,62 @@ pub enum TorChange {
     Start(Wanted),
 }
 
-#[live_settings::async_trait]
-impl live_settings::Reloadable for TorReloadable {
-    type Config = TorConfig;
-    type Prepared = TorChange;
+/// The setting a refused [`Tor::prepare`] names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WantedField {
+    /// [`Wanted::state_dir`] (`tor.state_dir`).
+    StateDir,
+    /// [`Wanted::hidden_service_dir`] (`tor.hidden_service_dir`).
+    HiddenServiceDir,
+}
 
-    async fn prepare(
-        &self,
-        new: &TorConfig,
-        _old: &TorConfig,
-    ) -> Result<(TorChange, Vec<Warning>), FieldError> {
-        if new.mode != TorMode::Inside {
-            return Ok((TorChange::Stop, Vec::new()));
-        }
-        let wanted = Wanted {
-            state_dir: new.state_dir.clone(),
-            hidden_service_dir: new.hidden_service_dir.clone(),
+/// Why Tor inside monokulo can't run with what was asked for, and which
+/// setting to change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused {
+    pub field: WantedField,
+    pub message: String,
+}
+
+impl Tor {
+    /// What saving the Tor settings does to Tor inside monokulo: `wanted`
+    /// is what they ask it to run with, `None` when they don't ask for it
+    /// (off, or an external tor). Only a change to what it runs with
+    /// touches it; the other Tor settings are read per request. Makes the
+    /// state folder and checks the HiddenServiceDir's key, leaving what
+    /// runs as it is until [`Tor::install`].
+    pub fn prepare(&self, wanted: Option<Wanted>) -> Result<TorChange, Refused> {
+        let refused = |field| move |message| Refused { field, message };
+        let Some(wanted) = wanted else {
+            return Ok(TorChange::Stop);
         };
-        if self.tor.running_with().as_ref() == Some(&wanted) {
-            return Ok((TorChange::Keep, Vec::new()));
+        if self.running_with().as_ref() == Some(&wanted) {
+            return Ok(TorChange::Keep);
         }
-        prepare_state_dir(&wanted.state_dir).map_err(|e| FieldError::new(TOR_STATE_DIR.key, e))?;
+        prepare_state_dir(&wanted.state_dir).map_err(refused(WantedField::StateDir))?;
         if let Some(dir) = &wanted.hidden_service_dir {
-            check_hidden_service_dir(dir)
-                .map_err(|e| FieldError::new(TOR_HIDDEN_SERVICE_DIR.key, e))?;
-            #[cfg(feature = "tor")]
-            arti::address_to_serve(&wanted)
-                .map_err(|e| FieldError::new(TOR_HIDDEN_SERVICE_DIR.key, e))?;
+            check_hidden_service_dir(dir).map_err(refused(WantedField::HiddenServiceDir))?;
+            #[cfg(feature = "arti")]
+            arti::address_to_serve(&wanted).map_err(refused(WantedField::HiddenServiceDir))?;
         }
-        Ok((TorChange::Start(wanted), Vec::new()))
+        Ok(TorChange::Start(wanted))
     }
 
-    async fn install(&self, change: TorChange) {
+    /// Puts a [`Tor::prepare`]d change in place.
+    pub fn install(&self, change: TorChange) {
         match change {
             TorChange::Keep => {}
             TorChange::Stop => {
-                if self.tor.running_with().is_some() {
+                if self.running_with().is_some() {
                     tracing::info!("tor: stopping the onion service");
                 }
-                self.tor.stop();
+                self.stop();
             }
             TorChange::Start(wanted) => {
-                self.tor.stop();
-                self.tor.start(wanted);
+                self.stop();
+                self.start(wanted);
             }
         }
-    }
-
-    fn boot_policy(&self) -> live_settings::BootPolicy {
-        live_settings::BootPolicy::Exit
     }
 }
 

@@ -22,6 +22,7 @@ use super::{
     HOSTNAME_FILE, NICKNAME,
 };
 use abuse::proxy_protocol::OnionPeer;
+use service_runtime::time::now_unix;
 
 /// How long after an error the service starts again.
 const RETRY: Duration = Duration::from_secs(30);
@@ -66,7 +67,7 @@ pub async fn run(
         tracing::warn!(error = %error, retry = ?RETRY, "tor: the onion service stopped, starting it again");
         tor.set_status(TorStatus::Failed {
             error,
-            since: crate::now_unix(),
+            since: now_unix(),
         });
         tokio::select! {
             () = tokio::time::sleep(RETRY) => {}
@@ -229,7 +230,7 @@ async fn serve_service(tor: &Tor, wanted: &Wanted, router: axum::Router) -> Resu
                         address: address.clone(),
                         since: match tor.status() {
                             TorStatus::Running { since, .. } => since,
-                            _ => crate::now_unix(),
+                            _ => now_unix(),
                         },
                     },
                     State::Bootstrapping => TorStatus::Publishing {
@@ -299,11 +300,16 @@ async fn hand_over(request: StreamRequest, peer: OnionPeer, connections: TorConn
     }
 }
 
-/// `domain`'s verification file (`embed_domains::WELL_KNOWN_PATH`), fetched
-/// over Tor on a circuit of its own: `Ok(None)` for any answer but a 200
-/// (redirects aren't followed) or one bigger than
-/// `embed_domains::WELL_KNOWN_MAX_BYTES`.
-pub async fn fetch_well_known(client: Client, domain: &str) -> Result<Option<String>, String> {
+/// `path` on `domain` (an onion shop's verification file, monokulo's
+/// `embed_domains::WELL_KNOWN_PATH`), fetched over Tor on a circuit of its
+/// own: `Ok(None)` for any answer but a 200 (redirects aren't followed) or
+/// one bigger than `max_bytes` (`embed_domains::WELL_KNOWN_MAX_BYTES`).
+pub async fn fetch(
+    client: Client,
+    domain: &str,
+    path: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, String> {
     use http_body_util::BodyExt;
     let fetch = async {
         let mut prefs = arti_client::StreamPrefs::new();
@@ -320,7 +326,7 @@ pub async fn fetch_well_known(client: Client, domain: &str) -> Result<Option<Str
         let connection = AbortOnDrop(tokio::spawn(async move {
             let _ = connection.await;
         }));
-        let request = axum::http::Request::get(crate::embed_domains::WELL_KNOWN_PATH)
+        let request = axum::http::Request::get(path)
             .header(axum::http::header::HOST, domain)
             .header(axum::http::header::USER_AGENT, "monokulo")
             .body(http_body_util::Empty::<bytes::Bytes>::new())
@@ -333,12 +339,9 @@ pub async fn fetch_well_known(client: Client, domain: &str) -> Result<Option<Str
             drop(connection);
             return Ok(None);
         }
-        let body = http_body_util::Limited::new(
-            response.into_body(),
-            crate::embed_domains::WELL_KNOWN_MAX_BYTES,
-        )
-        .collect()
-        .await;
+        let body = http_body_util::Limited::new(response.into_body(), max_bytes)
+            .collect()
+            .await;
         drop(connection);
         Ok(body
             .ok()

@@ -82,11 +82,11 @@ pub fn normalize_domain(input: &str) -> Result<String, &'static str> {
     if !domain.is_ascii() {
         return Err("Enter the domain in its ASCII form (the xn-- version) - international characters can't be checked.");
     }
-    if crate::onion::is_onion_host(&domain) {
+    if tor_service::onion::is_onion_host(&domain) {
         // The service itself: its subdomains are the same service, and
         // covered anyway.
-        return crate::onion::v3_host(&domain)
-            .map(|host| crate::onion::service_of(&host).to_string())
+        return tor_service::onion::v3_host(&domain)
+            .map(|host| tor_service::onion::service_of(&host).to_string())
             .map_err(|_| "That isn't a valid onion address: v3 addresses have 56 letters and digits before .onion. Check it for a typo.");
     }
     if domain.parse::<std::net::Ipv4Addr>().is_ok() {
@@ -118,7 +118,7 @@ pub const WELL_KNOWN_MAX_BYTES: usize = 4096;
 
 /// Whether `domain` is an onion address, proved by its file rather than DNS.
 pub fn is_onion(domain: &str) -> bool {
-    crate::onion::is_onion_host(domain)
+    tor_service::onion::is_onion_host(domain)
 }
 
 /// The scheme a page on `domain` is served over: onion services are plain
@@ -475,6 +475,23 @@ impl WellKnownFetch for UnavailableTor {
     ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>> {
         let error = self.0.clone();
         Box::pin(async move { Err(error) })
+    }
+}
+
+/// Fetches onion shops' verification files over Tor inside monokulo
+/// ([`tor_service::Tor::fetch_over_tor`]), never over the web: only while
+/// it runs.
+pub struct WellKnownOverTor(pub tor_service::Tor);
+
+impl WellKnownFetch for WellKnownOverTor {
+    fn fetch<'a>(
+        &'a self,
+        domain: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<String>, String>> + Send + 'a>> {
+        Box::pin(
+            self.0
+                .fetch_over_tor(domain, WELL_KNOWN_PATH, WELL_KNOWN_MAX_BYTES),
+        )
     }
 }
 
