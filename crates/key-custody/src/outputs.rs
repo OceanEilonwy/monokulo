@@ -12,14 +12,18 @@
 //!   before it checks the output's view tag. The tag is one hash and rejects
 //!   255 outputs in 256, so here it goes first.
 //!
-//! `pays` only answers yes or no. A transaction that does pay the wallet is
-//! rare, and [`owned_outputs`] has monero-rs say which of its outputs match,
-//! as before, and open each one's amount. The tests below check that `pays`
-//! and monero-rs never disagree.
+//! It also tries only the first transaction key in `extra`, where monerod's
+//! wallet tries every one: a transaction whose outputs were made with a
+//! later one pays the merchant's wallet, and must pay the store too.
+//!
+//! `pays` only answers yes or no; [`owned_outputs`] says which outputs
+//! match, from the same matching, and opens each one's amount. The tests
+//! below check that they and monero-rs never disagree where monero-rs looks.
 
 use std::collections::HashMap;
 
-use monero::blockdata::transaction::{OwnedTxOut, TxOut};
+use monero::blockdata::transaction::{SubField, TxOut};
+use monero::consensus::encode::VarInt;
 use monero::cryptonote::onetime_key::{KeyGenerator, SubKeyChecker};
 use monero::util::ringct::RctType;
 use monero::{PublicKey, ViewPair};
@@ -33,20 +37,7 @@ pub(super) fn pays(
     table: &HashMap<PublicKey, SubaddressIndex>,
     tx: &ScanInput,
 ) -> bool {
-    let extra = tx.prefix().extra.try_parse();
-    let Some(tx_pubkey) = extra.tx_pubkey() else {
-        return false;
-    };
-    // A transaction paying several subaddresses carries one more key per
-    // output. Each output is tried with the main key, then with its own.
-    let additional = extra.tx_additional_pubkeys().unwrap_or_default();
-    let main = KeyGenerator::from_key(view_pair, tx_pubkey);
-    tx.prefix().outputs.iter().enumerate().any(|(index, out)| {
-        is_paid_to(table, &main, index, out)
-            || additional.get(index).is_some_and(|key| {
-                is_paid_to(table, &KeyGenerator::from_key(view_pair, *key), index, out)
-            })
-    })
+    matches(view_pair, table, tx).next().is_some()
 }
 
 /// The outputs of `tx` that pay one of the subaddresses in `checker`, with
@@ -59,56 +50,116 @@ pub(super) fn pays(
 /// scan that failed on it would fail again on every retry, and the store
 /// would never get past that block.
 pub(super) fn owned_outputs(checker: &SubKeyChecker<'_>, tx: &ScanInput) -> Vec<MatchedOutput> {
-    // Without the RingCT data monero-rs only matches outputs. Given it, it
-    // also opens their amounts, and fails the whole transaction on the first
-    // one that doesn't open.
-    let Ok(owned) = tx.prefix().check_outputs_with(checker, None) else {
-        return Vec::new();
-    };
-    owned
-        .iter()
-        .map(|out| MatchedOutput {
-            output_index: out.index(),
-            subaddress_index: out.sub_index(),
-            amount_piconero: amount(checker.keys, tx, out),
+    matches(checker.keys, &checker.table, tx)
+        .map(|found| MatchedOutput {
+            output_index: found.index,
+            subaddress_index: found.subaddress,
+            amount_piconero: amount(checker.keys, tx, &found),
         })
         .collect()
 }
 
+/// An output of the transaction that pays the wallet.
+struct Match<'a> {
+    index: usize,
+    out: &'a TxOut,
+    subaddress: SubaddressIndex,
+    /// The transaction key it was made with, which opens its amount.
+    tx_pubkey: PublicKey,
+}
+
+/// Every output of `tx` paid to a subaddress in `table`, each once. An
+/// output is tried with every transaction key in `extra`, as monerod's
+/// wallet does, then with its own additional key (a transaction paying
+/// several subaddresses carries one per output).
+fn matches<'a>(
+    view_pair: &'a ViewPair,
+    table: &'a HashMap<PublicKey, SubaddressIndex>,
+    tx: &'a ScanInput,
+) -> impl Iterator<Item = Match<'a>> + 'a {
+    let extra = tx.prefix().extra.try_parse();
+    let mut main = Vec::new();
+    let mut additional = Vec::new();
+    for field in extra.0 {
+        match field {
+            SubField::TxPublicKey(key) => main.push(key),
+            // The first such field, as monerod reads it.
+            SubField::AdditionalPublickKey(keys) if additional.is_empty() => additional = keys,
+            _ => {}
+        }
+    }
+    // A transaction with no transaction key pays nobody, whatever its
+    // additional keys, as monero-rs and monerod's wallet have it.
+    if main.is_empty() {
+        additional.clear();
+    }
+    // The shared secret, once per transaction key.
+    let main: Vec<(PublicKey, KeyGenerator)> = main
+        .into_iter()
+        .map(|key| (key, KeyGenerator::from_key(view_pair, key)))
+        .collect();
+    tx.prefix()
+        .outputs
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, out)| {
+            let own = additional
+                .get(index)
+                .map(|key| (*key, KeyGenerator::from_key(view_pair, *key)));
+            main.iter()
+                .cloned()
+                .chain(own)
+                .find_map(|(tx_pubkey, keygen)| {
+                    let subaddress = paid_to(table, &keygen, index, out)?;
+                    Some(Match {
+                        index,
+                        out,
+                        subaddress,
+                        tx_pubkey,
+                    })
+                })
+        })
+}
+
 /// The amount of an output that belongs to the wallet, or `None` if it can't
 /// be read.
-fn amount(view_pair: &ViewPair, tx: &ScanInput, out: &OwnedTxOut<'_>) -> Option<u64> {
+fn amount(view_pair: &ViewPair, tx: &ScanInput, found: &Match<'_>) -> Option<u64> {
     let rct = match tx.rct() {
         Some(rct) if rct.rct_type != RctType::Null => rct,
         // No RingCT: the amount is in the clear.
-        _ => return out.amount().map(monero::Amount::as_pico),
+        _ => {
+            return match found.out.amount {
+                VarInt(0) => None,
+                VarInt(amount) => Some(amount),
+            }
+        }
     };
-    let encrypted = rct.ecdh_info.get(out.index())?;
-    let commitment = PublicKey::from_slice(&rct.out_pk.get(out.index())?.mask.key)
+    let encrypted = rct.ecdh_info.get(found.index)?;
+    let commitment = PublicKey::from_slice(&rct.out_pk.get(found.index)?.mask.key)
         .ok()?
         .point
         .decompress()?;
     let opening =
-        encrypted.open_commitment(view_pair, &out.tx_pubkey(), out.index(), &commitment)?;
+        encrypted.open_commitment(view_pair, &found.tx_pubkey, found.index, &commitment)?;
     Some(opening.amount.as_pico())
 }
 
-/// Whether output `index` was sent to a subaddress in `table`, given the
-/// shared secret in `keygen`.
-fn is_paid_to(
+/// The subaddress in `table` output `index` was sent to, given the shared
+/// secret in `keygen`.
+fn paid_to(
     table: &HashMap<PublicKey, SubaddressIndex>,
     keygen: &KeyGenerator,
     index: usize,
     out: &TxOut,
-) -> bool {
+) -> Option<SubaddressIndex> {
     if !out.target.check_view_tag(keygen.rv, index) {
-        return false;
+        return None;
     }
-    let Some(key) = out.target.as_one_time_key() else {
-        return false;
-    };
+    let key = out.target.as_one_time_key()?;
     // D = P - Hs(8vR || n)*G: the spend key the output was sent to.
-    table.contains_key(&(key - PublicKey::from_private_key(&keygen.get_rvn_scalar(index))))
+    table
+        .get(&(key - PublicKey::from_private_key(&keygen.get_rvn_scalar(index))))
+        .copied()
 }
 
 #[cfg(test)]
@@ -416,6 +467,29 @@ mod tests {
         assert_eq!(found[0].output_index, 1);
         assert_eq!(found[0].subaddress_index, minor(3));
         assert!(scan(&wallet(3), &tx).is_empty());
+
+        // Or with a transaction key after a decoy, as monerod's wallet
+        // finds: monero-rs, trying only the first key, doesn't. Found once,
+        // with its amount, though the other key is tried on it too.
+        let (my_key, mine) = payment(&me, minor(0), scalar(8), 1, true);
+        let (_, theirs) = payment(&stranger, minor(0), scalar(8), 0, true);
+        let decoy = PublicKey::from_private_key(&scalar(6));
+        let tx = transaction(
+            vec![SubField::TxPublicKey(decoy), SubField::TxPublicKey(my_key)],
+            vec![theirs, mine],
+        );
+        let checker = SubKeyChecker::new(&me, 0..1, 0..4);
+        let input = ScanInput::of(&tx);
+        assert!(pays(&me, &checker.table, &input));
+        assert_eq!(
+            owned_outputs(&checker, &input),
+            [MatchedOutput {
+                output_index: 1,
+                subaddress_index: minor(0),
+                amount_piconero: Some(1_001),
+            }]
+        );
+        assert!(tx.check_outputs_with(&checker).unwrap().is_empty());
     }
 
     #[test]
