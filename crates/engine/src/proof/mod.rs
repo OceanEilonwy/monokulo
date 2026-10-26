@@ -43,7 +43,8 @@ use engine_pow::{ProvenBlock, Rejection, Verdict, Window, DIFFICULTY_BLOCKS};
 pub struct ProofTuning {
     /// Blocks below the nodes' tips an anchor is taken at: deeper than any
     /// reorg Monero has seen (18 blocks, in 2025). Also the deepest reorg
-    /// the proven chain can follow.
+    /// the proven chain can follow right after anchoring; once the chain
+    /// has grown past it, `keep_blocks` bounds that instead.
     pub anchor_depth: u64,
     /// Blocks the proven chain's ids are kept for (at least what
     /// `anchor_depth` needs): a payment settles only on a block found here,
@@ -168,6 +169,9 @@ struct Finding {
     height: Option<u64>,
     /// Blocks left to check (the round's budget ran out, or the chain moved).
     more: bool,
+    /// For [`NodeVerdict::Diverged`]: how far below the proven tip a branch
+    /// could have left it and still been followed.
+    followable: Option<u64>,
 }
 
 impl Finding {
@@ -177,6 +181,7 @@ impl Finding {
             detail: None,
             height,
             more: false,
+            followable: None,
         }
     }
 
@@ -187,6 +192,11 @@ impl Finding {
 
     fn more(mut self) -> Self {
         self.more = true;
+        self
+    }
+
+    fn followable(mut self, depth: u64) -> Self {
+        self.followable = Some(depth);
         self
     }
 }
@@ -571,6 +581,7 @@ impl Follower {
         // The lowest block with a whole window below it: the deepest a
         // branch can leave the proven chain and still be checked.
         let deepest = floor.height + DIFFICULTY_BLOCKS as u64 - 1;
+        let followable = ours.height.saturating_sub(deepest);
         let unreachable =
             |error: String| Finding::new(NodeVerdict::Unreachable, Some(height)).because(error);
         let node_hash = |at: u64| tuning.bounded(node.client.get_block_hash(at));
@@ -604,7 +615,8 @@ impl Follower {
         } else {
             if top < deepest {
                 return Ok(Finding::new(NodeVerdict::Diverged, Some(height))
-                    .because(format!("its chain isn't the proven one at block {top}, below the deepest followable block {deepest}")));
+                    .because(format!("its chain isn't the proven one at block {top}, below the deepest followable block {deepest}"))
+                    .followable(followable));
             }
             let network = self.network;
             let agrees = |at: u64, theirs: String| {
@@ -623,9 +635,11 @@ impl Follower {
                 Err(error) => return Ok(unreachable(error)),
             };
             if !agrees(deepest, at_deepest).await? {
-                return Ok(Finding::new(NodeVerdict::Diverged, Some(height)).because(format!(
-                    "its chain left the proven one before block {deepest}, further back than can be followed"
-                )));
+                return Ok(Finding::new(NodeVerdict::Diverged, Some(height))
+                    .because(format!(
+                        "its chain left the proven one before block {deepest}, further back than can be followed"
+                    ))
+                    .followable(followable));
             }
             // `lo` agrees, `hi` doesn't.
             let (mut lo, mut hi) = (deepest, top);
@@ -1025,13 +1039,18 @@ impl Follower {
                     NodeVerdict::Caught | NodeVerdict::Diverged | NodeVerdict::Lighter
                 )
             });
-        let diverged = reachable.iter().any(|f| f.verdict == NodeVerdict::Diverged);
-        let (state, summary) = if none_on_chain && diverged {
+        // The depth look_afresh judged them by, which the kept chain
+        // bounds once it is longer than the anchor's depth.
+        let diverged = reachable
+            .iter()
+            .filter(|f| f.verdict == NodeVerdict::Diverged)
+            .filter_map(|f| f.followable)
+            .max();
+        let (state, summary) = if let Some(followable) = diverged.filter(|_| none_on_chain) {
             (
                 ProofState::Held,
                 format!(
-                    "Every node's chain left the proven one more than {} blocks back, further than can be followed. Nothing new settles. If the network really reorganised that deep, check the nodes, then take a new anchor.",
-                    self.tuning.anchor_depth
+                    "Every node's chain left the proven one more than {followable} blocks back, further than can be followed. Nothing new settles. If the network really reorganised that deep, check the nodes, then take a new anchor."
                 ),
             )
         } else if none_on_chain {
