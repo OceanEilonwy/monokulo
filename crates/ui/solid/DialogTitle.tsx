@@ -4,8 +4,11 @@
 import type { JSX } from '@solidjs/web';
 
 /**
- * A dialog's title: an `h2`, with a ✕ that closes the dialog. On the
- * content's own page, the title is the page's (`PageHeader`).
+ * A dialog's title: an `h2`, with a ✕ that closes the dialog beside it.
+ * The `h2` holds the title alone, as the dialog is named by it
+ * (`aria-labelledby`): the ✕ and the status sit next to it, never in
+ * the dialog's name or the heading. On the content's own page, the
+ * title is the page's (`PageHeader`).
  */
 export interface DialogTitleProps {
   id: string;
@@ -17,13 +20,18 @@ export interface DialogTitleProps {
 }
 
 /**
- * A dialog's title: an `h2`, with a ✕ that closes the dialog. On the
- * content's own page, the title is the page's (`PageHeader`).
+ * A dialog's title: an `h2`, with a ✕ that closes the dialog beside it.
+ * The `h2` holds the title alone, as the dialog is named by it
+ * (`aria-labelledby`): the ✕ and the status sit next to it, never in
+ * the dialog's name or the heading. On the content's own page, the
+ * title is the page's (`PageHeader`).
  */
 export function DialogTitle(props: DialogTitleProps): JSX.Element {
   return (
-    <h2 id={props.id} class="dialog-title">
-      {props.children}
+    <div class="dialog-title">
+      <h2 id={props.id}>
+        {props.children}
+      </h2>
       {props.aside != null ? (
         <span class="dialog-aside">
           {props.aside}
@@ -34,6 +42,6 @@ export function DialogTitle(props: DialogTitleProps): JSX.Element {
       <button type="button" class="dialog-x" aria-label="Close" data-closes-dialog>
         ×
       </button>
-    </h2>
+    </div>
   );
 }

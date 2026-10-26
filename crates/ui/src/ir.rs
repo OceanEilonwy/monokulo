@@ -172,6 +172,10 @@ pub enum Cond {
     /// `enhanced`: false as the server renders, true once the behaviour
     /// runs.
     Enhanced,
+    /// `a && b`
+    And(Box<Cond>, Box<Cond>),
+    /// `a || b`
+    Or(Box<Cond>, Box<Cond>),
 }
 
 impl Cond {
@@ -180,6 +184,11 @@ impl Cond {
             Cond::Truthy(p) | Cond::Eq(p, _, _) => vec![*p],
             Cond::Same(a, b, _) => vec![*a, *b],
             Cond::Not(c) => c.paths(),
+            Cond::And(a, b) | Cond::Or(a, b) => {
+                let mut paths = a.paths();
+                paths.extend(b.paths());
+                paths
+            }
             Cond::Enhanced => vec![],
         }
     }
@@ -188,6 +197,7 @@ impl Cond {
         match self {
             Cond::Enhanced => true,
             Cond::Not(c) => c.enhanced(),
+            Cond::And(a, b) | Cond::Or(a, b) => a.enhanced() || b.enhanced(),
             _ => false,
         }
     }

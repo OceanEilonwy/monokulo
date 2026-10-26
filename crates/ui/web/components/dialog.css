@@ -7,7 +7,8 @@
 .confirm-dialog { width: min(32rem, calc(100vw - 2rem)); }
 .confirm-dialog-page { max-width: 32rem; margin: var(--space-lg) 0; }
 .wide-dialog-page { max-width: 46rem; margin: var(--space-lg) 0; }
-.dialog-title { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--text-lg); border: 0; padding: 0; margin: 0 0 var(--space-sm); }
+.dialog-title { display: flex; align-items: center; gap: var(--space-sm); margin: 0 0 var(--space-sm); }
+.dialog-title > h2 { font-size: var(--text-lg); border: 0; padding: 0; margin: 0; }
 .dialog-aside { margin-left: auto; white-space: nowrap; }
 .dialog-aside + .dialog-x, .dialog-aside + .dialog-x:hover { margin-left: 0; }
 .dialog-x, .dialog-x:hover { margin: 0 0 0 auto; padding: 0 var(--space-xs); border: 0; background: none; color: var(--muted); font-size: var(--text-xl); line-height: 1; }

@@ -696,11 +696,23 @@ enum Cond {
     Same(Path, Path, bool),
     /// `enhanced`: false as the server renders, true once the behaviour runs.
     Enhanced,
+    /// `a && b`
+    And(Box<Cond>, Box<Cond>),
+    /// `a || b`
+    Or(Box<Cond>, Box<Cond>),
 }
 
 impl Cond {
     fn ir(&self) -> Tokens {
         match self {
+            Cond::And(a, b) => {
+                let (a, b) = (a.ir(), b.ir());
+                quote! { ::ui::ir::Cond::And(::std::boxed::Box::new(#a), ::std::boxed::Box::new(#b)) }
+            }
+            Cond::Or(a, b) => {
+                let (a, b) = (a.ir(), b.ir());
+                quote! { ::ui::ir::Cond::Or(::std::boxed::Box::new(#a), ::std::boxed::Box::new(#b)) }
+            }
             Cond::Truthy(p) => {
                 let p = p.ir();
                 quote! { ::ui::ir::Cond::Truthy(#p) }
@@ -728,6 +740,10 @@ impl Cond {
                 quote! { let _ = ::ui::Truthy::truthy(&#e); }
             }
             Cond::Not(c) => c.check(scope),
+            Cond::And(a, b) | Cond::Or(a, b) => {
+                let (a, b) = (a.check(scope), b.check(scope));
+                quote! { #a #b }
+            }
             Cond::Eq(p, variant, _) => {
                 let e = p.expr(scope);
                 quote! { let _ = matches!(#e, #variant); }
@@ -743,6 +759,7 @@ impl Cond {
         match self {
             Cond::Enhanced => true,
             Cond::Not(c) => c.enhanced(),
+            Cond::And(a, b) | Cond::Or(a, b) => a.enhanced() || b.enhanced(),
             _ => false,
         }
     }
@@ -751,6 +768,11 @@ impl Cond {
             Cond::Truthy(p) | Cond::Eq(p, _, _) => vec![p],
             Cond::Same(a, b, _) => vec![a, b],
             Cond::Not(c) => c.paths(),
+            Cond::And(a, b) | Cond::Or(a, b) => {
+                let mut paths = a.paths();
+                paths.extend(b.paths());
+                paths
+            }
             Cond::Enhanced => vec![],
         }
     }
@@ -1580,11 +1602,32 @@ impl Parser {
         Ok(path)
     }
 
-    /// `name`, `!name`, `name == Enum::Variant`, `name != Enum::Variant`.
+    /// Conditions joined by `||`, each of them conditions joined by `&&`
+    /// (which binds tighter, as in Rust).
     fn cond(&mut self) -> Result<Cond> {
+        let mut cond = self.all()?;
+        while self.is_punct('|') && self.is_punct_at(1, '|') {
+            self.at += 2;
+            cond = Cond::Or(Box::new(cond), Box::new(self.all()?));
+        }
+        Ok(cond)
+    }
+
+    /// Conditions joined by `&&`.
+    fn all(&mut self) -> Result<Cond> {
+        let mut cond = self.one()?;
+        while self.is_punct('&') && self.is_punct_at(1, '&') {
+            self.at += 2;
+            cond = Cond::And(Box::new(cond), Box::new(self.one()?));
+        }
+        Ok(cond)
+    }
+
+    /// `name`, `!name`, `name == Enum::Variant`, `name != Enum::Variant`.
+    fn one(&mut self) -> Result<Cond> {
         if self.is_punct('!') {
             self.at += 1;
-            return Ok(Cond::Not(Box::new(self.cond()?)));
+            return Ok(Cond::Not(Box::new(self.one()?)));
         }
         let path = self.path()?;
         if path.0.len() == 1 && path.0[0] == "enhanced" {

@@ -1619,7 +1619,7 @@ mod tests {
                 },
                 &[store("s1", "Bakery", None, None)],
             );
-            assert!(html.starts_with("<h2 id=\"retire-title\" class=\"dialog-title\">Retire \u{201c}Shop takings\u{201d}?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>"), "{html}");
+            assert!(html.starts_with("<div class=\"dialog-title\"><h2 id=\"retire-title\">Retire \u{201c}Shop takings\u{201d}?</h2><button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></div>"), "{html}");
             assert!(html.contains("<p>Retiring deletes its keys from Monokulo, so it stops seeing payments. The money stays in your wallet app.</p>"), "{html}");
             assert!(html.contains(r#"<li class="no"><span class="mark" aria-hidden="true">✕</span><span><span class="visually-hidden">Not yet: </span>No store takes payments into it<span class="fix">1 store does<span class="fix-line">Bakery does · <a href="/stores/s1/settings?tab=wallet#card-wallet">change its wallet</a></span></span></span></li>"#), "{html}");
             assert!(html.contains(r#"<li class="ok"><span class="mark" aria-hidden="true">✓</span><span><span class="visually-hidden">Done: </span>No order on it can still be paid</span></li>"#), "{html}");

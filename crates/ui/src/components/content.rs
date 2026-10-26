@@ -90,12 +90,14 @@ component! {
         rest: Attrs,
     }
     html {
-        @if quiet {
-            @if block { div class=(tone) ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
-        } @else if tone == Tone::Error {
-            @if block { div class=(tone) role="alert" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="alert" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
+        @if block {
+            div class=(tone) role=join["alert" if !quiet && tone == Tone::Error, "status" if !quiet && tone != Tone::Error] ..rest {
+                @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } }
+            }
         } @else {
-            @if block { div class=(tone) role="status" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } } @else { p class=(tone) role="status" ..rest { @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } } } }
+            p class=(tone) role=join["alert" if !quiet && tone == Tone::Error, "status" if !quiet && tone != Tone::Error] ..rest {
+                @if let Some(icon) = icon { span class="alert-icon" aria-hidden="true" { (icon) } } @if let Some(title) = title { strong class="alert-title" { (title) } " " } (children) @if let Some(actions) = actions { span class="alert-actions" { (actions) } }
+            }
         }
     }
 }
@@ -598,9 +600,7 @@ component! {
             summary { (summary) }
             @if look == DisclosureLook::Boxed {
                 div class="keys-help-body" { (children) }
-            } @else if look == DisclosureLook::Compact {
-                div class="disclosure-body" { (children) }
-            } @else if look == DisclosureLook::Row {
+            } @else if look == DisclosureLook::Compact || look == DisclosureLook::Row {
                 div class="disclosure-body" { (children) }
             } @else {
                 (children)

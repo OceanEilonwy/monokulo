@@ -232,6 +232,8 @@ fn cond(c: &Cond, scope: &Scope<'_>) -> bool {
             _ => scope.resolve(p).truthy(),
         },
         Cond::Not(c) => !cond(c, scope),
+        Cond::And(a, b) => cond(a, scope) && cond(b, scope),
+        Cond::Or(a, b) => cond(a, scope) || cond(b, scope),
         Cond::Eq(p, variant, equal) => {
             // An unset `Option` is no variant.
             let value = match scope.resolve(p) {
