@@ -134,9 +134,12 @@ jobs:
         with:
           shared-key: dev
           save: 'false'
-      # As the rust tests job runs them on the other platforms.
+      # As the rust tests job runs them on the other platforms, but with
+      # xtask, as the rust build job builds it: xtask has no library, so no
+      # doctests, but without it a few dependencies resolve fewer features
+      # (crc32fast, regex) and build again rather than come from the cache.
       - name: Run the doctests
-        run: cargo test --workspace --locked --exclude xtask --doc --features monokulo/snp
+        run: cargo test --workspace --locked --doc --features monokulo/snp
 
   rust:
     name: rust tests

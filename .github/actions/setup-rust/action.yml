@@ -64,13 +64,20 @@ runs:
     # ubuntu runner, with the dependencies built, the workspace's tests
     # built in 136 s unoptimised, 399 at level 1 and 561 at 3, and ran in
     # 187, 165 and 143 s; every test over the 5 s xtask/src/slow.rs allows
-    # is listed there. Set before the Rust cache, whose key considers
-    # CARGO_* variables; so is the terminal colour, so every job that shares
-    # a cache has the same key.
+    # is listed there. Build scripts and proc macros keep the same debug
+    # info as the rest: Cargo's default for them is none, but a crate one
+    # build compiles only for them (proc-macro2, for the doctests) and
+    # another also links into a target (ui-macros's unit tests) then comes
+    # out two ways, and the doctests job rebuilt syn, every derive and all
+    # that use them (298 crates, 6.5 of its 7.5 minutes) rather than
+    # restore what the rust build job had built. Set before the Rust cache,
+    # whose key considers CARGO_* variables; so is the terminal colour, so
+    # every job that shares a cache has the same key.
     - name: Set the dev profile for CI
       shell: bash
       run: |
         echo CARGO_PROFILE_DEV_DEBUG=line-tables-only >> "$GITHUB_ENV"
+        echo CARGO_PROFILE_DEV_BUILD_OVERRIDE_DEBUG=line-tables-only >> "$GITHUB_ENV"
         echo CARGO_TERM_COLOR=always >> "$GITHUB_ENV"
     - uses: dtolnay/rust-toolchain@nightly
       with:
