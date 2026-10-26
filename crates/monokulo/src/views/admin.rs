@@ -1700,9 +1700,6 @@ fn node_row(
     let summary_status = row.status.as_ref().map(node_status_words);
     let saved = row.saved.as_ref();
     let saved_text = |f: fn(&crate::admin_nodes::NodeRow) -> &str| saved.map(|s| f(s).to_string());
-    let saved_box = |f: fn(&crate::admin_nodes::NodeRow) -> bool| {
-        saved.map(|s| if f(s) { "on" } else { "off" })
-    };
     let summary = html! {
         @if position.is_some() {
             (ui::SortHandle::new(format!("Reorder {place}: press the up or down arrow")).flag("data-node-handle"))
@@ -1738,26 +1735,28 @@ fn node_row(
             }
         })
         .help(html! { "The node's host and port, like " code { (example) } ". "
-            code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
+            code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also turns on Use TLS); "
             "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "." })
         .help_id(address_help))
-        (ui::Setting::new("Use TLS", id("ssl"), ui::Checkbox::new()
-            .name(name("ssl"))
-            .id(id("ssl"))
-            .checked(row.row.ssl)
-            .described_by(ssl_help.as_str())
-            .flag("data-node-tls")
-            .maybe_attr("data-saved", saved_box(|s| s.ssl)))
+        (ui::Setting::new("Use TLS", id("ssl"), super::controls::switch_control(
+            &name("ssl"),
+            &id("ssl"),
+            row.row.ssl,
+            Some(ssl_help.as_str()),
+            saved.map(|s| s.ssl),
+        )
+        .flag("data-node-tls"))
         .help("Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it.")
         .help_id(ssl_help))
-        // Shown only while Use TLS is ticked, with JavaScript.
-        (ui::Setting::new("Accept a self-signed certificate", id("self_signed"), ui::Checkbox::new()
-            .name(name("self_signed"))
-            .id(id("self_signed"))
-            .checked(row.row.self_signed)
-            .described_by(self_signed_help.as_str())
-            .maybe_attr("data-saved", saved_box(|s| s.self_signed)))
-        .help("Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS.")
+        // Shown only while Use TLS is on, with JavaScript.
+        (ui::Setting::new("Accept a self-signed certificate", id("self_signed"), super::controls::switch_control(
+            &name("self_signed"),
+            &id("self_signed"),
+            row.row.self_signed,
+            Some(self_signed_help.as_str()),
+            saved.map(|s| s.self_signed),
+        ))
+        .help("Many community nodes use a self-signed TLS certificate; turn this on to accept one. Only used with TLS.")
         .help_id(self_signed_help)
         .flag("data-node-self-signed"))
         (ui::Setting::new("Announcements (ZMQ)", id("zmq_pub"), ui::Input::new(name("zmq_pub"))

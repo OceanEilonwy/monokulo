@@ -112,6 +112,10 @@
           el.setAttribute(attr, el.getAttribute(attr).replace(names, "node_" + network + "_" + i + "_").replace(ids, "node-" + network + "-" + i + "-"));
         });
       });
+      // A switch's listing names it by its value.
+      each(row, 'input[name="switches"]', function (listing) {
+        listing.value = listing.value.replace(names, "node_" + network + "_" + i + "_");
+      });
       each(row, 'button[name="node_action"]', function (button) {
         button.value = button.value.replace(/:\d+$/, ":" + i);
       });

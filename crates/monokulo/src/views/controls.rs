@@ -15,6 +15,18 @@ pub fn switch(
     described_by: Option<&str>,
     saved: Option<bool>,
 ) -> Markup {
+    html! { (switch_control(name, id, on, described_by, saved)) }
+}
+
+/// [`switch`] as the component, for a caller that puts a script's hook on
+/// it (`flag`).
+pub fn switch_control(
+    name: &str,
+    id: &str,
+    on: bool,
+    described_by: Option<&str>,
+    saved: Option<bool>,
+) -> ui::Switch {
     let mut switch = ui::Switch::new(name, id).on(on).listed_in("switches");
     if let Some(described_by) = described_by {
         switch = switch.described_by(described_by);
@@ -22,7 +34,7 @@ pub fn switch(
     if let Some(saved) = saved {
         switch = switch.saved(ui::Saved::from(saved));
     }
-    html! { (switch) }
+    switch
 }
 
 #[cfg(test)]

@@ -4613,9 +4613,9 @@ mod tests {
         assert!(html.contains(r#"name="node_stagenet_1_address" id="node-stagenet-1-address" value="node.example.com""#), "{html}");
         assert!(
             html.contains(
-                r#"name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#
+                r#"name="node_stagenet_1_ssl" value="true" id="node-stagenet-1-ssl" checked"#
             ),
-            "a ticked box stays ticked: {html}"
+            "a switch left on stays on: {html}"
         );
         assert!(html.contains(r#"<span class="setting-problem" id="node-stagenet-1-error">Add the port, like node.example.com:18081.</span>"#), "{html}");
         assert!(html.contains(r##"href="/admin/settings?tab=nodes" fx-action="/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
