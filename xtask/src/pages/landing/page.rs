@@ -1,7 +1,7 @@
-//! The landing page (GitHub Pages: /): about the product. The hero, with an
-//! order's life beside it as the POS draws it; what Monokulo is good at;
-//! the ways to take payments, each linking into the docs; the two calls a
-//! checkout takes; and the way to the install guides, which are docs pages
+//! The landing page (GitHub Pages: /): about the product. The hero, the
+//! animated mark over one line; what Monokulo is good at; the ways to take
+//! payments, each linking into the docs; the two calls a checkout takes,
+//! with an order's life under them as the POS draws it; and the way to the install guides, which are docs pages
 //! (`install`). Rendered with maud, beside the site's stylesheet
 //! (`xtask/src/pages/assets/styles.css`).
 //!
@@ -166,23 +166,12 @@ pub(super) fn render(github_url: &str) -> Markup {
                 (site_header::render(Section::Home, "", github_url))
                 main id="top" class="home" {
                     section.hero {
-                        div {
-                            p.eyebrow { "Self-hosted Monero payments" }
-                            h1 { "Accept Monero, on your own computer or router" }
-                            p.lead {
-                                "Monokulo is a self-hosted Monero payment gateway. It runs on Linux, macOS, Windows or your OpenWrt router, watches the chain with each store’s view key, and tells the store when an order is paid. It never holds a spend key, so it can never move your coins."
-                            }
-                            div.actions {
-                                (ui::LinkButton::new(html! { "Get started" (PreEscaped(icons::ARROW_RIGHT)) }, site_header::docs_front("")).variant(ui::ButtonVariant::Primary))
-                                (ui::LinkButton::new(html! { (PreEscaped(GITHUB_MARK)) "View on GitHub" }, github_url))
-                            }
-                            ul.chips aria-label="Runs on" {
-                                @for chip in ["Linux", "macOS", "Windows", "OpenWrt", "Open source"] {
-                                    li { (chip) }
-                                }
-                            }
+                        div.hero-mark { (PreEscaped(ui::assets::BRAND_HERO)) }
+                        h1 { "Accept Monero seamlessly" }
+                        div.actions {
+                            (ui::LinkButton::new(html! { "Get started" (PreEscaped(icons::ARROW_RIGHT)) }, site_header::docs_front("")).variant(ui::ButtonVariant::Primary))
+                            (ui::LinkButton::new(html! { (PreEscaped(GITHUB_MARK)) "View on GitHub" }, github_url))
                         }
-                        div.flow { (order_life()) }
                     }
                     section.home-section aria-labelledby="why" {
                         h2 id="why" { "Why Monokulo" }
@@ -216,6 +205,7 @@ pub(super) fn render(github_url: &str) -> Markup {
                             }
                         }
                         pre { code { (SAMPLE) } }
+                        div.flow { (order_life()) }
                     }
                     section.install-band id="install" aria-labelledby="install-heading" {
                         div {

@@ -180,4 +180,33 @@ mod tests {
             .collect();
         assert_eq!(states, ["pending", "unconfirmed", "confirming", "paid"]);
     }
+
+    /// The hero is the animated mark over its one line and the two
+    /// buttons; the order's life sits under the two calls to a checkout.
+    #[test]
+    fn the_hero_is_the_animated_mark_and_the_order_life_follows_the_two_calls() {
+        let scratch = Scratch::new("landing-hero");
+        let (_, page) = built(&scratch);
+        let section = |start: &str| {
+            let from = page.find(start).unwrap_or_else(|| panic!("{start}"));
+            &page[from..from + page[from..].find("</section>").unwrap()]
+        };
+        let hero = section(r#"<section class="hero">"#);
+        assert!(hero.contains(r#"<div class="hero-mark"><svg"#));
+        assert!(hero.contains("<animate "), "the mark's glints animate");
+        assert!(hero.contains("<h1>Accept Monero seamlessly</h1>"));
+        assert!(!hero.contains("mk-track"));
+        assert!(section(r#"<section class="dev""#)
+            .contains(r#"<div class="flow"><div class="mk-stage">"#));
+        // The mark's clip path is the only one by its name on the page.
+        let ids = regex::Regex::new(r#" id="([^"]+)""#).unwrap();
+        let mut ids: Vec<&str> = ids
+            .captures_iter(&page)
+            .map(|c| c.get(1).unwrap().as_str())
+            .collect();
+        let all = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), all, "every id on the page is its own");
+    }
 }
