@@ -35,13 +35,43 @@ pub enum NodeUse {
     LeftOut,
 }
 
+/// What a network's scanner is doing, worked out once from the engine's
+/// three bools, so the page shows one state instead of re-deriving it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScannerState {
+    /// It hasn't finished a tick yet.
+    NotYet,
+    /// Its last tick was too long ago.
+    Stale,
+    /// Its last tick failed.
+    Failing,
+    Scanning,
+}
+
+impl ScannerState {
+    pub fn label(self) -> &'static str {
+        match self {
+            ScannerState::NotYet => "not scanned yet",
+            ScannerState::Stale => "stale",
+            ScannerState::Failing => "tick failing",
+            ScannerState::Scanning => "scanning",
+        }
+    }
+
+    fn tone(self) -> TagTone {
+        match self {
+            ScannerState::NotYet => TagTone::Unknown,
+            ScannerState::Stale | ScannerState::Failing => TagTone::Error,
+            ScannerState::Scanning => TagTone::Ok,
+        }
+    }
+}
+
 /// One network's scanner-loop row - mirrors `engine_client::ScannerStatusView`
-/// plus a single overall `status_label` so the page renders one tag instead
-/// of re-deriving it from three bools.
+/// plus its overall [`ScannerState`].
 pub struct StatusScannerView {
     pub ever_ticked: bool,
-    pub status_label: String,
-    pub status_tag_class: String,
+    pub state: ScannerState,
     pub last_tick_display: String,
     pub tick_count: u64,
     pub tenants_scanned: usize,
@@ -252,15 +282,15 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
     let name = network_name(&network.network);
     let scanner = &network.scanner;
     let scanner_tag = html! {
-        span class="mk-status-text" data-tone=[tone(&scanner.status_tag_class)] { (scanner.status_label) }
+        span class="mk-status-text" data-tone=[tone(scanner.state.tone())] { (scanner.state.label()) }
     };
     let body = html! {
         div class="net-head" {
             h2 { (name) }
             (scanner_tag)
             @if let Some(proof) = &network.proof {
-                @let (label, class) = proof_tag(proof.state);
-                span class="mk-status-text" data-tone=[tone(class)] { (label) }
+                @let (label, proof_tone) = proof_tag(proof.state);
+                span class="mk-status-text" data-tone=[tone(proof_tone)] { (label) }
             }
             @if engine_page {
                 (LinkButton::new(html! { (PreEscaped(ui::assets::icons::EYE)) "Watch it live" }, crate::base::url(format!("/status/engine?network={}", network.network))).attr("data-watch-live", ""))
@@ -298,24 +328,27 @@ fn network_card(network: &StatusNetworkView, engine_page: bool) -> Markup {
     }
 }
 
-/// The words' tone for a status beside a title, from the tag class it
-/// would have as a chip: the words say the state, the colour only backs
-/// them up.
-fn tone(tag_class: &str) -> Option<&'static str> {
-    match tag_class {
-        "tag-ok" => Some("success"),
-        "tag-error" => Some("error"),
-        "tag-warn" => Some("warning"),
-        _ => None,
+/// The words' tone for a status beside a title, from the tone it would
+/// have as a chip: the words say the state, the colour only backs them up.
+fn tone(tone: TagTone) -> Option<&'static str> {
+    match tone {
+        TagTone::Ok => Some("success"),
+        TagTone::Error => Some("error"),
+        TagTone::Unknown
+        | TagTone::Syncing
+        | TagTone::Stalled
+        | TagTone::Slow
+        | TagTone::Muted
+        | TagTone::Dashed => None,
     }
 }
 
 /// The proof state's tag beside the network's title.
-fn proof_tag(state: ProofState) -> (&'static str, &'static str) {
+fn proof_tag(state: ProofState) -> (&'static str, TagTone) {
     match state {
-        ProofState::Following => ("proof checked", "tag-ok"),
-        ProofState::Anchoring => ("finding an anchor", "tag-unknown"),
-        ProofState::Held => ("settlement held", "tag-error"),
+        ProofState::Following => ("proof checked", TagTone::Ok),
+        ProofState::Anchoring => ("finding an anchor", TagTone::Unknown),
+        ProofState::Held => ("settlement held", TagTone::Error),
     }
 }
 
@@ -594,8 +627,7 @@ mod tests {
     fn scanner() -> StatusScannerView {
         StatusScannerView {
             ever_ticked: true,
-            status_label: "scanning".to_string(),
-            status_tag_class: "tag-ok".to_string(),
+            state: ScannerState::Scanning,
             last_tick_display: "2s ago".to_string(),
             tick_count: 41_203,
             tenants_scanned: 3,
