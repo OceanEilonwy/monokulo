@@ -267,13 +267,13 @@ settings! {
         key: "server.rate_limit_per_token_per_min",
         default: 120,
         check: range(1, 1_000_000),
-        description: "Requests a minute each store may make of the engine, counted by its secret key, so one busy store can't use up another's.",
+        description: "Requests a minute each store may make of the engine, counted once its secret key is checked, so one busy store can't use up another's.",
         example: "120",
     },
     SERVER_INSTANCE_RATE_LIMIT: bool {
         key: "server.instance_rate_limit",
         default: true,
-        description: "Whether the engine limits the requests made without a store's key: its status, settings, logs and engine pages, and making stores. Off by default when the engine runs inside monokulo, where only monokulo can call it; on for a standalone engine, which anything holding its token can reach.",
+        description: "Whether the engine limits the requests made without a store's key: its status, settings, logs and engine pages, making stores, and any carrying a key that is no store's. Off by default when the engine runs inside monokulo, where only monokulo can call it; on for a standalone engine, which anything holding its token can reach.",
     },
     SERVER_INSTANCE_RATE_LIMIT_PER_MIN: u32 {
         key: "server.instance_rate_limit_per_min",
