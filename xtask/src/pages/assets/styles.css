@@ -63,23 +63,32 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .card table>tbody>tr:last-child>td{border-bottom:0}
 
 /* ============================================================
-   Landing page (/, xtask/src/pages/landing/): the hero with an
-   order's life beside it, the feature tiles, the ways to take
-   payments, the code sample, the install band and the footer
+   Landing page (/, xtask/src/pages/landing/): the hero (the
+   animated mark over one line), the feature tiles, the ways to
+   take payments, the code sample with an order's life under it,
+   the install band and the footer
    ============================================================ */
 main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--space-3xl)}
 .actions{display:flex;gap:var(--space-md);flex-wrap:wrap;margin-top:var(--space-xl)}
 .actions .mk-btn svg{width:18px;height:18px;flex:none}
-.hero{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:var(--space-3xl);align-items:center}
-.eyebrow{margin-bottom:var(--space-sm);font-size:var(--text-sm);font-weight:700;color:var(--muted)}
-.hero h1{font-size:clamp(34px,5vw,54px);letter-spacing:-.02em;margin-bottom:var(--space-lg)}
-.hero .lead{font-size:var(--text-lg);color:var(--muted)}
-.chips{display:flex;flex-wrap:wrap;gap:var(--space-sm);margin:var(--space-xl) 0 0;padding:0;list-style:none;font-size:var(--text-sm);font-weight:700;color:var(--muted)}
-.chips li{padding:var(--pill-pad-y) var(--pill-pad-x);border:1px solid var(--line);border-radius:999px;background:var(--paper-raised)}
-/* The order's life: the ui's steps, upright, on its neutral card. */
+.hero{display:flex;flex-direction:column;align-items:center;text-align:center}
+.hero-mark{width:128px;height:128px;margin-bottom:var(--space-xl);color:var(--ink)}
+.hero-mark svg{display:block;width:100%;height:100%}
+/* SMIL ignores the motion setting: with less motion, the glints stay hidden. */
+@media (prefers-reduced-motion:reduce){.hero-mark path[fill="var(--logo-glint)"]{display:none}}
+.hero h1{font-size:clamp(34px,5vw,54px);letter-spacing:-.02em}
+.hero .actions{justify-content:center}
+/* The order's life: the ui's upright steps, laid across the page where
+   there's room, each step's words under its dot and a line to the next. */
+.dev .flow{grid-column:1 / -1}
 .flow .mk-stage{margin:0}
 .flow .mk-track{margin-bottom:0}
 .flow .mk-track-dot .pos-icon{width:86%;height:86%}
+@media (min-width:861px){
+  .flow .mk-track[data-orientation="vertical"]{grid-auto-flow:column;grid-auto-columns:minmax(0,1fr)}
+  .flow .mk-track[data-orientation="vertical"]>li{grid-template-columns:minmax(0,1fr);align-content:start;row-gap:var(--space-sm)}
+  .flow .mk-track[data-orientation="vertical"]>li:not(:last-child)::after{top:calc(1.065em - 1px);bottom:auto;left:calc(2.13em + var(--space-sm));right:calc(var(--space-sm) - var(--space-xl));width:auto;height:2px}
+}
 
 .home-section h2{font-size:clamp(24px,3.4vw,32px);margin-bottom:var(--space-sm)}
 .home-section>p{color:var(--muted);max-width:60ch;margin:0 0 var(--space-xl)}
@@ -105,7 +114,7 @@ main.home{max-width:1120px;gap:calc(1.5 * var(--space-3xl));padding-top:var(--sp
 .home-foot a:hover{color:var(--ink)}
 
 @media (max-width:1000px){
-  .hero,.dev{grid-template-columns:minmax(0,1fr)}
+  .dev{grid-template-columns:minmax(0,1fr)}
   .features,.ways{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media (max-width:620px){
