@@ -389,8 +389,8 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
 #[tokio::test]
 async fn a_store_sends_at_most_six_tests_a_minute() {
     let shop = shop_with(PRIVATE).await;
-    // The limit's clock (the abuse protection's) stopped 15 s into a
-    // minute, so it can't roll over halfway through.
+    // The limit's clock (the abuse protection's) stopped, so the store's
+    // minute, which starts at its first test, can't end halfway through.
     let state = AppState {
         abuse: Arc::new(
             abuse::AbuseProtection::new(shop.state.abuse.config())
@@ -430,7 +430,7 @@ async fn a_store_sends_at_most_six_tests_a_minute() {
         "https://docs.monokulo.com/problems/rate-limited"
     );
     assert_eq!(problem["retry_after"], wait);
-    assert_eq!(wait, 45);
+    assert_eq!(wait, 60);
 
     let block = body_text(shop.dashboard_test(&webhook, true).await).await;
     assert!(
