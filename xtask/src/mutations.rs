@@ -72,7 +72,7 @@ const MUTATIONS: &[Mutation] = &[
       "false && now.saturating_sub(self.last_failure) >= Self::FORGET_AFTER", RETRY_EXPIRY, "BOUNDARY: retry-expiry"),
     // Systematic comparison/guard perturbations at critical decision boundaries.
     m("funding-boundary-strict", "crates/engine/src/status.rs",
-      "if total >= inputs.xmr_amount_piconero {", "if total > inputs.xmr_amount_piconero {", STATUS_GRID, "BOUNDARY: status-decision-grid"),
+      "if total < amount {", "if total <= amount {", STATUS_GRID, "BOUNDARY: status-decision-grid"),
     m("confirmation-boundary-strict", "crates/engine/src/status.rs",
       "min_confirmations >= inputs.confirmations_required", "min_confirmations > inputs.confirmations_required", STATUS_GRID,
       "BOUNDARY: status-decision-grid"),
