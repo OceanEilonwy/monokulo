@@ -9,7 +9,7 @@
 //! table needed no change for it.
 
 use engine_protocol::ids::WebhookId;
-use engine_protocol::order_event::ReadOrderEventKind;
+use engine_protocol::order_event::{LogPosition, ReadOrderEventKind};
 use rusqlite::{params, OptionalExtension as _};
 use sqlite::Unsigned;
 
@@ -293,33 +293,40 @@ impl Db {
             .expect("deleting a test delivery");
     }
 
-    /// Where the order-event log has been read up to: 0 before the first
-    /// event.
-    pub fn order_event_position(&self) -> Result<i64> {
+    /// Where the order-event log has been read up to, with the id of the
+    /// event there when it was one read: 0 before the first event.
+    pub fn order_event_position(&self) -> Result<LogPosition> {
         Ok(self
             .conn
             .query_row(
-                "SELECT after_seq FROM order_event_position WHERE id = 1",
+                "SELECT after_seq, after_event_id FROM order_event_position WHERE id = 1",
                 [],
-                |row| row.get(0),
+                |row| {
+                    Ok(LogPosition {
+                        seq: row.get(0)?,
+                        event_id: row.get(1)?,
+                    })
+                },
             )
             .optional()?
-            .unwrap_or(0))
+            .unwrap_or_default())
     }
 
-    fn save_order_event_position(&self, after: i64, at: i64) -> Result<()> {
+    fn save_order_event_position(&self, after: &LogPosition, at: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO order_event_position (id, after_seq, updated_at_utc) VALUES (1, ?1, ?2)
-             ON CONFLICT (id) DO UPDATE SET after_seq = ?1, updated_at_utc = ?2",
-            params![after, at],
+            "INSERT INTO order_event_position (id, after_seq, after_event_id, updated_at_utc)
+             VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT (id) DO UPDATE
+             SET after_seq = ?1, after_event_id = ?2, updated_at_utc = ?3",
+            params![after.seq, after.event_id, at],
         )?;
         Ok(())
     }
 
     /// Moves the position without queueing anything: the engine said the
-    /// events before `after` are gone.
+    /// events before `after` are gone, or the event at it can't be read.
     pub fn skip_order_events_to(&self, after: i64, at: i64) -> Result<()> {
-        self.save_order_event_position(after, at)
+        self.save_order_event_position(&LogPosition::at(after), at)
     }
 
     /// Queues `event` for each of its store's webhooks, with the
@@ -337,7 +344,7 @@ impl Db {
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        if event.seq <= self.order_event_position()? {
+        if event.seq <= self.order_event_position()?.seq {
             return Ok(0);
         }
         let mut queued = 0;
@@ -366,7 +373,13 @@ impl Db {
                 }
             }
         }
-        self.save_order_event_position(event.seq, at)?;
+        self.save_order_event_position(
+            &LogPosition {
+                seq: event.seq,
+                event_id: Some(event.event_id.clone()),
+            },
+            at,
+        )?;
         tx.commit()?;
         Ok(queued)
     }

@@ -488,6 +488,17 @@ pub struct Tuning {
     pub poll_ms: u64,
 }
 
+/// Where a reader of a network's activity stream is: the next event it
+/// wants, `seq`, numbered as the engine run it was reading (`epoch`)
+/// numbers them. Another run's number means nothing in this one's record,
+/// so the stream is asked for both (`?epoch=&from=`, or `Last-Event-ID:
+/// epoch:seq` for the last event read).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamPosition {
+    pub epoch: String,
+    pub seq: u64,
+}
+
 /// One message of `GET /api/v1/admin/engine/activity/stream`: one
 /// network's recorded events, the first message's from where the reader
 /// asked, each later one's what was recorded since the one before.

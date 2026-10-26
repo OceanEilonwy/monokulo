@@ -775,7 +775,7 @@ async fn the_subscriber_queues_each_event_once_across_a_restart() {
         "the engine's event ids are the webhook's"
     );
     assert_eq!(
-        shop.state.db.lock().order_event_position().unwrap(),
+        shop.state.db.lock().order_event_position().unwrap().seq,
         *seqs.last().unwrap()
     );
 }
@@ -909,7 +909,7 @@ async fn events_without_webhooks_move_the_position_and_old_events_are_ignored() 
     let store = add_store(&db, "s1", "Bakery");
     assert_eq!(queue(&db, &event(1, "nobody", "o1", "order.paid"), 0), 0);
     assert_eq!(queue(&db, &event(2, "s1", "o2", "order.paid"), 0), 0);
-    assert_eq!(db.lock().order_event_position().unwrap(), 2);
+    assert_eq!(db.lock().order_event_position().unwrap().seq, 2);
     let (webhook, _) = add_webhook(&db, &store, "https://bakery.example/hook").await;
     assert_eq!(
         queue(&db, &event(2, "s1", "o2", "order.paid"), 0),
@@ -977,7 +977,7 @@ async fn the_subscriber_skips_events_the_engine_no_longer_has() {
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].order_id.as_ref().unwrap().as_str(), new);
     assert!(deliveries[0].event_seq > damaged);
-    assert!(shop.state.db.lock().order_event_position().unwrap() > damaged);
+    assert!(shop.state.db.lock().order_event_position().unwrap().seq > damaged);
 }
 
 /// Delivery and the log together: an engine event, read and delivered to

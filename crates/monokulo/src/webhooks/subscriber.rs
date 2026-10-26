@@ -115,11 +115,11 @@ pub async fn follow(
 ) -> Result<(), FollowError> {
     let after = db.read(|db| db.order_event_position()).await?;
     let mut stream = engine
-        .open_order_event_log(after)
+        .open_order_event_log(&after)
         .await
         .map_err(FollowError::Open)?;
     tracing::info!(
-        order_events.after = after,
+        order_events.after = after.seq,
         "reading the engine's order-event log"
     );
     on_open();
@@ -163,7 +163,7 @@ async fn handle(
                         "an order event can't be read, so its webhooks were never sent; the ones after it carry on"
                     );
                     db.write(move |db| {
-                        if seq > db.order_event_position()? {
+                        if seq > db.order_event_position()?.seq {
                             db.skip_order_events_to(seq, now)?;
                         }
                         Ok::<(), DbError>(())

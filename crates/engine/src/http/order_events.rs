@@ -6,14 +6,18 @@
 //!
 //! - The reader says where it is with `Last-Event-ID` (as `EventSource`
 //!   reconnects do) or, failing that, `?after=<seq>`; neither is `0`, the
-//!   start of the log.
+//!   start of the log. With `?event_id=`, the id of the event at `after`
+//!   it read, a position in another log that happens to have the same
+//!   number (a database restored from a backup hands numbers out again) is
+//!   told apart from this log's.
 //! - Each event is an `order_event` whose `id:` is its `seq` and whose data
 //!   is its JSON ([`crate::store::OrderEvent::wire_json`]). Every kept event
 //!   after the reader's position is sent first, oldest first, then each new
 //!   one as it commits.
 //! - If some events after the reader's position are gone (pruned after
-//!   `order_events.retention_days`, or the position is past anything this
-//!   log ever had), a single `events_lost` comes first, its `id:` where the
+//!   `order_events.retention_days`, or the position isn't this log's: past
+//!   anything it ever had, or another event than the one it holds there),
+//!   a single `events_lost` comes first, its `id:` where the
 //!   stream carries on from and its data
 //!   `{"requested_after": n, "resume_after": m}`: the reader missed every
 //!   event in between, and should say so loudly.
@@ -29,6 +33,8 @@ use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::Stream;
 
+use engine_protocol::order_event::LogPosition;
+
 use crate::store::{Database, ResumePoint};
 
 use super::ApiError;
@@ -42,10 +48,12 @@ const POLL_EVERY: Duration = Duration::from_secs(10);
 #[derive(serde::Deserialize)]
 pub(super) struct AfterQuery {
     after: Option<i64>,
+    event_id: Option<String>,
 }
 
-/// The reader's position: `Last-Event-ID`, else `?after=`, else 0.
-fn position(headers: &HeaderMap, query: &AfterQuery) -> Result<i64, ApiError> {
+/// The reader's position: `Last-Event-ID`, else `?after=`, else 0; with
+/// the id of the event there, when given.
+fn position(headers: &HeaderMap, query: &AfterQuery) -> Result<LogPosition, ApiError> {
     let header = headers
         .get("last-event-id")
         .map(|value| {
@@ -60,7 +68,10 @@ fn position(headers: &HeaderMap, query: &AfterQuery) -> Result<i64, ApiError> {
     if after < 0 {
         return Err(ApiError::BadRequest("an event id is never negative".into()));
     }
-    Ok(after)
+    Ok(LogPosition {
+        seq: after,
+        event_id: query.event_id.clone(),
+    })
 }
 
 /// What the stream keeps between reads of the log.
@@ -77,13 +88,16 @@ pub(super) async fn order_events(
     headers: HeaderMap,
     Query(query): Query<AfterQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let requested = position(&headers, &query)?;
+    let position = position(&headers, &query)?;
+    let requested = position.seq;
     // Subscribed before the first read, so nothing committed in between is
     // missed.
     let mut appended = db.subscribe_order_events();
     appended.mark_unchanged();
-    let span = db.read(crate::store::Store::order_event_span).await?;
-    let (lost, after) = match span.resume(requested) {
+    let (span, kept) = db
+        .read(move |s| Ok((s.order_event_span()?, s.order_event_id_at(requested)?)))
+        .await?;
+    let (lost, after) = match span.resume(&position, kept.as_deref()) {
         ResumePoint::Complete => (None, requested),
         ResumePoint::Lost { resume_after } => {
             tracing::warn!(

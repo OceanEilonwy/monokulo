@@ -139,3 +139,24 @@ impl<'de> serde::Deserialize<'de> for ReadOrderEventKind {
         Ok(ReadOrderEventKind::from(name.as_str()))
     }
 }
+
+/// Where a reader of the order-event log is: just after the event `seq`,
+/// whose `event_id` it read. A log restored from a backup hands the same
+/// numbers out again, to new events: the id says whether this log's event
+/// `seq` is the one the reader read. `None` when it never read that event
+/// (the log's start, or a position the engine said to carry on from).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogPosition {
+    pub seq: i64,
+    pub event_id: Option<String>,
+}
+
+impl LogPosition {
+    /// Just after the event `seq`, never read.
+    pub fn at(seq: i64) -> Self {
+        Self {
+            seq,
+            event_id: None,
+        }
+    }
+}

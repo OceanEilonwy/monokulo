@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use engine_protocol::activity::{Event, Recorded};
+use engine_protocol::activity::{Event, Recorded, StreamPosition};
 /// How far back the record reaches, and the most events it keeps whatever
 /// their age: shared with the engine page's history, which mirrors it.
 pub use engine_protocol::activity::{KEEP, MAX_EVENTS};
@@ -240,14 +240,26 @@ impl Activity {
         &self.epoch
     }
 
-    /// The events from sequence number `from` on, oldest first. Without
-    /// `from`, or if `from` has already left the record (or belongs to
-    /// another epoch's numbering), everything from the oldest snapshot kept,
-    /// so the reader can rebuild the state from there; `gap` says it had to.
-    pub fn page(&self, from: Option<u64>) -> Page {
+    /// Sequence number `seq` of this record.
+    pub fn position(&self, seq: u64) -> StreamPosition {
+        StreamPosition {
+            epoch: self.epoch.clone(),
+            seq,
+        }
+    }
+
+    /// The events from `from` on, oldest first. Without `from`, or if
+    /// `from` has already left the record or belongs to another epoch's
+    /// numbering (however close its number is to this one's), everything
+    /// from the oldest snapshot kept, so the reader can rebuild the state
+    /// from there; `gap` says it had to.
+    pub fn page(&self, from: Option<&StreamPosition>) -> Page {
         let record = self.record.lock();
         let oldest = record.events.front().map_or(record.next_seq, |e| e.seq);
-        let continues = from.filter(|from| (oldest..=record.next_seq).contains(from));
+        let continues = from
+            .filter(|from| from.epoch == self.epoch)
+            .map(|from| from.seq)
+            .filter(|from| (oldest..=record.next_seq).contains(from));
         let start = continues.map_or_else(
             || {
                 record
@@ -307,9 +319,12 @@ mod tests {
         let first = activity.page(None);
         assert_eq!(seqs(&first), [0, 1]);
         assert!(!first.gap);
-        assert!(activity.page(Some(first.next)).events.is_empty());
+        assert!(activity
+            .page(Some(&activity.position(first.next)))
+            .events
+            .is_empty());
         activity.record(Event::Vanished { looked: 2 });
-        let second = activity.page(Some(first.next));
+        let second = activity.page(Some(&activity.position(first.next)));
         assert_eq!(seqs(&second), [2]);
         assert_eq!(second.next, 3);
         assert!(!second.gap);
@@ -344,10 +359,14 @@ mod tests {
             agrees: true,
             looked_up: true,
         });
-        let ahead = activity.page(Some(99));
+        let ahead = activity.page(Some(&activity.position(99)));
         assert!(ahead.gap);
         assert_eq!(seqs(&ahead), [0, 1]);
         assert_ne!(activity.epoch(), Activity::default().epoch());
+        // Another epoch's number, though this record has one like it.
+        let restarted = activity.page(Some(&Activity::default().position(1)));
+        assert!(restarted.gap);
+        assert_eq!(seqs(&restarted), [0, 1]);
 
         // Push the first events out by age.
         let old = now_ms() - KEEP.as_millis() as i64 - 1;
@@ -362,7 +381,7 @@ mod tests {
             },
         );
         aged.record(Event::Snapshot(Box::default()));
-        let behind = aged.page(Some(1));
+        let behind = aged.page(Some(&aged.position(1)));
         assert!(behind.gap);
         assert_eq!(seqs(&behind), [2]);
     }
@@ -441,13 +460,17 @@ mod tests {
             Event::ReorgCollected,
         );
         record_at(&activity, now, Event::ReorgCollected);
-        assert_eq!(seqs(&activity.page(Some(0))), [1], "the stale event went");
+        assert_eq!(
+            seqs(&activity.page(Some(&activity.position(0)))),
+            [1],
+            "the stale event went"
+        );
 
         let full = Activity::default();
         for _ in 0..=MAX_EVENTS {
             record_at(&full, now, Event::ReorgCollected);
         }
-        let page = full.page(Some(1));
+        let page = full.page(Some(&full.position(1)));
         assert_eq!(page.events.len(), MAX_EVENTS);
         assert_eq!(page.events[0].seq, 1);
         assert!(!page.gap);

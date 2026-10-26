@@ -95,6 +95,7 @@ pub const COLUMNS: Classification = Classification {
         ("order_currency_metadata", "show_merchant_order_id", Visible),
         ("order_event_position", "id", Visible),
         ("order_event_position", "after_seq", Visible),
+        ("order_event_position", "after_event_id", Visible),
         ("order_event_position", "updated_at_utc", Visible),
         ("order_requests", "connection_id", Visible),
         ("order_requests", "idempotency_key", Visible),

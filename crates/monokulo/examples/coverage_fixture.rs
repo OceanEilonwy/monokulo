@@ -634,7 +634,13 @@ async fn seed_webhooks(
         )
         .await
         .map_err(failed)?;
-        let first = control.db.lock().order_event_position().map_err(failed)? + 1;
+        let first = control
+            .db
+            .lock()
+            .order_event_position()
+            .map_err(failed)?
+            .seq
+            + 1;
         let db = control.db.lock();
         for seq in first..first + many {
             let at = now - 60 * (first + many - seq);
@@ -765,7 +771,12 @@ async fn seed_webhooks(
         ),
     ];
     let public_key = control.public_key.clone();
-    let mut seq = control.db.lock().order_event_position().map_err(failed)?;
+    let mut seq = control
+        .db
+        .lock()
+        .order_event_position()
+        .map_err(failed)?
+        .seq;
     let mut ids = Vec::new();
     for (url, events) in webhooks {
         let created = monokulo::webhooks::create(
