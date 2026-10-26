@@ -656,17 +656,6 @@ impl EngineClient {
         .await
     }
 
-    /// `POST /api/v1/admin/tenants` — provisions a new tenant on
-    /// the engine. No store secret: it has none yet.
-    pub async fn create_tenant(
-        &self,
-        req: CreateTenantRequest,
-    ) -> Result<CreateTenantResponse<RawToken>, EngineClientError> {
-        self.send(Call::post("/api/v1/admin/tenants").json(&req))
-            .await?
-            .parsed()
-    }
-
     /// `POST /api/v1/admin/wallets` — registers a wallet's keys once, for
     /// any number of stores to take payments into (`create_tenant_on_wallet`).
     pub async fn create_wallet(
@@ -1289,19 +1278,27 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str =
         "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    fn test_create_tenant_request() -> CreateTenantRequest {
-        CreateTenantRequest {
-            keys: StoreKeys {
-                view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
-                spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
-                encrypted_keys: None,
-            },
-            wallet_id: None,
-            network: Some("mainnet".to_string()),
-            confirmations_required: None,
-            order_expiry_seconds: None,
-            key_custody_backend: None,
-        }
+    /// A store on a wallet of its own, made as monokulo makes stores.
+    async fn create_test_store(client: &EngineClient) -> CreateTenantResponse<RawToken> {
+        let wallet = client
+            .create_wallet(CreateWalletRequest {
+                keys: StoreKeys {
+                    view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
+                    spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
+                    encrypted_keys: None,
+                },
+                network: Some("mainnet".to_string()),
+                key_custody_backend: None,
+            })
+            .await
+            .unwrap();
+        client
+            .create_tenant_on_wallet(CreateTenantRequest {
+                wallet_id: Some(wallet.wallet_id),
+                ..CreateTenantRequest::default()
+            })
+            .await
+            .unwrap()
     }
 
     /// Each node's network (nicer_admin_screen.md step 4) is read when the
@@ -1351,10 +1348,7 @@ mod tests {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::embedded_for_tests(engine.router());
-        let created = client
-            .create_tenant(test_create_tenant_request())
-            .await
-            .unwrap();
+        let created = create_test_store(&client).await;
 
         let order = client
             .create_order(
@@ -1393,10 +1387,7 @@ mod tests {
         let engine =
             engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::embedded_for_tests(engine.router());
-        let created = client
-            .create_tenant(test_create_tenant_request())
-            .await
-            .unwrap();
+        let created = create_test_store(&client).await;
 
         let order = client
             .create_order(
@@ -1574,17 +1565,25 @@ mod contract_tests {
         let mut lines = Vec::new();
 
         let created = client
-            .create_tenant(CreateTenantRequest {
-                keys: StoreKeys {
-                    view_key_hex: VIEW_KEY_HEX.to_string(),
-                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
-                    encrypted_keys: None,
-                },
-                wallet_id: None,
-                network: Some("mainnet".to_string()),
+            .create_tenant_on_wallet(CreateTenantRequest {
+                wallet_id: Some(
+                    client
+                        .create_wallet(CreateWalletRequest {
+                            keys: StoreKeys {
+                                view_key_hex: VIEW_KEY_HEX.to_string(),
+                                spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                                encrypted_keys: None,
+                            },
+                            network: Some("mainnet".to_string()),
+                            key_custody_backend: None,
+                        })
+                        .await
+                        .expect("the store's wallet")
+                        .wallet_id,
+                ),
                 confirmations_required: None,
                 order_expiry_seconds: None,
-                key_custody_backend: None,
+                ..CreateTenantRequest::default()
             })
             .await
             .unwrap();
@@ -1902,17 +1901,25 @@ mod contract_tests {
     async fn a_watched_order_is_woken_over_the_embedded_transport() {
         let (_engine, client, engine_runtime) = engine_and_client("embedded on its runtime").await;
         let created = client
-            .create_tenant(CreateTenantRequest {
-                keys: StoreKeys {
-                    view_key_hex: VIEW_KEY_HEX.to_string(),
-                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
-                    encrypted_keys: None,
-                },
-                wallet_id: None,
-                network: Some("mainnet".to_string()),
+            .create_tenant_on_wallet(CreateTenantRequest {
+                wallet_id: Some(
+                    client
+                        .create_wallet(CreateWalletRequest {
+                            keys: StoreKeys {
+                                view_key_hex: VIEW_KEY_HEX.to_string(),
+                                spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                                encrypted_keys: None,
+                            },
+                            network: Some("mainnet".to_string()),
+                            key_custody_backend: None,
+                        })
+                        .await
+                        .expect("the store's wallet")
+                        .wallet_id,
+                ),
                 confirmations_required: None,
                 order_expiry_seconds: None,
-                key_custody_backend: None,
+                ..CreateTenantRequest::default()
             })
             .await
             .unwrap();
@@ -1969,17 +1976,25 @@ mod contract_tests {
     async fn an_event_stream_ends_when_the_engines_runtime_stops() {
         let (_engine, client, engine_runtime) = engine_and_client("embedded on its runtime").await;
         let created = client
-            .create_tenant(CreateTenantRequest {
-                keys: StoreKeys {
-                    view_key_hex: VIEW_KEY_HEX.to_string(),
-                    spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
-                    encrypted_keys: None,
-                },
-                wallet_id: None,
-                network: Some("mainnet".to_string()),
+            .create_tenant_on_wallet(CreateTenantRequest {
+                wallet_id: Some(
+                    client
+                        .create_wallet(CreateWalletRequest {
+                            keys: StoreKeys {
+                                view_key_hex: VIEW_KEY_HEX.to_string(),
+                                spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                                encrypted_keys: None,
+                            },
+                            network: Some("mainnet".to_string()),
+                            key_custody_backend: None,
+                        })
+                        .await
+                        .expect("the store's wallet")
+                        .wallet_id,
+                ),
                 confirmations_required: None,
                 order_expiry_seconds: None,
-                key_custody_backend: None,
+                ..CreateTenantRequest::default()
             })
             .await
             .unwrap();

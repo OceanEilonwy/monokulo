@@ -99,17 +99,25 @@ async fn main() {
     );
     let client = EngineClient::embedded_for_tests(engine.router());
     let tenant = client
-        .create_tenant(CreateTenantRequest {
-            keys: monokulo::engine_client::StoreKeys {
-                view_key_hex: VIEW_KEY_HEX.to_string(),
-                spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
-                encrypted_keys: None,
-            },
-            wallet_id: None,
-            network: Some("mainnet".to_string()),
+        .create_tenant_on_wallet(CreateTenantRequest {
+            wallet_id: Some(
+                client
+                    .create_wallet(monokulo::engine_client::CreateWalletRequest {
+                        keys: monokulo::engine_client::StoreKeys {
+                            view_key_hex: VIEW_KEY_HEX.to_string(),
+                            spend_pubkey_hex: SPEND_PUBKEY_HEX.to_string(),
+                            encrypted_keys: None,
+                        },
+                        network: Some("mainnet".to_string()),
+                        key_custody_backend: None,
+                    })
+                    .await
+                    .expect("the store's wallet")
+                    .wallet_id,
+            ),
             confirmations_required: Some(1),
             order_expiry_seconds: Some(900),
-            key_custody_backend: None,
+            ..CreateTenantRequest::default()
         })
         .await
         .expect("create the store's tenant");
