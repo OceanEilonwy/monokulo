@@ -74,15 +74,6 @@ impl Action {
             Action::Handoff => "handoff",
         }
     }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "create" => Some(Action::Create),
-            "move" => Some(Action::Move),
-            "handoff" => Some(Action::Handoff),
-            _ => None,
-        }
-    }
 }
 
 /// Everything a client needs to check the backend and encrypt to it. Byte
