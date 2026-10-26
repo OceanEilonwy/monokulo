@@ -1,5 +1,6 @@
-//! At-rest encryption for the engine's `sk_...` secret token, kept in
-//! `store_connections.tenant_secret_token_encrypted`.
+//! At-rest encryption for the secrets [`Binding`] lists, each bound to the
+//! row it is kept in. A wrong key or a changed binding string makes every
+//! one of them unreadable, not only one column.
 //!
 //! AES-256-GCM (via the `aes-gcm` crate — RustCrypto, the same ecosystem
 //! family as `hmac`/`sha2` already used elsewhere in this workspace) rather
@@ -11,9 +12,8 @@
 //! Deliberately pure functions, key-as-parameter: no environment variable
 //! is read in this module. Key *sourcing* (env var, test constant,
 //! whatever) is entirely the caller's job — see `main.rs` for the real
-//! source and the HTTP handler layer (`http/connections.rs`) for where
-//! `encrypt`/`decrypt` actually get called. `Db` itself stays crypto-unaware
-//! and just stores/returns whatever string it's given.
+//! source. `Db` itself stays crypto-unaware and just stores/returns
+//! whatever string it's given.
 
 use aes_gcm::aead::{Aead, Generate, Key, KeyInit};
 use aes_gcm::Aes256Gcm;
@@ -74,6 +74,7 @@ impl std::fmt::Debug for AtRestKey {
 /// another store's row, an invite token into another request's - fails to
 /// decrypt there. Anyone able to write the database file could otherwise
 /// make one store act with another's secret without knowing the key.
+#[derive(Clone, Copy)]
 pub enum Binding<'a> {
     /// `store_connections.tenant_secret_token_encrypted` of this connection.
     StoreSecret(&'a str),
@@ -111,9 +112,8 @@ pub fn encrypt(key: &AtRestKey, binding: Binding<'_>, plaintext: &str) -> String
     // A fresh, cryptographically random nonce every call - see this
     // module's doc comment on why that matters for GCM.
     let nonce = CipherNonce::generate();
-    // Only fails for absurdly large plaintexts (far beyond GCM's ~64GiB
-    // limit) - never for anything this module is actually used for (a
-    // ~70-byte `sk_...` token).
+    // Only fails for a plaintext beyond AES-GCM's limit of about 64 GiB,
+    // far larger than any secret a row holds.
     let aad = binding.bytes();
     let ciphertext = cipher
         .encrypt(
