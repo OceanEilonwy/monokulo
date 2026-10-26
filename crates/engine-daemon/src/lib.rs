@@ -6,7 +6,8 @@
 //! The trait holds what the engine asks of a node and nothing else: the real
 //! implementation is [`rpc::RpcDaemonClient`], behind
 //! [`fallback::FallbackDaemonClient`]; [`link`] measures each node's link and
-//! [`monero_tx`] reads the pruned transactions nodes send. With
+//! [`monero_tx`] reads the pruned transactions nodes send; [`ids`] are the
+//! transaction ids and block hashes a node's answers are read into. With
 //! `test-support`, `fake` is a scripted node for the engine's tests.
 
 // Engine code must not panic on anything it can recover from: a panic in a
@@ -27,6 +28,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod fallback;
+pub mod ids;
 pub mod link;
 pub mod monero_tx;
 pub mod rpc;

@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::time::Instant;
 
+use crate::ids::{BlockHash, TxId};
 use crate::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, DifficultyHeader, EndpointStats,
     FetchedTx, IdBinding, KeyImageStatus, MoneroDaemonClient, PoolAnswer, PoolOutlook, TxLocation,
@@ -559,18 +560,18 @@ impl RpcDaemonClient {
 /// pins. Trading a retry for never voiding a live payment off a response that never
 /// said it was gone is not a close call.
 fn classify_located_transaction(
-    txid: &str,
+    txid: TxId,
     resp: &GetTransactionsResponse,
     lone: bool,
 ) -> Result<TxLocation, DaemonError> {
-    // Both lists are matched by the same rule: hex, either case.
-    let missed = resp.missed_tx.iter().any(|h| h.eq_ignore_ascii_case(txid));
+    // Both lists are matched the same way: as ids, whatever case the hex.
+    let missed = resp.missed_tx.iter().any(|h| TxId::parse(h) == Some(txid));
     // The entry for the transaction asked about, not whatever came first:
     // an entry for another hash (a cache or proxy answering for someone
     // else) is a non-answer. One that names no hash answers for the
     // transaction only when it was the one asked about (`lone`).
     let entry = resp.txs.iter().flatten().find(|entry| {
-        entry.tx_hash.eq_ignore_ascii_case(txid) || (lone && entry.tx_hash.is_empty())
+        TxId::parse(&entry.tx_hash) == Some(txid) || (lone && entry.tx_hash.is_empty())
     });
     match (missed, entry) {
         (true, None) => Ok(TxLocation::NotFound),
@@ -794,21 +795,21 @@ impl BinBlock {
         let mut txids = Vec::with_capacity(self.txs.len());
         let mut bindings = Vec::with_capacity(self.txs.len());
         for (entry, listed) in self.txs.iter().zip(&block.tx_hashes) {
-            let txid = hex::encode(listed.0);
+            let txid = TxId::from_bytes(listed.0);
             let (tx, binding) =
-                decode_tx_blob(&entry.blob, entry.prunable_hash.as_ref(), Some(&txid)).map_err(
+                decode_tx_blob(&entry.blob, entry.prunable_hash.as_ref(), Some(txid)).map_err(
                     |e| DaemonError::Request(format!("get_blocks.bin: block {height}: {e}").into()),
                 )?;
             // Only what the scan reads is kept; the transaction itself is
             // dropped here.
             txs.push(crate::ScanTx::of(&tx.tx));
-            txids.push(txid);
+            txids.push(txid.to_string());
             bindings.push(binding);
         }
         Ok(ChainBlock {
             height,
-            hash: hex::encode(block.id().0),
-            prev_hash: hex::encode(block.header.prev_id.0),
+            hash: BlockHash::from_bytes(block.id().0).to_string(),
+            prev_hash: BlockHash::from_bytes(block.header.prev_id.0).to_string(),
             timestamp: block.header.timestamp.0,
             txs,
             txids,
@@ -835,8 +836,8 @@ impl BinBlock {
 fn decode_tx_blob(
     blob: &[u8],
     prunable_hash: Option<&[u8; 32]>,
-    claimed: Option<&str>,
-) -> Result<(FetchedTx, IdBinding), String> {
+    claimed: Option<TxId>,
+) -> Result<(Decoded, IdBinding), String> {
     let tx = crate::monero_tx::decode_any(blob)
         .map_err(|e| format!("failed to parse a transaction blob: {e}"))?;
     let computed = if crate::monero_tx::is_pruned(&tx) {
@@ -847,7 +848,7 @@ fn decode_tx_blob(
     } else {
         Some(tx.hash())
     }
-    .map(|hash| hex::encode(hash.to_bytes()));
+    .map(|hash| TxId::from_bytes(hash.to_bytes()));
     let (txid, binding) = match (computed, claimed) {
         (Some(computed), Some(claimed)) if computed != claimed => {
             return Err(format!(
@@ -855,15 +856,33 @@ fn decode_tx_blob(
             ))
         }
         (Some(computed), _) => (computed, IdBinding::Computed),
-        (None, Some(claimed)) if is_txid(claimed) => (claimed.to_owned(), IdBinding::Listed),
-        (None, _) => return Err("a pruned transaction came without an id".to_owned()),
+        (None, Some(claimed)) => (claimed, IdBinding::Listed),
+        (None, None) => return Err("a pruned transaction came without an id".to_owned()),
     };
-    Ok((FetchedTx { txid, tx }, binding))
+    Ok((Decoded { txid, tx }, binding))
 }
 
-/// Whether `s` has the shape of a transaction id: 64 lowercase hex digits.
-fn is_txid(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+/// An id a caller asks about. One that isn't an id is refused before any
+/// node is asked: no answer could place it.
+fn parse_asked(txid: &str) -> Result<TxId, DaemonError> {
+    TxId::parse(txid)
+        .ok_or_else(|| DaemonError::Request(format!("{txid:?} is not a transaction id").into()))
+}
+
+/// A transaction decoded here, with its id as bytes: what is compared with
+/// the ids asked for, before it is handed on as a [`FetchedTx`].
+struct Decoded {
+    txid: TxId,
+    tx: Transaction,
+}
+
+impl Decoded {
+    fn into_fetched(self) -> FetchedTx {
+        FetchedTx {
+            txid: self.txid.to_string(),
+            tx: self.tx,
+        }
+    }
 }
 
 /// A 32-byte value from an epee string field, if it is one.
@@ -1038,18 +1057,18 @@ struct PoolChanges {
     /// `pool_info_since`.
     daemon_time: u64,
     /// Transactions that entered the pool, with their (pruned) bodies.
-    added: Vec<(String, Vec<u8>)>,
+    added: Vec<(TxId, Vec<u8>)>,
     /// Transactions that entered the pool, ids only (a restricted node
     /// sends at most 100 bodies per answer).
-    added_ids: Vec<String>,
-    removed: Vec<String>,
+    added_ids: Vec<TxId>,
+    removed: Vec<TxId>,
 }
 
 /// Parses a `get_blocks.bin` response about the pool. `Ok(None)` when the node
 /// answered without describing its pool: one that doesn't know the request
 /// (an older monerod), to be asked the old way instead.
 fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> {
-    fn ids(blob: &[u8]) -> Result<Vec<String>, DaemonError> {
+    fn ids(blob: &[u8]) -> Result<Vec<TxId>, DaemonError> {
         let (whole, rest) = blob.as_chunks::<32>();
         if !rest.is_empty() {
             return Err(DaemonError::Request(
@@ -1060,7 +1079,7 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
                 .into(),
             ));
         }
-        Ok(whole.iter().map(hex::encode).collect())
+        Ok(whole.iter().copied().map(TxId::from_bytes).collect())
     }
     let epee_err = |e| epee_err("pool get_blocks.bin", e);
 
@@ -1100,7 +1119,7 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
                         match field_key.consume() {
                             b"tx_hash" => {
                                 txid = hash32(field_value.to_str().map_err(epee_err)?.consume())
-                                    .map(hex::encode);
+                                    .map(TxId::from_bytes);
                             }
                             b"tx_blob" => {
                                 blob = Some(
@@ -1177,9 +1196,9 @@ struct PoolView {
     tip_apart_until: Option<Instant>,
     /// The node's clock at its last answer.
     since: u64,
-    txids: HashSet<String>,
+    txids: HashSet<TxId>,
     /// Bodies that arrived with the changes and haven't been asked for yet.
-    bodies: HashMap<String, Transaction>,
+    bodies: HashMap<TxId, Transaction>,
     polled_at: Option<Instant>,
     resynced_at: Option<Instant>,
 }
@@ -1198,9 +1217,9 @@ impl PoolView {
             // doesn't decode or hashes to something else is left to be
             // fetched (and reported) the same way.
             if self.bodies.len() < POOL_BODIES_MAX {
-                match decode_tx_blob(&blob, None, Some(&txid)) {
-                    Ok((fetched, IdBinding::Computed)) => {
-                        self.bodies.insert(txid.clone(), fetched.tx);
+                match decode_tx_blob(&blob, None, Some(txid)) {
+                    Ok((decoded, IdBinding::Computed)) => {
+                        self.bodies.insert(txid, decoded.tx);
                     }
                     Ok((_, IdBinding::Listed)) => {}
                     Err(error) => telemetry::throttled!(
@@ -1224,15 +1243,20 @@ impl PoolView {
 
     /// Replaces the ids with the node's plain list, keeping the bodies of
     /// those still there.
-    fn resync(&mut self, txids: Vec<String>) {
+    fn resync(&mut self, txids: Vec<TxId>) {
         self.txids = txids.into_iter().collect();
         let txids = &self.txids;
         self.bodies.retain(|txid, _| txids.contains(txid));
     }
 
     fn list(&self) -> Vec<String> {
-        self.txids.iter().cloned().collect()
+        as_text(&self.txids.iter().copied().collect::<Vec<_>>())
     }
+}
+
+/// Ids as the engine is handed them: lowercase hex.
+fn as_text(txids: &[TxId]) -> Vec<String> {
+    txids.iter().map(TxId::to_string).collect()
 }
 
 /// Matches `COMMAND_RPC_GET_HEIGHT::response_t`: `uint64_t height`, plain
@@ -1339,8 +1363,7 @@ impl BlockHeader {
     /// are: a hash recorded in another form would never equal the one read
     /// later, and read as a reorg at that height forever.
     fn into_chain_header(self, height: u64) -> Result<ChainHeader, DaemonError> {
-        let hash = self.hash.to_ascii_lowercase();
-        if !is_txid(&hash) {
+        let Some(hash) = BlockHash::parse(&self.hash) else {
             return Err(DaemonError::Request(
                 format!(
                     "block {height}'s header has an invalid hash: {:?}",
@@ -1348,12 +1371,11 @@ impl BlockHeader {
                 )
                 .into(),
             ));
-        }
+        };
         let prev_hash = if height == 0 {
             String::new()
         } else {
-            let prev_hash = self.prev_hash.to_ascii_lowercase();
-            if !is_txid(&prev_hash) {
+            let Some(prev_hash) = BlockHash::parse(&self.prev_hash) else {
                 return Err(DaemonError::Request(
                     format!(
                         "block {height}'s header has an invalid parent hash: {:?}",
@@ -1361,12 +1383,12 @@ impl BlockHeader {
                     )
                     .into(),
                 ));
-            }
-            prev_hash
+            };
+            prev_hash.to_string()
         };
         Ok(ChainHeader {
             height,
-            hash,
+            hash: hash.to_string(),
             prev_hash,
             timestamp: self.timestamp,
             weight: self.block_weight,
@@ -1434,7 +1456,7 @@ impl TxEntry {
     /// (none, or the all-zero "none") is a non-answer: it can't be checked
     /// against the id it came under, so a node could send any body under
     /// any id.
-    fn fetched(&self) -> Result<FetchedTx, DaemonError> {
+    fn fetched(&self) -> Result<Decoded, DaemonError> {
         let hex_blob = if self.pruned_as_hex.is_empty() {
             &self.as_hex
         } else {
@@ -1450,20 +1472,17 @@ impl TxEntry {
         let prunable_hash = hex::decode(&self.prunable_hash)
             .ok()
             .and_then(|bytes| hash32(&bytes));
-        let claimed = self.tx_hash.to_ascii_lowercase();
-        match decode_tx_blob(
-            &blob,
-            prunable_hash.as_ref(),
-            Some(claimed.as_str()).filter(|claimed| !claimed.is_empty()),
-        )
-        .map_err(|e| DaemonError::Request(e.into()))?
+        // A claim that isn't an id is no claim: the id is computed then.
+        let claimed = TxId::parse(&self.tx_hash);
+        match decode_tx_blob(&blob, prunable_hash.as_ref(), claimed)
+            .map_err(|e| DaemonError::Request(e.into()))?
         {
-            (fetched, IdBinding::Computed) => Ok(fetched),
-            (fetched, IdBinding::Listed) => Err(DaemonError::Request(
+            (decoded, IdBinding::Computed) => Ok(decoded),
+            (decoded, IdBinding::Listed) => Err(DaemonError::Request(
                 format!(
                     "transaction {} came pruned without the hash of its pruned part, so it can't \
                  be checked against its id",
-                    fetched.txid
+                    decoded.txid
                 )
                 .into(),
             )),
@@ -1508,7 +1527,7 @@ const POOL_CHANGES_AND_TIP_ENDPOINT: &str = "/get_blocks.bin (pool changes and t
 impl RpcDaemonClient {
     /// The pool's transaction ids, the whole list
     /// (`/get_transaction_pool_hashes`).
-    async fn pool_hashes(&self) -> Result<Vec<String>, DaemonError> {
+    async fn pool_hashes(&self) -> Result<Vec<TxId>, DaemonError> {
         #[derive(Deserialize)]
         struct PoolHashes {
             #[serde(default)]
@@ -1517,7 +1536,13 @@ impl RpcDaemonClient {
         let resp: PoolHashes = self
             .post_plain("/get_transaction_pool_hashes", json!({}))
             .await?;
-        Ok(resp.tx_hashes)
+        // Something that isn't an id names no transaction: it can't be
+        // fetched or matched, so it is left out.
+        Ok(resp
+            .tx_hashes
+            .iter()
+            .filter_map(|hash| TxId::parse(hash))
+            .collect())
     }
 
     /// One poll of the pool (see `get_mempool_txids`), returning its
@@ -1542,7 +1567,7 @@ impl RpcDaemonClient {
             pool.follows_changes = None;
         }
         if pool.follows_changes == Some(false) {
-            return Ok((self.pool_hashes().await?, false));
+            return Ok((as_text(&self.pool_hashes().await?), false));
         }
         if pool.follows_changes == Some(true) {
             if pool
@@ -1564,8 +1589,8 @@ impl RpcDaemonClient {
         }
         let mut tip_id = known_tip
             .and_then(|tip| tip.hash.as_deref())
-            .and_then(|hash| hex::decode(hash).ok())
-            .and_then(|bytes| hash32(&bytes))
+            .and_then(BlockHash::parse)
+            .map(|hash| *hash.as_bytes())
             .filter(|_| pool.tip_apart_until.is_none_or(|until| now >= until));
         let parsed = loop {
             let (endpoint, request) = match &tip_id {
@@ -1620,7 +1645,7 @@ impl RpcDaemonClient {
                     tip_apart_until: pool.tip_apart_until,
                     ..PoolView::default()
                 };
-                return Ok((self.pool_hashes().await?, false));
+                return Ok((as_text(&self.pool_hashes().await?), false));
             }
         };
         // No blocks and the same length: the chain still ends at the block
@@ -1706,8 +1731,10 @@ impl MoneroDaemonClient for RpcDaemonClient {
             height: resp.height.saturating_sub(1),
             hash: resp
                 .hash
-                .map(|hash| hash.to_ascii_lowercase())
-                .filter(|hash| is_txid(hash) && resp.height > 0),
+                .as_deref()
+                .and_then(BlockHash::parse)
+                .filter(|_| resp.height > 0)
+                .map(|hash| hash.to_string()),
         };
         *self.tip.lock() = Some(tip.clone()).filter(|tip| tip.hash.is_some());
         Ok(tip)
@@ -1786,16 +1813,15 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let hash: String = self
             .post_json_rpc("on_get_block_hash", json!([height]))
             .await?;
-        let hash = hash.to_ascii_lowercase();
-        if !is_txid(&hash) {
+        let Some(hash) = BlockHash::parse(&hash) else {
             return Err(DaemonError::Request(
                 format!(
                 "on_get_block_hash returned something that is not a block hash for height {height}"
             )
                 .into(),
             ));
-        }
-        Ok(hash)
+        };
+        Ok(hash.to_string())
     }
 
     /// `get_blocks.bin`, decoding each block's own header: one round trip
@@ -1813,12 +1839,19 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let mut out = Vec::new();
         let from = if start_height == 0 {
             // Its header names the genesis block and dates it. It holds no
-            // transactions but its coinbase, on any network.
+            // transactions but its coinbase, on any network. Read like every
+            // other header: its own height, and a hash that is one.
             let header = self.block_header(0).await?;
+            if header.height.is_some_and(|own| own != 0) {
+                return Err(DaemonError::Request(
+                    "get_block_header_by_height: asked for block 0, the node sent another".into(),
+                ));
+            }
+            let header = header.into_chain_header(0)?;
             out.push(ChainBlock {
                 height: 0,
                 hash: header.hash,
-                prev_hash: String::new(),
+                prev_hash: header.prev_hash,
                 timestamp: header.timestamp,
                 txs: Vec::new(),
                 txids: Vec::new(),
@@ -1964,14 +1997,18 @@ impl MoneroDaemonClient for RpcDaemonClient {
         }
         Ok(crate::BlockOutline {
             height,
-            hash: hex::encode(block.id().0),
+            hash: BlockHash::from_bytes(block.id().0).to_string(),
             prev_hash: if height == 0 {
                 String::new()
             } else {
-                hex::encode(block.header.prev_id.0)
+                BlockHash::from_bytes(block.header.prev_id.0).to_string()
             },
             timestamp: block.header.timestamp.0,
-            txids: block.tx_hashes.iter().map(|id| hex::encode(id.0)).collect(),
+            txids: block
+                .tx_hashes
+                .iter()
+                .map(|id| TxId::from_bytes(id.0).to_string())
+                .collect(),
         })
     }
 
@@ -2070,23 +2107,24 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let mut missing = Vec::new();
         {
             let mut pool = self.pool.lock().await;
-            for txid in txids {
-                match pool.bodies.remove(txid) {
-                    Some(tx) => out.push(FetchedTx {
-                        txid: txid.clone(),
-                        tx,
-                    }),
-                    None => missing.push(txid.clone()),
+            // Something that isn't an id names no transaction a node has.
+            for txid in txids.iter().filter_map(|txid| TxId::parse(txid)) {
+                match pool.bodies.remove(&txid) {
+                    Some(tx) => out.push(Decoded { txid, tx }.into_fetched()),
+                    None => missing.push(txid),
                 }
             }
         }
         // In batches, so one request never carries an unbounded list.
         for batch in missing.chunks(TXS_PER_REQUEST) {
-            let wanted: HashSet<&String> = batch.iter().collect();
-            let resp = self.request_transactions(batch).await?;
+            let wanted: HashSet<TxId> = batch.iter().copied().collect();
+            let asked: Vec<String> = batch.iter().map(TxId::to_string).collect();
+            let resp = self.request_transactions(&asked).await?;
             for entry in resp.txs.unwrap_or_default() {
                 match entry.fetched() {
-                    Ok(fetched) if wanted.contains(&fetched.txid) => out.push(fetched),
+                    Ok(fetched) if wanted.contains(&fetched.txid) => {
+                        out.push(fetched.into_fetched());
+                    }
                     Ok(fetched) => {
                         return Err(DaemonError::Request(
                             format!(
@@ -2109,8 +2147,9 @@ impl MoneroDaemonClient for RpcDaemonClient {
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        let txid = parse_asked(txid)?;
         let resp = self
-            .request_transactions(std::slice::from_ref(&txid.to_owned()))
+            .request_transactions(std::slice::from_ref(&txid.to_string()))
             .await?;
         classify_located_transaction(txid, &resp, true)
     }
@@ -2128,9 +2167,13 @@ impl MoneroDaemonClient for RpcDaemonClient {
         let mut out = HashMap::with_capacity(txids.len());
         for batch in txids.chunks(TXS_PER_REQUEST) {
             let resp = self.request_transactions(batch).await?;
-            for txid in batch {
+            for asked in batch {
+                // Left out unless it is an id the answer places.
+                let Some(txid) = TxId::parse(asked) else {
+                    continue;
+                };
                 if let Ok(location) = classify_located_transaction(txid, &resp, batch.len() == 1) {
-                    out.insert(txid.clone(), location);
+                    out.insert(asked.clone(), location);
                 }
             }
         }
@@ -2143,8 +2186,9 @@ impl MoneroDaemonClient for RpcDaemonClient {
         &self,
         txid: &str,
     ) -> Result<Option<(FetchedTx, TxLocation)>, DaemonError> {
+        let txid = parse_asked(txid)?;
         let resp = self
-            .request_transactions(std::slice::from_ref(&txid.to_owned()))
+            .request_transactions(std::slice::from_ref(&txid.to_string()))
             .await?;
         let fetched = resp
             .txs
@@ -2168,7 +2212,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 .into(),
             ));
         }
-        Ok(Some((fetched, location)))
+        Ok(Some((fetched.into_fetched(), location)))
     }
 
     async fn is_key_image_spent(
@@ -2293,7 +2337,8 @@ mod tests {
         // spending txid, so nothing else in the system cross-checks that conclusion.
         // Every non-answer therefore has to be an error rather than a "no".
         let txid = "aa".repeat(32);
-        let classify = |resp| classify_located_transaction(&txid, &resp, true);
+        let classify =
+            |resp| classify_located_transaction(TxId::parse(&txid).unwrap(), &resp, true);
 
         // The daemon affirmatively says it doesn't have it. This is the only shape
         // that may report NotFound.
@@ -2781,6 +2826,11 @@ mod wire_tests {
     const C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     const D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 
+    /// `text` as the id it spells.
+    fn id(text: &str) -> TxId {
+        TxId::parse(text).unwrap()
+    }
+
     /// The blocks request is, byte for byte, the one recorded against real
     /// nodes.
     #[test]
@@ -3032,9 +3082,9 @@ mod wire_tests {
             PoolChanges {
                 full: true,
                 daemon_time: 9,
-                added: vec![(a, blob)],
-                added_ids: vec![B.to_owned()],
-                removed: vec![C.to_owned()],
+                added: vec![(id(&a), blob)],
+                added_ids: vec![id(B)],
+                removed: vec![id(C)],
                 ..PoolChanges::default()
             }
         );
@@ -3083,49 +3133,49 @@ mod wire_tests {
         view.apply(PoolChanges {
             full: true,
             daemon_time: 5,
-            added: vec![(a.clone(), blob.clone())],
-            added_ids: vec![B.to_owned()],
+            added: vec![(id(&a), blob.clone())],
+            added_ids: vec![id(B)],
             removed: vec![],
             ..PoolChanges::default()
         });
         assert_eq!(view.since, 5);
         assert_eq!(sorted(view.list()), sorted(vec![a.clone(), B.to_owned()]));
-        assert!(view.bodies.contains_key(&a));
+        assert!(view.bodies.contains_key(&id(&a)));
         // A body under another id, or a pruned one (nothing to check it
         // against), is a known id without a body.
         let (_, pruned, _) = pruned_fixture();
         view.apply(PoolChanges {
             full: false,
             daemon_time: 5,
-            added: vec![(D.to_owned(), blob), (C.to_owned(), pruned)],
+            added: vec![(id(D), blob), (id(C), pruned)],
             added_ids: vec![],
             removed: vec![],
             ..PoolChanges::default()
         });
-        assert!(!view.bodies.contains_key(D));
-        assert!(!view.bodies.contains_key(C));
-        assert!(view.txids.contains(D) && view.txids.contains(C));
+        assert!(!view.bodies.contains_key(&id(D)));
+        assert!(!view.bodies.contains_key(&id(C)));
+        assert!(view.txids.contains(&id(D)) && view.txids.contains(&id(C)));
         view.apply(PoolChanges {
             full: false,
             daemon_time: 5,
             added: vec![],
             added_ids: vec![],
-            removed: vec![C.to_owned(), D.to_owned()],
+            removed: vec![id(C), id(D)],
             ..PoolChanges::default()
         });
         // An undecodable body is a known id without a body.
         view.apply(PoolChanges {
             full: false,
             daemon_time: 6,
-            added: vec![(C.to_owned(), vec![1, 2, 3])],
+            added: vec![(id(C), vec![1, 2, 3])],
             added_ids: vec![],
-            removed: vec![B.to_owned()],
+            removed: vec![id(B)],
             ..PoolChanges::default()
         });
         assert_eq!(sorted(view.list()), sorted(vec![a, C.to_owned()]));
-        assert!(!view.bodies.contains_key(C));
+        assert!(!view.bodies.contains_key(&id(C)));
         // The plain list drops what it doesn't have, body and all.
-        view.resync(vec![C.to_owned(), D.to_owned()]);
+        view.resync(vec![id(C), id(D)]);
         assert_eq!(
             sorted(view.list()),
             sorted(vec![C.to_owned(), D.to_owned()])
@@ -3137,7 +3187,7 @@ mod wire_tests {
             full: true,
             daemon_time: 7,
             added: vec![],
-            added_ids: vec![B.to_owned()],
+            added_ids: vec![id(B)],
             removed: vec![],
             ..PoolChanges::default()
         });
@@ -3152,40 +3202,40 @@ mod wire_tests {
     fn a_transaction_blob_is_checked_against_the_id_it_came_under() {
         let (txid, blob, prunable) = pruned_fixture();
         let whole = hex::decode(FIXTURE_TX_HEX.trim()).unwrap();
-        let id = |decoded: (FetchedTx, IdBinding)| (decoded.0.txid, decoded.1);
+        let named = |decoded: (Decoded, IdBinding)| (decoded.0.txid.to_string(), decoded.1);
         let computed = (txid.clone(), IdBinding::Computed);
         // Whole: hashed, whatever was claimed.
-        assert_eq!(id(decode_tx_blob(&whole, None, None).unwrap()), computed);
+        assert_eq!(named(decode_tx_blob(&whole, None, None).unwrap()), computed);
         assert_eq!(
-            id(decode_tx_blob(&whole, None, Some(&txid)).unwrap()),
+            named(decode_tx_blob(&whole, None, Some(id(&txid))).unwrap()),
             computed
         );
-        let error = decode_tx_blob(&whole, None, Some(B)).unwrap_err();
+        let error = decode_tx_blob(&whole, None, Some(id(B))).err().unwrap();
         assert!(error.contains("hashes to"), "{error}");
         // Pruned, with the hash of the rest: computed, and checked.
         let (fetched, _) = decode_tx_blob(&blob, Some(&prunable), None).unwrap();
-        assert_eq!(fetched.txid, txid);
+        assert_eq!(fetched.txid.to_string(), txid);
         assert!(crate::monero_tx::is_pruned(&fetched.tx));
         assert_eq!(
-            id(decode_tx_blob(&blob, Some(&prunable), Some(&txid)).unwrap()),
+            named(decode_tx_blob(&blob, Some(&prunable), Some(id(&txid))).unwrap()),
             computed
         );
-        decode_tx_blob(&blob, Some(&prunable), Some(B)).unwrap_err();
-        decode_tx_blob(&blob, Some(&[7; 32]), Some(&txid)).unwrap_err();
+        assert!(decode_tx_blob(&blob, Some(&prunable), Some(id(B))).is_err());
+        assert!(decode_tx_blob(&blob, Some(&[7; 32]), Some(id(&txid))).is_err());
         // Pruned, no hash of the rest (or the all-zero "none"): as claimed,
         // and only listed under it.
         assert_eq!(
-            id(decode_tx_blob(&blob, None, Some(&txid)).unwrap()),
+            named(decode_tx_blob(&blob, None, Some(id(&txid))).unwrap()),
             (txid.clone(), IdBinding::Listed)
         );
         assert_eq!(
-            id(decode_tx_blob(&blob, Some(&[0; 32]), Some(B)).unwrap()),
+            named(decode_tx_blob(&blob, Some(&[0; 32]), Some(id(B))).unwrap()),
             (B.to_owned(), IdBinding::Listed)
         );
-        // ...and refused with no usable id at all.
-        decode_tx_blob(&blob, None, None).unwrap_err();
-        decode_tx_blob(&blob, None, Some("not an id")).unwrap_err();
-        decode_tx_blob(&[1, 2, 3], None, Some(&txid)).unwrap_err();
+        // ...and refused with no usable id at all (a claim that isn't an
+        // id is read as no claim, `TxEntry::fetched`).
+        assert!(decode_tx_blob(&blob, None, None).is_err());
+        assert!(decode_tx_blob(&[1, 2, 3], None, Some(id(&txid))).is_err());
     }
 
     fn tx_entry(txid: &str, in_pool: bool, block_height: Option<u64>) -> Value {
@@ -4124,6 +4174,7 @@ mod live_node_tests {
                 .unwrap()
                 .into_iter()
                 .take(20)
+                .map(|txid| txid.to_string())
                 .collect();
             if !pool.is_empty() {
                 break pool;
@@ -4141,7 +4192,7 @@ mod live_node_tests {
             assert_ne!(entry.prunable_hash, "0".repeat(64), "a real hash");
             assert_eq!(entry.prunable_hash.len(), 64);
             let fetched = entry.fetched().unwrap();
-            assert!(pool.contains(&fetched.txid));
+            assert!(pool.contains(&fetched.txid.to_string()));
             assert!(crate::monero_tx::is_pruned(&fetched.tx));
         }
     }
