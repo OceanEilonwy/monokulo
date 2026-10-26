@@ -98,7 +98,7 @@ const MUTATIONS: &[Mutation] = &[
       "if !self.in_flight.insert(key) {", "if false && !self.in_flight.insert(key) {", RESERVATION_GRID,
       "BOUNDARY: reservation-decision-grid"),
     m("double-credit-amount", "crates/engine/src/store/mod.rs",
-      "sum.saturating_add(v.amount_piconero)", "sum.saturating_add(v.amount_piconero).saturating_add(v.amount_piconero)",
+      "map(|v| v.amount_piconero).sum()", "map(|v| v.amount_piconero.saturating_add(v.amount_piconero)).sum()",
       "work::tests::boundaries::combined_portfolio_interactions_have_fixed_positive_controls", "BOUNDARY: independent-amount-ledger"),
     m("accept-stale-block-parent", "crates/engine/src/work/blocks.rs",
       "if s.get_scanned_block_hash(network, block.parent)?", "if false && s.get_scanned_block_hash(network, block.parent)?",
