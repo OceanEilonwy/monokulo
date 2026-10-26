@@ -293,11 +293,17 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
     // refused connection rather than a timeout.
     let patient = shop_with("[webhooks]\nallow_private_urls = true\n").await;
 
-    // Down: the port is ours, bound but not listening, so nothing else
-    // can take it and every connection to it is refused.
-    let closed = tokio::net::TcpSocket::new_v4().unwrap();
-    closed.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    // Down: nothing listens there any more, so the connection is refused.
+    // A socket kept bound but never listening would hold the port, but
+    // macOS drops a connection to one unanswered until the timeout instead
+    // of refusing it; and `service_runtime::unreachable` accepts and hangs
+    // up, which is a receiver that's up and drops the request, not one
+    // that can't be reached. The kernel picks the next free port for a bind
+    // from across its whole range, so it's very unlikely to hand this one
+    // straight out again.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let down = format!("http://{}/hook", closed.local_addr().unwrap());
+    drop(closed);
     // An error.
     let status = Arc::new(AtomicU16::new(500));
     let failing = endpoint(status.clone(), Received::default()).await;
