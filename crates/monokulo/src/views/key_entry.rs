@@ -25,11 +25,11 @@ pub struct SnpReady {
     /// Whether the command names a saved file (this instance has no public
     /// address to fetch the bundle from) rather than the address.
     pub bundle_is_file: bool,
-    /// The ID key digest to trust, when it isn't the official one.
-    pub trust_id_key: Option<String>,
-    /// The ID key digest to trust, for the page's script, when it isn't the
-    /// official one built into the checker.
-    pub id_key_digest: Option<String>,
+    /// The ID key digest to trust, when it isn't the official one: named in
+    /// the page's warning and handed to the page's script. The official key
+    /// is built into the browser's checker, so the script isn't told which
+    /// key to trust then.
+    pub custom_id_key: Option<String>,
     pub min_guest_svn: u32,
     /// The lowest firmware trusted, for the page's script.
     pub min_tcb: String,
@@ -109,7 +109,7 @@ pub fn snp_section(entry: &SnpKeyEntry, backend_field: Option<&str>) -> Markup {
 pub fn snp_bundle(entry: &SnpKeyEntry) -> Markup {
     match entry {
         SnpKeyEntry::Ready(ready) => html! {
-            div data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.id_key_digest.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) {
+            div data-key-custody-bundle=(ready.bundle_json) data-key-custody-id-key=[ready.custom_id_key.as_deref()] data-key-custody-min-svn=(ready.min_guest_svn) data-key-custody-min-tcb=(ready.min_tcb) {
                 (status_line())
             }
             // The script fetches its module from where the page says.
@@ -135,7 +135,7 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
             "the page checks the engine's attestation and encrypts the keys you typed above when you submit."
         }))
         (status_line())
-        @if let Some(digest) = &ready.trust_id_key {
+        @if let Some(digest) = &ready.custom_id_key {
             (ui::Alert::new(html! {
                 "This instance's engine image is not signed by the official monokulo key. It is trusted "
                 "here by the digest " code { (digest) } ". Before you rely on it, confirm that digest "
@@ -195,7 +195,7 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
     };
     let mut panel =
         ui::Panel::new(content).attr("data-key-custody-bundle", ready.bundle_json.as_str());
-    if let Some(digest) = &ready.id_key_digest {
+    if let Some(digest) = &ready.custom_id_key {
         panel = panel.attr("data-key-custody-id-key", digest.as_str());
     }
     panel = panel
@@ -211,13 +211,12 @@ fn ready_section(ready: &SnpReady, backend_field: Option<&str>) -> Markup {
 mod tests {
     use super::*;
 
-    fn ready(trust_id_key: Option<&str>, downloads: Vec<CliDownload>) -> SnpReady {
+    fn ready(custom_id_key: Option<&str>, downloads: Vec<CliDownload>) -> SnpReady {
         SnpReady {
             bundle_json: "{\"v\":1}".into(),
             bundle_path: "/key-custody/bundles/abc".into(),
             bundle_is_file: false,
-            trust_id_key: trust_id_key.map(str::to_owned),
-            id_key_digest: Some("ab".repeat(48)),
+            custom_id_key: custom_id_key.map(str::to_owned),
             min_guest_svn: 0,
             min_tcb: String::new(),
             command:
