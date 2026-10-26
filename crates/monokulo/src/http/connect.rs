@@ -550,80 +550,33 @@ pub async fn finish(
     // The webhook: its URL was checked above, so what can still fail here
     // is this instance's own database. The token is spent by then; the
     // plugin starts connecting again (an `internal` problem says so).
-    let (webhook_id, webhook_signing_secret) = match &req.webhook_url {
-        Some(url) => match crate::webhooks::create(
-            &state.db,
-            &state.encryption_key,
-            &row.id,
-            url,
-            &Default::default(),
-        )
-        .await
-        {
-            Ok(created) => (
-                Some(created.webhook.id.to_string()),
-                Some(created.signing_secret),
-            ),
-            Err(crate::webhooks::CreateError::Invalid(why)) => {
-                return Err(Problem::InvalidRequest.detail(why))
-            }
-            Err(e) => {
-                tracing::error!(store.id = %row.id, error = %e, "the plugin's webhook could not be added");
-                return Err(internal());
-            }
-        },
-        None => (None, None),
-    };
-
-    // Connecting while a plugin is still connected (this one again, or
-    // another replacing it): the earlier connection's webhook goes, so the
-    // shop isn't sent each event twice, and the earlier plugin is closed
-    // below (`connect_integration`). A store has one plugin.
-    let store_id = row.id.clone();
-    let earlier = state
-        .db
-        .read(move |db| db.active_integration(&store_id))
-        .await
-        .ok()
-        .flatten()
-        .and_then(|i| i.webhook_id);
-    if let Some(earlier) = earlier {
-        let store_id = row.id.clone();
-        let earlier = engine_protocol::ids::WebhookId::new(earlier);
-        if let Err(e) = state
-            .db
-            .write(move |db| db.delete_webhook(&store_id, &earlier))
-            .await
-        {
-            tracing::warn!(store.id = %row.id, error = %e, "the earlier connection's webhook could not be removed");
-        }
-    }
-
     let version =
         crate::api::runtime::client::client_version(&headers, slug.as_str()).unwrap_or_default();
-    let name = req.name.as_deref().and_then(PluginName::clean);
-    let (store_id, site, webhook_url) = (row.id.clone(), row.site.clone(), req.webhook_url.clone());
-    let recorded = state
-        .db
-        .write(move |db| {
-            // A plugin that gave no name (one built before plugins named
-            // themselves) keeps the name it had on this store before.
-            let name = match name {
-                Some(name) => Some(name),
-                None => db.last_integration_name(&store_id, &slug)?,
-            };
-            db.connect_integration(&crate::db::NewStoreIntegration {
-                store_id: &store_id,
-                plugin: &Plugin::new(slug, name),
-                site: site.as_ref(),
-                version: &version,
-                webhook_id: webhook_id.as_deref(),
-                webhook_url: webhook_url.as_deref(),
-                at: now_unix(),
-            })
-        })
-        .await;
-    if let Err(e) = recorded {
+    let connected = crate::plugins::connect(
+        &state.db,
+        &state.encryption_key,
+        crate::plugins::Connecting {
+            store_id: row.id.clone(),
+            slug,
+            name: req.name.as_deref().and_then(PluginName::clean),
+            site: row.site.clone(),
+            version,
+            webhook_url: req.webhook_url.clone(),
+            at: now_unix(),
+        },
+    )
+    .await;
+    let connected = match connected {
+        Ok(connected) => connected,
+        Err(crate::webhooks::CreateError::Invalid(why)) => {
+            return Err(Problem::InvalidRequest.detail(why))
+        }
+        Err(e) => {
+            tracing::error!(store.id = %row.id, error = %e, "the plugin's webhook could not be added");
+            return Err(internal());
+        }
+    };
+    if let Err(e) = connected.recorded {
         // The plugin has its key either way; the store just doesn't show
         // it as connected.
         tracing::error!(store.id = %row.id, error = %e, "a plugin connected but it couldn't be recorded");
@@ -635,7 +588,7 @@ pub async fn finish(
         secret_token: secret_token.expose().to_string(),
         api,
         onion_api,
-        webhook_signing_secret,
+        webhook_signing_secret: connected.webhook_signing_secret,
     }))
 }
 
