@@ -33,6 +33,7 @@ use crate::store::db::{Class, Db};
 use crate::store::proof::ProvenWrite;
 use crate::store::{Store, StoreError};
 use engine_daemon::fallback::FallbackDaemonClient;
+use engine_daemon::ids::BlockHash;
 use engine_daemon::{DaemonError, MoneroDaemonClient};
 use engine_pow::hasher::Hasher;
 use engine_pow::{ProvenBlock, Rejection, Verdict, Window, DIFFICULTY_BLOCKS};
@@ -606,7 +607,7 @@ impl Follower {
         let ours_at = |at: u64| self.db(db, move |s, network| s.proven_block(network, at));
         let agrees_at_top = ours_at(top)
             .await?
-            .is_some_and(|b| hex::encode(b.id) == top_hash.to_ascii_lowercase());
+            .is_some_and(|b| BlockHash::parse(&top_hash) == Some(BlockHash::from_bytes(b.id)));
         let parent_height = if agrees_at_top {
             if height <= ours.height {
                 return Ok(Finding::new(NodeVerdict::OnChain, Some(height)));
@@ -625,9 +626,9 @@ impl Follower {
                     let mine = db
                         .run(Class::Scanner, move |s| s.proven_block(network, at))
                         .await?;
-                    Ok::<bool, ProofError>(
-                        mine.is_some_and(|b| hex::encode(b.id) == theirs.to_ascii_lowercase()),
-                    )
+                    Ok::<bool, ProofError>(mine.is_some_and(|b| {
+                        BlockHash::parse(&theirs) == Some(BlockHash::from_bytes(b.id))
+                    }))
                 }
             };
             let at_deepest = match node_hash(deepest).await {

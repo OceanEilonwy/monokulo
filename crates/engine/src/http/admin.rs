@@ -1539,12 +1539,13 @@ pub(super) async fn lookup_payment(
     State(state): State<AppState>,
     Json(req): Json<LookupPaymentRequest>,
 ) -> Result<Json<PaymentLookupView>, ApiError> {
-    let txid = req.txid.trim().to_lowercase();
-    if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+    // Either case; looked up as the lowercase hex every id is kept in.
+    let Some(txid) = engine_daemon::ids::TxId::parse(req.txid.trim()) else {
         return Err(ApiError::BadRequest(
             "txid must be 64 hex characters".to_owned(),
         ));
-    }
+    };
+    let txid = txid.to_string();
 
     let network = tenant.network;
     let daemon = state.networks.daemons.get(network).ok_or_else(|| {
