@@ -45,21 +45,13 @@ export function Disclosure(props: DisclosureProps): JSX.Element {
         </div>
       ) : (
         <>
-          {(props.look ?? "plain") === "compact" ? (
+          {((props.look ?? "plain") === "compact") || ((props.look ?? "plain") === "row") ? (
             <div class="disclosure-body">
               {props.children}
             </div>
           ) : (
             <>
-              {(props.look ?? "plain") === "row" ? (
-                <div class="disclosure-body">
-                  {props.children}
-                </div>
-              ) : (
-                <>
-                  {props.children}
-                </>
-              )}
+              {props.children}
             </>
           )}
         </>

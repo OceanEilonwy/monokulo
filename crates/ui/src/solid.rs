@@ -553,6 +553,8 @@ impl Out {
                 }
             }
             Cond::Not(inner) => format!("!({})", self.cond(inner)),
+            Cond::And(a, b) => format!("({}) && ({})", self.cond(a), self.cond(b)),
+            Cond::Or(a, b) => format!("({}) || ({})", self.cond(a), self.cond(b)),
             Cond::Eq(path, value, equal) => {
                 let (expr, _) = self.path(path);
                 let op = if *equal { "===" } else { "!==" };

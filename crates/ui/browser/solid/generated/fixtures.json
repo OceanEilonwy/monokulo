@@ -2700,7 +2700,7 @@
   },
   {
     "component": "Dialog",
-    "html": "<dialog id=\"book-dialog\" class=\"settings-dialog confirm-dialog\" aria-labelledby=\"book-dialog-title\" data-mk=\"1\" data-island=\"Dialog\" data-props=\"{&quot;confirms_when&quot;:&quot;changed&quot;,&quot;id&quot;:&quot;book-dialog&quot;}\"><h2 id=\"book-dialog-title\" class=\"dialog-title\">Retire this wallet?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><button class=\"mk-btn\" type=\"button\" data-closes-dialog=\"\">Cancel</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></dialog>",
+    "html": "<dialog id=\"book-dialog\" class=\"settings-dialog confirm-dialog\" aria-labelledby=\"book-dialog-title\" data-mk=\"1\" data-island=\"Dialog\" data-props=\"{&quot;confirms_when&quot;:&quot;changed&quot;,&quot;id&quot;:&quot;book-dialog&quot;}\"><div class=\"dialog-title\"><h2 id=\"book-dialog-title\">Retire this wallet?</h2><button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></div><p class=\"hint\">Takes it out of every list and deletes its keys from Monokulo.</p><div class=\"dialog-actions\"><button class=\"mk-btn\" type=\"button\" data-closes-dialog=\"\">Cancel</button><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\">Retire wallet</button></div></dialog>",
     "props": {
       "children": {
         "$slot": [
@@ -2777,7 +2777,7 @@
   },
   {
     "component": "DialogTitle",
-    "html": "<h2 id=\"book-title-dialog\" class=\"dialog-title\">Delete this webhook?<button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>",
+    "html": "<div class=\"dialog-title\"><h2 id=\"book-title-dialog\">Delete this webhook?</h2><button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></div>",
     "props": {
       "children": {
         "$slot": [
@@ -2790,7 +2790,7 @@
   },
   {
     "component": "DialogTitle",
-    "html": "<h2 id=\"book-title-status\" class=\"dialog-title\">Delivery of order.paid<span class=\"dialog-aside\"><span class=\"tag tag-slow\">retrying</span></span><button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></h2>",
+    "html": "<div class=\"dialog-title\"><h2 id=\"book-title-status\">Delivery of order.paid</h2><span class=\"dialog-aside\"><span class=\"tag tag-slow\">retrying</span></span><button type=\"button\" class=\"dialog-x\" aria-label=\"Close\" data-closes-dialog>×</button></div>",
     "props": {
       "aside": {
         "$slot": [

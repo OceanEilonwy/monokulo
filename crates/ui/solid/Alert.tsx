@@ -3,6 +3,7 @@
 
 import { omit } from 'solid-js';
 import type { JSX } from '@solidjs/web';
+import { tokens } from './runtime';
 import type { Tone } from './types';
 
 /**
@@ -50,190 +51,62 @@ export function Alert(props: AlertProps): JSX.Element {
   const rest = omit(props, "children", "tone", "icon", "title", "actions", "quiet", "block");
   return (
     <>
-      {(props.quiet ?? false) ? (
-        <>
-          {(props.block ?? false) ? (
-            <div class={props.tone} {...(rest as object)}>
-              {props.icon != null ? (
-                <span class="alert-icon" aria-hidden="true">
-                  {props.icon}
-                </span>
-              ) : (
-                null
-              )}
-              {props.title != null ? (
-                <>
-                  <strong class="alert-title">
-                    {props.title}
-                  </strong>
-                  {" "}
-                </>
-              ) : (
-                null
-              )}
-              {props.children}
-              {props.actions != null ? (
-                <span class="alert-actions">
-                  {props.actions}
-                </span>
-              ) : (
-                null
-              )}
-            </div>
+      {(props.block ?? false) ? (
+        <div class={props.tone} role={tokens((!((props.quiet ?? false))) && (props.tone === "error") && `alert`, (!((props.quiet ?? false))) && (props.tone !== "error") && `status`)} {...(rest as object)}>
+          {props.icon != null ? (
+            <span class="alert-icon" aria-hidden="true">
+              {props.icon}
+            </span>
           ) : (
-            <p class={props.tone} {...rest}>
-              {props.icon != null ? (
-                <span class="alert-icon" aria-hidden="true">
-                  {props.icon}
-                </span>
-              ) : (
-                null
-              )}
-              {props.title != null ? (
-                <>
-                  <strong class="alert-title">
-                    {props.title}
-                  </strong>
-                  {" "}
-                </>
-              ) : (
-                null
-              )}
-              {props.children}
-              {props.actions != null ? (
-                <span class="alert-actions">
-                  {props.actions}
-                </span>
-              ) : (
-                null
-              )}
-            </p>
+            null
           )}
-        </>
+          {props.title != null ? (
+            <>
+              <strong class="alert-title">
+                {props.title}
+              </strong>
+              {" "}
+            </>
+          ) : (
+            null
+          )}
+          {props.children}
+          {props.actions != null ? (
+            <span class="alert-actions">
+              {props.actions}
+            </span>
+          ) : (
+            null
+          )}
+        </div>
       ) : (
-        <>
-          {props.tone === "error" ? (
+        <p class={props.tone} role={tokens((!((props.quiet ?? false))) && (props.tone === "error") && `alert`, (!((props.quiet ?? false))) && (props.tone !== "error") && `status`)} {...rest}>
+          {props.icon != null ? (
+            <span class="alert-icon" aria-hidden="true">
+              {props.icon}
+            </span>
+          ) : (
+            null
+          )}
+          {props.title != null ? (
             <>
-              {(props.block ?? false) ? (
-                <div class={props.tone} role="alert" {...(rest as object)}>
-                  {props.icon != null ? (
-                    <span class="alert-icon" aria-hidden="true">
-                      {props.icon}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                  {props.title != null ? (
-                    <>
-                      <strong class="alert-title">
-                        {props.title}
-                      </strong>
-                      {" "}
-                    </>
-                  ) : (
-                    null
-                  )}
-                  {props.children}
-                  {props.actions != null ? (
-                    <span class="alert-actions">
-                      {props.actions}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                </div>
-              ) : (
-                <p class={props.tone} role="alert" {...rest}>
-                  {props.icon != null ? (
-                    <span class="alert-icon" aria-hidden="true">
-                      {props.icon}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                  {props.title != null ? (
-                    <>
-                      <strong class="alert-title">
-                        {props.title}
-                      </strong>
-                      {" "}
-                    </>
-                  ) : (
-                    null
-                  )}
-                  {props.children}
-                  {props.actions != null ? (
-                    <span class="alert-actions">
-                      {props.actions}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                </p>
-              )}
+              <strong class="alert-title">
+                {props.title}
+              </strong>
+              {" "}
             </>
           ) : (
-            <>
-              {(props.block ?? false) ? (
-                <div class={props.tone} role="status" {...(rest as object)}>
-                  {props.icon != null ? (
-                    <span class="alert-icon" aria-hidden="true">
-                      {props.icon}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                  {props.title != null ? (
-                    <>
-                      <strong class="alert-title">
-                        {props.title}
-                      </strong>
-                      {" "}
-                    </>
-                  ) : (
-                    null
-                  )}
-                  {props.children}
-                  {props.actions != null ? (
-                    <span class="alert-actions">
-                      {props.actions}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                </div>
-              ) : (
-                <p class={props.tone} role="status" {...rest}>
-                  {props.icon != null ? (
-                    <span class="alert-icon" aria-hidden="true">
-                      {props.icon}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                  {props.title != null ? (
-                    <>
-                      <strong class="alert-title">
-                        {props.title}
-                      </strong>
-                      {" "}
-                    </>
-                  ) : (
-                    null
-                  )}
-                  {props.children}
-                  {props.actions != null ? (
-                    <span class="alert-actions">
-                      {props.actions}
-                    </span>
-                  ) : (
-                    null
-                  )}
-                </p>
-              )}
-            </>
+            null
           )}
-        </>
+          {props.children}
+          {props.actions != null ? (
+            <span class="alert-actions">
+              {props.actions}
+            </span>
+          ) : (
+            null
+          )}
+        </p>
       )}
     </>
   );

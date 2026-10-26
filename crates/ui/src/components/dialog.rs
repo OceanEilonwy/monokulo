@@ -96,8 +96,11 @@ pub(super) fn dialog_opener() -> crate::LinkButton {
 }
 
 component! {
-    /// A dialog's title: an `h2`, with a ✕ that closes the dialog. On the
-    /// content's own page, the title is the page's (`PageHeader`).
+    /// A dialog's title: an `h2`, with a ✕ that closes the dialog beside it.
+    /// The `h2` holds the title alone, as the dialog is named by it
+    /// (`aria-labelledby`): the ✕ and the status sit next to it, never in
+    /// the dialog's name or the heading. On the content's own page, the
+    /// title is the page's (`PageHeader`).
     pub struct DialogTitle {
         id: String,
         children: Slot,
@@ -105,8 +108,8 @@ component! {
         aside: Option<Slot>,
     }
     html {
-        h2 id=(id) class="dialog-title" {
-            (children)
+        div class="dialog-title" {
+            h2 id=(id) { (children) }
             @if let Some(aside) = aside { span class="dialog-aside" { (aside) } }
             button type="button" class="dialog-x" aria-label="Close" data-closes-dialog { "×" }
         }
