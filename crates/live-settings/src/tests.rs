@@ -1775,11 +1775,12 @@ mod sources {
     struct Setup {
         registry: Registry,
         rate: Live<Rate>,
-        database: Arc<MemoryStore>,
+        /// The database behind the file, whose writes can be made to fail.
+        database: Arc<TestStore>,
     }
 
     async fn setup(file: OptionsFile, env: Env) -> Result<Setup, BuildError> {
-        let database = Arc::new(MemoryStore::new());
+        let database = Arc::new(TestStore::default());
         let store = LayeredStore::new(file, Arc::clone(&database) as Arc<dyn SettingsStore>, ALL);
         let mut builder = Registry::builder_with_env(Arc::new(store), ALL, env).await;
         let rate = builder.section::<Rate>();
@@ -2217,7 +2218,8 @@ mod sources {
     /// file (a save writes beside it and renames), is reported as not
     /// writable, and a save to it is refused - even one the page would not
     /// have sent - leaving the file, and its permissions, as they were.
-    /// Runtime switches, in the database, still save.
+    /// Runtime switches, in the database, still save; and a save whose
+    /// database half fails puts the file's half back.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_file_the_process_cannot_write_refuses_saves_and_stays_as_it_was() {
@@ -2275,6 +2277,29 @@ mod sources {
             .map(|e| e.file_name())
             .collect();
         assert_eq!(leftovers, [std::ffi::OsString::from("app.toml")]);
+
+        // Writable, but the database refuses its half of a save: the file's
+        // half is put back, so nothing of the save is left, and the next
+        // save isn't refused as a file changed since it was loaded.
+        let s = setup(OptionsFile::at(&path), key_env()).await.unwrap();
+        s.database.fail_writes.store(true, Ordering::SeqCst);
+        let refused = s
+            .registry
+            .save(vec![
+                change("scan.limit_per_min", "30"),
+                change("abuse.under_attack", "true"),
+            ])
+            .await
+            .unwrap_err();
+        assert!(matches!(refused, SaveError::Store(_)), "{refused}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(s.rate.load().limit, 20);
+        s.database.fail_writes.store(false, Ordering::SeqCst);
+        s.registry
+            .save(vec![change("scan.limit_per_min", "30")])
+            .await
+            .unwrap();
+        assert_eq!(s.rate.load().limit, 30);
         let _ = std::fs::remove_dir_all(dir);
     }
 
