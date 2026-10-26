@@ -107,9 +107,12 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
             Node::Element(element) => {
                 out.push('<');
                 out.push_str(element.tag);
-                for attr in &element.attrs {
-                    attribute(attr, scope, out);
-                }
+                let written: Vec<&str> = element
+                    .attrs
+                    .iter()
+                    .filter(|attr| attribute(attr, scope, out))
+                    .map(|attr| attr.name())
+                    .collect();
                 if let Some(mark) = element.mark {
                     out.push_str(&format!(" data-mk=\"{mark}\""));
                 }
@@ -121,8 +124,10 @@ fn nodes(list: &[Node], scope: &Scope<'_>, out: &mut String) {
                         panic!("a spread takes Attrs");
                     };
                     for (name, value) in &attrs.0 {
+                        // One the component left out (its condition
+                        // didn't hold) is the caller's to give.
                         debug_assert!(
-                            !element.attrs.iter().any(|a| a.name() == name),
+                            !written.contains(&name.as_str()),
                             "`{name}` belongs to the component"
                         );
                         write_attr(name, Some(value), out);
@@ -248,10 +253,11 @@ fn cond(c: &Cond, scope: &Scope<'_>) -> bool {
     }
 }
 
-fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) {
+/// Writes `attr`, if it is there as the server renders: whether it was.
+fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) -> bool {
     // The behaviour's to set, once it runs.
     if attr.reads_behaviour() {
-        return;
+        return false;
     }
     match attr {
         Attr::Static(name, value) => write_attr(name, Some(value), out),
@@ -259,18 +265,20 @@ fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) {
         Attr::Value(name, path) => write_attr(name, Some(&text(scope.resolve(path))), out),
         Attr::Concat(name, list) => write_attr(name, Some(&parts(list, scope)), out),
         Attr::Bool(name, c) => {
-            if cond(c, scope) {
-                write_attr(name, None, out);
+            if !cond(c, scope) {
+                return false;
             }
+            write_attr(name, None, out);
         }
         Attr::Optional(name, path) => match scope.resolve(path) {
-            Value::Null => {}
+            Value::Null => return false,
             value => write_attr(name, Some(&text(value)), out),
         },
         Attr::When(name, list, c) => {
-            if cond(c, scope) {
-                write_attr(name, Some(&parts(list, scope)), out);
+            if !cond(c, scope) {
+                return false;
             }
+            write_attr(name, Some(&parts(list, scope)), out);
         }
         Attr::Tokens(name, tokens) => {
             let present: Vec<String> = tokens
@@ -278,12 +286,14 @@ fn attribute(attr: &Attr, scope: &Scope<'_>, out: &mut String) {
                 .filter(|(_, c)| c.as_ref().is_none_or(|c| cond(c, scope)))
                 .map(|(list, _)| parts(list, scope))
                 .collect();
-            if !present.is_empty() {
-                write_attr(name, Some(&present.join(" ")), out);
+            if present.is_empty() {
+                return false;
             }
+            write_attr(name, Some(&present.join(" ")), out);
         }
-        Attr::On(..) | Attr::Ref(_) => {}
+        Attr::On(..) | Attr::Ref(_) => return false,
     }
+    true
 }
 
 fn write_attr(name: &str, value: Option<&str>, out: &mut String) {
