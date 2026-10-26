@@ -909,7 +909,7 @@ async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
             order_id: &crate::db::OrderId::new("o_who"),
             currency: "EUR",
             amount: "12.34",
-            piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000),
             provider: "fixed",
             created_at: 1000,
             base_currency: "EUR",

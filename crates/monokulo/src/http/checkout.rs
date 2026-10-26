@@ -44,10 +44,7 @@ use crate::api::runtime::problem::{internal, Problem};
 /// Customer-facing amount guidance; POS keeps its own merchant-facing alerts.
 fn checkout_payment_message(order: &OrderView) -> Option<String> {
     // Amounts without trailing zeros: this is read by the customer.
-    let xmr = |piconero: u64| {
-        crate::views::trim_xmr(&pricing::exchange_rate::format_piconero_as_xmr(piconero))
-            .to_string()
-    };
+    let xmr = pricing::xmr_amount::format_xmr_trimmed;
     let requested = xmr(order.xmr_amount_piconero);
     let received = xmr(order.amount_received_piconero);
     // The same rule as the page's stage: a reversed payment matters only
@@ -96,12 +93,13 @@ pub(super) fn payment_uri(order: &crate::engine_client::OrderView) -> String {
     let due = order
         .xmr_amount_piconero
         .saturating_sub(order.amount_received_piconero);
-    if matches!(order.status, OrderStatus::Pending | OrderStatus::Partial) && due > 0 {
-        let amount = pricing::exchange_rate::format_piconero_as_xmr(due);
+    if matches!(order.status, OrderStatus::Pending | OrderStatus::Partial)
+        && due > pricing::xmr_amount::Piconero::ZERO
+    {
         format!(
             "monero:{}?tx_amount={}",
             order.address,
-            crate::views::trim_xmr(&amount)
+            pricing::xmr_amount::format_xmr_trimmed(due)
         )
     } else {
         order.address.clone()
@@ -541,7 +539,7 @@ async fn build_checkout_view(
         // The engine's own rule (`Store::set_refund_address`), so the page
         // doesn't offer an edit it would refuse.
         refund_address_locked: detail.order.refund_address.is_some()
-            && detail.order.amount_received_piconero > 0,
+            && detail.order.amount_received_piconero > pricing::xmr_amount::Piconero::ZERO,
         refund_address_error,
         is_compact: options.is_compact(),
         refund_enabled: options.refund_enabled(),
@@ -1058,8 +1056,8 @@ mod tests {
             merchant_order_id: None,
             description: None,
             address: "address".to_string(),
-            xmr_amount_piconero: 500_000_000_000,
-            amount_received_piconero: 200_000_000_000,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(500_000_000_000),
+            amount_received_piconero: pricing::xmr_amount::Piconero(200_000_000_000),
             status: engine_protocol::order_status::OrderStatus::Partial,
             confirmations: 0,
             double_spend_detected_at: None,
@@ -1078,7 +1076,7 @@ mod tests {
         );
 
         order.status = engine_protocol::order_status::OrderStatus::Overpaid;
-        order.amount_received_piconero = 600_000_000_000;
+        order.amount_received_piconero = pricing::xmr_amount::Piconero(600_000_000_000);
         assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 
         // A reversed payment the extra still covers changes nothing; one

@@ -19,7 +19,7 @@ fn depth() -> BoxedStrategy<u64> {
 fn payment() -> impl Strategy<Value = PaymentView> {
     (amount(), depth(), any::<bool>()).prop_map(|(amount_piconero, depth, is_zero_conf)| {
         PaymentView {
-            amount_piconero,
+            amount_piconero: crate::store::Piconero(amount_piconero),
             confirmations: if is_zero_conf { 0 } else { depth },
             is_zero_conf,
         }
@@ -55,7 +55,7 @@ fn scenario() -> impl Strategy<Value = (Vec<PaymentView>, StatusInputs)> {
                     (
                         payments,
                         StatusInputs {
-                            xmr_amount_piconero,
+                            xmr_amount_piconero: crate::store::Piconero(xmr_amount_piconero),
                             confirmations_required,
                             now,
                             expires_at,
@@ -100,12 +100,12 @@ fn status_decision_boundaries_match_independent_grid() {
                 for required in [0, 1, 2, u64::MAX] {
                     for now in [-1, 0, 1] {
                         let payments = [PaymentView {
-                            amount_piconero: amount,
+                            amount_piconero: crate::store::Piconero(amount),
                             confirmations,
                             is_zero_conf: confirmations == 0,
                         }];
                         let inputs = StatusInputs {
-                            xmr_amount_piconero: goal,
+                            xmr_amount_piconero: crate::store::Piconero(goal),
                             confirmations_required: required,
                             now,
                             expires_at: 0,
@@ -206,9 +206,9 @@ mod properties {
             payments.push(p);
             let before = derive_status(&payments, inputs);
             payments.pop();
-            let first = split.min(p.amount_piconero);
-            payments.push(PaymentView { amount_piconero: first, ..p });
-            payments.push(PaymentView { amount_piconero: p.amount_piconero - first, ..p });
+            let first = split.min(p.amount_piconero.get());
+            payments.push(PaymentView { amount_piconero: crate::store::Piconero(first), ..p });
+            payments.push(PaymentView { amount_piconero: crate::store::Piconero(p.amount_piconero.get() - first), ..p });
             prop_assert_eq!(derive_status(&payments, inputs), before);
         }
 
@@ -219,13 +219,13 @@ mod properties {
             confirmations_required in depth(),
         ) {
             let inputs = StatusInputs {
-                xmr_amount_piconero: expected,
+                xmr_amount_piconero: crate::store::Piconero(expected),
                 confirmations_required,
                 now: expires_at,
                 expires_at,
             };
             let payments = [PaymentView {
-                amount_piconero: expected - 1,
+                amount_piconero: crate::store::Piconero(expected - 1),
                 confirmations: u64::MAX,
                 is_zero_conf: false,
             }];

@@ -405,7 +405,7 @@ async fn record_payment(
     ) else {
         return StatusCode::NOT_FOUND;
     };
-    let Some(piconero) = share(order.xmr_amount_piconero, &query.fraction) else {
+    let Some(piconero) = share(order.xmr_amount_piconero.get(), &query.fraction) else {
         return StatusCode::BAD_REQUEST;
     };
     match control.engine.record_order_payment(
@@ -648,7 +648,7 @@ async fn seed_webhooks(
                 txid: None,
                 merchant_order_id: None,
                 description: None,
-                xmr_amount_piconero: 81_245_310_000,
+                xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
             };
             db.queue_order_event(&event, at, |store, metadata| {
                 monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
@@ -800,7 +800,7 @@ async fn seed_webhooks(
                 txid: None,
                 merchant_order_id: Some("gm-1042".to_string()),
                 description: None,
-                xmr_amount_piconero: 81_245_310_000,
+                xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
             };
             let db = control.db.lock();
             db.queue_order_event(&event, event.created_at, |store, metadata| {
@@ -1084,7 +1084,7 @@ fn record_order(
         order_id,
         currency: "XMR",
         amount: "0.001",
-        piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000_000_000),
+        piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000_000_000),
         provider: "fixed",
         created_at: monokulo::now_unix(),
         base_currency: "XMR",

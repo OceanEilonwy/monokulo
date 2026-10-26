@@ -404,7 +404,7 @@ async fn sweep() -> Result<(), Box<dyn Error>> {
                 merchant_order_id: None,
                 minor_index: minor,
                 address: subaddress.to_string(),
-                xmr_amount_piconero: 1,
+                xmr_amount_piconero: engine::store::Piconero(1),
                 description: None,
                 created_at: first_block_time - 7200,
                 expires_at: now + 7 * 24 * 3600,

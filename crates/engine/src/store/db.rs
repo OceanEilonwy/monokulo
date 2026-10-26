@@ -550,7 +550,7 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: index,
                 address: "addr".into(),
-                xmr_amount_piconero: 10,
+                xmr_amount_piconero: crate::store::Piconero(10),
                 description: None,
                 created_at: 100,
                 expires_at: 10_000,
@@ -561,7 +561,16 @@ mod tests {
         let order_id = order.id.clone();
         db.run(Class::Scanner, move |s| -> Result<()> {
             s.in_transaction(|s| -> Result<()> {
-                s.record_payment_match(&order_id, "tx", 0, 10, "[]", 200, Some(5), None)?;
+                s.record_payment_match(
+                    &order_id,
+                    "tx",
+                    0,
+                    crate::store::Piconero(10),
+                    "[]",
+                    200,
+                    Some(5),
+                    None,
+                )?;
                 s.recompute_order_status(&order_id, 10, 200)?;
                 Ok(())
             })

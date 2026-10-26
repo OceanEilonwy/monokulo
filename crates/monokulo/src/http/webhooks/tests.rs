@@ -345,7 +345,7 @@ async fn store_with_deliveries(
             txid: None,
             merchant_order_id: None,
             description: None,
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(1),
         };
         db.queue_order_event(&event, now - 600, |store, metadata| {
             crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())

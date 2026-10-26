@@ -196,7 +196,7 @@ fn fixture_tenant_rows(
             merchant_order_id: None,
             minor_index: index,
             address: "fixture".into(),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: crate::store::Piconero(1),
             description: None,
             created_at: 1000,
             expires_at,

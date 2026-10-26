@@ -280,7 +280,7 @@ async fn malformed_history(corruption: u8, amount: u64, restart: bool, rounds: u
         let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
         let rows = s.get_all_payments(&h.order).unwrap();
         o.status == OrderStatus::Paid
-            && o.amount_received_piconero == amount
+            && o.amount_received_piconero == crate::store::Piconero(amount)
             && rows.len() == 1
             && rows[0].block_height == Some(3)
     })
@@ -330,7 +330,12 @@ async fn spent_history(
         let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
         rows.len() == 1
             && rows[0].voided_at.is_some() == sole_vote
-            && o.amount_received_piconero == if sole_vote { 0 } else { amount }
+            && o.amount_received_piconero
+                == if sole_vote {
+                    crate::store::Piconero::ZERO
+                } else {
+                    crate::store::Piconero(amount)
+                }
             && !settled(o.status)
     })
     .await;
@@ -345,7 +350,7 @@ async fn spent_history(
     w.converge(|s, h| {
         let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
         o.status == OrderStatus::Paid
-            && o.amount_received_piconero == amount
+            && o.amount_received_piconero == crate::store::Piconero(amount)
             && s.get_all_payments(&h.order).unwrap()[0].voided_at.is_none()
     })
     .await;
@@ -1208,7 +1213,7 @@ mod properties {
             w.converge(|s, h| {
                 let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
                 o.status == OrderStatus::Paid
-                    && o.amount_received_piconero == amount
+                    && o.amount_received_piconero == crate::store::Piconero(amount)
                     && s.get_all_payments(&h.order).unwrap()[0].block_height == Some(3)
             })
             .await;
@@ -1331,7 +1336,7 @@ mod properties {
                     .get_order(&w.h.tenants[0].0, &w.h.order)
                     .unwrap()
                     .unwrap();
-            assert_eq!(o.amount_received_piconero, amount);
+            assert_eq!(o.amount_received_piconero, crate::store::Piconero(amount));
             // Zero confirmations deliberately use pool evidence even with
             // checking enabled. Positive depths require verified blocks when
             // checking is enabled; otherwise the node's height is trusted.
@@ -1435,7 +1440,7 @@ mod properties {
             w.converge(|s, h| {
                 orders.iter().enumerate().all(|(i, id)| {
                     let o = s.get_order(&h.tenants[0].0, id).unwrap().unwrap();
-                    o.amount_received_piconero == totals[i]
+                    o.amount_received_piconero == crate::store::Piconero(totals[i])
                         && o.status == OrderStatus::Confirming
                         && s.get_all_payments(id)
                             .unwrap()
@@ -1449,7 +1454,8 @@ mod properties {
             w.converge(|s, h| {
                 orders.iter().enumerate().all(|(i, id)| {
                     let o = s.get_order(&h.tenants[0].0, id).unwrap().unwrap();
-                    o.amount_received_piconero == totals[i] && o.status == OrderStatus::Paid
+                    o.amount_received_piconero == crate::store::Piconero(totals[i])
+                        && o.status == OrderStatus::Paid
                 })
             })
             .await;
@@ -1591,7 +1597,7 @@ mod properties {
                 let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
                 let rows = s.get_all_payments(&h.order).unwrap();
                 o.status == OrderStatus::Paid
-                    && o.amount_received_piconero == amount
+                    && o.amount_received_piconero == crate::store::Piconero(amount)
                     && rows.len() == 1
                     && rows[0].block_height == Some(3)
             })
@@ -1626,7 +1632,7 @@ mod properties {
                 let s = w.h.store().lock();
                 let o = s.get_order(&w.h.tenants[0].0, &w.h.order).unwrap().unwrap();
                 assert!(!settled(o.status));
-                assert_eq!(o.amount_received_piconero, amount);
+                assert_eq!(o.amount_received_piconero, crate::store::Piconero(amount));
                 assert!(s
                     .get_all_payments(&w.h.order)
                     .unwrap()
@@ -1654,7 +1660,7 @@ mod properties {
             w.converge(|s, h| {
                 let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
                 o.status == OrderStatus::Paid
-                    && o.amount_received_piconero == amount
+                    && o.amount_received_piconero == crate::store::Piconero(amount)
                     && s.get_all_payments(&h.order).unwrap()[0].block_height == Some(5)
             })
             .await;
@@ -1709,7 +1715,8 @@ mod properties {
             }
             w.converge(|s, h| {
                 let o = s.get_order(&h.tenants[0].0, &h.order).unwrap().unwrap();
-                o.amount_received_piconero == 0 && o.status == OrderStatus::Pending
+                o.amount_received_piconero == crate::store::Piconero::ZERO
+                    && o.status == OrderStatus::Pending
             })
             .await;
             assert_eq!(
@@ -1805,7 +1812,7 @@ mod properties {
                     .get_all_payments(id)
                     .unwrap()
                     .iter()
-                    .any(|p| p.amount_piconero == 17)),
+                    .any(|p| p.amount_piconero == crate::store::Piconero(17))),
                 "mempool tier did not record the new payment after bounded block work"
             );
             if restart {
@@ -1838,7 +1845,10 @@ mod properties {
                 );
                 let rows = s.get_all_payments(order).unwrap();
                 assert_eq!(rows.len(), 2);
-                assert_eq!(rows.iter().map(|p| p.amount_piconero).sum::<u64>(), 40);
+                assert_eq!(
+                    rows.iter().map(|p| p.amount_piconero.get()).sum::<u64>(),
+                    40
+                );
             }
         });
     }

@@ -33,6 +33,7 @@ use std::pin::Pin;
 
 use bytes::Bytes;
 use credentials::auth::RawToken;
+use engine_protocol::amount::Piconero;
 use engine_protocol::custody::CustodyBackend;
 use engine_protocol::ids::EngineWalletId;
 use futures_util::{Stream, StreamExt as _};
@@ -984,7 +985,7 @@ impl EngineClient {
             Call::post("/api/v1/admin/tenant/orders")
                 .store(sk)
                 .json(&CreateOrderRequest {
-                    xmr_amount_piconero: xmr_amount_piconero.get(),
+                    xmr_amount_piconero,
                     merchant_order_id,
                     description,
                     confirmations_required,
@@ -1324,7 +1325,7 @@ pub struct WalletChangeAnswer {
 /// What a store's orders add up to ([`EngineClient::order_totals`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 pub struct OrderTotals {
-    pub received_piconero: u64,
+    pub received_piconero: Piconero,
     /// Orders made at or after the time asked about.
     pub orders_since: u64,
 }
@@ -1342,8 +1343,8 @@ pub struct OrderView {
     #[serde(default)]
     pub description: Option<String>,
     pub address: String,
-    pub xmr_amount_piconero: u64,
-    pub amount_received_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
+    pub amount_received_piconero: Piconero,
     pub status: engine_protocol::order_status::OrderStatus,
     pub confirmations: u64,
     pub double_spend_detected_at: Option<i64>,
@@ -1383,7 +1384,7 @@ impl OrderView {
 pub struct PaymentView {
     pub txid: String,
     pub output_index: i64,
-    pub amount_piconero: u64,
+    pub amount_piconero: Piconero,
     pub first_seen_at: i64,
     pub block_height: Option<i64>,
     pub voided_at: Option<i64>,
@@ -1437,7 +1438,7 @@ struct PatchTenantRequest {
 /// Mirrors the engine's own `orders::CreateOrderRequest`.
 #[derive(Serialize)]
 struct CreateOrderRequest {
-    xmr_amount_piconero: u64,
+    xmr_amount_piconero: Piconero,
     merchant_order_id: Option<String>,
     /// What the order is for, shown to the payer on the checkout.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1470,7 +1471,7 @@ pub const MAX_CALLER_IDEMPOTENCY_KEY_CHARS: usize = 100;
 pub struct CreateOrderResponse {
     pub order_id: engine_protocol::ids::OrderId,
     pub address: String,
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
     pub expires_at: i64,
 }
 
@@ -2206,7 +2207,7 @@ mod contract_tests {
             "retiring it once unused: ok",
             "confirmations now 3",
             "the same idempotency key gives the same order: true",
-            "listed 1, page 1, open 1, by ids 1, totals OrderTotals { received_piconero: 0, orders_since: 1 }",
+            "listed 1, page 1, open 1, by ids 1, totals OrderTotals { received_piconero: Piconero(0), orders_since: 1 }",
             "detail: Some(\"m-1\") Pending refund Some(\"4refund\"), 0 payments",
             "unknown order: 404 Not Found",
             "an id that names another route: 404 Not Found: not a valid id",

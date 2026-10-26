@@ -16,6 +16,7 @@ use engine_protocol::order_status::OrderStatus;
 use tokio::sync::broadcast;
 
 use crate::db::{AppOrder, LoggedEvent};
+use pricing::xmr_amount::Piconero;
 
 /// How long a connect code can be redeemed after the dashboard showed it.
 pub const CONNECT_TOKEN_TTL_SECONDS: i64 = 10 * 60;
@@ -103,7 +104,7 @@ pub struct SaleEvent {
     pub amount: String,
     pub currency: String,
     pub address: String,
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
     pub merchant_order_id: Option<String>,
     pub expires_at: i64,
     /// The device that made the order.
@@ -197,7 +198,7 @@ mod tests {
             amount: "24.50".into(),
             currency: "USD".into(),
             address: "8Bx".into(),
-            xmr_amount_piconero: 141_000_000_000,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(141_000_000_000),
             merchant_order_id: Some("#1042".into()),
             expires_at: 2_000,
             created_at: 1_000,
@@ -215,7 +216,7 @@ mod tests {
             txid: None,
             merchant_order_id: None,
             description: None,
-            xmr_amount_piconero: 141_000_000_000,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(141_000_000_000),
         }
     }
 

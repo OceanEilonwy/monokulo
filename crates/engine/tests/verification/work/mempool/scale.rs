@@ -61,7 +61,7 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
             merchant_order_id: None,
             minor_index: minor,
             address: "scale-second".into(),
-            xmr_amount_piconero: 1234,
+            xmr_amount_piconero: crate::store::Piconero(1234),
             description: None,
             created_at: 1000,
             expires_at: i64::MAX,
@@ -84,7 +84,7 @@ async fn sustained_arrivals(wave: usize, rounds: usize) {
         1,
         "assertion failed: BOUNDARY: sustained-arrival-starvation"
     );
-    assert_eq!(payments[0].amount_piconero, 1234);
+    assert_eq!(payments[0].amount_piconero, crate::store::Piconero(1234));
     assert_eq!(payments[0].output_index, 0);
     assert!(store.get_all_payments(&first).unwrap().is_empty());
     assert!(state.mempool.inner.lock().in_flight.is_empty());
@@ -147,7 +147,10 @@ async fn large_pool(count: usize) {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].txid, payer_id);
     assert_eq!(rows[0].output_index, 1);
-    assert_eq!(rows[0].amount_piconero, 7_000_000_000);
+    assert_eq!(
+        rows[0].amount_piconero,
+        crate::store::Piconero(7_000_000_000)
+    );
     assert_eq!(
         custody.attempts.lock()[&handle],
         failed_attempts + count as u32,
@@ -316,7 +319,7 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
                     merchant_order_id: None,
                     minor_index: minor,
                     address: "matrix".into(),
-                    xmr_amount_piconero: 1234 * transactions as u64,
+                    xmr_amount_piconero: crate::store::Piconero(1234 * transactions as u64),
                     description: None,
                     created_at: 1000,
                     expires_at: i64::MAX,
@@ -348,7 +351,7 @@ async fn transaction_tenant_matrix(count: usize, transactions: usize) {
         assert_eq!(rows.len(), transactions);
         assert!(rows
             .iter()
-            .all(|r| r.amount_piconero == 1234 && r.output_index == 0));
+            .all(|r| r.amount_piconero == crate::store::Piconero(1234) && r.output_index == 0));
         assert_eq!(
             rows.iter().map(|r| &r.txid).collect::<HashSet<_>>().len(),
             transactions

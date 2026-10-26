@@ -29,6 +29,7 @@ use crate::engine_client::EngineClient;
 use crate::live::{SseEvent, SseParser};
 
 use super::delivery::Clock;
+use pricing::xmr_amount::Piconero;
 
 /// The longest wait between attempts to open the stream.
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
@@ -51,7 +52,7 @@ struct WireEvent {
     merchant_order_id: Option<String>,
     #[serde(default)]
     description: Option<String>,
-    xmr_amount_piconero: u64,
+    xmr_amount_piconero: Piconero,
 }
 
 /// An `events_lost`'s data.

@@ -9,18 +9,19 @@
 //! outside this function entirely.
 
 /// Shared with monokulo, which reads it from the admin API.
+pub use engine_protocol::amount::Piconero;
 pub use engine_protocol::order_status::OrderStatus;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PaymentView {
-    pub amount_piconero: u64,
+    pub amount_piconero: Piconero,
     pub confirmations: u64,
     pub is_zero_conf: bool, // true iff block_height IS NULL for this payment
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct StatusInputs {
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
     /// `0` is a legal, deliberate value: an order whose effective threshold is 0
     /// trusts a mempool-only sighting as final the instant the full amount is seen -
     /// see `derive_status`'s own doc comment for why this needs no special-casing.
@@ -47,9 +48,7 @@ pub struct StatusInputs {
 pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderStatus {
     // Saturating: amounts are decrypted from the chain, and a sum that wraps
     // could turn an overpayment into a partial one.
-    let total = payments
-        .iter()
-        .fold(0u64, |sum, p| sum.saturating_add(p.amount_piconero));
+    let total: Piconero = payments.iter().map(|p| p.amount_piconero).sum();
 
     if total >= inputs.xmr_amount_piconero {
         // The order is judged by the payments that cover its amount, deepest
@@ -62,7 +61,7 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
                 .cmp(&a.confirmations)
                 .then(a.is_zero_conf.cmp(&b.is_zero_conf))
         });
-        let mut covered = 0u64;
+        let mut covered = Piconero::ZERO;
         let mut covering = Vec::with_capacity(by_depth.len());
         for payment in by_depth {
             covering.push(payment);
@@ -91,7 +90,7 @@ pub fn derive_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderSta
         // still exist at the address and require manual merchant handling, since no
         // automated refund path exists anywhere in this system.
         OrderStatus::Expired
-    } else if total == 0 {
+    } else if total == Piconero::ZERO {
         OrderStatus::Pending
     } else {
         OrderStatus::Partial
@@ -109,7 +108,7 @@ mod tests {
 
     fn inputs(expected: u64, conf_required: u64, now: i64, expires_at: i64) -> StatusInputs {
         StatusInputs {
-            xmr_amount_piconero: expected,
+            xmr_amount_piconero: Piconero(expected),
             confirmations_required: conf_required,
             now,
             expires_at,
@@ -118,7 +117,7 @@ mod tests {
 
     fn confirmed(amount: u64, confirmations: u64) -> PaymentView {
         PaymentView {
-            amount_piconero: amount,
+            amount_piconero: Piconero(amount),
             confirmations,
             is_zero_conf: false,
         }
@@ -126,7 +125,7 @@ mod tests {
 
     fn zero_conf(amount: u64) -> PaymentView {
         PaymentView {
-            amount_piconero: amount,
+            amount_piconero: Piconero(amount),
             confirmations: 0,
             is_zero_conf: true,
         }
@@ -140,7 +139,7 @@ mod tests {
         let after = |amount, required| inputs(amount, required, 1500, 1000);
         let long_past = |amount, required| inputs(amount, required, 9_999_999, 1000);
         let nothing = PaymentView {
-            amount_piconero: 0,
+            amount_piconero: Piconero::ZERO,
             confirmations: 0,
             is_zero_conf: true,
         };

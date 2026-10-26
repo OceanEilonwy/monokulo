@@ -18,7 +18,7 @@ use crate::key_custody::{
     KeyCustody, KeyCustodyError, LiveWallet, MatchedOutput, ScanIndices, ScanInput, WalletHandle,
     WalletHandles,
 };
-use crate::store::{Store, StoreError};
+use crate::store::{Piconero, Store, StoreError};
 use engine_daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 #[derive(Debug, thiserror::Error)]
@@ -350,7 +350,7 @@ pub fn record_scan_match(
             &order.id,
             &scan.txid,
             output_index(m.output_index)?,
-            amount,
+            Piconero(amount),
             &scan.key_images_json,
             seen_at,
             block_height.map(crate::store::sql_height).transpose()?,

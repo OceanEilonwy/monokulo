@@ -3,7 +3,10 @@ use super::{derive_status, OrderStatus, PaymentView, StatusInputs};
 pub(super) fn total(payments: &[PaymentView]) -> u64 {
     // A wider sum is independent of production's saturating fold. The vector
     // bound keeps this safely within u128, including 32 maximal amounts.
-    let sum: u128 = payments.iter().map(|p| u128::from(p.amount_piconero)).sum();
+    let sum: u128 = payments
+        .iter()
+        .map(|p| u128::from(p.amount_piconero.get()))
+        .sum();
     u64::try_from(sum).unwrap_or(u64::MAX)
 }
 
@@ -11,7 +14,7 @@ pub(super) fn total(payments: &[PaymentView]) -> u64 {
 // depth. This does not sort payments or construct production's covering prefix.
 pub(super) fn reference_status(payments: &[PaymentView], inputs: StatusInputs) -> OrderStatus {
     let received = total(payments);
-    if received < inputs.xmr_amount_piconero {
+    if received < inputs.xmr_amount_piconero.get() {
         if inputs.now > inputs.expires_at {
             OrderStatus::Expired
         } else if received == 0 {
@@ -25,8 +28,8 @@ pub(super) fn reference_status(payments: &[PaymentView], inputs: StatusInputs) -
             .copied()
             .filter(|p| p.confirmations >= inputs.confirmations_required)
             .collect();
-        if total(&eligible) >= inputs.xmr_amount_piconero {
-            if received > inputs.xmr_amount_piconero {
+        if total(&eligible) >= inputs.xmr_amount_piconero.get() {
+            if received > inputs.xmr_amount_piconero.get() {
                 OrderStatus::Overpaid
             } else {
                 OrderStatus::Paid
@@ -49,7 +52,7 @@ pub(crate) fn explore(data: &[u8]) {
         u64::from_le_bytes(bytes)
     };
     let inputs = StatusInputs {
-        xmr_amount_piconero: read(0).max(1),
+        xmr_amount_piconero: crate::store::Piconero(read(0).max(1)),
         confirmations_required: read(8),
         now: read(16) as i64,
         expires_at: read(24) as i64,
@@ -63,7 +66,7 @@ pub(crate) fn explore(data: &[u8]) {
         .map(|(i, bytes)| {
             let pool = bytes.get(16).copied().unwrap_or(0) & 1 != 0;
             PaymentView {
-                amount_piconero: read(32 + i * 17),
+                amount_piconero: crate::store::Piconero(read(32 + i * 17)),
                 confirmations: if pool { 0 } else { read(40 + i * 17) },
                 is_zero_conf: pool,
             }
@@ -82,13 +85,13 @@ pub(crate) fn explore(data: &[u8]) {
         "payment ordering changed status"
     );
     if let Some(payment) = payments.pop() {
-        let half = payment.amount_piconero / 2;
+        let half = crate::store::Piconero(payment.amount_piconero.get() / 2);
         payments.push(PaymentView {
             amount_piconero: half,
             ..payment
         });
         payments.push(PaymentView {
-            amount_piconero: payment.amount_piconero - half,
+            amount_piconero: payment.amount_piconero.saturating_sub(half),
             ..payment
         });
         assert_eq!(

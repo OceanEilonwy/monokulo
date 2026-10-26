@@ -56,7 +56,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
                     merchant_order_id: None,
                     minor_index: minor,
                     address: format!("scale-{index}-{minor}"),
-                    xmr_amount_piconero: 7_000_000_000,
+                    xmr_amount_piconero: crate::store::Piconero(7_000_000_000),
                     description: None,
                     created_at: 1000,
                     expires_at: i64::MAX,
@@ -248,7 +248,7 @@ async fn many_tenants(count: usize, groups: usize, outage_rounds: usize) {
         assert_eq!(rows.len(), usize::from(*paying));
         assert_eq!(
             current.amount_received_piconero,
-            if *paying { 7_000_000_000 } else { 0 }
+            crate::store::Piconero(if *paying { 7_000_000_000 } else { 0 })
         );
         if *paying {
             assert_eq!(rows[0].output_index, 1);

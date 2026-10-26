@@ -392,9 +392,7 @@ async fn order_detail_data(
                 Some(m) => (
                     format!(
                         "{} XMR per 1 {}",
-                        crate::views::trim_xmr(&pricing::exchange_rate::format_piconero_as_xmr(
-                            m.piconero_per_unit.get()
-                        )),
+                        pricing::xmr_amount::format_xmr_trimmed(m.piconero_per_unit.per_unit()),
                         m.currency
                     ),
                     m.provider.clone(),
@@ -425,9 +423,7 @@ async fn order_detail_data(
                     Some(rate) => {
                         format!(
                             "{} XMR per 1 {base_currency}",
-                            crate::views::trim_xmr(
-                                &pricing::exchange_rate::format_piconero_as_xmr(rate.get())
-                            )
+                            pricing::xmr_amount::format_xmr_trimmed(rate.per_unit())
                         )
                     }
                     None => "same as order currency".to_string(),
@@ -5207,8 +5203,8 @@ mod tests {
             amount: "0.5".to_string(),
             rate_display: "1 XMR per 1 XMR".to_string(),
             rate_provider: "xmr".to_string(),
-            xmr_amount_piconero: 500_000_000_000,
-            amount_received_piconero: 500_000_000_000,
+            xmr_amount_piconero: pricing::xmr_amount::Piconero(500_000_000_000),
+            amount_received_piconero: pricing::xmr_amount::Piconero(500_000_000_000),
             status: engine_protocol::order_status::OrderStatus::Paid,
             is_final: true,
             confirmations: 10,

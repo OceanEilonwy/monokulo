@@ -295,11 +295,17 @@ async fn overlap(ordering: usize, cancelled: u8, change: u8, repeats: usize) {
         let s = store.lock();
         let rows = s.get_all_payments(&order).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].amount_piconero, FIXTURE_AMOUNT_PICONERO);
+        assert_eq!(
+            rows[0].amount_piconero,
+            crate::store::Piconero(FIXTURE_AMOUNT_PICONERO)
+        );
         assert_eq!(rows[0].block_height, Some(3));
         assert!(rows[0].voided_at.is_none());
         let invoice = s.get_order(&tenant, &order).unwrap().unwrap();
-        assert_eq!(invoice.amount_received_piconero, FIXTURE_AMOUNT_PICONERO);
+        assert_eq!(
+            invoice.amount_received_piconero,
+            crate::store::Piconero(FIXTURE_AMOUNT_PICONERO)
+        );
         assert_eq!(invoice.status, OrderStatus::Paid);
         assert!(s.reorg_job(monero::Network::Mainnet).unwrap().is_none());
         assert!(s
@@ -514,7 +520,10 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
             .unwrap();
     }
     let invoice = store.get_order(&tenant, &order).unwrap().unwrap();
-    assert_eq!(invoice.amount_received_piconero, FIXTURE_AMOUNT_PICONERO);
+    assert_eq!(
+        invoice.amount_received_piconero,
+        crate::store::Piconero(FIXTURE_AMOUNT_PICONERO)
+    );
     assert_eq!(
         invoice.status,
         OrderStatus::Confirming,

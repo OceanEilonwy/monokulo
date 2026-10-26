@@ -396,7 +396,7 @@ impl Store {
         )?;
         let views = statement
             .query_map(params![order_id, SqlNetwork(network)], |row| {
-                let amount: sqlite::Unsigned<u64> = row.get(0)?;
+                let amount: crate::store::Piconero = row.get(0)?;
                 let height: Option<i64> = row.get(1)?;
                 let found_in: Option<String> = row.get(2)?;
                 let proven: Option<String> = row.get(3)?;
@@ -413,7 +413,7 @@ impl Store {
                 Ok((
                     id,
                     crate::status::PaymentView {
-                        amount_piconero: amount.0,
+                        amount_piconero: amount,
                         confirmations,
                         is_zero_conf: height.is_none(),
                     },
@@ -671,7 +671,7 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: index,
                 address: "fixture".into(),
-                xmr_amount_piconero: 1,
+                xmr_amount_piconero: crate::store::Piconero(1),
                 description: None,
                 created_at: 1000,
                 expires_at: 10_000,
@@ -692,7 +692,16 @@ mod tests {
         };
 
         store
-            .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(110), None)
+            .record_payment_match(
+                &order,
+                "tx",
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                Some(110),
+                None,
+            )
             .unwrap();
         assert_eq!(views(&store)[0].confirmations, 0, "not attested");
         store
@@ -710,7 +719,16 @@ mod tests {
 
         // Recorded again at the same height: still attested.
         store
-            .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(110), None)
+            .record_payment_match(
+                &order,
+                "tx",
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                Some(110),
+                None,
+            )
             .unwrap();
         assert_eq!(views(&store)[0].confirmations, 11);
         // Moved: forgotten until attested at its new height.
@@ -723,7 +741,16 @@ mod tests {
             .unwrap();
         assert_eq!(views(&store)[0].confirmations, 9);
         store
-            .record_payment_match(&order, "tx", 0, 5, "[]", 1000, Some(111), None)
+            .record_payment_match(
+                &order,
+                "tx",
+                0,
+                crate::store::Piconero(5),
+                "[]",
+                1000,
+                Some(111),
+                None,
+            )
             .unwrap();
         assert_eq!(
             views(&store)[0].confirmations,

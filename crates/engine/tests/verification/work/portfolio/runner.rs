@@ -208,7 +208,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             merchant_order_id: None,
                             minor_index: minor,
                             address: format!("portfolio-{wallet}-{minor}"),
-                            xmr_amount_piconero: goal,
+                            xmr_amount_piconero: crate::store::Piconero(goal),
                             description: None,
                             created_at: 1000,
                             expires_at: expires,

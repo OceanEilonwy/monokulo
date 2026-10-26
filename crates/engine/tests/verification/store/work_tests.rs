@@ -44,7 +44,7 @@ fn order(store: &Store, tenant_id: &str, expires_at: i64) -> String {
             merchant_order_id: None,
             minor_index: index,
             address: format!("addr-{}", uuid::Uuid::new_v4().simple()),
-            xmr_amount_piconero: 100,
+            xmr_amount_piconero: Piconero(100),
             description: None,
             created_at: 100,
             expires_at,
@@ -60,7 +60,7 @@ fn pay(store: &Store, order_id: &str, txid: &str, height: Option<i64>) -> i64 {
             &OrderId::new(order_id.to_owned()),
             txid,
             0,
-            10,
+            Piconero(10),
             "[\"ki\"]",
             100,
             height,
@@ -357,7 +357,7 @@ fn staged_reorg_cleanup(network: monero::Network, fork: u64, restart: bool) {
         let matches = store.take_staged_payments(net, &t, &hash).unwrap();
         assert_eq!(matches.len(), usize::from(!discarded));
         if !discarded {
-            assert_eq!(matches[0].amount_piconero, 17);
+            assert_eq!(matches[0].amount_piconero, Piconero(17));
         }
     }
     drop(store);
@@ -406,7 +406,7 @@ fn open_orders_are_due_by_deadline_and_height_and_terminal_ones_never() {
         &OrderId::new(expiring.clone()),
         "tx",
         0,
-        100,
+        Piconero(100),
         "[\"ki\"]",
         1_000,
         Some(50),
@@ -453,7 +453,7 @@ fn a_settlement_waits_for_an_open_reorg_on_its_network() {
         &OrderId::new(o.clone()),
         "tx",
         0,
-        100,
+        Piconero(100),
         "[\"ki\"]",
         1_000,
         Some(50),
@@ -506,8 +506,17 @@ fn a_settlement_waits_for_the_payments_block_to_be_recorded() {
     let (store, path) = fixture();
     let s = &store.0;
     let o = OrderId::new(order(s, &store.3, 5_000));
-    s.record_payment_match(&o, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50), None)
-        .unwrap();
+    s.record_payment_match(
+        &o,
+        "tx",
+        0,
+        Piconero(100),
+        "[\"ki\"]",
+        1_000,
+        Some(50),
+        None,
+    )
+    .unwrap();
     s.set_scanned_block(monero::Network::Mainnet, 49, "h49")
         .unwrap();
     let (_, held) = s.recompute_order_status(&o, 59, 1_000).unwrap();
@@ -860,7 +869,7 @@ fn every_store_operation_fails_whole_and_then_works() {
             &OrderId::new(order_id.clone()),
             "tx_confirmed",
             0,
-            50,
+            Piconero(50),
             "[\"ki1\"]",
             150,
             Some(11),
@@ -872,7 +881,7 @@ fn every_store_operation_fails_whole_and_then_works() {
             &OrderId::new(order_id.clone()),
             "tx_pool",
             0,
-            50,
+            Piconero(50),
             "[\"ki2\"]",
             150,
             None,
@@ -884,7 +893,7 @@ fn every_store_operation_fails_whole_and_then_works() {
             &OrderId::new(order_id.clone()),
             "tx_voided",
             0,
-            50,
+            Piconero(50),
             "[\"ki3\"]",
             150,
             Some(10),
@@ -1174,7 +1183,7 @@ fn out_of_range_values_and_corrupt_rows_are_errors() {
             &OrderId::new(order_id),
             "tx",
             0,
-            1,
+            Piconero(1),
             "[]",
             100,
             Some(7),
@@ -1542,7 +1551,16 @@ fn a_store_leaves_scope_when_its_orders_settle_and_returns_with_a_new_one() {
         |tenant: &String| in_scope(&store, monero::Network::Mainnet, i64::MAX, 0).contains(tenant);
     let settle = |order: &str, txid: &str| {
         store
-            .record_payment_match(&order_id(order), txid, 0, 100, "[]", 1_500, Some(50), None)
+            .record_payment_match(
+                &order_id(order),
+                txid,
+                0,
+                Piconero(100),
+                "[]",
+                1_500,
+                Some(50),
+                None,
+            )
             .unwrap();
         let (_, status) = store
             .recompute_order_status(&order_id(order), 59, 1_600)

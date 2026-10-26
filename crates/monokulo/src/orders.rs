@@ -163,7 +163,7 @@ pub enum Made {
 pub struct NewOrder {
     pub order_id: OrderId,
     pub address: String,
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
     pub expires_at: i64,
     /// When it was priced, and so made.
     pub created_at: i64,
@@ -349,7 +349,7 @@ pub async fn make(
         .client
         .create_order(
             &sk,
-            Piconero(price.xmr_amount_piconero),
+            price.xmr_amount_piconero,
             request.merchant_order_id.clone(),
             request.description.clone(),
             Some(price.confirmations_required),
@@ -508,7 +508,7 @@ async fn price_of(
     .map_err(MakeError::Threshold)?;
     Ok(OrderPrice {
         xmr_amount_piconero,
-        piconero_per_unit: Piconero(piconero_per_unit),
+        piconero_per_unit,
         provider: provider.to_owned(),
         base_currency: resolution.base_currency,
         base_currency_piconero_per_unit: resolution.base_currency_piconero_per_unit,
@@ -520,7 +520,7 @@ async fn price_of(
 struct OrderRecord {
     order_id: OrderId,
     address: String,
-    xmr_amount_piconero: u64,
+    xmr_amount_piconero: Piconero,
     expires_at: i64,
     created_at: i64,
     amount: String,

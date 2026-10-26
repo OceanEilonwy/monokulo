@@ -244,14 +244,14 @@ impl Harness {
                     id: p.id,
                     txid: p.txid,
                     output: p.output_index,
-                    amount: p.amount_piconero,
+                    amount: p.amount_piconero.get(),
                     height: p.block_height,
                     voided_at: p.voided_at,
                 })
                 .collect(),
             status: order.status,
             confirmations: order.confirmations,
-            amount_received: order.amount_received_piconero,
+            amount_received: order.amount_received_piconero.get(),
             cursor: store
                 .get_tenant_by_id(&self.tenants[0].0)
                 .unwrap()

@@ -10,7 +10,7 @@
 use credentials::auth::TokenHash;
 pub use engine_protocol::ids::{ConnectionId, EngineWalletId, OrderId, UserId, WalletId};
 use parking_lot::Mutex;
-use pricing::xmr_amount::Piconero;
+use pricing::xmr_amount::PiconeroPerUnit;
 use sqlite::{Pool, PoolError, Unsigned};
 use std::sync::Arc;
 
@@ -930,7 +930,7 @@ pub struct OrderCurrencyMetadataRow {
     pub order_id: OrderId,
     pub currency: String,
     pub amount: String,
-    pub piconero_per_unit: Piconero,
+    pub piconero_per_unit: PiconeroPerUnit,
     /// Which provider produced `piconero_per_unit` - `"xmr"` (the trivial
     /// identity rate), `"coingecko"`, `"unknown"` for a row recorded before
     /// this field existed (migration 0006), or a stale `"fixed"` for a row
@@ -945,7 +945,7 @@ pub struct OrderCurrencyMetadataRow {
     /// `store_base_currency` terms - `None` either because the order's own
     /// currency already *was* the base currency (no conversion needed), or
     /// the row predates this snapshot entirely.
-    pub base_currency_piconero_per_unit: Option<Piconero>,
+    pub base_currency_piconero_per_unit: Option<PiconeroPerUnit>,
     /// The confirmations_required this order was actually created with on
     /// the engine (`crate::confirmation_thresholds::Resolution::confirmations_required`) -
     /// `None` only for a row predating this snapshot.
@@ -980,11 +980,11 @@ pub struct NewOrderRecord<'a> {
     pub order_id: &'a OrderId,
     pub currency: &'a str,
     pub amount: &'a str,
-    pub piconero_per_unit: Piconero,
+    pub piconero_per_unit: PiconeroPerUnit,
     pub provider: &'a str,
     pub created_at: i64,
     pub base_currency: &'a str,
-    pub base_currency_piconero_per_unit: Option<Piconero>,
+    pub base_currency_piconero_per_unit: Option<PiconeroPerUnit>,
     pub confirmations_required_applied: u64,
     pub created_with_key: bool,
     pub source: Option<&'a str>,
@@ -3822,7 +3822,7 @@ mod tests {
                 order_id: &engine_protocol::ids::OrderId::new("pay_1"),
                 currency: "USD",
                 amount: "25.00",
-                piconero_per_unit: pricing::xmr_amount::Piconero(6_700_000_000),
+                piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(6_700_000_000),
                 provider: "fixed",
                 created_at: 1000,
                 base_currency: "XMR",
@@ -3850,7 +3850,7 @@ mod tests {
             assert_eq!(row.amount, "25.00");
             assert_eq!(
                 row.piconero_per_unit,
-                pricing::xmr_amount::Piconero(6_700_000_000)
+                pricing::xmr_amount::PiconeroPerUnit(6_700_000_000)
             );
             assert_eq!(row.provider, "fixed");
             assert_eq!(row.created_at, 1000);
@@ -4399,7 +4399,7 @@ mod tests {
             order_id: &order,
             currency: "XMR",
             amount: "1",
-            piconero_per_unit: Piconero(1),
+            piconero_per_unit: PiconeroPerUnit(1),
             provider: "xmr",
             created_at: 3000,
             base_currency: "XMR",
@@ -4577,7 +4577,7 @@ mod tests {
             order_id: &OrderId::new("pay_huge"),
             currency: "USD",
             amount: "1.00",
-            piconero_per_unit: Piconero(u64::MAX),
+            piconero_per_unit: PiconeroPerUnit(u64::MAX),
             provider: "fixed",
             created_at: 1000,
             base_currency: "XMR",
@@ -4622,7 +4622,7 @@ mod tests {
             order_id: &engine_protocol::ids::OrderId::new("pay_shared"),
             currency: "USD",
             amount: "10.00",
-            piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000),
             provider: "fixed",
             created_at: 1000,
             base_currency: "XMR",
@@ -4638,7 +4638,7 @@ mod tests {
             order_id: &engine_protocol::ids::OrderId::new("pay_shared"),
             currency: "EUR",
             amount: "20.00",
-            piconero_per_unit: pricing::xmr_amount::Piconero(2_000_000),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(2_000_000),
             provider: "coingecko",
             created_at: 2000,
             base_currency: "XMR",
@@ -4679,7 +4679,7 @@ mod tests {
             order_id: &engine_protocol::ids::OrderId::new("pay_a"),
             currency: "USD",
             amount: "10.00",
-            piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000),
             provider: "fixed",
             created_at: 1000,
             base_currency: "XMR",
@@ -4695,7 +4695,7 @@ mod tests {
             order_id: &engine_protocol::ids::OrderId::new("pay_b"),
             currency: "EUR",
             amount: "20.00",
-            piconero_per_unit: pricing::xmr_amount::Piconero(2_000_000),
+            piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(2_000_000),
             provider: "fixed",
             created_at: 2000,
             base_currency: "XMR",

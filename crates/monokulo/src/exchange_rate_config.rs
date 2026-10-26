@@ -75,6 +75,7 @@ use std::time::Duration;
 use pricing::coinmarketcap::CoinMarketCapRateProvider;
 use pricing::exchange_rate::{CoingeckoRateProvider, ExchangeRateError, XmrIdentityProvider};
 use pricing::haveno::HavenoRateProvider;
+use pricing::xmr_amount::PiconeroPerUnit;
 
 use crate::db::StoreConnectionRow;
 
@@ -373,7 +374,7 @@ impl ExchangeRateProviders {
         &self,
         store: &StoreConnectionRow,
         currency: &crate::currencies::KnownCurrency,
-    ) -> Result<Option<(u64, &'static str)>, ExchangeRateLookupError> {
+    ) -> Result<Option<(PiconeroPerUnit, &'static str)>, ExchangeRateLookupError> {
         let currency = currency.as_str();
         if currency == "XMR" {
             return Ok(Some((self.xmr.piconero_per_unit(), "xmr")));
@@ -424,7 +425,7 @@ impl ExchangeRateProviders {
             };
             consulted = true;
             match outcome {
-                Ok((provider, Some(rate))) => return Ok(Some((rate, provider))),
+                Ok((provider, Some(rate))) => return Ok(Some((PiconeroPerUnit(rate), provider))),
                 Ok((provider, None)) => {
                     tracing::info!(
                         provider,
@@ -602,7 +603,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(rate, 1_000_000_000_000);
+        assert_eq!(
+            rate,
+            pricing::xmr_amount::PiconeroPerUnit(1_000_000_000_000)
+        );
         assert_eq!(provider, "xmr");
     }
 
@@ -711,7 +715,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!((rate, name), (1_000_000_000_000, COINGECKO));
+        assert_eq!(
+            (rate, name),
+            (
+                pricing::xmr_amount::PiconeroPerUnit(1_000_000_000_000),
+                COINGECKO
+            )
+        );
         let (rate, name) = providers
             .piconero_per_unit_for(
                 &test_store(&[COINMARKETCAP, COINGECKO]),
@@ -720,7 +730,13 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!((rate, name), (500_000_000_000, COINMARKETCAP));
+        assert_eq!(
+            (rate, name),
+            (
+                pricing::xmr_amount::PiconeroPerUnit(500_000_000_000),
+                COINMARKETCAP
+            )
+        );
     }
 
     #[tokio::test]
@@ -873,7 +889,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!((rate, name), (10_000_000_000, HAVENO));
+        assert_eq!(
+            (rate, name),
+            (pricing::xmr_amount::PiconeroPerUnit(10_000_000_000), HAVENO)
+        );
         assert!(providers
             .piconero_per_unit_for(
                 &test_store(&[HAVENO]),

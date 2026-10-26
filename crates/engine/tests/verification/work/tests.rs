@@ -387,7 +387,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
             &engine_protocol::ids::OrderId::new(order.to_string()),
             &engine_daemon::fake::tx_id_hex(&fixture_tx()),
             0,
-            1,
+            crate::store::Piconero(1),
             "[\"ki\"]",
             1000,
             Some(30),
@@ -404,7 +404,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
                 &engine_protocol::ids::OrderId::new(other.to_string()),
                 &format!("{i:064x}"),
                 0,
-                1,
+                crate::store::Piconero(1),
                 "[\"ki\"]",
                 1000,
                 Some(55),
@@ -892,7 +892,7 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool() {
             &engine_protocol::ids::OrderId::new(candidate_order.to_string()),
             &stuck,
             0,
-            1,
+            crate::store::Piconero(1),
             "[\"ki\"]",
             now,
             Some(9),
@@ -1599,7 +1599,7 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
                 &engine_protocol::ids::OrderId::new(order.to_string()),
                 &format!("{i:064x}"),
                 0,
-                1,
+                crate::store::Piconero(1),
                 "[]",
                 1000,
                 Some(9),
@@ -1783,7 +1783,10 @@ async fn a_failed_mempool_body_fetch_retries_every_id_without_starving_other_sli
         1,
         "fetch recovery lost or duplicated a real payment"
     );
-    assert_eq!(rows[0].amount_piconero, 7_000_000_000);
+    assert_eq!(
+        rows[0].amount_piconero,
+        crate::store::Piconero(7_000_000_000)
+    );
     assert_eq!(rows[0].output_index, 1);
 }
 
@@ -2880,7 +2883,7 @@ async fn open_reorg_with(
                 &order,
                 txid,
                 0,
-                1,
+                crate::store::Piconero(1),
                 "[\"ki\"]",
                 now,
                 Some(*height as i64),
@@ -4013,7 +4016,16 @@ async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from_state
 fn unconfirmed(store: &SharedStore, order: &crate::store::OrderId, txid: &str) {
     store
         .lock()
-        .record_payment_match(order, txid, 0, 1, "[\"ki\"]", crate::now_unix(), None, None)
+        .record_payment_match(
+            order,
+            txid,
+            0,
+            crate::store::Piconero(1),
+            "[\"ki\"]",
+            crate::now_unix(),
+            None,
+            None,
+        )
         .unwrap();
 }
 
@@ -4179,7 +4191,7 @@ fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8
             &engine_protocol::ids::OrderId::new(order.to_string()),
             &txid,
             0,
-            1,
+            crate::store::Piconero(1),
             &format!("[\"{image}\"]"),
             now,
             Some(15),
@@ -4370,14 +4382,23 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
                     merchant_order_id: None,
                     minor_index: index,
                     address: format!("addr{i}"),
-                    xmr_amount_piconero: 1,
+                    xmr_amount_piconero: crate::store::Piconero(1),
                     description: None,
                     created_at: now,
                     expires_at: now + 3600,
                 })
                 .unwrap();
-            s.record_payment_match(&order.id, &format!("{i:064x}"), 0, 1, "[]", now, None, None)
-                .unwrap();
+            s.record_payment_match(
+                &order.id,
+                &format!("{i:064x}"),
+                0,
+                crate::store::Piconero(1),
+                "[]",
+                now,
+                None,
+                None,
+            )
+            .unwrap();
             orders.push(order.id);
         }
     }
@@ -4759,7 +4780,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                     merchant_order_id: None,
                     minor_index: index,
                     address: format!("due{i}"),
-                    xmr_amount_piconero: 1,
+                    xmr_amount_piconero: crate::store::Piconero(1),
                     description: None,
                     created_at: now,
                     expires_at: now + 3600,
@@ -4770,7 +4791,7 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
                     &order.id,
                     &format!("{i:064x}"),
                     0,
-                    1,
+                    crate::store::Piconero(1),
                     "[]",
                     now,
                     None,
@@ -5364,7 +5385,7 @@ fn unconfirmed_with_image(
             order,
             txid,
             output,
-            1,
+            crate::store::Piconero(1),
             &format!("[\"{image}\"]"),
             crate::now_unix(),
             None,
@@ -6018,7 +6039,7 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
             &order,
             &"c".repeat(64),
             0,
-            1,
+            crate::store::Piconero(1),
             "[]",
             1000,
             Some(30),
@@ -6026,7 +6047,16 @@ async fn a_reorg_moves_a_superseded_payment_without_restoring_it() {
         )
         .unwrap();
     store
-        .record_payment_match(&order, &txid, 0, 1, "[]", 1000, Some(55), Some("k"))
+        .record_payment_match(
+            &order,
+            &txid,
+            0,
+            crate::store::Piconero(1),
+            "[]",
+            1000,
+            Some(55),
+            Some("k"),
+        )
         .unwrap();
     store.recompute_order_status(&order, 60, 1000).unwrap();
     let superseded = |store: &Store| {

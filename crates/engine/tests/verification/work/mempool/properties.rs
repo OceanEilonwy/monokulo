@@ -446,7 +446,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
             .unwrap()
             .unwrap()
             .amount_received_piconero,
-        0
+        crate::store::Piconero::ZERO
     );
     assert_eq!(custody.scans.load(Ordering::SeqCst), 2);
     if failure == 2 {
@@ -486,7 +486,7 @@ async fn mixed_tenant_batch(failure: u8, reverse: bool, repeats: usize) {
             .unwrap()
             .unwrap()
             .amount_received_piconero
-            > 0
+            > crate::store::Piconero::ZERO
     );
     for _ in 0..repeats {
         assert!(

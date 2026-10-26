@@ -59,8 +59,8 @@ pub struct XmrIdentityProvider;
 impl XmrIdentityProvider {
     /// Always `PICONERO_PER_XMR` (1 XMR = 1e12 piconero) - not a lookup,
     /// just the fixed unit conversion every XMR-denominated order uses.
-    pub fn piconero_per_unit(&self) -> u64 {
-        PICONERO_PER_XMR
+    pub fn piconero_per_unit(&self) -> PiconeroPerUnit {
+        PiconeroPerUnit::XMR
     }
 }
 
@@ -499,7 +499,8 @@ impl CoingeckoRateProvider {
 /// here unchanged so every existing `exchange_rate::{AmountError, parse_xmr_to_piconero,
 /// format_piconero_as_xmr}` caller keeps compiling.
 pub use crate::xmr_amount::{
-    format_piconero_as_xmr, parse_xmr_to_piconero, AmountError, MAX_AMOUNT_DECIMALS,
+    format_piconero_as_xmr, parse_xmr_to_piconero, AmountError, Piconero, PiconeroPerUnit,
+    MAX_AMOUNT_DECIMALS, MAX_ORDER_PICONERO,
 };
 use crate::xmr_amount::{parse_scaled, AMOUNT_SCALE};
 
@@ -573,14 +574,17 @@ pub fn still_usable(
 /// only ever ask for a hair more than the price, which the status ladder already
 /// handles as an overpayment. Erring against the party who chose the amount is the
 /// safe direction.
-pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u64, AmountError> {
+pub fn compute_xmr_amount(
+    fiat_amount: &str,
+    piconero_per_unit: PiconeroPerUnit,
+) -> Result<Piconero, AmountError> {
     // The amount in units of 10^-12.
     let scaled_amount = parse_scaled(fiat_amount)?;
     if scaled_amount == 0 {
         return Err(AmountError::NotPositive);
     }
     let scaled = scaled_amount
-        .checked_mul(piconero_per_unit as u128)
+        .checked_mul(u128::from(piconero_per_unit.get()))
         .ok_or(AmountError::TooLarge)?;
     let piconero = scaled.div_ceil(AMOUNT_SCALE);
     // `as u64` here would wrap silently, turning a huge order into a trivially cheap
@@ -594,7 +598,7 @@ pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u
         // `derive_status` would call it `Paid` on an empty payment set.
         return Err(AmountError::NotPositive);
     }
-    Ok(piconero)
+    Ok(Piconero(piconero))
 }
 
 /// Converts an order amount into piconero: `"XMR"` (case-insensitively) is
@@ -602,16 +606,24 @@ pub fn compute_xmr_amount(fiat_amount: &str, piconero_per_unit: u64) -> Result<u
 /// is not consulted at all for it, since the rate is always exactly 1 XMR
 /// per XMR. Every other currency is multiplied through its rate by
 /// `compute_xmr_amount`. Both take the same [`MAX_AMOUNT_DECIMALS`].
+///
+/// More than the largest order there can be ([`MAX_ORDER_PICONERO`], which
+/// the engine refuses too) is [`AmountError::AboveOrderLimit`], before any
+/// order is asked for.
 pub fn compute_order_amount(
     currency: &str,
     amount: &str,
-    piconero_per_unit: u64,
-) -> Result<u64, AmountError> {
-    if currency.eq_ignore_ascii_case("XMR") {
-        parse_xmr_to_piconero(amount)
+    piconero_per_unit: PiconeroPerUnit,
+) -> Result<Piconero, AmountError> {
+    let piconero = if currency.eq_ignore_ascii_case("XMR") {
+        Piconero(parse_xmr_to_piconero(amount)?)
     } else {
-        compute_xmr_amount(amount, piconero_per_unit)
+        compute_xmr_amount(amount, piconero_per_unit)?
+    };
+    if piconero > MAX_ORDER_PICONERO {
+        return Err(AmountError::AboveOrderLimit);
     }
+    Ok(piconero)
 }
 
 #[cfg(test)]
@@ -621,31 +633,31 @@ mod tests {
     #[test]
     fn compute_order_amount_reads_xmr_as_itself_without_a_rate() {
         assert_eq!(
-            compute_order_amount("XMR", "0.000335", 1_000_000_000_000).unwrap(),
-            335_000_000
+            compute_order_amount("XMR", "0.000335", PiconeroPerUnit(1_000_000_000_000)).unwrap(),
+            Piconero(335_000_000)
         );
         // Case-insensitive, same as every other currency check in this codebase.
         assert_eq!(
-            compute_order_amount("xmr", "1.5", 1_000_000_000_000).unwrap(),
-            1_500_000_000_000
+            compute_order_amount("xmr", "1.5", PiconeroPerUnit(1_000_000_000_000)).unwrap(),
+            Piconero(1_500_000_000_000)
         );
         // `piconero_per_unit` is ignored entirely for XMR - a wildly wrong
         // value must not change the result.
         assert_eq!(
-            compute_order_amount("XMR", "1", 999).unwrap(),
-            1_000_000_000_000
+            compute_order_amount("XMR", "1", PiconeroPerUnit(999)).unwrap(),
+            Piconero(1_000_000_000_000)
         );
     }
 
     #[test]
     fn compute_order_amount_multiplies_a_fiat_amount_through_its_rate() {
         assert_eq!(
-            compute_order_amount("USD", "25.00", 6_700_000_000).unwrap(),
-            167_500_000_000
+            compute_order_amount("USD", "25.00", PiconeroPerUnit(6_700_000_000)).unwrap(),
+            Piconero(167_500_000_000)
         );
         assert_eq!(
-            compute_order_amount("USD", "25.001", 6_700_000_000).unwrap(),
-            167_506_700_000
+            compute_order_amount("USD", "25.001", PiconeroPerUnit(6_700_000_000)).unwrap(),
+            Piconero(167_506_700_000)
         );
     }
 
@@ -653,17 +665,17 @@ mod tests {
     fn twenty_five_dollars_at_a_known_rate_matches_hand_computed_value() {
         // 0.0067 XMR/USD expressed as piconero-per-USD: 0.0067 * 1e12 = 6_700_000_000
         let piconero_per_usd = 6_700_000_000u64;
-        let amount = compute_xmr_amount("25.00", piconero_per_usd).unwrap();
-        assert_eq!(amount, 167_500_000_000);
+        let amount = compute_xmr_amount("25.00", PiconeroPerUnit(piconero_per_usd)).unwrap();
+        assert_eq!(amount, Piconero(167_500_000_000));
 
         // Zero or empty amount is rejected.
         {
             assert_eq!(
-                compute_xmr_amount("0.00", 1_000_000),
+                compute_xmr_amount("0.00", PiconeroPerUnit(1_000_000)),
                 Err(AmountError::NotPositive)
             );
             assert_eq!(
-                compute_xmr_amount("", 1_000_000),
+                compute_xmr_amount("", PiconeroPerUnit(1_000_000)),
                 Err(AmountError::InvalidDecimal)
             );
         }
@@ -671,7 +683,7 @@ mod tests {
         // Non numeric amount is rejected.
         {
             assert_eq!(
-                compute_xmr_amount("abc", 1_000_000),
+                compute_xmr_amount("abc", PiconeroPerUnit(1_000_000)),
                 Err(AmountError::InvalidDecimal)
             );
         }
@@ -679,49 +691,58 @@ mod tests {
 
     #[test]
     fn whole_number_amount_without_a_decimal_point_works() {
-        assert_eq!(compute_xmr_amount("5", 1_000_000).unwrap(), 5_000_000);
+        assert_eq!(
+            compute_xmr_amount("5", PiconeroPerUnit(1_000_000)).unwrap(),
+            Piconero(5_000_000)
+        );
     }
 
     #[test]
     fn single_decimal_digit_is_treated_as_tenths() {
-        assert_eq!(compute_xmr_amount("5.5", 1_000_000).unwrap(), 5_500_000);
+        assert_eq!(
+            compute_xmr_amount("5.5", PiconeroPerUnit(1_000_000)).unwrap(),
+            Piconero(5_500_000)
+        );
     }
 
     #[test]
     fn up_to_twelve_decimal_places_are_priced_exactly() {
         // 12.345 at 1e9 piconero per unit.
         assert_eq!(
-            compute_xmr_amount("12.345", 1_000_000_000).unwrap(),
-            12_345_000_000
+            compute_xmr_amount("12.345", PiconeroPerUnit(1_000_000_000)).unwrap(),
+            Piconero(12_345_000_000)
         );
         // Bitcoin-like 8 places.
         assert_eq!(
-            compute_xmr_amount("0.00012345", 1_000_000_000_000).unwrap(),
-            123_450_000
+            compute_xmr_amount("0.00012345", PiconeroPerUnit(1_000_000_000_000)).unwrap(),
+            Piconero(123_450_000)
         );
         // The twelfth place, at one XMR per unit, is one piconero.
         assert_eq!(
-            compute_xmr_amount("0.000000000001", 1_000_000_000_000).unwrap(),
-            1
+            compute_xmr_amount("0.000000000001", PiconeroPerUnit(1_000_000_000_000)).unwrap(),
+            Piconero(1)
         );
         assert_eq!(
-            compute_xmr_amount("1.000000000001", 1_000_000_000_000).unwrap(),
-            1_000_000_000_001
+            compute_xmr_amount("1.000000000001", PiconeroPerUnit(1_000_000_000_000)).unwrap(),
+            Piconero(1_000_000_000_001)
         );
         // A twelfth place below a piconero still rounds up to one.
-        assert_eq!(compute_xmr_amount("0.000000000001", 1).unwrap(), 1);
+        assert_eq!(
+            compute_xmr_amount("0.000000000001", PiconeroPerUnit(1)).unwrap(),
+            Piconero(1)
+        );
     }
 
     #[test]
     fn a_thirteenth_significant_decimal_place_is_rejected_not_truncated() {
         assert_eq!(
-            compute_xmr_amount("5.1234567890123", 1_000_000),
+            compute_xmr_amount("5.1234567890123", PiconeroPerUnit(1_000_000)),
             Err(AmountError::TooManyDecimalPlaces {
                 max: MAX_AMOUNT_DECIMALS
             })
         );
         assert_eq!(
-            compute_xmr_amount("0.0000000000001", 1_000_000_000_000),
+            compute_xmr_amount("0.0000000000001", PiconeroPerUnit(1_000_000_000_000)),
             Err(AmountError::TooManyDecimalPlaces { max: 12 })
         );
     }
@@ -730,20 +751,23 @@ mod tests {
     fn trailing_zeros_never_count_against_the_limit() {
         // What the OpenCart plugin sends for 12.50.
         assert_eq!(
-            compute_xmr_amount("12.50000000", 1_000_000).unwrap(),
-            compute_xmr_amount("12.50", 1_000_000).unwrap()
+            compute_xmr_amount("12.50000000", PiconeroPerUnit(1_000_000)).unwrap(),
+            compute_xmr_amount("12.50", PiconeroPerUnit(1_000_000)).unwrap()
         );
         assert_eq!(
-            compute_xmr_amount("12.500000000000000000000", 1_000_000).unwrap(),
-            12_500_000
+            compute_xmr_amount("12.500000000000000000000", PiconeroPerUnit(1_000_000)).unwrap(),
+            Piconero(12_500_000)
         );
         assert_eq!(
-            compute_xmr_amount("1.000000000001000", 1_000_000_000_000).unwrap(),
-            1_000_000_000_001
+            compute_xmr_amount("1.000000000001000", PiconeroPerUnit(1_000_000_000_000)).unwrap(),
+            Piconero(1_000_000_000_001)
         );
-        assert_eq!(compute_xmr_amount("5.", 1_000_000).unwrap(), 5_000_000);
         assert_eq!(
-            compute_xmr_amount("0.000000000000000", 1_000_000),
+            compute_xmr_amount("5.", PiconeroPerUnit(1_000_000)).unwrap(),
+            Piconero(5_000_000)
+        );
+        assert_eq!(
+            compute_xmr_amount("0.000000000000000", PiconeroPerUnit(1_000_000)),
             Err(AmountError::NotPositive)
         );
     }
@@ -758,7 +782,7 @@ mod tests {
         // normal rate. `crate::xmr_amount`'s own tests cover the same overflow
         // guard for `parse_xmr_to_piconero` directly.
         assert_eq!(
-            compute_xmr_amount("99999999999", 6_700_000_000),
+            compute_xmr_amount("99999999999", PiconeroPerUnit(6_700_000_000)),
             Err(AmountError::TooLarge)
         );
     }
@@ -779,22 +803,25 @@ mod tests {
             "2".to_string(),
         ] {
             assert_eq!(
-                compute_xmr_amount(&amount, max_rate),
+                compute_xmr_amount(&amount, PiconeroPerUnit(max_rate)),
                 Err(AmountError::TooLarge),
                 "{amount}"
             );
         }
         // One unit at the largest rate a `u64` holds is exactly that rate.
-        assert_eq!(compute_xmr_amount("1", max_rate).unwrap(), u64::MAX);
+        assert_eq!(
+            compute_xmr_amount("1", PiconeroPerUnit(max_rate)).unwrap(),
+            Piconero(u64::MAX)
+        );
         // At 1000 XMR per unit (far above any real currency), the edge of
         // what a `u64` holds is priced exactly, and just past it is refused.
         let thousand_xmr = 1_000 * PICONERO_PER_XMR;
         assert_eq!(
-            compute_xmr_amount("18446.744073709", thousand_xmr).unwrap(),
-            18_446_744_073_709_000_000
+            compute_xmr_amount("18446.744073709", PiconeroPerUnit(thousand_xmr)).unwrap(),
+            Piconero(18_446_744_073_709_000_000)
         );
         assert_eq!(
-            compute_xmr_amount("18446.744073710", thousand_xmr),
+            compute_xmr_amount("18446.744073710", PiconeroPerUnit(thousand_xmr)),
             Err(AmountError::TooLarge)
         );
     }
@@ -804,11 +831,11 @@ mod tests {
         // Rust's integer parser accepts `+`, and the `+` then consumed one of the
         // zero-padding slots: "1.+5" silently became 1.05 instead of being refused.
         assert_eq!(
-            compute_xmr_amount("1.+5", 1_000_000_000_000),
+            compute_xmr_amount("1.+5", PiconeroPerUnit(1_000_000_000_000)),
             Err(AmountError::InvalidDecimal)
         );
         assert_eq!(
-            compute_xmr_amount("+25.00", 1_000_000),
+            compute_xmr_amount("+25.00", PiconeroPerUnit(1_000_000)),
             Err(AmountError::InvalidDecimal)
         );
     }
@@ -818,17 +845,29 @@ mod tests {
         // 1 cent at a rate of 15 piconero/unit is 0.15 piconero. Rounding down gives
         // 0 - an order satisfiable by paying nothing. Rounding up gives 1, at a cost
         // of one piconero (1e-12 XMR) to the customer.
-        assert_eq!(compute_xmr_amount("0.01", 15).unwrap(), 1);
+        assert_eq!(
+            compute_xmr_amount("0.01", PiconeroPerUnit(15)).unwrap(),
+            Piconero(1)
+        );
         // 3 cents at 5 piconero/unit = 0.15 -> 1, not 0.
-        assert_eq!(compute_xmr_amount("0.03", 5).unwrap(), 1);
+        assert_eq!(
+            compute_xmr_amount("0.03", PiconeroPerUnit(5)).unwrap(),
+            Piconero(1)
+        );
         // 101 cents at 1 piconero/unit = 1.01 -> 2, never 1.
-        assert_eq!(compute_xmr_amount("1.01", 1).unwrap(), 2);
+        assert_eq!(
+            compute_xmr_amount("1.01", PiconeroPerUnit(1)).unwrap(),
+            Piconero(2)
+        );
         // Exact divisions must not be nudged upwards by the ceiling.
         assert_eq!(
-            compute_xmr_amount("25.00", 6_700_000_000).unwrap(),
-            167_500_000_000
+            compute_xmr_amount("25.00", PiconeroPerUnit(6_700_000_000)).unwrap(),
+            Piconero(167_500_000_000)
         );
-        assert_eq!(compute_xmr_amount("1.00", 100).unwrap(), 100);
+        assert_eq!(
+            compute_xmr_amount("1.00", PiconeroPerUnit(100)).unwrap(),
+            Piconero(100)
+        );
     }
 
     #[test]
@@ -836,11 +875,11 @@ mod tests {
         // A zero-priced order is satisfied by an empty payment set - `derive_status`
         // would report it `Paid` the moment it was created.
         assert_eq!(
-            compute_xmr_amount("25.00", 0),
+            compute_xmr_amount("25.00", PiconeroPerUnit(0)),
             Err(AmountError::NotPositive)
         );
         assert_eq!(
-            compute_xmr_amount("0.00", 6_700_000_000),
+            compute_xmr_amount("0.00", PiconeroPerUnit(6_700_000_000)),
             Err(AmountError::NotPositive)
         );
     }
