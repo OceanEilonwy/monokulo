@@ -24,7 +24,7 @@ use uuid::Uuid;
 pub use engine_protocol::ids::{OrderId, TenantId};
 
 use crate::auth::{generate_public_key, generate_secret_token, RawToken};
-use crate::status::{derive_status, OrderStatus, PaymentView, StatusInputs};
+use crate::status::{derive_status, order_confirmations, OrderStatus, PaymentView, StatusInputs};
 
 mod conflicts;
 pub mod db;
@@ -773,12 +773,7 @@ fn plan_status(facts: &StatusFacts<'_>) -> StatusPlan {
         .views
         .iter()
         .fold(0u64, |sum, v| sum.saturating_add(v.amount_piconero));
-    let confirmations = facts
-        .views
-        .iter()
-        .map(|v| v.confirmations)
-        .min()
-        .unwrap_or(0);
+    let confirmations = order_confirmations(facts.views, order.xmr_amount_piconero);
     let derived = derive_status(
         facts.views,
         StatusInputs {
