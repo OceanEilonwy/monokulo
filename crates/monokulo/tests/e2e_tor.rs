@@ -335,6 +335,7 @@ async fn start_monokulo(
                 spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
                 encrypted_keys: None,
             },
+            wallet_id: None,
             network: Some("mainnet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: Some(3600),

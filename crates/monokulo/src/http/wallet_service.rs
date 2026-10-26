@@ -88,8 +88,8 @@ pub(crate) async fn add_wallet(
         .client
         .create_wallet(CreateWalletRequest {
             keys,
-            network: req.network.clone(),
-            key_custody_backend,
+            network: Some(req.network.clone()),
+            key_custody_backend: key_custody_backend.map(Into::into),
         })
         .await
         .map_err(|e| match e {

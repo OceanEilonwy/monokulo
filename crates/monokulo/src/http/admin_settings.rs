@@ -159,15 +159,18 @@ fn engine_form_name(key: &str) -> String {
 #[derive(Deserialize)]
 struct RemoteScalarSetting {
     value: String,
-    source: String,
+    /// `None` for a source this build doesn't know (a newer engine's): the
+    /// card still shows, the chip as the default's.
+    #[serde(deserialize_with = "known_or_none")]
+    source: Option<live_settings::SettingSource>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
     kind: SettingKindView,
     #[serde(default)]
     example: Option<String>,
-    #[serde(default)]
-    applies: Option<String>,
+    #[serde(default, deserialize_with = "known_or_none")]
+    applies: Option<live_settings::Applies>,
     #[serde(default)]
     pending_restart: bool,
     #[serde(default)]
@@ -175,6 +178,17 @@ struct RemoteScalarSetting {
     /// Why the page can't change it, if it can't: shown locked.
     #[serde(default)]
     locked: Option<String>,
+}
+
+/// A value of `T` if it is one this build knows, else `None`, rather than
+/// failing the whole reply.
+fn known_or_none<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| T::deserialize(value).ok()))
 }
 
 #[derive(Deserialize, Default)]
@@ -234,10 +248,10 @@ async fn fetch_engine_settings(
                     .or(s.description),
                 key,
                 value: s.value,
-                source: SettingSourceView::from_name(&s.source),
+                source: s.source.map_or(SettingSourceView::Default, live_source),
                 kind: s.kind,
                 example: s.example,
-                restart_only: s.applies.as_deref() == Some("restart"),
+                restart_only: s.applies == Some(live_settings::Applies::Restart),
                 pending_restart: s.pending_restart,
                 problem: s.problem,
                 locked: s.locked,
@@ -512,7 +526,7 @@ async fn build_view_model(
 fn unreachable_networks(unserved: Vec<crate::engine_client::UnservedTenant>) -> Vec<String> {
     let mut networks: Vec<String> = unserved
         .into_iter()
-        .filter(|tenant| tenant.reason == "no_reachable_node")
+        .filter(|tenant| tenant.reason == crate::engine_client::UnservedReason::NoReachableNode)
         .map(|tenant| tenant.network)
         .collect();
     networks.sort();
@@ -4816,6 +4830,7 @@ mod tests {
                     "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
                 encrypted_keys: None,
             },
+            wallet_id: None,
             network: Some("stagenet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,

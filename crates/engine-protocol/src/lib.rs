@@ -4,6 +4,8 @@
 //! here, so a field or a status can't mean one thing to the engine and
 //! another to monokulo.
 //!
+//! - [`admin_api`] (feature `admin-api`): the admin API's and `/status`'s
+//!   bodies, built from the parts below.
 //! - [`amount`]: amounts of monero and exchange rates into it.
 //! - [`custody`]: the key custody backends a store's keys can be held in.
 //! - [`ids`]: store, order and other identifiers as types of their own.
@@ -15,6 +17,8 @@
 //!   about ZMQ announcements, proof-of-work checking and scaling.
 
 pub mod activity;
+#[cfg(feature = "admin-api")]
+pub mod admin_api;
 pub mod amount;
 pub mod announcements;
 pub mod custody;

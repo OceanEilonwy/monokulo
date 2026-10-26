@@ -14,7 +14,7 @@ use uuid::Uuid;
 
 use crate::crypto;
 use crate::db::UserRow;
-use crate::engine_client::{CreateTenantOnWalletRequest, EngineClientError};
+use crate::engine_client::{CreateTenantRequest, EngineClientError};
 use crate::now_unix;
 use crate::stores::Site;
 
@@ -142,10 +142,11 @@ pub(super) async fn create_connection_for_user(
     let created = state
         .engine
         .client
-        .create_tenant_on_wallet(CreateTenantOnWalletRequest {
-            wallet_id: wallet.engine_wallet_id.clone(),
+        .create_tenant_on_wallet(CreateTenantRequest {
+            wallet_id: Some(wallet.engine_wallet_id.clone()),
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
+            ..CreateTenantRequest::default()
         })
         .await
         .map_err(|e| match e {
