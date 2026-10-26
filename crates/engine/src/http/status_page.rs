@@ -512,7 +512,7 @@ fn custody_unserved_tenants(
             };
             Some(UnservedTenant {
                 public_key,
-                network,
+                network: network_str(network).to_owned(),
                 reason,
                 blocks_behind: None,
             })
@@ -545,14 +545,11 @@ fn unserved_tenants(
 ) -> Result<Vec<UnservedTenant>, crate::store::StoreError> {
     let mut unserved = Vec::new();
     let with_tenants = store.count_tenants_by_network()?;
-    for (network, count) in with_tenants {
-        // A name no network has is a corrupted row: nothing to report on.
-        let Ok(parsed) = crate::network::parse_network(&network) else {
-            continue;
-        };
+    for (parsed, count) in with_tenants {
         if count == 0 {
             continue;
         }
+        let network = network_str(parsed).to_owned();
         if network_unreachable(networks.iter().find(|n| n.network == network)) {
             for public_key in store.tenant_public_keys_on_network(parsed)? {
                 unserved.push(UnservedTenant {

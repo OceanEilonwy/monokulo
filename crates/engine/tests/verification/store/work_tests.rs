@@ -20,7 +20,7 @@ fn tenant(store: &Store, network: &str) -> String {
                 key_custody_backend: crate::store::CustodyBackend::Plain,
                 sealed_key_material: vec![0u8; 64],
                 primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
-                network: network.into(),
+                network: engine_protocol::network::parse_network(network).unwrap(),
                 confirmations_required: Some(10),
                 order_expiry_seconds: None,
             },
@@ -282,7 +282,7 @@ fn a_rewind_that_empties_the_window_keeps_the_ancestor_and_clamps_cursors() {
         .list_active_tenants()
         .unwrap()
         .into_iter()
-        .filter(|t| t.network == "mainnet")
+        .filter(|t| t.network == monero::Network::Mainnet)
         .map(|t| t.scanned_through_height)
         .collect();
     assert!(cursors.iter().all(|c| *c == Some(19)), "{cursors:?}");

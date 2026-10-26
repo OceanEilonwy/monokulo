@@ -890,7 +890,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
                         .await
                         .unwrap(),
                     primary_address: "5x".into(),
-                    network: "stagenet".into(),
+                    network: Network::Stagenet,
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },

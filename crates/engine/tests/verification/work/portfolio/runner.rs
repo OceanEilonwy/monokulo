@@ -172,7 +172,7 @@ pub(crate) fn explore(data: &[u8]) -> BTreeMap<String, u64> {
                             key_custody_backend: crate::store::CustodyBackend::Plain,
                             sealed_key_material: sealed,
                             primary_address: "portfolio".into(),
-                            network: "mainnet".into(),
+                            network: monero::Network::Mainnet,
                             confirmations_required: Some(1),
                             order_expiry_seconds: None,
                         },

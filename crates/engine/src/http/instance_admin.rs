@@ -141,7 +141,10 @@ pub async fn get_settings(
                     description: view.description,
                     example: view.example,
                     source: source_str(view.source),
-                    tenant_count: tenant_counts.get(network).copied().unwrap_or(0),
+                    tenant_count: tenant_counts
+                        .iter()
+                        .find(|(n, _)| crate::network::network_str(*n) == network)
+                        .map_or(0, |(_, count)| *count),
                 },
             );
             continue;
@@ -493,13 +496,11 @@ async fn saved(
         .map(|(n, _)| *n)
         .collect();
     let mut unserved = Vec::new();
-    for (network, tenants) in counts {
+    for (parsed, tenants) in counts {
         if tenants == 0 {
             continue;
         }
-        let Ok(parsed) = crate::network::parse_network(&network) else {
-            continue;
-        };
+        let network = crate::network::network_str(parsed).to_owned();
         let reachable = match networks.daemons.get(parsed) {
             None => false,
             Some(_) if !saved_networks.contains(&network.as_str()) => true,

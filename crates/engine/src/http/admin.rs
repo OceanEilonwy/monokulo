@@ -13,7 +13,9 @@ use crate::key_custody::{
     WalletHandle, WalletMaterial,
 };
 use crate::status::OrderStatus;
-use crate::store::{Database, NewTenant, Order, OrderPaymentRow, TenantConfigPatch};
+use crate::store::{
+    Database, EngineWalletId, NewTenant, Order, OrderPaymentRow, TenantConfigPatch,
+};
 use engine_daemon::MoneroDaemonClient as _;
 
 use super::{
@@ -55,7 +57,7 @@ pub(super) struct CreateTenantRequest {
     /// (`POST /api/v1/admin/wallets`), instead of `keys`: its keys are not
     /// sent again, and it shares the wallet's address counter with the
     /// wallet's other stores.
-    wallet_id: Option<String>,
+    wallet_id: Option<EngineWalletId>,
     network: Option<String>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
@@ -249,7 +251,7 @@ async fn create_tenant_to_completion(
         key_custody_backend: backend,
         sealed_key_material: sealed,
         primary_address: primary_address.to_string(),
-        network: network_str(network).to_owned(),
+        network,
         // Values the request doesn't give come from the instance's
         // current defaults (task 2.9), not a hardcoded number.
         confirmations_required: Some(
@@ -301,7 +303,7 @@ async fn create_tenant_to_completion(
 /// sealed keys, which are then registered for it like a store's at boot.
 async fn create_tenant_on_wallet(
     state: AppState,
-    wallet_id: String,
+    wallet_id: EngineWalletId,
     req: CreateTenantRequest,
 ) -> Result<Json<CreateTenantResponse>, ApiError> {
     if !req.keys.view_key_hex.trim().is_empty()
@@ -323,19 +325,19 @@ async fn create_tenant_on_wallet(
         .await?
         .filter(|w| w.deleted_at.is_none())
         .ok_or_else(|| ApiError::BadRequest(format!("no wallet {wallet_id:?}")))?;
-    if let Some(network) = req.network.as_deref() {
-        if network != wallet.network {
+    let network = wallet.network;
+    if let Some(requested) = req.network.as_deref() {
+        if requested != network_str(network) {
             return Err(ApiError::BadRequest(format!(
-                "the wallet is on {:?}, not {network:?}",
-                wallet.network
+                "the wallet is on {:?}, not {requested:?}",
+                network_str(network)
             )));
         }
     }
-    let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
     if !state.networks.daemons.is_configured(network) {
         return Err(ApiError::BadRequest(format!(
             "no monero_node is configured for network {:?} on this instance",
-            wallet.network
+            network_str(network)
         )));
     }
     let (confirmations, expiry) = {
@@ -406,7 +408,7 @@ pub(super) struct CreateWalletRequest {
 
 #[derive(Serialize)]
 pub(super) struct WalletView {
-    wallet_id: String,
+    wallet_id: EngineWalletId,
     primary_address: String,
     network: String,
     key_custody_backend: CustodyBackend,
@@ -455,7 +457,7 @@ async fn create_wallet_to_completion(
         key_custody_backend: backend,
         sealed_key_material: sealed,
         primary_address,
-        network: network_str(network).to_owned(),
+        network,
     };
     let wallet = state
         .db
@@ -464,14 +466,14 @@ async fn create_wallet_to_completion(
     Ok(Json(WalletView {
         wallet_id: wallet.id,
         primary_address: wallet.primary_address,
-        network: wallet.network,
+        network: network_str(wallet.network).to_owned(),
         key_custody_backend: wallet.key_custody_backend,
     }))
 }
 
 #[derive(Serialize)]
 pub(super) struct WalletStatusView {
-    wallet_id: String,
+    wallet_id: EngineWalletId,
     primary_address: String,
     network: String,
     key_custody_backend: CustodyBackend,
@@ -493,7 +495,7 @@ pub(super) struct WalletStatusView {
 /// would wait for.
 pub(super) async fn get_wallet(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<EngineWalletId>,
 ) -> Result<Json<WalletStatusView>, ApiError> {
     let grace = grace_period(&state);
     let (wallet, in_use) = state
@@ -509,7 +511,7 @@ pub(super) async fn get_wallet(
     Ok(Json(WalletStatusView {
         wallet_id: wallet.id,
         primary_address: wallet.primary_address,
-        network: wallet.network,
+        network: network_str(wallet.network).to_owned(),
         key_custody_backend: wallet.key_custody_backend,
         retired_at: wallet.deleted_at,
         stores: in_use.stores,
@@ -539,7 +541,7 @@ pub(super) struct RetiredView {
 /// already retired one.
 pub(super) async fn retire_wallet(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<EngineWalletId>,
 ) -> Result<Json<RetiredView>, ApiError> {
     let grace = grace_period(&state);
     let now = now_unix();
@@ -564,7 +566,7 @@ pub(super) struct RestoreWalletRequest {
 /// address they make, compared by keys. `400` for other keys.
 pub(super) async fn restore_wallet(
     State(state): State<AppState>,
-    Path(id): Path<String>,
+    Path(id): Path<EngineWalletId>,
     Json(req): Json<RestoreWalletRequest>,
 ) -> Result<Json<WalletView>, ApiError> {
     let lookup = id.clone();
@@ -574,7 +576,7 @@ pub(super) async fn restore_wallet(
         .await?
         .filter(|w| w.deleted_at.is_some())
         .ok_or(ApiError::NotFound)?;
-    let network = parse_network(&wallet.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let network = wallet.network;
     let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
     let registered = register_keys(&state, backend, &req.keys, Action::Create, None).await?;
     let same = match &registered.material {
@@ -605,7 +607,7 @@ pub(super) async fn restore_wallet(
     Ok(Json(WalletView {
         wallet_id: wallet.id,
         primary_address: wallet.primary_address,
-        network: wallet.network,
+        network: network_str(wallet.network).to_owned(),
         key_custody_backend: wallet.key_custody_backend,
     }))
 }
@@ -669,7 +671,7 @@ fn validate_tenant_settings(
 pub(super) struct TenantView {
     tenant_id: crate::store::TenantId,
     public_key: String,
-    wallet_id: String,
+    wallet_id: EngineWalletId,
     primary_address: String,
     network: String,
     confirmations_required: u64,
@@ -684,7 +686,7 @@ impl From<crate::store::Tenant> for TenantView {
             public_key: t.public_key,
             wallet_id: t.wallet_id,
             primary_address: t.primary_address,
-            network: t.network,
+            network: network_str(t.network).to_owned(),
             confirmations_required: t.confirmations_required,
             order_expiry_seconds: t.order_expiry_seconds,
             key_custody_backend: t.key_custody_backend,
@@ -750,7 +752,7 @@ async fn switch_key_custody_to_completion(
         .await?
         .filter(|t| t.disabled_at.is_none())
         .ok_or(ApiError::Unauthorized)?;
-    let network = parse_network(&tenant.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    let network = tenant.network;
 
     let store = tenant.id.as_str().to_owned();
     let Registered {
@@ -1018,7 +1020,7 @@ pub(super) async fn delete_own_tenant(
 async fn forget_handles(
     custody: &Custody,
     ids: impl IntoIterator<Item = crate::store::TenantId>,
-    of_wallet: Option<&str>,
+    of_wallet: Option<&EngineWalletId>,
     why: &str,
 ) {
     for id in ids {
@@ -1027,7 +1029,7 @@ async fn forget_handles(
             let mut handles = custody.wallet_handles.write();
             let theirs = handles
                 .get(&id)
-                .is_some_and(|live| of_wallet.is_none_or(|wallet| live.wallet_id == wallet));
+                .is_some_and(|live| of_wallet.is_none_or(|wallet| live.wallet_id == *wallet));
             theirs.then(|| handles.remove(&id)).flatten()
         };
         if let Some(live) = removed {
@@ -1044,7 +1046,7 @@ async fn forget_handles(
 
 #[derive(Deserialize)]
 pub(super) struct ChangeWalletRequest {
-    wallet_id: String,
+    wallet_id: EngineWalletId,
 }
 
 #[derive(Serialize)]
@@ -1544,12 +1546,7 @@ pub(super) async fn lookup_payment(
         ));
     }
 
-    let network = parse_network(&tenant.network).map_err(|e| {
-        ApiError::Internal(format!(
-            "tenant has an unrecognized network {:?}: {e}",
-            tenant.network
-        ))
-    })?;
+    let network = tenant.network;
     let daemon = state.networks.daemons.get(network).ok_or_else(|| {
         ApiError::Unavailable(format!(
             "no Monero node is configured for network {network:?}"

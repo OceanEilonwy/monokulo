@@ -295,7 +295,7 @@ impl World {
                             key_custody_backend: crate::store::CustodyBackend::Plain,
                             sealed_key_material: sealed,
                             primary_address: "fault-control".into(),
-                            network: "mainnet".into(),
+                            network: monero::Network::Mainnet,
                             confirmations_required: Some(0),
                             order_expiry_seconds: None,
                         },
