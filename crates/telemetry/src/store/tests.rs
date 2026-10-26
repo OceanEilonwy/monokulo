@@ -256,7 +256,7 @@ fn spans_are_stored_redacted_with_their_parents_and_a_trace_reads_back_whole() {
     assert_eq!(trace.spans.len(), 2, "{trace:?}");
     let (request, call) = (&trace.spans[0], &trace.spans[1]);
     assert_eq!(request.name, "HTTP request");
-    assert_eq!(request.kind, "server");
+    assert_eq!(request.kind, super::SpanKind::Server);
     assert_eq!(request.parent_span_id, None);
     assert_eq!(
         call.parent_span_id.as_deref(),
