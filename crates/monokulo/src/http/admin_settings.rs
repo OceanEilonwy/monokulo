@@ -909,36 +909,47 @@ async fn commit_monokulo(
         ));
     };
     match registry.save(monokulo_changes(form)).await {
-        Ok(report) => {
-            let mut notes = Vec::new();
-            for warning in &report.warnings {
-                // The only monokulo warning today: the engine didn't answer
-                // at the saved URL.
-                notes.push(SaveNote::Banner(warning.message.clone()));
-            }
-            if !report.env_overridden.is_empty() {
-                notes.push(SaveNote::Remark(format!(
-                    "Saved, but these are set by an environment variable, which wins while it is set: {}.",
-                    report.env_overridden.join(", ")
-                )));
-            }
-            if !report.restart_required.is_empty() {
-                notes.push(SaveNote::Restart(format!(
-                    "Saved. These take effect after monokulo restarts: {}.",
-                    report.restart_required.join(", ")
-                )));
-            }
-            Ok(notes)
-        }
+        Ok(report) => Ok(monokulo_notes(&report, "Saved")),
         // Stored, but applying them failed: retrying would fail the same way.
         Err(live_settings::SaveError::Install(message)) => {
             tracing::error!(error = %message, "monokulo settings were saved but applying them failed");
-            Ok(vec![SaveNote::Banner(format!(
-                "Saved, but applying the new values failed ({message}). Restart monokulo to apply them."
-            ))])
+            Ok(vec![install_failed_note(&message, "Saved")])
         }
         Err(e) => Err(registry_refusal(e)),
     }
+}
+
+/// What a save or a reload of monokulo's settings leaves to say (`done`
+/// says which): its warnings, what the command line or environment still
+/// overrides, and what waits for a restart.
+fn monokulo_notes(report: &live_settings::SaveReport, done: &str) -> Vec<SaveNote> {
+    let mut notes = Vec::new();
+    for warning in &report.warnings {
+        // The only monokulo warning today: the engine didn't answer
+        // at the saved URL.
+        notes.push(SaveNote::Banner(warning.message.clone()));
+    }
+    if !report.env_overridden.is_empty() {
+        notes.push(SaveNote::Remark(format!(
+            "{done}, but these are set by an environment variable, which wins while it is set: {}.",
+            report.env_overridden.join(", ")
+        )));
+    }
+    if !report.restart_required.is_empty() {
+        notes.push(SaveNote::Restart(format!(
+            "{done}. These take effect after monokulo restarts: {}.",
+            report.restart_required.join(", ")
+        )));
+    }
+    notes
+}
+
+/// Monokulo's new values were stored, but applying them failed (`done`
+/// says by a save or a reload).
+fn install_failed_note(message: &str, done: &str) -> SaveNote {
+    SaveNote::Banner(format!(
+        "{done}, but applying the new values failed ({message}). Restart monokulo to apply them."
+    ))
 }
 
 /// The SEV-SNP key entry settings as `form` would leave them, checked
@@ -1085,11 +1096,15 @@ struct RemoteSaveResponse {
     warnings: RemoteSaveWarnings,
 }
 
-/// What an accepted engine save leaves to say (tasks 3.6, 4.5, decisions
-/// D1, D2, D8): networks stores use that no longer have a node (a banner),
-/// restart-only settings, environment overrides and anything else the
-/// engine said.
-fn engine_save_notes(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>) -> Vec<SaveNote> {
+/// What an accepted engine save or reload leaves to say (`done` says
+/// which; tasks 3.6, 4.5, decisions D1, D2, D8): networks stores use that no
+/// longer have a node (a banner), restart-only settings, environment
+/// overrides and anything else the engine said.
+fn engine_save_notes(
+    warnings: RemoteSaveWarnings,
+    submitted_bind: Option<&str>,
+    done: &str,
+) -> Vec<SaveNote> {
     let mut notes = Vec::new();
     for unserved in &warnings.unserved_networks {
         let stores = if unserved.tenants == 1 {
@@ -1111,7 +1126,7 @@ fn engine_save_notes(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>)
     }
     if !warnings.restart_required.is_empty() {
         let mut text = format!(
-            "Saved. These settings take effect after the engine restarts: {}.",
+            "{done}. These settings take effect after the engine restarts: {}.",
             warnings.restart_required.join(", ")
         );
         if warnings.restart_required.iter().any(|k| k == "server.bind") {
@@ -1128,7 +1143,7 @@ fn engine_save_notes(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>)
     }
     if !warnings.env_overridden.is_empty() {
         notes.push(SaveNote::Remark(format!(
-            "Saved, but these are set by an environment variable on the engine, which wins while it is set: {}.",
+            "{done}, but these are set by an environment variable on the engine, which wins while it is set: {}.",
             warnings.env_overridden.join(", ")
         )));
     }
@@ -1209,31 +1224,13 @@ async fn commit_engine(
 ) -> Result<Vec<SaveNote>, Refusal> {
     match state.engine.client.save_settings(&req).await {
         Ok(response) if response.status().is_success() => {
-            let saved: RemoteSaveResponse = match response.json() {
-                Ok(saved) => saved,
-                Err(e) => {
-                    // Saved, but what it said about the save is lost: say
-                    // so, and don't trust the cached node status either.
-                    tracing::warn!(error = %e, "the engine saved its settings but its reply could not be read");
-                    super::status_page::invalidate_status_cache(&state.engine);
-                    return Ok(vec![SaveNote::Remark(
-                        "Saved, but the engine's reply could not be read, so any restart it needs or node it lost isn't shown here.".to_string(),
-                    )]);
-                }
-            };
-            // New nodes: the next page shows their status, not the cached
-            // one of the nodes they replaced.
-            if saved
-                .changed
-                .iter()
-                .any(|key| key.starts_with("monero_node."))
-            {
-                super::status_page::invalidate_status_cache(&state.engine);
-            }
-            Ok(engine_save_notes(
-                saved.warnings,
+            let (_, notes) = engine_saved(
+                state,
+                response.json().map_err(|e| e.to_string()),
                 req.scalars.get("server.bind").map(String::as_str),
-            ))
+                "Saved",
+            );
+            Ok(notes)
         }
         Ok(response) => {
             let status = response.status();
@@ -1243,6 +1240,44 @@ async fn commit_engine(
             "Could not reach the configured engine: {e}"
         ))),
     }
+}
+
+/// What the engine's reply to an accepted save or reload says (`done` says
+/// which): the keys it changed, `None` when the reply couldn't be read, and
+/// what it leaves to say. The cached node status is dropped when nodes
+/// changed, or might have.
+fn engine_saved(
+    state: &AppState,
+    reply: Result<RemoteSaveResponse, String>,
+    submitted_bind: Option<&str>,
+    done: &str,
+) -> (Option<Vec<String>>, Vec<SaveNote>) {
+    let saved = match reply {
+        Ok(saved) => saved,
+        Err(e) => {
+            // Done, but what it said about it is lost: say so, and don't
+            // trust the cached node status either.
+            tracing::warn!(error = %e, "the engine took its settings but its reply could not be read");
+            super::status_page::invalidate_status_cache(&state.engine);
+            return (
+                None,
+                vec![SaveNote::Remark(format!(
+                    "{done}, but the engine's reply could not be read, so any restart it needs or node it lost isn't shown here."
+                ))],
+            );
+        }
+    };
+    // New nodes: the next page shows their status, not the cached one of
+    // the nodes they replaced.
+    if saved
+        .changed
+        .iter()
+        .any(|key| key.starts_with("monero_node."))
+    {
+        super::status_page::invalidate_status_cache(&state.engine);
+    }
+    let notes = engine_save_notes(saved.warnings, submitted_bind, done);
+    (Some(saved.changed), notes)
 }
 
 /// What saving a tab did: its outcome, what it leaves to say, and what to
@@ -1657,32 +1692,22 @@ pub struct ReloadForm {
     tab: Option<String>,
 }
 
-/// What a reload changed, as the page says it.
-fn reload_notes(
-    process: &str,
-    changed: &[String],
-    restart_required: &[String],
-) -> (String, Vec<SaveNote>) {
-    let success = if changed.is_empty() {
-        format!("Reloaded {process}'s options file: nothing in it changed.")
-    } else {
-        format!(
+/// What a reload changed, as the page says it: `None` when that isn't
+/// known (the engine's reply was lost).
+fn reload_success(process: &str, changed: Option<&[String]>) -> String {
+    match changed {
+        None => format!("Reloaded {process}'s options file."),
+        Some([]) => format!("Reloaded {process}'s options file: nothing in it changed."),
+        Some(changed) => format!(
             "Reloaded {process}'s options file and applied it: {}.",
             changed.join(", ")
-        )
-    };
-    let mut notes = Vec::new();
-    if !restart_required.is_empty() {
-        notes.push(SaveNote::Restart(format!(
-            "These take effect after {process} restarts: {}.",
-            restart_required.join(", ")
-        )));
+        ),
     }
-    (success, notes)
 }
 
 /// Reads monokulo's options file again and applies it; `Err` is why
-/// nothing changed.
+/// nothing changed. What it leaves to say is what a save of the same
+/// values would.
 async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), String> {
     let Some(registry) = state.settings.registry.as_ref() else {
         return Err("Settings can't be reloaded on this instance.".to_string());
@@ -1690,19 +1715,19 @@ async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), St
     match registry.reload().await {
         Ok(report) => {
             let changed: Vec<String> = report.changed.iter().map(ToString::to_string).collect();
-            let restart: Vec<String> = report
-                .restart_required
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-            let (success, mut notes) = reload_notes("monokulo", &changed, &restart);
-            notes.extend(
-                report
-                    .warnings
-                    .iter()
-                    .map(|warning| SaveNote::Banner(warning.message.clone())),
-            );
-            Ok((success, notes))
+            Ok((
+                reload_success("monokulo", Some(&changed)),
+                monokulo_notes(&report, "Reloaded"),
+            ))
+        }
+        // Read and stored, but applying them failed: a reload that read
+        // nothing wrong in the file, so not one to fix and retry.
+        Err(live_settings::SaveError::Install(message)) => {
+            tracing::error!(error = %message, "monokulo's options file was reloaded but applying it failed");
+            Ok((
+                reload_success("monokulo", None),
+                vec![install_failed_note(&message, "Reloaded")],
+            ))
         }
         Err(e) => Err(format!(
             "Nothing was reloaded: monokulo's options file has problems. {e}"
@@ -1712,6 +1737,7 @@ async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), St
 
 /// Asks the engine to read its options file again and apply it
 /// (`POST /api/v1/admin/settings/reload`); `Err` is why nothing changed.
+/// What it leaves to say is what a save of the same values would.
 async fn reload_engine(state: &AppState) -> Result<(String, Vec<SaveNote>), String> {
     let response = state
         .engine
@@ -1730,27 +1756,13 @@ async fn reload_engine(state: &AppState) -> Result<(String, Vec<SaveNote>), Stri
             "Nothing was reloaded: the engine's options file has problems ({status}). {message}"
         ));
     }
-    let saved: RemoteSaveResponse = serde_json::from_str(&body).unwrap_or_default();
-    if saved
-        .changed
-        .iter()
-        .any(|key| key.starts_with("monero_node."))
-    {
-        super::status_page::invalidate_status_cache(&state.engine);
-    }
-    let (success, mut notes) = reload_notes(
-        "the engine",
-        &saved.changed,
-        &saved.warnings.restart_required,
+    let (changed, notes) = engine_saved(
+        state,
+        serde_json::from_str(&body).map_err(|e| e.to_string()),
+        None,
+        "Reloaded",
     );
-    notes.extend(
-        saved
-            .warnings
-            .messages
-            .into_iter()
-            .map(|message| SaveNote::Remark(message.message)),
-    );
-    Ok((success, notes))
+    Ok((reload_success("the engine", changed.as_deref()), notes))
 }
 
 /// `POST /admin/settings/reload` - the Reload options file button:
@@ -4758,7 +4770,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(
-            super::engine_save_notes(warnings, None),
+            super::engine_save_notes(warnings, None, "Saved"),
             [super::SaveNote::Banner(
                 "The snp key custody backend can't run: this engine is not a trusted SEV-SNP image. Stores on it aren't scanned until it can.".into()
             )]
