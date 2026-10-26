@@ -198,6 +198,29 @@ fn what_is_older_than_the_history_keeps_is_let_go_of_and_the_rest_still_rebuilds
         (KEEP_MS / KEYFRAME_EVERY_MS..=KEEP_MS / KEYFRAME_EVERY_MS + 2).contains(&keyframes),
         "{keyframes}"
     );
+
+    // A catch-up's burst, more events inside a minute than the engine's
+    // record keeps: no more than that is kept either, and it still
+    // rebuilds.
+    let mut burst = network(100);
+    let start = burst[0].at_ms;
+    for recorded in &mut burst {
+        recorded.at_ms = start + i64::try_from(recorded.seq / 1_000).unwrap();
+    }
+    assert!(burst.len() > MAX_EVENTS);
+    let newest = burst.last().unwrap().at_ms;
+    assert!(newest - start < 60_000);
+    let history = History::new(page(&burst, "e1"));
+    assert!(
+        history.events.len() <= MAX_EVENTS,
+        "{}",
+        history.events.len()
+    );
+    let oldest = history.oldest_ms().unwrap();
+    assert!(oldest > start);
+    for at in [oldest, oldest + 7, newest] {
+        assert_eq!(history.state_at(at), brute_force(&burst, at));
+    }
 }
 
 /// A page of new events is a frame: what the page draws now, the effects

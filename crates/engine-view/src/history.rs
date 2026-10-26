@@ -10,13 +10,14 @@
 
 use std::collections::VecDeque;
 
-use engine_protocol::activity::{ActivityPage, Event, Recorded, Tuning};
+use engine_protocol::activity::{ActivityPage, Event, Recorded, Tuning, KEEP, MAX_EVENTS};
 use serde::Serialize;
 
 use super::machine::{step, Effect, Mark, State};
 
-/// How far back the history reaches: the engine keeps as much.
-pub const KEEP_MS: i64 = 30 * 60_000;
+/// How far back the history reaches: the engine keeps as much. Like the
+/// engine's record, it also keeps no more than [`MAX_EVENTS`] events.
+pub const KEEP_MS: i64 = KEEP.as_millis() as i64;
 /// How often the state is kept, so a moment is rebuilt from at most this
 /// much of events...
 pub const KEYFRAME_EVERY_MS: i64 = 5_000;
@@ -131,7 +132,8 @@ impl History {
     }
 
     /// Runs the machine over `events` (those not seen yet), keeping
-    /// keyframes and marks, and lets go of what is older than [`KEEP_MS`].
+    /// keyframes and marks, and lets go of what is older than [`KEEP_MS`]
+    /// or past [`MAX_EVENTS`].
     /// Returns how many were new, and their effects and marks.
     fn apply(&mut self, events: Vec<Recorded>) -> (usize, Vec<Timed>, Vec<Mark>) {
         let mut applied = 0;
@@ -171,9 +173,17 @@ impl History {
 
     /// Lets go of what happened before `cutoff`, keeping the newest
     /// keyframe from before it as the base everything later is rebuilt
-    /// from.
+    /// from; and of the oldest events past [`MAX_EVENTS`], moving the base
+    /// on to the oldest keyframe that leaves no more than that.
     fn forget_before(&mut self, cutoff: i64) {
-        while self.keyframes.len() > 1 && self.keyframes[1].at_ms <= cutoff {
+        let next = self.events.back().map_or(0, |e| e.seq + 1);
+        let too_many = |keyframe: &Keyframe| {
+            usize::try_from(next.saturating_sub(keyframe.next_seq)).unwrap_or(usize::MAX)
+                > MAX_EVENTS
+        };
+        while self.keyframes.len() > 1
+            && (self.keyframes[1].at_ms <= cutoff || too_many(&self.keyframes[0]))
+        {
             self.keyframes.pop_front();
         }
         let base = self.keyframes.front().map_or(0, |k| k.next_seq);

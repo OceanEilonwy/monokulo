@@ -12,6 +12,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::order_status::OrderStatus;
 
+/// How far back the engine's record of a network's events reaches, and the
+/// engine page's history of them with it.
+pub const KEEP: std::time::Duration = std::time::Duration::from_mins(30);
+/// The most events either keeps, whatever their age: a busy network's
+/// record stays bounded (a round records about ten; a catch-up a few per
+/// block).
+pub const MAX_EVENTS: usize = 50_000;
+
 /// The kinds of the scanner's work, in priority order within a round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
