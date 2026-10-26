@@ -39,7 +39,9 @@ pub const FOREIGN_KEYS_OFF: &str = "-- foreign_keys: off";
 /// Migrations already recorded in `schema_migrations` (created here if it doesn't
 /// exist yet) are skipped, so calling this repeatedly against an already-migrated
 /// database - e.g. every time a server restarts against its existing database file -
-/// is safe and a no-op for anything already applied.
+/// is safe and a no-op for anything already applied. A database that records
+/// a version past the last of `migrations` was migrated by a newer release,
+/// and is refused with nothing run.
 pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<()> {
     // A duplicated or out-of-order version would be skipped as "already
     // applied", or applied out of order, without a word.
@@ -58,6 +60,25 @@ pub fn apply(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<
              PRIMARY KEY (kind, id)
          );",
     )?;
+    // A database a newer release has migrated has a schema this binary's
+    // code was never written against: refuse it before anything runs,
+    // rather than serve from it after a rollback. A fresh database has no
+    // rows yet, so it passes.
+    let newest: Option<i64> =
+        conn.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })?;
+    let known = migrations.last().map(|(version, _)| *version);
+    if let Some(newest) = newest.filter(|newest| known.is_none_or(|known| *newest > known)) {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some(format!(
+                "this database was migrated by a newer release (version {newest}); \
+                 this one knows up to {}",
+                known.unwrap_or(0)
+            )),
+        ));
+    }
     for (version, sql) in migrations {
         let already_applied: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
@@ -241,6 +262,41 @@ mod tests {
             (2, "CREATE TABLE half_applied (id INTEGER PRIMARY KEY);"),
         ];
         apply(&conn, fixed).unwrap();
+    }
+
+    /// An older binary run on a database a newer release migrated (a
+    /// rollback) stops at start, before running anything, instead of
+    /// serving from a schema it doesn't know.
+    #[test]
+    fn a_database_a_newer_release_migrated_is_refused() {
+        let conn = Connection::open_in_memory().unwrap();
+        let newer: &[(i64, &str)] = &[
+            (1, "CREATE TABLE a (v TEXT);"),
+            (3, "CREATE TABLE c (v TEXT);"),
+        ];
+        apply(&conn, newer).unwrap();
+
+        // The older release knows a version 2 the newer one never had.
+        let older: &[(i64, &str)] = &[
+            (1, "CREATE TABLE a (v TEXT);"),
+            (2, "CREATE TABLE b (v TEXT);"),
+        ];
+        let error = apply(&conn, older).unwrap_err().to_string();
+        assert!(
+            error.contains("version 3") && error.contains("knows up to 2"),
+            "{error}"
+        );
+        let b_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'b')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!b_exists, "nothing ran");
+
+        // The release that migrated it still opens it.
+        apply(&conn, newer).unwrap();
     }
 
     fn foreign_keys_on(conn: &Connection) -> bool {
