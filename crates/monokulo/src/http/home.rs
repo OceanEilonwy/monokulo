@@ -100,9 +100,9 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
         // page of latest orders listed below.
         let day_ago = crate::now_unix() - 24 * 3600;
         if let Ok(totals) = state.engine.client.order_totals(&sk, day_ago).await {
-            let received = u128::from(totals.received_piconero);
+            let received = u128::from(totals.received_piconero.get());
             store.orders_last_day = totals.orders_since;
-            store.received_xmr = format_piconero_as_xmr(received);
+            store.received_xmr = pricing::xmr_amount::format_scaled_trimmed(received);
             total_received_piconero += received;
         }
         if let Ok(orders) = state.engine.client.list_orders(&sk).await {
@@ -158,48 +158,13 @@ async fn dashboard(state: &AppState, user: &UserRow) -> Response {
         has_stores: !stores.is_empty(),
         stores,
         recent_orders: all_orders,
-        total_received_xmr: format_piconero_as_xmr(total_received_piconero),
+        total_received_xmr: pricing::xmr_amount::format_scaled_trimmed(total_received_piconero),
     };
     views::home::page(&chrome, &view_model).into_response()
 }
 
-/// 1 XMR = 10^12 piconero (the same fixed-point convention every other
-/// piconero value in this codebase uses - see `engine::status`'s own
-/// doc comments at the repo root). Formats with the full 12 fractional
-/// digits, trailing zeros trimmed, so a whole-XMR total reads as `"1"` not
-/// `"1.000000000000"`, while still showing genuine sub-piconero-rounded
-/// precision when present.
-fn format_piconero_as_xmr(piconero: u128) -> String {
-    const PICONERO_PER_XMR: u128 = 1_000_000_000_000;
-    let whole = piconero / PICONERO_PER_XMR;
-    let frac = piconero % PICONERO_PER_XMR;
-    if frac == 0 {
-        return whole.to_string();
-    }
-    let frac_str = format!("{frac:012}");
-    let trimmed = frac_str.trim_end_matches('0');
-    format!("{whole}.{trimmed}")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::format_piconero_as_xmr;
-
-    /// Whole amounts have no decimal point, fractions lose their trailing
-    /// zeros, and a single piconero keeps its last digit.
-    #[test]
-    fn formats_piconero_as_xmr_with_no_trailing_zeros() {
-        for (piconero, xmr) in [
-            (1_000_000_000_000, "1"),
-            (0, "0"),
-            (1_500_000_000_000, "1.5"),
-            (335_000_000, "0.000335"),
-            (1, "0.000000000001"),
-        ] {
-            assert_eq!(format_piconero_as_xmr(piconero), xmr);
-        }
-    }
-
     mod http_tests {
         use axum::body::Body;
         use axum::http::{Request, StatusCode};
@@ -270,7 +235,7 @@ mod tests {
                         order_id: &metadata_order,
                         currency: "EUR",
                         amount: "12.34",
-                        piconero_per_unit: pricing::xmr_amount::Piconero(1_000_000),
+                        piconero_per_unit: pricing::xmr_amount::PiconeroPerUnit(1_000_000),
                         provider: "fixed",
                         created_at: 1000,
                         base_currency: "EUR",

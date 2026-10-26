@@ -667,7 +667,7 @@ async fn setup_with_confirmations_override(
             merchant_order_id: None,
             minor_index: index,
             address: address.to_string(),
-            xmr_amount_piconero: 1, // fixture tx amount is unknown ahead of time; use a trivially-satisfied amount
+            xmr_amount_piconero: Piconero(1), // fixture tx amount is unknown ahead of time; use a trivially-satisfied amount
             description: None,
             created_at: 1000,
             // Genuinely in the future: every tick now recomputes every
@@ -743,7 +743,7 @@ async fn setup_with_expiry(
             merchant_order_id: None,
             minor_index: index,
             address: address.to_string(),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: Piconero(1),
             description: None,
             created_at: expires_at - 300,
             expires_at,
@@ -1278,7 +1278,7 @@ async fn scanning_a_mempool_tx_records_a_payment_against_the_right_order() {
         .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
         .unwrap();
     assert_eq!(payments.len(), 1);
-    assert!(payments[0].amount_piconero > 0);
+    assert!(payments[0].amount_piconero > Piconero::ZERO);
     assert_eq!(payments[0].block_height, None); // mempool-only
 }
 
@@ -1536,7 +1536,7 @@ async fn run_scan_tick_matches_mempool_tx_recomputes_status_and_writes_an_order_
         .unwrap()
         .unwrap();
     assert_eq!(order.status, OrderStatus::Unconfirmed);
-    assert!(order.amount_received_piconero > 0);
+    assert!(order.amount_received_piconero > Piconero::ZERO);
 
     let due = s.order_events_for_test().unwrap();
     assert_eq!(due.len(), 1);
@@ -1591,7 +1591,7 @@ async fn tenant_with_pending_order(
             merchant_order_id: None,
             minor_index: index,
             address: address.to_string(),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: Piconero(1),
             description: None,
             created_at: 1000,
             // Genuinely in the future: every tick now recomputes every
@@ -1730,7 +1730,7 @@ async fn run_scan_tick_never_scans_a_tenant_on_a_different_network_even_if_inclu
                 .allocate_minor_index(&stagenet_tenant.tenant.id)
                 .unwrap(),
             address: "5someaddress".into(),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: Piconero(1),
             description: None,
             created_at: 1000,
             // Genuinely in the future: every tick now recomputes every
@@ -2154,7 +2154,7 @@ async fn an_unpaid_order_past_its_deadline_becomes_expired_on_a_tick_that_matche
                 .allocate_minor_index(&engine_protocol::ids::TenantId::new(tenant_id.clone()))
                 .unwrap(),
             address: "sub_expired".into(),
-            xmr_amount_piconero: 1_000_000,
+            xmr_amount_piconero: Piconero(1_000_000),
             description: None,
             created_at: 1000,
             expires_at: crate::now_unix() - 1,
@@ -3088,7 +3088,8 @@ async fn a_tick_that_detects_a_reorg_never_announces_paid_from_the_chain_it_is_a
         .unwrap()
         .unwrap();
     assert_eq!(
-        order.amount_received_piconero, 0,
+        order.amount_received_piconero,
+        Piconero::ZERO,
         "the voided payment must not count towards the order"
     );
     assert!(order.double_spend_detected_at.is_some());
@@ -3188,7 +3189,7 @@ async fn a_payment_a_reorg_dropped_to_the_mempool_can_still_be_voided_when_later
         )
         .unwrap()
         .unwrap();
-    assert_eq!(order.amount_received_piconero, 0);
+    assert_eq!(order.amount_received_piconero, Piconero::ZERO);
     assert!(order.double_spend_detected_at.is_some());
 }
 
@@ -3593,7 +3594,8 @@ async fn a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_r
         .unwrap()
         .unwrap();
     assert_eq!(
-        order.amount_received_piconero, 0,
+        order.amount_received_piconero,
+        Piconero::ZERO,
         "the orphaned payment must stop counting"
     );
     assert_eq!(order.status, OrderStatus::Pending);
@@ -3834,7 +3836,11 @@ async fn an_output_reusing_a_credited_one_time_key_is_not_credited_twice() {
             .unwrap()
             .amount_received_piconero
     };
-    assert_eq!(received(&store), FIXTURE_AMOUNT_PICONERO, "counted once");
+    assert_eq!(
+        received(&store),
+        Piconero(FIXTURE_AMOUNT_PICONERO),
+        "counted once"
+    );
 
     // A genuinely independent second payment counts too.
     let independent = independent_payment_tx(2);
@@ -3850,7 +3856,7 @@ async fn an_output_reusing_a_credited_one_time_key_is_not_credited_twice() {
     )
     .await
     .unwrap();
-    assert_eq!(received(&store), 2 * FIXTURE_AMOUNT_PICONERO);
+    assert_eq!(received(&store), Piconero(2 * FIXTURE_AMOUNT_PICONERO));
 
     // The real one is mined: credited, the copy voided for it.
     scan_transaction_for_tenant(
@@ -3865,7 +3871,7 @@ async fn an_output_reusing_a_credited_one_time_key_is_not_credited_twice() {
     )
     .await
     .unwrap();
-    assert_eq!(received(&store), 2 * FIXTURE_AMOUNT_PICONERO);
+    assert_eq!(received(&store), Piconero(2 * FIXTURE_AMOUNT_PICONERO));
     let payments = store.get_all_payments(&order).unwrap();
     let credited = payments
         .iter()
@@ -4185,7 +4191,7 @@ async fn a_double_spend_mined_in_a_different_block_than_the_original_voids_it_on
         .unwrap()
         .unwrap()
         .amount_received_piconero,
-        0
+        Piconero::ZERO
     );
 }
 
@@ -4230,7 +4236,7 @@ async fn voiding_one_of_an_orders_two_payments_leaves_the_other_counting() {
         .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
         .unwrap()
         .iter()
-        .map(|p| p.amount_piconero)
+        .map(|p| p.amount_piconero.get())
         .sum();
 
     // Only the first transaction is double-spent; the second is remined at 51.
@@ -4275,8 +4281,8 @@ async fn voiding_one_of_an_orders_two_payments_leaves_the_other_counting() {
         "only the survivor's amount counts"
     );
     assert_eq!(
-        total_before - order.amount_received_piconero,
-        voided[0].amount_piconero,
+        total_before - order.amount_received_piconero.get(),
+        voided[0].amount_piconero.get(),
         "the total falls by exactly the voided amount"
     );
     assert!(
@@ -4359,7 +4365,7 @@ async fn a_third_transaction_claiming_the_same_inputs_keeps_the_original_voided(
         .unwrap()
         .unwrap()
         .amount_received_piconero,
-        0
+        Piconero::ZERO
     );
 }
 
@@ -4453,7 +4459,7 @@ async fn a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reo
         )
         .unwrap()
         .unwrap();
-    assert_eq!(order.amount_received_piconero, 0);
+    assert_eq!(order.amount_received_piconero, Piconero::ZERO);
     assert_eq!(order.status, OrderStatus::Pending);
     assert!(order.double_spend_detected_at.is_some());
     let events: Vec<String> = s
@@ -5148,7 +5154,10 @@ async fn a_payment_a_node_makes_up_under_a_real_blocks_transaction_id_is_never_c
     let credited = payments(&store);
     assert_eq!(credited.len(), 1);
     assert_eq!(credited[0].txid, txid);
-    assert_eq!(credited[0].amount_piconero, FIXTURE_AMOUNT_PICONERO);
+    assert_eq!(
+        credited[0].amount_piconero,
+        Piconero(FIXTURE_AMOUNT_PICONERO)
+    );
     assert_eq!(credited[0].block_height, Some(2));
 }
 
@@ -6600,7 +6609,7 @@ async fn a_transaction_a_daemon_invents_cannot_become_a_payment_unless_it_matche
         .unwrap()
         .unwrap()
         .amount_received_piconero,
-        0
+        Piconero::ZERO
     );
 }
 
@@ -6831,7 +6840,7 @@ async fn several_transactions_in_one_block_paying_one_order_are_all_recorded_and
         )
         .unwrap()
         .unwrap();
-    assert_eq!(order.amount_received_piconero, per_tx_amount * 3);
+    assert_eq!(order.amount_received_piconero, Piconero(per_tx_amount * 3));
     assert_eq!(
         order.status,
         OrderStatus::Confirming,
@@ -6866,7 +6875,7 @@ async fn one_transactions_outputs_are_routed_to_whichever_order_owns_each_index(
             merchant_order_id: None,
             minor_index: second_index,
             address: "sub_2".into(),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: Piconero(1),
             description: None,
             created_at: 1000,
             expires_at: crate::now_unix() + 3600,
@@ -6923,12 +6932,13 @@ async fn one_transactions_outputs_are_routed_to_whichever_order_owns_each_index(
         .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(
-        first[0].amount_piconero, 700,
+        first[0].amount_piconero,
+        Piconero(700),
         "each order gets its own output's amount, never the transaction total"
     );
     let second = store.get_all_payments(&second_order.id).unwrap();
     assert_eq!(second.len(), 1);
-    assert_eq!(second[0].amount_piconero, 900);
+    assert_eq!(second[0].amount_piconero, Piconero(900));
 }
 
 #[tokio::test]
@@ -7113,7 +7123,7 @@ async fn an_amount_that_only_decrypts_on_a_later_tick_is_recorded_then_never_unr
             .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
             .unwrap()[0]
             .amount_piconero,
-        4_242
+        Piconero(4_242)
     );
 
     record_scan_match(
@@ -7129,7 +7139,8 @@ async fn an_amount_that_only_decrypts_on_a_later_tick_is_recorded_then_never_unr
         .unwrap();
     assert_eq!(payments.len(), 1);
     assert_eq!(
-        payments[0].amount_piconero, 4_242,
+        payments[0].amount_piconero,
+        Piconero(4_242),
         "a later failure to decrypt must not disturb a recorded payment"
     );
     assert!(payments[0].voided_at.is_none());
@@ -7186,7 +7197,7 @@ async fn a_payment_completing_an_order_in_the_tick_its_deadline_passes_settles_r
         OrderStatus::Unconfirmed,
         "paid in full, if only just - the deadline governs orders that fall short, not covered ones"
     );
-    assert!(order.amount_received_piconero > 0);
+    assert!(order.amount_received_piconero > Piconero::ZERO);
 
     // The other side of the same boundary: a *partial* payment past the deadline
     // does expire, and keeping both cases in one test is what stops a future
@@ -7201,14 +7212,23 @@ async fn a_payment_completing_an_order_in_the_tick_its_deadline_passes_settles_r
                 .allocate_minor_index(&engine_protocol::ids::TenantId::new(tenant_id.clone()))
                 .unwrap(),
             address: "sub_partial".into(),
-            xmr_amount_piconero: 10_000_000,
+            xmr_amount_piconero: Piconero(10_000_000),
             description: None,
             created_at: 1000,
             expires_at: crate::now_unix() - 1,
         })
         .unwrap();
-    s.record_payment_match(&partial.id, "tx_partial", 0, 1, "[]", 1500, None, None)
-        .unwrap();
+    s.record_payment_match(
+        &partial.id,
+        "tx_partial",
+        0,
+        Piconero(1),
+        "[]",
+        1500,
+        None,
+        None,
+    )
+    .unwrap();
     let (_, status) = s
         .recompute_order_status(&partial.id, 1, crate::now_unix())
         .unwrap();
@@ -7508,7 +7528,8 @@ async fn a_void_that_lands_before_the_node_fails_still_updates_the_order_it_belo
         .unwrap()
         .unwrap();
     assert_eq!(
-        order.amount_received_piconero, per_tx,
+        order.amount_received_piconero,
+        Piconero(per_tx),
         "the order's total must reflect the void that actually committed"
     );
     assert_eq!(
@@ -7756,7 +7777,7 @@ async fn a_lagging_tenants_order_does_not_expire_until_it_has_caught_up() {
                 merchant_order_id: None,
                 minor_index: index,
                 address: "fixture".into(),
-                xmr_amount_piconero: 1,
+                xmr_amount_piconero: Piconero(1),
                 description: None,
                 created_at: 1000,
                 expires_at: crate::now_unix() + 3600,
@@ -8843,7 +8864,7 @@ fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
                     merchant_order_id: None,
                     minor_index: index,
                     address: format!("addr-{}", uuid::Uuid::new_v4().simple()),
-                    xmr_amount_piconero: 1,
+                    xmr_amount_piconero: Piconero(1),
                     description: None,
                     created_at: 100,
                     expires_at: 10_000,
@@ -9080,7 +9101,7 @@ async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its
             &engine_protocol::ids::OrderId::new(order.to_string()),
             "original",
             0,
-            1,
+            Piconero(1),
             "[]",
             now,
             Some(1),
@@ -9301,7 +9322,7 @@ async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_
                 merchant_order_id: None,
                 minor_index: index,
                 address: "other".into(),
-                xmr_amount_piconero: 1,
+                xmr_amount_piconero: Piconero(1),
                 description: None,
                 created_at: 1000,
                 expires_at: crate::now_unix() + 3600,
@@ -9610,7 +9631,7 @@ async fn a_store_whose_window_changed_has_the_pool_scanned_again_for_it() {
             merchant_order_id: None,
             minor_index: index,
             address: "new".into(),
-            xmr_amount_piconero: 1,
+            xmr_amount_piconero: Piconero(1),
             description: None,
             created_at: 1000,
             expires_at: crate::now_unix() + 3600,
@@ -10076,7 +10097,7 @@ async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
         .unwrap()
         .unwrap();
     assert_eq!(order.status, OrderStatus::Pending);
-    assert_eq!(order.amount_received_piconero, 0);
+    assert_eq!(order.amount_received_piconero, Piconero::ZERO);
     assert_eq!(
         logs.count("its amount could not be decrypted"),
         2,

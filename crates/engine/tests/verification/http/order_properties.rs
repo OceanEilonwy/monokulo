@@ -82,7 +82,7 @@ impl World {
                             o.id.to_string(),
                             o.minor_index,
                             o.address,
-                            o.xmr_amount_piconero,
+                            o.xmr_amount_piconero.get(),
                             o.merchant_order_id,
                             o.confirmations_required_override,
                         )
@@ -304,7 +304,7 @@ mod properties {
                     {
                         let id=crate::store::OrderId::from(first["order_id"].as_str().unwrap());
                         let s=w.store.lock();let o=s.get_order(&w.ids[tenant],&id).unwrap().unwrap();
-                        assert_eq!(o.xmr_amount_piconero,base+u64::from(key));
+                        assert_eq!(o.xmr_amount_piconero,crate::store::Piconero(base+u64::from(key)));
                         assert_eq!(o.merchant_order_id,Some(format!("purchase-{key}")));
                         assert_eq!(o.confirmations_required_override,Some(u64::from(key)));
                         assert_eq!(first["address"].as_str(),Some(o.address.as_str()));
@@ -321,13 +321,13 @@ mod properties {
         }
         #[test]
         fn request_validation_is_atomic_at_integer_and_key_boundaries(
-            amount in prop_oneof![Just(0),Just(super::super::super::orders::MAX_ORDER_PICONERO),Just(super::super::super::orders::MAX_ORDER_PICONERO+1),any::<u64>()],
+            amount in prop_oneof![Just(0),Just(super::super::super::orders::MAX_ORDER_PICONERO.get()),Just(super::super::super::orders::MAX_ORDER_PICONERO.get()+1),any::<u64>()],
             key in prop_oneof!["[!-~]{1,128}",Just(String::new()),Just("x".repeat(129)),Just("contains space".to_owned()),Just("\u{e9}".to_owned()),Just("a\nb".to_owned())],
             confirmations in prop_oneof![Just(None),any::<u64>().prop_map(Some),Just(Some(0)),Just(Some(super::super::super::admin::MAX_CONFIRMATIONS_REQUIRED))],
         ) {
             runtime().block_on(async {
                 let w=World::new(1,false).await; let before=w.snapshot();
-                let valid=amount>0 && amount<=super::super::super::orders::MAX_ORDER_PICONERO && !key.is_empty() && key.len()<=128 && key.bytes().all(|b|b.is_ascii_graphic()) && confirmations.is_none_or(|c|c<=super::super::super::admin::MAX_CONFIRMATIONS_REQUIRED);
+                let valid=amount>0 && amount<=super::super::super::orders::MAX_ORDER_PICONERO.get() && !key.is_empty() && key.len()<=128 && key.bytes().all(|b|b.is_ascii_graphic()) && confirmations.is_none_or(|c|c<=super::super::super::admin::MAX_CONFIRMATIONS_REQUIRED);
                 let (status,_)=create(&w,0,body(Some(key),amount,0,confirmations)).await;
                 assert_eq!(status,if valid {StatusCode::OK} else {StatusCode::BAD_REQUEST});
                 if !valid {assert_eq!(w.snapshot(),before);} w.invariants();
@@ -392,7 +392,7 @@ mod properties {
             runtime().block_on(async {
                 let w=World::new(1,false).await; let next=u32::MAX-offset;
                 w.store.lock().conn_for_test().execute("UPDATE wallets SET next_minor_index=?1",[i64::from(next)]).unwrap();
-                let new=crate::store::NewOrder { tenant_id:w.ids[0].clone(),minor_index:if mismatch {next.saturating_sub(1)} else {next},address:"derived".to_owned(),xmr_amount_piconero:1,idempotency_key:Some("boundary".to_owned()),merchant_order_id:None,description:None,confirmations_required_override:None,created_at:1,expires_at:2 };
+                let new=crate::store::NewOrder { tenant_id:w.ids[0].clone(),minor_index:if mismatch {next.saturating_sub(1)} else {next},address:"derived".to_owned(),xmr_amount_piconero:crate::store::Piconero(1),idempotency_key:Some("boundary".to_owned()),merchant_order_id:None,description:None,confirmations_required_override:None,created_at:1,expires_at:2 };
                 let wallet=w.store.lock().wallet_of(&w.ids[0]).unwrap().unwrap();
                 let result=w.store.lock().create_order_claiming_minor_index(&wallet,next,&new);
                 if mismatch || next==u32::MAX {

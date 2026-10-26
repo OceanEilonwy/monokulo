@@ -73,7 +73,7 @@ impl Sale {
             amount: sale.amount.clone(),
             currency: sale.currency.clone(),
             address: sale.address.clone(),
-            xmr_amount_piconero: sale.xmr_amount_piconero,
+            xmr_amount_piconero: sale.xmr_amount_piconero.get(),
             merchant_order_id: sale.merchant_order_id.clone(),
             expires_at: sale.expires_at,
             device_name: sale.device_name.clone(),

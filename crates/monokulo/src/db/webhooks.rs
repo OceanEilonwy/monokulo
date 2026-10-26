@@ -14,6 +14,7 @@ use rusqlite::{params, OptionalExtension as _};
 use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
+use pricing::xmr_amount::Piconero;
 
 /// Most attempts a delivery keeps in `attempts_json`.
 pub const KEPT_ATTEMPTS: usize = 20;
@@ -171,7 +172,7 @@ pub struct LoggedEvent {
     pub merchant_order_id: Option<String>,
     /// What the order is for, as it was created.
     pub description: Option<String>,
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
 }
 
 /// A webhook's deliveries in sum: what its health line says.

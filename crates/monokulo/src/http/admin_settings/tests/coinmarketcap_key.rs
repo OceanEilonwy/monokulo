@@ -280,7 +280,13 @@ async fn a_key_set_on_the_page_is_checked_stored_encrypted_used_replaced_and_rem
         .await
         .unwrap()
         .unwrap();
-    assert_eq!((rate, provider), (500_000_000_000, "coinmarketcap"));
+    assert_eq!(
+        (rate, provider),
+        (
+            pricing::xmr_amount::PiconeroPerUnit(500_000_000_000),
+            "coinmarketcap"
+        )
+    );
     assert_eq!(
         seen.lock().as_slice(),
         [(

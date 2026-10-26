@@ -14,7 +14,7 @@ use crate::key_custody::{
 };
 use crate::status::OrderStatus;
 use crate::store::{
-    Database, EngineWalletId, NewTenant, Order, OrderPaymentRow, TenantConfigPatch,
+    Database, EngineWalletId, NewTenant, Order, OrderPaymentRow, Piconero, TenantConfigPatch,
 };
 use engine_daemon::MoneroDaemonClient as _;
 
@@ -1152,8 +1152,8 @@ pub(super) struct OrderView {
     /// none.
     description: Option<String>,
     address: String,
-    xmr_amount_piconero: u64,
-    amount_received_piconero: u64,
+    xmr_amount_piconero: Piconero,
+    amount_received_piconero: Piconero,
     status: String,
     confirmations: u64,
     double_spend_detected_at: Option<i64>,
@@ -1338,7 +1338,7 @@ pub(super) struct OrderTotalsQuery {
 
 #[derive(Serialize)]
 pub(super) struct OrderTotalsView {
-    received_piconero: u64,
+    received_piconero: Piconero,
     orders_since: u64,
 }
 
@@ -1363,7 +1363,7 @@ pub(super) async fn order_totals(
 pub(super) struct PaymentView {
     txid: String,
     output_index: i64,
-    amount_piconero: u64,
+    amount_piconero: Piconero,
     first_seen_at: i64,
     block_height: Option<i64>,
     voided_at: Option<i64>,

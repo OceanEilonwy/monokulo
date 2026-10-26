@@ -2,7 +2,7 @@
 //! `crate::orders`): what each key's purchase was, the price it was made
 //! at, and, once recorded, the order it made.
 
-use pricing::xmr_amount::Piconero;
+use pricing::xmr_amount::{Piconero, PiconeroPerUnit};
 use rusqlite::{params, OptionalExtension as _};
 use sqlite::Unsigned;
 
@@ -13,11 +13,11 @@ use super::{ConnectionId, Db, OrderId, Result};
 /// (`crate::confirmation_thresholds::Resolution`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OrderPrice {
-    pub xmr_amount_piconero: u64,
-    pub piconero_per_unit: Piconero,
+    pub xmr_amount_piconero: Piconero,
+    pub piconero_per_unit: PiconeroPerUnit,
     pub provider: String,
     pub base_currency: String,
-    pub base_currency_piconero_per_unit: Option<Piconero>,
+    pub base_currency_piconero_per_unit: Option<PiconeroPerUnit>,
     pub confirmations_required: u64,
 }
 
@@ -57,7 +57,7 @@ impl Db {
                         Some(order_id) => Reserved::Made(order_id),
                         None => Reserved::Priced {
                             price: OrderPrice {
-                                xmr_amount_piconero: row.get::<_, Unsigned<u64>>(1)?.0,
+                                xmr_amount_piconero: row.get(1)?,
                                 piconero_per_unit: row.get(2)?,
                                 provider: row.get(3)?,
                                 base_currency: row.get(4)?,
@@ -94,7 +94,7 @@ impl Db {
                 store,
                 key,
                 fingerprint,
-                Unsigned(price.xmr_amount_piconero),
+                price.xmr_amount_piconero,
                 price.piconero_per_unit,
                 price.provider,
                 price.base_currency,

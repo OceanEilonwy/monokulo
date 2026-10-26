@@ -2,7 +2,7 @@
 //! the reorg job, the recompute schedule, and rotation positions. Every
 //! read here is a bounded page; every multi-row write is one transaction.
 
-use super::{OrderId, TenantId};
+use super::{OrderId, Piconero, TenantId};
 use rusqlite::{params, OptionalExtension as _};
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
@@ -942,7 +942,7 @@ pub struct StagedPayment {
     pub order_id: OrderId,
     pub txid: String,
     pub output_index: i64,
-    pub amount_piconero: u64,
+    pub amount_piconero: Piconero,
     pub key_images_json: String,
     pub seen_at: i64,
     pub output_key: Option<String>,
@@ -1017,7 +1017,7 @@ impl Store {
                         order_id: row.get(0)?,
                         txid: row.get(1)?,
                         output_index: row.get(2)?,
-                        amount_piconero: unsigned(row, 3)?,
+                        amount_piconero: row.get(3)?,
                         key_images_json: row.get(4)?,
                         seen_at: row.get(5)?,
                         output_key: row.get(6)?,

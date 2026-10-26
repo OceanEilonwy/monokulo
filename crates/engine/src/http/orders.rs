@@ -8,7 +8,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::key_custody::{KeyCustodyError, SubaddressIndex};
-use crate::store::{NewOrder, NextIndex, Tenant};
+use crate::store::{NewOrder, NextIndex, Piconero, Tenant};
 
 use super::{
     forget_wallet_handle, now_unix, resolve_wallet_handle_held, ApiError, AppState, AuthedTenant,
@@ -25,7 +25,7 @@ use super::{
 #[derive(Deserialize)]
 pub(super) struct CreateOrderRequest {
     merchant_order_id: Option<String>,
-    xmr_amount_piconero: u64,
+    xmr_amount_piconero: Piconero,
     /// What the order is for, shown to the payer on monokulo's checkout.
     /// Kept as given: monokulo checks it (one line, at most 140
     /// characters) before calling here.
@@ -59,14 +59,15 @@ fn valid_idempotency_key(key: &str) -> bool {
 
 /// Most an order can ask for: a million XMR. Far above any purchase, and
 /// well under what SQLite's signed 64-bit integer holds (an amount above
-/// `i64::MAX` would be stored negative and compared as such).
-pub(super) const MAX_ORDER_PICONERO: u64 = 1_000_000 * 1_000_000_000_000;
+/// `i64::MAX` would be stored negative and compared as such). Monokulo
+/// refuses a larger price before asking; this is the backstop.
+pub(super) use engine_protocol::amount::MAX_ORDER_PICONERO;
 
 #[derive(Serialize)]
 pub(super) struct CreateOrderResponse {
     order_id: crate::store::OrderId,
     address: String,
-    xmr_amount_piconero: u64,
+    xmr_amount_piconero: Piconero,
     expires_at: i64,
 }
 
@@ -87,7 +88,7 @@ async fn create_order_for_tenant(
     tenant: Tenant,
     req: CreateOrderRequest,
 ) -> Result<Json<CreateOrderResponse>, ApiError> {
-    if req.xmr_amount_piconero == 0 {
+    if req.xmr_amount_piconero == Piconero::ZERO {
         return Err(ApiError::BadRequest(
             "xmr_amount_piconero must be greater than zero".into(),
         ));

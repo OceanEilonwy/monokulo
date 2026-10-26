@@ -3,10 +3,10 @@
 
 use credentials::auth::TokenHash;
 use rusqlite::{params, OptionalExtension as _};
-use sqlite::Unsigned;
 
 use super::{ConnectionId, Db, OrderId, Result};
 pub use engine_protocol::ids::AppId;
+use pricing::xmr_amount::Piconero;
 
 /// A device connected to a store with a key of its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub struct AppOrder {
     pub amount: String,
     pub currency: String,
     pub address: String,
-    pub xmr_amount_piconero: u64,
+    pub xmr_amount_piconero: Piconero,
     pub merchant_order_id: Option<String>,
     pub expires_at: i64,
     pub created_at: i64,
@@ -96,7 +96,7 @@ fn order_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppOrder> {
         amount: row.get("amount")?,
         currency: row.get("currency")?,
         address: row.get("address")?,
-        xmr_amount_piconero: row.get::<_, Unsigned<u64>>("xmr_amount_piconero")?.0,
+        xmr_amount_piconero: row.get("xmr_amount_piconero")?,
         merchant_order_id: row.get("merchant_order_id")?,
         expires_at: row.get("expires_at")?,
         created_at: row.get("created_at_utc")?,
@@ -273,7 +273,7 @@ impl Db {
                 order.amount,
                 order.currency,
                 order.address,
-                Unsigned(order.xmr_amount_piconero),
+                order.xmr_amount_piconero,
                 order.merchant_order_id,
                 order.expires_at,
                 order.created_at

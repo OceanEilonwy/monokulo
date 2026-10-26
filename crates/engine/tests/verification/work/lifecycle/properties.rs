@@ -67,7 +67,7 @@ mod properties {
                 // Two independent outputs: one just below the retained window and
                 // one at its edge. Only the edge payment has reorg evidence.
                 for (output,height) in [(0,edge-1),(1,edge)] {
-                    s.record_payment_match(&h.order,"retention-payment",output,1,"[]",h.now,Some(height as i64),None).unwrap();
+                    s.record_payment_match(&h.order,"retention-payment",output,crate::store::Piconero(1),"[]",h.now,Some(height as i64),None).unwrap();
                 }
                 }
                 let hashes: Vec<_> = (fork..=tip).map(|height| format!("replacement-{height}")).collect();
