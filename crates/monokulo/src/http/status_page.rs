@@ -905,23 +905,11 @@ fn announcements_view(
     }
 }
 
-/// A plain, four-bucket "Ns/Nm/Nh/Nd ago" formatter - the same
-/// presentation-belongs-to-the-renderer split `http/status_page.rs`'s
-/// module doc comment describes, now actually living in the renderer.
-/// Buckets are half-open on their upper bound (`< 60`, `< 3600`, `< 86400`)
-/// so a value exactly on a boundary (e.g. precisely 3600s) falls into the
-/// *next* bucket up, never double-counted or skipped.
+/// How long ago `at` was, worded as every merchant page words a past time
+/// ([`views::time::Clock::relative`]). A time the engine reports ahead of
+/// this clock reads as just now, never as in the future.
 fn relative_time(now: i64, at: i64) -> String {
-    let diff = (now - at).max(0);
-    if diff < 60 {
-        format!("{diff}s ago")
-    } else if diff < 3600 {
-        format!("{}m ago", diff / 60)
-    } else if diff < 86400 {
-        format!("{}h ago", diff / 3600)
-    } else {
-        format!("{}d ago", diff / 86400)
-    }
+    views::time::Clock::utc(now).relative(at.min(now))
 }
 
 #[cfg(test)]
@@ -1054,17 +1042,11 @@ mod tests {
     }
 
     #[test]
-    fn relative_time_picks_the_right_bucket() {
-        assert_eq!(relative_time(100, 100), "0s ago");
-        assert_eq!(relative_time(159, 100), "59s ago");
-        assert_eq!(relative_time(160, 100), "1m ago");
-        assert_eq!(relative_time(3700, 100), "1h ago");
-        assert_eq!(relative_time(3600, 0), "1h ago");
-        assert_eq!(relative_time(100_000, 0), "1d ago");
-        assert_eq!(relative_time(90_000, 0), "1d ago");
-        assert_eq!(relative_time(20_000, 0), "5h ago");
+    fn relative_time_never_reads_as_the_future() {
+        assert_eq!(relative_time(100, 100), "just now");
+        assert_eq!(relative_time(3700, 100), "60 min ago");
         // A clock that moved backward never reads as negative.
-        assert_eq!(relative_time(100, 200), "0s ago");
+        assert_eq!(relative_time(100, 200), "just now");
     }
 
     #[tokio::test]
@@ -1432,7 +1414,7 @@ mod tests {
                 view.networks[2].scanner.last_error.as_deref(),
                 Some("daemon request failed: timed out")
             );
-            assert_eq!(view.networks[0].scanner.last_tick_display, "1m ago");
+            assert_eq!(view.networks[0].scanner.last_tick_display, "2 min ago");
             let node_b = &view.networks[0].nodes[1];
             assert!(!node_b.is_reachable);
             assert_eq!(node_b.height_display, "-");
@@ -1463,13 +1445,13 @@ mod tests {
                             node: "node.example:18089".into(),
                             endpoint: "tcp://10.0.0.5:18083".into(),
                             connected: true,
-                            connected_since: Some(now - 600),
+                            connected_since: Some(now - 570),
                             connections: 2,
                             pool_announcements: 41,
                             block_announcements: 3,
                             last_announcement_at: Some(now - 150),
                             last_error: Some("the node closed the connection".into()),
-                            last_error_at: Some(now - 700),
+                            last_error_at: Some(now - 630),
                         },
                         engine_protocol::announcements::Publisher {
                             node: "backup.example:18089".into(),
@@ -1488,11 +1470,11 @@ mod tests {
 
             let admin = super::super::status_view(&state, true).await;
             let shown = admin.networks[0].announcements.as_ref().unwrap();
-            assert_eq!(shown.publishers[0].state_display, "since 10m ago");
-            assert_eq!(shown.publishers[0].last_announcement_display, "2m ago");
+            assert_eq!(shown.publishers[0].state_display, "since 10 min ago");
+            assert_eq!(shown.publishers[0].last_announcement_display, "3 min ago");
             assert_eq!(
                 shown.publishers[0].last_error.as_deref(),
-                Some("Last failure 11m ago: the node closed the connection")
+                Some("Last failure 11 min ago: the node closed the connection")
             );
             assert_eq!(shown.publishers[1].state_display, "never yet");
             assert_eq!(shown.publishers[1].last_announcement_display, "none yet");
@@ -1609,10 +1591,10 @@ mod tests {
                 r#"<span class="mk-status-text" data-tone="success">proof checked</span>"#,
                 "Orders settle on blocks up to <strong>118</strong>, proven by the engine itself.",
                 r#"<span class="tag tag-unknown">2 behind the tip</span>"#,
-                "<dt>Anchor</dt><dd>Block 100, 2 of 3 nodes agreed, 2h ago</dd>",
+                "<dt>Anchor</dt><dd>Block 100, 2 of 3 nodes agreed, 2 h ago</dd>",
                 "<dt>Checked</dt><dd>20 blocks since the engine started, 16 ms each (compiled)</dd>",
                 "<dt>RandomX keys</dt><dd>1 held, 256 MiB each</dd>",
-                "<dt>Last checked</dt><dd>2m ago</dd>",
+                "<dt>Last checked</dt><dd>3 min ago</dd>",
                 "<code>10.0.0.5:18081</code>",
                 r#"<span class="verdict is-bad">served a block that breaks the rules</span><span class="sub">block 121's proof of work doesn't meet its difficulty 7</span>"#,
                 r#"<span class="tag tag-error">left out</span>"#,
