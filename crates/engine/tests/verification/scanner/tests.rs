@@ -11105,8 +11105,9 @@ mod live_node_tests {
             "test needs a non-empty live mempool to be meaningful"
         );
 
+        let live = LiveWallet::of_store(&store, &created.tenant.id, handle);
         for FetchedTx { txid, tx } in &txs {
-            let scan = scan_transaction_as(&key_custody, handle, txid, tx, 0..1)
+            let scan = scan_transaction_as(&key_custody, &live, txid, tx, 0..1)
                 .await
                 .unwrap();
             let touched = record_scan_match(&store, &created.tenant.id, &scan, 0, None).unwrap();
