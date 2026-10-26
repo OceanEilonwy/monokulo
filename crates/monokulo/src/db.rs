@@ -1288,23 +1288,10 @@ impl Db {
         Ok(())
     }
 
-    /// Stores and deletes several settings in one transaction (the
-    /// settings registry's save): either all of them land or none do.
-    pub fn write_settings(&self, changes: &[(&str, Option<String>)]) -> Result<()> {
-        let tx = self.conn.unchecked_transaction()?;
-        for (key, value) in changes {
-            match value {
-                Some(value) => self.set_setting(key, value)?,
-                None => self.delete_setting(key)?,
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Stores and deletes settings and encrypted secret settings
     /// (`encrypted_settings`, values already encrypted by
-    /// `settings::DbSettings`) in one transaction: all of them or none.
+    /// `settings::DbSettings`) in one transaction (the settings registry's
+    /// save): either all of them land or none do.
     pub fn write_settings_and_secrets(
         &self,
         plain: &[(&str, Option<String>)],
