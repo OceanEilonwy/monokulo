@@ -28,7 +28,7 @@ use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use crate::store::{LogRow, Record, SpanRow};
+use crate::store::{LogRow, Record, SpanKind, SpanRow, SpanStatus};
 
 /// Records waiting to be sent; more are dropped.
 const QUEUE: usize = 10_000;
@@ -199,17 +199,17 @@ pub(crate) fn log_record(row: &LogRow) -> LogRecord {
 }
 
 pub(crate) fn span(row: &SpanRow) -> Span {
-    let kind = match row.kind.as_str() {
-        "server" => span::SpanKind::Server,
-        "client" => span::SpanKind::Client,
-        "producer" => span::SpanKind::Producer,
-        "consumer" => span::SpanKind::Consumer,
-        _ => span::SpanKind::Internal,
+    let kind = match row.kind {
+        SpanKind::Server => span::SpanKind::Server,
+        SpanKind::Client => span::SpanKind::Client,
+        SpanKind::Producer => span::SpanKind::Producer,
+        SpanKind::Consumer => span::SpanKind::Consumer,
+        SpanKind::Internal => span::SpanKind::Internal,
     };
-    let code = match row.status.as_str() {
-        "ok" => status::StatusCode::Ok,
-        "error" => status::StatusCode::Error,
-        _ => status::StatusCode::Unset,
+    let code = match row.status {
+        SpanStatus::Unset => status::StatusCode::Unset,
+        SpanStatus::Ok => status::StatusCode::Ok,
+        SpanStatus::Error => status::StatusCode::Error,
     };
     Span {
         trace_id: hex_bytes(Some(&row.trace_id)),
@@ -293,11 +293,13 @@ pub(crate) struct Exporter {
 }
 
 /// Records queued for export, and records whose request has finished
-/// (sent, or failed), so `Telemetry::flush` can wait for them.
+/// (sent, or failed), so `Telemetry::flush` can wait for them; and records
+/// the queue was too full to take, which the export task reports.
 #[derive(Default)]
 pub(crate) struct Progress {
     queued: AtomicU64,
     finished: AtomicU64,
+    dropped: AtomicU64,
 }
 
 impl Progress {
@@ -321,16 +323,16 @@ impl Exporter {
         Some(Exporter { sender, progress })
     }
 
-    /// Queues a record; false when the queue is full.
-    pub(crate) fn offer(&self, record: Record) -> bool {
+    /// Queues a record; one the queue is too full to take is counted as
+    /// dropped from export (not from the log store, which keeps it).
+    pub(crate) fn offer(&self, record: Record) {
         // Counted before the send, so the task can never have finished
         // more than were queued.
         self.progress.queued.fetch_add(1, Ordering::SeqCst);
-        let queued = self.sender.try_send(record).is_ok();
-        if !queued {
+        if self.sender.try_send(record).is_err() {
             self.progress.queued.fetch_sub(1, Ordering::SeqCst);
+            self.progress.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        queued
     }
 
     pub(crate) fn progress(&self) -> Arc<Progress> {
@@ -355,6 +357,7 @@ async fn run(
     };
     let mut batch = Vec::with_capacity(BATCH);
     let mut last_failure: Option<std::time::Instant> = None;
+    let mut last_dropped_report = std::time::Instant::now();
     loop {
         let open =
             match tokio::time::timeout(FLUSH_EVERY, receiver.recv_many(&mut batch, BATCH)).await {
@@ -381,6 +384,15 @@ async fn run(
                 }
             }
             progress.finished.fetch_add(count, Ordering::SeqCst);
+        }
+        // Records the queue refused while the collector was slow: once a
+        // minute at most, beside the failures.
+        if last_dropped_report.elapsed() >= Duration::from_secs(60) {
+            let dropped = progress.dropped.swap(0, Ordering::Relaxed);
+            if dropped > 0 {
+                last_dropped_report = std::time::Instant::now();
+                tracing::warn!(dropped, endpoint = %config.endpoint, "OTLP export fell behind; some records were not exported");
+            }
         }
         if !open {
             return;

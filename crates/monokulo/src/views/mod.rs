@@ -610,10 +610,13 @@ pub fn trim_xmr(amount: &str) -> &str {
 /// A link to the Logs page searching for `field = value` over everything
 /// kept, for admins on the pages about that thing (an order, a store).
 pub fn logs_link(chrome: &PageChrome, field: &str, value: &str, text: &str) -> Markup {
-    let query = format!(
-        "{field} = '{}'",
-        value.replace('\\', "\\\\").replace('\'', "\\'")
-    );
+    // Printed by the query language itself, so its quoting can't drift.
+    let query = telemetry::query::Expr::Compare {
+        field: field.to_string(),
+        op: telemetry::query::Op::Eq,
+        value: telemetry::query::Value::Text(value.to_string()),
+    }
+    .to_string();
     let href = format!(
         "/admin/logs?q={}&range=all",
         url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>()

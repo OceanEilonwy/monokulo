@@ -154,15 +154,115 @@ pub struct SpanRow {
     pub parent_span_id: Option<String>,
     pub service: String,
     pub name: String,
-    /// `server`, `client` or `internal`.
-    pub kind: String,
+    pub kind: SpanKind,
     /// Unix times in nanoseconds.
     pub start: i64,
     pub end: i64,
-    /// `unset`, `ok` or `error`.
-    pub status: String,
+    pub status: SpanStatus,
     pub attributes: Map<String, Value>,
 }
+
+/// What a span stands for, as OpenTelemetry has it. Stored, and sent in
+/// the log API, as its lowercase name (`server`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpanKind {
+    Server,
+    Client,
+    Producer,
+    Consumer,
+    Internal,
+}
+
+impl SpanKind {
+    const ALL: [SpanKind; 5] = [
+        SpanKind::Server,
+        SpanKind::Client,
+        SpanKind::Producer,
+        SpanKind::Consumer,
+        SpanKind::Internal,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SpanKind::Server => "server",
+            SpanKind::Client => "client",
+            SpanKind::Producer => "producer",
+            SpanKind::Consumer => "consumer",
+            SpanKind::Internal => "internal",
+        }
+    }
+}
+
+impl From<&opentelemetry::trace::SpanKind> for SpanKind {
+    fn from(kind: &opentelemetry::trace::SpanKind) -> Self {
+        use opentelemetry::trace::SpanKind as K;
+        match kind {
+            K::Server => SpanKind::Server,
+            K::Client => SpanKind::Client,
+            K::Producer => SpanKind::Producer,
+            K::Consumer => SpanKind::Consumer,
+            K::Internal => SpanKind::Internal,
+        }
+    }
+}
+
+/// How a span ended, as OpenTelemetry has it (without an error's text).
+/// Stored, and sent in the log API, as its lowercase name (`error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpanStatus {
+    Unset,
+    Ok,
+    Error,
+}
+
+impl SpanStatus {
+    const ALL: [SpanStatus; 3] = [SpanStatus::Unset, SpanStatus::Ok, SpanStatus::Error];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SpanStatus::Unset => "unset",
+            SpanStatus::Ok => "ok",
+            SpanStatus::Error => "error",
+        }
+    }
+}
+
+impl From<&Status> for SpanStatus {
+    fn from(status: &Status) -> Self {
+        match status {
+            Status::Unset => SpanStatus::Unset,
+            Status::Ok => SpanStatus::Ok,
+            Status::Error { .. } => SpanStatus::Error,
+        }
+    }
+}
+
+/// Both span enums go into SQLite as their names, and come back from them.
+macro_rules! named_in_sql {
+    ($name:ident) => {
+        impl rusqlite::types::ToSql for $name {
+            fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+                Ok(self.as_str().into())
+            }
+        }
+
+        impl rusqlite::types::FromSql for $name {
+            fn column_result(
+                value: rusqlite::types::ValueRef<'_>,
+            ) -> rusqlite::types::FromSqlResult<Self> {
+                let text = value.as_str()?;
+                $name::ALL
+                    .into_iter()
+                    .find(|named| named.as_str() == text)
+                    .ok_or(rusqlite::types::FromSqlError::InvalidType)
+            }
+        }
+    };
+}
+named_in_sql!(SpanKind);
+named_in_sql!(SpanStatus);
 
 /// Everything stored for one trace: its spans by start time and its lines
 /// by time.
@@ -255,10 +355,9 @@ impl StoreSink {
     }
 
     fn send(&self, record: Record) {
+        // The exporter counts what its own queue drops.
         if let Some(exporter) = self.otlp.read().as_ref() {
-            if !exporter.offer(record.clone()) {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-            }
+            exporter.offer(record.clone());
         }
         if let Some(sender) = self.sender.get() {
             self.try_send(sender, record);
@@ -357,15 +456,10 @@ impl SpanRow {
             parent_span_id: (parent != SpanId::INVALID).then(|| parent.to_string()),
             service: service.to_string(),
             name: span.name.to_string(),
-            kind: format!("{:?}", span.span_kind).to_ascii_lowercase(),
+            kind: SpanKind::from(&span.span_kind),
             start: nanos(span.start_time),
             end: nanos(span.end_time),
-            status: match &span.status {
-                Status::Unset => "unset",
-                Status::Ok => "ok",
-                Status::Error { .. } => "error",
-            }
-            .to_string(),
+            status: SpanStatus::from(&span.status),
             attributes: redacted_attributes(&span.attributes),
         }
     }

@@ -13,7 +13,7 @@
 //! (`db::Db::client_logging`); the pages of such a store don't load the
 //! script in the first place. Reports from pages about no store (the admin
 //! pages, the dashboard home) are always kept: they carry no merchant or
-//! customer data.
+//! customer data. A report whose page can't be placed is dropped.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -47,8 +47,21 @@ pub(crate) fn clip(text: &str) -> String {
 }
 
 /// Whether reports from `page` may be kept: `false` for a page about a
-/// store that hasn't opted in to client logs.
-pub fn page_may_report(db: &Db, page: &str) -> bool {
+/// store that hasn't opted in to client logs, and for one that can't be
+/// placed (no path at all). `base` is the request's base path
+/// ([`crate::base::path`]): the script sends the page's path without it,
+/// but one served from an older copy may still send it, and the routes it
+/// is matched against are at the root.
+pub fn page_may_report(db: &Db, page: &str, base: &str) -> bool {
+    let page = match page.strip_prefix(base) {
+        _ if base.is_empty() => page,
+        Some("") => "/",
+        Some(rest) if rest.starts_with('/') => rest,
+        _ => page,
+    };
+    if !page.starts_with('/') {
+        return false;
+    }
     if let Some(store) = super::store_of_path(page) {
         return db
             .client_logging(&crate::db::ConnectionId::new(store))
@@ -69,8 +82,9 @@ pub async fn client_report(
     let report = serde_json::from_slice::<ClientReport>(&body)
         .map_err(|e| Problem::InvalidRequest.detail(format!("That isn't a client report: {e}.")))?;
     let page = report.page.clone().unwrap_or_default();
+    let base = crate::base::path();
     let may_report = db
-        .read(move |db| Ok::<_, crate::db::DbError>(page_may_report(db, &page)))
+        .read(move |db| Ok::<_, crate::db::DbError>(page_may_report(db, &page, &base)))
         .await
         .unwrap_or(false);
     if !may_report {
@@ -146,22 +160,33 @@ mod tests {
     fn pages_about_a_store_report_only_once_it_opted_in() {
         let db = db_with_store();
         assert!(
-            page_may_report(&db, "/admin/logs"),
+            page_may_report(&db, "/admin/logs", ""),
             "admin pages always report"
         );
-        assert!(page_may_report(&db, "/"));
-        assert!(page_may_report(&db, ""));
-        assert!(!page_may_report(&db, "/stores/c1/settings"));
-        assert!(!page_may_report(&db, "/stores/c1/pos"));
-        assert!(!page_may_report(&db, "/checkout/o1"));
+        assert!(page_may_report(&db, "/", ""));
+        assert!(!page_may_report(&db, "", ""), "a page that can't be placed");
+        assert!(!page_may_report(&db, "/stores/c1/settings", ""));
+        assert!(!page_may_report(&db, "/stores/c1/pos", ""));
+        assert!(!page_may_report(&db, "/checkout/o1", ""));
         assert!(
-            !page_may_report(&db, "/stores/unknown/orders"),
+            !page_may_report(&db, "/stores/unknown/orders", ""),
             "no store, no reports"
         );
+        // Under a base path: the script sends the page without it, an older
+        // copy with it; either way it's the same store's page.
+        for page in [
+            "/stores/c1/settings",
+            "/monokulo/stores/c1/settings",
+            "/monokulo/checkout/o1",
+        ] {
+            assert!(!page_may_report(&db, page, "/monokulo"), "{page}");
+        }
+        assert!(page_may_report(&db, "/monokulo", "/monokulo"));
         db.set_client_logging(&engine_protocol::ids::ConnectionId::new("c1"), true)
             .unwrap();
-        assert!(page_may_report(&db, "/stores/c1/settings"));
-        assert!(page_may_report(&db, "/checkout/o1"));
+        assert!(page_may_report(&db, "/stores/c1/settings", ""));
+        assert!(page_may_report(&db, "/checkout/o1", ""));
+        assert!(page_may_report(&db, "/monokulo/checkout/o1", "/monokulo"));
     }
 
     #[test]

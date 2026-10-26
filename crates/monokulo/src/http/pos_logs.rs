@@ -57,6 +57,45 @@ struct PosEvent {
     detail: Map<String, Value>,
 }
 
+/// A tablet's clock reading in Unix milliseconds, one a log line's
+/// nanosecond time can hold (1970 to 2262): the tablet's value is the
+/// client's, so one out of range is left out where it arrives rather than
+/// overflowing the timeline's arithmetic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ClientTime(i64);
+
+impl ClientTime {
+    const MAX_MS: i64 = i64::MAX / 1_000_000;
+
+    /// `ms`, when it is a plausible reading.
+    pub fn from_ms(ms: i64) -> Option<Self> {
+        (0..=Self::MAX_MS).contains(&ms).then_some(ClientTime(ms))
+    }
+
+    /// The reading for a line written at `ts` (Unix nanoseconds), for an
+    /// event whose own reading was left out.
+    pub fn at(ts: i64) -> Self {
+        ClientTime(ts.div_euclid(1_000_000).max(0))
+    }
+
+    pub fn ms(self) -> i64 {
+        self.0
+    }
+
+    /// As Unix nanoseconds, which can't overflow.
+    pub fn nanos(self) -> i64 {
+        self.0 * 1_000_000
+    }
+}
+
+/// A period an event's detail gives in milliseconds (`offline_ms`): never
+/// negative, and no longer than a [`ClientTime`] can span.
+pub fn period_ms(text: &str) -> Option<i64> {
+    text.parse::<i64>()
+        .ok()
+        .filter(|ms| (0..=ClientTime::MAX_MS).contains(ms))
+}
+
 /// A session id: what `timeline.ts` makes (`crypto.randomUUID()`).
 pub fn is_session_id(text: &str) -> bool {
     (8..=64).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
@@ -87,9 +126,10 @@ fn order_id(text: &str) -> Option<String> {
 
 /// `key=value key=value`, keys in alphabetical order, clipped to `MAX_DETAIL`
 /// characters. Keys are reduced to `[a-z0-9_]`, values have their control
-/// characters replaced, and a value with a space is quoted: in `"`, with
-/// only `\` and `"` escaped, so [`detail_pairs`] reads back exactly what
-/// was written.
+/// characters replaced, and every text value is quoted: in `"`, with only
+/// `\` and `"` escaped, so [`detail_pairs`] reads back exactly what was
+/// written (a bare value never starts with a quote). Numbers and booleans
+/// stay bare.
 pub fn detail_text(detail: &Map<String, Value>) -> String {
     let mut out = String::new();
     for (key, value) in detail {
@@ -104,24 +144,21 @@ pub fn detail_text(detail: &Map<String, Value>) -> String {
                 }
             })
             .collect();
-        let value = match value {
-            Value::String(s) => s.clone(),
-            Value::Number(n) => n.to_string(),
-            Value::Bool(b) => b.to_string(),
-            _ => continue,
-        };
         if key.is_empty() {
             continue;
         }
-        let value: String = value
-            .chars()
-            .take(200)
-            .map(|c| if c.is_control() { ' ' } else { c })
-            .collect();
-        let value = if value.contains(' ') || value.is_empty() {
-            format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-        } else {
-            value
+        let value = match value {
+            Value::String(s) => {
+                let s: String = s
+                    .chars()
+                    .take(200)
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+            }
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => continue,
         };
         if !out.is_empty() {
             out.push(' ');
@@ -174,11 +211,12 @@ pub async fn receive(
             format!("{kind} {detail}")
         };
         let detail = Some(detail).filter(|d| !d.is_empty());
+        let client_ts = ClientTime::from_ms(event.t).map(ClientTime::ms);
         macro_rules! line {
             ($level:ident) => {
                 tracing::$level!(
                     pos.seq = event.seq,
-                    pos.client_ts = event.t,
+                    pos.client_ts = client_ts,
                     pos.kind = %kind,
                     pos.detail = detail.as_deref(),
                     order.id = order.as_deref(),
@@ -250,12 +288,16 @@ mod tests {
         detail.insert("note".into(), Value::String(value.into()));
         detail.insert("empty".into(), Value::String(String::new()));
         detail.insert("plain".into(), Value::String("ok".into()));
+        detail.insert("a".into(), Value::String("\"x".into()));
+        detail.insert("offline_ms".into(), Value::from(42000));
         let text = detail_text(&detail);
         assert_eq!(
             detail_pairs(&text),
             [
+                ("a".to_string(), "\"x".to_string()),
                 ("empty".to_string(), String::new()),
                 ("note".to_string(), value.to_string()),
+                ("offline_ms".to_string(), "42000".to_string()),
                 ("plain".to_string(), "ok".to_string()),
             ]
         );
@@ -284,7 +326,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             detail_text(&detail),
-            r#"bad_key_=v error="Failed to fetch" offline_ms=42000 persisted=true route=/pos/orders"#
+            r#"bad_key_="v" error="Failed to fetch" offline_ms=42000 persisted=true route="/pos/orders""#
         );
         assert_eq!(
             detail_pairs(&detail_text(&detail)),

@@ -17,7 +17,8 @@
   "use strict";
   // Under the base path the page says Monokulo is served at (`crate::base`).
   var base = document.querySelector("meta[name=\"monokulo-base\"]");
-  var ENDPOINT = (base ? base.content : "") + "/telemetry/client";
+  var BASE = base ? base.content : "";
+  var ENDPOINT = BASE + "/telemetry/client";
   var MAX_REPORTS = 10;
   var MAX_TEXT = 1000;
   var sent = 0;
@@ -30,6 +31,17 @@
     return text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) : text;
   }
 
+  // The page's path as Monokulo's routes have it, without the base path, so
+  // the server can tell which store's page it is.
+  function pagePath() {
+    var path = location.pathname;
+    if (BASE && path.indexOf(BASE) === 0) {
+      var rest = path.slice(BASE.length);
+      if (rest === "" || rest.charAt(0) === "/") return rest || "/";
+    }
+    return path;
+  }
+
   function report(kind, message, detail) {
     if (sent >= MAX_REPORTS || !window.fetch || Date.now() < pausedUntil) return;
     sent += 1;
@@ -38,7 +50,7 @@
       kind: clip(kind),
       message: clip(message),
       detail: detail ? clip(detail) : undefined,
-      page: location.pathname
+      page: pagePath()
     });
     try {
       fetch(ENDPOINT, { method: "POST", body: body, keepalive: true, credentials: "same-origin",
