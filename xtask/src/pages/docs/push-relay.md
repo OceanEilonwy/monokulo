@@ -64,7 +64,7 @@ The relay answers `201 Created` once APNs or FCM took it.
 | Handle | Handed on as |
 | --- | --- |
 | `apns` | An alert, `mutable-content` on, titled "New sale" until the app's Notification Service Extension decrypts the ciphertext it carries as `aes128gcm` (base64url) and writes its own. Priority 10 for a high-urgency push, 5 otherwise; expires after the push's TTL; collapsed by its topic. |
-| `apns-liveactivity` | The JSON as the activity's `content-state`, read for `phase` (`waiting`, `seen`, `confirming`, `paid` or `expired`), `expiresAt` (Unix seconds: the activity's stale date), `amount` and `waitingCount`. `paid` and `expired` come with an alert ("Paid · $24.50", "No payment yet") and end the activity unless `waitingCount` says other sales wait. |
+| `apns-liveactivity` | The JSON as the activity's `content-state`, read for `phase` (`waiting`, `seen`, `confirming`, `paid` or `expired`), `expiresAt` (Unix seconds: the activity's stale date), and `amount`; the rest goes to APNs as it came. Every push is an `update`: `paid` and `expired` come with an alert ("Paid · $24.50", "No payment yet"), and the relay never ends the activity, which the app idles or ends itself. |
 | `apns-pushtostart` | A new activity: the JSON is `{"attributes-type", "attributes", "content-state"}`, handed on as they are, with an alert. |
 | `fcm` | A data message carrying the ciphertext as `aes128gcm`, priority `HIGH` for a high-urgency push and `NORMAL` otherwise, kept for the TTL (at most 28 days), collapsed by its topic. |
 

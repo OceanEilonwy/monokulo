@@ -503,10 +503,7 @@ async fn a_body_the_handles_platform_does_not_take_is_an_invalid_request() {
         (&activity, encrypted(&keys, b"{}")),
         (&start, encrypted(&keys, b"{}")),
         (&activity, plain(json!({"phase": "idle"}))),
-        (
-            &activity,
-            plain(json!({"phase": "seen", "waitingCount": -1})),
-        ),
+        (&activity, plain(json!({"phase": "paid", "amount": 24.5}))),
         (
             &activity,
             plain(json!({"phase": "seen", "expiresAt": "soon"})),
