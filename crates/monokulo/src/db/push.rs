@@ -552,7 +552,10 @@ impl Db {
     /// wants it and hears of the order ([`PushTarget::hears_of`]) but
     /// `except`'s, once per endpoint: records it as the order's latest,
     /// then one push per target, each superseding that target's unsent
-    /// push about the same order.
+    /// push about the same order. Its TTL runs from when the sale event
+    /// happened, not from `at`, when it is queued: an event read late (a
+    /// backlog after monokulo was down) is worth no more for it, and one
+    /// whose TTL ended before `at` supersedes but queues nothing.
     fn queue_sale_pushes(
         &self,
         order: &AppOrder,
@@ -582,14 +585,27 @@ impl Db {
             return Ok(0);
         }
         let urgency = policy::urgency(sale.event);
-        let ttl = policy::ttl(sale.event, order.expires_at, at, queueing.default_ttl);
-        let expires_at = at.saturating_add(i64::from(ttl.as_secs()));
+        // An engine clock ahead of this one doesn't lengthen it.
+        let happened = sale.at.min(at);
+        let ttl = policy::ttl(sale.event, order.expires_at, happened, queueing.default_ttl);
+        let expires_at = happened.saturating_add(i64::from(ttl.as_secs()));
+        let stale = expires_at <= at;
         // Each made once, for the targets that take it.
         let mut encrypted: Option<String> = None;
         let mut waiting_count: Option<u64> = None;
         let mut queued = 0;
         for target in &targets {
             let topic = policy::topic(&target.id, &order.order_id);
+            // A stale event still says the order's older state is past.
+            self.conn.execute(
+                "UPDATE push_deliveries SET superseded_at_utc = ?3, next_attempt_at_utc = NULL
+                 WHERE push_target_id = ?1 AND topic = ?2 AND next_attempt_at_utc IS NOT NULL
+                   AND event_id <> ?4",
+                params![target.id, topic.as_str(), at, event_id],
+            )?;
+            if stale {
+                continue;
+            }
             let payload = match target.kind {
                 TargetKind::Encrypted { .. } => encrypted
                     .get_or_insert_with(|| notification(sale, &queueing.link_base))
@@ -604,12 +620,6 @@ impl Db {
                     LiveActivityState::of(sale, waiting, include_payment_uri).to_json()
                 }
             };
-            self.conn.execute(
-                "UPDATE push_deliveries SET superseded_at_utc = ?3, next_attempt_at_utc = NULL
-                 WHERE push_target_id = ?1 AND topic = ?2 AND next_attempt_at_utc IS NOT NULL
-                   AND event_id <> ?4",
-                params![target.id, topic.as_str(), at, event_id],
-            )?;
             queued += self.conn.execute(
                 "INSERT INTO push_deliveries
                      (push_target_id, event_seq, event_id, event_type, order_id, topic, urgency,

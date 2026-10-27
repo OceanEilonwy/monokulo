@@ -914,6 +914,108 @@ async fn a_live_activity_is_pushed_only_its_own_apps_sales() {
     assert_eq!(world.pushes(&y_island).len(), 7);
 }
 
+/// A push's TTL runs from when its sale event happened, not from when
+/// the subscriber reads it. After two hours down, a backlog's
+/// `sale.seen` and `sale.paid` are past theirs and queue nothing (the
+/// order's unsent push is still superseded, its latest event still
+/// recorded, its webhook still queued), while the same events read as
+/// they happen are queued with the TTL they always had. A payment seen
+/// just after its sale expired still gets its minute, from when it was
+/// seen.
+#[tokio::test]
+async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
+    let world = world().await;
+    let maker = world.another_app().await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(&ak, encrypted("t", "https://push.example/t", &device, None))
+        .await;
+    let event_at = |seq: i64, order: &OrderId, kind: &str, at: i64| LoggedEvent {
+        created_at: at,
+        ..world.event(seq, order, kind)
+    };
+    let app_order = |order: &OrderId| {
+        world
+            .fixture
+            .state
+            .db
+            .lock()
+            .app_order(order)
+            .unwrap()
+            .unwrap()
+    };
+    let default_ttl = i64::from(PushConfig::default().default_ttl.as_secs());
+
+    let late = world.order(&maker).await;
+    let two_hours_ago = world.clock.now() - 7_200;
+    for (seq, kind) in [(1, "order.unconfirmed"), (2, "order.paid")] {
+        assert_eq!(
+            world.queue(&event_at(seq, &late, kind, two_hours_ago)),
+            Queued {
+                webhooks: 1,
+                pushes: 0
+            },
+            "{kind}"
+        );
+        assert_eq!(world.position(), seq);
+    }
+    let pushes = world.pushes(&target);
+    assert_eq!(pushes.len(), 1, "only the sale.waiting: {pushes:?}");
+    assert_eq!(pushes[0].event_type, "sale.waiting");
+    assert_eq!(pushes[0].superseded_at, Some(world.clock.now()));
+    assert_eq!(world.tick().await, 0);
+    let recorded: String = world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .query_row(
+            "SELECT last_sale_event FROM app_orders WHERE order_id = ?1",
+            [late.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, "sale.paid");
+
+    let now = world.clock.now();
+    let fresh = world.order(&maker).await;
+    let sale_expires_at = app_order(&fresh).expires_at;
+    world.queue(&event_at(3, &fresh, "order.unconfirmed", now));
+    world.queue(&event_at(4, &fresh, "order.paid", now));
+    let pushes: Vec<(String, i64)> = world
+        .pushes(&target)
+        .into_iter()
+        .filter(|push| push.order_id == fresh && push.event_type != "sale.waiting")
+        .map(|push| (push.event_type, push.expires_at))
+        .collect();
+    let seen_until = sale_expires_at.clamp(now + 60, now + default_ttl);
+    assert_eq!(
+        pushes,
+        [
+            ("sale.seen".to_owned(), seen_until),
+            ("sale.paid".to_owned(), now + default_ttl),
+        ]
+    );
+
+    // Seen 30 seconds after the sale expired, read 20 seconds later: the
+    // minute runs from the sighting. Read a minute after it, nothing.
+    let expired = world.order(&maker).await;
+    let expired_at = app_order(&expired).expires_at;
+    world.clock.set(expired_at + 50);
+    world.queue(&event_at(5, &expired, "order.unconfirmed", expired_at + 30));
+    world.clock.set(expired_at + 90);
+    world.queue(&event_at(6, &expired, "order.confirming", expired_at + 30));
+    let pushes: Vec<(String, i64)> = world
+        .pushes(&target)
+        .into_iter()
+        .filter(|push| push.order_id == expired && push.event_type != "sale.waiting")
+        .map(|push| (push.event_type, push.expires_at))
+        .collect();
+    assert_eq!(pushes, [("sale.seen".to_owned(), expired_at + 90)]);
+}
+
 // -- The worker, in process --------------------------------------------------
 
 /// A push found due after its TTL ended is given up on, with no request.

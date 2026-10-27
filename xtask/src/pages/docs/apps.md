@@ -292,8 +292,10 @@ of a store carry the same value:
 | `sale.paid`, `sale.expired`, `sale.double_spend` | `high` | 30 minutes |
 
 "Until the sale expires" is at least a minute and at most 30 minutes (the
-admin's `push.default_ttl_secs`). A push is never sent after its `TTL`, and
-a newer one about the same order replaces one not sent yet. One that
+admin's `push.default_ttl_secs`), counted from when the event happened, so
+a sale Monokulo hears of late (after a restart) is pushed only for what is
+left of it, or not at all. A push is never sent after its `TTL`, and a
+newer one about the same order replaces one not sent yet. One that
 fails is tried again 5, 20, 80 and 320 seconds later (or when the push
 service's `Retry-After` says), five times at most. A store's apps are sent
 at most 120 pushes a minute (the admin's `push.per_store_per_minute`),

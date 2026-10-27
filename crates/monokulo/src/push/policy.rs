@@ -47,10 +47,11 @@ pub fn ends_the_sale(kind: SaleKind) -> bool {
     }
 }
 
-/// How long a push about `kind` is worth delivering, made at `now` for a
-/// sale expiring at `expires_at`: a sale's end for `default_ttl`; a step
-/// of a sale in progress until the sale expires, within [`MIN_TTL`] and
-/// `default_ttl`.
+/// How long a push about `kind` is worth delivering from `now`, when the
+/// event happened, for a sale expiring at `expires_at`: a sale's end for
+/// `default_ttl`; a step of a sale in progress until the sale expires,
+/// within [`MIN_TTL`] and `default_ttl`. From the event, not from when it
+/// is queued: one read late is worth no more for it.
 pub fn ttl(kind: SaleKind, expires_at: i64, now: i64, default_ttl: Ttl) -> Ttl {
     if ends_the_sale(kind) {
         return default_ttl;
