@@ -576,3 +576,414 @@ async fn the_log_carries_no_token_endpoint_or_body_over_http() {
         assert!(!text.contains(secret), "{secret} is in the log: {text}");
     }
 }
+
+/// A handle lives for `handles.ttl_days` after its last delivered push:
+/// one APNs or FCM took moves its expiry on, one they didn't take leaves
+/// it where it was (so holding an endpoint can't keep a dead one alive).
+#[tokio::test]
+async fn only_a_delivered_push_moves_a_handles_expiry_over_http() {
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let endpoint = relay.register("apns", &apns_token(), &sender).await;
+    let soon = now() + 100;
+    let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
+
+    relay.expire(&endpoint, soon);
+    assert_eq!(
+        relay.push(&endpoint, push()).await.status,
+        StatusCode::CREATED
+    );
+    assert!(within(relay.expires_at(&endpoint), now() + 90 * 86_400));
+
+    relay.expire(&endpoint, soon);
+    for answer in [
+        Answer::status(503).json(json!({"reason": "ServiceUnavailable"})),
+        Answer::status(400).json(json!({"reason": "BadTopic"})),
+        Answer::status(413).json(json!({"reason": "PayloadTooLarge"})),
+    ] {
+        apns.answer(move |_| answer.clone());
+        assert_ne!(
+            relay.push(&endpoint, push()).await.status,
+            StatusCode::CREATED
+        );
+        assert_eq!(relay.expires_at(&endpoint), soon);
+    }
+    assert_eq!(apns.drain().await.len(), 4);
+}
+
+/// APNs's own 413 is the sender's `413` too, and the handle stays.
+#[tokio::test]
+async fn apns_finding_a_push_too_large_is_payload_too_large_over_http() {
+    let apns =
+        Stub::start(|_| Answer::status(413).json(json!({"reason": "PayloadTooLarge"}))).await;
+    let fcm = Stub::accepting().await;
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let endpoint = relay.register("apns", &apns_token(), &sender).await;
+    let keys = ReceiverKeys::generate();
+    let answered = relay
+        .push(
+            &endpoint,
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    assert_eq!(
+        (answered.status, answered.problem().as_str()),
+        (StatusCode::PAYLOAD_TOO_LARGE, "payload-too-large")
+    );
+    assert_eq!(relay.handles(), 1);
+}
+
+/// `Retry-After` as an HTTP date (APNs) or seconds (FCM, on a 429) is
+/// handed to the sender as seconds; an APNs or FCM that can't be reached
+/// at all is "try again in 30 seconds". The handles stay.
+#[tokio::test]
+async fn retry_after_from_apns_and_fcm_reaches_the_sender_as_seconds_over_http() {
+    let apns = Stub::start(|_| {
+        let at = std::time::SystemTime::now() + Duration::from_secs(120);
+        Answer::status(503)
+            .json(json!({"reason": "ServiceUnavailable"}))
+            .header("retry-after", &httpdate::fmt_http_date(at))
+    })
+    .await;
+    let fcm = Stub::start(|received| {
+        if received.path == "/token" {
+            Answer::status(200).json(json!({"access_token": "t", "expires_in": 3600}))
+        } else {
+            Answer::status(429)
+                .json(
+                    json!({"error": {"code": 429, "status": "RESOURCE_EXHAUSTED",
+                    "details": [{"errorCode": "QUOTA_EXCEEDED"}]}}),
+                )
+                .header("retry-after", "75")
+        }
+    })
+    .await;
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
+    let to_apns = relay.register("apns", &apns_token(), &sender).await;
+    let to_fcm = relay.register("fcm", FCM_TOKEN, &sender).await;
+
+    let wait = |answered: &Answered| -> u64 {
+        assert_eq!(
+            (answered.status, answered.problem().as_str()),
+            (StatusCode::SERVICE_UNAVAILABLE, "upstream-unavailable"),
+            "{}",
+            answered.text()
+        );
+        let header: u64 = answered.headers[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(answered.json()["retry_after"], header);
+        header
+    };
+    let from_date = wait(&relay.push(&to_apns, push()).await);
+    assert!((118..=120).contains(&from_date), "{from_date}");
+    assert_eq!(wait(&relay.push(&to_fcm, push()).await), 75);
+
+    // Neither can be reached.
+    let (dead_apns, dead_fcm) = (unreachable_url(), unreachable_url());
+    let offline = TestRelay::start(
+        &apns,
+        &fcm,
+        &[("apns.endpoint", &dead_apns), ("fcm.endpoint", &dead_fcm)],
+    )
+    .await;
+    let to_apns = offline.register("apns", &apns_token(), &sender).await;
+    let to_fcm = offline.register("fcm", FCM_TOKEN, &sender).await;
+    assert_eq!(wait(&offline.push(&to_apns, push()).await), 30);
+    assert_eq!(wait(&offline.push(&to_fcm, push()).await), 30);
+    assert_eq!((relay.handles(), offline.handles()), (2, 2));
+}
+
+/// FCM's token endpoint refusing, or not answering a token, is FCM being
+/// unavailable: nothing is sent to FCM without a token.
+#[tokio::test]
+async fn no_fcm_access_token_is_upstream_unavailable_and_nothing_is_sent_over_http() {
+    let (apns, fcm) = (
+        Stub::accepting().await,
+        Stub::start(|_| Answer::status(500)).await,
+    );
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let endpoint = relay.register("fcm", FCM_TOKEN, &sender).await;
+    let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
+    for answer in [
+        Answer::status(500),
+        Answer::status(400).json(json!({"error": "invalid_grant"})),
+        Answer::status(200).json(json!({"token_type": "Bearer"})),
+    ] {
+        fcm.answer(move |_| answer.clone());
+        let answered = relay.push(&endpoint, push()).await;
+        assert_eq!(
+            (answered.status, answered.problem().as_str()),
+            (StatusCode::SERVICE_UNAVAILABLE, "upstream-unavailable")
+        );
+        assert_eq!(answered.headers[header::RETRY_AFTER], "30");
+    }
+    let asked: Vec<String> = fcm.drain().await.into_iter().map(|r| r.path).collect();
+    assert_eq!(asked, ["/token", "/token", "/token"]);
+    assert_eq!(relay.handles(), 1);
+}
+
+/// FCM refusing the access token (`401`) is "try again", and the next
+/// push exchanges the assertion for a new token rather than reuse the
+/// refused one.
+#[tokio::test]
+async fn an_access_token_fcm_refuses_is_replaced_for_the_next_push_over_http() {
+    let issued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = issued.clone();
+    let fcm = Stub::start(move |received| {
+        if received.path == "/token" {
+            let n = counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            Answer::status(200)
+                .json(json!({"access_token": format!("token-{n}"), "expires_in": 3600}))
+        } else if received.header("authorization") == "Bearer token-1" {
+            Answer::status(401).json(json!({"error": {"code": 401, "status": "UNAUTHENTICATED"}}))
+        } else {
+            Answer::status(200).json(json!({"name": "projects/x/messages/2"}))
+        }
+    })
+    .await;
+    let apns = Stub::accepting().await;
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let endpoint = relay.register("fcm", FCM_TOKEN, &sender).await;
+    let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
+
+    let answered = relay.push(&endpoint, push()).await;
+    assert_eq!(
+        (answered.status, answered.problem().as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, "upstream-unavailable")
+    );
+    assert_eq!(
+        relay.push(&endpoint, push()).await.status,
+        StatusCode::CREATED
+    );
+    let seen: Vec<(String, String)> = fcm
+        .drain()
+        .await
+        .into_iter()
+        .map(|r| {
+            let auth = r
+                .headers
+                .get("authorization")
+                .map(|v| v.to_str().unwrap().to_owned());
+            (r.path, auth.unwrap_or_default())
+        })
+        .collect();
+    let send = "/v1/projects/monokular-test/messages:send".to_owned();
+    assert_eq!(
+        seen,
+        [
+            ("/token".to_owned(), String::new()),
+            (send.clone(), "Bearer token-1".to_owned()),
+            ("/token".to_owned(), String::new()),
+            (send, "Bearer token-2".to_owned()),
+        ]
+    );
+}
+
+/// Pushes arriving together when no access token is held wait for one
+/// exchange at the token endpoint, not one each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pushes_at_once_share_one_fcm_token_exchange_over_http() {
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let mut endpoints = Vec::new();
+    for n in 0..8 {
+        endpoints.push(
+            relay
+                .register("fcm", &format!("{FCM_TOKEN}-{n}"), &sender)
+                .await,
+        );
+    }
+    let mut pushing = tokio::task::JoinSet::new();
+    for endpoint in endpoints {
+        let request = PushBuilder::new(&sender, encrypted(&keys, b"{}")).request(&endpoint);
+        let router = relay.router.clone();
+        pushing.spawn(async move { call_router(router, "192.0.2.1:1", request).await });
+    }
+    while let Some(answered) = pushing.join_next().await {
+        let answered = answered.unwrap();
+        assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    }
+    let received = fcm.drain().await;
+    let exchanges = received.iter().filter(|r| r.path == "/token").count();
+    assert_eq!((exchanges, received.len()), (1, 9));
+}
+
+/// A push without a topic has no `apns-collapse-id`, and a TTL of 0 is
+/// APNs's "now or never" (`apns-expiration: 0`).
+#[tokio::test]
+async fn a_push_without_topic_or_ttl_reaches_apns_as_now_or_never_over_http() {
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let endpoint = relay.register("apns", &apns_token(), &sender).await;
+    let answered = relay
+        .push(
+            &endpoint,
+            PushBuilder {
+                topic: None,
+                ttl: Some(Ttl::seconds(0)),
+                urgency: Urgency::VeryLow,
+                ..PushBuilder::new(&sender, encrypted(&keys, b"{}"))
+            },
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    let received = apns.next().await;
+    assert_eq!(received.header("apns-expiration"), "0");
+    assert_eq!(received.header("apns-priority"), "5");
+    assert!(!received.headers.contains_key("apns-collapse-id"));
+}
+
+/// A paid sale with others still waiting updates the Live Activity, with
+/// the alert, rather than end it under them.
+#[tokio::test]
+async fn a_paid_sale_with_others_waiting_keeps_the_live_activity_over_http() {
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let endpoint = relay
+        .register("apns-liveactivity", &apns_token(), &sender)
+        .await;
+    let paid = json!({"phase": "paid", "amount": "$5.00", "waitingCount": 1});
+    let answered = relay
+        .push(&endpoint, PushBuilder::new(&sender, plain(paid.clone())))
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    let aps = apns.next().await.json()["aps"].clone();
+    assert_eq!(aps["event"], "update");
+    assert_eq!(aps["alert"], json!({"title": "Paid · $5.00"}));
+    assert_eq!(aps["content-state"], paid);
+    assert_eq!(aps.get("stale-date"), None);
+}
+
+/// Only pushes the handle's sender signed count against the limits: a
+/// stranger's forged pushes can't use up a sender's or a device's budget.
+#[tokio::test]
+async fn unsigned_pushes_spend_no_senders_or_handles_budget_over_http() {
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(
+        &apns,
+        &fcm,
+        &[
+            ("limits.per_handle_per_minute", "1"),
+            ("limits.per_sender_per_minute", "1"),
+        ],
+    )
+    .await;
+    let sender = Arc::new(VapidKey::generate());
+    let stranger = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let endpoint = relay.register("apns", &apns_token(), &sender).await;
+    for _ in 0..5 {
+        let forged = relay
+            .push(
+                &endpoint,
+                PushBuilder::new(&stranger, encrypted(&keys, b"{}")),
+            )
+            .await;
+        assert_eq!(forged.status, StatusCode::UNAUTHORIZED);
+    }
+    let answered = relay
+        .push(
+            &endpoint,
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    assert_eq!(apns.drain().await.len(), 1);
+}
+
+/// Pushes that fail, every way they can, log what failed and never the
+/// token, endpoint, signature or body: a forged or malformed push, APNs
+/// and FCM refusing or unreachable, FCM refusing its access token.
+#[tokio::test]
+async fn the_log_carries_no_token_endpoint_or_body_when_pushes_fail_over_http() {
+    let (_guard, log) = capture_log();
+    let apns = Stub::start(|_| Answer::status(403).json(json!({"reason": "BadCertificate"}))).await;
+    let fcm = Stub::start(|received| {
+        if received.path == "/token" {
+            Answer::status(200)
+                .json(json!({"access_token": "ya29.secret-access", "expires_in": 3600}))
+        } else {
+            Answer::status(401).json(json!({"error": {"code": 401, "status": "UNAUTHENTICATED"}}))
+        }
+    })
+    .await;
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let push = || PushBuilder::new(&sender, encrypted(&keys, b"secret plaintext"));
+    let to_apns = relay.register("apns", &apns_token(), &sender).await;
+    let to_fcm = relay.register("fcm", FCM_TOKEN, &sender).await;
+    let activity = relay
+        .register("apns-liveactivity", &"4e".repeat(32), &sender)
+        .await;
+
+    assert_eq!(
+        relay.push(&to_apns, push()).await.status,
+        StatusCode::BAD_GATEWAY
+    );
+    assert_eq!(
+        relay.push(&to_fcm, push()).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let stranger = Arc::new(VapidKey::generate());
+    let forged = PushBuilder::new(&stranger, encrypted(&keys, b"secret plaintext"));
+    assert_eq!(
+        relay.push(&to_apns, forged).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let secret_state = plain(json!({"phase": "teleported", "paymentURI": "monero:4SecretAddress"}));
+    assert_eq!(
+        relay
+            .push(&activity, PushBuilder::new(&sender, secret_state))
+            .await
+            .status,
+        StatusCode::BAD_REQUEST
+    );
+    let offline = TestRelay::start(&apns, &fcm, &[("apns.endpoint", &unreachable_url())]).await;
+    let unreachable = offline.register("apns", &apns_token(), &sender).await;
+    assert_eq!(
+        offline.push(&unreachable, push()).await.status,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    let text = log.text();
+    assert!(
+        text.contains("APNs refused a push"),
+        "the relay logged: {text}"
+    );
+    assert!(
+        text.contains("APNs can't be reached"),
+        "the relay logged: {text}"
+    );
+    for secret in [
+        apns_token().as_str(),
+        "4e4e4e4e4e4e4e4e",
+        FCM_TOKEN,
+        "ya29.secret-access",
+        "4SecretAddress",
+        "secret plaintext",
+        "/v1/push/ph_",
+        "/3/device/",
+        "eyJ",
+    ] {
+        assert!(!text.contains(secret), "{secret} is in the log: {text}");
+    }
+}
