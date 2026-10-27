@@ -160,9 +160,27 @@ enum Done {
     Gone,
 }
 
+impl Done {
+    /// Whether its target's newer pushes must wait: it is still to be
+    /// sent, later (a failed attempt to try again, one put off), so they
+    /// would land before it; or its target is gone, and they with it.
+    fn holds_back_the_rest(&self) -> bool {
+        match self {
+            Done::GaveUp(_) => false,
+            Done::Deferred(_) | Done::Gone => true,
+            Done::Attempted(attempt) => match attempt.result {
+                PushResult::Delivered => false,
+                PushResult::Failed { retry_at, .. } => retry_at.is_some(),
+            },
+        }
+    }
+}
+
 /// Sends one batch of due pushes, concurrently but one target's one at a
-/// time in queue order, and records each as it finishes. `reach` is what `webhooks.allow_private_urls` allows. Returns
-/// how many were picked: a full batch means more may be due now.
+/// time in queue order, and records each as it finishes; a target's push
+/// left to be sent later keeps its newer ones in the queue. `reach` is
+/// what `webhooks.allow_private_urls` allows. Returns how many were
+/// picked: a full batch means more may be due now.
 pub async fn run_delivery_tick(
     db: &Database,
     client: &PushClient,
@@ -202,27 +220,35 @@ pub async fn run_delivery_tick(
     // One target's pushes go one after another, as they were queued, and
     // different targets' at once: a Live Activity shows whichever state
     // lands last, so a till's newer sale must land after its older one.
+    // One left due later (or whose target is gone) ends its target's turn:
+    // the rest wait in the queue behind it (`due_push_deliveries`).
     let mut attempts = stream::iter(by_target(readable))
         .map(|pushes| {
-            Box::pin(stream::iter(pushes).then(move |push| {
-                let span = tracing::info_span!(
-                    "push delivery",
-                    otel.kind = "client",
-                    store.id = %push.target.store_id,
-                    push_target.id = %push.target.id,
-                    push_target.kind = push.target.kind.name().as_str(),
-                    push.event = push.event.as_str(),
-                    push.host = push.target.endpoint.host(),
-                    attempt = push.attempt_count.saturating_add(1),
-                );
-                tracing::Instrument::instrument(
-                    async move {
-                        let done = deliver(client, &push, config, reach, clock).await;
-                        (push, done)
-                    },
-                    span,
-                )
-            }))
+            Box::pin(stream::unfold(
+                pushes.into_iter(),
+                move |mut pushes| async move {
+                    let push = pushes.next()?;
+                    let span = tracing::info_span!(
+                        "push delivery",
+                        otel.kind = "client",
+                        store.id = %push.target.store_id,
+                        push_target.id = %push.target.id,
+                        push_target.kind = push.target.kind.name().as_str(),
+                        push.event = push.event.as_str(),
+                        push.host = push.target.endpoint.host(),
+                        attempt = push.attempt_count.saturating_add(1),
+                    );
+                    let done = tracing::Instrument::instrument(
+                        deliver(client, &push, config, reach, clock),
+                        span,
+                    )
+                    .await;
+                    if done.holds_back_the_rest() {
+                        pushes = Vec::new().into_iter();
+                    }
+                    Some(((push, done), pushes))
+                },
+            ))
         })
         .flatten_unordered(DELIVERY_CONCURRENCY);
 

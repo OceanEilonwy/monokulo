@@ -680,7 +680,11 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      to its target is (`due_push_deliveries`, a window over the unsent
      pushes: one waiting for a retry holds the newer back until it is
      sent, given up or superseded, at most its TTL), and the worker sends
-     each target's batch in order while other targets' go beside them.
+     each target's batch in order while other targets' go beside them. In
+     a batch too: a push left to be sent later (failed with a retry, or
+     put off by its store's budget) ends its target's turn, and the rest
+     of the target's batch stays queued behind it, untouched; one given up
+     on doesn't, and one whose target is gone ends it with the target.
      Holding a newer push back costs nothing a failing push service
      wouldn't cost it anyway. Superseding every older push to a Live
      Activity instead (only the newest state matters to the island) was
