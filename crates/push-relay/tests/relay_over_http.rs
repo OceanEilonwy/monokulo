@@ -282,6 +282,65 @@ async fn an_encrypted_push_reaches_fcm_with_its_priority_over_http() {
     );
 }
 
+/// A push handed on is answered as one even when the handles database
+/// then refuses to write: a `500` would have the sender send it again, and
+/// the device show it twice. The failure is logged, with the handle.
+#[tokio::test]
+async fn a_push_handed_on_is_answered_so_when_the_handles_database_fails_over_http() {
+    let (_guard, log) = capture_log();
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let endpoint = relay.register("apns", &apns_token(), &sender).await;
+    let id = endpoint.rsplit('/').next().unwrap().to_owned();
+    // Reads still work; every write to the handles fails.
+    rusqlite::Connection::open(&relay.store_path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER no_updates BEFORE UPDATE ON handles
+                 BEGIN SELECT RAISE(FAIL, 'the disk is full'); END;
+             CREATE TRIGGER no_deletes BEFORE DELETE ON handles
+                 BEGIN SELECT RAISE(FAIL, 'the disk is full'); END;",
+        )
+        .unwrap();
+
+    let answered = relay
+        .push(
+            &endpoint,
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    apns.next().await;
+    let logged = log.text();
+    let line = logged
+        .lines()
+        .find(|line| line.contains("can't be kept alive"))
+        .unwrap_or_else(|| panic!("{logged}"));
+    assert!(line.contains("ERROR") && line.contains(&id) && line.contains("the disk is full"));
+
+    // Gone, but not forgotten: still 404 to the sender, and logged.
+    apns.answer(|_| Answer::status(410).json(json!({"reason": "Unregistered"})));
+    let answered = relay
+        .push(
+            &endpoint,
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    assert_eq!(
+        (answered.status, answered.problem().as_str()),
+        (StatusCode::NOT_FOUND, "unknown-handle")
+    );
+    let logged = log.text();
+    let line = logged
+        .lines()
+        .find(|line| line.contains("can't be forgotten"))
+        .unwrap_or_else(|| panic!("{logged}"));
+    assert!(line.contains("ERROR") && line.contains(&id));
+    assert_eq!(relay.handles(), 1);
+}
+
 /// APNs or FCM saying the token is gone forgets the handle, and the
 /// sender is told to drop its subscription.
 #[tokio::test]
