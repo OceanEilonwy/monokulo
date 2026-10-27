@@ -15,7 +15,9 @@ pub use crate::base64url::KeyError;
 /// A push endpoint: the URL a push is `POST`ed to.
 ///
 /// Always `https` (RFC 8030 §8 requires TLS, and the URL is a capability:
-/// whoever learns it can push to the device), never an onion address (a
+/// whoever learns it can push to the device), except to a loopback host
+/// (`127.0.0.0/8`, `[::1]`, `localhost`), where TLS protects nothing and
+/// a sender's tests host their push service; never an onion address (a
 /// sender here doesn't reach Tor), never with a user name or password in
 /// it, and at most [`Endpoint::MAX_LEN`] characters.
 ///
@@ -32,7 +34,7 @@ pub enum EndpointError {
     TooLong,
     #[error("not a URL: {0}")]
     Invalid(#[from] url::ParseError),
-    #[error("not https")]
+    #[error("not https (http reaches only a loopback host)")]
     NotHttps,
     #[error("has no host")]
     NoHost,
@@ -60,16 +62,19 @@ impl Endpoint {
         if url.as_str().len() > Self::MAX_LEN {
             return Err(EndpointError::TooLong);
         }
-        if url.scheme() != "https" {
-            return Err(EndpointError::NotHttps);
+        let host = url.host().ok_or(EndpointError::NoHost)?;
+        match url.scheme() {
+            "https" => {}
+            "http" if is_loopback(&host) => {}
+            _ => return Err(EndpointError::NotHttps),
         }
         if !url.username().is_empty() || url.password().is_some() {
             return Err(EndpointError::Userinfo);
         }
-        match url.host() {
-            None => return Err(EndpointError::NoHost),
-            Some(Host::Domain(domain)) if is_onion(domain) => return Err(EndpointError::Onion),
-            Some(_) => {}
+        if let Host::Domain(domain) = host {
+            if is_onion(domain) {
+                return Err(EndpointError::Onion);
+            }
         }
         Ok(Endpoint(url))
     }
@@ -102,6 +107,16 @@ impl Endpoint {
 fn is_onion(domain: &str) -> bool {
     let domain = domain.strip_suffix('.').unwrap_or(domain);
     domain == "onion" || domain.ends_with(".onion")
+}
+
+/// This machine, by address or as `localhost` (`Url` writes every spelling
+/// of an IPv4 address, `127.1` or `0x7f000001`, as the dotted one).
+fn is_loopback(host: &Host<&str>) -> bool {
+    match host {
+        Host::Ipv4(address) => address.is_loopback(),
+        Host::Ipv6(address) => address.is_loopback(),
+        Host::Domain(domain) => domain.strip_suffix('.').unwrap_or(domain) == "localhost",
+    }
 }
 
 impl fmt::Debug for Endpoint {
@@ -366,6 +381,51 @@ mod tests {
             Endpoint::parse("push.example.net/x"),
             Err(EndpointError::Invalid(_))
         ));
+    }
+
+    /// Plain http reaches this machine only: a sender's tests host their
+    /// push service on loopback, where TLS protects nothing. Any other
+    /// host, a name that merely starts with a loopback address among
+    /// them, needs https.
+    #[test]
+    fn an_http_endpoint_is_accepted_on_loopback_only() {
+        for text in [
+            "http://127.0.0.1:8444/v1/push/ph_1",
+            "http://127.1.2.3/x",
+            "http://127.1/x",
+            "http://0x7f000001/x",
+            "http://[::1]:8444/x",
+            "http://localhost:3000/x",
+            "http://localhost./x",
+            "http://LocalHost/x",
+        ] {
+            let endpoint = Endpoint::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert!(endpoint.origin().as_str().starts_with("http://"), "{text}");
+        }
+        assert_eq!(
+            Endpoint::parse("http://0x7f000001/x").unwrap().host(),
+            "127.0.0.1"
+        );
+        for text in [
+            "http://10.0.0.1/x",
+            "http://[::ffff:127.0.0.1]/x",
+            "http://127.0.0.1.example.net/x",
+            "http://localhost.example.net/x",
+            "http://push.localhost/x",
+            "http://0.0.0.0/x",
+            "http://[::]/x",
+        ] {
+            assert_eq!(
+                Endpoint::parse(text),
+                Err(EndpointError::NotHttps),
+                "{text}"
+            );
+        }
+        // Onion and userinfo rules hold for http too.
+        assert_eq!(
+            Endpoint::parse("http://user@127.0.0.1/x"),
+            Err(EndpointError::Userinfo)
+        );
     }
 
     #[test]
