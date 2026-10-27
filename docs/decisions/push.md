@@ -943,8 +943,10 @@ every package was approved.
      refined). After `push-crate`, the push crate gained
      `Es256Key::from_pkcs8_pem` and live-settings the handling of several
      embedded services (both on `push-relay`), and one `rev` serves all six
-     crates the Bell takes, so the one commit that has everything is the
-     final commit of `push-relay`; monokular #14's `Cargo.toml` names it.
+     crates the Bell takes, so the pin is `push-relay`'s head when the
+     Bell's gates were last run against it; monokular #14's `Cargo.toml`
+     names it. A later commit of the stack that changes none of those six
+     crates (this log, the report) needs no re-pin; one that does, does.
      After the stack is on `main`, the pin moves to `main`'s commit with
      `cargo update -p push --precise`, as 22 planned.
 135. **The design document follows the build in the Bell's PR** (94's
@@ -975,7 +977,7 @@ every package was approved.
      skipped, 26.5 s) and xtask (112), the doctests, the OpenAPI document,
      the slow-test summary, `xtask ui --check` and the browser suite (90
      passed). The Bell's `rust.yml` steps were run on stable against its
-     pin (70 tests).
+     pin (71 tests).
 138. **The report is `docs/reports/bell-and-relay.md`**, a new directory
      (`docs/` had plans and audits, no reports), linked from each of the
      five PRs; monokular carries `docs/reports/bell.md` with the Bell's
