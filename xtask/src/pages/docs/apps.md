@@ -163,8 +163,8 @@ An app that isn't running hears of the store's sales from pushes instead
 of its event stream: [Web Push](https://www.rfc-editor.org/rfc/rfc8030),
 encrypted to the device ([RFC 8291](https://www.rfc-editor.org/rfc/rfc8291))
 and signed by the Monokulo ([VAPID](https://www.rfc-editor.org/rfc/rfc8292)),
-to a UnifiedPush distributor or to a push relay that hands it on to APNs or
-FCM. Only an app's key has push targets.
+to a UnifiedPush distributor or to a [push relay](../push-relay/) that
+hands it on to APNs or FCM. Only an app's key has push targets.
 
 Follow the entry's `mk:push-targets`:
 
