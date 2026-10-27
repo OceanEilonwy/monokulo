@@ -154,17 +154,20 @@ async fn push(
 
     let delivery = hand_on(&shared, &handle, &request, now).await?;
     tracing::debug!(handle = %handle.id, platform = %handle.platform, app = %handle.app, outcome = ?delivery, "push handed on");
+    // Past here the push is handed on or the token is gone: the answer
+    // says so even when the bookkeeping fails, since a 500 would have the
+    // sender send the same push again.
     match delivery {
         Delivery::Delivered => {
-            shared
-                .store
-                .touch(&handle.id, now, shared.handle_ttl)
-                .await
-                .map_err(internal)?;
+            if let Err(error) = shared.store.touch(&handle.id, now, shared.handle_ttl).await {
+                tracing::error!(handle = %handle.id, error = %error, "a delivered push's handle can't be kept alive");
+            }
             Ok(StatusCode::CREATED.into_response())
         }
         Delivery::Gone => {
-            shared.store.delete(&handle.id).await.map_err(internal)?;
+            if let Err(error) = shared.store.delete(&handle.id).await {
+                tracing::error!(handle = %handle.id, error = %error, "a gone handle can't be forgotten");
+            }
             Err(unknown_handle())
         }
         Delivery::TooLarge => Err(Problem::PayloadTooLarge
