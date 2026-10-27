@@ -1,0 +1,40 @@
+[package]
+name = "push"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Web Push for a sender and a relay: RFC 8291 encryption, VAPID (RFC 8292) and the RFC 8030 request both sides read"
+
+# No workspace crate here, and nothing that needs nightly: the Monokular
+# Bell (another repository, on stable) depends on this crate by git
+# revision.
+
+[features]
+# Decryption and a receiver's key pair, for other crates' tests that check
+# what a push service would hand a device. Enabled only from
+# [dev-dependencies] (resolver 2 keeps it out of every normal build).
+test-support = []
+
+[dependencies]
+# RFC 8291's content encoding: AES-128-GCM under a key and nonce from HKDF
+# (SHA-256) over a P-256 ECDH secret. The RustCrypto generation the rest
+# of the workspace is on (aes-gcm 0.11, hkdf 0.13, sha2 0.11).
+aes-gcm = "0.11.1"
+base64 = "0.23.1"
+hkdf = "0.13.0"
+http = "1.5.0"
+# `Retry-After` given as an HTTP date.
+httpdate = "1.0.3"
+# ECDH for RFC 8291, ECDSA (ES256) for VAPID and APNs tokens.
+p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
+rand = "0.10.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.20"
+url = "2.5.8"
+zeroize = "1.9.0"
+
+[lints]
+workspace = true
