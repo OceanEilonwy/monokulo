@@ -665,52 +665,65 @@ async fn each_target_gets_its_own_topic_for_an_order() {
 }
 
 /// A store's targets that share an endpoint are one subscription, pushed
-/// once per event, as the oldest of them that wants it: an app's eight
-/// targets, or another app's, on one relay handle don't make eight pushes
-/// out of one sale.
+/// once per event, as the last registered of them that wants it: an app's
+/// eight targets, or another app's, on one relay handle don't make eight
+/// pushes out of one sale, and a device re-paired as a new app, handed the
+/// same relay handle for new keys, is pushed with those, not the old.
 #[tokio::test]
 async fn targets_that_share_an_endpoint_are_pushed_once_per_event() {
     let world = world().await;
     let other = world.another_app().await;
-    let device = ::push::encrypt::ReceiverKeys::generate();
+    let old_keys = ::push::encrypt::ReceiverKeys::generate();
     let handle = "https://relay.example/h/one-handle";
-    let only_paid = world
-        .register(
-            &other,
-            encrypted("paid", handle, &device, Some(&["sale.paid"])),
-        )
-        .await;
-    let mut targets = vec![only_paid.clone()];
-    for n in 1..8 {
+    let mut targets = Vec::new();
+    for n in 0..7 {
         targets.push(
             world
-                .register(&other, encrypted(&format!("t{n}"), handle, &device, None))
+                .register(&other, encrypted(&format!("t{n}"), handle, &old_keys, None))
                 .await,
         );
     }
-    let third = world.another_app().await;
-    let theirs = world
-        .register(&third, encrypted("t", handle, &device, None))
+    let re_paired = world.another_app().await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let newest = world
+        .register(&re_paired, encrypted("t", handle, &device, None))
+        .await;
+    let only_paid = world
+        .register(
+            &re_paired,
+            encrypted("paid", handle, &device, Some(&["sale.paid"])),
+        )
         .await;
     let elsewhere = world
         .register(
-            &third,
-            encrypted("elsewhere", "https://push.example/own", &device, None),
+            &other,
+            encrypted("elsewhere", "https://push.example/own", &old_keys, None),
         )
         .await;
     let order = world.order(&world.fixture.ak.clone()).await;
     let pushed = |target: &PushTargetId| world.pushes(target).len();
-    // `sale.waiting`: the oldest target that wants it.
+    // `sale.waiting`: the last registered target that wants it.
     assert_eq!(pushed(&only_paid), 0);
-    assert_eq!(pushed(&targets[1]), 1);
+    assert_eq!(pushed(&newest), 1);
     assert_eq!(pushed(&elsewhere), 1);
-    for target in targets[2..].iter().chain([&theirs]) {
+    for target in &targets {
         assert_eq!(pushed(target), 0, "{target}");
     }
     assert_eq!(world.queue(&world.event(1, &order, "order.paid")).pushes, 2);
     assert_eq!(pushed(&only_paid), 1);
-    assert_eq!(pushed(&targets[1]), 1);
+    assert_eq!(pushed(&newest), 1);
     assert_eq!(pushed(&elsewhere), 2);
+
+    // Registering an older one again, in place, makes it the last.
+    world
+        .register(&other, encrypted("t3", handle, &device, None))
+        .await;
+    assert_eq!(
+        world.queue(&world.event(2, &order, "order.expired")).pushes,
+        2
+    );
+    assert_eq!(pushed(&targets[3]), 1);
+    assert_eq!((pushed(&newest), pushed(&only_paid)), (1, 1));
 }
 
 /// A disconnected app's targets went with it: its store's later events

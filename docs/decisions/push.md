@@ -707,13 +707,25 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      well below the relay's per-sender limit. Budgeting at queueing was the
      other way, but retries spend the relay's budget too.
 145. **A store's targets that share an endpoint are pushed once per
-     event**, as the oldest of them that wants it (push audit #15). An
+     event**, as the last registered of them that wants it (push audit
+     #15). An
      endpoint is one subscription; eight targets of an app (or of several
      apps) on one relay handle made eight pushes of each sale, eight times
      the store's share of the relay's budget, for one device. Refusing such
      a registration was the other way, but two apps on one device may be
      handed the same relay handle for this instance's key, and the second
-     app's registration would have failed for no fault of its own.
+     app's registration would have failed for no fault of its own. The
+     last registered, not the oldest: the relay hands a device the same
+     handle for the same token and sender key, so a device re-paired as a
+     new app connection (its old one left on the dashboard) registers the
+     same endpoint with new keys; pushed as the oldest, its pushes went
+     encrypted to keys it no longer holds, the push service took them, and
+     the live install never heard a push. "Last registered" counts a
+     registration in place too (`push_targets.registered_seq`, one more
+     than the highest at each registration: no clock ties), since an app
+     registers again whenever it runs. Having a registration delete the
+     store's other targets on its endpoint was the other way; it would
+     drop their event choices, and the budget is the same either way.
 146. **The relay's half of push audit #15** (charge the sender only for
      what passes the handle's limit, and size `per_sender_per_minute` for
      a multi-store instance and the Bell) is fixed on `push-relay`, where

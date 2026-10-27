@@ -242,7 +242,8 @@ alert or its payment code there would be about the wrong sale). The
 shows the sale already. One target's pushes are sent one after another,
 in the order they were queued, so the last to arrive is the latest.
 Targets of the store with the same `endpoint` are one subscription, and
-are pushed once per event, as the oldest of them that wants it.
+are pushed once per event, as the one of them last registered that wants
+it: register again whenever your app gets new subscription keys.
 
 An `encrypted` target gets the event's JSON, as the stream sends it, with
 the `api_version` webhooks carry, encrypted to the subscription's keys
