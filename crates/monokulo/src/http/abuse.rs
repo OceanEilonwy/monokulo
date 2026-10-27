@@ -85,19 +85,7 @@ pub fn anonymous_identity(
         return Some(peer.identity());
     }
     let ConnectInfo(peer) = extensions.get::<ConnectInfo<SocketAddr>>()?;
-    // Every `X-Forwarded-For` line, in order, as one list: a proxy that
-    // adds a line of its own instead of appending to the client's leaves
-    // the client's own line first, and reading only that would let the
-    // client name any address it likes. A line that isn't text ends the
-    // walk at the peer rather than being skipped.
-    let lines: Vec<&str> = headers
-        .get_all("x-forwarded-for")
-        .iter()
-        .map(|value| value.to_str().unwrap_or("?"))
-        .collect();
-    let joined = lines.join(",");
-    let forwarded_for = (!joined.is_empty()).then_some(joined.as_str());
-    let address = identity::client_address(peer.ip(), forwarded_for, trusted);
+    let address = identity::client_address(peer.ip(), headers, trusted);
     // The request span recorded the connecting peer; behind a trusted proxy
     // this is the real client (truncated to its network when written out).
     tracing::Span::current().record("client.address", address.to_string());

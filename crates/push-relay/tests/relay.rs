@@ -207,6 +207,41 @@ async fn registrations_are_limited_per_address() {
     assert_eq!(answered.status, StatusCode::TOO_MANY_REQUESTS);
 }
 
+/// A trusted proxy that adds its own `X-Forwarded-For` line (HAProxy's
+/// `option forwardfor`) leaves the client's invented line first: the
+/// registration limit counts the address the proxy's line names, so a new
+/// invented address on each request buys no new budget.
+#[tokio::test]
+async fn registrations_behind_a_line_adding_proxy_are_limited_by_its_line() {
+    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
+    let relay = TestRelay::start(
+        &apns,
+        &fcm,
+        &[
+            ("limits.registrations_per_minute", "2"),
+            ("server.trusted_proxies", "10.0.0.1"),
+        ],
+    )
+    .await;
+    let sender = VapidKey::generate();
+    let mut statuses = Vec::new();
+    for invented in ["203.0.113.1", "203.0.113.2", "203.0.113.3"] {
+        let mut request = registration("apns", &apns_token(), &sender);
+        let headers = request.headers_mut();
+        headers.append("x-forwarded-for", invented.parse().unwrap());
+        headers.append("x-forwarded-for", "198.51.100.7".parse().unwrap());
+        statuses.push(relay.call_from("10.0.0.1:443", request).await.status);
+    }
+    assert_eq!(
+        statuses,
+        [
+            StatusCode::CREATED,
+            StatusCode::CREATED,
+            StatusCode::TOO_MANY_REQUESTS
+        ]
+    );
+}
+
 /// Pushes refused before anything is handed on: none of them reaches APNs
 /// or FCM.
 #[tokio::test]
