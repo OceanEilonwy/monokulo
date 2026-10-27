@@ -291,18 +291,8 @@ impl TestRelay {
     }
 
     /// `request` from `peer`, as a connection from there brings it.
-    pub async fn call_from(&self, peer: &str, mut request: Request<Body>) -> Answered {
-        let peer: SocketAddr = peer.parse().unwrap();
-        request.extensions_mut().insert(ConnectInfo(peer));
-        let response = self.router.clone().oneshot(request).await.unwrap();
-        let status = response.status();
-        let headers = response.headers().clone();
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        Answered {
-            status,
-            headers,
-            body: body.to_vec(),
-        }
+    pub async fn call_from(&self, peer: &str, request: Request<Body>) -> Answered {
+        call_router(self.router.clone(), peer, request).await
     }
 
     pub async fn call(&self, request: Request<Body>) -> Answered {
@@ -335,6 +325,19 @@ impl TestRelay {
             .unwrap();
     }
 
+    /// When the handle's database row says it expires (Unix seconds).
+    pub fn expires_at(&self, endpoint: &str) -> i64 {
+        let id = endpoint.rsplit('/').next().unwrap();
+        let connection = rusqlite::Connection::open(&self.store_path).unwrap();
+        connection
+            .query_row(
+                "SELECT expires_at FROM handles WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     /// How many handles the database holds.
     pub fn handles(&self) -> i64 {
         let connection = rusqlite::Connection::open(&self.store_path).unwrap();
@@ -342,6 +345,29 @@ impl TestRelay {
             .query_row("SELECT COUNT(*) FROM handles", [], |row| row.get(0))
             .unwrap()
     }
+}
+
+/// `request` from `peer` to `router`, as a connection from there brings
+/// it: for tests that call one relay from several tasks at once.
+pub async fn call_router(router: axum::Router, peer: &str, mut request: Request<Body>) -> Answered {
+    let peer: SocketAddr = peer.parse().unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer));
+    let response = router.oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    Answered {
+        status,
+        headers,
+        body: body.to_vec(),
+    }
+}
+
+/// An `http` address on loopback that nothing listens on: an APNs or FCM
+/// that can't be reached.
+pub fn unreachable_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    format!("http://{}", listener.local_addr().unwrap())
 }
 
 /// A relay's answer.
@@ -406,6 +432,9 @@ pub struct PushBuilder {
     pub urgency: Urgency,
     pub ttl: Option<Ttl>,
     pub topic: Option<Topic>,
+    /// When the VAPID token is signed (Unix seconds; it is valid for 12
+    /// hours from then): now, unless a test says otherwise.
+    pub signed_at: Option<i64>,
 }
 
 impl PushBuilder {
@@ -419,6 +448,7 @@ impl PushBuilder {
             urgency: Urgency::High,
             ttl: Some(Ttl::seconds(1800)),
             topic: Some(Topic::parse("sale-1042").unwrap()),
+            signed_at: None,
         }
     }
 
@@ -431,7 +461,8 @@ impl PushBuilder {
             .authorization(
                 &Origin::parse(&self.audience).unwrap(),
                 None,
-                service_runtime::time::now_unix(),
+                self.signed_at
+                    .unwrap_or_else(service_runtime::time::now_unix),
             )
             .unwrap();
         let mut request = Request::post(path)
