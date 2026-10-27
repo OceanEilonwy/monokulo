@@ -9,7 +9,9 @@
 //! on a runtime of its own, its threads named
 //! `engine-…`, with its settings in this options file's `[engine.*]`
 //! tables, reached through its router in-process with a token made for
-//! this run.
+//! this run. A push relay runs inside it too when `relay.enabled`
+//! (`monokulo::relay`), on its own listener, its settings in the
+//! `[relay.*]` tables.
 
 use std::sync::Arc;
 
@@ -54,11 +56,12 @@ fn main() {
     // The options file next: it says where the database is, and anything
     // wrong in it stops monokulo here, line by line. The engine's tables
     // are left to the engine at first; they are refused below if there is
-    // no engine here to read them.
+    // no engine here to read them. The push relay's are the relay's, or
+    // refused when it isn't built in.
     let file = OptionsFile::at(&start.options)
         .with_renamed(settings::RENAMED)
         .with_retired(settings::RETIRED);
-    let own_options = file.clone().leaving(settings::ENGINE_TABLE);
+    let own_options = monokulo::relay::own_options(file.clone().leaving(settings::ENGINE_TABLE));
     let values = own_options.read(settings::ALL).unwrap_or_else(|e| stop(e));
     let early = Snapshot::new(values, env.clone());
     // Then logging, so everything after it is logged (structured_logging.md
@@ -82,9 +85,10 @@ fn main() {
         EngineMode::Embedded => own_options,
         // No engine here to read `[engine.*]`: refused, with why.
         EngineMode::Remote => {
-            let strict = file
-                .clone()
-                .with_hint(settings::ENGINE_TABLE, settings::ENGINE_TABLE_HINT);
+            let strict = monokulo::relay::own_options(
+                file.clone()
+                    .with_hint(settings::ENGINE_TABLE, settings::ENGINE_TABLE_HINT),
+            );
             if let Err(e) = strict.read(settings::ALL) {
                 stop(e);
             }
@@ -95,6 +99,9 @@ fn main() {
         EngineMode::Embedded => Some(embedded::prepare(&file, args.engine)),
         EngineMode::Remote => None,
     };
+    // The push relay's tables, checked whether it runs or not.
+    let relay = monokulo::relay::prepare(&file, args.relay, early.get(&settings::RELAY_ENABLED))
+        .unwrap_or_else(|e| stop(e));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -106,6 +113,7 @@ fn main() {
         mode,
         own_options,
         engine,
+        relay,
     }));
     // Every engine task stopped in `run`; whatever is left of its runtime
     // (idle threads) goes now, without waiting on anything stuck.
@@ -124,6 +132,7 @@ struct Boot {
     mode: EngineMode,
     own_options: OptionsFile,
     engine: Option<embedded::Prepared>,
+    relay: monokulo::relay::Prepared,
 }
 
 /// Runs monokulo until SIGTERM or Ctrl-C, and the embedded engine with it;
@@ -136,6 +145,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         mode,
         own_options,
         engine,
+        relay,
     } = boot;
     // What has to be known before the database opens, or must never be kept
     // in it: given at start only. Stores' secrets can't be read without the
@@ -160,6 +170,12 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // process's one log store: opened before an embedded engine starts, so
     // its lines (named `engine`) come here too.
     let log_store = telemetry::global().and_then(|t| t.open_store_beside(&db_path));
+
+    // The push relay, when it runs here: every setting of it checked
+    // first, on or off.
+    let relay = monokulo::relay::start(relay, &db_path)
+        .await
+        .unwrap_or_else(|e| stop(e));
 
     // The engine, inside or over HTTP.
     let (engine_client, embedded) = match (mode, engine) {
@@ -360,6 +376,9 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         Err(_) => {
             tracing::warn!(grace = ?service_runtime::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
         }
+    }
+    if let Some(relay) = relay {
+        relay.stop().await;
     }
     match embedded {
         Some(running) => Some(running.stop().await),
