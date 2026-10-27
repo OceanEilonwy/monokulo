@@ -1,6 +1,6 @@
 # Push audit: the Bell and relay stack
 
-Audit of the code that the Bell and relay stack added or changed. Nothing in it has been fixed yet: the stack's PRs stay unmerged until the owner reviews them. Read this beside the team's build report. The raw generated report is `target/code-audit-push/report.md`, the database is `target/code-audit-push/audit.db`, and the method is in `DECISIONS.md`.
+Audit of the code that the Bell and relay stack added or changed. **Status (2026-10-28): every confirmed finding is fixed** on the draft branches, each with its regression test; see `FIXES.md` for the fix, test, commit and PR of each, and section 10 of monokulo's `docs/reports/bell-and-relay.md` (on `push-relay`). The stack's PRs stay unmerged until the owner reviews them. Read this beside the team's build report. The raw generated report is `target/code-audit-push/report.md`, the database is `target/code-audit-push/audit.db`, and the method is in `DECISIONS.md`.
 
 ## Scope
 
