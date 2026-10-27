@@ -83,8 +83,9 @@ Monokulo-Client: {slug}/{your version}
 
 The entry links to the store (`mk:store`: its name, base currency and the
 wallet its payments go to, with the full address), its orders, its events,
-and your app's own connection (`mk:app`), and carries the forms your key may
-use (`create-order`, `disconnect`). Follow the links rather than building
+your app's own connection (`mk:app`) and its push targets
+(`mk:push-targets`), and carries the forms your key may use
+(`create-order`, `disconnect`, `register-push-target`). Follow the links rather than building
 paths: they're relative, so resolve them against the URL you used. Keep the
 entry as its `Cache-Control` says, and read it again when it expires or a
 link from it answers `401`, `404` or `405` (see
@@ -153,6 +154,73 @@ DELETE https://www.monokulo.com/api/v1/app
 Authorization: Bearer {app_key}
 ```
 
-The key stops working at once, and its event stream ends. The merchant can
-do the same from the dashboard. Orders the app made stay, and can still be
-paid.
+The key stops working at once, its event stream ends and its push targets
+are deleted. The merchant can do the same from the dashboard. Orders the
+app made stay, and can still be paid.
+
+## 6. Get pushes
+
+An app that isn't running hears of the store's sales from pushes instead
+of its event stream: [Web Push](https://www.rfc-editor.org/rfc/rfc8030),
+encrypted to the device ([RFC 8291](https://www.rfc-editor.org/rfc/rfc8291))
+and signed by the Monokulo ([VAPID](https://www.rfc-editor.org/rfc/rfc8292)),
+to a UnifiedPush distributor or to a push relay that hands it on to APNs or
+FCM. Only an app's key has push targets.
+
+Follow the entry's `mk:push-targets`:
+
+```
+GET https://www.monokulo.com/api/v1/push-targets
+Authorization: Bearer {app_key}
+```
+
+```json
+{ "vapid_public_key": "BOz2…", "push_targets": [],
+  "_links": { "self": { "href": "/api/v1/push-targets" }, "mk:app": { "href": "/api/v1/app" } },
+  "_templates": { "register-push-target": { "method": "POST", "target": "/api/v1/push-targets" } } }
+```
+
+`vapid_public_key` is the Monokulo's own key, the same for every app. Give
+it to your push service when you ask it for a subscription (a UnifiedPush
+distributor's `VAPID` option, the relay's `vapid_public_key`), so it takes
+pushes for that subscription from this Monokulo only. Read it each time you
+subscribe, rather than keeping it.
+
+Then register the subscription with the `register-push-target` form:
+
+```
+POST https://www.monokulo.com/api/v1/push-targets
+Authorization: Bearer {app_key}
+Content-Type: application/json
+
+{ "client_id": "unifiedpush", "kind": "encrypted",
+  "endpoint": "https://ntfy.sh/upYuGg6sBMEvqHs4?up=1",
+  "keys": { "p256dh": "BCVx…iw4", "auth": "BTBZ…Igg" } }
+```
+
+- `client_id` is your app's own name for the subscription (visible ASCII,
+  at most 64 characters). Registering again with the same one replaces that
+  target's subscription and keeps its id: do so whenever your push service
+  hands out a new endpoint.
+- `kind` is `encrypted`, Web Push encrypted with the subscription's `keys`
+  (`p256dh` and `auth`, base64url, as a `PushSubscription` or a UnifiedPush
+  distributor gives them); or `live-activity`, plain JSON to the push relay
+  for an iOS Live Activity, which takes no `keys`. A `live-activity` target
+  may set `include_payment_uri` to have its pushes carry the payment URI,
+  for the Dynamic Island to show the payment code.
+- `endpoint` is the subscription's `https` URL. Monokulo doesn't push over
+  Tor, so it is never an onion address.
+- `events` names the sale events to push (the names of
+  [Follow them](#4-follow-them)); every one when left out.
+
+It answers `201 Created` with the target and its `Location`. Its keys are
+never shown again. A target carries the `unregister-push-target` form,
+`DELETE` on the target itself, for when the app no longer wants its
+pushes. An app may have 8 push targets.
+
+| Problem | Status | What to do |
+| --- | --- | --- |
+| [`invalid-request`](../problems/invalid-request/) | 400 | The subscription isn't one Monokulo can push to: `detail` says why. |
+| [`too-many-push-targets`](../problems/too-many-push-targets/) | 409 | Unregister a target you no longer use, or register again with the `client_id` of one. |
+| [`forbidden`](../problems/forbidden/) | 403 | Only an app's own key has push targets. |
+| [`not-found`](../problems/not-found/) | 404 | No such target for your app (another app's included). |
