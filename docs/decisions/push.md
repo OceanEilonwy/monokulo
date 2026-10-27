@@ -731,17 +731,25 @@ principal renumbers, or not, when the stack is merged.
      4096 bytes, but base64 in a JSON envelope it no longer fits APNs's
      payload or FCM's data: the relay measures what it would send and
      answers `413` before sending (about 3000 bytes of ciphertext fit).
-113. **A Live Activity ends only when its sale is paid or expired and
-     `waitingCount` is 0**; otherwise the paid or expired state is an
-     `update` with its alert ("Paid · {amount}", "No payment yet"). The
-     plan ended it at every paid or expired sale, which would take an
-     overlapping waiting sale off the screen. **Open for the principal:**
-     design §6 keeps one activity per shift that goes back to idle after
-     a sale, which no `end` fits; the app work decides it. The relay
+113. **The relay never ends a Live Activity: every Live Activity push is
+     `event: update`** (replaced by the principal at review; the
+     engineer's version ended it when the sale was paid or expired and
+     `waitingCount` was 0, and asked for this call). Design §6 has one
+     activity per shift, started by the app, back to idle between sales
+     (set by the app) and ended by iOS after 8 hours or by the app. An
+     `end` from the relay would take the shift's activity off the island
+     at the first finished sale, and the app can't start another from the
+     background; `update` keeps every option open, since the app can
+     always end its own activity locally. So `paid` and `expired` are
+     updates carrying their alert ("Paid · {amount}", "No payment yet"),
+     `stale-date` is `expiresAt` while the sale is open, and the relay
      reads `phase` (`waiting`, `seen`, `confirming`, `paid`, `expired`),
-     `expiresAt` (Unix seconds, the stale date while the sale is open),
-     `amount` and `waitingCount` (default 0); P3's `LiveActivityState`
-     must write those names and types.
+     `expiresAt` (Unix seconds) and `amount` only: `waitingCount` is the
+     app's to show and the relay no longer reads it. If a sender ever
+     needs to end an activity remotely, that is a new field in the state,
+     decided then. P3's `LiveActivityState` writes those names and types;
+     its `Phase` comment saying the relay ends the activity changes at
+     its rebase.
 114. **A push-to-start's JSON is `{"attributes-type", "attributes",
      "content-state"}`**, each handed to APNs as it is, with event
      `start` and an alert (iOS shows a started activity only with one).
@@ -819,3 +827,45 @@ principal renumbers, or not, when the stack is merged.
      spellings had two handles, against the rule that the same four are
      one handle. FCM tokens are case-sensitive and kept as sent. No stored
      handles exist yet, so nothing is migrated.
+
+## The push relay's review (the principal)
+
+124. **P4 is not approved as it stands** (review round 1, at `143f9cea4`).
+     The whole diff against `origin/push-targets` was read (40 files) and
+     the gates run again: `cargo fmt --all --check`, `cargo clippy
+     --workspace --all-targets --all-features --locked -D warnings`,
+     `-p push-relay --lib --bins`, `-p monokulo --lib --bins
+     --no-default-features --features embedded-engine,tor`, `cargo
+     +stable clippy -p push --all-targets`, and `cargo nextest run -p
+     monokulo -p live-settings -p push-relay -p push -p xtask --features
+     monokulo/snp` (1075 passed, 2 skipped). All green. What must change
+     before it merges: the Live Activity's `end` (113, replaced above),
+     the answer to a delivered push whose expiry write fails (125), two
+     re-exports nothing names (126), and one missing test (127). Decisions
+     100 to 112 and 114 to 123 stand as written, 118 (reqwest's `http2`
+     reaching every client) included: the workspace's `rustls` feature
+     already brings reqwest's platform verifier and aws-lc-rs everywhere,
+     so the relay adds no new TLS stack, only ALPN `h2`.
+125. **A push APNs or FCM took is answered `201` even when the handle's
+     expiry can't be written**, and one they said is gone is answered
+     `404` even when the handle can't be deleted: the database failure is
+     logged as an error and the sender is told what became of the push.
+     As written, a failed `touch` after a delivered push answered `500`,
+     which `push::Sender` takes as a server failure and retries, so a
+     database hiccup would deliver the same notification twice. The
+     database's state is a cache of what APNs or FCM know; the answer to
+     the sender is the truth about the push.
+126. **`push_relay::ServiceAccount` and `push_relay::AppName` are not
+     re-exported**: nothing outside the crate names them (monokulo and the
+     tests reach the relay through `settings` and `Relay`). A `pub use`
+     nothing uses is dead code, as the standing rule has it.
+127. **The documented options-file form of `handles.apps` is tested
+     end to end**: the docs page and `--init` give `[handles.apps.monokular]`
+     with `apns_topic` and `fcm_project_id` as a TOML table, and the only
+     test of that form was a negative one (a misspelt field refused). One
+     test reads such a table through `OptionsFile` and `settings::load`
+     into `Apps` with the right bundle and project.
+128. **The decision numbers stay as they are.** P3's run from 73 and the
+     relay's from 100; the gap is harmless, and renumbering would break
+     the references the entries, commits and reviews make to each other.
+     The merged log keeps both runs, in the order the stack merges.
