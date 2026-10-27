@@ -813,3 +813,9 @@ principal renumbers, or not, when the stack is merged.
      `monokulo-engine` (decision 27); its port, 8444, is published only by
      a setup that runs a relay. The standalone relay logs to stderr only:
      it has no admin page to read a log store.
+123. **APNs tokens are kept in lowercase** (test engineer). An APNs token
+     is the app's hex spelling of the token's bytes, in either case; kept
+     as sent, the same device, app and sender registered in both
+     spellings had two handles, against the rule that the same four are
+     one handle. FCM tokens are case-sensitive and kept as sent. No stored
+     handles exist yet, so nothing is migrated.
