@@ -126,10 +126,12 @@ pub fn write_init(path: &std::path::Path) -> Result<(), String> {
     let text = live_settings::render_init_nested(
         "monokulo",
         crate::settings::ALL,
-        crate::settings::ENGINE_TABLE,
-        "The engine's own settings, used when it runs inside monokulo (engine.mode = \"embedded\", the default). With a remote engine they belong in that engine's own options file instead, and are refused here.",
-        &engine::engine_settings::embedded_settings(),
-        &embedded_engine_defaults(),
+        &[live_settings::Nested {
+            table: crate::settings::ENGINE_TABLE,
+            about: "The engine's own settings, used when it runs inside monokulo (engine.mode = \"embedded\", the default). With a remote engine they belong in that engine's own options file instead, and are refused here.",
+            settings: &engine::engine_settings::embedded_settings(),
+            defaults: &embedded_engine_defaults(),
+        }],
     );
     #[cfg(not(feature = "embedded-engine"))]
     let text = live_settings::render_init("monokulo", crate::settings::ALL);
