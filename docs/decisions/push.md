@@ -460,3 +460,114 @@ overrule any of them; a replacement is recorded under the same number.
     `aee1085de` and `dc2e93881` before its review; its decisions follow
     72. The final rebase of the stack onto `main` drops the merge commit
     and keeps the numbering 53 to 72 as it is here.
+
+## Push deliveries (rust-engineer-2)
+
+P3, `push-delivery`, on `push-targets` at `7c56066f4` (which has the
+merge of decision 72). If the relay's entries (P4) land first, these
+take the numbers after them; their content stands.
+
+73. **A push's `Topic` is the first 32 hex digits of the order id's
+    SHA-256, not the id's own 32 hex digits.** The `Topic` header crosses
+    the push service and any relay in the clear (it is how they
+    collapse), and an order's id opens its checkout, which shows the
+    address and the amount. A hash is as good for collapsing (one per
+    order, the same each time) and tells them nothing. Engine order ids
+    are `order_` + 32 hex, so the plan's rule would have put the id
+    itself in every header.
+74. **What a Live Activity's state holds.** Never the order's id (the
+    payload is plain through the relay and APNs; decision 73's reason).
+    `sale` is the app's own `merchant_order_id`, left out when it gave
+    none. `currency` is added beside `amount`: "$24.50" can't be drawn
+    from `"24.50"` alone, and the design's table names a display string
+    no server can format for the device's locale. `xmr` is trimmed
+    (`0.1419`), as the payment URI's `tx_amount` is. `paymentURI` is sent
+    only to a target with `include_payment_uri` *and* only while the sale
+    takes a payment (`waiting`, `partial`): a paid or expired sale has
+    no code to show, so the address doesn't cross the relay again.
+    `sale.partial` is phase `waiting` (the rest can still come; the
+    engine's event doesn't carry what arrived, so "amount left" isn't
+    available) and `sale.double_spend` is `expired`, as the design's
+    table has them.
+75. **`waitingCount` comes from a new column, `app_orders.last_sale_event`**
+    (migration 0053, nullable, with a `CHECK` on the seven names; no
+    existing row changes: an order from before has long expired). Each
+    queued sale event, pushed or not, records itself there in the same
+    transaction; the count is the store's app orders whose latest event is
+    none, `sale.waiting` or `sale.partial`, and that haven't expired.
+    Deriving it from `push_deliveries` was the alternative, but those rows
+    exist only for targets that asked for the event, and are pruned.
+76. **Every app's targets in the store are pushed, not only the targets of
+    the app that made the order**, as every app's event stream hears every
+    app order: the tills of one shop all want to know of a sale. The one
+    exception is **the order API's `sale.waiting`, which isn't pushed to
+    the app that made the order**: the design's "the till that made it
+    already shows it". The engine's `order.pending` later (the order
+    waiting again after a double spend) is news to that app too, and is
+    pushed to every target.
+77. **A `429` doesn't count towards `push.target_failure_limit`.** The plan
+    counted it; but a push service limiting this sender says nothing about
+    the device, and twenty of them in a busy hour would delete a working
+    target. A `413` (the payload can't be sent, a bug) and a VAPID signing
+    failure (this instance's key) give up on the push without counting
+    either. `5xx`, other refusals, timeouts, refused private addresses and
+    connection failures count.
+78. **A retry that would fall at or after the push's expiry gives the push
+    up at once**, instead of the plan's "capped at expires_at", which
+    would schedule an attempt with no TTL left to send. And each attempt
+    sends as `TTL` what is left of the push's own (`expires_at - now`), so
+    a push service never holds a push past the end the policy gave it.
+79. **The `sub` claim follows `public_uri` while running.** The worker
+    rebuilds its two senders (one per reach) when the setting changes, so
+    a save applies without a restart; their signed tokens go with them. No
+    `sub` while `public_uri` is unset or isn't `https` (a VAPID contact is
+    `mailto:` or `https:` only).
+80. **`Db::queue_order_event` takes a `push::Queueing` and returns
+    `Queued { webhooks, pushes }`.** The settings it needs (`default_ttl`,
+    the links' path) are read as each event is queued, like the webhook
+    bodies' addresses (`Addresses::push_queueing`); the counts let the
+    subscriber wake each worker only when it queued for it.
+    `run_subscriber` and `follow` take the `Push` (a new argument at their
+    four callers: `main.rs`, `mock-woocommerce`, two tests' and an
+    example's).
+81. **An `encrypted` payload's links are written as an app's key reads
+    them, on the web address's path**: what the stream gives an app on
+    the web address. An app connected over the onion address gets the same
+    relative path, which is right whenever monokulo is served at its host's
+    root (the onion address is). Two payloads per event, one per network,
+    weren't worth it for one link the guide says to follow from the order
+    anyway.
+82. **One `give_up_push(id, at, reason)` instead of the plan's
+    `give_up_push` and `mark_push_expired`**: the three reasons
+    (`expired before it could be sent`, `no attempts left`, `unreadable:
+    …`) are one update with different words. The plan's
+    `delete_push_target_dead` is `delete_dead_push_target`.
+83. **A due push that can't be read is given up on alone.** A row whose
+    `event_type`, `urgency` or `topic`, or whose target's endpoint or keys,
+    don't parse comes back from `due_push_deliveries` as an
+    `UnreadablePush` and is given up as `unreadable: …` (logged as an
+    error); failing the whole batch would have stopped every push behind
+    it for good, as the order-event subscriber skips an unreadable event.
+84. **No per-store share of a batch**, unlike webhooks (4 per store): a
+    push's TTL bounds every backlog to minutes, an app has at most 8
+    targets, and pushes go soonest first, so one store can delay another
+    by a batch at most.
+85. **A push superseded while its attempt is in flight keeps that attempt**
+    (delivered, or its error) but is never scheduled again: the newer one
+    is what the device should get next.
+86. **The payload's size isn't checked when it is queued.** The test of the
+    largest sale an app can make (a 120-character `merchant_order_id` of
+    control characters, which JSON writes as 6 bytes each, a 40-character
+    device name of emoji, an integrated address, the longest amount)
+    shows both payloads well within `MAX_PLAINTEXT` and `MAX_BODY`; one
+    that somehow isn't is given up at its attempt with an error log, the
+    plan's runtime safety net. `MerchantRef`'s 120 became
+    `scalars::MAX_MERCHANT_REF_CHARS` for that test to name.
+87. **The push settings have their own card, "Pushes to apps", on the
+    Payments tab**, after Webhooks; `webhooks.allow_private_urls`'s
+    description now says it governs pushes too (decision 19), and the
+    outbound onion error says nothing is sent over Tor "from here" rather
+    than naming webhooks.
+88. **The Query page shows every `push_deliveries` column.** The payload
+    is what `app_orders` already shows (amount, address, reference); the
+    topic is a hash; the endpoint, the one capability, isn't in the table.

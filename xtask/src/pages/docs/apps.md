@@ -226,3 +226,62 @@ pushes. An app may have 8 push targets.
 | [`too-many-push-targets`](../problems/too-many-push-targets/) | 409 | Unregister a target you no longer use, or register again with the `client_id` of one. |
 | [`forbidden`](../problems/forbidden/) | 403 | Only an app's own key has push targets. |
 | [`not-found`](../problems/not-found/) | 404 | No such target for your app (another app's included). |
+
+### What arrives
+
+Each sale event of [Follow them](#4-follow-them) that a target wants is
+pushed to it, for every order any of the store's apps makes. The
+`sale.waiting` of a new order isn't pushed to the app that made it: it
+shows the sale already.
+
+An `encrypted` target gets the event's JSON, as the stream sends it, with
+the `api_version` webhooks carry, encrypted to the subscription's keys
+(`Content-Encoding: aes128gcm`, RFC 8291). Decrypt it with the
+subscription's private key and `auth`, which never leave the device:
+
+```json
+{ "api_version": 2, "event": "sale.paid", "order_id": "order_9f3c…", "amount": "24.50",
+  "currency": "USD", "address": "8…", "xmr_amount_piconero": 141900000000,
+  "merchant_order_id": "#1042", "expires_at": 1761312000,
+  "device_name": "Front counter", "at": 1761310260,
+  "_links": { "mk:order": { "href": "/api/v1/orders/order_9f3c…" }, "curies": […] } }
+```
+
+A `live-activity` target gets the state an iOS Live Activity shows, plain
+JSON (`Content-Type: application/json`), through the relay. It never holds
+the order's id; `sale` is the app's own `merchant_order_id`, when it gave
+one, and `paymentURI` is there only for a target registered with
+`include_payment_uri`, and only while the sale takes a payment:
+
+```json
+{ "phase": "waiting", "sale": "#1042", "amount": "24.50", "currency": "USD",
+  "xmr": "0.1419", "expiresAt": 1761312000, "waitingCount": 2,
+  "paymentURI": "monero:8…?tx_amount=0.1419" }
+```
+
+`phase` is `waiting` (`sale.waiting`, and `sale.partial`: the rest can
+still come), `seen`, `confirming`, `paid`, or `expired` (`sale.expired`,
+and `sale.double_spend`: no payment). `waitingCount` is the store's app
+orders still waiting for a payment, this one included while it is.
+
+Every push about one order has the same `Topic`, so a push service holding
+pushes for a device that is away keeps only the latest. It is a hash, not
+the order's id, which a push service shouldn't learn:
+
+| Event | `Urgency` | `TTL` |
+| --- | --- | --- |
+| `sale.waiting` | `normal` | until the sale expires |
+| `sale.seen`, `sale.confirming` | `low` | until the sale expires |
+| `sale.partial` | `high` | until the sale expires |
+| `sale.paid`, `sale.expired`, `sale.double_spend` | `high` | 30 minutes |
+
+"Until the sale expires" is at least a minute and at most 30 minutes (the
+admin's `push.default_ttl_secs`). A push is never sent after its `TTL`, and
+a newer one about the same order replaces one not sent yet. One that
+fails is tried again 5, 20, 80 and 320 seconds later (or when the push
+service's `Retry-After` says), five times at most.
+
+A push service answering `404` or `410` has dropped the subscription:
+Monokulo deletes the target. So it does after 20 failures in a row. Read
+your targets (`mk:push-targets`) when the app starts, and register again
+any that's gone.
