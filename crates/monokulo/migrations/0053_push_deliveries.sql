@@ -1,8 +1,8 @@
 -- Pushes to connected apps' push targets (`crate::push::delivery`): one row
 -- per sale event and target that wants it, queued in the same transaction
 -- as the event's webhook deliveries (`Db::queue_order_event`), or as the
--- order an app made (`sale.waiting`). New tables and one new column; no
--- existing row changes.
+-- order an app made (`sale.waiting`). New tables and two new columns; no
+-- existing row changes but a push target's new column.
 --
 -- `event_seq`: the event's place in the engine's order-event log, 0 for
 -- `sale.waiting` (the order API makes it; the log never has it).
@@ -15,6 +15,15 @@
 -- then delivered, given up on, or superseded: a newer push for the same
 -- target and topic replaced it before it was sent. Deleting the target
 -- deletes its rows.
+-- The order push targets were last registered in, in place or new, higher
+-- later (one more than the highest at each registration): of a store's
+-- targets that share an endpoint (one subscription), the last registered is
+-- the one pushed, as it holds the keys the device has now (a re-paired app
+-- registers the same relay handle with new keys). Targets registered before
+-- this migration keep the order they were made in.
+ALTER TABLE push_targets ADD COLUMN registered_seq INTEGER NOT NULL DEFAULT 0;
+UPDATE push_targets SET registered_seq = rowid;
+
 CREATE TABLE push_deliveries (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     push_target_id      TEXT NOT NULL REFERENCES push_targets(id) ON DELETE CASCADE,

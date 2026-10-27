@@ -150,6 +150,7 @@ pub const COLUMNS: Classification = Classification {
         ("push_targets", "created_at_utc", Visible),
         ("push_targets", "last_ok_at_utc", Visible),
         ("push_targets", "failures", Visible),
+        ("push_targets", "registered_seq", Visible),
         ("saved_log_searches", "id", Visible),
         ("saved_log_searches", "user_id", Visible),
         ("saved_log_searches", "name", Visible),
