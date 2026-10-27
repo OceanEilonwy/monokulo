@@ -58,8 +58,8 @@ pub struct OptionsFile {
     scope: Option<String>,
     /// Tables other handles own: their subtables are left alone here.
     leaves: Vec<String>,
-    /// What to add when a key under this table isn't a setting.
-    hint: Option<(String, String)>,
+    /// What to add when a key under one of these tables isn't a setting.
+    hints: Vec<(String, String)>,
     /// Settings that were renamed, old key and new: a file still holding
     /// an old key is refused with the new name, so the fix is plain.
     renamed: &'static [(&'static str, &'static str)],
@@ -102,7 +102,7 @@ impl OptionsFile {
             }),
             scope: None,
             leaves: Vec::new(),
-            hint: None,
+            hints: Vec::new(),
             renamed: &[],
             retired: &[],
         }
@@ -117,7 +117,7 @@ impl OptionsFile {
             shared: self.shared.clone(),
             scope: Some(table.to_string()),
             leaves: Vec::new(),
-            hint: None,
+            hints: Vec::new(),
             renamed: &[],
             retired: &[],
         }
@@ -134,8 +134,9 @@ impl OptionsFile {
 
     /// This handle, adding `hint` to the problem reported for a key under
     /// `table` that isn't a setting: why such keys don't belong here.
+    /// Called once for each such table.
     pub fn with_hint(mut self, table: &str, hint: &str) -> Self {
-        self.hint = Some((table.to_string(), hint.to_string()));
+        self.hints.push((table.to_string(), hint.to_string()));
         self
     }
 
@@ -160,7 +161,7 @@ impl OptionsFile {
         Reading {
             scope: self.scope.as_deref(),
             leaves: &self.leaves,
-            hint: self.hint.as_ref().map(|(t, h)| (t.as_str(), h.as_str())),
+            hints: &self.hints,
             renamed: self.renamed,
             retired: self.retired,
         }
@@ -416,7 +417,7 @@ impl SettingsStore for LayeredStore {
 struct Reading<'a> {
     scope: Option<&'a str>,
     leaves: &'a [String],
-    hint: Option<(&'a str, &'a str)>,
+    hints: &'a [(String, String)],
     renamed: &'static [(&'static str, &'static str)],
     retired: &'static [(&'static str, &'static str)],
 }
@@ -553,8 +554,9 @@ impl Walk<'_, '_> {
                     }
                     let hint = self
                         .reading
-                        .hint
-                        .filter(|(table, _)| shown.starts_with(&format!("{table}.")))
+                        .hints
+                        .iter()
+                        .find(|(table, _)| shown.starts_with(&format!("{table}.")))
                         .map(|(_, hint)| format!(": {hint}"))
                         .unwrap_or_default();
                     self.problems
