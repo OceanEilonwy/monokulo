@@ -864,6 +864,7 @@ mod tests {
             snp_entry: base.snp_entry.clone(),
             cli_links: base.cli_links.clone(),
             webhooks: base.webhooks.clone(),
+            push: base.push.clone(),
             admin_tools: base.admin_tools.clone(),
             tor: base.tor.clone(),
             snp_bundle_limits: live_settings::Live::new(crate::settings::SnpBundleLimits {

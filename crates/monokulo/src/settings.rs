@@ -399,7 +399,7 @@ settings! {
     WEBHOOKS_ALLOW_PRIVATE_URLS: bool {
         key: "webhooks.allow_private_urls",
         default: false,
-        description: "Whether webhooks may be sent to private or loopback addresses. Only for testing against your own network.",
+        description: "Whether webhooks, and pushes to connected apps, may be sent to private or loopback addresses. Only for testing against your own network.",
         example: "false",
     },
     WEBHOOKS_DELIVERY_TIMEOUT_MS: u64 {
@@ -429,6 +429,41 @@ settings! {
         check: range(1, 3650),
         description: "Days a webhook delivery that was given up on stays in the store's list (where it can still be sent again) before it is deleted.",
         example: "90",
+    },
+    PUSH_DELIVERY_TIMEOUT_MS: u64 {
+        key: "push.delivery_timeout_ms",
+        default: 5000,
+        check: range(100, 300_000),
+        description: "Milliseconds a push service has to take a push to a connected app before the attempt counts as failed.",
+        example: "5000",
+    },
+    PUSH_MAX_ATTEMPTS: u32 {
+        key: "push.max_attempts",
+        default: 5,
+        check: range(1, 16),
+        description: "Attempts per push before giving up, waiting 5, 20, 80, then 320 seconds between them, and never once the push has expired.",
+        example: "5",
+    },
+    PUSH_DEFAULT_TTL_SECS: u32 {
+        key: "push.default_ttl_secs",
+        default: 1800,
+        check: range(60, 86_400),
+        description: "Seconds a push about a paid, expired or double-spent sale is worth sending for, and the most any push is: one about a sale still in progress lasts until the sale expires, at least a minute.",
+        example: "1800",
+    },
+    PUSH_KEEP_DAYS: u64 {
+        key: "push.keep_days",
+        default: 7,
+        check: range(1, 365),
+        description: "Days a push that was sent, given up on or replaced by a newer one stays in the database before it is deleted.",
+        example: "7",
+    },
+    PUSH_TARGET_FAILURE_LIMIT: u32 {
+        key: "push.target_failure_limit",
+        default: 20,
+        check: range(1, 1000),
+        description: "Failed attempts in a row after which a connected app's push target is deleted; the app registers it again when it next runs.",
+        example: "20",
     },
     ABUSE_STREAM_CAP: usize {
         key: "abuse.stream_cap",
@@ -773,6 +808,60 @@ impl Section for WebhookConfig {
             max_attempts: snapshot.get(&WEBHOOKS_MAX_ATTEMPTS),
             keep_delivered_secs: days(snapshot.get(&WEBHOOKS_KEEP_DELIVERED_DAYS)),
             keep_given_up_secs: days(snapshot.get(&WEBHOOKS_KEEP_GIVEN_UP_DAYS)),
+        })
+    }
+}
+
+/// How pushes to connected apps are delivered (`crate::push::delivery`),
+/// read before each batch, so a save applies to the next attempt. Which
+/// addresses they may go to is `webhooks.allow_private_urls`
+/// ([`WebhookConfig::allow_private_urls`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushConfig {
+    pub delivery_timeout: std::time::Duration,
+    pub max_attempts: u32,
+    /// How long a push about a sale's end lasts, and the most any lasts.
+    pub default_ttl: ::push::Ttl,
+    /// How long a push sent, given up on or superseded is kept, in seconds.
+    pub keep_secs: i64,
+    /// Failed attempts in a row that delete a target.
+    pub target_failure_limit: u32,
+}
+
+impl Default for PushConfig {
+    fn default() -> Self {
+        PushConfig {
+            delivery_timeout: std::time::Duration::from_millis(
+                PUSH_DELIVERY_TIMEOUT_MS.default_value(),
+            ),
+            max_attempts: PUSH_MAX_ATTEMPTS.default_value(),
+            default_ttl: ::push::Ttl::seconds(PUSH_DEFAULT_TTL_SECS.default_value()),
+            keep_secs: days(PUSH_KEEP_DAYS.default_value()),
+            target_failure_limit: PUSH_TARGET_FAILURE_LIMIT.default_value(),
+        }
+    }
+}
+
+impl Section for PushConfig {
+    const NAME: &'static str = "push";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &PUSH_DELIVERY_TIMEOUT_MS,
+            &PUSH_MAX_ATTEMPTS,
+            &PUSH_DEFAULT_TTL_SECS,
+            &PUSH_KEEP_DAYS,
+            &PUSH_TARGET_FAILURE_LIMIT,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(PushConfig {
+            delivery_timeout: std::time::Duration::from_millis(
+                snapshot.get(&PUSH_DELIVERY_TIMEOUT_MS),
+            ),
+            max_attempts: snapshot.get(&PUSH_MAX_ATTEMPTS),
+            default_ttl: ::push::Ttl::seconds(snapshot.get(&PUSH_DEFAULT_TTL_SECS)),
+            keep_secs: days(snapshot.get(&PUSH_KEEP_DAYS)),
+            target_failure_limit: snapshot.get(&PUSH_TARGET_FAILURE_LIMIT),
         })
     }
 }
@@ -1488,6 +1577,8 @@ pub struct MonokuloSettings {
     pub snp_bundle_limits: live_settings::Live<SnpBundleLimits>,
     /// How webhooks are delivered: read before each batch.
     pub webhooks: live_settings::Live<WebhookConfig>,
+    /// How pushes to connected apps are delivered: read before each batch.
+    pub push: live_settings::Live<PushConfig>,
     /// Which admin tools are on: read per request.
     pub admin_tools: live_settings::Live<AdminTools>,
     /// How visitors on Tor reach this instance: read per request.
@@ -1545,6 +1636,7 @@ impl MonokuloSettings {
             snp_entry: live_settings::Live::new(snp_entry),
             snp_bundle_limits: live_settings::Live::new(SnpBundleLimits::default()),
             webhooks: live_settings::Live::new(WebhookConfig::default()),
+            push: live_settings::Live::new(PushConfig::default()),
             admin_tools: live_settings::Live::new(AdminTools {
                 query_enabled: ADMIN_QUERY_ENABLED.default_value(),
             }),
@@ -1564,6 +1656,7 @@ impl MonokuloSettings {
             snp_entry: self.snp_entry.clone(),
             snp_bundle_limits: self.snp_bundle_limits.clone(),
             webhooks: live_settings::Live::new(webhooks),
+            push: self.push.clone(),
             admin_tools: self.admin_tools.clone(),
             tor: self.tor.clone(),
         })
@@ -1581,6 +1674,7 @@ impl MonokuloSettings {
             snp_entry: self.snp_entry.clone(),
             snp_bundle_limits: self.snp_bundle_limits.clone(),
             webhooks: self.webhooks.clone(),
+            push: self.push.clone(),
             admin_tools: self.admin_tools.clone(),
             tor: live_settings::Live::new(tor),
         })
@@ -1644,6 +1738,7 @@ impl MonokuloSettings {
         let snp_entry = builder.section::<SnpEntryPolicy>();
         let snp_bundle_limits = builder.section::<SnpBundleLimits>();
         let webhooks = builder.section::<WebhookConfig>();
+        let push = builder.section::<PushConfig>();
         let admin_tools = builder.section::<AdminTools>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
@@ -1670,6 +1765,7 @@ impl MonokuloSettings {
             snp_entry,
             snp_bundle_limits,
             webhooks,
+            push,
             admin_tools,
             tor,
         }))
@@ -1699,6 +1795,7 @@ fn test_registry() -> Registry {
     builder.section::<SnpEntryPolicy>();
     builder.section::<SnpBundleLimits>();
     builder.section::<WebhookConfig>();
+    builder.section::<PushConfig>();
     builder.section::<AdminTools>();
     builder.section::<DatabaseConfig>();
     builder.section::<BootConfig>();
@@ -2048,6 +2145,10 @@ mod tests {
             WebhookConfig::from_snapshot(&snapshot).unwrap(),
             WebhookConfig::default()
         );
+        assert_eq!(
+            PushConfig::from_snapshot(&snapshot).unwrap(),
+            PushConfig::default()
+        );
         let covered: std::collections::BTreeSet<&str> = [
             PerRequest::keys(),
             CliLinks::keys(),
@@ -2062,6 +2163,7 @@ mod tests {
             BootConfig::keys(),
             ServerConfig::keys(),
             WebhookConfig::keys(),
+            PushConfig::keys(),
             AdminTools::keys(),
         ]
         .iter()
@@ -2108,6 +2210,63 @@ mod tests {
                 Ok(_) => panic!("{bad} was accepted"),
             };
             assert!(refused.contains("webhooks.keep_"), "{refused}");
+        }
+    }
+
+    /// The push settings come from the options file's `[push]`; a value out
+    /// of range stops monokulo from starting, naming it.
+    #[tokio::test]
+    async fn the_push_settings_load_and_bad_ones_stop_monokulo() {
+        let load = |options: &str| {
+            let options = options.to_string();
+            async move {
+                MonokuloSettings::load(
+                    DbSettings::new(
+                        Database::inline(Db::open_in_memory().unwrap().into_shared()),
+                        crate::http::TEST_ENCRYPTION_KEY,
+                    ),
+                    Arc::new(ExchangeRateProviders::xmr_only()),
+                    Default::default(),
+                    None,
+                    test_secrets(),
+                    live_settings::OptionsFile::in_memory(&options),
+                )
+                .await
+            }
+        };
+        let settings = load(
+            "[push]\ndelivery_timeout_ms = 2500\nmax_attempts = 3\ndefault_ttl_secs = 600\nkeep_days = 2\ntarget_failure_limit = 50\n",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *settings.push.load(),
+            PushConfig {
+                delivery_timeout: Duration::from_millis(2500),
+                max_attempts: 3,
+                default_ttl: ::push::Ttl::seconds(600),
+                keep_secs: 2 * 86_400,
+                target_failure_limit: 50,
+            }
+        );
+        for (bad, key) in [
+            ("[push]\nmax_attempts = 17\n", "push.max_attempts"),
+            ("[push]\ndefault_ttl_secs = 59\n", "push.default_ttl_secs"),
+            (
+                "[push]\ndelivery_timeout_ms = 99\n",
+                "push.delivery_timeout_ms",
+            ),
+            ("[push]\nkeep_days = 0\n", "push.keep_days"),
+            (
+                "[push]\ntarget_failure_limit = 1001\n",
+                "push.target_failure_limit",
+            ),
+        ] {
+            let refused = match load(bad).await {
+                Err(refused) => refused,
+                Ok(_) => panic!("{bad} was accepted"),
+            };
+            assert!(refused.contains(key), "{refused}");
         }
     }
 
