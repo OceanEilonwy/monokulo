@@ -3188,7 +3188,7 @@
   },
   {
     "component": "Stepper",
-    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"0\" max=\"720\" name=\"book_confirmations\" value=\"10\" aria-label=\"confirmations\" data-mk=\"3\"><!--mk:4--></span>",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"text\" inputmode=\"numeric\" autocomplete=\"off\" role=\"spinbutton\" aria-valuemin=\"0\" aria-valuemax=\"720\" name=\"book_confirmations\" value=\"10\" aria-label=\"confirmations\" data-mk=\"3\"><!--mk:4--></span>",
     "props": {
       "disabled": false,
       "invalid": false,
@@ -3203,7 +3203,7 @@
   },
   {
     "component": "Stepper",
-    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:1}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"1\" max=\"720\" name=\"book_at_min\" value=\"1\" aria-label=\"confirmations\" data-mk=\"3\"><!--mk:4--></span>",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:1}\"><!--mk:2--><input class=\"mk-input\" type=\"text\" inputmode=\"numeric\" autocomplete=\"off\" role=\"spinbutton\" aria-valuemin=\"1\" aria-valuemax=\"720\" name=\"book_at_min\" value=\"1\" aria-label=\"confirmations\" data-mk=\"3\"><!--mk:4--></span>",
     "props": {
       "disabled": false,
       "invalid": false,
@@ -3218,7 +3218,7 @@
   },
   {
     "component": "Stepper",
-    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"0\" max=\"720\" name=\"book_stepper_refused\" value=\"721\" aria-label=\"confirmations\" aria-invalid=\"true\" data-mk=\"3\"><!--mk:4--></span>",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"text\" inputmode=\"numeric\" autocomplete=\"off\" role=\"spinbutton\" aria-valuemin=\"0\" aria-valuemax=\"720\" name=\"book_stepper_refused\" value=\"721\" aria-label=\"confirmations\" aria-invalid=\"true\" data-mk=\"3\"><!--mk:4--></span>",
     "props": {
       "disabled": false,
       "invalid": true,
@@ -3233,7 +3233,7 @@
   },
   {
     "component": "Stepper",
-    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"0\" name=\"book_stepper_disabled\" value=\"3\" aria-label=\"confirmations\" disabled data-mk=\"3\"><!--mk:4--></span>",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"text\" inputmode=\"numeric\" autocomplete=\"off\" role=\"spinbutton\" aria-valuemin=\"0\" name=\"book_stepper_disabled\" value=\"3\" aria-label=\"confirmations\" disabled data-mk=\"3\"><!--mk:4--></span>",
     "props": {
       "disabled": true,
       "invalid": false,

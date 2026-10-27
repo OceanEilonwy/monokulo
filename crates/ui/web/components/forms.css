@@ -85,13 +85,11 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-money[data-size="compact"] > .mk-money-unit { padding: 0 var(--space-sm); font-size: var(--text-xs); }
 
 /* A whole number with − and + (Stepper). Without the behaviour, a narrow
-   number input; with it, one box with the buttons at its ends, and the
-   browser's own spin arrows gone. */
+   field; with it, one box with the buttons at its ends. */
 .mk-stepper { box-sizing: border-box; display: inline-flex; align-items: stretch; vertical-align: middle; }
 .mk-stepper > .mk-input { width: 5.5rem; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
 .mk-stepper[data-ready] { border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); overflow: hidden; }
-.mk-stepper[data-ready] > .mk-input { width: 4.5rem; border: 0; border-radius: 0; padding-inline: var(--space-xs); appearance: textfield; -moz-appearance: textfield; }
-.mk-stepper[data-ready] > .mk-input::-webkit-inner-spin-button, .mk-stepper[data-ready] > .mk-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.mk-stepper[data-ready] > .mk-input { width: 4.5rem; border: 0; border-radius: 0; padding-inline: var(--space-xs); }
 .mk-stepper[data-ready] > .mk-input:focus-visible { outline: none; }
 .mk-stepper[data-ready]:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }
 .mk-stepper[data-ready]:has(> [aria-invalid="true"]) { border-color: var(--error); }

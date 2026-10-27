@@ -420,10 +420,13 @@ pub(super) fn money_input_examples() -> Vec<(&'static str, MoneyInput)> {
 
 component! {
     /// A whole number with buttons to take one off and add one: a count
-    /// of confirmations, of items. Without JavaScript a number input; once
-    /// its island attaches, − and + either side of it, each stopping at
-    /// its end and announcing the new value as an `input` event (so a
-    /// settings form sees the change).
+    /// of confirmations, of items. A text field for digits (a spin button
+    /// to screen readers), never the browser's number input: what is typed
+    /// is sent as typed and the server says what's wrong, as every other
+    /// setting does, rather than the browser refusing to send it. Once its
+    /// island attaches, − and + either side of it and the arrow keys step
+    /// it, each stopping at its end and announcing the new value as an
+    /// `input` event (so a settings form sees the change).
     pub struct Stepper {
         name: String,
         id: Option<String>,
@@ -462,7 +465,8 @@ component! {
                 button class="mk-stepper-btn" type="button" tabindex="-1" aria-label={ "Fewer " (label) }
                     disabled[b.at_min] on:click=down { "−" }
             }
-            input class="mk-input" type="number" inputmode="numeric" step="1" min=(min) max=[max] name=(name)
+            input class="mk-input" type="text" inputmode="numeric" autocomplete="off" role="spinbutton"
+                aria-valuemin=(min) aria-valuemax=[max] name=(name)
                 id=[id] value=[value] aria-label=(label) aria-describedby=[described_by]
                 aria-invalid="true" if invalid required[required] disabled[disabled] ..rest ref=input;
             @if enhanced {
