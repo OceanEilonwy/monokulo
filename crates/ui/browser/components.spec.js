@@ -276,3 +276,105 @@ test('a countdown counts on from the seconds it was given, and turns as time run
   await expect(low.getByRole('status')).toHaveText('Time is up.');
   await expect(low.locator('progress')).toHaveAttribute('value', '0');
 });
+
+test('a money input groups as it is typed, takes a comma as the point, and sends the plain number', async ({ page }) => {
+  await page.goto('/#component-money-input');
+  const usd = page.getByRole('textbox', { name: 'Amount in USD' }).first();
+  await expect(usd).toHaveValue('1,250.50');
+  await usd.fill('');
+  await usd.pressSequentially('1234567');
+  await expect(usd).toHaveValue('1,234,567');
+  await usd.pressSequentially(',5');
+  await expect(usd).toHaveValue('1,234,567.5');
+  await usd.pressSequentially('99');
+  await expect(usd).toHaveValue('1,234,567.59');
+  // Backspace over a group comma takes the digit before it.
+  await usd.fill('');
+  await usd.pressSequentially('1250');
+  for (let i = 0; i < 3; i++) await usd.press('ArrowLeft');
+  await usd.press('Backspace');
+  await expect(usd).toHaveValue('250');
+  // What a form sends is plain.
+  await usd.fill('');
+  await usd.pressSequentially('1250.5');
+  const sent = await usd.evaluate(el => {
+    const box = el.closest('.mk-money');
+    const form = document.createElement('form');
+    box.before(form);
+    form.append(box);
+    return new FormData(form).get('book_usd');
+  });
+  // Moving it blurred it, so the cents were filled in: still plain.
+  expect(sent).toBe('1250.50');
+});
+
+test('a Monero amount keeps its twelve places and refuses a piconero count', async ({ page }) => {
+  await page.goto('/#component-money-input');
+  const xmr = page.getByRole('textbox', { name: 'Amount in XMR' });
+  await expect(xmr).toHaveValue('0.125');
+  await xmr.fill('');
+  await xmr.pressSequentially('0,000000000001');
+  await expect(xmr).toHaveValue('0.000000000001');
+  expect(await xmr.evaluate(el => el.validationMessage)).toBe('');
+  await xmr.fill('');
+  await xmr.pressSequentially('125000000000');
+  await expect(xmr).toHaveValue('125,000,000,000');
+  expect(await xmr.evaluate(el => el.validationMessage)).toContain('not piconero');
+});
+
+test('a paste is read for what it means, and an ambiguous one is asked about', async ({ page }) => {
+  await page.goto('/#component-money-input');
+  const paste = (el, text) => el.evaluate((input, text) => {
+    const data = new DataTransfer();
+    data.setData('text', text);
+    input.focus();
+    input.select();
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  }, text);
+  const xmr = page.getByRole('textbox', { name: 'Amount in XMR' });
+  await paste(xmr, '0,125 XMR');
+  await expect(xmr).toHaveValue('0.125');
+  await paste(xmr, '1,250');
+  await expect(xmr).toHaveValue('0.125');
+  expect(await xmr.evaluate(el => el.validationMessage)).toContain('a comma for thousands, or for decimals');
+  // The server's refused "1,250" is left as it is, not read as 1250.
+  const refused = page.getByRole('textbox', { name: 'Amount in EUR' });
+  await expect(refused).toHaveValue('1,250');
+  expect(await refused.evaluate(el => el.validationMessage)).toContain('a comma for thousands, or for decimals');
+});
+
+test('without JavaScript a money input is plain and sends what is typed', async ({ browser }) => {
+  const { context, page } = await noScript(browser);
+  const xmr = page.getByRole('textbox', { name: 'Amount in XMR' });
+  await expect(xmr).toHaveValue('0.125');
+  await expect(page.locator('#component-money-input-2 .mk-money-unit')).toHaveText('XMR');
+  await xmr.fill('');
+  await xmr.pressSequentially('0.5');
+  await expect(xmr).toHaveValue('0.5');
+  await context.close();
+});
+
+test('a stepper steps from what is typed and stops at its ends', async ({ page }) => {
+  await page.goto('/#component-stepper');
+  const example = page.locator('#component-stepper-1');
+  const input = example.getByRole('spinbutton', { name: 'confirmations' });
+  const more = example.getByRole('button', { name: 'More confirmations' });
+  const fewer = example.getByRole('button', { name: 'Fewer confirmations' });
+  await more.click();
+  await expect(input).toHaveValue('11');
+  await input.fill('720');
+  await expect(more).toBeDisabled();
+  await fewer.click();
+  await expect(input).toHaveValue('719');
+  await expect(more).toBeEnabled();
+  const low = page.locator('#component-stepper-2');
+  await expect(low.getByRole('button', { name: 'Fewer confirmations' })).toBeDisabled();
+});
+
+test('without JavaScript a stepper is a number input with no buttons', async ({ browser }) => {
+  const { context, page } = await noScript(browser);
+  const example = page.locator('#component-stepper-1');
+  await expect(example.getByRole('spinbutton', { name: 'confirmations' })).toHaveValue('10');
+  await expect(example.locator('button')).toHaveCount(0);
+  await context.close();
+});

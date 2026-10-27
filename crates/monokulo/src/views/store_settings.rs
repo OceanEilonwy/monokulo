@@ -21,6 +21,9 @@ use maud::{html, Markup};
 use super::settings::{plain_card, toast_region, Card, Field, Save, Toast, ToastKind};
 use super::PageChrome;
 use crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS;
+
+/// The most confirmations a store or tier can ask for (the engine's limit).
+const MAX_CONFIRMATIONS: u32 = engine_protocol::order_status::MAX_CONFIRMATIONS_REQUIRED as u32;
 use ui::{Choice, Select};
 
 /// One row of the FX-provider settings dropdown.
@@ -82,7 +85,7 @@ pub struct StoreSettingsData {
     pub fx_provider_options: Vec<FxProviderOption>,
     /// `Some` while this instance offers Haveno - its per-store limits.
     pub haveno_settings: Option<HavenoSettingsView>,
-    pub base_currency: String,
+    pub base_currency: crate::currencies::KnownCurrency,
     pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
     pub confirmation_thresholds: Vec<ConfirmationThresholdView>,
     /// The store's webhooks and their deliveries (`views::webhooks`),
@@ -686,7 +689,7 @@ fn store_card(store: &StoreSettingsData) -> Markup {
 
 /// "Base currency".
 fn base_currency_card(store: &StoreSettingsData) -> Markup {
-    let shown = store.shown("base_currency", &store.base_currency);
+    let shown = store.shown("base_currency", store.base_currency.as_str());
     settings_card(
         store,
         StoreSection::BaseCurrency,
@@ -706,7 +709,7 @@ fn base_currency_card(store: &StoreSettingsData) -> Markup {
                         .collect::<Vec<_>>(),
                 )
                 .id("base-currency")
-                .maybe_attr("data-saved", store.saved_attr(&store.base_currency)))
+                .maybe_attr("data-saved", store.saved_attr(store.base_currency.as_str())))
             }),
     )
 }
@@ -725,10 +728,10 @@ fn wait(confirmations: u64) -> String {
 fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
     let currency = store.base_currency.as_str();
     let mut tiers: Vec<&ConfirmationThresholdView> = store.confirmation_thresholds.iter().collect();
-    tiers.sort_by(|a, b| {
-        let amount =
-            |t: &ConfirmationThresholdView| t.unit_amount.parse::<f64>().unwrap_or(f64::MAX);
-        amount(a).total_cmp(&amount(b))
+    // Exactly, by amount; one that doesn't parse goes last.
+    tiers.sort_by_key(|t| {
+        let amount = pricing::unit_amount::UnitAmount::parse(&t.unit_amount).ok();
+        (amount.is_none(), amount)
     });
     let confirmations = |n: u64| {
         if n == 1 {
@@ -765,19 +768,15 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
     let new_row = (!at_max).then(|| {
         html! {
             "From"
-            (ui::Input::new("new_unit_amount")
+            // As typed when the save refused it, so it can be put right.
+            (super::money_input("new_unit_amount", &store.base_currency, None)
                 .value(store.shown("new_unit_amount", ""))
                 .label(format!("New tier's amount ({currency})"))
-                .attr("inputmode", "decimal")
                 .maybe_attr("data-saved", store.saved_attr("")))
-            (currency) " need"
-            (ui::Input::new("new_confirmations_required")
+            "need"
+            (ui::Stepper::new("new_confirmations_required", "confirmations for the new tier")
                 .value(store.shown("new_confirmations_required", ""))
-                .label("New tier's confirmations")
-                .attr("data-input", "confirmations")
-                .attr("size", "3")
-                .attr("maxlength", "3")
-                .attr("inputmode", "numeric")
+                .max(MAX_CONFIRMATIONS)
                 .maybe_attr("data-saved", store.saved_attr("")))
             "confirmations"
         }
@@ -867,15 +866,12 @@ fn default_confirmations(store: &StoreSettingsData, saved: u64) -> Markup {
         (Field::new("Default confirmations", "confirmations-required")
             .help(Some("confirmations-required-help"), html! { "Blocks a payment waits before an order counts as paid, from 0 to 720." })
             .render(html! {
-                (ui::Input::new("confirmations_required")
+                (ui::Stepper::new("confirmations_required", "default confirmations")
                     .id("confirmations-required")
                     .value(store.shown("confirmations_required", &default))
+                    .max(MAX_CONFIRMATIONS)
                     .described_by("confirmations-required-help")
                     .required(true)
-                    .attr("data-input", "confirmations")
-                    .attr("size", "3")
-                    .attr("maxlength", "3")
-                    .attr("inputmode", "numeric")
                     .maybe_attr("data-saved", store.saved_attr(&default)))
             }))
         (Field::new("Accept unconfirmed (0-conf) payments", "zero-conf")
@@ -1202,7 +1198,7 @@ mod tests {
                 selected: true,
             }],
             haveno_settings: None,
-            base_currency: "XMR".to_string(),
+            base_currency: crate::currencies::KnownCurrency::for_test("XMR"),
             base_currency_options: vec![],
             confirmation_thresholds: vec![],
             webhooks: super::super::webhooks::WebhooksCard {

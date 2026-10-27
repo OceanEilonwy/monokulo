@@ -13,7 +13,7 @@
     "build:ui": "npm run build -w @monokulo/ui",
     "test:ui": "playwright test -c crates/ui/playwright.config.js",
     "lint:ui": "node crates/ui/tools/lint.mjs",
-    "test:ui:unit": "node --test crates/ui/tools/lint.test.mjs",
+    "test:ui:unit": "node --test crates/ui/tools/lint.test.mjs crates/ui/tools/money-mask.test.ts",
     "test:engine": "npm run test -w @monokulo/engine"
   },
   "devDependencies": {

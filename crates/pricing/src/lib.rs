@@ -12,4 +12,5 @@ pub mod coinmarketcap;
 pub mod exchange_rate;
 pub mod haveno;
 pub mod http_client;
+pub mod unit_amount;
 pub mod xmr_amount;

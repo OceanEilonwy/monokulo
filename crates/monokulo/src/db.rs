@@ -2836,7 +2836,7 @@ impl Db {
         // By amount; one that doesn't parse (a hand-edited row) sorts last
         // and is logged, rather than quietly coming first.
         rows.sort_by_key(|row| {
-            let amount = crate::confirmation_thresholds::ThresholdAmount::parse(&row.unit_amount);
+            let amount = pricing::unit_amount::UnitAmount::parse(&row.unit_amount);
             if amount.is_err() {
                 tracing::warn!(unit_amount = %row.unit_amount, "a confirmation threshold's amount does not parse");
             }

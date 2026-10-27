@@ -73,6 +73,22 @@ impl KnownCurrency {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The decimal places its amounts are typed and shown with
+    /// ([`minor_units`]).
+    pub fn decimals(&self) -> u8 {
+        minor_units(&self.0)
+    }
+
+    /// What someone typed into an amount field in this currency: digits
+    /// and a dot, no more decimals than it has, and for XMR no more than
+    /// the largest order (so a piconero count is refused, not taken as XMR).
+    pub fn parse_entered(
+        &self,
+        text: &str,
+    ) -> Result<pricing::unit_amount::UnitAmount, pricing::unit_amount::EnteredAmountError> {
+        pricing::unit_amount::UnitAmount::parse_entered(text, &self.0, self.decimals())
+    }
 }
 
 impl std::fmt::Display for KnownCurrency {

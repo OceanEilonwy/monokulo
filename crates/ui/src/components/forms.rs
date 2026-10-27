@@ -320,6 +320,191 @@ pub(super) fn input_examples() -> Vec<(&'static str, Input)> {
 }
 
 component! {
+    /// An amount of money in one currency: the number, with the currency
+    /// inside its right edge. Its value is always plain, digits and a dot
+    /// (`1250.5`): what the server renders, and what it is sent. Without
+    /// JavaScript that is all it is. Once its island attaches it groups
+    /// thousands as typed (`1,250.50`), takes a typed comma as the
+    /// decimal point (never as grouping: `0,125` is 0.125), holds to
+    /// `decimals`, refuses more than `max` before the form is sent, and
+    /// puts the plain number back in what the form sends.
+    pub struct MoneyInput {
+        name: String,
+        id: Option<String>,
+        /// The currency's code, inside the input's right edge.
+        currency: String,
+        /// The decimal places it is typed with: 2 for USD, 0 for JPY,
+        /// 12 for XMR.
+        #[default(2u32)]
+        decimals: u32,
+        /// Plain: digits and a dot.
+        value: Option<String>,
+        /// The most it may be, plain.
+        max: Option<String>,
+        /// What to say when it is more than `max`.
+        over_max: Option<String>,
+        /// Its name for screen readers, when nothing on the page labels it.
+        label: Option<String>,
+        described_by: Option<String>,
+        /// What was entered was refused.
+        #[default(false)]
+        invalid: bool,
+        #[default(false)]
+        required: bool,
+        #[default(false)]
+        disabled: bool,
+        size: Option<ControlSize>,
+        /// More attributes for the input: `data-saved`, `fx-*`.
+        rest: Attrs,
+    }
+    behaviour "money-input.behaviour.ts" {
+        uses(decimals, max, over_max),
+        ref input,
+    }
+    html {
+        span class="mk-money" data-size=[size] {
+            input class="mk-input" type="text" inputmode="decimal" autocomplete="off" name=(name) id=[id]
+                value=[value] aria-label=[label] aria-describedby=[described_by]
+                aria-invalid="true" if invalid required[required] disabled[disabled] ..rest ref=input;
+            span class="mk-money-unit" { (currency) }
+        }
+    }
+}
+
+pub(super) fn money_input_examples() -> Vec<(&'static str, MoneyInput)> {
+    vec![
+        (
+            "US dollars",
+            MoneyInput::new("book_usd", "USD")
+                .value("1250.5")
+                .label("Amount in USD"),
+        ),
+        (
+            "Monero, 12 decimals, no more than the largest order",
+            MoneyInput::new("book_xmr", "XMR")
+                .decimals(12u32)
+                .value("0.125")
+                .max("1000000")
+                .over_max("That's more than 1,000,000 XMR. Enter the amount in XMR, not piconero.")
+                .label("Amount in XMR"),
+        ),
+        (
+            "Yen, no decimals",
+            MoneyInput::new("book_jpy", "JPY")
+                .decimals(0u32)
+                .value("15000")
+                .label("Amount in JPY"),
+        ),
+        (
+            "Refused",
+            MoneyInput::new("book_refused", "EUR")
+                .value("1,250")
+                .label("Amount in EUR")
+                .invalid(true),
+        ),
+        (
+            "Disabled",
+            MoneyInput::new("book_disabled", "USD")
+                .value("500")
+                .label("Amount in USD")
+                .disabled(true),
+        ),
+        (
+            "Compact",
+            MoneyInput::new("book_compact", "USD")
+                .label("Amount in USD")
+                .size(ControlSize::Compact),
+        ),
+    ]
+}
+
+component! {
+    /// A whole number with buttons to take one off and add one: a count
+    /// of confirmations, of items. Without JavaScript a number input; once
+    /// its island attaches, − and + either side of it, each stopping at
+    /// its end and announcing the new value as an `input` event (so a
+    /// settings form sees the change).
+    pub struct Stepper {
+        name: String,
+        id: Option<String>,
+        /// As typed or saved; a refused value is shown as it was.
+        value: Option<String>,
+        #[default(0u32)]
+        min: u32,
+        max: Option<u32>,
+        /// Its name for screen readers and the buttons' ("Fewer
+        /// confirmations"), when nothing on the page labels it.
+        label: String,
+        described_by: Option<String>,
+        #[default(false)]
+        invalid: bool,
+        #[default(false)]
+        required: bool,
+        #[default(false)]
+        disabled: bool,
+        size: Option<ControlSize>,
+        /// More attributes for the input: `data-saved`, `fx-*`.
+        rest: Attrs,
+    }
+    behaviour "stepper.behaviour.ts" {
+        uses(min, max),
+        /// At `min`, or disabled: − does nothing.
+        at_min: bool,
+        /// At `max`, or disabled: + does nothing.
+        at_max: bool,
+        fn down,
+        fn up,
+        ref input,
+    }
+    html {
+        span class="mk-stepper" data-size=[size] data-ready="" if enhanced {
+            @if enhanced {
+                button class="mk-stepper-btn" type="button" tabindex="-1" aria-label={ "Fewer " (label) }
+                    disabled[b.at_min] on:click=down { "−" }
+            }
+            input class="mk-input" type="number" inputmode="numeric" step="1" min=(min) max=[max] name=(name)
+                id=[id] value=[value] aria-label=(label) aria-describedby=[described_by]
+                aria-invalid="true" if invalid required[required] disabled[disabled] ..rest ref=input;
+            @if enhanced {
+                button class="mk-stepper-btn" type="button" tabindex="-1" aria-label={ "More " (label) }
+                    disabled[b.at_max] on:click=up { "+" }
+            }
+        }
+    }
+}
+
+pub(super) fn stepper_examples() -> Vec<(&'static str, Stepper)> {
+    vec![
+        (
+            "Confirmations, 0 to 720",
+            Stepper::new("book_confirmations", "confirmations")
+                .value("10")
+                .max(720u32),
+        ),
+        (
+            "At its lowest",
+            Stepper::new("book_at_min", "confirmations")
+                .value("1")
+                .min(1u32)
+                .max(720u32),
+        ),
+        (
+            "Refused",
+            Stepper::new("book_stepper_refused", "confirmations")
+                .value("721")
+                .max(720u32)
+                .invalid(true),
+        ),
+        (
+            "Disabled",
+            Stepper::new("book_stepper_disabled", "confirmations")
+                .value("3")
+                .disabled(true),
+        ),
+    ]
+}
+
+component! {
     /// Text over several lines. Its label is elsewhere, like an `Input`'s.
     pub struct TextArea {
         name: String,

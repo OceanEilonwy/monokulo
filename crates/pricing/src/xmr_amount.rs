@@ -76,7 +76,7 @@ const _: () = assert!(AMOUNT_SCALE == PICONERO_PER_XMR as u128);
 /// returned as it is: whether it is allowed is the caller's to say.
 ///
 /// One parser for every decimal amount: an order's, a rate's, and a
-/// confirmation threshold's (monokulo's `ThresholdAmount`).
+/// confirmation threshold's (`unit_amount::UnitAmount`).
 pub fn parse_scaled(amount: &str) -> Result<u128, AmountError> {
     let (whole, fraction) = split_decimal(amount)?;
     let fraction = fraction.trim_end_matches('0');

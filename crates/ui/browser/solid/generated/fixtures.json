@@ -3127,6 +3127,157 @@
     "title": "With actions inside"
   },
   {
+    "component": "MoneyInput",
+    "html": "<span class=\"mk-money\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:2}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_usd\" value=\"1250.5\" aria-label=\"Amount in USD\" data-mk=\"1\"><span class=\"mk-money-unit\">USD</span></span>",
+    "props": {
+      "currency": "USD",
+      "decimals": 2,
+      "disabled": false,
+      "invalid": false,
+      "label": "Amount in USD",
+      "name": "book_usd",
+      "required": false,
+      "value": "1250.5"
+    },
+    "title": "US dollars"
+  },
+  {
+    "component": "MoneyInput",
+    "html": "<span class=\"mk-money\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:12,&quot;max&quot;:&quot;1000000&quot;,&quot;over_max&quot;:&quot;That's more than 1,000,000 XMR. Enter the amount in XMR, not piconero.&quot;}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_xmr\" value=\"0.125\" aria-label=\"Amount in XMR\" data-mk=\"1\"><span class=\"mk-money-unit\">XMR</span></span>",
+    "props": {
+      "currency": "XMR",
+      "decimals": 12,
+      "disabled": false,
+      "invalid": false,
+      "label": "Amount in XMR",
+      "max": "1000000",
+      "name": "book_xmr",
+      "over_max": "That's more than 1,000,000 XMR. Enter the amount in XMR, not piconero.",
+      "required": false,
+      "value": "0.125"
+    },
+    "title": "Monero, 12 decimals, no more than the largest order"
+  },
+  {
+    "component": "MoneyInput",
+    "html": "<span class=\"mk-money\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:0}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_jpy\" value=\"15000\" aria-label=\"Amount in JPY\" data-mk=\"1\"><span class=\"mk-money-unit\">JPY</span></span>",
+    "props": {
+      "currency": "JPY",
+      "decimals": 0,
+      "disabled": false,
+      "invalid": false,
+      "label": "Amount in JPY",
+      "name": "book_jpy",
+      "required": false,
+      "value": "15000"
+    },
+    "title": "Yen, no decimals"
+  },
+  {
+    "component": "MoneyInput",
+    "html": "<span class=\"mk-money\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:2}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_refused\" value=\"1,250\" aria-label=\"Amount in EUR\" aria-invalid=\"true\" data-mk=\"1\"><span class=\"mk-money-unit\">EUR</span></span>",
+    "props": {
+      "currency": "EUR",
+      "decimals": 2,
+      "disabled": false,
+      "invalid": true,
+      "label": "Amount in EUR",
+      "name": "book_refused",
+      "required": false,
+      "value": "1,250"
+    },
+    "title": "Refused"
+  },
+  {
+    "component": "MoneyInput",
+    "html": "<span class=\"mk-money\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:2}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_disabled\" value=\"500\" aria-label=\"Amount in USD\" disabled data-mk=\"1\"><span class=\"mk-money-unit\">USD</span></span>",
+    "props": {
+      "currency": "USD",
+      "decimals": 2,
+      "disabled": true,
+      "invalid": false,
+      "label": "Amount in USD",
+      "name": "book_disabled",
+      "required": false,
+      "value": "500"
+    },
+    "title": "Disabled"
+  },
+  {
+    "component": "MoneyInput",
+    "html": "<span class=\"mk-money\" data-size=\"compact\" data-island=\"MoneyInput\" data-props=\"{&quot;decimals&quot;:2}\"><input class=\"mk-input\" type=\"text\" inputmode=\"decimal\" autocomplete=\"off\" name=\"book_compact\" aria-label=\"Amount in USD\" data-mk=\"1\"><span class=\"mk-money-unit\">USD</span></span>",
+    "props": {
+      "currency": "USD",
+      "decimals": 2,
+      "disabled": false,
+      "invalid": false,
+      "label": "Amount in USD",
+      "name": "book_compact",
+      "required": false,
+      "size": "compact"
+    },
+    "title": "Compact"
+  },
+  {
+    "component": "Stepper",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"0\" max=\"720\" name=\"book_confirmations\" value=\"10\" aria-label=\"confirmations\" data-mk=\"3\"><!--mk:4--></span>",
+    "props": {
+      "disabled": false,
+      "invalid": false,
+      "label": "confirmations",
+      "max": 720,
+      "min": 0,
+      "name": "book_confirmations",
+      "required": false,
+      "value": "10"
+    },
+    "title": "Confirmations, 0 to 720"
+  },
+  {
+    "component": "Stepper",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:1}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"1\" max=\"720\" name=\"book_at_min\" value=\"1\" aria-label=\"confirmations\" data-mk=\"3\"><!--mk:4--></span>",
+    "props": {
+      "disabled": false,
+      "invalid": false,
+      "label": "confirmations",
+      "max": 720,
+      "min": 1,
+      "name": "book_at_min",
+      "required": false,
+      "value": "1"
+    },
+    "title": "At its lowest"
+  },
+  {
+    "component": "Stepper",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;max&quot;:720,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"0\" max=\"720\" name=\"book_stepper_refused\" value=\"721\" aria-label=\"confirmations\" aria-invalid=\"true\" data-mk=\"3\"><!--mk:4--></span>",
+    "props": {
+      "disabled": false,
+      "invalid": true,
+      "label": "confirmations",
+      "max": 720,
+      "min": 0,
+      "name": "book_stepper_refused",
+      "required": false,
+      "value": "721"
+    },
+    "title": "Refused"
+  },
+  {
+    "component": "Stepper",
+    "html": "<span class=\"mk-stepper\" data-mk=\"1\" data-island=\"Stepper\" data-props=\"{&quot;label&quot;:&quot;confirmations&quot;,&quot;min&quot;:0}\"><!--mk:2--><input class=\"mk-input\" type=\"number\" inputmode=\"numeric\" step=\"1\" min=\"0\" name=\"book_stepper_disabled\" value=\"3\" aria-label=\"confirmations\" disabled data-mk=\"3\"><!--mk:4--></span>",
+    "props": {
+      "disabled": true,
+      "invalid": false,
+      "label": "confirmations",
+      "min": 0,
+      "name": "book_stepper_disabled",
+      "required": false,
+      "value": "3"
+    },
+    "title": "Disabled"
+  },
+  {
     "component": "FieldNote",
     "html": "<span class=\"field-help\">The node's host and port, like node.example.com:18089.</span>",
     "props": {
