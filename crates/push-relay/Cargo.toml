@@ -1,0 +1,73 @@
+[package]
+name = "push-relay"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "A Web Push service that hands pushes on to APNs and FCM: inside monokulo, or on its own as monokulo-push-relay"
+
+# The relay on its own. Named for the project, as `monokulo-engine` is.
+[[bin]]
+name = "monokulo-push-relay"
+path = "src/main.rs"
+
+[dependencies]
+# The client's address behind a trusted proxy (`X-Forwarded-For`), with
+# IPv6 grouped by its /64, as monokulo counts its visitors: the
+# registration limit's key.
+abuse = { path = "../abuse" }
+# Axum's defaults less `tower-log` (see the engine's manifest), and less
+# what the relay's two JSON routes don't use.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "matched-path", "tokio"] }
+# The ciphertext as APNs and FCM carry it: base64url in a JSON string.
+base64 = "0.23.1"
+# `monokulo-push-relay`'s command line, from the settings' declarations.
+clap = "4.6.7"
+hex = "0.4.3"
+# A `Retry-After` from APNs or FCM given as an HTTP date.
+httpdate = "1.0.3"
+live-settings = { path = "../live-settings" }
+parking_lot = "0.12.5"
+# Reading what a sender pushed (RFC 8030), checking its VAPID signature
+# against the handle's key, and the ES256 tokens APNs takes.
+push = { path = "../push" }
+rand = "0.10.2"
+# The limits per sender, per handle and per address.
+rate-limit = { path = "../rate-limit" }
+# APNs speaks HTTP/2 only (`http2`). rustls, as every client here.
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "http2"] }
+# FCM's OAuth: an RS256-signed service-account token (PKCS #1 v1.5 with
+# SHA-256, `rsa::sha2`), the key read from the account's PKCS #8 PEM.
+rsa = { version = "0.9.10", default-features = false, features = ["std", "pem", "sha2"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+service-runtime = { path = "../service-runtime" }
+# The handles' own database file: its pool and migration runner.
+sqlite = { path = "../sqlite" }
+telemetry = { path = "../telemetry" }
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1.44"
+# The OAuth token request's form body.
+url = "2.5.8"
+
+[dev-dependencies]
+# Stand-ins for APNs, FCM and FCM's token endpoint on loopback: HTTP/2 with
+# prior knowledge for APNs (the `http` scheme), as `apns.endpoint` allows.
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server-auto", "http1", "http2"] }
+# Checks the APNs provider tokens a stand-in receives against the test key.
+p256 = { version = "0.14.0", features = ["ecdsa", "pem"] }
+# What a device would read of an encrypted push.
+push = { path = "../push", features = ["test-support"] }
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time", "test-util"] }
+# A token endpoint that can't be reached (`service_runtime::unreachable`).
+service-runtime = { path = "../service-runtime", features = ["test-support"] }
+# The router called in-process (`ServiceExt::oneshot`).
+tower = { version = "0.5.3", features = ["util"] }
+# The captured log, checked for tokens, endpoints and bodies.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+
+[lints]
+workspace = true
