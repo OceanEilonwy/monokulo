@@ -2000,7 +2000,7 @@
   },
   {
     "component": "StatusBanner",
-    "html": "<div class=\"mk-status-banner\" data-tone=\"success\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔒</span><div class=\"mk-status-banner-title\"><strong>Only your verified domains can show this checkout.</strong><details class=\"help-tip\" data-anchor=\"container\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"What this means\" title=\"What this means\">?</summary><div class=\"help-tip-body\">Browsers won't show it on any other website, and orders started there are refused.</div></details></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"caution\" data-size=\"compact\">Allow any website</button></div></div>",
+    "html": "<div class=\"mk-status-banner\" data-tone=\"success\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔒</span><div class=\"mk-status-banner-title\"><strong>Only your verified domains can show this checkout.</strong><span class=\"mk-status-banner-detail\">Other websites can't show it or take orders for your store.</span></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"caution\" data-size=\"compact\">Allow any website</button></div></div>",
     "props": {
       "action": {
         "$slot": [
@@ -2022,26 +2022,10 @@
           }
         ]
       },
+      "detail": "Other websites can't show it or take orders for your store.",
       "icon": {
         "$slot": [
           "🔒"
-        ]
-      },
-      "tip": {
-        "$slot": [
-          {
-            "$component": "HelpTip",
-            "props": {
-              "anchor": "container",
-              "children": {
-                "$slot": [
-                  "Browsers won't show it on any other website, and orders started there are refused."
-                ]
-              },
-              "label": "What this means",
-              "wide": false
-            }
-          }
         ]
       },
       "title": "Only your verified domains can show this checkout.",
@@ -2051,7 +2035,7 @@
   },
   {
     "component": "StatusBanner",
-    "html": "<div class=\"mk-status-banner\" data-tone=\"warning\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔓</span><div class=\"mk-status-banner-title\"><strong>Any website can show this checkout.</strong><details class=\"help-tip\" data-anchor=\"container\" data-mk=\"1\" data-island=\"HelpTip\" data-props=\"{}\"><summary aria-label=\"What this means\" title=\"What this means\">?</summary><div class=\"help-tip-body\">Allow only your verified domains to stop other websites showing it.</div></details></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" data-size=\"compact\">Only allow my domains</button></div></div>",
+    "html": "<div class=\"mk-status-banner\" data-tone=\"warning\"><span class=\"mk-status-banner-icon\" aria-hidden=\"true\">🔓</span><div class=\"mk-status-banner-title\"><strong>Any website can show this checkout.</strong><span class=\"mk-status-banner-detail\">Allow only your domains to stop copycat sites showing it.</span></div><div class=\"mk-status-banner-action\"><button class=\"mk-btn\" type=\"button\" data-variant=\"primary\" data-size=\"compact\">Only allow my domains</button></div></div>",
     "props": {
       "action": {
         "$slot": [
@@ -2073,26 +2057,10 @@
           }
         ]
       },
+      "detail": "Allow only your domains to stop copycat sites showing it.",
       "icon": {
         "$slot": [
           "🔓"
-        ]
-      },
-      "tip": {
-        "$slot": [
-          {
-            "$component": "HelpTip",
-            "props": {
-              "anchor": "container",
-              "children": {
-                "$slot": [
-                  "Allow only your verified domains to stop other websites showing it."
-                ]
-              },
-              "label": "What this means",
-              "wide": false
-            }
-          }
         ]
       },
       "title": "Any website can show this checkout.",

@@ -7,11 +7,11 @@ import type { Tone } from './types';
 
 /**
  * A state the page is in, at the top of what it governs: an icon,
- * the state in bold, a "?" (`HelpTip`) with what it means, and the
- * one action that changes it. The tone's tint backs the words up; its
- * edge stays thin.
+ * the state in bold, a muted line under it saying what that means,
+ * and the one action that changes it. The tone's tint backs the words
+ * up; its edge stays thin.
  */
-export interface StatusBannerProps extends Omit<JSX.IntrinsicElements["div"], "action" | "class" | "classList" | "data-tone" | "icon" | "style" | "tip" | "title" | "tone"> {
+export interface StatusBannerProps extends Omit<JSX.IntrinsicElements["div"], "action" | "class" | "classList" | "data-tone" | "detail" | "icon" | "style" | "title" | "tone"> {
   /**
    * The state, in a sentence ("Any website can show this checkout.").
    */
@@ -22,10 +22,10 @@ export interface StatusBannerProps extends Omit<JSX.IntrinsicElements["div"], "a
    */
   icon?: JSX.Element;
   /**
-   * After the title: a `HelpTip`, anchored to the banner
-   * (`TipAnchor::Container`) so its help stays on a phone's screen.
+   * Under the title: what the state means for the store ("Other
+   * websites can't show it or take orders for your store.").
    */
-  tip?: JSX.Element;
+  detail?: string;
   /**
    * At the right: the button that changes the state.
    */
@@ -34,12 +34,12 @@ export interface StatusBannerProps extends Omit<JSX.IntrinsicElements["div"], "a
 
 /**
  * A state the page is in, at the top of what it governs: an icon,
- * the state in bold, a "?" (`HelpTip`) with what it means, and the
- * one action that changes it. The tone's tint backs the words up; its
- * edge stays thin.
+ * the state in bold, a muted line under it saying what that means,
+ * and the one action that changes it. The tone's tint backs the words
+ * up; its edge stays thin.
  */
 export function StatusBanner(props: StatusBannerProps): JSX.Element {
-  const rest = omit(props, "title", "tone", "icon", "tip", "action");
+  const rest = omit(props, "title", "tone", "icon", "detail", "action");
   return (
     <div class="mk-status-banner" data-tone={props.tone} {...rest}>
       {props.icon != null ? (
@@ -53,10 +53,10 @@ export function StatusBanner(props: StatusBannerProps): JSX.Element {
         <strong>
           {props.title}
         </strong>
-        {props.tip != null ? (
-          <>
-            {props.tip}
-          </>
+        {props.detail != null ? (
+          <span class="mk-status-banner-detail">
+            {props.detail}
+          </span>
         ) : (
           null
         )}

@@ -57,6 +57,18 @@
 .card-state { display: contents; }
 .card-head .card-discard { margin: 0; padding: var(--space-xs) var(--space-md); font-size: var(--text-sm); font-weight: 600; }
 .card-discard[hidden] { display: none; }
+/* A card whose head opens a guide (`plain_card_with_guide`): the whole head
+   is the disclosure's summary, "How this works" looks like a button at its
+   right, and the guide opens on a sunken panel above the body. */
+.card-guide > summary { cursor: pointer; list-style: none; }
+.card-guide > summary::-webkit-details-marker { display: none; }
+.card-guide > summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.card-guide > summary:hover > .card-guide-toggle { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); }
+.card-guide-toggle .mk-icon { width: 1.1em; height: 1.1em; }
+.card-guide-toggle::after { content: "\25BE"; color: var(--muted); }
+.card-guide[open] .card-guide-toggle::after { content: "\25B4"; }
+.card-guide-body { display: grid; gap: var(--space-lg); margin: var(--space-lg) var(--space-lg) 0; padding: var(--space-lg); background: var(--surface-sunken); border-radius: var(--radius-md); font-size: var(--text-base); }
+.card-guide-body > * { margin: 0; }
 .card-body { padding: var(--space-lg); min-width: 0; }
 .card-body > .hint:first-child { margin-top: 0; margin-bottom: var(--space-lg); }
 .card-body > p:first-child { margin-top: 0; }

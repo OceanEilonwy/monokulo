@@ -20,7 +20,7 @@
 //! own changes (`static/admin-settings.js` listens for `mk-count` on their
 //! card).
 
-use maud::{html, Markup};
+use maud::{html, Markup, PreEscaped};
 pub use ui::ToastKind;
 
 /// How a settings form saves.
@@ -204,6 +204,29 @@ pub fn plain_card_with_meta(name: &str, title: &str, meta: Option<&str>, body: M
                     span class="card-spacer" {}
                     span class="card-meta" { (meta) }
                 }
+            }
+            div class="card-body" { (body) }
+        }
+    }
+}
+
+/// [`plain_card`] whose head opens `guide`: "How this works" at the
+/// right of the title, and what it explains in a panel between the head and
+/// the body, pushing the body down. A disclosure, so it works without
+/// JavaScript; it starts closed.
+pub fn plain_card_with_guide(name: &str, title: &str, guide: Markup, body: Markup) -> Markup {
+    let id = card_id(name);
+    html! {
+        section id=(id) class="settings-card" aria-labelledby=(format!("{id}-title")) {
+            details class="card-guide" {
+                summary class="card-head" {
+                    h3 id=(format!("{id}-title")) { (title) }
+                    span class="card-spacer" {}
+                    span class="mk-btn card-guide-toggle" data-size="compact" {
+                        (PreEscaped(ui::assets::icons::INFO)) "How this works"
+                    }
+                }
+                div class="card-guide-body" { (guide) }
             }
             div class="card-body" { (body) }
         }

@@ -6,18 +6,18 @@ use crate::{component, Attrs, Slot};
 
 component! {
     /// A state the page is in, at the top of what it governs: an icon,
-    /// the state in bold, a "?" (`HelpTip`) with what it means, and the
-    /// one action that changes it. The tone's tint backs the words up; its
-    /// edge stays thin.
+    /// the state in bold, a muted line under it saying what that means,
+    /// and the one action that changes it. The tone's tint backs the words
+    /// up; its edge stays thin.
     pub struct StatusBanner {
         /// The state, in a sentence ("Any website can show this checkout.").
         title: String,
         tone: crate::Tone,
         /// Before the title: an inline SVG (`assets::icons::LOCK`).
         icon: Option<Slot>,
-        /// After the title: a `HelpTip`, anchored to the banner
-        /// (`TipAnchor::Container`) so its help stays on a phone's screen.
-        tip: Option<Slot>,
+        /// Under the title: what the state means for the store ("Other
+        /// websites can't show it or take orders for your store.").
+        detail: Option<String>,
         /// At the right: the button that changes the state.
         action: Option<Slot>,
         rest: Attrs,
@@ -27,7 +27,7 @@ component! {
             @if let Some(icon) = icon { span class="mk-status-banner-icon" aria-hidden="true" { (icon) } }
             div class="mk-status-banner-title" {
                 strong { (title) }
-                @if let Some(tip) = tip { (tip) }
+                @if let Some(detail) = detail { span class="mk-status-banner-detail" { (detail) } }
             }
             @if let Some(action) = action { div class="mk-status-banner-action" { (action) } }
         }
@@ -35,26 +35,26 @@ component! {
 }
 
 pub(super) fn status_banner_examples() -> Vec<(&'static str, StatusBanner)> {
-    let tip = |text: &str| {
-        crate::HelpTip::new("What this means", text).anchor(crate::TipAnchor::Container)
-    };
     vec![
         (
             "On",
-            StatusBanner::new("Only your verified domains can show this checkout.", crate::Tone::Success)
-                .icon("🔒")
-                .tip(tip("Browsers won't show it on any other website, and orders started there are refused."))
-                .action(
-                    crate::Button::new("Allow any website")
-                        .variant(crate::ButtonVariant::Caution)
-                        .size(crate::ControlSize::Compact),
-                ),
+            StatusBanner::new(
+                "Only your verified domains can show this checkout.",
+                crate::Tone::Success,
+            )
+            .icon("🔒")
+            .detail("Other websites can't show it or take orders for your store.")
+            .action(
+                crate::Button::new("Allow any website")
+                    .variant(crate::ButtonVariant::Caution)
+                    .size(crate::ControlSize::Compact),
+            ),
         ),
         (
             "Off",
             StatusBanner::new("Any website can show this checkout.", crate::Tone::Warning)
                 .icon("🔓")
-                .tip(tip("Allow only your verified domains to stop other websites showing it."))
+                .detail("Allow only your domains to stop copycat sites showing it.")
                 .action(
                     crate::Button::new("Only allow my domains")
                         .variant(crate::ButtonVariant::Primary)

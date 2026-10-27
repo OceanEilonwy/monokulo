@@ -552,6 +552,7 @@ pub async fn check_domain(
             maud::html! {
                 (crate::views::domains::card_only(&store, &view))
                 (crate::views::domains::restriction_banner_oob(&store, restricted, can_restrict))
+                (crate::views::domains::guide_now_oob(restricted, can_restrict))
             }
         };
         return Html(fragment.into_string()).into_response();
@@ -1931,6 +1932,13 @@ mod tests {
         assert!(
             fragment.contains(r#"<form id="embed-restriction""#)
                 && fragment.contains("data-fx-oob"),
+            "{fragment}"
+        );
+        // And "How this works" says what that means right now.
+        assert!(
+            fragment.contains(
+                r#"<div id="domains-now" class="guide-now" data-tone="warning" data-fx-oob>"#
+            ) && fragment.contains("Verify one of your websites first."),
             "{fragment}"
         );
         assert!(!fragment.contains("toast"), "{fragment}");
