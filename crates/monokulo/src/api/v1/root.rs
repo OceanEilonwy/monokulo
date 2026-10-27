@@ -9,8 +9,9 @@ api::resource!("/api/v1", rel = "root");
 /// app, the app itself and where its pushes go), the forms the key may use
 /// (a shop's server also gets the ones for sending its warnings and errors
 /// and for sending one of the store's webhooks a test delivery, an app the
-/// one for registering a push target), and the API's description. A link or form the key may not use is left out, so a
-/// client can find out what its key does by reading this. While this
+/// one for registering a push target), and the API's description. A link
+/// or form the key may not use is left out, so a client can find out what
+/// its key does by reading this. While this
 /// Monokulo has an onion address, `mk:onion-api` says where the same entry
 /// is on it.
 #[api::body]
