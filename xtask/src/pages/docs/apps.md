@@ -254,7 +254,8 @@ A `live-activity` target gets the state an iOS Live Activity shows, plain
 JSON (`Content-Type: application/json`), through the relay. It never holds
 the order's id; `sale` is the app's own `merchant_order_id`, when it gave
 one, and `paymentURI` is there only for a target registered with
-`include_payment_uri`, and only while the sale takes a payment:
+`include_payment_uri`, and only at `sale.waiting`, while the sale waits
+for its first payment:
 
 ```json
 { "phase": "waiting", "sale": "#1042", "amount": "24.50", "currency": "USD",
@@ -263,7 +264,9 @@ one, and `paymentURI` is there only for a target registered with
 ```
 
 `phase` is `waiting` (`sale.waiting`, and `sale.partial`: the rest can
-still come), `seen`, `confirming`, `paid`, or `expired` (`sale.expired`,
+still come; a part payment's push has no `paymentURI`, as the order's full
+`xmr` is no longer what is owed: send the customer to the checkout, which
+asks for what is left), `seen`, `confirming`, `paid`, or `expired` (`sale.expired`,
 and `sale.double_spend`: no payment). `waitingCount` is the store's app
 orders still waiting for a payment, this one included while it is.
 
