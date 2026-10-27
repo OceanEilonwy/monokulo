@@ -35,13 +35,15 @@ use ::push::{
 };
 
 use crate::db::{
-    Database, DbError, DuePush, PushAttempt, PushResult, TargetAfter, TargetKind, EXPIRED_UNSENT,
+    Database, DbError, DuePush, PushAttempt, PushResult, PushTargetId, TargetAfter, TargetKind,
+    EXPIRED_UNSENT,
 };
 use crate::outbound::{check_host, request_error_text, Outbound, Reach};
 use crate::settings::PushConfig;
 use crate::webhooks::delivery::{Clock, SystemClock};
 
-/// Most pushes picked per batch, and most sent at once.
+/// Most pushes picked per batch, and most sent at once (one target's one
+/// at a time).
 pub const DELIVERY_BATCH: u32 = 50;
 const DELIVERY_CONCURRENCY: usize = 16;
 /// How often old pushes are deleted (`push.keep_days`).
@@ -138,8 +140,8 @@ enum Done {
     Gone,
 }
 
-/// Sends one batch of due pushes, concurrently, and records each as it
-/// finishes. `reach` is what `webhooks.allow_private_urls` allows. Returns
+/// Sends one batch of due pushes, concurrently but one target's one at a
+/// time in queue order, and records each as it finishes. `reach` is what `webhooks.allow_private_urls` allows. Returns
 /// how many were picked: a full batch means more may be due now.
 pub async fn run_delivery_tick(
     db: &Database,
@@ -176,27 +178,32 @@ pub async fn run_delivery_tick(
         }
     }
 
-    let mut attempts = stream::iter(readable)
-        .map(|push| {
-            let span = tracing::info_span!(
-                "push delivery",
-                otel.kind = "client",
-                store.id = %push.target.store_id,
-                push_target.id = %push.target.id,
-                push_target.kind = push.target.kind.name().as_str(),
-                push.event = push.event.as_str(),
-                push.host = push.target.endpoint.host(),
-                attempt = push.attempt_count.saturating_add(1),
-            );
-            tracing::Instrument::instrument(
-                async move {
-                    let done = deliver(client, &push, config, reach, clock).await;
-                    (push, done)
-                },
-                span,
-            )
+    // One target's pushes go one after another, as they were queued, and
+    // different targets' at once: a Live Activity shows whichever state
+    // lands last, so a till's newer sale must land after its older one.
+    let mut attempts = stream::iter(by_target(readable))
+        .map(|pushes| {
+            Box::pin(stream::iter(pushes).then(move |push| {
+                let span = tracing::info_span!(
+                    "push delivery",
+                    otel.kind = "client",
+                    store.id = %push.target.store_id,
+                    push_target.id = %push.target.id,
+                    push_target.kind = push.target.kind.name().as_str(),
+                    push.event = push.event.as_str(),
+                    push.host = push.target.endpoint.host(),
+                    attempt = push.attempt_count.saturating_add(1),
+                );
+                tracing::Instrument::instrument(
+                    async move {
+                        let done = deliver(client, &push, config, reach, clock).await;
+                        (push, done)
+                    },
+                    span,
+                )
+            }))
         })
-        .buffer_unordered(DELIVERY_CONCURRENCY);
+        .flatten_unordered(DELIVERY_CONCURRENCY);
 
     // Each push is recorded as soon as it's done: one slow push service in
     // the batch doesn't hold the others' outcomes back, and a later write
@@ -241,6 +248,27 @@ pub async fn run_delivery_tick(
         Some(e) => Err(e),
         None => Ok(count),
     }
+}
+
+/// `due` by target, each target's in the order they were queued, the
+/// targets in the order their first push came due.
+fn by_target(due: Vec<DuePush>) -> Vec<Vec<DuePush>> {
+    let mut groups: Vec<Vec<DuePush>> = Vec::new();
+    let mut index: std::collections::HashMap<PushTargetId, usize> =
+        std::collections::HashMap::new();
+    for push in due {
+        match index.entry(push.target.id.clone()) {
+            std::collections::hash_map::Entry::Occupied(at) => groups[*at.get()].push(push),
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(groups.len());
+                groups.push(vec![push]);
+            }
+        }
+    }
+    for pushes in &mut groups {
+        pushes.sort_by_key(|push| push.id);
+    }
+    groups
 }
 
 /// One due push: given up on, or attempted once.

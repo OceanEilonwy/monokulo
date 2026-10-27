@@ -64,8 +64,9 @@ pub struct LiveActivityState {
     /// When it expires unpaid, in Unix seconds: the countdown, and the
     /// activity's `stale-date`.
     pub expires_at: i64,
-    /// The store's app orders still waiting for a payment, this one
-    /// included while it is: "+1 more" at 2.
+    /// Its app's orders still waiting for a payment, this one included
+    /// while it is: "+1 more" at 2. Only its own app's, as the island
+    /// shows only its own app's sales (`db::PushTarget::hears_of`).
     pub waiting_count: u64,
     /// `monero:{address}?tx_amount={xmr}`, only to a target registered
     /// with `include_payment_uri` and only while the sale waits for its
@@ -103,7 +104,7 @@ impl Phase {
 
 impl LiveActivityState {
     /// The state `sale` puts a Live Activity in, with `waiting_count` of
-    /// the store's sales waiting; the payment URI only if
+    /// its app's sales waiting; the payment URI only if
     /// `include_payment_uri`, and only at `sale.waiting`. A part payment
     /// (`sale.partial`) keeps the phase but not the code: it would ask for
     /// the whole price again, and the engine's event doesn't say what is

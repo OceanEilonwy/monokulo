@@ -655,3 +655,33 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      keyed on (target, topic). A plain hash rather than an HMAC: the target
      id is random and never leaves monokulo but in the app's own API
      answers, so nobody who sees a topic can recompute it.
+141. **A `live-activity` target is pushed only its own app's orders, for
+     every event** (push audit #13; narrows decision 76 for Live
+     Activities, `PushTarget::hears_of`). An app is one till, and its Live
+     Activity is one island whose content state iOS replaces with whatever
+     push lands last, no app code between. Store-wide, another till's
+     `sale.waiting` put that sale's amount and payment code on this till's
+     island (its customer paid the wrong sale) and its `sale.paid` read as
+     this till's sale paid. The design's store-wide island ("the newest
+     plus +N more") was the other way: it needs the state to name the sale
+     in the clear and monokulo to elect the newest waiting sale, for a
+     view no till asked for; `encrypted` targets keep the store-wide
+     fan-out, where the app's own code decides what to show.
+142. **`waitingCount` counts the target's own app's orders** (replaces
+     decision 93's "the store's"): the island shows only its own app's
+     sales, so "+1 more" for another till's would point at a sale it
+     can't show.
+143. **A target's pushes are sent in the order they were queued, one at
+     a time** (push audit #13), different targets' at once, up to the
+     same 16. A till's two overlapping sales are two topics, so
+     supersession doesn't order them; sent concurrently, or one retried
+     after the other was sent, the older sale's state could land last and
+     own the island. So a push is due only once every older unsent push
+     to its target is (`due_push_deliveries`, a window over the unsent
+     pushes: one waiting for a retry holds the newer back until it is
+     sent, given up or superseded, at most its TTL), and the worker sends
+     each target's batch in order while other targets' go beside them.
+     Holding a newer push back costs nothing a failing push service
+     wouldn't cost it anyway. Superseding every older push to a Live
+     Activity instead (only the newest state matters to the island) was
+     the other way, but it would drop an older sale's `paid` alert.
