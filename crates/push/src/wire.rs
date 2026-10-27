@@ -68,6 +68,11 @@ pub enum WireError {
 
 impl PushRequest {
     pub fn parse(headers: &HeaderMap, body: &[u8]) -> Result<Self, WireError> {
+        // First, so a body too large is answered as that whatever else is
+        // wrong with the request.
+        if body.len() > MAX_BODY {
+            return Err(WireError::TooLarge(body.len()));
+        }
         let authorization = headers
             .get(AUTHORIZATION)
             .ok_or(WireError::NoAuthorization)?;
@@ -86,9 +91,6 @@ impl PushRequest {
             .map(|value| Topic::parse(value).map_err(|_| WireError::Topic))
             .transpose()?;
 
-        if body.len() > MAX_BODY {
-            return Err(WireError::TooLarge(body.len()));
-        }
         if body.is_empty() {
             return Err(WireError::Empty);
         }
@@ -322,6 +324,11 @@ mod tests {
         ));
         assert!(matches!(
             PushRequest::parse(&headers, &vec![0; MAX_BODY + 1]),
+            Err(WireError::TooLarge(4097))
+        ));
+        // Too large is said before anything else is looked at.
+        assert!(matches!(
+            PushRequest::parse(&HeaderMap::new(), &vec![0; MAX_BODY + 1]),
             Err(WireError::TooLarge(4097))
         ));
         assert!(matches!(
