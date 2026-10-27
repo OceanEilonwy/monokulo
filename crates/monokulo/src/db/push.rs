@@ -534,7 +534,6 @@ impl Db {
         if targets.is_empty() {
             return Ok(0);
         }
-        let topic = policy::topic(&order.order_id);
         let urgency = policy::urgency(sale.event);
         let ttl = policy::ttl(sale.event, order.expires_at, at, queueing.default_ttl);
         let expires_at = at.saturating_add(i64::from(ttl.as_secs()));
@@ -543,6 +542,7 @@ impl Db {
         let mut waiting_count: Option<u64> = None;
         let mut queued = 0;
         for target in &targets {
+            let topic = policy::topic(&target.id, &order.order_id);
             let payload = match target.kind {
                 TargetKind::Encrypted { .. } => encrypted
                     .get_or_insert_with(|| notification(sale, &queueing.link_base))
