@@ -2644,3 +2644,8 @@ async fn a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http()
     }
     assert_eq!(relay.count(), 2 * budget as usize + 1 - short_lived.len(),);
 }
+
+// Through the push relay, to stand-ins for APNs and FCM: every test there
+// goes over real HTTP.
+#[cfg(feature = "relay")]
+mod relay_tests;
