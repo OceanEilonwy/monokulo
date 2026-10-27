@@ -29,7 +29,7 @@ use push::{Endpoint, Origin};
 use serde::{Deserialize, Serialize};
 
 use crate::fcm::ServiceAccount;
-use crate::handles::AppName;
+use crate::handles::{AppName, Lifetimes};
 
 settings! {
     SERVER_LISTEN: BindAddr {
@@ -74,8 +74,16 @@ settings! {
         key: "handles.ttl_days",
         default: 90,
         check: range(1, 3650),
-        description: "Days a handle lasts after its last registration or the last push APNs or FCM took for it. After that it is forgotten and its endpoint answers 404, so a sender drops it.",
+        description: "Days a handle lasts after its last registration or the last push APNs or FCM took for it, once APNs or FCM has taken one. After that it is forgotten and its endpoint answers 404, so a sender drops it.",
         example: "90",
+        applies: Restart,
+    },
+    HANDLES_UNUSED_TTL_DAYS: u32 {
+        key: "handles.unused_ttl_days",
+        default: 7,
+        check: range(1, 3650),
+        description: "Days a handle no push has reached yet lasts after its registration: at most handles.ttl_days. Registering needs no credential, so this is how long a made-up token's handle is kept; an app registers again whenever it starts, which pushes it back.",
+        example: "7",
         applies: Restart,
     },
     HANDLES_APPS: Json<Apps> {
@@ -245,7 +253,7 @@ pub struct RelayConfig {
     /// How long APNs, FCM and FCM's token endpoint get to answer.
     pub upstream_timeout: Duration,
     pub store_path: PathBuf,
-    pub handle_ttl: Duration,
+    pub handle_lifetimes: Lifetimes,
     pub apps: Apps,
     pub limits: LimitsConfig,
     /// Set when the APNs key is.
@@ -285,7 +293,7 @@ impl fmt::Debug for RelayConfig {
             .field("listen", &self.listen)
             .field("public_uri", &self.public_uri)
             .field("store_path", &self.store_path)
-            .field("handle_ttl", &self.handle_ttl)
+            .field("handle_lifetimes", &self.handle_lifetimes)
             .field("apps", &self.apps)
             .field("limits", &self.limits)
             .field("apns", &self.apns.as_ref().map(|apns| &apns.team_id))
@@ -305,6 +313,7 @@ impl Section for RelayConfig {
             &SERVER_UPSTREAM_TIMEOUT_MS,
             &STORE_PATH,
             &HANDLES_TTL_DAYS,
+            &HANDLES_UNUSED_TTL_DAYS,
             &HANDLES_APPS,
             &LIMITS_PER_SENDER_PER_MINUTE,
             &LIMITS_PER_HANDLE_PER_MINUTE,
@@ -343,6 +352,19 @@ impl Section for RelayConfig {
                 ));
             }
         }
+        let (ttl_days, unused_ttl_days) = (
+            snapshot.get(&HANDLES_TTL_DAYS),
+            snapshot.get(&HANDLES_UNUSED_TTL_DAYS),
+        );
+        if unused_ttl_days > ttl_days {
+            errors.push(FieldError::new(
+                HANDLES_UNUSED_TTL_DAYS.key,
+                format!(
+                    "is {unused_ttl_days}, more than {} ({ttl_days}): a handle no push has reached can't outlast one that has.",
+                    HANDLES_TTL_DAYS.key
+                ),
+            ));
+        }
         // Checked by the setting itself.
         let trusted_proxies =
             TrustedProxies::parse(&snapshot.get(&SERVER_TRUSTED_PROXIES)).unwrap_or_default();
@@ -355,7 +377,10 @@ impl Section for RelayConfig {
             trusted_proxies,
             upstream_timeout: Duration::from_millis(snapshot.get(&SERVER_UPSTREAM_TIMEOUT_MS)),
             store_path: snapshot.get(&STORE_PATH),
-            handle_ttl: Duration::from_secs(u64::from(snapshot.get(&HANDLES_TTL_DAYS)) * 86_400),
+            handle_lifetimes: Lifetimes {
+                unused: days(unused_ttl_days),
+                delivered: days(ttl_days),
+            },
             apps,
             limits: LimitsConfig {
                 per_sender: snapshot.get(&LIMITS_PER_SENDER_PER_MINUTE),
@@ -439,6 +464,10 @@ fn fcm(snapshot: &Snapshot, errors: &mut Vec<FieldError>) -> Option<FcmConfig> {
             None
         }
     }
+}
+
+fn days(days: u32) -> Duration {
+    Duration::from_secs(u64::from(days) * 86_400)
 }
 
 /// `monokulo-push-relay`'s own logging, read before anything else.
@@ -819,7 +848,13 @@ pub(crate) mod tests {
         let config = load_with(&[], &[], Host::Standalone).await.unwrap();
         assert_eq!(config.listen, "0.0.0.0:8444".parse().unwrap());
         assert_eq!(config.public_uri, None);
-        assert_eq!(config.handle_ttl, Duration::from_secs(90 * 86_400));
+        assert_eq!(
+            config.handle_lifetimes,
+            Lifetimes {
+                unused: Duration::from_secs(7 * 86_400),
+                delivered: Duration::from_secs(90 * 86_400),
+            }
+        );
         assert_eq!(
             config.limits,
             LimitsConfig {
@@ -999,6 +1034,11 @@ pub(crate) mod tests {
                 "apns.endpoint",
             ),
             (&[("apns.team_id", "abc")], &[], "apns.team_id"),
+            (
+                &[("handles.unused_ttl_days", "100")],
+                &[],
+                "handles.unused_ttl_days: is 100, more than handles.ttl_days (90)",
+            ),
             (
                 &[("server.trusted_proxies", "a.b.c.d")],
                 &[],

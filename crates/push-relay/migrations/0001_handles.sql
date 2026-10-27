@@ -1,8 +1,8 @@
 -- The relay's one table: where each handle's pushes go. A handle is made
 -- for one device token, app and sender (its VAPID key); the same four
--- registered again are the same handle, its expiry pushed back. Nothing
--- else is kept: no payload, no store, nothing linking two handles of one
--- device.
+-- registered again are the same handle, its expiry pushed back. No
+-- payload and no store is kept. Replaced by migration 2: the token and key
+-- in the clear linked one device's handles.
 CREATE TABLE handles (
     -- `ph_` and 32 hex digits: the last part of the endpoint it was minted
     -- as.
