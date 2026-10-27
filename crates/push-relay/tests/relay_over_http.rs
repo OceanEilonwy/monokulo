@@ -112,8 +112,10 @@ async fn an_encrypted_push_reaches_apns_as_an_alert_over_http() {
     assert_eq!(again.header("apns-priority"), "5");
 }
 
+/// Every state is an update, a paid sale's with the alert and no stale
+/// date: the relay never ends the shift's activity, whatever waits.
 #[tokio::test]
-async fn a_live_activity_is_updated_then_ended_with_an_alert_over_http() {
+async fn a_live_activity_is_updated_then_told_of_the_payment_with_an_alert_over_http() {
     let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
     let relay = TestRelay::start(&apns, &fcm, &[]).await;
     let sender = Arc::new(VapidKey::generate());
@@ -154,10 +156,11 @@ async fn a_live_activity_is_updated_then_ended_with_an_alert_over_http() {
         .push(&endpoint, PushBuilder::new(&sender, plain(paid.clone())))
         .await;
     assert_eq!(answered.status, StatusCode::CREATED);
-    let body = apns.next().await.json();
-    assert_eq!(body["aps"]["event"], "end");
-    assert_eq!(body["aps"]["content-state"], paid);
-    assert_eq!(body["aps"]["alert"], json!({"title": "Paid · $24.50"}));
+    let aps = apns.next().await.json()["aps"].clone();
+    assert_eq!(aps["event"], "update");
+    assert_eq!(aps["content-state"], paid);
+    assert_eq!(aps["alert"], json!({"title": "Paid · $24.50"}));
+    assert_eq!(aps.get("stale-date"), None);
 }
 
 #[tokio::test]
@@ -848,28 +851,6 @@ async fn a_push_without_topic_or_ttl_reaches_apns_as_now_or_never_over_http() {
     assert_eq!(received.header("apns-expiration"), "0");
     assert_eq!(received.header("apns-priority"), "5");
     assert!(!received.headers.contains_key("apns-collapse-id"));
-}
-
-/// A paid sale with others still waiting updates the Live Activity, with
-/// the alert, rather than end it under them.
-#[tokio::test]
-async fn a_paid_sale_with_others_waiting_keeps_the_live_activity_over_http() {
-    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
-    let relay = TestRelay::start(&apns, &fcm, &[]).await;
-    let sender = Arc::new(VapidKey::generate());
-    let endpoint = relay
-        .register("apns-liveactivity", &apns_token(), &sender)
-        .await;
-    let paid = json!({"phase": "paid", "amount": "$5.00", "waitingCount": 1});
-    let answered = relay
-        .push(&endpoint, PushBuilder::new(&sender, plain(paid.clone())))
-        .await;
-    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
-    let aps = apns.next().await.json()["aps"].clone();
-    assert_eq!(aps["event"], "update");
-    assert_eq!(aps["alert"], json!({"title": "Paid · $5.00"}));
-    assert_eq!(aps["content-state"], paid);
-    assert_eq!(aps.get("stale-date"), None);
 }
 
 /// Only pushes the handle's sender signed count against the limits: a
