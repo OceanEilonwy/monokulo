@@ -670,6 +670,7 @@ impl SettingsTab {
                 Group::Orders,
                 Group::Chain,
                 Group::Webhooks,
+                Group::Pushes,
                 Group::ExchangeRates,
             ],
             SettingsTab::Custody => &[Group::CustodyBackends, Group::CustodyCli],
@@ -706,6 +707,8 @@ pub enum Group {
     Orders,
     Chain,
     Webhooks,
+    /// Pushes to connected apps.
+    Pushes,
     ExchangeRates,
     CustodyBackends,
     /// A key custody backend's own settings, the engine's and this site's.
@@ -749,6 +752,7 @@ impl Group {
                 "engine" => Group::EngineConnection,
                 "exchange_rate" => Group::ExchangeRates,
                 "webhooks" => Group::Webhooks,
+                "push" => Group::Pushes,
                 "abuse" if matches!(rest, "challenge_bits" | "under_attack") => {
                     Group::AbuseChallenge
                 }
@@ -795,9 +799,11 @@ impl Group {
         match self {
             Group::Signup | Group::PublicAddress | Group::EngineConnection => SettingsTab::General,
             Group::Network(_) | Group::AllNodes => SettingsTab::Nodes,
-            Group::Orders | Group::Chain | Group::Webhooks | Group::ExchangeRates => {
-                SettingsTab::Payments
-            }
+            Group::Orders
+            | Group::Chain
+            | Group::Webhooks
+            | Group::Pushes
+            | Group::ExchangeRates => SettingsTab::Payments,
             Group::CustodyBackends | Group::Custody(_) | Group::CustodyCli => SettingsTab::Custody,
             Group::AbuseLimits | Group::AbuseChallenge | Group::AbuseVisitors => SettingsTab::Abuse,
             Group::TorService | Group::TorVisitors => SettingsTab::Tor,
@@ -822,6 +828,7 @@ impl Group {
             Group::Orders => "Orders".into(),
             Group::Chain => "Watching the chain".into(),
             Group::Webhooks => "Webhooks".into(),
+            Group::Pushes => "Pushes to apps".into(),
             Group::ExchangeRates => "Exchange rates".into(),
             Group::CustodyBackends => "Backends".into(),
             Group::Custody(CustodyBackend::Snp) => "SEV-SNP".into(),
@@ -844,6 +851,7 @@ impl Group {
             Group::AbuseLimits => Some("Requests a minute, per visitor, merchant or shop."),
             Group::PublicAddress => Some("Each visitor gets links on the address they came in on: web visitors the web address, visitors on Tor the onion address."),
             Group::Webhooks => Some("How stores' webhooks are sent, and how long the engine keeps the order events they're sent from."),
+            Group::Pushes => Some("How connected apps' sale pushes are sent. Whether they may go to private addresses is the webhooks' setting."),
             _ => None,
         }
     }
@@ -893,6 +901,7 @@ impl std::fmt::Display for Group {
             Group::Orders => f.write_str("orders"),
             Group::Chain => f.write_str("chain"),
             Group::Webhooks => f.write_str("webhooks"),
+            Group::Pushes => f.write_str("pushes"),
             Group::ExchangeRates => f.write_str("exchange-rates"),
             Group::CustodyBackends => f.write_str("custody-backends"),
             Group::Custody(backend) => write!(f, "custody-{}", backend.as_str()),
@@ -925,6 +934,11 @@ const FIELD_ORDER: &[&str] = &[
     "webhooks.keep_delivered_days",
     "webhooks.keep_given_up_days",
     "order_events.retention_days",
+    "push.max_attempts",
+    "push.delivery_timeout_ms",
+    "push.default_ttl_secs",
+    "push.target_failure_limit",
+    "push.keep_days",
     "abuse.soft_per_min",
     "abuse.hard_per_min",
     "abuse.stream_cap",
@@ -2440,6 +2454,11 @@ mod tests {
             ("webhooks.max_attempts", M, Payments, "webhooks"),
             ("webhooks.keep_delivered_days", M, Payments, "webhooks"),
             ("webhooks.keep_given_up_days", M, Payments, "webhooks"),
+            ("push.delivery_timeout_ms", M, Payments, "pushes"),
+            ("push.max_attempts", M, Payments, "pushes"),
+            ("push.default_ttl_secs", M, Payments, "pushes"),
+            ("push.keep_days", M, Payments, "pushes"),
+            ("push.target_failure_limit", M, Payments, "pushes"),
             ("engine.mode", M, General, "engine"),
             ("engine.url", M, General, "engine"),
             ("engine.status_cache_ms", M, General, "engine"),

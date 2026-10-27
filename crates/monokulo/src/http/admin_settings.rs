@@ -2268,6 +2268,11 @@ mod tests {
             ("webhooks.max_attempts", "12"),
             ("webhooks.keep_delivered_days", "14"),
             ("webhooks.keep_given_up_days", "60"),
+            ("push.delivery_timeout_ms", "2500"),
+            ("push.max_attempts", "3"),
+            ("push.default_ttl_secs", "600"),
+            ("push.keep_days", "3"),
+            ("push.target_failure_limit", "40"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting
