@@ -685,3 +685,32 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      wouldn't cost it anyway. Superseding every older push to a Live
      Activity instead (only the newest state matters to the island) was
      the other way, but it would drop an older sale's `paid` alert.
+144. **Each store's apps are sent at most `push.per_store_per_minute`
+     pushes a minute, 120 by default, retries included** (push audit #15,
+     its monokulo half). Every store signs with this instance's one VAPID
+     key and the relay's only fairness limit is per sender (600 a minute on
+     relay.monokulo.com), so one busy or hostile store spent it for all of
+     them, and their pushes then sat out 429s until they expired. Only
+     monokulo knows stores apart, so the share is taken here, at sending
+     (what the relay counts), with the shared fixed-window `RateLimiter`
+     keyed by store on the `PushClient`; it lives in memory, and a restart
+     gives every store a fresh minute, which is at most one extra budget.
+     A push over its store's budget is put off, unattempted and uncounted,
+     to the store's next minute (`Db::defer_push`), or given up (`its
+     store's pushes for the minute were spent until it expired`) when that
+     is past its TTL. 120 is about six sales a minute for a store with four
+     tills of two targets each; the description tells the admin to keep it
+     well below the relay's per-sender limit. Budgeting at queueing was the
+     other way, but retries spend the relay's budget too.
+145. **A store's targets that share an endpoint are pushed once per
+     event**, as the oldest of them that wants it (push audit #15). An
+     endpoint is one subscription; eight targets of an app (or of several
+     apps) on one relay handle made eight pushes of each sale, eight times
+     the store's share of the relay's budget, for one device. Refusing such
+     a registration was the other way, but two apps on one device may be
+     handed the same relay handle for this instance's key, and the second
+     app's registration would have failed for no fault of its own.
+146. **The relay's half of push audit #15** (charge the sender only for
+     what passes the handle's limit, and size `per_sender_per_minute` for
+     a multi-store instance and the Bell) is fixed on `push-relay`, where
+     the relay is.
