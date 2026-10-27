@@ -120,6 +120,19 @@ pub struct Description(String);
 )]
 pub struct IdempotencyKey(String);
 
+/// An app's own name for one of its push subscriptions: visible ASCII
+/// characters. Registering a push target with a name the app used before
+/// replaces that target, so an app names each subscription once (`fcm`,
+/// `unifiedpush`, a Live Activity's id) and registers again under the same
+/// name whenever its push service hands it a new endpoint.
+#[api::scalar(
+    pattern = r"^[!-~]+$",
+    example = "unifiedpush",
+    min_length = 1,
+    max_length = 64
+)]
+pub struct ClientId(String);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,6 +145,10 @@ mod tests {
         assert!(MerchantRef::parse(&"x".repeat(121)).is_err());
         assert!(Description::parse("two\nlines").is_err());
         assert!(IdempotencyKey::parse("with space").is_err());
+        assert!(ClientId::parse("unifiedpush").is_ok());
+        assert!(ClientId::parse("").is_err());
+        assert!(ClientId::parse("two words").is_err());
+        assert!(ClientId::parse(&"x".repeat(65)).is_err());
         let refused: Result<Amount, _> = serde_json::from_str("\"twelve\"");
         assert!(refused
             .unwrap_err()

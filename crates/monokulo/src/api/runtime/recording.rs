@@ -46,6 +46,10 @@ pub const PUBLIC_URI: &str = "https://www.monokulo.com";
 /// onion links (`mk:onion-checkout`, `mk:onion-api`). The Tor Project's own.
 pub const ONION_URI: &str = "http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion";
 
+/// The private key of the VAPID key every recorded instance has, so its
+/// `vapid_public_key` is the same each run.
+const RECORDED_VAPID_KEY: [u8; 32] = [0x2a; 32];
+
 /// The key kind a request's bearer token says it is.
 fn key_of(request: &Request) -> Option<String> {
     let token = request
@@ -228,9 +232,10 @@ fn webhooks_to(state: &AppState, url: &str) {
         .unwrap();
 }
 
-/// A state like a real instance's, on `engine`, with [`options`].
+/// A state like a real instance's, on `engine`, with [`options`], its
+/// VAPID key [`RECORDED_VAPID_KEY`], read as a start reads a stored one.
 async fn state(engine: axum::Router, public_uri: Option<&str>, onion: bool) -> AppState {
-    AppState {
+    let state = AppState {
         engine: crate::http::Engine::new(crate::engine_client::EngineClient::embedded_for_tests(
             engine,
         )),
@@ -238,7 +243,29 @@ async fn state(engine: axum::Router, public_uri: Option<&str>, onion: bool) -> A
         ..AppState::for_tests()
     }
     .with_options(&options(public_uri, onion))
-    .await
+    .await;
+    let vapid = ::push::VapidKey::from_bytes(&RECORDED_VAPID_KEY).expect("a P-256 scalar");
+    let private = hex::encode(*vapid.to_bytes());
+    state
+        .db
+        .lock()
+        .store_vapid_key(&crate::db::StoredVapidKey {
+            public_key: vapid.public().to_string(),
+            private_key_encrypted: crate::crypto::encrypt(
+                &state.encryption_key,
+                crate::crypto::Binding::VapidKey,
+                &private,
+            ),
+            created_at: RECORDED_AT,
+        })
+        .unwrap();
+    let push = crate::push::Push::load_or_make(&state.db, &state.encryption_key)
+        .await
+        .unwrap();
+    AppState {
+        push: Arc::new(push),
+        ..state
+    }
 }
 
 fn json_post(uri: &str, body: &Value) -> Request {
@@ -253,7 +280,7 @@ fn json_post(uri: &str, body: &Value) -> Request {
 
 /// Connects an app to store `id` as the dashboard and the app do: what the
 /// handshake answered.
-async fn connect_app(router: &axum::Router, id: &str, cookie: &str) -> Value {
+pub(crate) async fn connect_app(router: &axum::Router, id: &str, cookie: &str) -> Value {
     let page = router
         .clone()
         .oneshot(form_post(
@@ -564,23 +591,138 @@ async fn call_api(
         .unwrap()
 }
 
-/// The path of the route `template`, for the order `order_id`.
-fn path_of(template: &str, order_id: &str) -> String {
-    template.replace("{order_id}", order_id)
+/// The things a route's path may name: the recorded order, and the app's
+/// push target.
+#[derive(Clone, Copy)]
+struct Ids<'a> {
+    order_id: &'a str,
+    push_target_id: &'a str,
+}
+
+/// The path of the route `template`, for the things `ids` names.
+fn path_of(template: &str, ids: &Ids<'_>) -> String {
+    template
+        .replace("{order_id}", ids.order_id)
+        .replace("{push_target_id}", ids.push_target_id)
+}
+
+/// A push subscription, as an app registers one: a UnifiedPush
+/// distributor's endpoint and the subscription's keys (RFC 8291's example
+/// receiver's, so the same each run).
+fn push_target_input() -> Value {
+    json!({
+        "client_id": "unifiedpush",
+        "kind": "encrypted",
+        "endpoint": "https://ntfy.sh/upYuGg6sBMEvqHs4?up=1",
+        "keys": {
+            "p256dh": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+            "auth": "BTBZMqHH6r4Tts7J_aSIgg"
+        }
+    })
+}
+
+/// A Live Activity's push target, as an iOS app registers one through
+/// the push relay, showing the payment code in the Dynamic Island.
+fn live_activity_input() -> Value {
+    json!({
+        "client_id": "live-activity",
+        "kind": "live-activity",
+        "endpoint": "https://relay.monokulo.com/v1/push/ph_6f1c2d3e4f5a69788796a5b4c3d2e1f0",
+        "events": ["sale.waiting", "sale.seen", "sale.confirming", "sale.paid", "sale.expired"],
+        "include_payment_uri": true
+    })
 }
 
 /// What a client sends `handler`: `order` to make an order, a log report
 /// to the logs, an empty object to test the store's webhook (the plugin's,
-/// as a plugin's "Test connection" sends it), nothing elsewhere.
+/// as a plugin's "Test connection" sends it), a subscription to register
+/// a push target, nothing elsewhere.
 fn body_for(handler: &catalog::HandlerInfo, order: &Value) -> Option<Value> {
     match (handler.method, handler.template) {
         ("POST", t) if t == super::super::v1::orders::Path::TEMPLATE => Some(order.clone()),
+        ("POST", t) if t == super::super::v1::push_targets::Path::TEMPLATE => {
+            Some(push_target_input())
+        }
         ("POST", t) if t == super::super::v1::logs::Path::TEMPLATE => Some(
             json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]}),
         ),
         ("POST", t) if t == super::super::v1::webhook_tests::Path::TEMPLATE => Some(json!({})),
         _ => None,
     }
+}
+
+/// The app's push targets, with the app's key `ak` on `router`: a
+/// subscription registered, read and listed, registered again with a new
+/// endpoint (the same target), the forms' refusals, and the app past its
+/// limit (the targets that took it there unregistered again). The
+/// registered target's id.
+async fn record_push_targets(router: &axum::Router, ak: &str) -> String {
+    let uri = super::super::v1::push_targets::Path::TEMPLATE;
+    let made = call_api(router, "POST", uri, Some(ak), Some(push_target_input())).await;
+    assert_eq!(made.status(), StatusCode::CREATED);
+    let id = body_json(made).await["push_target_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        call_api(router, "GET", uri, Some(ak), None).await.status(),
+        StatusCode::OK
+    );
+    let one = format!("{uri}/{id}");
+    assert_eq!(
+        call_api(router, "GET", &one, Some(ak), None).await.status(),
+        StatusCode::OK
+    );
+    let unknown = format!("{uri}/pt_00000000000000000000000000000000");
+    assert_eq!(
+        call_api(router, "GET", &unknown, Some(ak), None)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    // The push service handed out a new endpoint: the same target.
+    let mut again = push_target_input();
+    again["endpoint"] = json!("https://ntfy.sh/upQm3vX8wKp2TzLd?up=1");
+    let replaced = call_api(router, "POST", uri, Some(ak), Some(again)).await;
+    assert_eq!(body_json(replaced).await["push_target_id"], id.as_str());
+    // A subscription the form refuses: keys for a Live Activity, none for
+    // an encrypted target, an endpoint Monokulo doesn't push to, an event
+    // that isn't one.
+    let mut keyed = live_activity_input();
+    keyed["keys"] = push_target_input()["keys"].clone();
+    let mut keyless = push_target_input();
+    keyless.as_object_mut().unwrap().remove("keys");
+    let mut plain = push_target_input();
+    plain["endpoint"] = json!("http://ntfy.sh/upYuGg6sBMEvqHs4?up=1");
+    let mut unknown_event = push_target_input();
+    unknown_event["events"] = json!(["sale.refunded"]);
+    for refused in [keyed, keyless, plain, unknown_event] {
+        let answer = call_api(router, "POST", uri, Some(ak), Some(refused)).await;
+        assert_eq!(answer.status(), StatusCode::BAD_REQUEST);
+    }
+    // As many as an app may have, then one more.
+    let mut extra = Vec::new();
+    for n in 1..crate::db::MAX_TARGETS_PER_APP {
+        let mut more = live_activity_input();
+        more["client_id"] = json!(format!("live-activity-{n}"));
+        let answer = call_api(router, "POST", uri, Some(ak), Some(more)).await;
+        assert_eq!(answer.status(), StatusCode::CREATED);
+        extra.push(
+            body_json(answer).await["push_target_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let mut over = live_activity_input();
+    over["client_id"] = json!("one-too-many");
+    let answer = call_api(router, "POST", uri, Some(ak), Some(over)).await;
+    assert_eq!(answer.status(), StatusCode::CONFLICT);
+    for extra in extra {
+        let answer = call_api(router, "DELETE", &format!("{uri}/{extra}"), Some(ak), None).await;
+        assert_eq!(answer.status(), StatusCode::NO_CONTENT);
+    }
+    id
 }
 
 /// The `send-test-webhook` form's answers: a test delivered to the
@@ -699,11 +841,12 @@ fn sql(state: &AppState, statement: &str) {
 async fn record_route_problems(
     state: &AppState,
     router: &axum::Router,
-    order_id: &str,
+    ids: &Ids<'_>,
     keys: &Keys<'_>,
     recorder: &Recorder,
 ) {
     use super::problem::Problem;
+    let order_id = ids.order_id;
     let store_id = state
         .db
         .lock()
@@ -716,7 +859,7 @@ async fn record_route_problems(
 
     // A key this Monokulo doesn't know, and each key a route doesn't take.
     for handler in &handlers {
-        let uri = path_of(handler.template, order_id);
+        let uri = path_of(handler.template, ids);
         let body = body_for(handler, &xmr);
         call_api(router, handler.method, &uri, Some("sk_0000"), body.clone()).await;
         for key in keys.refused(handler) {
@@ -728,11 +871,17 @@ async fn record_route_problems(
     let orders = super::super::v1::orders::Path::TEMPLATE;
     let logs = super::super::v1::logs::Path::TEMPLATE;
     let tests = super::super::v1::webhook_tests::Path::TEMPLATE;
-    for uri in [orders, logs, tests] {
+    let push_targets = super::super::v1::push_targets::Path::TEMPLATE;
+    for (uri, key) in [
+        (orders, keys.sk),
+        (logs, keys.sk),
+        (tests, keys.sk),
+        (push_targets, keys.ak),
+    ] {
         // An empty object is all a test webhook takes: it would send one
         // (`record_test_webhooks` does).
         if uri != tests {
-            call_api(router, "POST", uri, Some(keys.sk), Some(json!({}))).await;
+            call_api(router, "POST", uri, Some(key), Some(json!({}))).await;
         }
         let unlabelled = router
             .clone()
@@ -740,7 +889,7 @@ async fn record_route_problems(
                 axum::http::Request::builder()
                     .method("POST")
                     .uri(uri)
-                    .header(header::AUTHORIZATION, format!("Bearer {}", keys.sk))
+                    .header(header::AUTHORIZATION, format!("Bearer {key}"))
                     .body(Body::from("amount=1"))
                     .unwrap(),
             )
@@ -749,7 +898,7 @@ async fn record_route_problems(
         assert_eq!(unlabelled.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
         let too_large =
             json!({"amount": "1", "currency": "XMR", "description": "x".repeat(64 * 1024)});
-        let answer = call_api(router, "POST", uri, Some(keys.sk), Some(too_large)).await;
+        let answer = call_api(router, "POST", uri, Some(key), Some(too_large)).await;
         assert_eq!(answer.status(), StatusCode::PAYLOAD_TOO_LARGE, "{uri}");
     }
     let many = json!({"entries": vec![json!({"level": "error", "message": "again"}); super::super::v1::logs::MAX_ENTRIES + 1]});
@@ -810,7 +959,7 @@ async fn record_route_problems(
         recorder,
     );
     for (n, handler) in handlers.iter().enumerate() {
-        let uri = path_of(handler.template, order_id);
+        let uri = path_of(handler.template, ids);
         let peer = format!("203.0.113.20:{}", 2000 + n);
         let mut last = StatusCode::OK;
         for _ in 0..2 {
@@ -841,7 +990,7 @@ async fn record_route_problems(
         if !handler.problems().contains(&Problem::ChallengeRequired) {
             continue;
         }
-        let uri = path_of(handler.template, order_id);
+        let uri = path_of(handler.template, ids);
         let request = api_request(handler.method, &uri, None, body_for(handler, &xmr));
         let answer = under_attack
             .clone()
@@ -897,9 +1046,11 @@ async fn record_route_problems(
             continue;
         }
         // Their secret key alone, which a wrong encryption key leaves
-        // unknown (`401`): each fails here another way, below.
+        // unknown (`401`), and an app's push targets, which need no key
+        // opened: each fails here another way, below.
         if handler.template == super::super::v1::store::Path::TEMPLATE
             || handler.template == super::super::v1::webhook_tests::Path::TEMPLATE
+            || handler.template.starts_with(push_targets)
         {
             continue;
         }
@@ -915,7 +1066,7 @@ async fn record_route_problems(
         let answer = call_api(
             &wrong_key,
             handler.method,
-            &path_of(handler.template, order_id),
+            &path_of(handler.template, ids),
             Some(key),
             body_for(handler, &xmr),
         )
@@ -944,6 +1095,43 @@ async fn record_route_problems(
     let answer = call_api(router, "DELETE", "/api/v1/app", Some(keys.ak), None).await;
     sql(state, "DROP TRIGGER keep_apps");
     assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    // The app's push targets, their table away; then one kept.
+    sql(
+        state,
+        "ALTER TABLE push_targets RENAME TO push_targets_away",
+    );
+    for handler in &handlers {
+        if !handler.template.starts_with(push_targets) || handler.method == "DELETE" {
+            continue;
+        }
+        let answer = call_api(
+            router,
+            handler.method,
+            &path_of(handler.template, ids),
+            Some(keys.ak),
+            body_for(handler, &xmr),
+        )
+        .await;
+        assert_eq!(
+            answer.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "{} {}",
+            handler.method,
+            handler.template
+        );
+    }
+    sql(
+        state,
+        "ALTER TABLE push_targets_away RENAME TO push_targets",
+    );
+    sql(
+        state,
+        "CREATE TRIGGER keep_push_targets BEFORE DELETE ON push_targets BEGIN SELECT RAISE(FAIL, 'kept'); END",
+    );
+    let target = path_of(super::super::v1::push_target::Path::TEMPLATE, ids);
+    let answer = call_api(router, "DELETE", &target, Some(keys.ak), None).await;
+    sql(state, "DROP TRIGGER keep_push_targets");
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     // The engine unreachable: every route that asks it.
     let down = recorder.around(build_router(AppState {
@@ -960,7 +1148,7 @@ async fn record_route_problems(
         let answer = call_api(
             &down,
             handler.method,
-            &path_of(handler.template, order_id),
+            &path_of(handler.template, ids),
             Some(keys.sk),
             body_for(handler, &xmr),
         )
@@ -1233,6 +1421,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     });
     call(&router, "GET", "/api/v1/app".into(), Some(&ak), None).await;
     call(&router, "GET", "/api/v1/app".into(), Some(sk), None).await;
+    let push_target_id = record_push_targets(&router, &ak).await;
     let logs = json!({"entries": [{"level": "error", "message": "Monokulo could not be reached"}]});
     call(
         &router,
@@ -1283,8 +1472,12 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         pk,
         ak: ak.as_str(),
     };
+    let ids = Ids {
+        order_id: &order_id,
+        push_target_id: &push_target_id,
+    };
     webhooks_to(&state, &receiver);
-    record_route_problems(&state, &router, &order_id, &keys, &recorder).await;
+    record_route_problems(&state, &router, &ids, &keys, &recorder).await;
 
     // The same Monokulo once its admin has given it an onion address: the
     // handshakes, every route with each key it takes, and the order, made
@@ -1318,6 +1511,25 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
         pk,
         ak: onion_ak.as_str(),
     };
+    // The onion's app has a Live Activity's push target: the one its
+    // routes read.
+    let live_activity = call(
+        &onion_router,
+        "POST",
+        super::super::v1::push_targets::Path::TEMPLATE.into(),
+        Some(&onion_ak),
+        Some(live_activity_input()),
+    )
+    .await;
+    assert_eq!(live_activity.status(), StatusCode::CREATED);
+    let onion_push_target_id = body_json(live_activity).await["push_target_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let onion_ids = Ids {
+        order_id: &order_id,
+        push_target_id: &onion_push_target_id,
+    };
     for handler in catalog::handlers() {
         // The app disconnects itself last; the document is the same.
         if handler.method == "DELETE"
@@ -1334,7 +1546,7 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
             let answer = call(
                 &onion_router,
                 handler.method,
-                path_of(handler.template, &order_id),
+                path_of(handler.template, &onion_ids),
                 Some(key),
                 body_for(handler, &order_input),
             )
@@ -1351,6 +1563,29 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     for (key, kind) in [(sk, "sk"), (pk, "pk"), (onion_ak.as_str(), "ak")] {
         record_order_events(&onion_router, &onion, &order_id, key, kind).await;
     }
+    // The subscription the loop registered, unregistered.
+    let registered = call(
+        &onion_router,
+        "POST",
+        super::super::v1::push_targets::Path::TEMPLATE.into(),
+        Some(&onion_ak),
+        Some(push_target_input()),
+    )
+    .await;
+    let registered = body_json(registered).await["push_target_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(registered, onion_push_target_id);
+    let unregistered = call(
+        &onion_router,
+        "DELETE",
+        format!("/api/v1/push-targets/{registered}"),
+        Some(&onion_ak),
+        None,
+    )
+    .await;
+    assert_eq!(unregistered.status(), StatusCode::NO_CONTENT);
     call(
         &onion_router,
         "DELETE",
@@ -1361,6 +1596,19 @@ pub async fn record(engine: axum::Router) -> Vec<Exchange> {
     .await;
 
     record_test_webhooks(&router, sk).await;
+
+    // The app unregisters its push target, then again.
+    for expected in [StatusCode::NO_CONTENT, StatusCode::NOT_FOUND] {
+        let answer = call(
+            &router,
+            "DELETE",
+            format!("/api/v1/push-targets/{push_target_id}"),
+            Some(&ak),
+            None,
+        )
+        .await;
+        assert_eq!(answer.status(), expected);
+    }
 
     // Last, the app disconnects itself; its key no longer works.
     call(&router, "DELETE", "/api/v1/app".into(), Some(&ak), None).await;

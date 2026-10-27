@@ -225,6 +225,8 @@ pub struct AppState {
     /// Sale events for connected apps' event streams (`crate::apps`),
     /// announced by the order API and the order-event subscriber.
     pub apps: Arc<crate::apps::AppEvents>,
+    /// What pushes to connected apps are signed with (`crate::push`).
+    pub push: Arc<crate::push::Push>,
     /// The keys and sessions open streams were opened with: revoking one
     /// ends its streams (`crate::revocation`).
     pub revocations: Arc<crate::revocation::Revocations>,
@@ -277,7 +279,7 @@ impl AppState {
     /// A state for tests: an in-memory db with the test admin seeded
     /// (`Db::seed_test_admin`), an engine that hangs up on every request
     /// (`service_runtime::unreachable`, quick to fail on every system), a fixed
-    /// encryption key, XMR-only exchange rates, default abuse limits and
+    /// encryption key, a VAPID key of its own (`push::Push::for_tests`), XMR-only exchange rates, default abuse limits and
     /// settings except that anyone may sign up ([`AppState::test_settings`]),
     /// no DNS and no log store. A test that needs something else
     /// overrides just that field with struct update syntax:
@@ -310,6 +312,7 @@ impl AppState {
             log_store: None,
             webhooks: Arc::default(),
             apps: Arc::default(),
+            push: Arc::new(crate::push::Push::for_tests()),
             revocations: Arc::default(),
             stopping: Default::default(),
             tor: tor_service::Tor::default(),

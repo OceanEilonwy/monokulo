@@ -266,6 +266,11 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             )
         });
     }
+    // This instance's VAPID key, made at the first start: a stored one
+    // that can't be read stops the process, as any other secret does.
+    let push = monokulo::push::Push::load_or_make(&db, &encryption_key)
+        .await
+        .unwrap_or_else(|e| stop(format!("failed to read this Monokulo's VAPID key: {e}")));
     let engine = monokulo::http::Engine::new(engine_client);
     monokulo::http::status_page::set_status_cache_ttl(
         &engine,
@@ -283,6 +288,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         log_store,
         webhooks,
         apps,
+        push: Arc::new(push),
         revocations: Default::default(),
         stopping: stopping.clone(),
         tor: tor.clone(),

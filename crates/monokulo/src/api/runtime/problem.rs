@@ -30,8 +30,9 @@ pub enum Problem {
     Unauthorized,
     /// The key is valid but may not do this: each route says which keys it
     /// takes. A store's public key (`pk_`) only makes and reads orders;
-    /// only an app's own key (`ak_`) reads or disconnects the app; only the
-    /// store's secret key (`sk_`) sends a plugin's logs and test webhooks.
+    /// only an app's own key (`ak_`) reads or disconnects the app and
+    /// registers where its pushes go; only the store's secret key (`sk_`)
+    /// sends a plugin's logs and test webhooks.
     /// A store that takes
     /// orders only from its verified websites also refuses an order made
     /// with its public key anywhere else.
@@ -74,6 +75,12 @@ pub enum Problem {
     /// choice of whether the reference shows.
     #[problem(status = 409, title = "Key used for another order")]
     IdempotencyConflict,
+    /// The app already has as many push targets as it may (8, a few for
+    /// each push service its device uses). Unregister one it no longer
+    /// uses first, or register again with the `client_id` of one it has,
+    /// which replaces that one.
+    #[problem(status = 409, title = "Too many push targets")]
+    TooManyPushTargets,
     /// The request body is larger than the route takes.
     #[problem(status = 413, title = "Request too large")]
     TooLarge,

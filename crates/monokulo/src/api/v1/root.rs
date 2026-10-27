@@ -1,4 +1,4 @@
-use super::{app, events, logs, openapi, orders, store, webhook_tests};
+use super::{app, events, logs, openapi, orders, push_targets, store, webhook_tests};
 use crate::api::{self, prelude::*};
 
 api::resource!("/api/v1", rel = "root");
@@ -6,10 +6,10 @@ api::resource!("/api/v1", rel = "root");
 /// The API's entry: where to go from here.
 ///
 /// Links to the store, its orders and its events (and, for a connected
-/// app, the app itself), the forms the key may use (a shop's server also
-/// gets the ones for sending its warnings and errors and for sending one
-/// of the store's webhooks a test delivery), and the API's
-/// description. A link or form the key may not use is left out, so a
+/// app, the app itself and where its pushes go), the forms the key may use
+/// (a shop's server also gets the ones for sending its warnings and errors
+/// and for sending one of the store's webhooks a test delivery, an app the
+/// one for registering a push target), and the API's description. A link or form the key may not use is left out, so a
 /// client can find out what its key does by reading this. While this
 /// Monokulo has an onion address, `mk:onion-api` says where the same entry
 /// is on it.
@@ -31,12 +31,14 @@ struct Body {
     orders: Link<orders::Path>,
     events: Link<events::Path>,
     app: Link<app::Path>,
+    push_targets: Link<push_targets::Path>,
     service_desc: Link<openapi::Path>,
     service_doc: Href,
     create_order: Form<orders::create>,
     send_logs: Form<logs::send>,
     send_test_webhook: Form<webhook_tests::send>,
     disconnect: Form<app::delete>,
+    register_push_target: Form<push_targets::register>,
 }
 
 /// How long a client may keep the entry before reading it again.
@@ -81,6 +83,7 @@ fn body(instance: &Instance) -> Body {
         orders: Link::new(orders::Path {}),
         events: Link::new(events::Path {}),
         app: Link::new(app::Path {}),
+        push_targets: Link::new(push_targets::Path {}),
         service_desc: Link::new(openapi::Path {}),
         service_doc: Href {
             href: format!("{}/api/", api::runtime::DOCS),
@@ -90,5 +93,6 @@ fn body(instance: &Instance) -> Body {
         send_logs: Form::new(),
         send_test_webhook: Form::new(),
         disconnect: Form::new(),
+        register_push_target: Form::new(),
     }
 }

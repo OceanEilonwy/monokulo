@@ -84,6 +84,9 @@ pub enum Binding<'a> {
     WebhookSecret(&'a str),
     /// `encrypted_settings.value_encrypted` of this setting's key.
     Setting(&'a str),
+    /// `vapid_keys.private_key_encrypted`: this instance's one VAPID key
+    /// (its row's id is always 1).
+    VapidKey,
 }
 
 impl Binding<'_> {
@@ -93,6 +96,7 @@ impl Binding<'_> {
             Binding::InviteToken(id) => format!("invite_links.token:{id}"),
             Binding::WebhookSecret(id) => format!("webhooks.signing_secret:{id}"),
             Binding::Setting(key) => format!("encrypted_settings.value:{key}"),
+            Binding::VapidKey => "vapid_keys.private_key:1".to_owned(),
         }
         .into_bytes()
     }
