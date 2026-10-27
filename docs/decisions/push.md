@@ -330,3 +330,99 @@ overrule any of them; a replacement is recorded under the same number.
     as decision 39 has it, and the test failed once in a few hundred runs.
     The rule under test is sharing, not the clock; the clock-set-back case
     has its own assertion.
+
+## Push targets (rust-engineer-2)
+
+53. **`SaleKind` is the API's sale event name; there is no second enum.**
+    The plan's `SaleEventName` would have been `SaleKind` again with a
+    serde impl. `SaleKind` reads and writes as its stream name
+    (`sale.paid`), and its schema (named `SaleEventName`) lists
+    `SaleKind::ALL`'s names, so the stream, the push target's `events` and
+    the stored JSON can't disagree. An unknown name is refused by
+    deserialization, with the list of names in `detail`.
+54. **A resource's own forms are sent to the resource itself.** The
+    macros refused a form on a path with parameters (its target was the
+    route template, `{…}` and all), so `unregister-push-target` couldn't
+    be the plan's `#[delete(app, form = …)]`. A body's own forms now
+    target its own path with the parameters filled in; a form another body
+    offers (`Form<H>`) still targets its route, and a `Form<H>` whose
+    route has parameters fails to compile (`FormTarget::TEMPLATE`). The
+    alternative, a `DELETE` without a form, would have left the target's
+    removal undiscoverable from its body, against the API layout.
+55. **Both `GET`s answer `internal`.** The plan gave the list no problems;
+    both read the database, which can fail, and the OpenAPI document must
+    list what a route really answers. The recording shows each `500`
+    with the table renamed away (and a trigger for `DELETE`).
+56. **Registering a `client_id` again replaces everything about the
+    subscription**: endpoint, kind, keys, events and
+    `include_payment_uri`, and forgets `failures` and `last_ok_at_utc`,
+    which were the old subscription's. Only the id and `created_at` stay.
+    A replacement never counts against the limit of 8.
+57. **The form is strict about what belongs to which kind.** `keys` with
+    `live-activity`, no `keys` with `encrypted`, and `include_payment_uri`
+    with `encrypted` (even `false`) are each `invalid-request` with a
+    reason, rather than ignored: a client sending them has misunderstood
+    the kind. An empty `events` is refused too ("leave it out for every
+    one, or unregister"): a target that wants nothing is a target that
+    shouldn't exist. Duplicated events are kept once, in `SaleKind::ALL`'s
+    order.
+58. **A target's `store_id` is read from its app in the same statement**
+    (`INSERT … SELECT store_id FROM app_connections WHERE id = ?`), never
+    passed in, so a target can't sit under a store its app isn't on. An app
+    disconnected between its key check and the insert inserts nothing and
+    is answered `401` as a disconnected app's key is.
+59. **What a target's body shows.** Its keys never (they were the app's to
+    give, not to read back); its endpoint yes, to its own app only (the app
+    gave it, and comparing it is how an app knows a registration is
+    current); `include_payment_uri` only for a `live-activity` target.
+    Log lines carry the endpoint's host, never the URL (decision 34).
+60. **The Query page hides a target's `endpoint` and `auth`, and the VAPID
+    private key.** An endpoint is a capability (whoever holds it can push
+    to the device), `auth` is a secret by name; `p256dh`, the public key,
+    stays visible.
+61. **How the VAPID key is kept.** The private scalar is hex inside
+    `crypto::encrypt` (whose API takes text; the hex is zeroized after),
+    bound to `vapid_keys.private_key:1`. Loading checks the stored public
+    key is the private key's (a row edited by hand would otherwise hand
+    apps a key their pushes don't verify against). `store_vapid_key` keeps
+    the first row stored (`ON CONFLICT DO NOTHING`) and the loader uses
+    what it reads back, so two starts racing can't end up with two keys.
+    `AppState::for_tests` has a fresh key of its own (`Push::for_tests`);
+    the recording stores a fixed one and loads it as a start does, so its
+    examples are the same each run.
+62. **Registration doesn't check whether the endpoint's host is
+    private.** As for webhooks, that is checked at every send (decision
+    19): DNS can change in between, and a check here would pass a name
+    that later points inside.
+63. **`crate::push` shares its name with the `push` crate**, as the plan
+    laid it out; code in monokulo writes the crate as `::push::` and
+    `db.rs` re-exports its module as `self::push`.
+
+## Push targets' tests (the test engineer)
+
+64. **`push-targets` takes `origin/push-crate` by a merge, not a rebase.**
+    The branch was built on the crate's first commit; the crate's later
+    endpoint bound (decision 44) is what keeps a stored endpoint readable:
+    without it an app could register 1000 `é` (2025 bytes, stored as 6025
+    characters), which then failed `Endpoint::parse` on every read, so
+    that app's whole push-target list answered `500` for good. A rebase
+    would have meant force-pushing rust-engineer-2's branch, so it is a
+    merge, and the push targets' decisions (first numbered 44 to 54, the
+    numbers the crate's review took meanwhile) are 53 to 63. A rebase of
+    the stack later drops the merge commit.
+65. **Registration takes plain `http` to loopback, as `Endpoint` does**
+    (decision 49): the form's doc and the apps guide say so, and that
+    Monokulo pushes there only when its admin allows private addresses
+    (the send-time check, decision 19). Refusing it at registration
+    would leave the delivery worker's real-HTTP tests nothing to register.
+66. **A form sent as a JSON array is left as serde takes it.** A derived
+    `Deserialize` reads a struct from a sequence too, so
+    `["unifiedpush", "encrypted", …]` registers like the object. Every
+    field's check still applies, and the same holds for every
+    `#[api::input]`; refusing it belongs to `extract::json_body` for all
+    routes at once, not to this one. Recorded, not changed.
+67. **The `store_id` cascade isn't tested by deleting a store.** Nothing
+    in Monokulo deletes a store, and older tables reference
+    `store_connections` without a cascade, so the delete fails. The
+    cascade that runs is the app's, tested from the dashboard and from
+    `DELETE /api/v1/app`.

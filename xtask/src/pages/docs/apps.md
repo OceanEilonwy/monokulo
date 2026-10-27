@@ -207,8 +207,11 @@ Content-Type: application/json
   for an iOS Live Activity, which takes no `keys`. A `live-activity` target
   may set `include_payment_uri` to have its pushes carry the payment URI,
   for the Dynamic Island to show the payment code.
-- `endpoint` is the subscription's `https` URL. Monokulo doesn't push over
-  Tor, so it is never an onion address.
+- `endpoint` is the subscription's `https` URL, at most 2048 characters
+  once non-ASCII characters are percent-escaped. Monokulo doesn't push over
+  Tor, so it is never an onion address. Plain `http` is taken only for this
+  machine (`127.0.0.1`, `[::1]`, `localhost`), which Monokulo pushes to only
+  when its admin allows private addresses.
 - `events` names the sale events to push (the names of
   [Follow them](#4-follow-them)); every one when left out.
 
