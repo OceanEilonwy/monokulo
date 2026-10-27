@@ -63,17 +63,50 @@ impl fmt::Debug for ServiceAccount {
     }
 }
 
-/// Why a service account's JSON can't be used.
+/// Why a service account's JSON can't be used. Never the value itself,
+/// nor serde_json's message about it, which quotes a refused string in
+/// full: the whole key file, private key and all, when it was encoded as
+/// a JSON string once more. This goes into the start-up error and the
+/// log.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AccountError {
     #[error("isn't a service account's JSON key file: {0}")]
-    Json(String),
-    #[error("is a {0:?} key, not a service account's")]
-    Type(String),
+    Json(JsonError),
+    #[error("is a JSON string, not a key file: the key file is encoded as JSON twice, so give the file's text as it is")]
+    EncodedTwice,
+    /// The account's `type`, when it is a short name such as
+    /// `authorized_user`; anything else is not named.
+    #[error("is a {} key, not a service account's", .0.as_deref().map_or("different kind of".to_owned(), |kind| format!("{kind:?}")))]
+    Type(Option<String>),
     #[error("its token_uri: {0}")]
     TokenUri(String),
     #[error("its private_key isn't an RSA key in PKCS #8 PEM")]
     Key,
+}
+
+/// Where and how a key file's JSON went wrong, as `serde_json` classifies
+/// it, without its message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{category} (line {line}, column {column})")]
+pub struct JsonError {
+    category: &'static str,
+    line: usize,
+    column: usize,
+}
+
+impl From<serde_json::Error> for JsonError {
+    fn from(error: serde_json::Error) -> Self {
+        JsonError {
+            category: match error.classify() {
+                serde_json::error::Category::Io => "unreadable",
+                serde_json::error::Category::Syntax => "not JSON",
+                serde_json::error::Category::Data => "not a key file's shape",
+                serde_json::error::Category::Eof => "cut short",
+            },
+            line: error.line(),
+            column: error.column(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -88,10 +121,18 @@ struct AccountFile {
 
 impl ServiceAccount {
     pub fn parse(json: &str) -> Result<Self, AccountError> {
-        let file: AccountFile =
-            serde_json::from_str(json).map_err(|error| AccountError::Json(error.to_string()))?;
+        if json.trim_start().starts_with('"') {
+            return Err(AccountError::EncodedTwice);
+        }
+        let file: AccountFile = serde_json::from_str(json)
+            .map_err(|error| AccountError::Json(JsonError::from(error)))?;
         if file.kind != "service_account" {
-            return Err(AccountError::Type(file.kind));
+            let named = (1..=32).contains(&file.kind.len())
+                && file
+                    .kind
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_');
+            return Err(AccountError::Type(named.then_some(file.kind)));
         }
         let token_uri = <ServiceUrl as live_settings::SettingValue>::parse(&file.token_uri)
             .map_err(AccountError::TokenUri)?;
@@ -562,7 +603,12 @@ mod tests {
         account["type"] = "authorized_user".into();
         assert_eq!(
             ServiceAccount::parse(&account.to_string()),
-            Err(AccountError::Type("authorized_user".into()))
+            Err(AccountError::Type(Some("authorized_user".into())))
+        );
+        account["type"] = "-----BEGIN PRIVATE KEY-----".into();
+        assert_eq!(
+            ServiceAccount::parse(&account.to_string()),
+            Err(AccountError::Type(None))
         );
         let mut account: Value = serde_json::from_str(&fcm_account(GOOGLE_TOKEN_URI)).unwrap();
         account["token_uri"] = "http://oauth2.example.com/token".into();
@@ -577,6 +623,37 @@ mod tests {
             ServiceAccount::parse(&account.to_string()),
             Err(AccountError::Key)
         );
+    }
+
+    /// A key file encoded as a JSON string once more (a secret store or
+    /// a template's `jsonencode`) is refused without a word of it: the
+    /// error goes into the start-up error and the log.
+    #[test]
+    fn a_key_file_encoded_twice_is_refused_without_quoting_it() {
+        let file = fcm_account(GOOGLE_TOKEN_URI);
+        let pem = include_str!("../tests/fixtures/fcm-test-key.pem");
+        let quiet = |error: &AccountError| {
+            let text = error.to_string();
+            assert!(!text.contains("PRIVATE KEY"), "{text}");
+            for line in pem.lines().filter(|line| line.len() > 8) {
+                assert!(!text.contains(line), "{text}");
+            }
+            assert!(!text.contains("relay@monokular-test"), "{text}");
+        };
+        let twice = serde_json::to_string(&file).unwrap();
+        let error = ServiceAccount::parse(&twice).unwrap_err();
+        assert_eq!(error, AccountError::EncodedTwice);
+        quiet(&error);
+        // A field of the wrong type, or broken JSON, is placed, not quoted.
+        let mut account: Value = serde_json::from_str(&file).unwrap();
+        account["client_email"] = json!([pem]);
+        let error = ServiceAccount::parse(&account.to_string()).unwrap_err();
+        assert!(matches!(error, AccountError::Json(_)), "{error}");
+        assert!(error.to_string().contains("shape"), "{error}");
+        quiet(&error);
+        let error = ServiceAccount::parse(&file[..file.len() / 2]).unwrap_err();
+        assert!(error.to_string().contains("line 1"), "{error}");
+        quiet(&error);
     }
 
     #[test]
