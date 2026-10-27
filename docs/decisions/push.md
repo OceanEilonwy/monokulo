@@ -938,3 +938,24 @@ after group 2's last entry (150).
      same two-listener shape, a microsecond apart: each now makes the
      token where it made the first listener, so their start-up behaviour
      is unchanged.
+157. **No push-to-start until something sends one** (push audit #18;
+     replaces 114). The relay took `apns-pushtostart` registrations and
+     turned a `{"attributes-type", "attributes", "content-state"}` push
+     into an APNs `start`, but nothing writes that shape: monokulo's push
+     targets are `encrypted` or `live-activity`, whose payload is always
+     `LiveActivityState`, and the Bell sends only encrypted dings. An app
+     that opted in would have handed monokulo an endpoint every push to
+     which was refused 400, until monokulo deleted the target after
+     `push.target_failure_limit` refusals, with nothing telling the
+     merchant why. Removed rather than given a third target kind now: the
+     iOS app's opt-in isn't built, and the target kind needs the
+     attributes (location label, store name) decided with it. The
+     platform, `Start`, `live_activity_start`, the docs page's rows and
+     the stand-in test go, and `'apns-pushtostart'` leaves migration 2's
+     `CHECK` (unreleased, so edited in place; a file made with the old
+     list keeps it, harmlessly). A registration naming it is refused
+     `400 invalid-request` as any unknown platform is, so no endpoint is
+     minted that nothing can feed. Push-to-start comes back as a
+     monokulo target kind writing `Start`, with the relay's platform, in
+     one change. Monokular's design (sections 5 and 6) still describes the
+     opt-in, for the Bell's branch to bring in line.

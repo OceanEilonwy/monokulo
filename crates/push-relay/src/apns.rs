@@ -3,7 +3,7 @@
 //! from the team's `.p8` key, reused for 50 minutes: Apple refuses one
 //! older than an hour, and one renewed more than every 20 minutes).
 //!
-//! A push becomes one of three requests ([`translate`]):
+//! A push becomes one of two requests ([`translate`]):
 //!
 //! - `apns`: an alert with `mutable-content`, the ciphertext beside `aps`
 //!   for the app's Notification Service Extension to decrypt and replace
@@ -13,8 +13,8 @@
 //!   `expired`, and a stale date while the sale is open. The relay never
 //!   ends an activity: there is one per shift, which only the app idles or
 //!   ends, and the app can't start one again from the background.
-//! - `apns-pushtostart`: a Live Activity started, its attributes and first
-//!   state from the plain JSON.
+//!
+//! No push-to-start: nothing sends one yet (decisions/push.md 157).
 
 use std::time::Duration;
 
@@ -148,17 +148,6 @@ impl State {
     }
 }
 
-/// What a push-to-start's JSON holds: the activity's static attributes,
-/// their Swift type's name, and its first state.
-#[derive(Deserialize, Serialize)]
-struct Start {
-    #[serde(rename = "attributes-type")]
-    attributes_type: String,
-    attributes: serde_json::Map<String, Value>,
-    #[serde(rename = "content-state")]
-    content_state: serde_json::Map<String, Value>,
-}
-
 /// The APNs request for `request` to `handle` of an app whose bundle ID is
 /// `bundle`, at `now` (Unix seconds).
 pub fn translate(
@@ -193,11 +182,6 @@ pub fn translate(
             push.push_type = PushType::LiveActivity;
             push.topic = live_activity_topic(bundle);
             live_activity_update(json, now)?
-        }
-        (Platform::ApnsPushToStart, Message::PlainJson(json)) => {
-            push.push_type = PushType::LiveActivity;
-            push.topic = live_activity_topic(bundle);
-            live_activity_start(json, now)?
         }
         (platform @ Platform::Apns, Message::PlainJson(_)) => {
             return Err(TranslateError::WrongBody {
@@ -246,27 +230,6 @@ fn live_activity_update(json: &PlainJson, now: i64) -> Result<Value, TranslateEr
                 aps.insert("stale-date".into(), expires_at.into());
             }
         }
-    }
-    Ok(json!({ "aps": aps }))
-}
-
-/// A new activity, with its attributes and first state as the JSON gives
-/// them.
-fn live_activity_start(json: &PlainJson, now: i64) -> Result<Value, TranslateError> {
-    let start: Start = serde_json::from_slice(json.as_bytes())
-        .map_err(|error| TranslateError::State(error.to_string()))?;
-    let state: State = serde_json::from_value(Value::Object(start.content_state.clone()))
-        .map_err(|error| TranslateError::State(format!("content-state: {error}")))?;
-    let mut aps = serde_json::Map::new();
-    aps.insert("timestamp".into(), now.into());
-    aps.insert("event".into(), "start".into());
-    aps.insert("attributes-type".into(), start.attributes_type.into());
-    aps.insert("attributes".into(), Value::Object(start.attributes));
-    aps.insert("content-state".into(), Value::Object(start.content_state));
-    // iOS shows a started activity only with an alert.
-    aps.insert("alert".into(), json!({"title": FALLBACK_TITLE}));
-    if let Some(expires_at) = state.expires_at {
-        aps.insert("stale-date".into(), expires_at.into());
     }
     Ok(json!({ "aps": aps }))
 }
@@ -595,34 +558,6 @@ mod tests {
     }
 
     #[test]
-    fn a_push_to_start_starts_an_activity_with_its_attributes() {
-        let start = json!({
-            "attributes-type": "SaleAttributes",
-            "attributes": {"location": "Front Counter"},
-            "content-state": {"phase": "waiting", "amount": "$3.00", "expiresAt": NOW + 600},
-        });
-        let push = translate(
-            &handle(Platform::ApnsPushToStart),
-            &bundle(),
-            &request(json(start), Urgency::High, 600),
-            NOW,
-        )
-        .unwrap();
-        assert_eq!(push.topic, "com.example.monokular.push-type.liveactivity");
-        assert_eq!(
-            body(&push),
-            json!({"aps": {
-                "timestamp": NOW, "event": "start",
-                "attributes-type": "SaleAttributes",
-                "attributes": {"location": "Front Counter"},
-                "content-state": {"phase": "waiting", "amount": "$3.00", "expiresAt": NOW + 600},
-                "alert": {"title": "New sale"},
-                "stale-date": NOW + 600,
-            }})
-        );
-    }
-
-    #[test]
     fn each_handle_takes_only_its_kind_of_body() {
         let keys = push::encrypt::ReceiverKeys::generate();
         let encrypted = Message::Encrypted(encrypt(&keys.subscription_keys(), b"{}").unwrap());
@@ -639,12 +574,10 @@ mod tests {
             wrong(Platform::Apns, &plain),
             Err(TranslateError::WrongBody { .. })
         ));
-        for platform in [Platform::ApnsLiveActivity, Platform::ApnsPushToStart] {
-            assert!(matches!(
-                wrong(platform, &encrypted),
-                Err(TranslateError::WrongBody { .. })
-            ));
-        }
+        assert!(matches!(
+            wrong(Platform::ApnsLiveActivity, &encrypted),
+            Err(TranslateError::WrongBody { .. })
+        ));
         for state in [json!({"phase": "idle"}), json!({}), json!(["seen"])] {
             assert!(
                 matches!(
@@ -654,10 +587,6 @@ mod tests {
                 "{state}"
             );
         }
-        assert!(matches!(
-            wrong(Platform::ApnsPushToStart, &plain),
-            Err(TranslateError::State(_))
-        ));
     }
 
     /// A push that fits as Web Push can be too large once base64 and the
