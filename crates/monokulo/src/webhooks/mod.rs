@@ -117,7 +117,7 @@ pub fn check_url(url: &str) -> Result<String, String> {
     let Some(host) = parsed.host_str() else {
         return Err("A webhook URL needs a host.".to_string());
     };
-    if tor_service::onion::is_onion_host(host) {
+    if outbound::is_onion_host(host) {
         return Err(ONION_REFUSED.to_string());
     }
     Ok(url.to_string())

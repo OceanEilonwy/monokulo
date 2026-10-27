@@ -23,6 +23,8 @@ monero = "0.22.0"
 # resulting raw transaction blobs into `monero::Transaction` the same way
 # every other daemon call already does (`monero::consensus::encode::deserialize`).
 monero-epee = "0.2.1"
+# A node on an onion name is refused before it is looked up.
+outbound = { path = "../outbound" }
 parking_lot = "0.12.5"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0.229", features = ["derive"] }

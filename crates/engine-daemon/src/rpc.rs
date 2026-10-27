@@ -37,13 +37,6 @@ use crate::{
     FetchedTx, IdBinding, KeyImageStatus, MoneroDaemonClient, PoolAnswer, PoolOutlook, TxLocation,
 };
 
-/// Whether `host` ends in `.onion` (any case, with or without a final dot).
-pub fn is_onion_host(host: &str) -> bool {
-    host.trim_end_matches('.')
-        .to_ascii_lowercase()
-        .ends_with(".onion")
-}
-
 /// What a node on an onion address is told, wherever it turns up.
 pub fn onion_node_message(host: &str, port: u16) -> String {
     format!(
@@ -181,7 +174,7 @@ impl RpcDaemonClient {
             .ok_or_else(|| {
                 DaemonError::Request(format!("not a node address: {host}:{port}").into())
             })?;
-        let unsupported = is_onion_host(&host).then(|| onion_node_message(&host, port));
+        let unsupported = outbound::is_onion_host(&host).then(|| onion_node_message(&host, port));
         Ok(Self {
             client,
             base_url,

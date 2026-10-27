@@ -51,9 +51,10 @@ use crate::db::{
     ConnectionId, Database, DbError, DuePush, PushAttempt, PushResult, PushTargetId, TargetAfter,
     TargetKind, EXPIRED_UNSENT,
 };
-use crate::outbound::{check_host, request_error_text, Outbound, Reach};
+use crate::outbound::{request_error_text, Outbound};
 use crate::settings::PushConfig;
 use crate::webhooks::delivery::{Clock, SystemClock};
+use outbound::{check_host, Reach};
 
 /// Most pushes picked per batch, and most sent at once (one target's one
 /// at a time).

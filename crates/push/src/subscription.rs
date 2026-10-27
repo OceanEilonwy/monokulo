@@ -72,7 +72,7 @@ impl Endpoint {
             return Err(EndpointError::Userinfo);
         }
         if let Host::Domain(domain) = host {
-            if is_onion(domain) {
+            if outbound::is_onion_host(domain) {
                 return Err(EndpointError::Onion);
             }
         }
@@ -100,13 +100,6 @@ impl Endpoint {
         // `parse` refused a URL without a host.
         self.0.host_str().unwrap_or_default()
     }
-}
-
-/// `example.onion`, `example.onion.` and any subdomain of either, in any
-/// case (`Url` lowercases a domain, so this sees it lowercased).
-fn is_onion(domain: &str) -> bool {
-    let domain = domain.strip_suffix('.').unwrap_or(domain);
-    domain == "onion" || domain.ends_with(".onion")
 }
 
 /// This machine, by address or as `localhost` (`Url` writes every spelling

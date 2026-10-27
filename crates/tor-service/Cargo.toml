@@ -22,6 +22,9 @@ test-support = []
 abuse = { path = "../abuse" }
 # The router both onion paths serve, and the listener it is served from.
 axum = "0.8.9"
+# What an onion name is, as everything that refuses to look one up reads
+# it.
+outbound = { path = "../outbound" }
 parking_lot = "0.12.5"
 # The clock Tor's status is stamped with.
 service-runtime = { path = "../service-runtime" }

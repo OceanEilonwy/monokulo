@@ -51,13 +51,6 @@ pub fn service_of(host: &str) -> &str {
     &host[label_start..]
 }
 
-/// Whether `host` ends in `.onion` (valid or not).
-pub fn is_onion_host(host: &str) -> bool {
-    host.trim_end_matches('.')
-        .to_ascii_lowercase()
-        .ends_with(".onion")
-}
-
 /// Checks an `onion_uri` value: `http://<v3 address>.onion`, with nothing
 /// after it but an optional `/`. Returns it without the trailing `/`.
 /// Onion services are reached over plain `http`: Tor itself encrypts and
@@ -74,7 +67,7 @@ pub fn validate_onion_uri(value: &str) -> Result<String, String> {
         && parsed.username().is_empty()
         && parsed.password().is_none();
     let host = parsed.host_str().ok_or_else(|| problem.to_string())?;
-    if !shape || !is_onion_host(host) {
+    if !shape || !outbound::is_onion_host(host) {
         return Err(problem.to_string());
     }
     let host = v3_host(host)?;
