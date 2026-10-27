@@ -246,6 +246,8 @@ struct Stub {
     /// Pushes it takes before answering `429` to every later one, as the
     /// push relay limits one sender (one VAPID key) a minute.
     sender_limit: Arc<Mutex<Option<usize>>>,
+    /// Pushes still to be answered `500` before `answer` again.
+    failing: Arc<Mutex<usize>>,
 }
 
 impl Stub {
@@ -279,6 +281,15 @@ impl Stub {
             let delay = *stub.delay.lock();
             tokio::time::sleep(delay).await;
             stub.in_flight.fetch_sub(1, Ordering::SeqCst);
+            let failing = {
+                let mut left = stub.failing.lock();
+                let failing = *left > 0;
+                *left = left.saturating_sub(1);
+                failing
+            };
+            if failing {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
             let (status, retry_after) = *stub.answer.lock();
             let mut answer = StatusCode::from_u16(status).unwrap().into_response();
             if let Some(retry_after) = retry_after {
@@ -306,6 +317,11 @@ impl Stub {
 
     fn count(&self) -> usize {
         self.received.lock().len()
+    }
+
+    /// Answers the next `count` pushes `500`, then as before.
+    fn fail_next(&self, count: usize) {
+        *self.failing.lock() = count;
     }
 
     /// Takes `limit` pushes, and answers `429` to every one after.
@@ -1219,8 +1235,9 @@ async fn a_rate_limit_waits_as_told_and_a_gone_subscription_deletes_the_target_o
 }
 
 /// Failing answers back off 5, 20, 80 and 320 seconds, each counting
-/// against the target; the fifth attempt is the last, and the target's
-/// 20th failure in a row deletes it. No log line, and no recorded error,
+/// against the target; the fifth attempt is the last, a target's pushes
+/// are tried one after another, and the target's 20th failure in a row
+/// deletes it. No log line, and no recorded error,
 /// holds the endpoint's URL.
 #[tokio::test]
 async fn twenty_failures_in_a_row_delete_the_target_over_http() {
@@ -1252,21 +1269,34 @@ async fn twenty_failures_in_a_row_delete_the_target_over_http() {
             .map(|target| target.failures)
     };
 
-    let mut at = world.clock.now();
-    for (n, wait) in [(1u32, 5), (2, 20), (3, 80), (4, 320)] {
-        assert_eq!(world.tick().await, 4);
-        assert_eq!(failures(), Some(4 * n));
-        for push in world.pushes(&target) {
-            assert_eq!(push.attempt_count, n);
-            assert_eq!(push.next_attempt_at, Some(at + wait));
-            assert_eq!(push.last_status_code, Some(503));
-            let error = push.last_error.unwrap();
-            assert!(!error.contains(secret), "{error}");
-        }
-        at += wait;
-        world.clock.set(at);
-    }
+    // One push at a time, in queue order: each is tried five times, and
+    // the next goes first with the tick that gives up on it.
     assert_eq!(world.tick().await, 4);
+    let mut at = world.clock.now();
+    for k in 0..4u32 {
+        let current = usize::try_from(k).unwrap();
+        for (n, wait) in [(1u32, 5), (2, 20), (3, 80), (4, 320)] {
+            assert_eq!(failures(), Some(5 * k + n));
+            let pushes = world.pushes(&target);
+            for (i, push) in pushes.into_iter().enumerate() {
+                if i < current {
+                    assert_eq!((push.attempt_count, push.next_attempt_at), (5, None));
+                } else if i > current {
+                    assert_eq!(push.attempt_count, 0);
+                    continue;
+                } else {
+                    assert_eq!(push.attempt_count, n);
+                    assert_eq!(push.next_attempt_at, Some(at + wait));
+                }
+                assert_eq!(push.last_status_code, Some(503));
+                let error = push.last_error.unwrap();
+                assert!(!error.contains(secret), "{error}");
+            }
+            at += wait;
+            world.clock.set(at);
+            assert_eq!(world.tick().await, 4 - current);
+        }
+    }
     assert_eq!(
         failures(),
         None,
@@ -2035,6 +2065,62 @@ async fn one_targets_pushes_go_one_at_a_time_in_queue_order_over_http() {
             "{path}"
         );
     }
+}
+
+/// A target's push that fails in a batch holds back its newer ones in
+/// the same batch: they stay queued, unattempted, and go after it once it
+/// is sent, so the till's island ends on its newer sale.
+#[tokio::test]
+async fn a_failed_push_holds_its_targets_newer_one_in_the_same_batch_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let island = world
+        .register(
+            &ak,
+            live_activity("island", &format!("{origin}/la/island"), false),
+        )
+        .await;
+    for (seq, amount) in (1..).zip(["1.00", "2.00"]) {
+        let made = world
+            .call(
+                "POST",
+                "/api/v1/orders",
+                &ak,
+                Some(json!({"amount": amount, "currency": "XMR"})),
+            )
+            .await;
+        let order = OrderId::new(made["order_id"].as_str().unwrap());
+        world.queue(&world.event(seq, &order, "order.unconfirmed"));
+    }
+    let sent = || -> Vec<String> {
+        stub.received
+            .lock()
+            .iter()
+            .map(|p| {
+                let state: Value = serde_json::from_slice(&p.body).unwrap();
+                state["amount"].as_str().unwrap().to_owned()
+            })
+            .collect()
+    };
+    stub.fail_next(1);
+
+    world.tick().await;
+    assert_eq!(sent(), ["1.00"]);
+    let pushes = world.pushes(&island);
+    let [older, newer] = pushes.as_slice() else {
+        panic!("{pushes:?}")
+    };
+    assert_eq!(older.attempt_count, 1);
+    assert_eq!((newer.attempt_count, newer.delivered_at), (0, None));
+
+    world.clock.advance(super::delivery::backoff_seconds(1));
+    world.tick().await;
+    assert_eq!(sent(), ["1.00", "1.00", "2.00"]);
+    assert!(world
+        .pushes(&island)
+        .iter()
+        .all(|push| push.delivered_at.is_some()));
 }
 
 /// Each push service gets a token for its own origin, carrying this
