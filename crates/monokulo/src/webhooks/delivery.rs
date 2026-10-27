@@ -12,7 +12,8 @@
 //! Nothing private: a URL whose host is, or resolves to, a loopback,
 //! private, link-local or otherwise internal address is refused at every
 //! attempt (DNS can change between attempts), redirects aren't followed,
-//! and no proxy is used, unless `webhooks.allow_private_urls` is on.
+//! and no proxy is used, unless `webhooks.allow_private_urls` is on
+//! (`crate::outbound`).
 //!
 //! Runs on its own task, so a slow or hostile endpoint delays only its own
 //! deliveries, never anything else monokulo does.
@@ -21,9 +22,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use credentials::webhook_sign::{is_disallowed_address, sign_payload};
+use credentials::webhook_sign::sign_payload;
 
 use crate::db::{Attempt, AttemptOutcome, Database, DbError, DueDelivery};
+use crate::outbound::{check_host, request_error_text, Outbound, Reach};
 use crate::settings::WebhookConfig;
 
 /// What the worker tells the time by: the system's clock, or a test's.
@@ -58,19 +60,11 @@ pub fn backoff_seconds(attempts_made: u32) -> i64 {
     60 * (1i64 << attempts_made.saturating_sub(1).min(6))
 }
 
-/// The HTTP clients deliveries are sent with: one for each destination
-/// policy, reused across deliveries (building one reads the system's
-/// certificates). Each resolver is what makes the private-address check
-/// hold: the addresses a name resolves to are checked by the very lookup
-/// the connection is made from, so a name can't answer the check with one
-/// address and the connection with another; a name with any private address
-/// among its answers isn't connected to at all. Separate pools, so turning
-/// `webhooks.allow_private_urls` off can't reuse a connection opened while
-/// it was on.
+/// The HTTP clients deliveries are sent with (`crate::outbound`), and
+/// whether `webhooks.allow_private_urls` is on, set before each batch.
 #[derive(Clone)]
 pub struct WebhookClient {
-    client: reqwest::Client,
-    private_client: reqwest::Client,
+    outbound: Outbound,
     allow_private: Arc<AtomicBool>,
 }
 
@@ -78,19 +72,8 @@ impl WebhookClient {
     /// Redirects off (one to a private address must not be followed) and
     /// the checking resolver. Fails only if TLS can't be set up.
     pub fn build() -> reqwest::Result<Self> {
-        let build = |allow| {
-            let builder = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .user_agent(concat!("monokulo-webhooks/", env!("CARGO_PKG_VERSION")))
-                .dns_resolver(Arc::new(CheckingResolver {
-                    allow_private: Arc::new(AtomicBool::new(allow)),
-                }));
-            // A proxy connects on our behalf, past the checking resolver.
-            if allow { builder } else { builder.no_proxy() }.build()
-        };
         Ok(Self {
-            client: build(false)?,
-            private_client: build(true)?,
+            outbound: Outbound::build(concat!("monokulo-webhooks/", env!("CARGO_PKG_VERSION")))?,
             allow_private: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -100,101 +83,9 @@ impl WebhookClient {
         self.allow_private.store(allow, Ordering::Relaxed);
     }
 
-    fn allows_private(&self) -> bool {
-        self.allow_private.load(Ordering::Relaxed)
+    fn reach(&self) -> Reach {
+        Reach::allowing_private(self.allow_private.load(Ordering::Relaxed))
     }
-}
-
-/// The system resolver, with every answer checked before it is connected
-/// to. An IP literal in a URL never reaches a resolver (the connector
-/// parses it first): [`check_host`] checks those.
-struct CheckingResolver {
-    allow_private: Arc<AtomicBool>,
-}
-
-impl reqwest::dns::Resolve for CheckingResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let allow_private = self.allow_private.load(Ordering::Relaxed);
-        Box::pin(async move {
-            // An onion name is never looked up (RFC 7686): asking DNS for it
-            // would tell the resolver the address, and find nothing.
-            if tor_service::onion::is_onion_host(name.as_str()) {
-                return Err(BoxError::from(DeliveryError::OnionHost));
-            }
-            // Port 0: the connector sets the URL's port on each address.
-            let addrs: Vec<std::net::SocketAddr> =
-                tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
-            if addrs.is_empty() {
-                return Err(BoxError::from(DeliveryError::UnresolvableHost(
-                    name.as_str().to_owned(),
-                )));
-            }
-            // Every answer has to pass: a name resolving to both a public
-            // and a private address is the rebinding this defends against.
-            if !allow_private && addrs.iter().any(|addr| is_disallowed_address(addr.ip())) {
-                return Err(BoxError::from(DeliveryError::PrivateAddress));
-            }
-            Ok::<reqwest::dns::Addrs, BoxError>(Box::new(addrs.into_iter()))
-        })
-    }
-}
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-
-#[derive(Debug, thiserror::Error)]
-pub enum DeliveryError {
-    #[error("the URL's host could not be resolved: {0}")]
-    UnresolvableHost(String),
-    #[error("the URL is, or resolves to, a private or loopback address")]
-    PrivateAddress,
-    #[error("the URL is on an onion address, and webhooks aren't sent over Tor")]
-    OnionHost,
-}
-
-/// Refuses a URL on an onion address, so not even a proxy is asked for
-/// it, and one whose host is an IP literal of a private, loopback or
-/// link-local address (unless `allow_private`): the half of the check a
-/// resolver never sees.
-fn check_host(url: &url::Url, allow_private: bool) -> Result<(), DeliveryError> {
-    if url
-        .host_str()
-        .is_some_and(tor_service::onion::is_onion_host)
-    {
-        return Err(DeliveryError::OnionHost);
-    }
-    if allow_private {
-        return Ok(());
-    }
-    let ip = match url.host() {
-        None => return Err(DeliveryError::UnresolvableHost("no host".into())),
-        Some(url::Host::Ipv4(ip)) => std::net::IpAddr::V4(ip),
-        Some(url::Host::Ipv6(ip)) => std::net::IpAddr::V6(ip),
-        Some(url::Host::Domain(_)) => return Ok(()),
-    };
-    if is_disallowed_address(ip) {
-        return Err(DeliveryError::PrivateAddress);
-    }
-    Ok(())
-}
-
-/// What a failed request is recorded as: the error and its causes, without
-/// the URL (whose query string may hold a merchant's token).
-fn request_error_text(e: reqwest::Error) -> String {
-    let e = e.without_url();
-    let mut text = if e.is_timeout() {
-        "timed out".to_string()
-    } else if e.is_connect() {
-        "could not connect".to_string()
-    } else {
-        e.to_string()
-    };
-    let mut source = std::error::Error::source(&e);
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
 }
 
 /// Headers monokulo sets itself, which a webhook's extra headers can't.
@@ -274,14 +165,11 @@ async fn send(
     timeout: Duration,
 ) -> Result<(u16, String), String> {
     let url = url::Url::parse(&delivery.url).map_err(|e| format!("not a valid URL: {e}"))?;
-    let allow_private = client.allows_private();
-    check_host(&url, allow_private).map_err(|e| e.to_string())?;
-    let http = if allow_private {
-        &client.private_client
-    } else {
-        &client.client
-    };
-    let mut request = http
+    let reach = client.reach();
+    check_host(&url, reach).map_err(|e| e.to_string())?;
+    let mut request = client
+        .outbound
+        .client(reach)
         .post(url)
         .timeout(timeout)
         .header("Content-Type", "application/json")
@@ -537,83 +425,6 @@ pub async fn run_delivery_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The check is the resolver's: the addresses a name resolves to are
-    /// what the connection is made to, and a name with a private address
-    /// among its answers is refused before anything connects. Checking
-    /// with one lookup and connecting with another would be no check
-    /// against whoever controls the name's DNS (a zero-TTL record, or a
-    /// round-robin between a public and a private address).
-    #[tokio::test]
-    async fn the_resolver_refuses_a_name_with_a_private_address_and_answers_otherwise() {
-        use reqwest::dns::Resolve as _;
-        let allow_private = Arc::new(AtomicBool::new(false));
-        let resolver = CheckingResolver {
-            allow_private: Arc::clone(&allow_private),
-        };
-        let name = |host: &str| host.parse::<reqwest::dns::Name>().unwrap();
-        let refused = match resolver.resolve(name("localhost")).await {
-            Err(e) => e.to_string(),
-            Ok(_) => panic!("a loopback answer must be refused"),
-        };
-        assert!(refused.contains("private or loopback"), "{refused}");
-
-        allow_private.store(true, Ordering::Relaxed);
-        let addrs: Vec<_> = resolver.resolve(name("localhost")).await.unwrap().collect();
-        assert!(
-            addrs.iter().all(|addr| addr.ip().is_loopback()),
-            "{addrs:?}"
-        );
-        assert!(
-            addrs.iter().all(|addr| addr.port() == 0),
-            "the connector sets the URL's port: {addrs:?}"
-        );
-
-        // An onion name is refused as one, whatever the setting, before any
-        // lookup: a lookup would have failed with the system resolver's own
-        // error, after asking its DNS for the name.
-        for onion in [
-            "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion",
-            "SHOP.2GZYXA5IHM7NSGGFXNU52RCK2VV4RVMDLKIU3ZZUI5DU4XYCLEN53WID.ONION.",
-        ] {
-            let refused = match resolver.resolve(name(onion)).await {
-                Err(e) => e.to_string(),
-                Ok(_) => panic!("{onion} must not be resolved"),
-            };
-            assert!(refused.contains("onion address"), "{onion}: {refused}");
-        }
-    }
-
-    /// An IP literal never reaches the resolver, so it is classified on
-    /// its own: a loopback literal of either family is refused, a public
-    /// one passes, and a name is left to the resolver.
-    #[test]
-    fn an_ip_literal_url_is_classified_before_the_request() {
-        let url = |u: &str| url::Url::parse(u).unwrap();
-        for private in [
-            "http://[::1]:9999/hook",
-            "http://127.0.0.1/hook",
-            "http://169.254.169.254/latest",
-            "http://10.0.0.1/hook",
-            "http://[::ffff:127.0.0.1]/hook",
-        ] {
-            assert!(
-                matches!(
-                    check_host(&url(private), false),
-                    Err(DeliveryError::PrivateAddress)
-                ),
-                "{private}"
-            );
-        }
-        check_host(&url("https://[2606:4700:4700::1111]/hook"), false).unwrap();
-        check_host(&url("https://1.1.1.1/hook"), false).unwrap();
-        check_host(&url("https://shop.example/hook"), false).unwrap();
-        check_host(&url("http://[::1]/hook"), true).unwrap();
-        assert!(matches!(
-            check_host(&url("http://shop.example.onion/hook"), true),
-            Err(DeliveryError::OnionHost)
-        ));
-    }
 
     /// The waits between attempts: 1 minute after the first failure,
     /// doubling to 64 minutes, and no further.

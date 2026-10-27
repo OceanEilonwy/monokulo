@@ -27,6 +27,7 @@ pub mod live;
 pub mod logs;
 pub mod network;
 pub mod orders;
+pub mod outbound;
 pub mod plugins;
 pub mod push;
 pub mod qr;
