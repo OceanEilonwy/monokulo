@@ -1024,6 +1024,24 @@ pub(crate) mod tests {
         }
     }
 
+    /// A key file the environment holds encoded as a JSON string once more
+    /// stops the relay with an error that says so and quotes none of it.
+    #[tokio::test]
+    async fn a_service_account_encoded_twice_stops_the_relay_without_its_key() {
+        let twice = serde_json::to_string(&fcm_account(GOOGLE_TOKEN_URI)).unwrap();
+        let error = load_with(
+            &[],
+            &[("MONOKULO_RELAY_FCM_CREDENTIALS", &twice)],
+            Host::Standalone,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("encoded as JSON twice"), "{error}");
+        assert!(!error.contains("PRIVATE KEY"), "{error}");
+        assert!(!error.contains("relay@monokular-test"), "{error}");
+    }
+
     /// The public address may be http only on this machine, and is read as
     /// its origin.
     #[test]
