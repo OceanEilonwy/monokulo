@@ -172,6 +172,11 @@ fn events_json(events: &[SaleKind]) -> String {
 /// Why a push was given up on without being sent: its TTL ran out first.
 pub const EXPIRED_UNSENT: &str = "expired before it could be sent";
 
+/// Why a push was given up on without being sent: its target was
+/// registered again for pushes it was not made for (another kind, the
+/// payment code no longer shown, or not its event).
+pub const REREGISTERED: &str = "its target was registered again for other pushes";
+
 /// A push due now, with the target it goes to.
 #[derive(Debug, Clone)]
 pub struct DuePush {
@@ -317,7 +322,8 @@ impl Db {
     /// Registers an app's push target, in one transaction: the app's
     /// target with the same `client_id` gets the new subscription in place
     /// (its id and `created_at` kept, its failures and last success
-    /// forgotten: they were the old subscription's); otherwise a new one,
+    /// forgotten: they were the old subscription's; its unsent pushes it no
+    /// longer takes given up on, [`REREGISTERED`]); otherwise a new one,
     /// while the app has fewer than [`MAX_TARGETS_PER_APP`]. Its store is
     /// the app's.
     pub fn register_push_target(&self, new: &NewPushTarget<'_>, now: i64) -> Result<Registration> {
@@ -336,15 +342,31 @@ impl Db {
             } => (None, None, *include_payment_uri),
         };
         let events = events_json(new.events);
-        let existing: Option<PushTargetId> = tx
+        let existing: Option<(PushTargetId, String, bool)> = tx
             .query_row(
-                "SELECT id FROM push_targets WHERE app_id = ?1 AND client_id = ?2",
+                "SELECT id, kind, include_payment_uri FROM push_targets
+                 WHERE app_id = ?1 AND client_id = ?2",
                 params![new.app_id, new.client_id.as_str()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
         let id = match existing {
-            Some(id) => {
+            Some((id, old_kind, old_include_payment_uri)) => {
+                // Its unsent pushes were made for the target as it was: one
+                // made for another kind (an `encrypted` payload, the whole
+                // sale, would go out in the clear to a Live Activity), with
+                // a payment code it no longer shows, or for an event it no
+                // longer wants, is given up on. A new endpoint or keys alone
+                // keep them: each attempt encrypts afresh to the keys then.
+                let reshaped = old_kind != new.kind.name().as_str()
+                    || old_include_payment_uri != include_payment_uri;
+                tx.execute(
+                    "UPDATE push_deliveries
+                     SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2, last_error = ?3
+                     WHERE push_target_id = ?1 AND next_attempt_at_utc IS NOT NULL
+                       AND (?4 OR event_type NOT IN (SELECT value FROM json_each(?5)))",
+                    params![id, now, REREGISTERED, reshaped, events],
+                )?;
                 tx.execute(
                     "UPDATE push_targets SET kind = ?2, endpoint = ?3, p256dh = ?4, auth = ?5,
                          events = ?6, include_payment_uri = ?7, last_ok_at_utc = NULL, failures = 0

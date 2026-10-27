@@ -571,3 +571,15 @@ take the numbers after them; their content stands.
 88. **The Query page shows every `push_deliveries` column.** The payload
     is what `app_orders` already shows (amount, address, reference); the
     topic is a hash; the endpoint, the one capability, isn't in the table.
+89. **Registering a target again drops the unsent pushes it no longer
+    takes** (found by the test engineer). A push's payload is made for its
+    target's kind when it is queued, so a target registered again under
+    the same `client_id` as another kind would have been sent the old
+    payload as it was: an `encrypted` one, the whole sale with the order's
+    id and address, in the clear to a Live Activity's relay. The same for a
+    payment URI to a target that turned `include_payment_uri` off
+    (decision 11), and for an event it no longer wants. Those unsent pushes
+    are given up on in the registration's transaction (`its target was
+    registered again for other pushes`). A new endpoint or new keys alone
+    keep them: the payload is kept plain and encrypted at each attempt, so
+    a moved UnifiedPush subscription still gets the sale in flight.
