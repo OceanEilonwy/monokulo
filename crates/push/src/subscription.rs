@@ -49,10 +49,17 @@ impl Endpoint {
     pub const MAX_LEN: usize = 2048;
 
     pub fn parse(text: &str) -> Result<Self, EndpointError> {
+        // Before parsing, so a long text isn't parsed only to be refused,
+        // and after: the URL stored is the parsed one, which can be
+        // three times longer than the text: a non-ASCII path character is
+        // written as a percent-escape of each of its bytes, `é` as `%C3%A9`.
         if text.len() > Self::MAX_LEN {
             return Err(EndpointError::TooLong);
         }
         let url = Url::parse(text)?;
+        if url.as_str().len() > Self::MAX_LEN {
+            return Err(EndpointError::TooLong);
+        }
         if url.scheme() != "https" {
             return Err(EndpointError::NotHttps);
         }
@@ -531,5 +538,124 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("endpoint not https"), "{error}");
+    }
+
+    /// The bound is on the URL as stored, not the text handed in: a path
+    /// of non-ASCII characters is written percent-escaped, three times
+    /// longer.
+    #[test]
+    fn an_endpoint_whose_stored_url_would_pass_2048_characters_is_refused() {
+        let text = format!("https://push.example.net/{}", "é".repeat(1000));
+        assert!(text.len() <= Endpoint::MAX_LEN);
+        assert_eq!(Endpoint::parse(&text), Err(EndpointError::TooLong));
+
+        let escaped =
+            Endpoint::parse(&format!("https://push.example.net/{}", "é".repeat(300))).unwrap();
+        assert!(escaped.as_str().len() <= Endpoint::MAX_LEN);
+        assert!(escaped.as_str().ends_with("%C3%A9"));
+    }
+
+    /// The onion check sees the host as `Url` normalizes it, so no
+    /// spelling of an onion name gets past it: percent-escaped dots, the
+    /// full stops IDNA maps to `.`, a port, a trailing escaped dot.
+    #[test]
+    fn an_onion_endpoint_is_refused_however_its_host_is_escaped() {
+        for text in [
+            "https://example%2Eonion/x",
+            "https://example%2eonion/x",
+            "https://example.onion%2E/x",
+            "https://example\u{3002}onion/x",
+            "https://example\u{FF0E}onion/x",
+            "https://example.ONION:443/x",
+            "https://example.onion:8443/x",
+        ] {
+            assert_eq!(Endpoint::parse(text), Err(EndpointError::Onion), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_endpoint_that_is_not_a_url_with_a_host_is_refused() {
+        for text in ["", "https://", "https://exa mple.net/x", "https://[::1/x"] {
+            assert!(
+                matches!(Endpoint::parse(text), Err(EndpointError::Invalid(_))),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_subscription_with_a_bad_or_missing_key_is_refused_naming_it() {
+        let endpoint = "https://push.example.net/x";
+        let refused = |json: String| {
+            serde_json::from_str::<Subscription>(&json)
+                .unwrap_err()
+                .to_string()
+        };
+
+        let error = refused(format!(
+            r#"{{"endpoint": "{endpoint}", "keys": {{"p256dh": "BAAA", "auth": "{AUTH}"}}}}"#
+        ));
+        assert!(error.contains("p256dh"), "{error}");
+        let error = refused(format!(
+            r#"{{"endpoint": "{endpoint}", "keys": {{"p256dh": "{UA_PUBLIC}", "auth": "AAAA"}}}}"#
+        ));
+        assert!(error.contains("auth 3 bytes"), "{error}");
+        let error = refused(format!(
+            r#"{{"endpoint": "{endpoint}", "keys": {{"p256dh": "{UA_PUBLIC}"}}}}"#
+        ));
+        assert!(error.contains("auth"), "{error}");
+        let error = refused(format!(r#"{{"endpoint": "{endpoint}"}}"#));
+        assert!(error.contains("keys"), "{error}");
+        let error = refused(format!(
+            r#"{{"endpoint": "https://x.onion/p", "keys": {{"p256dh": "{UA_PUBLIC}", "auth": "{AUTH}"}}}}"#
+        ));
+        assert!(error.contains("endpoint an onion address"), "{error}");
+    }
+
+    /// Points that aren't a device's public key, each a classic way to
+    /// break ECDH: the identity, all zeros, coordinates past the field's
+    /// prime, a hybrid encoding.
+    #[test]
+    fn a_p256dh_that_is_no_public_key_is_refused() {
+        assert_eq!(
+            P256dh::from_base64url(&base64url::encode(&[0])),
+            Err(KeyError::Length(1))
+        );
+        assert_eq!(P256dh::from_base64url(""), Err(KeyError::Length(0)));
+        let mut zeros = [0u8; 65];
+        zeros[0] = 0x04;
+        assert_eq!(
+            P256dh::from_base64url(&base64url::encode(&zeros)),
+            Err(KeyError::NotOnCurve)
+        );
+        let mut past_prime = [0xffu8; 65];
+        past_prime[0] = 0x04;
+        assert_eq!(
+            P256dh::from_base64url(&base64url::encode(&past_prime)),
+            Err(KeyError::NotOnCurve)
+        );
+        let key = P256dh::from_base64url(UA_PUBLIC).unwrap();
+        for tag in [0x00, 0x03, 0x06, 0x07] {
+            let mut tagged = base64url::point_bytes(key.key());
+            tagged[0] = tag;
+            assert_eq!(
+                P256dh::from_base64url(&base64url::encode(&tagged)),
+                Err(KeyError::Compressed),
+                "{tag:#04x}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_auth_secret_reads_padded_or_not_and_writes_unpadded() {
+        let padded = format!("{AUTH}==");
+        assert_eq!(
+            AuthSecret::from_base64url(&padded).unwrap().to_base64url(),
+            AUTH
+        );
+        assert_eq!(
+            AuthSecret::from_base64url("BTBZMqHH6r4Tts7J/aSIgg"),
+            Err(AuthSecretError::Base64)
+        );
     }
 }
