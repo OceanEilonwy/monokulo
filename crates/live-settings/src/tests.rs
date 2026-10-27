@@ -2693,6 +2693,129 @@ url = \"http://node:18081\"
         );
     }
 
+    /// A second nested service, with a secret of its own.
+    mod relay {
+        settings! {
+            LISTEN: crate::BindAddr {
+                key: "server.listen",
+                default: crate::parsed_default("0.0.0.0:8444"),
+                description: "Where the relay listens.",
+                applies: Restart,
+            },
+            KEY: crate::Secret {
+                key: "apns.key",
+                env: "RELAY_APNS_KEY",
+                default: crate::Secret::default(),
+                description: "The signing key.",
+                sources: [Env],
+            },
+        }
+    }
+
+    /// Two services nested in one file: the outer handle leaves both
+    /// tables, each service reads its own, and `--init` writes both, with
+    /// every service's secrets named at the top.
+    #[test]
+    fn an_outer_handle_leaves_every_nested_table() {
+        let text = format!("{TEXT}\n[relay.server]\nlisten = \"0.0.0.0:9444\"\n");
+        let file = OptionsFile::in_memory(text);
+        let outer = read(&file.clone().leaving("engine").leaving("relay"), ALL).unwrap();
+        assert_eq!(outer.len(), 2, "{outer:?}");
+        let problem = read(&file.clone().leaving("engine"), ALL).unwrap_err();
+        assert!(
+            problem.contains("there is no setting called relay.server.listen"),
+            "{problem}"
+        );
+        assert_eq!(
+            read(&file.scoped("relay"), relay::ALL).unwrap(),
+            HashMap::from([("server.listen".to_string(), "0.0.0.0:9444".to_string())])
+        );
+
+        let defaults = Env::default();
+        let init = render_init_nested(
+            "outer",
+            ALL,
+            &[
+                Nested {
+                    table: "engine",
+                    about: "The engine's.",
+                    settings: engine::ALL,
+                    defaults: &defaults,
+                },
+                Nested {
+                    table: "relay",
+                    about: "The relay's.",
+                    settings: relay::ALL,
+                    defaults: &defaults,
+                },
+            ],
+        );
+        assert!(init.contains("#   RELAY_APNS_KEY\n"), "{init}");
+        let engine_at = init.find("[engine.payment]\n").unwrap();
+        let relay_at = init.find("[relay.server]\n").unwrap();
+        assert!(engine_at < relay_at, "{init}");
+        assert!(init.contains("# listen = \"0.0.0.0:8444\"\n"), "{init}");
+        let uncommented = init.replace("# listen = ", "listen = ");
+        let file = OptionsFile::in_memory(uncommented);
+        read(&file.clone().leaving("engine").leaving("relay"), ALL).unwrap();
+        assert_eq!(
+            read(&file.scoped("relay"), relay::ALL)
+                .unwrap()
+                .get("server.listen")
+                .map(String::as_str),
+            Some("0.0.0.0:8444")
+        );
+    }
+
+    /// A nested service's secrets are listed with the process's own, after
+    /// the options and before the examples, and have no option.
+    #[test]
+    fn a_nested_services_secrets_join_the_environment_list() {
+        settings! {
+            TOKEN: crate::Secret {
+                key: "server.token",
+                env: "OUTER_TOKEN",
+                default: crate::Secret::default(),
+                description: "The outer token. More about it.",
+                sources: [Env],
+            },
+        }
+        let command = clap::Command::new("outer").after_help("Examples:\n  outer");
+        let command = cli::with_settings(command, ALL, "outer.toml");
+        let command = cli::with_nested_settings(command, "relay", relay::ALL, &Env::default());
+        let help = command.clone().render_help().to_string();
+        let list = help
+            .split("Environment variables")
+            .nth(1)
+            .unwrap_or_default();
+        assert!(list.contains("RELAY_APNS_KEY"), "{help}");
+        assert!(
+            list.find("RELAY_APNS_KEY") < list.find("Examples:"),
+            "{help}"
+        );
+        assert!(!help.contains("--relay-apns-key"), "{help}");
+        assert!(help.contains("--relay-server-listen"), "{help}");
+        // Added to the list the process already has, after its own.
+        let long = cli::with_nested_settings(
+            cli::with_settings(
+                clap::Command::new("o").after_help("Examples:\n  o"),
+                &[&TOKEN],
+                "o.toml",
+            ),
+            "relay",
+            relay::ALL,
+            &Env::default(),
+        )
+        .render_long_help()
+        .to_string();
+        assert_eq!(long.matches("Environment variables").count(), 1, "{long}");
+        let token = long.find("OUTER_TOKEN").unwrap();
+        let key = long.find("RELAY_APNS_KEY").unwrap();
+        let examples = long.find("Examples:").unwrap();
+        assert!(token < key && key < examples, "{long}");
+        assert!(long.contains("The outer token. More about it."), "{long}");
+    }
+
     /// A mistake in the nested service's tables is reported by its reader,
     /// by the key as written in the file, with its line.
     #[test]
@@ -2926,10 +3049,12 @@ url = \"http://node:18081\"
         let text = render_init_nested(
             "outer",
             ALL,
-            "engine",
-            "The engine's settings, when it runs inside outer.",
-            engine::ALL,
-            &Env::default(),
+            &[Nested {
+                table: "engine",
+                about: "The engine's settings, when it runs inside outer.",
+                settings: engine::ALL,
+                defaults: &Env::default(),
+            }],
         );
         assert!(text.contains("[server]\n"), "{text}");
         assert!(
@@ -2941,7 +3066,16 @@ url = \"http://node:18081\"
         // The host's own default is the one written, and the one --help
         // names.
         let defaults = Env::default().with_defaults(&[("payment.confirmations", "2")]);
-        let hosted = render_init_nested("outer", ALL, "engine", "Inside.", engine::ALL, &defaults);
+        let hosted = render_init_nested(
+            "outer",
+            ALL,
+            &[Nested {
+                table: "engine",
+                about: "Inside.",
+                settings: engine::ALL,
+                defaults: &defaults,
+            }],
+        );
         assert!(hosted.contains("# confirmations = 2\n"), "{hosted}");
         let help = cli::with_nested_settings(
             clap::Command::new("outer"),
