@@ -2855,6 +2855,21 @@ url = \"http://node:18081\"
             !problem.contains("engine.url:"),
             "the outer service's own key is fine: {problem}"
         );
+
+        // A hint for each table nobody reads, each problem with its own.
+        let text = format!("{TEXT}\n[relay.server]\nlisten = \"0.0.0.0:8444\"\n");
+        let file = OptionsFile::in_memory(text)
+            .with_hint("engine", "the engine's hint")
+            .with_hint("relay", "the relay's hint");
+        let problem = read(&file, ALL).unwrap_err();
+        assert!(
+            problem.contains("engine.node.url: the engine's hint"),
+            "{problem}"
+        );
+        assert!(
+            problem.contains("relay.server.listen: the relay's hint"),
+            "{problem}"
+        );
     }
 
     /// A file still holding a renamed setting's old key is refused, and
