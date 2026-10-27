@@ -20,7 +20,8 @@ use super::delivery::{run_delivery_tick, PushClient, NO_ATTEMPTS_LEFT, OVER_BUDG
 use super::Queueing;
 use crate::api::runtime::recording::{connect_app, fixture, Fixture, Recorder, PUBLIC_URI};
 use crate::db::{
-    AppId, LoggedEvent, OrderId, PushDeliveryRow, PushTargetId, Queued, EXPIRED_UNSENT,
+    AppId, LoggedEvent, OrderId, PushAttempt, PushDeliveryRow, PushResult, PushTargetId, Queued,
+    EXPIRED_UNSENT,
 };
 use crate::http::test_support::{api_request, body_json, store_with_keys};
 use crate::outbound::Reach;
@@ -914,7 +915,133 @@ async fn a_live_activity_is_pushed_only_its_own_apps_sales() {
     assert_eq!(world.pushes(&y_island).len(), 7);
 }
 
+/// A push's TTL runs from when its sale event happened, not from when
+/// the subscriber reads it. After two hours down, a backlog's
+/// `sale.seen` and `sale.paid` are past theirs and queue nothing (the
+/// order's unsent push is still superseded, its latest event still
+/// recorded, its webhook still queued), while the same events read as
+/// they happen are queued with the TTL they always had. A payment seen
+/// just after its sale expired still gets its minute, from when it was
+/// seen.
+#[tokio::test]
+async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
+    let world = world().await;
+    let maker = world.another_app().await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(&ak, encrypted("t", "https://push.example/t", &device, None))
+        .await;
+    let event_at = |seq: i64, order: &OrderId, kind: &str, at: i64| LoggedEvent {
+        created_at: at,
+        ..world.event(seq, order, kind)
+    };
+    let app_order = |order: &OrderId| {
+        world
+            .fixture
+            .state
+            .db
+            .lock()
+            .app_order(order)
+            .unwrap()
+            .unwrap()
+    };
+    let default_ttl = i64::from(PushConfig::default().default_ttl.as_secs());
+
+    let late = world.order(&maker).await;
+    let two_hours_ago = world.clock.now() - 7_200;
+    for (seq, kind) in [(1, "order.unconfirmed"), (2, "order.paid")] {
+        assert_eq!(
+            world.queue(&event_at(seq, &late, kind, two_hours_ago)),
+            Queued {
+                webhooks: 1,
+                pushes: 0
+            },
+            "{kind}"
+        );
+        assert_eq!(world.position(), seq);
+    }
+    let pushes = world.pushes(&target);
+    assert_eq!(pushes.len(), 1, "only the sale.waiting: {pushes:?}");
+    assert_eq!(pushes[0].event_type, "sale.waiting");
+    assert_eq!(pushes[0].superseded_at, Some(world.clock.now()));
+    assert_eq!(world.tick().await, 0);
+    let recorded: String = world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .query_row(
+            "SELECT last_sale_event FROM app_orders WHERE order_id = ?1",
+            [late.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, "sale.paid");
+
+    let now = world.clock.now();
+    let fresh = world.order(&maker).await;
+    let sale_expires_at = app_order(&fresh).expires_at;
+    world.queue(&event_at(3, &fresh, "order.unconfirmed", now));
+    world.queue(&event_at(4, &fresh, "order.paid", now));
+    let pushes: Vec<(String, i64)> = world
+        .pushes(&target)
+        .into_iter()
+        .filter(|push| push.order_id == fresh && push.event_type != "sale.waiting")
+        .map(|push| (push.event_type, push.expires_at))
+        .collect();
+    let seen_until = sale_expires_at.clamp(now + 60, now + default_ttl);
+    assert_eq!(
+        pushes,
+        [
+            ("sale.seen".to_owned(), seen_until),
+            ("sale.paid".to_owned(), now + default_ttl),
+        ]
+    );
+
+    // Seen 30 seconds after the sale expired, read 20 seconds later: the
+    // minute runs from the sighting. Read a minute after it, nothing.
+    let expired = world.order(&maker).await;
+    let expired_at = app_order(&expired).expires_at;
+    world.clock.set(expired_at + 50);
+    world.queue(&event_at(5, &expired, "order.unconfirmed", expired_at + 30));
+    world.clock.set(expired_at + 90);
+    world.queue(&event_at(6, &expired, "order.confirming", expired_at + 30));
+    let pushes: Vec<(String, i64)> = world
+        .pushes(&target)
+        .into_iter()
+        .filter(|push| push.order_id == expired && push.event_type != "sale.waiting")
+        .map(|push| (push.event_type, push.expires_at))
+        .collect();
+    assert_eq!(pushes, [("sale.seen".to_owned(), expired_at + 90)]);
+}
+
 // -- The worker, in process --------------------------------------------------
+
+impl World {
+    /// Records an attempt at the push `id` to `target` as the worker
+    /// does, without making one: the worker's bookkeeping, in process.
+    fn record_attempt(&self, app: &AppId, target: &PushTargetId, id: i64, attempt: PushAttempt) {
+        let db = self.fixture.state.db.lock();
+        let target = db.get_push_target(app, target).unwrap().unwrap();
+        db.record_push_attempt(id, &target, &attempt).unwrap();
+    }
+
+    /// A failed attempt now, answered `status`, to be tried again at
+    /// `retry_at` (or given up on), counting against the target.
+    fn failed(&self, status: u16, retry_at: Option<i64>) -> PushAttempt {
+        PushAttempt {
+            at: self.clock.now(),
+            status: Some(status),
+            result: PushResult::Failed {
+                error: format!("{status}"),
+                retry_at,
+                failure_limit: Some(PushConfig::default().target_failure_limit),
+            },
+        }
+    }
+}
 
 /// A push found due after its TTL ended is given up on, with no request.
 #[tokio::test]
@@ -943,77 +1070,40 @@ async fn a_push_past_its_ttl_is_given_up_without_a_request() {
     assert_eq!(world.tick().await, 0);
 }
 
-/// A push whose row can't be read (a name no sale event has, written by
-/// hand) is given up on, saying so, and the ones beside it are sent.
-#[tokio::test]
-async fn an_unreadable_push_is_given_up_and_the_others_are_sent() {
-    let world = world().await;
-    let (stub, origin) = Stub::start(201).await;
-    let ak = world.fixture.ak.clone();
-    let device = ::push::encrypt::ReceiverKeys::generate();
-    let target = world
-        .register(
-            &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
-        )
-        .await;
-    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
-    world.queue(&world.event(1, &first, "order.paid"));
-    world.queue(&world.event(2, &second, "order.paid"));
-    world
-        .fixture
-        .state
-        .db
-        .lock()
-        .conn_for_test()
-        .execute(
-            "UPDATE push_deliveries SET event_type = 'sale.refunded' WHERE event_id = 'evt_1'",
-            [],
-        )
-        .unwrap();
-
-    assert_eq!(world.tick().await, 2);
-    assert_eq!(stub.count(), 1);
-    let pushes = world.pushes(&target);
-    assert_eq!(pushes[0].gave_up_at, Some(world.clock.now()));
-    let error = pushes[0].last_error.as_deref().unwrap();
-    assert!(
-        error.starts_with("unreadable: ") && error.contains("sale.refunded"),
-        "{error}"
-    );
-    assert_eq!(pushes[1].delivered_at, Some(world.clock.now()));
-}
-
 /// `push.max_attempts` lowered below what a push has made already gives it
 /// up, with no request.
 #[tokio::test]
 async fn a_push_with_no_attempts_left_is_given_up_without_a_request() {
     let world = world().await;
-    let (stub, origin) = Stub::start(500).await;
     let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
     let device = ::push::encrypt::ReceiverKeys::generate();
     let target = world
         .register(
             &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
+            encrypted("t", "https://push.example/up/1", &device, None),
         )
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    world.tick().await;
-    world.clock.advance(5);
-    world.tick().await;
+    let id = world.pushes(&target)[0].id;
+    for _ in 0..2 {
+        world.record_attempt(
+            &app,
+            &target,
+            id,
+            world.failed(500, Some(world.clock.now())),
+        );
+    }
     assert_eq!(world.pushes(&target)[0].attempt_count, 2);
-    assert_eq!(stub.count(), 2);
 
-    world.clock.advance(20);
     let lowered = PushConfig {
         max_attempts: 2,
         ..PushConfig::default()
     };
     assert_eq!(world.tick_with(&lowered).await, 1);
-    assert_eq!(stub.count(), 2);
     let push = &world.pushes(&target)[0];
+    assert_eq!(push.attempt_count, 2, "no request");
     assert_eq!(push.gave_up_at, Some(world.clock.now()));
     assert_eq!(push.last_error.as_deref(), Some(NO_ATTEMPTS_LEFT));
 }
@@ -1024,13 +1114,13 @@ async fn a_push_with_no_attempts_left_is_given_up_without_a_request() {
 #[tokio::test]
 async fn old_pushes_are_pruned_after_push_keep_days() {
     let world = world().await;
-    let (stub, origin) = Stub::start(201).await;
     let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
     let device = ::push::encrypt::ReceiverKeys::generate();
     let target = world
         .register(
             &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
+            encrypted("t", "https://push.example/up/1", &device, None),
         )
         .await;
     let mut orders = Vec::new();
@@ -1042,12 +1132,20 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
     world.queue(&world.event(1, &orders[0], "order.paid"));
     world.queue(&world.event(2, &orders[1], "order.unconfirmed"));
     world.queue(&world.event(3, &orders[1], "order.confirming"));
-    assert_eq!(world.tick().await, 2);
+    let delivered = PushAttempt {
+        at: start,
+        status: Some(201),
+        result: PushResult::Delivered,
+    };
+    for push in [0, 2] {
+        let id = world.pushes(&target)[push].id;
+        world.record_attempt(&app, &target, id, delivered.clone());
+    }
     // Given up on an hour later (evt_4: refused as too large).
     world.clock.advance(3_600);
-    stub.answer(413, None);
     world.queue(&world.event(4, &orders[2], "order.paid"));
-    assert_eq!(world.tick().await, 1);
+    let id = world.pushes(&target)[3].id;
+    world.record_attempt(&app, &target, id, world.failed(413, None));
     // Still waiting (evt_5).
     world.queue(&world.event(5, &orders[3], "order.paid"));
     let pushes = world.pushes(&target);
@@ -1372,6 +1470,47 @@ async fn a_live_activity_target_gets_plain_json_over_http() {
     assert!(by_path("/la/plain").1.get("paymentURI").is_none());
 }
 
+/// A push whose row can't be read (a name no sale event has, written by
+/// hand) is given up on, saying so, and the ones beside it are sent.
+#[tokio::test]
+async fn an_unreadable_push_is_given_up_and_the_others_are_sent_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
+    world.queue(&world.event(1, &first, "order.paid"));
+    world.queue(&world.event(2, &second, "order.paid"));
+    world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "UPDATE push_deliveries SET event_type = 'sale.refunded' WHERE event_id = 'evt_1'",
+            [],
+        )
+        .unwrap();
+
+    assert_eq!(world.tick().await, 2);
+    assert_eq!(stub.count(), 1);
+    let pushes = world.pushes(&target);
+    assert_eq!(pushes[0].gave_up_at, Some(world.clock.now()));
+    let error = pushes[0].last_error.as_deref().unwrap();
+    assert!(
+        error.starts_with("unreadable: ") && error.contains("sale.refunded"),
+        "{error}"
+    );
+    assert_eq!(pushes[1].delivered_at, Some(world.clock.now()));
+}
+
 // -- Edge and failure cases --------------------------------------------------
 
 impl World {
@@ -1451,6 +1590,120 @@ async fn a_retried_order_is_pushed_as_waiting_once_and_a_shops_order_not_at_all(
 
     world.order(&world.fixture.sk.clone()).await;
     assert_eq!(world.pushes(&target).len(), 1);
+}
+
+/// A push target whose row this build can't read (an event kind it
+/// doesn't know, as after a downgrade) is pushed nothing, and holds
+/// nothing else up: the order event's webhook delivery and the store's
+/// other targets' pushes are queued, the position moves past it and the
+/// next event is queued too, and an app's new order still queues its
+/// `sale.waiting` for the others. One such row used to fail every order
+/// event's transaction, stopping every store's webhooks behind it.
+#[tokio::test]
+async fn an_unreadable_push_target_costs_only_its_own_pushes() {
+    let world = world().await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let spoilt = world
+        .register(
+            &ak,
+            encrypted("spoilt", "https://push.example/a", &device, None),
+        )
+        .await;
+    let fine = world
+        .register(
+            &ak,
+            encrypted("fine", "https://push.example/b", &device, None),
+        )
+        .await;
+    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
+    world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "UPDATE push_targets SET events = '[\"sale.refunded\"]' WHERE id = ?1",
+            [spoilt.as_str()],
+        )
+        .unwrap();
+
+    for (seq, order) in [(1, &first), (2, &second)] {
+        assert_eq!(
+            world.queue(&world.event(seq, order, "order.paid")),
+            Queued {
+                webhooks: 1,
+                pushes: 1
+            }
+        );
+        assert_eq!(world.position(), seq);
+    }
+    let other = world.another_app().await;
+    let third = world.order(&other).await;
+    let pushed: Vec<(OrderId, String)> = world
+        .pushes(&fine)
+        .into_iter()
+        .map(|push| (push.order_id, push.event_type))
+        .collect();
+    assert_eq!(
+        pushed,
+        [
+            (first, "sale.paid".to_owned()),
+            (second, "sale.paid".to_owned()),
+            (third, "sale.waiting".to_owned()),
+        ]
+    );
+    assert!(world.pushes(&spoilt).is_empty());
+}
+
+/// A push service's answer is about the subscription the push was sent
+/// to. A `410` from a target's old endpoint, arriving after the app
+/// registered the target again with a new one (a rotated subscription,
+/// the very reason for the `410`), doesn't delete the target, and a
+/// `503` from it counts nothing against the new subscription; the push
+/// then goes to the new endpoint.
+#[tokio::test]
+async fn an_answer_from_a_replaced_subscription_leaves_the_new_one_alone_over_http() {
+    let world = world().await;
+    let (old_stub, old_origin) = Stub::start(410).await;
+    old_stub.hold(std::time::Duration::from_millis(300));
+    let (new_stub, new_origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let at = |origin: &str, n: u32| encrypted("up", &format!("{origin}/up/{n}"), &device, None);
+    let target = world.register(&ak, at(&old_origin, 1)).await;
+    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
+
+    for (seq, order, old_answer, moved_to) in [(1, &first, 410, 2), (2, &second, 503, 4)] {
+        old_stub.answer(old_answer, None);
+        if seq == 2 {
+            world.register(&ak, at(&old_origin, 3)).await;
+        }
+        world.queue(&world.event(seq, order, "order.paid"));
+        let (sent, moved) = tokio::join!(world.tick(), async {
+            while old_stub.in_flight.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            world.register(&ak, at(&new_origin, moved_to)).await
+        });
+        assert_eq!((sent, &moved), (1, &target));
+        let kept = world
+            .target(&app, &target)
+            .unwrap_or_else(|| panic!("a {old_answer} from the old endpoint deleted the target"));
+        assert_eq!(
+            (kept.endpoint.as_str(), kept.failures),
+            (format!("{new_origin}/up/{moved_to}").as_str(), 0),
+            "after a {old_answer}"
+        );
+
+        world.clock.advance(5);
+        assert_eq!(world.tick().await, 1);
+        let push = world.pushes(&target).pop().unwrap();
+        assert_eq!(push.delivered_at, Some(world.clock.now()), "{push:?}");
+    }
+    assert_eq!((old_stub.count(), new_stub.count()), (2, 2));
 }
 
 /// A newer push about an order supersedes only its own target's unsent

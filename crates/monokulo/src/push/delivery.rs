@@ -13,7 +13,9 @@
 //! worth little; a sale's "seen" an hour late is worse than none.
 //!
 //! What an answer says about the target: `404` or `410` means the
-//! subscription is gone, and the target is deleted at once;
+//! subscription is gone, and the target is deleted at once (unless it
+//! was registered again meanwhile: an answer is about the subscription
+//! the push went to, `registered_seq`);
 //! `push.target_failure_limit` (20) failures in a row delete it too (a
 //! `429` doesn't count: the push service is limiting this sender, not
 //! refusing the device). The app registers again when it next runs.
@@ -256,7 +258,7 @@ pub async fn run_delivery_tick(
     // the batch doesn't hold the others' outcomes back, and a later write
     // failing doesn't lose the earlier ones.
     while let Some((push, done)) = attempts.next().await {
-        let (id, target_id) = (push.id, push.target.id.clone());
+        let (id, target) = (push.id, push.target.clone());
         let written = match done {
             Done::GaveUp(reason) => {
                 let at = clock.now();
@@ -265,23 +267,33 @@ pub async fn run_delivery_tick(
             Done::Deferred(until) => {
                 tracing::info!(
                     store.id = %push.target.store_id,
-                    push_target.id = %target_id,
+                    push_target.id = %target.id,
                     "the store's pushes for this minute are spent; put off"
                 );
                 db.write(move |db| db.defer_push(id, until)).await
             }
             Done::Gone => {
-                tracing::info!(
-                    push_target.id = %target_id,
-                    push.host = push.target.endpoint.host(),
-                    "the push service says the subscription is gone; push target deleted"
-                );
-                db.write(move |db| db.delete_dead_push_target(&target_id).map(|_| ()))
-                    .await
+                let deleted = db
+                    .write(move |db| db.delete_dead_push_target(&target))
+                    .await;
+                match deleted {
+                    Ok(true) => tracing::info!(
+                        push_target.id = %push.target.id,
+                        push.host = push.target.endpoint.host(),
+                        "the push service says the subscription is gone; push target deleted"
+                    ),
+                    Ok(false) => tracing::info!(
+                        push_target.id = %push.target.id,
+                        push.host = push.target.endpoint.host(),
+                        "the push service says a subscription is gone that its target no longer has; kept"
+                    ),
+                    Err(_) => {}
+                }
+                deleted.map(|_| ())
             }
             Done::Attempted(attempt) => {
                 let after = db
-                    .write(move |db| db.record_push_attempt(id, &target_id, &attempt))
+                    .write(move |db| db.record_push_attempt(id, &target, &attempt))
                     .await;
                 if let Ok(TargetAfter::Deleted) = after {
                     tracing::warn!(

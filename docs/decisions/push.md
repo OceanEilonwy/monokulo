@@ -1087,3 +1087,63 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      what passes the handle's limit, and size `per_sender_per_minute` for
      a multi-store instance and the Bell) is fixed on `push-relay`, where
      the relay is.
+
+## Push audit fixes: reads, registrations, times (the fixer of group 2)
+
+The push audit's second fix group (findings 1, 7, 5 and 19), on
+`push-delivery`, numbered after group 1's last entry (146).
+
+147. **A push target this build can't read costs only its own pushes**
+     (push audit #1; narrows decision 70 for the reads of many targets).
+     Pushes are queued in the order event's transaction, and a store's
+     targets were read strictly, so one drifted row (a rollback past a
+     release that added a sale event, a tightened endpoint rule, a hand
+     edit) failed every order event of that store, and with it the
+     subscriber's one log: every store's webhooks stopped behind it, as
+     did that store's app orders (`sale.waiting` is queued in the order's
+     transaction). Now the store's targets and an app's list
+     (`GET /api/v1/push-targets`) leave such a row out and log it with its
+     id, as an unreadable push is given up alone (decision 83). One
+     target read by id still answers `500`: it is that row's own error.
+     Left out of the list, it is the app's cue to register its
+     `client_id` again (the documented start-up check), which rewrites the
+     row. Queueing pushes in a savepoint whose error is swallowed was the
+     other way; it would also swallow a real database error and lose the
+     whole event's pushes for one row. The `db` layer logs here, a first
+     for it: only the reader skipping the row knows its id and why, and
+     carrying a list of skipped rows up through `Queued` and the order API
+     would add a field to every caller for a log line.
+148. **A push's TTL runs from when its sale event happened** (push audit
+     #7): `SaleEvent.at`, the engine's `created_at` for a logged event and
+     the order's `created_at` for `sale.waiting`, capped at the time it is
+     queued so an engine clock ahead can't lengthen it. `MIN_TTL` runs from
+     the event too, so a payment seen just after its sale expired still
+     gets its minute. A push whose TTL has ended when the subscriber reads
+     the event (a backlog after monokulo was down, or a reconnect) isn't
+     queued at all, rather than queued as given up: a two-hour backlog
+     would otherwise write a dead row per event and target. The event
+     still records the order's latest state and supersedes the order's
+     older unsent pushes, which are staler still. An engine clock behind
+     monokulo's by more than a TTL would now drop pushes; the engine is
+     private to monokulo, on its host or its network, and
+     `push.default_ttl_secs` is 30 minutes, so that is a broken clock,
+     not skew.
+149. **A push service's answer is applied to the registration it was
+     sent to** (push audit #5). The worker reads a batch with each target's
+     endpoint and keys, and a target registered again meanwhile (same
+     `client_id`, a rotated subscription) is another subscription: a `410`
+     from the old endpoint (the very reason it was rotated) deleted the
+     new one, and its failures counted against the fresh counter. The
+     target's `registered_seq` (decision 145), new at every registration,
+     is carried on `PushTarget`, and deleting a gone target, counting a
+     failure (and the limit's delete) and resetting the run on success
+     all hold only while the target still has it. The push's own row is
+     recorded as before, so it is retried, at the new subscription.
+     Comparing endpoints was the other way; it misses a re-registration
+     with the same endpoint and new keys, and `registered_seq` needs no
+     migration.
+150. **The worker tests that only check bookkeeping run in process**
+     (push audit #19, decision 26): "no attempts left" and pruning record
+     their attempts with `Db::record_push_attempt` instead of making them
+     against a stub, and the unreadable-push test, which needs its
+     neighbour to land, is `…_over_http`, under "Over HTTP".

@@ -62,6 +62,11 @@ pub struct PushTarget {
     pub last_ok_at: Option<i64>,
     /// Failed attempts in a row since the last success.
     pub failures: u32,
+    /// Its place in the order the store's targets were last registered
+    /// in, in place or new (`push_targets.registered_seq`): a new one at
+    /// each registration, so it tells this subscription of the target
+    /// from the one it is registered with next.
+    pub registered_seq: i64,
 }
 
 impl PushTarget {
@@ -172,7 +177,31 @@ fn target_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PushTarget> {
         created_at: row.get("created_at_utc")?,
         last_ok_at: row.get("last_ok_at_utc")?,
         failures: row.get("failures")?,
+        registered_seq: row.get("registered_seq")?,
     })
+}
+
+/// The push targets `rows` holds that can be read. One that can't (written
+/// by a build that reads it otherwise, or by hand) is left out and logged,
+/// as an unreadable push is given up on ([`Db::due_push_deliveries`]): it
+/// would otherwise fail every read of its store's targets, and with it
+/// every order event's transaction, which stops every store's webhooks
+/// behind it. Registering its `client_id` again rewrites it.
+fn readable_targets(rows: rusqlite::Rows<'_>) -> rusqlite::Result<Vec<PushTarget>> {
+    rows.mapped(|row| Ok((row.get::<_, PushTargetId>("id")?, target_from_row(row))))
+        .filter_map(|read| match read {
+            Ok((_, Ok(target))) => Some(Ok(target)),
+            Ok((id, Err(error))) => {
+                tracing::error!(
+                    push_target.id = %id,
+                    error = %error,
+                    "a push target can't be read; it is pushed nothing until its app registers it again"
+                );
+                None
+            }
+            Err(e) => Some(Err(e)),
+        })
+        .collect()
 }
 
 /// `events` once each, in [`SaleKind::ALL`]'s order, as `push_targets.events`
@@ -448,15 +477,14 @@ impl Db {
         Ok(Registration::Registered(Box::new(target)))
     }
 
-    /// An app's push targets, oldest first.
+    /// An app's push targets that can be read ([`readable_targets`]),
+    /// oldest first.
     pub fn list_push_targets(&self, app_id: &AppId) -> Result<Vec<PushTarget>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM push_targets WHERE app_id = ?1 ORDER BY created_at_utc, rowid",
         )?;
-        let rows = stmt
-            .query_map(params![app_id], target_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let targets = readable_targets(stmt.query(params![app_id])?)?;
+        Ok(targets)
     }
 
     /// The app's push target `id`; `None` for one it doesn't have (another
@@ -530,7 +558,10 @@ impl Db {
     /// wants it and hears of the order ([`PushTarget::hears_of`]) but
     /// `except`'s, once per endpoint: records it as the order's latest,
     /// then one push per target, each superseding that target's unsent
-    /// push about the same order.
+    /// push about the same order. Its TTL runs from when the sale event
+    /// happened, not from `at`, when it is queued: an event read late (a
+    /// backlog after monokulo was down) is worth no more for it, and one
+    /// whose TTL ended before `at` supersedes but queues nothing.
     fn queue_sale_pushes(
         &self,
         order: &AppOrder,
@@ -560,14 +591,27 @@ impl Db {
             return Ok(0);
         }
         let urgency = policy::urgency(sale.event);
-        let ttl = policy::ttl(sale.event, order.expires_at, at, queueing.default_ttl);
-        let expires_at = at.saturating_add(i64::from(ttl.as_secs()));
+        // An engine clock ahead of this one doesn't lengthen it.
+        let happened = sale.at.min(at);
+        let ttl = policy::ttl(sale.event, order.expires_at, happened, queueing.default_ttl);
+        let expires_at = happened.saturating_add(i64::from(ttl.as_secs()));
+        let stale = expires_at <= at;
         // Each made once, for the targets that take it.
         let mut encrypted: Option<String> = None;
         let mut waiting_count: Option<u64> = None;
         let mut queued = 0;
         for target in &targets {
             let topic = policy::topic(&target.id, &order.order_id);
+            // A stale event still says the order's older state is past.
+            self.conn.execute(
+                "UPDATE push_deliveries SET superseded_at_utc = ?3, next_attempt_at_utc = NULL
+                 WHERE push_target_id = ?1 AND topic = ?2 AND next_attempt_at_utc IS NOT NULL
+                   AND event_id <> ?4",
+                params![target.id, topic.as_str(), at, event_id],
+            )?;
+            if stale {
+                continue;
+            }
             let payload = match target.kind {
                 TargetKind::Encrypted { .. } => encrypted
                     .get_or_insert_with(|| notification(sale, &queueing.link_base))
@@ -582,12 +626,6 @@ impl Db {
                     LiveActivityState::of(sale, waiting, include_payment_uri).to_json()
                 }
             };
-            self.conn.execute(
-                "UPDATE push_deliveries SET superseded_at_utc = ?3, next_attempt_at_utc = NULL
-                 WHERE push_target_id = ?1 AND topic = ?2 AND next_attempt_at_utc IS NOT NULL
-                   AND event_id <> ?4",
-                params![target.id, topic.as_str(), at, event_id],
-            )?;
             queued += self.conn.execute(
                 "INSERT INTO push_deliveries
                      (push_target_id, event_seq, event_id, event_type, order_id, topic, urgency,
@@ -611,16 +649,15 @@ impl Db {
         Ok(queued)
     }
 
-    /// Every push target of the store's apps, the last registered first.
+    /// Every push target of the store's apps that can be read
+    /// ([`readable_targets`]), the last registered first.
     fn store_push_targets(&self, store_id: &ConnectionId) -> Result<Vec<PushTarget>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM push_targets WHERE store_id = ?1
              ORDER BY registered_seq DESC",
         )?;
-        let rows = stmt
-            .query_map(params![store_id], target_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let targets = readable_targets(stmt.query(params![store_id])?)?;
+        Ok(targets)
     }
 
     /// The orders of `order`'s app still waiting for a payment at `now`:
@@ -674,16 +711,20 @@ impl Db {
         Ok(rows)
     }
 
-    /// Records one attempt at the push `id` to `target_id`, and what it
-    /// says about the target, in one transaction. Delivered: the target's
-    /// run of failures ends. Failed: it is tried again at `retry_at` or
-    /// given up on, and a failure that counts lengthens the target's run,
-    /// which at its limit deletes the target. A push superseded while it
-    /// was being sent keeps its attempt but isn't tried again.
+    /// Records one attempt at the push `id` to `target`, as it was read
+    /// for the attempt, and what it says about the target, in one
+    /// transaction. Delivered: the target's run of failures ends. Failed:
+    /// it is tried again at `retry_at` or given up on, and a failure that
+    /// counts lengthens the target's run, which at its limit deletes the
+    /// target. What it says about the target holds only while the target
+    /// is still that registration: registered again meanwhile (a new
+    /// endpoint or keys), it is another subscription, which the attempt
+    /// says nothing about. A push superseded while it was being sent keeps
+    /// its attempt but isn't tried again.
     pub fn record_push_attempt(
         &self,
         id: i64,
-        target_id: &PushTargetId,
+        target: &PushTarget,
         attempt: &PushAttempt,
     ) -> Result<TargetAfter> {
         let tx = rusqlite::Transaction::new_unchecked(
@@ -722,8 +763,9 @@ impl Db {
         let after = match &attempt.result {
             PushResult::Delivered => {
                 self.conn.execute(
-                    "UPDATE push_targets SET failures = 0, last_ok_at_utc = ?2 WHERE id = ?1",
-                    params![target_id, attempt.at],
+                    "UPDATE push_targets SET failures = 0, last_ok_at_utc = ?3
+                     WHERE id = ?1 AND registered_seq = ?2",
+                    params![target.id, target.registered_seq, attempt.at],
                 )?;
                 TargetAfter::Kept
             }
@@ -736,14 +778,15 @@ impl Db {
                 ..
             } => {
                 let deleted = self.conn.execute(
-                    "DELETE FROM push_targets WHERE id = ?1 AND failures + 1 >= ?2",
-                    params![target_id, limit],
+                    "DELETE FROM push_targets
+                     WHERE id = ?1 AND registered_seq = ?2 AND failures + 1 >= ?3",
+                    params![target.id, target.registered_seq, limit],
                 )?;
                 if deleted == 0 {
                     self.conn.execute(
                         "UPDATE push_targets SET failures = MIN(failures + 1, 4294967295)
-                         WHERE id = ?1",
-                        params![target_id],
+                         WHERE id = ?1 AND registered_seq = ?2",
+                        params![target.id, target.registered_seq],
                     )?;
                     TargetAfter::Kept
                 } else {
@@ -780,11 +823,15 @@ impl Db {
     }
 
     /// Deletes a push target its push service said is gone (`404`, `410`),
-    /// with its pushes: whether it was still there.
-    pub fn delete_dead_push_target(&self, id: &PushTargetId) -> Result<bool> {
-        let deleted = self
-            .conn
-            .execute("DELETE FROM push_targets WHERE id = ?1", params![id])?;
+    /// as it was read for the attempt, with its pushes: whether it was
+    /// still there. Registered again meanwhile, it is kept: the answer was
+    /// about the subscription it replaced, often the very reason it was
+    /// registered again, and its pushes go to the new one.
+    pub fn delete_dead_push_target(&self, target: &PushTarget) -> Result<bool> {
+        let deleted = self.conn.execute(
+            "DELETE FROM push_targets WHERE id = ?1 AND registered_seq = ?2",
+            params![target.id, target.registered_seq],
+        )?;
         Ok(deleted > 0)
     }
 
