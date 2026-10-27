@@ -19,6 +19,8 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system"] 
 # (not test-only - both the scanner's and monokulo's real background
 # loops call this in production).
 tokio = { version = "1.53.1", features = ["full"] }
+# The process's stop (`shutdown::on_signal`), one token every part waits on.
+tokio-util = "0.7.20"
 tracing = "0.1.44"
 
 [dev-dependencies]
