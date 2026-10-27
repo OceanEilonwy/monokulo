@@ -47,7 +47,7 @@ mod store;
 mod value;
 
 pub use options::{
-    render_init, render_init_nested, write_init, FileInfo, LayeredStore, OptionsFile,
+    render_init, render_init_nested, write_init, FileInfo, LayeredStore, Nested, OptionsFile,
 };
 pub use registry::{
     read_sync, read_sync_with_env, BootError, BootReport, BuildError, Changes, CheckReport,

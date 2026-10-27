@@ -43,21 +43,21 @@ struct Shared {
 
 /// The options file, or one table of it.
 ///
-/// A handle is cheap to clone, and clones share the file. Two services in
-/// one process (monokulo and an engine embedded in it) share one file this
-/// way: monokulo's handle
-/// leaves the engine's table alone ([`OptionsFile::leaving`]), and the
-/// engine's handle is that table ([`OptionsFile::scoped`]), where it reads
-/// and writes its own keys under their own names. Saving through either
-/// keeps what the other saved.
+/// A handle is cheap to clone, and clones share the file. Services in one
+/// process (monokulo, and an engine and a push relay embedded in it) share
+/// one file this way: monokulo's handle leaves each embedded service's
+/// table alone ([`OptionsFile::leaving`]), and each service's handle is
+/// its table ([`OptionsFile::scoped`]), where it reads and writes its own
+/// keys under their own names. Saving through any of them keeps what the
+/// others saved.
 #[derive(Clone)]
 pub struct OptionsFile {
     shared: Arc<Shared>,
     /// The table this handle is, if it is one: its keys are named without
     /// it (`payment.x` for `engine.payment.x`).
     scope: Option<String>,
-    /// A table another handle owns: its subtables are left alone here.
-    leaves: Option<String>,
+    /// Tables other handles own: their subtables are left alone here.
+    leaves: Vec<String>,
     /// What to add when a key under this table isn't a setting.
     hint: Option<(String, String)>,
     /// Settings that were renamed, old key and new: a file still holding
@@ -101,7 +101,7 @@ impl OptionsFile {
                 loaded: Mutex::new(String::new()),
             }),
             scope: None,
-            leaves: None,
+            leaves: Vec::new(),
             hint: None,
             renamed: &[],
             retired: &[],
@@ -116,7 +116,7 @@ impl OptionsFile {
         OptionsFile {
             shared: self.shared.clone(),
             scope: Some(table.to_string()),
-            leaves: None,
+            leaves: Vec::new(),
             hint: None,
             renamed: &[],
             retired: &[],
@@ -125,9 +125,10 @@ impl OptionsFile {
 
     /// This handle, leaving the subtables of `table` to another handle on
     /// the same file (one made with [`Self::scoped`]): they aren't read as
-    /// this handle's settings, nor refused as unknown.
+    /// this handle's settings, nor refused as unknown. Called once for
+    /// each such table.
     pub fn leaving(mut self, table: &str) -> Self {
-        self.leaves = Some(table.to_string());
+        self.leaves.push(table.to_string());
         self
     }
 
@@ -158,7 +159,7 @@ impl OptionsFile {
     fn reading(&self) -> Reading<'_> {
         Reading {
             scope: self.scope.as_deref(),
-            leaves: self.leaves.as_deref(),
+            leaves: &self.leaves,
             hint: self.hint.as_ref().map(|(t, h)| (t.as_str(), h.as_str())),
             renamed: self.renamed,
             retired: self.retired,
@@ -414,7 +415,7 @@ impl SettingsStore for LayeredStore {
 /// leaves to another handle.
 struct Reading<'a> {
     scope: Option<&'a str>,
-    leaves: Option<&'a str>,
+    leaves: &'a [String],
     hint: Option<(&'a str, &'a str)>,
     renamed: &'static [(&'static str, &'static str)],
     retired: &'static [(&'static str, &'static str)],
@@ -529,7 +530,7 @@ impl Walk<'_, '_> {
                 Err(e) => self.problems.push(format!("{at}{shown}: {e}")),
             },
             // Another handle's table.
-            None if is_table(item) && self.reading.leaves.is_some_and(|table| prefix == table) => {}
+            None if is_table(item) && self.reading.leaves.iter().any(|table| prefix == table) => {}
             None => match item {
                 Item::Table(table) => self.table(table, &key),
                 Item::Value(Value::InlineTable(inline)) => self.table(inline, &key),
@@ -735,6 +736,32 @@ fn remove(doc: &mut DocumentMut, key: &str) {
 /// applies and its default, commented out, so the file changes nothing
 /// until a line is uncommented. Secrets are named, with their variables.
 pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> String {
+    render_init_nested(program, declared, &[])
+}
+
+/// A service that runs inside this process and keeps its options in this
+/// process's file, under `[table.…]`: an embedded engine's
+/// `[engine.payment]`, an embedded push relay's `[relay.server]`.
+#[derive(Clone, Copy)]
+pub struct Nested<'a> {
+    pub table: &'a str,
+    /// What the table is, written above it.
+    pub about: &'a str,
+    pub settings: &'a [&'static dyn AnySetting],
+    /// The defaults in effect for it: the host's own
+    /// ([`Env::with_defaults`]) where it gives one.
+    pub defaults: &'a Env,
+}
+
+/// [`render_init`], followed by the settings of each `nested` service under
+/// its table, introduced by its `about`, each showing the default in
+/// effect under its `defaults`. The secrets of every one of them are named
+/// at the top.
+pub fn render_init_nested(
+    program: &str,
+    declared: &[&'static dyn AnySetting],
+    nested: &[Nested<'_>],
+) -> String {
     let mut out = format!(
         "# Options file for {program}, written by `{program} --init`.\n\
          #\n\
@@ -743,7 +770,11 @@ pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> Strin
          # and reads the file again when you press Reload. A command-line option wins\n\
          # over this file: `{program} --help` lists them.\n"
     );
-    let secrets: Vec<_> = declared.iter().filter(|s| s.sources().env).collect();
+    let secrets: Vec<_> = declared
+        .iter()
+        .chain(nested.iter().flat_map(|service| service.settings))
+        .filter(|s| s.sources().env)
+        .collect();
     if !secrets.is_empty() {
         out.push_str("#\n# Secrets are never kept here. Set them in the environment:\n");
         for secret in secrets {
@@ -752,29 +783,19 @@ pub fn render_init(program: &str, declared: &[&'static dyn AnySetting]) -> Strin
         }
     }
     push_tables(&mut out, None, declared, &Env::default());
-    out
-}
-
-/// [`render_init`], followed by the settings of a service that runs inside
-/// this process and keeps its options in this file under `[table.…]` (an
-/// embedded engine: `[engine.payment]`), introduced by `about`. Each nested
-/// setting shows the default in effect under `defaults`: the host's own
-/// ([`Env::with_defaults`]) where it gives one.
-pub fn render_init_nested(
-    program: &str,
-    declared: &[&'static dyn AnySetting],
-    table: &str,
-    about: &str,
-    nested: &[&'static dyn AnySetting],
-    defaults: &Env,
-) -> String {
-    let mut out = render_init(program, declared);
-    out.push_str("\n#\n");
-    for line in wrap(about, 76) {
-        out.push_str(&format!("# {line}\n"));
+    for service in nested {
+        out.push_str("\n#\n");
+        for line in wrap(service.about, 76) {
+            out.push_str(&format!("# {line}\n"));
+        }
+        out.push_str("#\n");
+        push_tables(
+            &mut out,
+            Some(service.table),
+            service.settings,
+            service.defaults,
+        );
     }
-    out.push_str("#\n");
-    push_tables(&mut out, Some(table), nested, defaults);
     out
 }
 

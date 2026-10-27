@@ -62,6 +62,17 @@ pub fn with_settings(
     for setting in declared.iter().filter(|s| s.sources().cli) {
         command = command.arg(arg(*setting, &crate::Env::default()));
     }
+    with_environment(command, declared)
+}
+
+/// The heading of the environment variables listed after the options.
+const ENVIRONMENT: &str = "Environment variables (no option: the process list is readable by every user on the machine):\n";
+
+/// `command` with the environment variables of the settings in `declared`
+/// that have no option (secrets) listed after its options, in one list
+/// whoever adds to it: the process's own, then each embedded service's.
+/// What came after the help before the list (examples) stays after it.
+fn with_environment(command: Command, declared: &[&'static dyn AnySetting]) -> Command {
     let env_only: Vec<&&'static dyn AnySetting> = declared
         .iter()
         .filter(|s| s.sources().env && !s.sources().cli)
@@ -69,13 +80,8 @@ pub fn with_settings(
     if env_only.is_empty() {
         return command;
     }
-    let after = command.get_after_help().map(|text| text.to_string());
-    let after_long = command
-        .get_after_long_help()
-        .map(|text| text.to_string())
-        .or_else(|| after.clone());
-    let list = |long: bool| {
-        let mut text = String::from("Environment variables (no option: the process list is readable by every user on the machine):\n");
+    let entries = |long: bool| {
+        let mut text = String::new();
         for setting in &env_only {
             let required = if setting.required() {
                 " [required]"
@@ -94,13 +100,24 @@ pub fn with_settings(
         }
         text
     };
-    let join = |list: String, rest: Option<String>| match rest {
-        Some(rest) => format!("{list}\n{rest}"),
-        None => list,
+    // The list so far ends at the first blank line after its heading (or
+    // the text's end); without one yet, it starts the text.
+    let add = |before: Option<String>, entries: String| match before {
+        Some(text) if text.starts_with(ENVIRONMENT) => {
+            let end = text.find("\n\n").map_or(text.len(), |at| at + 1);
+            format!("{}{entries}{}", &text[..end], &text[end..])
+        }
+        Some(rest) => format!("{ENVIRONMENT}{entries}\n{rest}"),
+        None => format!("{ENVIRONMENT}{entries}"),
     };
+    let after = command.get_after_help().map(|text| text.to_string());
+    let after_long = command
+        .get_after_long_help()
+        .map(|text| text.to_string())
+        .or_else(|| after.clone());
     command
-        .after_help(join(list(false), after))
-        .after_long_help(join(list(true), after_long))
+        .after_help(add(after, entries(false)))
+        .after_long_help(add(after_long, entries(true)))
 }
 
 /// `command` still accepting the option of each `(key, since)` in
@@ -205,6 +222,7 @@ pub fn values(
 /// environment variables are their own. Each option's help names the
 /// default in effect under `defaults`: the host's own
 /// ([`Env::with_defaults`](crate::Env::with_defaults)) where it gives one.
+/// Its secrets' variables join the process's own after the options.
 pub fn with_nested_settings(
     mut command: Command,
     prefix: &str,
@@ -214,7 +232,7 @@ pub fn with_nested_settings(
     for setting in declared.iter().filter(|s| s.sources().cli) {
         command = command.arg(nested_arg(*setting, prefix, defaults));
     }
-    command
+    with_environment(command, declared)
 }
 
 /// The values given on the command line for the settings
