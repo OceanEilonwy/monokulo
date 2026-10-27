@@ -31,6 +31,7 @@ pub mod outbound;
 pub mod plugins;
 pub mod push;
 pub mod qr;
+pub mod relay;
 pub mod revocation;
 pub mod settings;
 pub mod stores;

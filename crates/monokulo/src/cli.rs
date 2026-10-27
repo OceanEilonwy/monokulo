@@ -2,7 +2,9 @@
 //! the options file, and an option for every setting that takes one, with
 //! help from the settings' own declarations (`live_settings::cli`). The
 //! engine that runs inside monokulo (`engine.mode = "embedded"`, the
-//! default) has its settings here too, each as `--engine-…`.
+//! default) has its settings here too, each as `--engine-…`, and so does
+//! the push relay that can run inside it (`relay.enabled`), as
+//! `--relay-…`.
 //!
 //! A setting comes from its environment variable (secrets only), then its
 //! option, then the options file (or, for the runtime switches, the
@@ -23,7 +25,8 @@ separate monokulo-engine at engine.url with the engine token (MONOKULO_ENGINE_TO
 
 Settings are kept in the options file (--options, by default ~/.config/monokulo/monokulo.toml), \
 which the admin settings page edits and reloads without a restart; --init writes one with \
-every setting described, the engine's under [engine.*]. An option below wins over the file \
+every setting described, the engine's under [engine.*] and the push relay's under [relay.*]. \
+An option below wins over the file \
 and locks that setting on the admin page. Secrets have no option and are never kept in the \
 file, only in their environment variable (listed after the options): every user on the \
 machine can read the process list. MONOKULO_ENCRYPTION_KEY is required.";
@@ -59,6 +62,13 @@ pub fn command() -> Command {
         &engine::engine_settings::embedded_settings(),
         &embedded_engine_defaults(),
     );
+    #[cfg(feature = "relay")]
+    let command = live_settings::cli::with_nested_settings(
+        command,
+        crate::settings::RELAY_TABLE,
+        &push_relay::settings::embedded_settings(),
+        &live_settings::Env::default(),
+    );
     command
 }
 
@@ -78,6 +88,9 @@ pub struct Args {
     /// The embedded engine's settings given as `--engine-…` options, by
     /// the engine's own keys.
     pub engine: HashMap<String, String>,
+    /// The embedded push relay's settings given as `--relay-…` options, by
+    /// the relay's own keys.
+    pub relay: HashMap<String, String>,
     /// A warning for each retired setting given as an option, to log at
     /// start (`settings::RETIRED`).
     pub retired: Vec<String>,
@@ -96,6 +109,7 @@ where
     Ok(Args {
         start: start(&matches),
         engine: engine_values(&matches),
+        relay: relay_values(&matches),
         retired: live_settings::cli::retired_given(&matches, crate::settings::RETIRED),
     })
 }
@@ -118,23 +132,52 @@ fn engine_values(_matches: &ArgMatches) -> HashMap<String, String> {
     HashMap::new()
 }
 
+#[cfg(feature = "relay")]
+fn relay_values(matches: &ArgMatches) -> HashMap<String, String> {
+    live_settings::cli::nested_values(
+        matches,
+        crate::settings::RELAY_TABLE,
+        &push_relay::settings::embedded_settings(),
+    )
+}
+
+#[cfg(not(feature = "relay"))]
+fn relay_values(_matches: &ArgMatches) -> HashMap<String, String> {
+    HashMap::new()
+}
+
 /// `--init`: writes the commented options file at `path`, refusing to
-/// replace one, with the embedded engine's settings under `[engine.*]`, and
-/// says where it went (on standard output, for the person who asked).
+/// replace one, with the embedded engine's settings under `[engine.*]` and
+/// the embedded push relay's under `[relay.*]`, and says where it went (on
+/// standard output, for the person who asked).
 pub fn write_init(path: &std::path::Path) -> Result<(), String> {
     #[cfg(feature = "embedded-engine")]
-    let text = live_settings::render_init_nested(
-        "monokulo",
-        crate::settings::ALL,
-        &[live_settings::Nested {
+    let (engine_settings, engine_defaults) = (
+        engine::engine_settings::embedded_settings(),
+        embedded_engine_defaults(),
+    );
+    #[cfg(feature = "relay")]
+    let (relay_settings, relay_defaults) = (
+        push_relay::settings::embedded_settings(),
+        live_settings::Env::default(),
+    );
+    let nested: &[live_settings::Nested<'_>] = &[
+        #[cfg(feature = "embedded-engine")]
+        live_settings::Nested {
             table: crate::settings::ENGINE_TABLE,
             about: "The engine's own settings, used when it runs inside monokulo (engine.mode = \"embedded\", the default). With a remote engine they belong in that engine's own options file instead, and are refused here.",
-            settings: &engine::engine_settings::embedded_settings(),
-            defaults: &embedded_engine_defaults(),
-        }],
-    );
-    #[cfg(not(feature = "embedded-engine"))]
-    let text = live_settings::render_init("monokulo", crate::settings::ALL);
+            settings: &engine_settings,
+            defaults: &engine_defaults,
+        },
+        #[cfg(feature = "relay")]
+        live_settings::Nested {
+            table: crate::settings::RELAY_TABLE,
+            about: "The push relay's own settings, used when it runs inside monokulo (relay.enabled = true), and checked at every start even when it doesn't. A standalone monokulo-push-relay takes the same settings in its own relay.toml.",
+            settings: &relay_settings,
+            defaults: &relay_defaults,
+        },
+    ];
+    let text = live_settings::render_init_nested("monokulo", crate::settings::ALL, nested);
     live_settings::write_init(path, &text)?;
     #[expect(
         clippy::print_stdout,
@@ -288,6 +331,73 @@ mod tests {
                 .map(String::as_str),
             Some("true")
         );
+    }
+
+    /// The embedded push relay's settings are `--relay-…` options, handed
+    /// to it by its own keys; its secrets are listed with monokulo's, and
+    /// `--init` writes its tables after the engine's.
+    #[cfg(feature = "relay")]
+    #[test]
+    fn the_embedded_relays_settings_are_relay_options() {
+        let args = parse_args([
+            "monokulo",
+            "--relay-server-public-uri",
+            "https://relay.example.org",
+            "--relay-enabled",
+            "true",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.relay,
+            HashMap::from([(
+                "server.public_uri".to_string(),
+                "https://relay.example.org".to_string()
+            )])
+        );
+        assert_eq!(args.start.env.cli("relay.enabled").as_deref(), Some("true"));
+        for standalone in ["--relay-logging-level", "--relay-apns-key"] {
+            assert!(
+                parse_args(["monokulo", standalone, "x"]).is_err(),
+                "{standalone}"
+            );
+        }
+        assert!(parse_args(["monokulo", "--relay-server-public-uri", "http://x.org"]).is_err());
+        let help = command().render_long_help().to_string();
+        let environment = help
+            .split("Environment variables")
+            .nth(1)
+            .unwrap_or_default();
+        for secret in [
+            "MONOKULO_ENCRYPTION_KEY",
+            "MONOKULO_RELAY_APNS_KEY",
+            "MONOKULO_RELAY_FCM_CREDENTIALS",
+        ] {
+            assert!(environment.contains(secret), "{secret}: {help}");
+        }
+
+        let path = std::env::temp_dir()
+            .join(format!("monokulo-init-relay-{}", std::process::id()))
+            .join("monokulo.toml");
+        let _ = std::fs::remove_file(&path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        write_init(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert!(text.contains("#   MONOKULO_RELAY_APNS_KEY\n"), "{text}");
+        let relay = text.find("[relay.server]\n").expect("the relay's tables");
+        assert!(text.find("[engine.payment]\n").unwrap() < relay, "{text}");
+        assert!(
+            text[relay..].contains("# listen = \"0.0.0.0:8444\"\n"),
+            "{text}"
+        );
+        // The file it writes reads back, monokulo's handle leaving the
+        // relay's tables.
+        let uncommented = text.replace("# listen = ", "listen = ");
+        let file = crate::relay::own_options(
+            live_settings::OptionsFile::in_memory(uncommented)
+                .leaving(crate::settings::ENGINE_TABLE),
+        );
+        file.read(crate::settings::ALL).unwrap();
     }
 
     /// `--options` names the file; without it, the default is in the

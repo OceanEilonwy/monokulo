@@ -13,7 +13,7 @@ edition = "2021"
 # Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
 # normal build), never in production.
 test-support = ["abuse/test-support", "tor-service/test-support", "sqlite/test-support", "credentials/test-support", "service-runtime/test-support", "embedded-engine", "dep:jsonschema"]
-default = ["embedded-engine", "tor"]
+default = ["embedded-engine", "tor", "relay"]
 # The engine's own router as a transport for `EngineClient`: the engine
 # runs inside monokulo's process.
 # Without it the client only reaches an engine over HTTP.
@@ -22,6 +22,11 @@ embedded-engine = ["dep:engine", "dep:tower", "dep:http-body-util"]
 # feature), and in a test build the test engine's stand-in for it. Off by
 # default; every test build turns it on (`--features monokulo/snp`).
 snp = ["engine?/snp", "engine-test-support/snp"]
+# A push relay inside monokulo (`crate::relay`, when `relay.enabled`): the
+# Web Push service that hands pushes on to APNs and FCM. Without it the
+# relay's server code, its APNs and FCM clients and OAuth aren't built,
+# and `relay.enabled` stops monokulo, naming monokulo-push-relay.
+relay = ["dep:push-relay"]
 # Tor inside monokulo (`tor_service`, `tor.mode = inside`): Arti, the Rust
 # Tor, serves the onion service from this process. Without it only an
 # external tor can serve one.
@@ -75,6 +80,7 @@ pricing = { path = "../pricing" }
 # Web Push to connected apps (`crate::push`): their subscriptions, checked
 # where they're registered, and this instance's VAPID key.
 push = { path = "../push" }
+push-relay = { path = "../push-relay", optional = true }
 # Reads a verified domain's TXT records (`embed_domains::LiveDns`).
 dns-client = { path = "../dns-client" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).

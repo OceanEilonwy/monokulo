@@ -61,6 +61,11 @@ choice_value! {
 /// settings: `[engine.payment]` holds its `payment.…`.
 pub const ENGINE_TABLE: &str = "engine";
 
+/// The table of monokulo's options file that holds an embedded push
+/// relay's settings: `[relay.server]` holds its `server.…`. A value
+/// directly in `[relay]` is monokulo's own (`relay.enabled`).
+pub const RELAY_TABLE: &str = "relay";
+
 /// Settings renamed since an earlier release, old key and new. An options
 /// file still holding an old key stops monokulo, naming the new key.
 pub const RENAMED: &[(&str, &str)] = &[("public_url", "public_uri")];
@@ -186,6 +191,14 @@ settings! {
         description: "With engine.mode = remote: where monokulo reaches the engine, its server.bind as a URL. Refused when the engine is embedded.",
         example: "http://127.0.0.1:8443",
         applies: Restart,
+    },
+    RELAY_ENABLED: bool {
+        key: "relay.enabled",
+        default: false,
+        description: "Run a push relay inside monokulo, on its own listener: the Web Push service that hands pushes on to APNs and FCM for apps with your own Apple and Google keys. Its settings are this file's [relay.*] tables (server.public_uri is required) and its keys MONOKULO_RELAY_APNS_KEY and MONOKULO_RELAY_FCM_CREDENTIALS. Off, the tables are still checked, and nothing listens.",
+        example: "false",
+        applies: Restart,
+        editable: false,
     },
     ENGINE_STATUS_CACHE_MS: u64 {
         key: "engine.status_cache_ms",
@@ -1006,6 +1019,25 @@ impl Section for DatabaseConfig {
     }
 }
 
+/// Read once at start (`main.rs`, `crate::relay`): whether a push relay
+/// runs inside monokulo.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelaySwitch {
+    pub enabled: bool,
+}
+
+impl Section for RelaySwitch {
+    const NAME: &'static str = "relay";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&RELAY_ENABLED]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(RelaySwitch {
+            enabled: snapshot.get(&RELAY_ENABLED),
+        })
+    }
+}
+
 /// The admin tools that can be switched off while running: read on each
 /// request ([`MonokuloSettings::query_enabled`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1742,6 +1774,7 @@ impl MonokuloSettings {
         let admin_tools = builder.section::<AdminTools>();
         // Read once at start, before the registry exists (`main.rs`).
         builder.section::<DatabaseConfig>();
+        builder.section::<RelaySwitch>();
         builder.section::<BootConfig>();
         let server = builder.section::<ServerConfig>();
         builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
@@ -1798,6 +1831,7 @@ fn test_registry() -> Registry {
     builder.section::<PushConfig>();
     builder.section::<AdminTools>();
     builder.section::<DatabaseConfig>();
+    builder.section::<RelaySwitch>();
     builder.section::<BootConfig>();
     builder.section::<ServerConfig>();
     builder.section::<LoggingConfig>();
@@ -2140,6 +2174,7 @@ mod tests {
         assert!(BootConfig::from_snapshot(&snapshot).is_ok());
         assert!(ServerConfig::from_snapshot(&snapshot).is_ok());
         assert!(DatabaseConfig::from_snapshot(&snapshot).is_ok());
+        assert!(!RelaySwitch::from_snapshot(&snapshot).unwrap().enabled);
         assert!(AdminTools::from_snapshot(&snapshot).unwrap().query_enabled);
         assert_eq!(
             WebhookConfig::from_snapshot(&snapshot).unwrap(),
@@ -2160,6 +2195,7 @@ mod tests {
             TorConfig::keys(),
             LoggingConfig::keys(),
             DatabaseConfig::keys(),
+            RelaySwitch::keys(),
             BootConfig::keys(),
             ServerConfig::keys(),
             WebhookConfig::keys(),
