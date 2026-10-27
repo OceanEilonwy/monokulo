@@ -1207,6 +1207,30 @@ pub async fn create_order(
         )
         .await;
     }
+    // What was typed, read as an amount of that currency: digits and a dot,
+    // its own decimals, and for XMR never a piconero count. An unknown
+    // currency is left for `orders::make` to name.
+    let asked = currency.to_owned();
+    let known = state
+        .db
+        .read(move |db| crate::currencies::KnownCurrency::resolve(db, &asked))
+        .await
+        .ok()
+        .flatten();
+    let entered = match known.map(|c| c.parse_entered(amount)) {
+        Some(Ok(entered)) => Some(entered.to_string()),
+        Some(Err(problem)) => {
+            return render_create_order_page(
+                &state,
+                row,
+                &user,
+                Some(&form),
+                Some(problem.to_string()),
+            )
+            .await
+        }
+        None => None,
+    };
     let merchant_order_id = {
         let trimmed = form.merchant_order_id.trim();
         if trimmed.is_empty() {
@@ -1249,7 +1273,7 @@ pub async fn create_order(
         });
 
     let request = crate::orders::OrderRequest {
-        amount: amount.to_string(),
+        amount: entered.unwrap_or_else(|| amount.to_string()),
         currency: currency.to_string(),
         merchant_order_id,
         description,
@@ -1702,6 +1726,53 @@ mod tests {
         )
         .await;
         (store.id, store.public_key)
+    }
+
+    /// The dashboard's Create order reads its amount as typed: an XMR
+    /// order of "0.125" is made, and a piconero count or a comma is refused
+    /// with a message saying how to write it.
+    #[tokio::test]
+    async fn the_dashboard_takes_an_xmr_amount_as_typed_and_never_piconero() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(
+            &router,
+            "dashboard-xmr@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (id, _) = create_connection(&router, &state, &session).await;
+        let path = format!("/stores/{id}/orders/new");
+        for (amount, message) in [
+            ("125000000000", "not piconero"),
+            ("0,125", "with a dot for decimals"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &path,
+                    &session,
+                    &[("amount", amount), ("currency", "XMR")],
+                ))
+                .await
+                .unwrap();
+            assert_ne!(response.status(), StatusCode::FOUND, "{amount}");
+            let html = body_text(response).await;
+            assert!(
+                html.contains(message),
+                "{amount}: expected {message:?}, got: {html}"
+            );
+        }
+        let made = router
+            .clone()
+            .oneshot(form_post_request(
+                &path,
+                &session,
+                &[("amount", "0.125"), ("currency", "xmr")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(made.status(), StatusCode::FOUND);
     }
 
     #[tokio::test]

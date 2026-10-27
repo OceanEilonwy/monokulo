@@ -48,7 +48,7 @@ fn too_many_thresholds() -> String {
 }
 
 /// A custom threshold to add: its confirmations, and its amount.
-type NewThreshold = (u64, String);
+type NewThreshold = (u64, pricing::unit_amount::UnitAmount);
 
 /// What a save changes, once every card's values were checked.
 /// A saved website changed in the form, to be asked about first.
@@ -358,7 +358,7 @@ async fn plan(
             ));
         }
         match crate::currencies::KnownCurrency::base_of(row).parse_entered(new_amount) {
-            Ok(amount) => Some((confirmations, amount.to_string())),
+            Ok(amount) => Some((confirmations, amount)),
             Err(problem) => return Err((CONFIRMATIONS, problem.to_string())),
         }
     };
@@ -400,7 +400,7 @@ async fn plan(
             if existing
                 .iter()
                 .filter(kept)
-                .any(|t| parse(&t.unit_amount).is_ok_and(|a| a.to_string() == *amount))
+                .any(|t| parse(&t.unit_amount) == Ok(*amount))
             {
                 return Err((
                     CONFIRMATIONS,
@@ -553,6 +553,8 @@ async fn apply(
     if let Some((deleted, new_threshold)) = plan.thresholds {
         let threshold_id = uuid::Uuid::new_v4().to_string();
         let (store_id, proof) = (row.id.clone(), policy.proof());
+        // Stored as its plain spelling, what `UnitAmount::parse` reads back.
+        let new_threshold = new_threshold.map(|(n, amount)| (n, amount.to_string()));
         let new_amount = new_threshold.as_ref().map(|(_, amount)| amount.clone());
         let written = state
             .db

@@ -41,6 +41,11 @@ export function setup(props: StepperProps): StepperBehaviour {
       input = element as HTMLInputElement;
       input.addEventListener('input', sync);
       input.addEventListener('change', sync);
+      // A wheel over the focused field scrolls the page, not the number:
+      // scrolling past it must not change what will be saved.
+      input.addEventListener('wheel', event => {
+        if (document.activeElement === input) event.preventDefault();
+      }, { passive: false });
       sync();
     },
   };

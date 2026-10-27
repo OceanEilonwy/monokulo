@@ -27,17 +27,15 @@ function split(text: string): { whole: string; fraction: string; point: boolean 
 const group = (whole: string) => whole.replace(/\B(?=(\d{3})+(?!\d))/g, GROUP);
 
 /**
- * `text` written out: grouped, at most `decimals` places while typing
- * (`typing`), and once done (`!typing`) a started fraction filled to the
- * currency's places when it has 2 or fewer (`12.5` USD is `12.50`).
- * Places past `decimals` that are already there (a value the server had)
- * are kept, never cut: the field is then refused, not quietly changed.
+ * `text` written out: grouped, and once done (`!typing`) a started
+ * fraction filled to the currency's places when it has 2 or fewer (`12.5`
+ * USD is `12.50`). Places past `decimals` are kept, never cut: the field
+ * is then refused, not quietly changed.
  */
 export function format(text: string, decimals: number, typing = false): string {
   let { whole, fraction, point } = split(text);
   if (whole === '' && !point) return '';
   if (whole === '') whole = '0';
-  if (typing && fraction.length > decimals) fraction = fraction.slice(0, decimals);
   if (!typing) {
     // Cents read as cents (`12.50`); Monero's twelve places read shortest (`0.125`).
     if (decimals > 2) fraction = fraction.replace(/0+$/, '');
@@ -52,6 +50,13 @@ export function plain(text: string): string {
   const { whole, fraction, point } = split(text);
   if (whole === '' && fraction === '') return '';
   return (whole || '0') + (point && fraction ? POINT + fraction : '');
+}
+
+/** One spelling per amount (`1,250.50` and `1250.5` are both `1250.5`): what a change is judged by. */
+export function canonical(text: string): string {
+  const [whole, fraction = ''] = plain(text).split(POINT);
+  const trimmed = fraction.replace(/0+$/, '');
+  return whole === undefined || whole === '' ? '' : whole + (trimmed ? POINT + trimmed : '');
 }
 
 /** How many places past the point `text` has. */
@@ -97,6 +102,8 @@ export function caretAfter(text: string, marks: number): number {
  * `1.250,50`); a lone comma with 3 digits after it is the ambiguous case.
  */
 export function readPasted(text: string): string | undefined {
+  // A sign or an exponent is no amount to take apart: `-5` is not 5.
+  if (/[+\-−]\s*\d|\d\s*[eE]\s*[+\-]?\d/.test(text)) return undefined;
   const kept = text.replace(/[^0-9.,]/g, '');
   const lastDot = kept.lastIndexOf('.');
   const lastComma = kept.lastIndexOf(',');
