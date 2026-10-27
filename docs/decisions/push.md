@@ -869,3 +869,31 @@ principal renumbers, or not, when the stack is merged.
      relay's from 100; the gap is harmless, and renumbering would break
      the references the entries, commits and reviews make to each other.
      The merged log keeps both runs, in the order the stack merges.
+129. **P4 is approved** (review round 2, at `e625a6fd2`, draft PR #248
+     with base `push-targets`). The whole diff against
+     `origin/push-targets` was read again (41 files) and each of round 1's
+     four changes checked: the Live Activity is never ended and
+     `waitingCount` is no longer read (113), a delivered or gone push is
+     answered `201` or `404` whatever the handles database then does, the
+     failure logged with the handle and a test with triggers that refuse
+     every write (125), the two re-exports are gone (126), and
+     `[handles.apps.monokular]` as a TOML table is read end to end (127).
+     The gates were run again on the final commit: `cargo fmt --all
+     --check`; `cargo clippy --workspace --all-targets --all-features
+     --locked -D warnings`; `-p push-relay --lib --bins`; `-p monokulo
+     --lib --bins --no-default-features --features embedded-engine,tor`;
+     `cargo nextest run -p monokulo -p live-settings -p push-relay -p push
+     -p xtask --features monokulo/snp` (1076 passed, 2 skipped). The Docker
+     image was not rebuilt: no build input (`Dockerfile`, any
+     `Cargo.toml`, `Cargo.lock`, the toolchain) changed after the
+     engineer's successful build at `e7c4c5c5b`, and every source change
+     since compiles under the same clippy runs. Left for the wave end, as
+     planned: the rebase onto `push-delivery`, with P3's `Phase` comment
+     changed as 113 says.
+130. **A push the handle's limit refuses still counts against its
+     sender** (raised by the test engineer; kept as is). The sender did
+     sign and send it, and the sender's limit is the one that keeps one
+     monokulo or Bell from crowding out the others; counting only pushes
+     the handle's limit let through would let a sender hammer one spent
+     handle without touching its own budget. The order (sender first,
+     then handle) is documented in `limits.rs` with its unit test.
