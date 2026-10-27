@@ -959,3 +959,19 @@ after group 2's last entry (150).
      monokulo target kind writing `Start`, with the relay's platform, in
      one change. Monokular's design (sections 5 and 6) still describes the
      opt-in, for the Bell's branch to bring in line.
+158. **The APNs provider token is renewed by the clock read under its
+     lock, with a minute's slack backwards** (push audit #11). The token
+     was reused while the request's `now` lay in `issued_at` to
+     `issued_at + 50 min`, and `now` was read when the request came in,
+     before its body, its handle lookup and the limiter. Requests reach
+     the token out of that order, so in the seconds after a renewal one
+     that came in a second earlier found its `now` before `issued_at`,
+     took it for a clock set back and signed again: two tokens in a
+     second, which APNs answers 429 `TooManyProviderTokenUpdates`.
+     `Apns::token` now takes a clock and reads it under the lock (the
+     route's `now` still dates the push itself: its expiration and
+     timestamp), and reuses the token from `CLOCK_SKEW` (60 s) before
+     its `iat`, so NTP stepping the clock back a little doesn't renew it
+     either; a step back of more than a minute still signs anew. APNs
+     takes an `iat` a few seconds ahead of its own clock. FCM's access
+     token keeps the request's `now`: a stale one only renews it earlier.

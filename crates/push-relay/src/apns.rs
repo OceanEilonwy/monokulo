@@ -35,6 +35,12 @@ use crate::upstream::{self, Delivery};
 /// How long a provider token is reused.
 pub const TOKEN_REUSE: i64 = 50 * 60;
 
+/// How far the clock may go back (NTP stepping it, say) with the provider
+/// token still reused: further is a clock set back, which signs anew
+/// rather than reuse a token from its future. Apple answers a token
+/// renewed more than once every 20 minutes with 429.
+pub const CLOCK_SKEW: i64 = 60;
+
 /// The largest payload APNs takes for a notification or a Live Activity.
 pub const MAX_PAYLOAD: usize = 4096;
 
@@ -280,15 +286,17 @@ impl Apns {
         })
     }
 
-    /// The provider token for a request at `now`: the last one while it is
-    /// younger than [`TOKEN_REUSE`], else a new one. A clock set back
-    /// signs anew rather than reuse a token from its future.
-    pub fn token(&self, now: i64) -> Result<CompactJwt, JwtError> {
+    /// The provider token for a request now, as `clock` reads it (Unix
+    /// seconds): the last one while it is younger than [`TOKEN_REUSE`] and
+    /// no more than [`CLOCK_SKEW`] in the future, else a new one. The clock
+    /// is read under the lock, not when the request came in, so requests
+    /// reaching here out of their arrival order still renew the token once.
+    pub fn token(&self, clock: impl FnOnce() -> i64) -> Result<CompactJwt, JwtError> {
         let mut cached = self.token.lock();
-        if let Some(token) = cached
-            .as_ref()
-            .filter(|token| (token.issued_at..token.issued_at + TOKEN_REUSE).contains(&now))
-        {
+        let now = clock();
+        if let Some(token) = cached.as_ref().filter(|token| {
+            (token.issued_at - CLOCK_SKEW..token.issued_at + TOKEN_REUSE).contains(&now)
+        }) {
             return Ok(token.jwt.clone());
         }
         let jwt = self.key.signer().sign(
@@ -317,8 +325,8 @@ impl Apns {
     }
 
     /// Hands `push` to APNs for `handle`, and says what became of it.
-    pub async fn send(&self, handle: &Handle, push: &ApnsPush, now: i64) -> Delivery {
-        let token = match self.token(now) {
+    pub async fn send(&self, handle: &Handle, push: &ApnsPush) -> Delivery {
+        let token = match self.token(service_runtime::time::now_unix) {
             Ok(token) => token,
             Err(error) => {
                 tracing::error!(error = %error, "the APNs provider token can't be signed");
@@ -619,18 +627,33 @@ mod tests {
     #[test]
     fn a_provider_token_is_reused_for_50_minutes_then_renewed() {
         let apns = Apns::new(&apns_config(), Duration::from_secs(5)).unwrap();
-        let first = apns.token(NOW).unwrap();
-        assert_eq!(apns.token(NOW + TOKEN_REUSE - 1).unwrap(), first);
-        let renewed = apns.token(NOW + TOKEN_REUSE).unwrap();
+        let at = |now: i64| move || now;
+        let first = apns.token(at(NOW)).unwrap();
+        assert_eq!(apns.token(at(NOW + TOKEN_REUSE - 1)).unwrap(), first);
+        let renewed = apns.token(at(NOW + TOKEN_REUSE)).unwrap();
         assert_ne!(renewed, first);
-        assert_eq!(apns.token(NOW + TOKEN_REUSE + 60).unwrap(), renewed);
+        assert_eq!(apns.token(at(NOW + TOKEN_REUSE + 60)).unwrap(), renewed);
         // A clock set back doesn't reuse a token from its future.
-        assert_ne!(apns.token(NOW).unwrap(), renewed);
+        assert_ne!(apns.token(at(NOW)).unwrap(), renewed);
         // Refused by APNs: signed anew, even within the 50 minutes.
-        let current = apns.token(NOW).unwrap();
-        assert_eq!(apns.token(NOW + 1).unwrap(), current);
+        let current = apns.token(at(NOW)).unwrap();
+        assert_eq!(apns.token(at(NOW + 1)).unwrap(), current);
         apns.forget(&current);
-        assert_ne!(apns.token(NOW + 1).unwrap(), current);
+        assert_ne!(apns.token(at(NOW + 1)).unwrap(), current);
+    }
+
+    /// A clock a second (or up to a minute) behind the one that just
+    /// renewed the token reuses it: two tokens in a second would have
+    /// APNs answer 429 TooManyProviderTokenUpdates. A clock set back
+    /// further still signs anew.
+    #[test]
+    fn a_clock_a_moment_behind_the_renewal_reuses_its_token() {
+        let apns = Apns::new(&apns_config(), Duration::from_secs(5)).unwrap();
+        let at = |now: i64| move || now;
+        let renewed = apns.token(at(NOW)).unwrap();
+        assert_eq!(apns.token(at(NOW - 1)).unwrap(), renewed);
+        assert_eq!(apns.token(at(NOW - CLOCK_SKEW)).unwrap(), renewed);
+        assert_ne!(apns.token(at(NOW - 3600)).unwrap(), renewed);
     }
 
     #[test]
