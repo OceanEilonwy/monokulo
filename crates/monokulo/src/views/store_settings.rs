@@ -166,7 +166,7 @@ pub struct WalletPeriodView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreSection {
     Store,
-    Connections,
+    Integrations,
     Wallet,
     BaseCurrency,
     Confirmations,
@@ -181,7 +181,7 @@ impl StoreSection {
     pub fn from_id(id: &str) -> Option<Self> {
         [
             Self::Store,
-            Self::Connections,
+            Self::Integrations,
             Self::Wallet,
             Self::BaseCurrency,
             Self::Confirmations,
@@ -200,7 +200,7 @@ impl StoreSection {
     pub fn id(self) -> &'static str {
         match self {
             StoreSection::Store => "store",
-            StoreSection::Connections => "connections",
+            StoreSection::Integrations => "integrations",
             StoreSection::Wallet => "wallet",
             StoreSection::BaseCurrency => "base-currency",
             StoreSection::Confirmations => "confirmation-thresholds",
@@ -214,22 +214,29 @@ impl StoreSection {
 }
 
 /// The page's tabs, each a page of its own (`?tab=`), each the cards of one
-/// job: the store itself, how it takes payments, where they go, and what
-/// it's connected to.
+/// job: the store itself, how it takes payments, where they go, the
+/// domains it has proved it owns, the apps and the shop plugins connected
+/// to it, and the webhooks it calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreTab {
     General,
     Payments,
     Wallet,
-    Connections,
+    Domains,
+    Apps,
+    Integrations,
+    Webhooks,
 }
 
 impl StoreTab {
-    pub const ALL: [StoreTab; 4] = [
+    pub const ALL: [StoreTab; 7] = [
         StoreTab::General,
         StoreTab::Payments,
         StoreTab::Wallet,
-        StoreTab::Connections,
+        StoreTab::Domains,
+        StoreTab::Apps,
+        StoreTab::Integrations,
+        StoreTab::Webhooks,
     ];
 
     /// What `?tab=` names it by.
@@ -238,7 +245,10 @@ impl StoreTab {
             StoreTab::General => "general",
             StoreTab::Payments => "payments",
             StoreTab::Wallet => "wallet",
-            StoreTab::Connections => "connections",
+            StoreTab::Domains => "domains",
+            StoreTab::Apps => "apps",
+            StoreTab::Integrations => "integrations",
+            StoreTab::Webhooks => "webhooks",
         }
     }
 
@@ -247,7 +257,10 @@ impl StoreTab {
             StoreTab::General => "General",
             StoreTab::Payments => "Payments",
             StoreTab::Wallet => "Wallet",
-            StoreTab::Connections => "Connections",
+            StoreTab::Domains => "Domains",
+            StoreTab::Apps => "Apps",
+            StoreTab::Integrations => "Integrations",
+            StoreTab::Webhooks => "Webhooks",
         }
     }
 
@@ -263,9 +276,9 @@ impl StoreTab {
             }
             StoreSection::Confirmations | StoreSection::FxProvider => StoreTab::Payments,
             StoreSection::Wallet | StoreSection::KeyStorage => StoreTab::Wallet,
-            StoreSection::Connections | StoreSection::Domains | StoreSection::Webhooks => {
-                StoreTab::Connections
-            }
+            StoreSection::Domains => StoreTab::Domains,
+            StoreSection::Integrations => StoreTab::Integrations,
+            StoreSection::Webhooks => StoreTab::Webhooks,
         }
     }
 
@@ -393,7 +406,7 @@ impl StoreSettingsData {
                 let title = match sections.as_slice() {
                     [StoreSection::Wallet] => "Wallet changed",
                     [StoreSection::Store] => "Store saved",
-                    [StoreSection::Connections] => "Plugin disconnected",
+                    [StoreSection::Integrations] => "Plugin disconnected",
                     [StoreSection::KeyStorage] => "Keys moved",
                     [StoreSection::Domains] => "Verified domains updated",
                     [StoreSection::Webhooks] if self.webhooks.created_secret.is_some() => {
@@ -1121,12 +1134,10 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         (key_storage_card(store, key_storage))
                     }
                 },
-                StoreTab::Connections => {
-                    (super::store_site::connections_card(&store.sites))
-                    (super::connected_apps::apps_card(&store.apps))
-                    (verified_domains_card(store))
-                    (webhooks_card(store))
-                },
+                StoreTab::Domains => (verified_domains_card(store)),
+                StoreTab::Apps => (super::connected_apps::apps_card(&store.apps)),
+                StoreTab::Integrations => (super::store_site::integrations_card(&store.sites)),
+                StoreTab::Webhooks => (webhooks_card(store)),
             }
             (toast_region(store.toast().as_ref(), false))
             (super::store_site::dialogs(&store.sites))
@@ -1339,7 +1350,7 @@ mod tests {
 
     #[test]
     fn the_restriction_banner_needs_a_verified_domain_to_turn_on() {
-        let html = render(on(StoreTab::Connections));
+        let html = render(on(StoreTab::Domains));
         let off = banner(&html);
         assert!(
             off.contains(r#"<input type="hidden" name="restricted" value="on">"#),
@@ -1363,7 +1374,7 @@ mod tests {
 
         let html = render(StoreSettingsData {
             embed_can_restrict: true,
-            ..on(StoreTab::Connections)
+            ..on(StoreTab::Domains)
         });
         let off = banner(&html);
         let button = off.split("<button").last().unwrap();
@@ -1377,7 +1388,7 @@ mod tests {
         let html = render(StoreSettingsData {
             embed_can_restrict: true,
             embed_restricted: true,
-            ..on(StoreTab::Connections)
+            ..on(StoreTab::Domains)
         });
         let on = banner(&html);
         assert!(on.contains(r#"data-tone="success""#), "{on}");

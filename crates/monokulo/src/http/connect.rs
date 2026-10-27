@@ -1373,18 +1373,18 @@ mod tests {
             Some("https://shop.example.com/?wc-api=monokulo")
         );
 
-        // The site is locked; Connections lists the plugin.
+        // The site is locked; Integrations lists the plugin.
         let settings = format!("/stores/{id}/settings");
         let page = body_text(get(&router, &settings, &cookie).await).await;
         assert!(
             page.contains(&format!(
-                r##"Set by Acme Cart · <a href="{settings}?tab=connections#card-connections">see Connections</a>"##
+                r##"Set by Acme Cart · <a href="{settings}?tab=integrations#card-integrations">see Integrations</a>"##
             )),
             "{page}"
         );
         assert!(!page.contains(r#"name="store_site""#), "{page}");
         let connections =
-            body_text(get(&router, &format!("{settings}?tab=connections"), &cookie).await).await;
+            body_text(get(&router, &format!("{settings}?tab=integrations"), &cookie).await).await;
         assert!(
             connections.contains("shop.example.com · plugin 0.4.0 · connected "),
             "{connections}"
@@ -1474,9 +1474,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(done.status(), StatusCode::SEE_OTHER);
-        assert!(location(&done).ends_with("?saved=connections#card-connections"));
+        assert!(location(&done).ends_with("?saved=integrations#card-integrations"));
         let toast =
-            body_text(get(&router, &format!("{settings}?saved=connections"), &cookie).await).await;
+            body_text(get(&router, &format!("{settings}?saved=integrations"), &cookie).await).await;
         assert!(toast.contains("Plugin disconnected"), "{toast}");
 
         // The plugin's key no longer works; the store's new one does, and
@@ -1518,7 +1518,7 @@ mod tests {
             "{page}"
         );
         let connections =
-            body_text(get(&router, &format!("{settings}?tab=connections"), &cookie).await).await;
+            body_text(get(&router, &format!("{settings}?tab=integrations"), &cookie).await).await;
         assert!(connections.contains("<h4>Before</h4>"), "{connections}");
 
         // Connecting again: a new active row, with the new key.

@@ -1,8 +1,8 @@
-// A store's settings page (crates/monokulo/src/views/store_settings.rs): four
+// A store's settings page (crates/monokulo/src/views/store_settings.rs): seven
 // tabs, each a page of its own (`?tab=`). General's and Payments' settings
 // are cards in one form with one save bar (the settings components,
 // crates/ui); the wallet, the keys, the domains (domains.spec.js) and the
-// webhooks are cards of their own on the Wallet and Connections tabs. Every
+// webhooks are cards of their own on the Wallet, Domains and Webhooks tabs. Every
 // save works without JavaScript too.
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
@@ -69,8 +69,8 @@ test('a save says so on the card and in a toast; a refused one keeps what was ty
   await expect(page.locator('#card-diagnostics input[role="switch"]')).not.toBeChecked();
   expect((await events(page, 'mk-dirty')).at(-1)).toEqual({ count: 0, groups: [] });
 
-  // An action on the Connections tab: its card says what it did, once.
-  await page.goto(tab('connections'));
+  // An action on the Webhooks tab: its card says what it did, once.
+  await page.goto(tab('webhooks'));
   const webhooks = page.locator('#card-webhooks');
   await webhooks.locator('input[name="url"]').fill('https://hooks.example.com/monokulo');
   await webhooks.getByRole('button', { name: 'Add webhook' }).click();

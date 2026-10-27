@@ -290,7 +290,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     let page = body_text(
         get(
             &router,
-            &format!("/stores/{connection_id}/settings?tab=connections"),
+            &format!("/stores/{connection_id}/settings?tab=webhooks"),
             &session_token,
         )
         .await,
@@ -581,7 +581,7 @@ async fn deleting_a_webhook_is_asked_on_a_page_then_removes_its_deliveries() {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=connections"))
+                    .uri(format!("/stores/{connection_id}/settings?tab=webhooks"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -618,7 +618,7 @@ async fn deleting_a_webhook_is_asked_on_a_page_then_removes_its_deliveries() {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/stores/{connection_id}/settings?tab=connections"))
+                    .uri(format!("/stores/{connection_id}/settings?tab=webhooks"))
                     .header("cookie", format!("session={session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -728,7 +728,7 @@ async fn creating_a_webhook_refuses_a_bad_url_or_header_and_registers_nothing() 
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
+                .uri(format!("/stores/{connection_id}/settings?tab=webhooks"))
                 .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -846,7 +846,7 @@ async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/stores/{connection_id}/settings?tab=connections"))
+                .uri(format!("/stores/{connection_id}/settings?tab=webhooks"))
                 .header("cookie", format!("session={session_token}"))
                 .body(Body::empty())
                 .unwrap(),

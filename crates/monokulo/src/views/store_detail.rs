@@ -72,7 +72,7 @@ pub struct FailingDomainWarning {
 /// dismissed; also what fixi swaps in for the warning on Dismiss.
 pub fn compact_embed_warning(connection_id: &str) -> Markup {
     let settings = crate::base::url(format!(
-        "/stores/{connection_id}/settings?tab=connections#card-verified-domains"
+        "/stores/{connection_id}/settings?tab=domains#card-verified-domains"
     ));
     html! {
         (ui::Alert::new(html! { a href=(settings) { "Verify your domains" } }, ui::Tone::Warning)
@@ -97,7 +97,7 @@ pub struct StoreDetailViewModel {
 
 fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
     let settings = crate::base::url(format!(
-        "/stores/{connection_id}/settings?tab=connections#card-verified-domains"
+        "/stores/{connection_id}/settings?tab=domains#card-verified-domains"
     ));
     let dismiss = crate::base::url(format!(
         "/stores/{connection_id}/settings/embed-restriction/dismiss-warning"

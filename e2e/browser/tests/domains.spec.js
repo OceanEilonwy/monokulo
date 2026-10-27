@@ -19,7 +19,7 @@ const settings = '/stores/coverage-store/settings';
 test('a domain is added on its own pages, and its check answers in place', async ({ page, context }) => {
   await login(context);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=domains#card-verified-domains');
   const card = page.locator('#card-verified-domains');
   // The banner says the state; nothing verified, its button can't be used.
   const banner = card.locator('.mk-status-banner');
@@ -65,7 +65,7 @@ test('a domain is added on its own pages, and its check answers in place', async
 
   // Back in Settings it waits as Not verified, with its record; its card's
   // Check again answers in the card.
-  await page.goto(fixture.base_url + settings + '?tab=connections#card-verified-domains');
+  await page.goto(fixture.base_url + settings + '?tab=domains#card-verified-domains');
   const domain = page.locator('article.mk-item-card', { hasText: 'layout-check.example' });
   await expect(domain.locator('.tag')).toHaveText('Not verified');
   await expect(domain.locator('table.mk-dns-record')).toBeVisible();

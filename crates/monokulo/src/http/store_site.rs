@@ -75,7 +75,7 @@ fn open_orders(
     })
 }
 
-/// The website and connections parts of `row`'s settings page.
+/// The website and integrations parts of `row`'s settings page.
 pub(super) async fn site_view(
     state: &AppState,
     row: &crate::db::StoreConnectionRow,
@@ -349,7 +349,7 @@ pub async fn disconnect_form(
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return crate::base::see_other(format!(
-            "/stores/{id}/settings?tab=connections#card-connections"
+            "/stores/{id}/settings?tab=integrations#card-integrations"
         ));
     };
     crate::views::store_site::disconnect_page(&chrome, &view, active, None).into_response()
@@ -372,7 +372,7 @@ pub async fn disconnect_submit(
         };
     let Some(active) = view.active.as_ref().filter(|a| a.id == integration) else {
         return crate::base::see_other(format!(
-            "/stores/{id}/settings?tab=connections#card-connections"
+            "/stores/{id}/settings?tab=integrations#card-integrations"
         ));
     };
     let refuse = |message: String| {
@@ -437,5 +437,5 @@ pub async fn disconnect_submit(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     tracing::info!(store.id = %id, integration = %integration, "plugin disconnected");
-    super::orders::saved(&id, StoreSection::Connections)
+    super::orders::saved(&id, StoreSection::Integrations)
 }

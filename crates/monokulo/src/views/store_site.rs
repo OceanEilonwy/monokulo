@@ -2,8 +2,8 @@
 //! (`docs/design/user-testing/store-site-integrations.html`: A3, B1, C1).
 //!
 //! - The Store card's website is locked while a plugin is connected
-//!   ("Set by PrestaShop · see Connections").
-//! - The Connections card lists each plugin: its site, version, when it
+//!   ("Set by PrestaShop · see Integrations").
+//! - The Shop plugins card, on the Integrations tab, lists each plugin: its site, version, when it
 //!   connected and its last order, with "Disconnect…"; past ones fold
 //!   under "Before".
 //! - Changing or removing the website asks first (B1): blocked while a
@@ -44,7 +44,7 @@ pub struct OpenOrders {
     pub until: Option<String>,
 }
 
-/// What the website and connections parts of the settings page show.
+/// What the website and integrations parts of the settings page show.
 pub struct SiteView {
     pub store_id: String,
     pub store_name: String,
@@ -107,7 +107,7 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
             (ui::Setting::new("Your website", "store-site", html! {
                 (ui::LockedValue::new(view.site.as_str()).id("store-site").described_by("store-site-lock"))
                 (ui::FieldNote::new(html! {
-                    "Set by " (active.name) " · " a href=(format!("{}?tab=connections#card-connections", view.settings())) { "see Connections" }
+                    "Set by " (active.name) " · " a href=(format!("{}?tab=integrations#card-integrations", view.settings())) { "see Integrations" }
                 }).id("store-site-lock"))
             }))
         },
@@ -126,18 +126,18 @@ pub fn website_field(view: &SiteView, shown: &str) -> Markup {
     }
 }
 
-/// The Connections card: each plugin connected to the store, with
+/// The Shop plugins card, on the Integrations tab: each plugin connected to the store, with
 /// Disconnect…; the ones before folded under "Before". An action card of
 /// its own, outside the settings form.
-pub fn connections_card(view: &SiteView) -> Markup {
+pub fn integrations_card(view: &SiteView) -> Markup {
     let meta = if view.active.is_some() {
         "1 active"
     } else {
         "none"
     };
     html! {
-        section id="card-connections" class="settings-card" aria-labelledby="card-connections-title" {
-            header class="card-head" { h3 id="card-connections-title" { "Connections" } span class="card-meta" { (meta) } }
+        section id="card-integrations" class="settings-card" aria-labelledby="card-integrations-title" {
+            header class="card-head" { h3 id="card-integrations-title" { "Shop plugins" } span class="card-meta" { (meta) } }
             div class="card-body" {
                 @match &view.active {
                     Some(active) => {
@@ -154,7 +154,11 @@ pub fn connections_card(view: &SiteView) -> Markup {
                         }
                     }
                     None if view.site.is_empty() => {
-                        (ui::Hint::new("A shop plugin needs your website: add it above first."))
+                        (ui::Hint::new(html! {
+                            "A shop plugin needs your website: "
+                            a href=(format!("{}?tab=general#card-store", view.settings())) { "add it on the General tab" }
+                            " first."
+                        }))
                     }
                     None => {
                         (ui::Hint::new(html! {

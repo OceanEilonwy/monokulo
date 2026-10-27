@@ -63,8 +63,8 @@ impl StoreRef<'_> {
     }
 
     /// The settings tab the Verified domains card is on.
-    fn connections(&self) -> String {
-        format!("{}?tab=connections", self.settings())
+    fn domains_tab(&self) -> String {
+        format!("{}?tab=domains", self.settings())
     }
 
     fn domain(&self, domain_id: &str) -> String {
@@ -75,7 +75,7 @@ impl StoreRef<'_> {
         super::crumbs(&[
             (&format!("/stores/{}", self.id), self.name),
             (
-                &format!("/stores/{}/settings?tab=connections", self.id),
+                &format!("/stores/{}/settings?tab=domains", self.id),
                 "Settings",
             ),
         ])
@@ -420,7 +420,7 @@ pub fn add_page(chrome: &PageChrome, store: &StoreRef, typed: &str, error: Optio
                 .help_id("new-domain-help"))
             }))
             (ui::FormActions::new(ui::Slot::many([
-                ui::Slot::from(ui::LinkButton::new("Cancel", format!("{}#card-verified-domains", store.connections()))),
+                ui::Slot::from(ui::LinkButton::new("Cancel", format!("{}#card-verified-domains", store.domains_tab()))),
                 ui::Slot::from(ui::Button::new(then_icon("Next", icons::ARROW_RIGHT)).variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit)),
             ])))
         }
@@ -556,7 +556,7 @@ pub fn check_result(store: &StoreRef, domain: &DomainView, checked: bool) -> Mar
                     .icon(icon(icons::CHECK))
                     .block(true))
                     (ui::FormActions::new(
-                        ui::LinkButton::new(with_icon(icons::CHECK, "Done"), format!("{}#domain-{}", store.connections(), domain.id))
+                        ui::LinkButton::new(with_icon(icons::CHECK, "Done"), format!("{}#domain-{}", store.domains_tab(), domain.id))
                             .variant(ui::ButtonVariant::Primary),
                     ))
                 } @else if checked {

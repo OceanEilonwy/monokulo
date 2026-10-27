@@ -430,7 +430,7 @@ table[data-table="wallets"] .card-unit { display: none; }
 .confirm-dialog .setting-field, .confirm-dialog-page .setting-field { margin: var(--space-md) 0 0; }
 .confirm-dialog .setting-field .setting-label-row, .confirm-dialog-page .setting-field .setting-label-row { margin: 0 0 var(--space-sm); }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
-/* A store's plugins (`views::store_site`): the Connections card, one row each. */
+/* A store's plugins (`views::store_site`): the Shop plugins card, one row each. */
 .int-rows { list-style: none; margin: 0; padding: 0; }
 .connect-app-qr { display: grid; place-items: center; margin: var(--space-md) 0; }
 .connect-app-qr svg { width: min(280px, 100%); height: auto; }
