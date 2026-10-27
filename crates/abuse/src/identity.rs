@@ -23,6 +23,8 @@ use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 use std::str::FromStr;
 
+use axum::http::HeaderMap;
+
 /// One client, as the rate limiter, the stream cap and the challenge see it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ClientIdentity {
@@ -166,19 +168,24 @@ impl TrustedProxies {
 /// left-most one is used. A malformed entry ends the walk: everything to its
 /// left was written by someone we don't trust, so the last good address
 /// seen is used, or the peer if there is none.
-pub fn client_address(
-    peer: IpAddr,
-    forwarded_for: Option<&str>,
-    trusted: &TrustedProxies,
-) -> IpAddr {
+///
+/// Every `X-Forwarded-For` line of `headers` is read, in order, as one
+/// list: a proxy that adds a line of its own instead of appending to the
+/// client's (HAProxy's `option forwardfor`; RFC 9110 lets a list field
+/// repeat) leaves the client's own line first, and reading only that one
+/// would let the client name any address it likes. A line that isn't text
+/// ends the walk like a malformed entry.
+pub fn client_address(peer: IpAddr, headers: &HeaderMap, trusted: &TrustedProxies) -> IpAddr {
     if !trusted.contains(peer) {
         return peer;
     }
-    let Some(header) = forwarded_for else {
-        return peer;
-    };
+    let lines: Vec<&str> = headers
+        .get_all(X_FORWARDED_FOR)
+        .iter()
+        .map(|value| value.to_str().unwrap_or(UNREADABLE_LINE))
+        .collect();
     let mut chosen = peer;
-    for entry in header.rsplit(',') {
+    for entry in lines.iter().rev().flat_map(|line| line.rsplit(',')) {
         let Some(address) = parse_forwarded_entry(entry) else {
             break;
         };
@@ -189,6 +196,13 @@ pub fn client_address(
     }
     chosen
 }
+
+/// The header proxies name the client in.
+const X_FORWARDED_FOR: &str = "x-forwarded-for";
+
+/// What a line that isn't text is read as: no address, so the walk ends
+/// there.
+const UNREADABLE_LINE: &str = "?";
 
 /// One `X-Forwarded-For` entry: an address, possibly with a port
 /// (`1.2.3.4:5678`, `[2001:db8::1]:443`).
@@ -209,9 +223,19 @@ fn parse_forwarded_entry(entry: &str) -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    /// `X-Forwarded-For` as these lines.
+    fn forwarded(lines: &[&'static str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for line in lines {
+            headers.append(X_FORWARDED_FOR, HeaderValue::from_static(line));
+        }
+        headers
     }
 
     #[test]
@@ -264,17 +288,21 @@ mod tests {
         let trusted = TrustedProxies::parse("127.0.0.1").unwrap();
         // An untrusted peer can't claim to be someone else.
         assert_eq!(
-            client_address(ip("203.0.113.5"), Some("198.51.100.1"), &trusted),
+            client_address(ip("203.0.113.5"), &forwarded(&["198.51.100.1"]), &trusted),
             ip("203.0.113.5")
         );
         // A trusted proxy's forwarded address is used.
         assert_eq!(
-            client_address(ip("127.0.0.1"), Some("198.51.100.1"), &trusted),
+            client_address(ip("127.0.0.1"), &forwarded(&["198.51.100.1"]), &trusted),
             ip("198.51.100.1")
         );
         // The last untrusted address wins, so a spoofed left-most entry is ignored.
         assert_eq!(
-            client_address(ip("127.0.0.1"), Some("6.6.6.6, 198.51.100.1"), &trusted),
+            client_address(
+                ip("127.0.0.1"),
+                &forwarded(&["6.6.6.6, 198.51.100.1"]),
+                &trusted
+            ),
             ip("198.51.100.1")
         );
         // A chain of trusted proxies is walked through.
@@ -282,33 +310,82 @@ mod tests {
         assert_eq!(
             client_address(
                 ip("127.0.0.1"),
-                Some("6.6.6.6, 198.51.100.1, 10.0.0.2"),
+                &forwarded(&["6.6.6.6, 198.51.100.1, 10.0.0.2"]),
                 &chain
             ),
             ip("198.51.100.1")
         );
         // Ports and brackets are tolerated.
         assert_eq!(
-            client_address(ip("127.0.0.1"), Some("[2001:db8::1]:443"), &trusted),
+            client_address(
+                ip("127.0.0.1"),
+                &forwarded(&["[2001:db8::1]:443"]),
+                &trusted
+            ),
             ip("2001:db8::1")
         );
         assert_eq!(
-            client_address(ip("127.0.0.1"), Some("198.51.100.1:5000"), &trusted),
+            client_address(
+                ip("127.0.0.1"),
+                &forwarded(&["198.51.100.1:5000"]),
+                &trusted
+            ),
             ip("198.51.100.1")
         );
         // No header, or garbage: the peer.
         assert_eq!(
-            client_address(ip("127.0.0.1"), None, &trusted),
+            client_address(ip("127.0.0.1"), &forwarded(&[]), &trusted),
             ip("127.0.0.1")
         );
         assert_eq!(
-            client_address(ip("127.0.0.1"), Some("not-an-ip"), &trusted),
+            client_address(ip("127.0.0.1"), &forwarded(&["not-an-ip"]), &trusted),
             ip("127.0.0.1")
         );
         // Garbage to the left of a good entry stops the walk at the good entry.
         assert_eq!(
-            client_address(ip("127.0.0.1"), Some("junk, 198.51.100.1"), &trusted),
+            client_address(
+                ip("127.0.0.1"),
+                &forwarded(&["junk, 198.51.100.1"]),
+                &trusted
+            ),
             ip("198.51.100.1")
+        );
+    }
+
+    /// A proxy that adds its own line leaves the client's first: every
+    /// line is read, from the last, so the client's invented address is
+    /// to the left of the one the proxy vouched for.
+    #[test]
+    fn every_forwarded_for_line_is_read_from_the_last() {
+        let trusted = TrustedProxies::parse("127.0.0.1").unwrap();
+        assert_eq!(
+            client_address(
+                ip("127.0.0.1"),
+                &forwarded(&["203.0.113.9", "198.51.100.1"]),
+                &trusted
+            ),
+            ip("198.51.100.1")
+        );
+        // Lines and the entries in them are one list.
+        let chain = TrustedProxies::parse("127.0.0.1, 10.0.0.0/8").unwrap();
+        assert_eq!(
+            client_address(
+                ip("127.0.0.1"),
+                &forwarded(&["6.6.6.6", "198.51.100.1, 10.0.0.2", "10.0.0.3"]),
+                &chain
+            ),
+            ip("198.51.100.1")
+        );
+        // A line that isn't text ends the walk, at what was read after it.
+        let mut headers = forwarded(&["198.51.100.1"]);
+        headers.append(
+            X_FORWARDED_FOR,
+            HeaderValue::from_bytes(b"\xff6.6.6.6").unwrap(),
+        );
+        headers.append(X_FORWARDED_FOR, HeaderValue::from_static("10.0.0.2"));
+        assert_eq!(
+            client_address(ip("127.0.0.1"), &headers, &chain),
+            ip("10.0.0.2")
         );
     }
 }
