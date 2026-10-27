@@ -426,3 +426,37 @@ overrule any of them; a replacement is recorded under the same number.
     `store_connections` without a cascade, so the delete fails. The
     cascade that runs is the app's, tested from the dashboard and from
     `DELETE /api/v1/app`.
+
+## Push targets' review (the principal)
+
+68. **P2 is approved as it stands** (review round 1, at `dc2e93881`
+    plus this entry). The whole diff against `origin/push-crate` was read
+    and the gates run again: `cargo fmt --check`, `cargo clippy
+    --workspace --all-targets --all-features --locked -D warnings`,
+    `cargo +stable clippy -p push`, the fuzz manifest, the test-support
+    grep, `cargo nextest run -p monokulo -p engine-protocol -p push -p
+    xtask` (931 passed) and `cargo xtask api openapi`. Decisions 53 to 67
+    stand. Nothing below changes code; the one edit is a rewrapped doc
+    comment on the entry.
+69. **A `PushTarget` carries `store_id` and `failures`, which nothing
+    reads yet.** They are the columns the delivery worker (P3, next in
+    this stack) reads: `failures` against `push.target_failure_limit`,
+    `store_id` to pick a store's targets. A row struct is the row, as
+    `AppConnection` and `DeliveryRow` are, and registration already resets
+    `failures` (decision 56), so they stay rather than being added back
+    in a day.
+70. **`db::push` takes the API's `ClientId` scalar**, the first `db`
+    module to import from `api::runtime::scalars`. A client id has one
+    definition, and a row's `client_id` is parsed where its `endpoint` and
+    `events` are, so an unreadable row is one error (`500`) rather than a
+    body that can't be built. One crate, no cycle; a second db module
+    needing a scalar would be the point to move the scalars down.
+71. **A form sent as a JSON array (decision 66) stays a follow-up for
+    `extract::json_body`**, all routes at once, outside this stack: every
+    field is still checked, so nothing wrong is stored; refusing it on
+    one route alone would make the routes disagree.
+72. **The stack takes the test engineer's merge (decision 64).** P3
+    (`push-delivery`) was branched from `4c8665177` and must take
+    `aee1085de` and `dc2e93881` before its review; its decisions follow
+    72. The final rebase of the stack onto `main` drops the merge commit
+    and keeps the numbering 53 to 72 as it is here.
