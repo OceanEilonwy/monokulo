@@ -72,6 +72,9 @@ service-runtime = { path = "../service-runtime" }
 rate-limit = { path = "../rate-limit" }
 # XMR amounts and the exchange-rate providers orders are priced with.
 pricing = { path = "../pricing" }
+# Web Push to connected apps (`crate::push`): their subscriptions, checked
+# where they're registered, and this instance's VAPID key.
+push = { path = "../push" }
 # Reads a verified domain's TXT records (`embed_domains::LiveDns`).
 dns-client = { path = "../dns-client" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).

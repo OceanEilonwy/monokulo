@@ -21,9 +21,15 @@ use crate::stores::Site;
 mod apps;
 mod order_changes;
 mod order_requests;
+mod push;
 mod webhooks;
 pub use apps::{AppConnection, AppId, AppOrder, DeletedApp, NewApp};
 pub use order_requests::{OrderPrice, Reserved};
+// `self::`: `push` is also the Web Push crate.
+pub use self::push::{
+    NewPushTarget, PushTarget, PushTargetId, Registration, StoredVapidKey, TargetKind,
+    MAX_TARGETS_PER_APP,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
     Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewTestDelivery,
@@ -188,6 +194,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         51,
         include_str!("../migrations/0051_order_event_position_event_id.sql"),
     ),
+    (52, include_str!("../migrations/0052_push_targets.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

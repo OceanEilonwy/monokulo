@@ -131,3 +131,8 @@ id!(
     /// An app connected to a store (monokulo's `app_connections.id`).
     AppId
 );
+id!(
+    /// Where a connected app wants its store's sales pushed (monokulo's
+    /// `push_targets.id`).
+    PushTargetId
+);

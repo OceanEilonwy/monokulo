@@ -40,8 +40,11 @@
 //!   (sk, ak), `app` (ak) or `anyone` (with no key too). A key it doesn't
 //!   admit gets `403`, no key `401`; a key this Monokulo doesn't know is
 //!   `401` before any handler runs (`http::abuse`, `runtime::auth`). A
-//!   handler with a `form` is a HAL-FORMS template on its resource, and a
-//!   type (`Form<orders::create>`) another body can offer. It answers a
+//!   handler with a `form` is a HAL-FORMS template on its resource, sent
+//!   to the resource itself (parameters filled in: a push target's
+//!   `unregister-push-target` is sent to that push target), and, on a
+//!   path without parameters, a type (`Form<orders::create>`) another body
+//!   can offer. It answers a
 //!   body, `Created`, `NoContent`, `Cached` (a body its caller may keep) or
 //!   an `EventStream` of the events its type lists. `problems = [...]`
 //!   names each `Problem` its own body may answer with (`InvalidAmount`,
@@ -92,7 +95,7 @@ pub mod prelude {
     };
     pub use super::runtime::problem::{internal, not_found, Problem};
     pub use super::runtime::scalars::{
-        Amount, CurrencyCode, Description, IdempotencyKey, MerchantRef,
+        Amount, ClientId, CurrencyCode, Description, IdempotencyKey, MerchantRef,
     };
     pub use crate::db::OrderId;
     pub use api_macros::{delete, get, post};
