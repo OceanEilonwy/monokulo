@@ -175,6 +175,29 @@ fn target_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PushTarget> {
     })
 }
 
+/// The push targets `rows` holds that can be read. One that can't (written
+/// by a build that reads it otherwise, or by hand) is left out and logged,
+/// as an unreadable push is given up on ([`Db::due_push_deliveries`]): it
+/// would otherwise fail every read of its store's targets, and with it
+/// every order event's transaction, which stops every store's webhooks
+/// behind it. Registering its `client_id` again rewrites it.
+fn readable_targets(rows: rusqlite::Rows<'_>) -> rusqlite::Result<Vec<PushTarget>> {
+    rows.mapped(|row| Ok((row.get::<_, PushTargetId>("id")?, target_from_row(row))))
+        .filter_map(|read| match read {
+            Ok((_, Ok(target))) => Some(Ok(target)),
+            Ok((id, Err(error))) => {
+                tracing::error!(
+                    push_target.id = %id,
+                    error = %error,
+                    "a push target can't be read; it is pushed nothing until its app registers it again"
+                );
+                None
+            }
+            Err(e) => Some(Err(e)),
+        })
+        .collect()
+}
+
 /// `events` once each, in [`SaleKind::ALL`]'s order, as `push_targets.events`
 /// keeps them.
 fn events_json(events: &[SaleKind]) -> String {
@@ -448,15 +471,14 @@ impl Db {
         Ok(Registration::Registered(Box::new(target)))
     }
 
-    /// An app's push targets, oldest first.
+    /// An app's push targets that can be read ([`readable_targets`]),
+    /// oldest first.
     pub fn list_push_targets(&self, app_id: &AppId) -> Result<Vec<PushTarget>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM push_targets WHERE app_id = ?1 ORDER BY created_at_utc, rowid",
         )?;
-        let rows = stmt
-            .query_map(params![app_id], target_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let targets = readable_targets(stmt.query(params![app_id])?)?;
+        Ok(targets)
     }
 
     /// The app's push target `id`; `None` for one it doesn't have (another
@@ -611,16 +633,15 @@ impl Db {
         Ok(queued)
     }
 
-    /// Every push target of the store's apps, the last registered first.
+    /// Every push target of the store's apps that can be read
+    /// ([`readable_targets`]), the last registered first.
     fn store_push_targets(&self, store_id: &ConnectionId) -> Result<Vec<PushTarget>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT * FROM push_targets WHERE store_id = ?1
              ORDER BY registered_seq DESC",
         )?;
-        let rows = stmt
-            .query_map(params![store_id], target_from_row)?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
+        let targets = readable_targets(stmt.query(params![store_id])?)?;
+        Ok(targets)
     }
 
     /// The orders of `order`'s app still waiting for a payment at `now`:
