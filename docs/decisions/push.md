@@ -984,3 +984,106 @@ every package was approved.
      part and a pointer here. Everything the owner needs to review the
      build is in those two files and the two decision logs; nothing is
      only in a chat.
+
+## Push audit fixes: one sale, one target (the fixer of group 1)
+
+The push audit's first fix group (`scripts/audit/REPORT.md` on the audit
+worktree: findings 13, 22, 15's monokulo half and 6), on `push-delivery`.
+Numbered after `push-relay`'s last entry (138), so the numbers hold when
+`push-delivery` is merged up into it.
+
+139. **After `sale.partial` a Live Activity gets no `paymentURI`** (push
+     audit #6; replaces decision 74's "`waiting`, `partial`"). The URI's
+     `tx_amount` is the order's full amount, and the engine's partial event
+     doesn't say what arrived, so a code then would ask the customer for
+     the whole price again. The phase stays `waiting` (the rest can still
+     come); the merchant sends the customer to the checkout, whose code
+     asks for what is left. Carrying the amount due in the engine's event
+     was the other way; it changes the engine's protocol for one field the
+     checkout already shows.
+140. **A push's `Topic` is per target: the first 32 hex digits of
+     SHA-256(target id ‖ 0x00 ‖ order id)** (push audit #22; replaces
+     decision 73's "of the order id"). The topic crosses the push service,
+     the relay (as `apns-collapse-id` and FCM's `collapse_key`) and any
+     distributor in the clear, and one value per order across every target
+     of the store told each of them exactly which devices are one store's,
+     even with one VAPID key for thousands of stores. RFC 8030 collapses
+     within one subscription, so sharing gained nothing. Supersession stays
+     keyed on (target, topic). A plain hash rather than an HMAC: the target
+     id is random and never leaves monokulo but in the app's own API
+     answers, so nobody who sees a topic can recompute it.
+141. **A `live-activity` target is pushed only its own app's orders, for
+     every event** (push audit #13; narrows decision 76 for Live
+     Activities, `PushTarget::hears_of`). An app is one till, and its Live
+     Activity is one island whose content state iOS replaces with whatever
+     push lands last, no app code between. Store-wide, another till's
+     `sale.waiting` put that sale's amount and payment code on this till's
+     island (its customer paid the wrong sale) and its `sale.paid` read as
+     this till's sale paid. The design's store-wide island ("the newest
+     plus +N more") was the other way: it needs the state to name the sale
+     in the clear and monokulo to elect the newest waiting sale, for a
+     view no till asked for; `encrypted` targets keep the store-wide
+     fan-out, where the app's own code decides what to show.
+142. **`waitingCount` counts the target's own app's orders** (replaces
+     decision 93's "the store's"): the island shows only its own app's
+     sales, so "+1 more" for another till's would point at a sale it
+     can't show.
+143. **A target's pushes are sent in the order they were queued, one at
+     a time** (push audit #13), different targets' at once, up to the
+     same 16. A till's two overlapping sales are two topics, so
+     supersession doesn't order them; sent concurrently, or one retried
+     after the other was sent, the older sale's state could land last and
+     own the island. So a push is due only once every older unsent push
+     to its target is (`due_push_deliveries`, a window over the unsent
+     pushes: one waiting for a retry holds the newer back until it is
+     sent, given up or superseded, at most its TTL), and the worker sends
+     each target's batch in order while other targets' go beside them. In
+     a batch too: a push left to be sent later (failed with a retry, or
+     put off by its store's budget) ends its target's turn, and the rest
+     of the target's batch stays queued behind it, untouched; one given up
+     on doesn't, and one whose target is gone ends it with the target.
+     Holding a newer push back costs nothing a failing push service
+     wouldn't cost it anyway. Superseding every older push to a Live
+     Activity instead (only the newest state matters to the island) was
+     the other way, but it would drop an older sale's `paid` alert.
+144. **Each store's apps are sent at most `push.per_store_per_minute`
+     pushes a minute, 120 by default, retries included** (push audit #15,
+     its monokulo half). Every store signs with this instance's one VAPID
+     key and the relay's only fairness limit is per sender (600 a minute on
+     relay.monokulo.com), so one busy or hostile store spent it for all of
+     them, and their pushes then sat out 429s until they expired. Only
+     monokulo knows stores apart, so the share is taken here, at sending
+     (what the relay counts), with the shared fixed-window `RateLimiter`
+     keyed by store on the `PushClient`; it lives in memory, and a restart
+     gives every store a fresh minute, which is at most one extra budget.
+     A push over its store's budget is put off, unattempted and uncounted,
+     to the store's next minute (`Db::defer_push`), or given up (`its
+     store's pushes for the minute were spent until it expired`) when that
+     is past its TTL. 120 is about six sales a minute for a store with four
+     tills of two targets each; the description tells the admin to keep it
+     well below the relay's per-sender limit. Budgeting at queueing was the
+     other way, but retries spend the relay's budget too.
+145. **A store's targets that share an endpoint are pushed once per
+     event**, as the last registered of them that wants it (push audit
+     #15). An
+     endpoint is one subscription; eight targets of an app (or of several
+     apps) on one relay handle made eight pushes of each sale, eight times
+     the store's share of the relay's budget, for one device. Refusing such
+     a registration was the other way, but two apps on one device may be
+     handed the same relay handle for this instance's key, and the second
+     app's registration would have failed for no fault of its own. The
+     last registered, not the oldest: the relay hands a device the same
+     handle for the same token and sender key, so a device re-paired as a
+     new app connection (its old one left on the dashboard) registers the
+     same endpoint with new keys; pushed as the oldest, its pushes went
+     encrypted to keys it no longer holds, the push service took them, and
+     the live install never heard a push. "Last registered" counts a
+     registration in place too (`push_targets.registered_seq`, one more
+     than the highest at each registration: no clock ties), since an app
+     registers again whenever it runs. Having a registration delete the
+     store's other targets on its endpoint was the other way; it would
+     drop their event choices, and the budget is the same either way.
+146. **The relay's half of push audit #15** (charge the sender only for
+     what passes the handle's limit, and size `per_sender_per_minute` for
+     a multi-store instance and the Bell) is fixed on `push-relay`, where
+     the relay is.

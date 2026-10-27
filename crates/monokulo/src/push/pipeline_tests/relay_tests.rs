@@ -289,7 +289,10 @@ async fn a_paid_sale_reaches_apns_through_the_relay_and_decrypts_on_the_device_o
     assert_eq!(received.header("apns-push-type"), "alert");
     assert_eq!(received.header("apns-topic"), BUNDLE);
     assert_eq!(received.header("apns-priority"), "10");
-    assert_eq!(received.header("apns-collapse-id"), policy_topic(&order));
+    assert_eq!(
+        received.header("apns-collapse-id"),
+        policy_topic(&target, &order)
+    );
     let expiration: i64 = received.header("apns-expiration").parse().unwrap();
     let now = crate::now_unix();
     assert!(
@@ -350,7 +353,10 @@ async fn a_paid_sale_reaches_fcm_through_the_relay_as_a_data_message_over_http()
     let message = &received.body["message"];
     assert_eq!(message["token"], FCM_TOKEN);
     assert_eq!(message["android"]["priority"], "HIGH");
-    assert_eq!(message["android"]["collapse_key"], policy_topic(&order));
+    assert_eq!(
+        message["android"]["collapse_key"],
+        policy_topic(&target, &order)
+    );
     let sale = decrypted(&device, &message["data"]["aes128gcm"]);
     assert_eq!(sale["event"], "sale.paid");
     assert_eq!(sale["order_id"], order.as_str());
@@ -360,10 +366,11 @@ async fn a_paid_sale_reaches_fcm_through_the_relay_as_a_data_message_over_http()
 
 /// An iPhone's Live Activity: its push token registered on the relay's
 /// `apns-liveactivity` platform and handed to Monokulo as a `live-activity`
-/// target showing the code. Another app's new sale reaches APNs as an
-/// update whose `content-state` is the sale's state, the payment URI in it
-/// as asked and the order's id nowhere; the sale paid, the update carries
-/// the alert, no URI, and the activity is never ended by the relay.
+/// target showing the code. The till's own sale waiting again (its payment
+/// spent twice) reaches APNs as an update whose `content-state` is the
+/// sale's state, the payment URI in it as asked and the order's id
+/// nowhere; the sale paid, the update carries the alert, no URI, and the
+/// activity is never ended by the relay.
 #[tokio::test]
 async fn a_live_activity_is_updated_through_the_relay_as_the_sale_moves_over_http() {
     let chain = chain().await;
@@ -376,11 +383,14 @@ async fn a_live_activity_is_updated_through_the_relay_as_the_sale_moves_over_htt
             &chain.vapid_public_key(),
         )
         .await;
-    let other = world.another_app().await;
+    let ak = world.fixture.ak.clone();
     world
-        .register(&other, live_activity("island", &endpoint, true))
+        .register(&ak, live_activity("island", &endpoint, true))
         .await;
-    let order = world.order(&world.fixture.ak.clone()).await;
+    let order = world.order(&ak).await;
+    // The till that made the sale shows it already.
+    assert_eq!(world.tick().await, 0);
+    world.queue(&world.event(1, &order, "order.pending"));
     assert_eq!(world.tick().await, 1);
 
     let waiting = chain.apns.only();
@@ -403,7 +413,7 @@ async fn a_live_activity_is_updated_through_the_relay_as_the_sale_moves_over_htt
     assert!(state.get("order_id").is_none());
     assert_eq!(aps["stale-date"], state["expiresAt"]);
 
-    world.queue(&world.event(1, &order, "order.paid"));
+    world.queue(&world.event(2, &order, "order.paid"));
     assert_eq!(world.tick().await, 1);
     let paid = chain.apns.only();
     assert_eq!(paid.header("apns-priority"), "10");

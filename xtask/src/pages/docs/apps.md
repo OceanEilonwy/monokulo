@@ -234,9 +234,16 @@ pushes. An app may have 8 push targets.
 ### What arrives
 
 Each sale event of [Follow them](#4-follow-them) that a target wants is
-pushed to it, for every order any of the store's apps makes. The
+pushed to it: to an `encrypted` target for every order any of the store's
+apps makes, to a `live-activity` target only for the orders its own app
+makes (a Live Activity is one till's island: another till's sale, its
+alert or its payment code there would be about the wrong sale). The
 `sale.waiting` of a new order isn't pushed to the app that made it: it
-shows the sale already.
+shows the sale already. One target's pushes are sent one after another,
+in the order they were queued, so the last to arrive is the latest.
+Targets of the store with the same `endpoint` are one subscription, and
+are pushed once per event, as the one of them last registered that wants
+it: register again whenever your app gets new subscription keys.
 
 An `encrypted` target gets the event's JSON, as the stream sends it, with
 the `api_version` webhooks carry, encrypted to the subscription's keys
@@ -255,7 +262,8 @@ A `live-activity` target gets the state an iOS Live Activity shows, plain
 JSON (`Content-Type: application/json`), through the relay. It never holds
 the order's id; `sale` is the app's own `merchant_order_id`, when it gave
 one, and `paymentURI` is there only for a target registered with
-`include_payment_uri`, and only while the sale takes a payment:
+`include_payment_uri`, and only at `sale.waiting`, while the sale waits
+for its first payment:
 
 ```json
 { "phase": "waiting", "sale": "#1042", "amount": "24.50", "currency": "USD",
@@ -264,13 +272,17 @@ one, and `paymentURI` is there only for a target registered with
 ```
 
 `phase` is `waiting` (`sale.waiting`, and `sale.partial`: the rest can
-still come), `seen`, `confirming`, `paid`, or `expired` (`sale.expired`,
-and `sale.double_spend`: no payment). `waitingCount` is the store's app
+still come; a part payment's push has no `paymentURI`, as the order's full
+`xmr` is no longer what is owed: send the customer to the checkout, which
+asks for what is left), `seen`, `confirming`, `paid`, or `expired` (`sale.expired`,
+and `sale.double_spend`: no payment). `waitingCount` is the app's own
 orders still waiting for a payment, this one included while it is.
 
-Every push about one order has the same `Topic`, so a push service holding
-pushes for a device that is away keeps only the latest. It is a hash, not
-the order's id, which a push service shouldn't learn:
+Every push about one order to one target has the same `Topic`, so a push
+service holding pushes for a device that is away keeps only the latest. It
+is a hash of the target and the order, not the order's id, which a push
+service shouldn't learn, and each target's is its own, so no two devices
+of a store carry the same value:
 
 | Event | `Urgency` | `TTL` |
 | --- | --- | --- |
@@ -283,7 +295,9 @@ the order's id, which a push service shouldn't learn:
 admin's `push.default_ttl_secs`). A push is never sent after its `TTL`, and
 a newer one about the same order replaces one not sent yet. One that
 fails is tried again 5, 20, 80 and 320 seconds later (or when the push
-service's `Retry-After` says), five times at most.
+service's `Retry-After` says), five times at most. A store's apps are sent
+at most 120 pushes a minute (the admin's `push.per_store_per_minute`),
+retries included; the rest wait for the next minute.
 
 A push service answering `404` or `410` has dropped the subscription:
 Monokulo deletes the target. So it does after 20 failures in a row. Read

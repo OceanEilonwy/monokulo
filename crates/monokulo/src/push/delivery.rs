@@ -18,6 +18,15 @@
 //! `429` doesn't count: the push service is limiting this sender, not
 //! refusing the device). The app registers again when it next runs.
 //!
+//! Each store's apps are sent at most `push.per_store_per_minute` pushes
+//! (120) a minute, retries included: every store signs with this
+//! instance's one VAPID key, and the push relay limits each sender, so
+//! one busy or hostile store would otherwise spend the relay's budget for
+//! every other. A push over its store's budget waits, unattempted, for the
+//! store's next minute, or is given up when that is past its TTL. And a
+//! store's targets that share an endpoint are pushed once per event, as
+//! the last registered (`db::push`).
+//!
 //! An endpoint is a capability: whoever has it can push to the device
 //! (with its keys) or at least wake it. So it is never written to a log
 //! line or a delivery's error, only its host.
@@ -34,14 +43,18 @@ use ::push::{
     encrypt, EncryptError, Message, Options, PlainJson, SendError, Sender, SubscriptionKeys, Ttl,
 };
 
+use rate_limit::RateLimiter;
+
 use crate::db::{
-    Database, DbError, DuePush, PushAttempt, PushResult, TargetAfter, TargetKind, EXPIRED_UNSENT,
+    ConnectionId, Database, DbError, DuePush, PushAttempt, PushResult, PushTargetId, TargetAfter,
+    TargetKind, EXPIRED_UNSENT,
 };
 use crate::outbound::{check_host, request_error_text, Outbound, Reach};
 use crate::settings::PushConfig;
 use crate::webhooks::delivery::{Clock, SystemClock};
 
-/// Most pushes picked per batch, and most sent at once.
+/// Most pushes picked per batch, and most sent at once (one target's one
+/// at a time).
 pub const DELIVERY_BATCH: u32 = 50;
 const DELIVERY_CONCURRENCY: usize = 16;
 /// How often old pushes are deleted (`push.keep_days`).
@@ -51,6 +64,10 @@ const PRUNE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// was lowered below what it had made.
 pub const NO_ATTEMPTS_LEFT: &str = "no attempts left";
 
+/// Why a push is given up on unsent when its store's pushes for the
+/// minute are spent and it would expire before the next.
+pub const OVER_BUDGET: &str = "its store's pushes for the minute were spent until it expired";
+
 /// The wait after a failed attempt, `attempts_made` counting it: 5 seconds
 /// after the first, four times longer each time, up to 320 seconds.
 pub fn backoff_seconds(attempts_made: u32) -> i64 {
@@ -59,13 +76,15 @@ pub fn backoff_seconds(attempts_made: u32) -> i64 {
 
 /// What pushes are sent with: this instance's VAPID key, a sender for each
 /// [`Reach`] over the outbound clients (each sender reuses its signed
-/// tokens per push service), and the `sub` claim they carry.
+/// tokens per push service), the `sub` claim they carry, and what each
+/// store has been sent this minute (`push.per_store_per_minute`).
 pub struct PushClient {
     outbound: Outbound,
     vapid: Arc<::push::VapidKey>,
     contact: Option<::push::Contact>,
     public: Sender,
     any_address: Sender,
+    budget: RateLimiter<ConnectionId>,
 }
 
 impl PushClient {
@@ -88,6 +107,7 @@ impl PushClient {
             outbound,
             vapid,
             contact,
+            budget: RateLimiter::new(PushConfig::default().per_store_per_minute),
         })
     }
 
@@ -132,15 +152,35 @@ pub fn contact(settings: &crate::settings::MonokuloSettings) -> Option<::push::C
 enum Done {
     /// Given up on before any request: why.
     GaveUp(String),
+    /// Put off, unattempted, until then: its store's budget is spent.
+    Deferred(i64),
     /// Attempted.
     Attempted(PushAttempt),
     /// Its push service said the subscription is gone.
     Gone,
 }
 
-/// Sends one batch of due pushes, concurrently, and records each as it
-/// finishes. `reach` is what `webhooks.allow_private_urls` allows. Returns
-/// how many were picked: a full batch means more may be due now.
+impl Done {
+    /// Whether its target's newer pushes must wait: it is still to be
+    /// sent, later (a failed attempt to try again, one put off), so they
+    /// would land before it; or its target is gone, and they with it.
+    fn holds_back_the_rest(&self) -> bool {
+        match self {
+            Done::GaveUp(_) => false,
+            Done::Deferred(_) | Done::Gone => true,
+            Done::Attempted(attempt) => match attempt.result {
+                PushResult::Delivered => false,
+                PushResult::Failed { retry_at, .. } => retry_at.is_some(),
+            },
+        }
+    }
+}
+
+/// Sends one batch of due pushes, concurrently but one target's one at a
+/// time in queue order, and records each as it finishes; a target's push
+/// left to be sent later keeps its newer ones in the queue. `reach` is
+/// what `webhooks.allow_private_urls` allows. Returns how many were
+/// picked: a full batch means more may be due now.
 pub async fn run_delivery_tick(
     db: &Database,
     client: &PushClient,
@@ -150,6 +190,7 @@ pub async fn run_delivery_tick(
 ) -> Result<usize, DbError> {
     use futures_util::stream::{self, StreamExt as _};
 
+    client.budget.set_limit(config.per_store_per_minute);
     let now = clock.now();
     let due = db
         .read(move |db| db.due_push_deliveries(now, DELIVERY_BATCH))
@@ -176,27 +217,40 @@ pub async fn run_delivery_tick(
         }
     }
 
-    let mut attempts = stream::iter(readable)
-        .map(|push| {
-            let span = tracing::info_span!(
-                "push delivery",
-                otel.kind = "client",
-                store.id = %push.target.store_id,
-                push_target.id = %push.target.id,
-                push_target.kind = push.target.kind.name().as_str(),
-                push.event = push.event.as_str(),
-                push.host = push.target.endpoint.host(),
-                attempt = push.attempt_count.saturating_add(1),
-            );
-            tracing::Instrument::instrument(
-                async move {
-                    let done = deliver(client, &push, config, reach, clock).await;
-                    (push, done)
+    // One target's pushes go one after another, as they were queued, and
+    // different targets' at once: a Live Activity shows whichever state
+    // lands last, so a till's newer sale must land after its older one.
+    // One left due later (or whose target is gone) ends its target's turn:
+    // the rest wait in the queue behind it (`due_push_deliveries`).
+    let mut attempts = stream::iter(by_target(readable))
+        .map(|pushes| {
+            Box::pin(stream::unfold(
+                pushes.into_iter(),
+                move |mut pushes| async move {
+                    let push = pushes.next()?;
+                    let span = tracing::info_span!(
+                        "push delivery",
+                        otel.kind = "client",
+                        store.id = %push.target.store_id,
+                        push_target.id = %push.target.id,
+                        push_target.kind = push.target.kind.name().as_str(),
+                        push.event = push.event.as_str(),
+                        push.host = push.target.endpoint.host(),
+                        attempt = push.attempt_count.saturating_add(1),
+                    );
+                    let done = tracing::Instrument::instrument(
+                        deliver(client, &push, config, reach, clock),
+                        span,
+                    )
+                    .await;
+                    if done.holds_back_the_rest() {
+                        pushes = Vec::new().into_iter();
+                    }
+                    Some(((push, done), pushes))
                 },
-                span,
-            )
+            ))
         })
-        .buffer_unordered(DELIVERY_CONCURRENCY);
+        .flatten_unordered(DELIVERY_CONCURRENCY);
 
     // Each push is recorded as soon as it's done: one slow push service in
     // the batch doesn't hold the others' outcomes back, and a later write
@@ -207,6 +261,14 @@ pub async fn run_delivery_tick(
             Done::GaveUp(reason) => {
                 let at = clock.now();
                 db.write(move |db| db.give_up_push(id, at, &reason)).await
+            }
+            Done::Deferred(until) => {
+                tracing::info!(
+                    store.id = %push.target.store_id,
+                    push_target.id = %target_id,
+                    "the store's pushes for this minute are spent; put off"
+                );
+                db.write(move |db| db.defer_push(id, until)).await
             }
             Done::Gone => {
                 tracing::info!(
@@ -243,6 +305,27 @@ pub async fn run_delivery_tick(
     }
 }
 
+/// `due` by target, each target's in the order they were queued, the
+/// targets in the order their first push came due.
+fn by_target(due: Vec<DuePush>) -> Vec<Vec<DuePush>> {
+    let mut groups: Vec<Vec<DuePush>> = Vec::new();
+    let mut index: std::collections::HashMap<PushTargetId, usize> =
+        std::collections::HashMap::new();
+    for push in due {
+        match index.entry(push.target.id.clone()) {
+            std::collections::hash_map::Entry::Occupied(at) => groups[*at.get()].push(push),
+            std::collections::hash_map::Entry::Vacant(at) => {
+                at.insert(groups.len());
+                groups.push(vec![push]);
+            }
+        }
+    }
+    for pushes in &mut groups {
+        pushes.sort_by_key(|push| push.id);
+    }
+    groups
+}
+
 /// One due push: given up on, or attempted once.
 async fn deliver(
     client: &PushClient,
@@ -268,6 +351,17 @@ async fn deliver(
             return Done::GaveUp(error);
         }
     };
+    if let Err(wait) = client
+        .budget
+        .check_with_retry(push.target.store_id.clone(), at)
+    {
+        let until = at.saturating_add(i64::try_from(wait).unwrap_or(i64::MAX));
+        if until >= push.expires_at {
+            tracing::info!("a push's store spent its pushes until it expired; given up");
+            return Done::GaveUp(OVER_BUDGET.to_owned());
+        }
+        return Done::Deferred(until);
+    }
     let options = Options {
         urgency: push.urgency,
         ttl,

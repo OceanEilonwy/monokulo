@@ -64,6 +64,22 @@ pub struct PushTarget {
     pub failures: u32,
 }
 
+impl PushTarget {
+    /// Whether it is pushed the sale events of `order`, one of its store's
+    /// apps': an `encrypted` target hears of every app's sales (the tills
+    /// of one shop all want to know of a sale), a `live-activity` target
+    /// only of its own app's. A Live Activity is one island per till, and
+    /// iOS shows whatever state lands last: another till's sale there, its
+    /// alert or its payment code, would have this till's customer pay, or
+    /// its cashier hand goods over, for the wrong sale.
+    pub fn hears_of(&self, order: &AppOrder) -> bool {
+        match self.kind {
+            TargetKind::Encrypted { .. } => true,
+            TargetKind::LiveActivity { .. } => self.app_id == order.app_id,
+        }
+    }
+}
+
 /// A push target an app registers, for [`Db::register_push_target`].
 pub struct NewPushTarget<'a> {
     pub app_id: &'a AppId,
@@ -325,7 +341,8 @@ impl Db {
     /// forgotten: they were the old subscription's; its unsent pushes it no
     /// longer takes given up on, [`REREGISTERED`]); otherwise a new one,
     /// while the app has fewer than [`MAX_TARGETS_PER_APP`]. Its store is
-    /// the app's.
+    /// the app's. Either way it is now the last registered, the one pushed
+    /// of the store's targets on its endpoint.
     pub fn register_push_target(&self, new: &NewPushTarget<'_>, now: i64) -> Result<Registration> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -369,7 +386,8 @@ impl Db {
                 )?;
                 tx.execute(
                     "UPDATE push_targets SET kind = ?2, endpoint = ?3, p256dh = ?4, auth = ?5,
-                         events = ?6, include_payment_uri = ?7, last_ok_at_utc = NULL, failures = 0
+                         events = ?6, include_payment_uri = ?7, last_ok_at_utc = NULL, failures = 0,
+                         registered_seq = (SELECT MAX(registered_seq) + 1 FROM push_targets)
                      WHERE id = ?1",
                     params![
                         id,
@@ -398,8 +416,9 @@ impl Db {
                 let made = tx.execute(
                     "INSERT INTO push_targets
                          (id, store_id, app_id, client_id, kind, endpoint, p256dh, auth, events,
-                          include_payment_uri, created_at_utc)
-                     SELECT ?1, store_id, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+                          include_payment_uri, created_at_utc, registered_seq)
+                     SELECT ?1, store_id, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                            (SELECT COALESCE(MAX(registered_seq), 0) + 1 FROM push_targets)
                      FROM app_connections WHERE id = ?2",
                     params![
                         id,
@@ -508,9 +527,10 @@ impl Db {
     }
 
     /// Queues `sale`'s pushes for every target of `order`'s store that
-    /// wants it but `except`'s: records it as the order's latest, then one
-    /// push per target, each superseding that target's unsent push about
-    /// the same order.
+    /// wants it and hears of the order ([`PushTarget::hears_of`]) but
+    /// `except`'s, once per endpoint: records it as the order's latest,
+    /// then one push per target, each superseding that target's unsent
+    /// push about the same order.
     fn queue_sale_pushes(
         &self,
         order: &AppOrder,
@@ -525,16 +545,20 @@ impl Db {
             "UPDATE app_orders SET last_sale_event = ?2 WHERE order_id = ?1",
             params![order.order_id, sale.event.as_str()],
         )?;
+        // Targets that share an endpoint are one subscription: it is
+        // pushed once, as the last registered of them that wants it, which
+        // holds the keys the device has now.
+        let mut endpoints = std::collections::HashSet::new();
         let targets: Vec<PushTarget> = self
             .store_push_targets(&order.store_id)?
             .into_iter()
-            .filter(|target| target.events.contains(&sale.event))
+            .filter(|target| target.events.contains(&sale.event) && target.hears_of(order))
             .filter(|target| except != Some(&target.app_id))
+            .filter(|target| endpoints.insert(target.endpoint.as_url().as_str().to_owned()))
             .collect();
         if targets.is_empty() {
             return Ok(0);
         }
-        let topic = policy::topic(&order.order_id);
         let urgency = policy::urgency(sale.event);
         let ttl = policy::ttl(sale.event, order.expires_at, at, queueing.default_ttl);
         let expires_at = at.saturating_add(i64::from(ttl.as_secs()));
@@ -543,6 +567,7 @@ impl Db {
         let mut waiting_count: Option<u64> = None;
         let mut queued = 0;
         for target in &targets {
+            let topic = policy::topic(&target.id, &order.order_id);
             let payload = match target.kind {
                 TargetKind::Encrypted { .. } => encrypted
                     .get_or_insert_with(|| notification(sale, &queueing.link_base))
@@ -552,9 +577,7 @@ impl Db {
                 } => {
                     let waiting = match waiting_count {
                         Some(count) => count,
-                        None => {
-                            *waiting_count.insert(self.waiting_app_orders(&order.store_id, at)?)
-                        }
+                        None => *waiting_count.insert(self.waiting_app_orders(order, at)?),
                     };
                     LiveActivityState::of(sale, waiting, include_payment_uri).to_json()
                 }
@@ -588,10 +611,11 @@ impl Db {
         Ok(queued)
     }
 
-    /// Every push target of the store's apps, oldest first.
+    /// Every push target of the store's apps, the last registered first.
     fn store_push_targets(&self, store_id: &ConnectionId) -> Result<Vec<PushTarget>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT * FROM push_targets WHERE store_id = ?1 ORDER BY created_at_utc, rowid",
+            "SELECT * FROM push_targets WHERE store_id = ?1
+             ORDER BY registered_seq DESC",
         )?;
         let rows = stmt
             .query_map(params![store_id], target_from_row)?
@@ -599,18 +623,19 @@ impl Db {
         Ok(rows)
     }
 
-    /// The store's app orders still waiting for a payment at `now`: none
-    /// seen yet, or only part, and not expired.
-    fn waiting_app_orders(&self, store_id: &ConnectionId, now: i64) -> Result<u64> {
+    /// The orders of `order`'s app still waiting for a payment at `now`:
+    /// none seen yet, or only part, and not expired. A Live Activity's
+    /// `waitingCount`: its island shows only its own app's sales.
+    fn waiting_app_orders(&self, order: &AppOrder, now: i64) -> Result<u64> {
         Ok(self
             .conn
             .query_row(
                 &format!(
                     "SELECT COUNT(*) FROM app_orders
-                     WHERE store_id = ?1 AND expires_at > ?2
+                     WHERE store_id = ?1 AND app_id = ?2 AND expires_at > ?3
                        AND (last_sale_event IS NULL OR last_sale_event IN {STILL_WAITING})"
                 ),
-                params![store_id, now],
+                params![order.store_id, order.app_id, now],
                 |row| row.get::<_, Unsigned<u64>>(0),
             )?
             .0)
@@ -618,7 +643,11 @@ impl Db {
 
     /// At most `limit` pushes due by `now`, soonest first, each with its
     /// target; one that can't be read comes back as such, to be given up
-    /// on, rather than stopping every other.
+    /// on, rather than stopping every other. A push is due only once every
+    /// older unsent push to its target is (one waiting for a retry holds
+    /// the newer back), and comes after them: a target's pushes go out in
+    /// the order they were queued, so a Live Activity's last state to land
+    /// is its newest.
     pub fn due_push_deliveries(
         &self,
         now: i64,
@@ -629,10 +658,14 @@ impl Db {
                     d.topic AS d_topic, d.payload AS d_payload,
                     d.expires_at_utc AS d_expires_at_utc, d.attempt_count AS d_attempt_count,
                     t.*
-             FROM push_deliveries d
+             FROM (SELECT id, MAX(next_attempt_at_utc) OVER (
+                              PARTITION BY push_target_id ORDER BY id ROWS UNBOUNDED PRECEDING
+                          ) AS due_at
+                   FROM push_deliveries WHERE next_attempt_at_utc IS NOT NULL) u
+             JOIN push_deliveries d ON d.id = u.id
              JOIN push_targets t ON t.id = d.push_target_id
-             WHERE d.next_attempt_at_utc <= ?1
-             ORDER BY d.next_attempt_at_utc, d.id
+             WHERE u.due_at <= ?1
+             ORDER BY u.due_at, d.id
              LIMIT ?2",
         )?;
         let rows = stmt
@@ -722,8 +755,20 @@ impl Db {
         Ok(after)
     }
 
+    /// Puts the push `id` off until `until` without an attempt: its
+    /// store's pushes for this minute are spent (`push.per_store_per_minute`).
+    pub fn defer_push(&self, id: i64, until: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE push_deliveries SET next_attempt_at_utc = ?2
+             WHERE id = ?1 AND next_attempt_at_utc IS NOT NULL",
+            params![id, until],
+        )?;
+        Ok(())
+    }
+
     /// Gives up on the push `id` without an attempt, saying why: it expired
-    /// unsent ([`EXPIRED_UNSENT`]), has no attempts left, or can't be sent.
+    /// unsent ([`EXPIRED_UNSENT`]), has no attempts left, would expire
+    /// before its store's next minute of pushes, or can't be sent.
     pub fn give_up_push(&self, id: i64, at: i64, error: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE push_deliveries SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2,
