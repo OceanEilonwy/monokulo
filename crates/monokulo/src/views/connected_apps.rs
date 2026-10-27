@@ -3,10 +3,16 @@
 //! the page that says whether it was used, and the public page a connect
 //! code's link opens in a browser. None of them names an app: monokulo
 //! keeps no list of apps.
+//!
+//! Connecting is three steps, shown as a strip under the page's title:
+//! naming the device, scanning the code, connected. The code page asks
+//! whether the code was used every couple of seconds (fixi, `fx-poll`)
+//! and moves the strip on once it was; without JavaScript, Check it
+//! connected loads the same answer as a page.
 
 use maud::{html, Markup, PreEscaped};
 
-use super::{DialogContent, PageChrome};
+use super::PageChrome;
 
 /// A store's connected apps, for its settings.
 pub struct AppsView {
@@ -114,46 +120,216 @@ pub fn apps_card(view: &AppsView) -> Markup {
     }
 }
 
-fn page(chrome: &PageChrome, view: &AppsView, title: &str, content: DialogContent) -> Markup {
-    let crumbs = super::store_crumbs(&view.store_id, &view.store_name, false);
-    let (header, body) = content.page(crumbs, ui::DialogSize::Confirm);
+/// Where connecting an app has got to: the strip's three steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    Name,
+    Scan,
+    /// The code ran out before an app used it.
+    RanOut,
+    Connected,
+}
+
+/// The strip under the page's title. Its id lets the code's status swap a
+/// newer one in (`data-fx-oob`).
+fn steps(now: Step, oob: bool) -> Markup {
+    use ui::WizardState::{Current, Done, Next};
+    let step = |label: &str, detail: &str, state| ui::WizardStep {
+        label: label.into(),
+        detail: detail.into(),
+        done: usize::from(state == Done),
+        tasks: 1,
+        state,
+    };
+    let steps = match now {
+        Step::Name => vec![
+            step("Name it", "Optional", Current),
+            step("Scan", "Next", Next),
+            step("Connected", "Next", Next),
+        ],
+        Step::Scan => vec![
+            step("Name it", "Done", Done),
+            step("Scan", "With the app", Current),
+            step("Connected", "Next", Next),
+        ],
+        Step::RanOut => vec![
+            step("Name it", "Done", Done),
+            step("Scan", "The code ran out", Current),
+            step("Connected", "Next", Next),
+        ],
+        Step::Connected => vec![
+            step("Name it", "Done", Done),
+            step("Scan", "Done", Done),
+            step("Connected", "Done", Done),
+        ],
+    };
+    html! {
+        div id="connect-app-steps" data-fx-oob[oob] {
+            (ui::WizardSteps::new("Connecting an app", steps))
+        }
+    }
+}
+
+fn page(chrome: &PageChrome, view: &AppsView, title: &str, now: Step, body: Markup) -> Markup {
+    let header = ui::PageHeader::new(title.to_owned())
+        .title_id("connect-app-title")
+        .crumbs(super::store_crumbs(&view.store_id, &view.store_name, false))
+        .progress(steps(now, false));
     super::Page::new(format!("{title} - {} - Monokulo", view.store_name), header)
-        .class("settings-page")
+        .class("settings-page connect-app")
         .render(chrome, body)
 }
 
-/// `GET /stores/{id}/settings/apps/connect`: what to call the device, then
-/// a code.
-pub fn connect_form_page(chrome: &PageChrome, view: &AppsView, error: Option<&str>) -> Markup {
+/// `GET /stores/{id}/settings/apps/connect`: what to call the device, and
+/// how it will read under Apps, then a code.
+pub fn connect_form_page(
+    chrome: &PageChrome,
+    view: &AppsView,
+    device_name: &str,
+    error: Option<&str>,
+) -> Markup {
     let body = html! {
-        p {
-            "The app gets a key of its own for \u{201c}" (view.store_name) "\u{201d}: it can make orders and follow "
-            "them, never change the store or its wallet. You can disconnect it here at any time."
-        }
-        @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
         form method="post" action=(view.connect_path()) {
-            (super::settings::Field::new("Device name (optional)", "device-name")
-                .help(None, html! { "How it's listed under Apps, like \u{201c}Front counter\u{201d}. Without one, the app names it." })
-                .render(html! {
-                    (ui::Input::new("device_name").id("device-name").autocomplete("off").attr("maxlength", "40"))
-                }))
+            section id="card-new-app" class="settings-card" aria-labelledby="card-new-app-title" {
+                header class="card-head" {
+                    h3 id="card-new-app-title" { "New app" }
+                    span class="card-meta" { "for " (view.store_name) }
+                }
+                div class="card-body" {
+                    @if let Some(error) = error { (ui::Alert::new(error, ui::Tone::Error)) }
+                    (ui::Setting::new("Device name", "device-name", html! {
+                        (ui::Input::new("device_name").id("device-name").value(device_name)
+                            .placeholder("Front counter").autocomplete("off")
+                            .described_by("device-name-help").attr("maxlength", "40")
+                            .attr("data-preview", "connect-app-preview"))
+                    })
+                    .chip(ui::Hint::new("(optional)").inline(true))
+                    .help("How it's listed under Apps, like \u{201c}Front counter\u{201d}. Without one, the app names it.")
+                    .help_id("device-name-help")
+                    .layout(ui::SettingLayout::Stacked))
+                    h4 { "Under Apps it will read" }
+                    ul class="int-rows connect-app-preview" {
+                        li {
+                            span class="int-mark" aria-hidden="true" { (PreEscaped(ui::assets::icons::POS)) }
+                            span {
+                                span class="int-name" {
+                                    "The app"
+                                    span id="connect-app-preview" hidden[device_name.is_empty()] {
+                                        " · " span { (device_name) }
+                                    }
+                                }
+                                span class="int-meta" { "Named by the app itself, once it connects" }
+                            }
+                        }
+                    }
+                    (ui::Hint::new(html! {
+                        "It gets a key of its own for \u{201c}" (view.store_name) "\u{201d}: it can make orders and follow "
+                        "them, never change the store or its wallet. You can disconnect it here at any time."
+                    }))
+                }
+            }
             (ui::DialogActions::new(ui::Slot::many([
                 ui::LinkButton::new("Cancel", view.settings()).into(),
                 ui::Button::new("Show the code").variant(ui::ButtonVariant::Primary).kind(ui::ButtonType::Submit).into(),
             ])))
         }
+        (super::script("connect-app.js", super::Load::Defer))
     };
-    page(
-        chrome,
-        view,
-        "Connect an app",
-        DialogContent {
-            title_id: "connect-app-title".into(),
-            title: html! { "Connect an app" },
-            aside: None,
-            body,
-        },
-    )
+    page(chrome, view, "Connect an app", Step::Name, body)
+}
+
+/// Where a code shown earlier is.
+pub enum CodeState {
+    /// Not used yet, with this many seconds left.
+    Waiting {
+        remaining: u64,
+    },
+    Connected(AppRow),
+    /// Not used, and too old to be now.
+    RanOut,
+}
+
+/// How long a code lasts, in seconds.
+const CODE_SECONDS: u64 = crate::apps::CONNECT_TOKEN_TTL_SECONDS.unsigned_abs();
+
+/// The card a code's page shows it on: named for the device, if it was.
+fn code_card(device_name: &str, meta: &str, body: Markup) -> Markup {
+    html! {
+        section id="card-connect-code" class="settings-card" aria-labelledby="card-connect-code-title" {
+            header class="card-head" {
+                h3 id="card-connect-code-title" {
+                    @if device_name.is_empty() { "New app" } @else { (device_name) }
+                }
+                span class="card-meta" id="connect-app-meta" { (meta) }
+            }
+            (body)
+        }
+    }
+}
+
+/// Whether the code was used: asked for again every couple of seconds while
+/// it waits (fx-poll), which stops once an app has used it or it ran out.
+/// Asked for by fixi, it also brings the strip and the card's meta up to
+/// date (`oob`).
+pub fn code_status(view: &AppsView, state: &CodeState, status_path: &str, oob: bool) -> Markup {
+    let status_url = crate::base::url(status_path);
+    html! {
+        @match state {
+            CodeState::Waiting { .. } => {
+                div id="connect-app-status" class="connect-app-status" fx-action=(status_url) fx-trigger="fx:poll"
+                    fx-swap="outerHTML" fx-poll="2000" fx-own-errors {
+                    p class="connect-app-wait" role="status" {
+                        span class="check-spinner" aria-hidden="true" {}
+                        span { "Waiting for the app to scan the code\u{2026}" }
+                    }
+                    a class="mk-btn" data-size="compact" data-only="no-script" href=(status_url) { "Check it connected" }
+                }
+            }
+            CodeState::Connected(app) => {
+                div id="connect-app-status" class="connect-app-status" {
+                    (ui::StatusBanner::new(format!("{} is connected.", app.title()), ui::Tone::Success)
+                        .icon(html! { (PreEscaped(ui::assets::icons::CHECK)) }))
+                    // As the Apps card lists it.
+                    ul class="int-rows connect-app-preview" {
+                        li {
+                            (super::store_site::plugin_mark(&app.app))
+                            span {
+                                span class="int-name" { (app.title()) }
+                                span class="int-meta" { (app.meta()) }
+                            }
+                        }
+                    }
+                }
+                @if oob {
+                    (steps(Step::Connected, true))
+                    span class="card-meta" id="connect-app-meta" data-fx-oob { "connected" }
+                    div id="connect-app-time" data-fx-oob {}
+                    div id="connect-app-done" data-fx-oob { (done_actions(view)) }
+                }
+            }
+            CodeState::RanOut => {
+                div id="connect-app-status" class="connect-app-status" {
+                    (ui::StatusBanner::new("No app used the code, and it has run out.", ui::Tone::Warning)
+                        .icon(html! { (PreEscaped(ui::assets::icons::CLOCK)) })
+                        .action(ui::LinkButton::new("Show a new code", view.connect_path())
+                            .variant(ui::ButtonVariant::Primary).size(ui::ControlSize::Compact)))
+                }
+                @if oob {
+                    (steps(Step::RanOut, true))
+                    span class="card-meta" id="connect-app-meta" data-fx-oob { "ran out" }
+                    div id="connect-app-time" data-fx-oob {}
+                }
+            }
+        }
+    }
+}
+
+fn done_actions(view: &AppsView) -> Markup {
+    html! {
+        (ui::DialogActions::new(ui::Slot::many([
+            ui::LinkButton::new("Done", view.settings()).variant(ui::ButtonVariant::Primary).into(),
+        ])))
+    }
 }
 
 /// The code an app scans, or the same as a link to paste: shown once,
@@ -161,68 +337,82 @@ pub fn connect_form_page(chrome: &PageChrome, view: &AppsView, error: Option<&st
 pub fn code_page(
     chrome: &PageChrome,
     view: &AppsView,
+    device_name: &str,
     link: &str,
     qr: &crate::qr::QrSvg,
     status_path: &str,
     onion: bool,
 ) -> Markup {
-    let body = html! {
-        p { "Open the app and scan this code. On this device, copy the link and paste it into the app instead." }
-        @if onion {
-            (ui::Hint::new("The code is on this Monokulo's onion address, as you are, so the app connects over Tor: it needs Tor running on the device (Orbot, for one) to use it."))
-        }
-        div class="connect-app-qr" { (PreEscaped(qr.as_str())) }
-        (ui::CopyValue::new(link).copy_label("Copy the connect link"))
-        (ui::Hint::new("It works once, for 10 minutes. Anyone with it can connect a device to this store, so don't share it."))
-        (ui::DialogActions::new(ui::Slot::many([
-            ui::LinkButton::new("Done", view.settings()).into(),
-            ui::LinkButton::new("Check it connected", crate::base::url(status_path)).into(),
-        ])))
+    let state = CodeState::Waiting {
+        remaining: CODE_SECONDS,
     };
-    page(
-        chrome,
-        view,
-        "Connect an app",
-        DialogContent {
-            title_id: "connect-app-title".into(),
-            title: html! { "Scan with the app" },
-            aside: None,
-            body,
-        },
-    )
+    let body = html! {
+        (code_card(device_name, "waiting", html! {
+            div class="card-body connect-app-code" {
+                div class="connect-app-qr" { (PreEscaped(qr.as_str())) }
+                div class="connect-app-text" {
+                    p { "Open the app and scan this code. On this device, copy the link and paste it into the app instead." }
+                    div id="connect-app-time" { (countdown(CODE_SECONDS)) }
+                    (code_status(view, &state, status_path, false))
+                    (ui::CopyValue::new(link).copy_label("Copy the connect link"))
+                    (ui::Hint::new("Anyone with it can connect a device to this store, so don't share it."))
+                    @if onion {
+                        (ui::Hint::new("The code is on this Monokulo's onion address, as you are, so the app connects over Tor: it needs Tor running on the device (Orbot, for one) to use it."))
+                    }
+                }
+            }
+        }))
+        div id="connect-app-done" {
+            (ui::DialogActions::new(ui::Slot::many([ui::LinkButton::new("Done", view.settings()).into()])))
+        }
+    };
+    page(chrome, view, "Scan with the app", Step::Scan, body)
 }
 
-/// Whether a code shown earlier has been used.
+/// The time left to scan: it works once, within it.
+fn countdown(remaining: u64) -> Markup {
+    let left = format!("{}m", remaining.div_ceil(60));
+    html! {
+        (ui::Countdown::new(CODE_SECONDS, remaining, left)
+            .suffix("left to scan")
+            .note("Works once")
+            .toned())
+    }
+}
+
+/// Whether a code shown earlier has been used, as a page: without
+/// JavaScript, where Check it connected goes.
 pub fn status_page(
     chrome: &PageChrome,
     view: &AppsView,
-    connected: Option<&AppRow>,
+    device_name: &str,
+    state: &CodeState,
     status_path: &str,
 ) -> Markup {
-    let body = match connected {
-        Some(app) => html! {
-            (ui::Alert::new(html! { (app.title()) " is connected." }, ui::Tone::Success))
-            (ui::DialogActions::new(ui::Slot::many([ui::LinkButton::new("Done", view.settings()).into()])))
-        },
-        None => html! {
-            p { "No app has used the code yet. It works for 10 minutes after it was shown." }
-            (ui::DialogActions::new(ui::Slot::many([
-                ui::LinkButton::new("Back to settings", view.settings()).into(),
-                ui::LinkButton::new("Refresh", crate::base::url(status_path)).into(),
-            ])))
-        },
+    let (now, meta) = match state {
+        CodeState::Waiting { .. } => (Step::Scan, "waiting"),
+        CodeState::Connected(_) => (Step::Connected, "connected"),
+        CodeState::RanOut => (Step::RanOut, "ran out"),
     };
-    page(
-        chrome,
-        view,
-        "Connect an app",
-        DialogContent {
-            title_id: "connect-app-title".into(),
-            title: html! { "Connect an app" },
-            aside: None,
-            body,
-        },
-    )
+    let body = html! {
+        (code_card(device_name, meta, html! {
+            div class="card-body connect-app-text" {
+                @if let CodeState::Waiting { remaining } = state {
+                    p { "No app has used the code yet." }
+                    div id="connect-app-time" { (countdown(*remaining)) }
+                }
+                (code_status(view, state, status_path, false))
+            }
+        }))
+        div id="connect-app-done" {
+            @if let CodeState::Connected(_) = state {
+                (done_actions(view))
+            } @else {
+                (ui::DialogActions::new(ui::Slot::many([ui::LinkButton::new("Back to settings", view.settings()).into()])))
+            }
+        }
+    };
+    page(chrome, view, "Connect an app", now, body)
 }
 
 /// `GET /apps/connect`: where a connect link lands when it's opened in a
