@@ -771,3 +771,17 @@ The push audit's second fix group (findings 1, 7, 5 and 19), on
      private to monokulo, on its host or its network, and
      `push.default_ttl_secs` is 30 minutes, so that is a broken clock,
      not skew.
+149. **A push service's answer is applied to the registration it was
+     sent to** (push audit #5). The worker reads a batch with each target's
+     endpoint and keys, and a target registered again meanwhile (same
+     `client_id`, a rotated subscription) is another subscription: a `410`
+     from the old endpoint (the very reason it was rotated) deleted the
+     new one, and its failures counted against the fresh counter. The
+     target's `registered_seq` (decision 145), new at every registration,
+     is carried on `PushTarget`, and deleting a gone target, counting a
+     failure (and the limit's delete) and resetting the run on success
+     all hold only while the target still has it. The push's own row is
+     recorded as before, so it is retried, at the new subscription.
+     Comparing endpoints was the other way; it misses a re-registration
+     with the same endpoint and new keys, and `registered_seq` needs no
+     migration.
