@@ -207,7 +207,7 @@ async fn hand_on(
                         Problem::InvalidRequest.detail(error.to_string())
                     }
                 })?;
-            Ok(apns.send(handle, &push, now).await)
+            Ok(apns.send(handle, &push).await)
         }
         Platform::Fcm => {
             let (Some(fcm), Some(project)) = (
