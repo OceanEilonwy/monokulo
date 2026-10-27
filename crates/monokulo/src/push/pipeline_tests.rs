@@ -1620,6 +1620,55 @@ async fn an_unreadable_push_target_costs_only_its_own_pushes() {
     assert!(world.pushes(&spoilt).is_empty());
 }
 
+/// A push service's answer is about the subscription the push was sent
+/// to. A `410` from a target's old endpoint, arriving after the app
+/// registered the target again with a new one (a rotated subscription,
+/// the very reason for the `410`), doesn't delete the target, and a
+/// `503` from it counts nothing against the new subscription; the push
+/// then goes to the new endpoint.
+#[tokio::test]
+async fn an_answer_from_a_replaced_subscription_leaves_the_new_one_alone_over_http() {
+    let world = world().await;
+    let (old_stub, old_origin) = Stub::start(410).await;
+    old_stub.hold(std::time::Duration::from_millis(300));
+    let (new_stub, new_origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let at = |origin: &str, n: u32| encrypted("up", &format!("{origin}/up/{n}"), &device, None);
+    let target = world.register(&ak, at(&old_origin, 1)).await;
+    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
+
+    for (seq, order, old_answer, moved_to) in [(1, &first, 410, 2), (2, &second, 503, 4)] {
+        old_stub.answer(old_answer, None);
+        if seq == 2 {
+            world.register(&ak, at(&old_origin, 3)).await;
+        }
+        world.queue(&world.event(seq, order, "order.paid"));
+        let (sent, moved) = tokio::join!(world.tick(), async {
+            while old_stub.in_flight.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            world.register(&ak, at(&new_origin, moved_to)).await
+        });
+        assert_eq!((sent, &moved), (1, &target));
+        let kept = world
+            .target(&app, &target)
+            .unwrap_or_else(|| panic!("a {old_answer} from the old endpoint deleted the target"));
+        assert_eq!(
+            (kept.endpoint.as_str(), kept.failures),
+            (format!("{new_origin}/up/{moved_to}").as_str(), 0),
+            "after a {old_answer}"
+        );
+
+        world.clock.advance(5);
+        assert_eq!(world.tick().await, 1);
+        let push = world.pushes(&target).pop().unwrap();
+        assert_eq!(push.delivered_at, Some(world.clock.now()), "{push:?}");
+    }
+    assert_eq!((old_stub.count(), new_stub.count()), (2, 2));
+}
+
 /// A newer push about an order supersedes only its own target's unsent
 /// one: each target keeps the latest about the order.
 #[tokio::test]

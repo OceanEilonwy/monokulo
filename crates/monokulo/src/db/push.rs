@@ -62,6 +62,11 @@ pub struct PushTarget {
     pub last_ok_at: Option<i64>,
     /// Failed attempts in a row since the last success.
     pub failures: u32,
+    /// Its place in the order the store's targets were last registered
+    /// in, in place or new (`push_targets.registered_seq`): a new one at
+    /// each registration, so it tells this subscription of the target
+    /// from the one it is registered with next.
+    pub registered_seq: i64,
 }
 
 impl PushTarget {
@@ -172,6 +177,7 @@ fn target_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PushTarget> {
         created_at: row.get("created_at_utc")?,
         last_ok_at: row.get("last_ok_at_utc")?,
         failures: row.get("failures")?,
+        registered_seq: row.get("registered_seq")?,
     })
 }
 
@@ -705,16 +711,20 @@ impl Db {
         Ok(rows)
     }
 
-    /// Records one attempt at the push `id` to `target_id`, and what it
-    /// says about the target, in one transaction. Delivered: the target's
-    /// run of failures ends. Failed: it is tried again at `retry_at` or
-    /// given up on, and a failure that counts lengthens the target's run,
-    /// which at its limit deletes the target. A push superseded while it
-    /// was being sent keeps its attempt but isn't tried again.
+    /// Records one attempt at the push `id` to `target`, as it was read
+    /// for the attempt, and what it says about the target, in one
+    /// transaction. Delivered: the target's run of failures ends. Failed:
+    /// it is tried again at `retry_at` or given up on, and a failure that
+    /// counts lengthens the target's run, which at its limit deletes the
+    /// target. What it says about the target holds only while the target
+    /// is still that registration: registered again meanwhile (a new
+    /// endpoint or keys), it is another subscription, which the attempt
+    /// says nothing about. A push superseded while it was being sent keeps
+    /// its attempt but isn't tried again.
     pub fn record_push_attempt(
         &self,
         id: i64,
-        target_id: &PushTargetId,
+        target: &PushTarget,
         attempt: &PushAttempt,
     ) -> Result<TargetAfter> {
         let tx = rusqlite::Transaction::new_unchecked(
@@ -753,8 +763,9 @@ impl Db {
         let after = match &attempt.result {
             PushResult::Delivered => {
                 self.conn.execute(
-                    "UPDATE push_targets SET failures = 0, last_ok_at_utc = ?2 WHERE id = ?1",
-                    params![target_id, attempt.at],
+                    "UPDATE push_targets SET failures = 0, last_ok_at_utc = ?3
+                     WHERE id = ?1 AND registered_seq = ?2",
+                    params![target.id, target.registered_seq, attempt.at],
                 )?;
                 TargetAfter::Kept
             }
@@ -767,14 +778,15 @@ impl Db {
                 ..
             } => {
                 let deleted = self.conn.execute(
-                    "DELETE FROM push_targets WHERE id = ?1 AND failures + 1 >= ?2",
-                    params![target_id, limit],
+                    "DELETE FROM push_targets
+                     WHERE id = ?1 AND registered_seq = ?2 AND failures + 1 >= ?3",
+                    params![target.id, target.registered_seq, limit],
                 )?;
                 if deleted == 0 {
                     self.conn.execute(
                         "UPDATE push_targets SET failures = MIN(failures + 1, 4294967295)
-                         WHERE id = ?1",
-                        params![target_id],
+                         WHERE id = ?1 AND registered_seq = ?2",
+                        params![target.id, target.registered_seq],
                     )?;
                     TargetAfter::Kept
                 } else {
@@ -811,11 +823,15 @@ impl Db {
     }
 
     /// Deletes a push target its push service said is gone (`404`, `410`),
-    /// with its pushes: whether it was still there.
-    pub fn delete_dead_push_target(&self, id: &PushTargetId) -> Result<bool> {
-        let deleted = self
-            .conn
-            .execute("DELETE FROM push_targets WHERE id = ?1", params![id])?;
+    /// as it was read for the attempt, with its pushes: whether it was
+    /// still there. Registered again meanwhile, it is kept: the answer was
+    /// about the subscription it replaced, often the very reason it was
+    /// registered again, and its pushes go to the new one.
+    pub fn delete_dead_push_target(&self, target: &PushTarget) -> Result<bool> {
+        let deleted = self.conn.execute(
+            "DELETE FROM push_targets WHERE id = ?1 AND registered_seq = ?2",
+            params![target.id, target.registered_seq],
+        )?;
         Ok(deleted > 0)
     }
 
