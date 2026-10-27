@@ -341,7 +341,8 @@ impl Db {
     /// forgotten: they were the old subscription's; its unsent pushes it no
     /// longer takes given up on, [`REREGISTERED`]); otherwise a new one,
     /// while the app has fewer than [`MAX_TARGETS_PER_APP`]. Its store is
-    /// the app's.
+    /// the app's. Either way it is now the last registered, the one pushed
+    /// of the store's targets on its endpoint.
     pub fn register_push_target(&self, new: &NewPushTarget<'_>, now: i64) -> Result<Registration> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
@@ -385,7 +386,8 @@ impl Db {
                 )?;
                 tx.execute(
                     "UPDATE push_targets SET kind = ?2, endpoint = ?3, p256dh = ?4, auth = ?5,
-                         events = ?6, include_payment_uri = ?7, last_ok_at_utc = NULL, failures = 0
+                         events = ?6, include_payment_uri = ?7, last_ok_at_utc = NULL, failures = 0,
+                         registered_seq = (SELECT MAX(registered_seq) + 1 FROM push_targets)
                      WHERE id = ?1",
                     params![
                         id,
@@ -414,8 +416,9 @@ impl Db {
                 let made = tx.execute(
                     "INSERT INTO push_targets
                          (id, store_id, app_id, client_id, kind, endpoint, p256dh, auth, events,
-                          include_payment_uri, created_at_utc)
-                     SELECT ?1, store_id, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+                          include_payment_uri, created_at_utc, registered_seq)
+                     SELECT ?1, store_id, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                            (SELECT COALESCE(MAX(registered_seq), 0) + 1 FROM push_targets)
                      FROM app_connections WHERE id = ?2",
                     params![
                         id,
@@ -543,7 +546,8 @@ impl Db {
             params![order.order_id, sale.event.as_str()],
         )?;
         // Targets that share an endpoint are one subscription: it is
-        // pushed once, as the oldest of them that wants it.
+        // pushed once, as the last registered of them that wants it, which
+        // holds the keys the device has now.
         let mut endpoints = std::collections::HashSet::new();
         let targets: Vec<PushTarget> = self
             .store_push_targets(&order.store_id)?
@@ -607,10 +611,11 @@ impl Db {
         Ok(queued)
     }
 
-    /// Every push target of the store's apps, oldest first.
+    /// Every push target of the store's apps, the last registered first.
     fn store_push_targets(&self, store_id: &ConnectionId) -> Result<Vec<PushTarget>> {
         let mut stmt = self.conn.prepare_cached(
-            "SELECT * FROM push_targets WHERE store_id = ?1 ORDER BY created_at_utc, rowid",
+            "SELECT * FROM push_targets WHERE store_id = ?1
+             ORDER BY registered_seq DESC",
         )?;
         let rows = stmt
             .query_map(params![store_id], target_from_row)?

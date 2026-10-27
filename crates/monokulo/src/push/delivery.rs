@@ -24,8 +24,8 @@
 //! one busy or hostile store would otherwise spend the relay's budget for
 //! every other. A push over its store's budget waits, unattempted, for the
 //! store's next minute, or is given up when that is past its TTL. And a
-//! store's targets that share an endpoint are pushed once per event
-//! (`db::push`).
+//! store's targets that share an endpoint are pushed once per event, as
+//! the last registered (`db::push`).
 //!
 //! An endpoint is a capability: whoever has it can push to the device
 //! (with its keys) or at least wake it. So it is never written to a log
