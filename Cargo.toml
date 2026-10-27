@@ -14,6 +14,7 @@ members = [
     "crates/abuse",
     "crates/tor-service",
     "crates/pricing",
+    "crates/push",
     "crates/live-settings",
     "crates/telemetry",
     "crates/monokulo",
