@@ -392,7 +392,7 @@ async fn an_app_orders_paid_event_queues_a_push_for_each_target_that_wants_it() 
         ),
         (1, "evt_1", "sale.paid", &order, "high")
     );
-    assert_eq!(paid.topic, policy_topic(&order));
+    assert_eq!(paid.topic, policy_topic(&wants_all, &order));
     assert_eq!(paid.next_attempt_at, Some(world.clock.now()));
     assert_eq!(
         paid.expires_at,
@@ -429,8 +429,8 @@ async fn an_app_orders_paid_event_queues_a_push_for_each_target_that_wants_it() 
     );
 }
 
-fn policy_topic(order: &OrderId) -> String {
-    super::policy::topic(order).as_str().to_owned()
+fn policy_topic(target: &PushTargetId, order: &OrderId) -> String {
+    super::policy::topic(target, order).as_str().to_owned()
 }
 
 /// Ten targets of two apps, one event: ten pushes, and the position moves
@@ -566,6 +566,62 @@ async fn a_newer_push_supersedes_an_unsent_one_about_the_same_order() {
     assert!(pushes[1].next_attempt_at.is_some());
     assert_eq!(pushes[2].superseded_at, None);
     assert!(pushes[2].next_attempt_at.is_some());
+}
+
+/// Each target's pushes about an order carry a topic of its own: two
+/// tills of one store are never pushed the same value, which the relay,
+/// Apple, Google or a distributor would read as "one store's devices".
+/// A later event about the order supersedes only each target's own unsent
+/// push, and another order gives each target a new topic.
+#[tokio::test]
+async fn each_target_gets_its_own_topic_for_an_order() {
+    let world = world().await;
+    let other = world.another_app().await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let mine = world
+        .register(
+            &world.fixture.ak.clone(),
+            encrypted("mine", "https://push.example/mine", &device, None),
+        )
+        .await;
+    let theirs = world
+        .register(
+            &other,
+            encrypted("theirs", "https://push.example/theirs", &device, None),
+        )
+        .await;
+    let maker = world.another_app().await;
+    let order = world.order(&maker).await;
+    world.queue(&world.event(1, &order, "order.unconfirmed"));
+    let topic = |target: &PushTargetId, n: usize| world.pushes(target)[n].topic.clone();
+    for n in [0, 1] {
+        assert_ne!(topic(&mine, n), topic(&theirs, n), "push {n}");
+    }
+    assert_eq!(topic(&mine, 0), topic(&mine, 1));
+    assert_eq!(topic(&mine, 0), policy_topic(&mine, &order));
+
+    world.queue(&world.event(2, &order, "order.confirming"));
+    for target in [&mine, &theirs] {
+        let superseded: Vec<bool> = world
+            .pushes(target)
+            .iter()
+            .map(|p| p.superseded_at.is_some())
+            .collect();
+        assert_eq!(superseded, [true, true, false], "{target}");
+    }
+
+    let next = world.order(&maker).await;
+    for target in [&mine, &theirs] {
+        let pushes = world.pushes(target);
+        let last = pushes.last().unwrap();
+        assert_eq!(last.order_id, next);
+        assert_ne!(last.topic, topic(target, 0), "{target}");
+        assert_eq!(last.topic, policy_topic(target, &next));
+    }
+    assert_ne!(
+        world.pushes(&mine).last().unwrap().topic,
+        world.pushes(&theirs).last().unwrap().topic
+    );
 }
 
 /// A disconnected app's targets went with it: its store's later events
@@ -875,7 +931,7 @@ async fn a_paid_sale_reaches_a_push_service_encrypted_and_signed_over_http() {
     let header = |name: &str| push.headers[name].to_str().unwrap().to_owned();
     assert_eq!(header("content-encoding"), "aes128gcm");
     assert_eq!(header("urgency"), "high");
-    assert_eq!(header("topic"), policy_topic(&order));
+    assert_eq!(header("topic"), policy_topic(&target, &order));
     assert_eq!(header("topic").len(), 32);
     let ttl: u32 = header("ttl").parse().unwrap();
     assert!(ttl > 1_700 && ttl <= 1_800, "{ttl}");

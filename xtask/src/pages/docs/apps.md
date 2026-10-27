@@ -271,9 +271,11 @@ asks for what is left), `seen`, `confirming`, `paid`, or `expired` (`sale.expire
 and `sale.double_spend`: no payment). `waitingCount` is the store's app
 orders still waiting for a payment, this one included while it is.
 
-Every push about one order has the same `Topic`, so a push service holding
-pushes for a device that is away keeps only the latest. It is a hash, not
-the order's id, which a push service shouldn't learn:
+Every push about one order to one target has the same `Topic`, so a push
+service holding pushes for a device that is away keeps only the latest. It
+is a hash of the target and the order, not the order's id, which a push
+service shouldn't learn, and each target's is its own, so no two devices
+of a store carry the same value:
 
 | Event | `Urgency` | `TTL` |
 | --- | --- | --- |
