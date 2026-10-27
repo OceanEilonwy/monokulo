@@ -1,0 +1,134 @@
+# The push audit's modules: the code the Bell and relay stack added or
+# changed (monokulo 8c7d902e609b358caaff2e30916a170f1c647c3d..3304e560b, monokular ca5e54018702ed8debb87112a63d3979f5d6e048..99a0c3b, under
+# monokular/). `audit.py modules` gives every file the first module whose
+# `files` globs match it, and refuses to go on while any file matches none.
+# A file the stack only changed is sized by its changed lines: review its
+# diff (git diff 8c7d902e609b358caaff2e30916a170f1c647c3d..HEAD -- FILE, or git -C monokular diff ca5e54018702ed8debb87112a63d3979f5d6e048..HEAD --
+# FILE) and the code around it, not the whole file.
+#
+# priority: 1 = crypto, keys, privacy, money or delivery, 2 = settings and
+# wiring, 3 = tooling and test support.
+
+[[module]]
+name = "push-crypto"
+priority = 1
+description = "crates/push's cryptography: RFC 8291 aes128gcm encryption and decryption, VAPID (RFC 8292) key handling and ES256 JWTs, base64url, the wire format."
+focus = "Correctness against RFC 8291/8292 (key derivation, salt, record size, padding, the 4 KB budget), JWT claims and expiry, key parsing and validation, nonce or key reuse, constant-time handling of secrets, secrets reaching Debug or logs."
+files = ["crates/push/src/encrypt.rs", "crates/push/src/jwt.rs", "crates/push/src/vapid.rs", "crates/push/src/base64url.rs", "crates/push/src/wire.rs"]
+context = ["crates/push/tests/*", "crates/push/src/lib.rs"]
+
+[[module]]
+name = "push-send"
+priority = 1
+description = "crates/push's subscriptions, messages and sender: endpoint and key validation, Urgency/TTL/Topic, the request it builds and how it reads the push service's answer."
+focus = "Subscription validation (https only, lengths, key sizes, SSRF-ish endpoints), the response mapping (201, 404/410, 413, 429 and 5xx with Retry-After), timeouts, redirects, header correctness, types that keep invalid messages out."
+files = ["crates/push/src/subscription.rs", "crates/push/src/message.rs", "crates/push/src/send.rs", "crates/push/src/lib.rs", "crates/push/tests/*"]
+context = ["crates/push/src/encrypt.rs", "crates/push/src/vapid.rs"]
+
+[[module]]
+name = "monokulo-push-targets"
+priority = 1
+description = "Monokulo's push targets: the /api/v1 push-target resources, their storage and VAPID keys, and the API runtime changes they needed."
+focus = "Authorization per key kind and store (an app may only manage its own connection's targets), idempotent client_id registration, problem+json errors, GET-able links, VAPID private key encryption at rest, target removal on disconnect, migrations on a live database."
+files = [
+    "crates/monokulo/src/api/v1/push_target.rs",
+    "crates/monokulo/src/api/v1/push_targets.rs",
+    "crates/monokulo/src/api/v1/root.rs",
+    "crates/monokulo/src/api/v1/events.rs",
+    "crates/monokulo/src/api/v1/mod.rs",
+    "crates/monokulo/src/api/mod.rs",
+    "crates/monokulo/src/api/runtime/*",
+    "crates/monokulo/src/db/push.rs",
+    "crates/monokulo/src/db.rs",
+    "crates/monokulo/src/apps.rs",
+    "crates/monokulo/src/crypto.rs",
+    "crates/engine-protocol/src/ids.rs",
+    "crates/api-macros/src/lib.rs",
+]
+
+[[module]]
+name = "monokulo-push-delivery"
+priority = 1
+description = "Monokulo's push delivery: fan-out from the webhooks subscriber, push_deliveries, the delivery worker, payloads and policy, and the outbound client."
+focus = "Fan-out in the same transaction as webhook deliveries, claim/send/backoff/give-up, Topic supersession, TTL drop, 404/410 removal, Retry-After, restart safety, payload contents (no items, Live Activity fields only), outbound client privacy (Tor, headers), the webhooks refactor not changing webhook behaviour."
+files = [
+    "crates/monokulo/src/push/*",
+    "crates/monokulo/src/webhooks/*",
+    "crates/monokulo/src/db/webhooks.rs",
+    "crates/monokulo/src/outbound.rs",
+    "crates/monokulo/src/orders.rs",
+    "crates/monokulo/src/http/webhooks/tests.rs",
+]
+
+[[module]]
+name = "relay-core"
+priority = 1
+description = "crates/push-relay's server: registration and push routes, the handle store, limits, problems and the upstream abstraction."
+focus = "VAPID JWT checked against the handle's own key on every push, one handle per (token, key), unlinkability of handles, rate limits per key and handle, handle TTL and deletion on dead tokens, no payload or body stored or logged, SQLite use from async code."
+files = [
+    "crates/push-relay/src/routes.rs",
+    "crates/push-relay/src/handles.rs",
+    "crates/push-relay/src/limits.rs",
+    "crates/push-relay/src/problem.rs",
+    "crates/push-relay/src/lib.rs",
+    "crates/push-relay/src/upstream.rs",
+    "crates/push-relay/tests/*",
+]
+
+[[module]]
+name = "relay-providers"
+priority = 1
+description = "crates/push-relay's APNs (HTTP/2, .p8 token auth, alert/liveactivity/pushtostart) and FCM HTTP v1 (service-account OAuth, data messages) clients."
+focus = "Provider JWT/OAuth correctness and refresh, secrets handling, request shape per push type (topics, priorities, expiration, collapse id), mapping provider answers to 404/410/429, the Live Activity plaintext contents, timeouts and retries."
+files = ["crates/push-relay/src/apns.rs", "crates/push-relay/src/fcm.rs"]
+context = ["crates/push-relay/tests/*"]
+
+[[module]]
+name = "relay-settings-embedding"
+priority = 2
+description = "The relay's settings, CLI and standalone binary, and its embedding in monokulo behind the relay feature, with monokulo's settings, CLI and admin changes and live-settings changes."
+focus = "Settings registry rules (TOML + CLI, env-only secrets, invalid values stop the process, CLI/env lock fields), the embedded relay's own listener and SQLite file, feature-off builds, start-up and shutdown, live-settings changes not breaking other settings."
+files = [
+    "crates/push-relay/src/settings.rs",
+    "crates/push-relay/src/cli.rs",
+    "crates/push-relay/src/main.rs",
+    "crates/monokulo/src/relay.rs",
+    "crates/monokulo/src/settings.rs",
+    "crates/monokulo/src/cli.rs",
+    "crates/monokulo/src/main.rs",
+    "crates/monokulo/src/lib.rs",
+    "crates/monokulo/src/views/admin.rs",
+    "crates/monokulo/src/http/admin_settings.rs",
+    "crates/monokulo/tests/options_file.rs",
+    "crates/live-settings/src/*",
+]
+
+[[module]]
+name = "bell"
+priority = 1
+description = "The Monokular Bell (monokular repo): Square webhook verification, registration with the Square token check, the registration store, dings over Web Push, routes and problems."
+focus = "Square webhook signature verification (HMAC over URL + body, constant time, replay), the body dropped and never stored or logged, the token check calling GET /v2/merchants/me and never storing the token, location matching, dings empty and encrypted with Urgency/TTL/Topic as designed, 404/410 removal, abuse and rate limits."
+files = [
+    "monokular/crates/monokular-bell/src/square.rs",
+    "monokular/crates/monokular-bell/src/registrations.rs",
+    "monokular/crates/monokular-bell/src/routes.rs",
+    "monokular/crates/monokular-bell/src/dings.rs",
+    "monokular/crates/monokular-bell/src/outbound.rs",
+    "monokular/crates/monokular-bell/src/problem.rs",
+    "monokular/crates/monokular-bell/src/lib.rs",
+    "monokular/crates/monokular-bell/tests/*",
+]
+
+[[module]]
+name = "bell-settings"
+priority = 2
+description = "The Bell's settings, CLI and binary."
+focus = "The settings rules (TOML + CLI, env-only secrets MONOKULAR_BELL_SQUARE_WEBHOOK_KEY and MONOKULAR_BELL_VAPID_KEY, invalid values stop the process), the Square environment and application id, the public URI used for signature checks, start-up and shutdown."
+files = ["monokular/crates/monokular-bell/src/settings.rs", "monokular/crates/monokular-bell/src/cli.rs", "monokular/crates/monokular-bell/src/main.rs"]
+
+[[module]]
+name = "support-tooling"
+priority = 3
+description = "Small changes to tooling, examples, test fixtures and pages that the stack needed."
+focus = "That each change is needed and correct; nothing else."
+files = ["xtask/*", "crates/mock-woocommerce/*", "crates/e2e-harness/*", "crates/monokulo/examples/*", "crates/monokulo/src/http/*"]
