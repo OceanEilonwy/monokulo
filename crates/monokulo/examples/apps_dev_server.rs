@@ -183,6 +183,7 @@ async fn main() {
         state.db.clone(),
         client,
         state.webhooks.clone(),
+        state.push.clone(),
         state.apps.clone(),
         monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
     ));

@@ -26,14 +26,16 @@ mod webhooks;
 pub use apps::{AppConnection, AppId, AppOrder, DeletedApp, NewApp};
 pub use order_requests::{OrderPrice, Reserved};
 // `self::`: `push` is also the Web Push crate.
+#[cfg(test)]
+pub use self::push::PushDeliveryRow;
 pub use self::push::{
-    NewPushTarget, PushTarget, PushTargetId, Registration, StoredVapidKey, TargetKind,
-    MAX_TARGETS_PER_APP,
+    DuePush, NewPushTarget, PushAttempt, PushResult, PushTarget, PushTargetId, Registration,
+    StoredVapidKey, TargetAfter, TargetKind, UnreadablePush, EXPIRED_UNSENT, MAX_TARGETS_PER_APP,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
     Attempt, AttemptOutcome, DeliveryRow, DeliveryState, DueDelivery, LoggedEvent, NewTestDelivery,
-    NewWebhook, WebhookHealth, WebhookRow, KEPT_ATTEMPTS,
+    NewWebhook, Queued, WebhookHealth, WebhookRow, KEPT_ATTEMPTS,
 };
 
 /// Reads a `store_connections.fx_providers` cell: a JSON array of provider
@@ -195,6 +197,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/0051_order_event_position_event_id.sql"),
     ),
     (52, include_str!("../migrations/0052_push_targets.sql")),
+    (53, include_str!("../migrations/0053_push_deliveries.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {

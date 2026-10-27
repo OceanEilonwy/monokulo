@@ -11,6 +11,24 @@
 //! a key that can't be read back stops the process, as any other secret
 //! does, rather than quietly making a new one that every registered
 //! subscription would refuse.
+//!
+//! Pushes ride the webhooks' pipeline (monokular docs/design.md §5):
+//!
+//! ```text
+//! engine order_events ──SSE──▶ webhooks::subscriber
+//!                                │ same transaction (`Db::queue_order_event`)
+//!                                ├─▶ webhook_deliveries
+//!                                └─▶ push_deliveries, one per target that wants the event
+//! orders API (an app's order) ──▶ push_deliveries (`sale.waiting`)
+//! push::delivery worker ──Web Push──▶ the target's endpoint (a distributor, or the relay)
+//! ```
+//!
+//! What each push asks of the push service is [`policy`]'s, what it says
+//! [`payload`]'s; [`delivery`] sends them.
+
+pub mod delivery;
+pub mod payload;
+pub mod policy;
 
 use std::sync::Arc;
 
@@ -19,9 +37,36 @@ use zeroize::Zeroizing;
 use crate::crypto::{AtRestKey, Binding, CryptoError};
 use crate::db::{Database, DbError, StoredVapidKey};
 
-/// What this instance pushes with.
+/// What this instance pushes with, and what tells the delivery worker
+/// there's something to send now.
 pub struct Push {
     vapid: Arc<::push::VapidKey>,
+    wake: tokio::sync::Notify,
+}
+
+/// What queueing a sale's pushes reads from the settings, read as each
+/// sale event is queued.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Queueing {
+    /// `push.default_ttl_secs`.
+    pub default_ttl: ::push::Ttl,
+    /// Where an `encrypted` push's links start: the path of this
+    /// Monokulo's web address, as an app on it reads the event stream.
+    pub link_base: String,
+}
+
+impl Queueing {
+    /// As the settings are now.
+    pub fn now(settings: &crate::settings::MonokuloSettings) -> Self {
+        Queueing {
+            default_ttl: settings.push.load().default_ttl,
+            link_base: settings
+                .public_uri()
+                .and_then(|uri| url::Url::parse(&uri).ok())
+                .map(|uri| uri.path().trim_end_matches('/').to_owned())
+                .unwrap_or_default(),
+        }
+    }
 }
 
 /// Why this instance's VAPID key couldn't be read or made.
@@ -62,6 +107,7 @@ impl Push {
         let vapid = decrypt_private(key, &stored)?;
         Ok(Push {
             vapid: Arc::new(vapid),
+            wake: tokio::sync::Notify::new(),
         })
     }
 
@@ -70,12 +116,28 @@ impl Push {
     pub fn for_tests() -> Push {
         Push {
             vapid: Arc::new(::push::VapidKey::generate()),
+            wake: tokio::sync::Notify::new(),
         }
     }
 
     /// The public half of the key, which apps hand their push service.
     pub fn vapid_public_key(&self) -> ::push::VapidPublicKey {
         self.vapid.public()
+    }
+
+    /// The key pushes are signed with, for the delivery worker's senders.
+    pub(crate) fn vapid(&self) -> Arc<::push::VapidKey> {
+        Arc::clone(&self.vapid)
+    }
+
+    /// Wakes the delivery worker (it also looks every few seconds).
+    pub fn wake(&self) {
+        self.wake.notify_one();
+    }
+
+    /// Until [`Self::wake`] is called (or was since the last time).
+    pub async fn woken(&self) {
+        self.wake.notified().await;
     }
 }
 
@@ -147,5 +209,7 @@ impl schemars::JsonSchema for PushTargetKind {
     }
 }
 
+#[cfg(test)]
+mod pipeline_tests;
 #[cfg(test)]
 mod tests;

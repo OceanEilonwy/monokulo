@@ -147,6 +147,9 @@ credentials = { path = "../credentials", features = ["test-support"] }
 engine-pow = { path = "../engine-pow" }
 # The in-thread database pool (`db::Db` in tests).
 sqlite = { path = "../sqlite", features = ["test-support"] }
+# Reads a push as the device would (`push::pipeline_tests`): its
+# `test-support` decryption.
+push = { path = "../push", features = ["test-support"] }
 engine-test-support = { path = "../engine-test-support" }
 # Paused time (`test-util`): a test watching the engine page for a minute
 # runs in an instant.
