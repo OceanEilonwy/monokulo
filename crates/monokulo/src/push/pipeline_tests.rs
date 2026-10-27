@@ -20,7 +20,8 @@ use super::delivery::{run_delivery_tick, PushClient, NO_ATTEMPTS_LEFT, OVER_BUDG
 use super::Queueing;
 use crate::api::runtime::recording::{connect_app, fixture, Fixture, Recorder, PUBLIC_URI};
 use crate::db::{
-    AppId, LoggedEvent, OrderId, PushDeliveryRow, PushTargetId, Queued, EXPIRED_UNSENT,
+    AppId, LoggedEvent, OrderId, PushAttempt, PushDeliveryRow, PushResult, PushTargetId, Queued,
+    EXPIRED_UNSENT,
 };
 use crate::http::test_support::{api_request, body_json, store_with_keys};
 use crate::outbound::Reach;
@@ -1018,6 +1019,30 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
 
 // -- The worker, in process --------------------------------------------------
 
+impl World {
+    /// Records an attempt at the push `id` to `target` as the worker
+    /// does, without making one: the worker's bookkeeping, in process.
+    fn record_attempt(&self, app: &AppId, target: &PushTargetId, id: i64, attempt: PushAttempt) {
+        let db = self.fixture.state.db.lock();
+        let target = db.get_push_target(app, target).unwrap().unwrap();
+        db.record_push_attempt(id, &target, &attempt).unwrap();
+    }
+
+    /// A failed attempt now, answered `status`, to be tried again at
+    /// `retry_at` (or given up on), counting against the target.
+    fn failed(&self, status: u16, retry_at: Option<i64>) -> PushAttempt {
+        PushAttempt {
+            at: self.clock.now(),
+            status: Some(status),
+            result: PushResult::Failed {
+                error: format!("{status}"),
+                retry_at,
+                failure_limit: Some(PushConfig::default().target_failure_limit),
+            },
+        }
+    }
+}
+
 /// A push found due after its TTL ended is given up on, with no request.
 #[tokio::test]
 async fn a_push_past_its_ttl_is_given_up_without_a_request() {
@@ -1045,77 +1070,40 @@ async fn a_push_past_its_ttl_is_given_up_without_a_request() {
     assert_eq!(world.tick().await, 0);
 }
 
-/// A push whose row can't be read (a name no sale event has, written by
-/// hand) is given up on, saying so, and the ones beside it are sent.
-#[tokio::test]
-async fn an_unreadable_push_is_given_up_and_the_others_are_sent() {
-    let world = world().await;
-    let (stub, origin) = Stub::start(201).await;
-    let ak = world.fixture.ak.clone();
-    let device = ::push::encrypt::ReceiverKeys::generate();
-    let target = world
-        .register(
-            &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
-        )
-        .await;
-    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
-    world.queue(&world.event(1, &first, "order.paid"));
-    world.queue(&world.event(2, &second, "order.paid"));
-    world
-        .fixture
-        .state
-        .db
-        .lock()
-        .conn_for_test()
-        .execute(
-            "UPDATE push_deliveries SET event_type = 'sale.refunded' WHERE event_id = 'evt_1'",
-            [],
-        )
-        .unwrap();
-
-    assert_eq!(world.tick().await, 2);
-    assert_eq!(stub.count(), 1);
-    let pushes = world.pushes(&target);
-    assert_eq!(pushes[0].gave_up_at, Some(world.clock.now()));
-    let error = pushes[0].last_error.as_deref().unwrap();
-    assert!(
-        error.starts_with("unreadable: ") && error.contains("sale.refunded"),
-        "{error}"
-    );
-    assert_eq!(pushes[1].delivered_at, Some(world.clock.now()));
-}
-
 /// `push.max_attempts` lowered below what a push has made already gives it
 /// up, with no request.
 #[tokio::test]
 async fn a_push_with_no_attempts_left_is_given_up_without_a_request() {
     let world = world().await;
-    let (stub, origin) = Stub::start(500).await;
     let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
     let device = ::push::encrypt::ReceiverKeys::generate();
     let target = world
         .register(
             &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
+            encrypted("t", "https://push.example/up/1", &device, None),
         )
         .await;
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.paid"));
-    world.tick().await;
-    world.clock.advance(5);
-    world.tick().await;
+    let id = world.pushes(&target)[0].id;
+    for _ in 0..2 {
+        world.record_attempt(
+            &app,
+            &target,
+            id,
+            world.failed(500, Some(world.clock.now())),
+        );
+    }
     assert_eq!(world.pushes(&target)[0].attempt_count, 2);
-    assert_eq!(stub.count(), 2);
 
-    world.clock.advance(20);
     let lowered = PushConfig {
         max_attempts: 2,
         ..PushConfig::default()
     };
     assert_eq!(world.tick_with(&lowered).await, 1);
-    assert_eq!(stub.count(), 2);
     let push = &world.pushes(&target)[0];
+    assert_eq!(push.attempt_count, 2, "no request");
     assert_eq!(push.gave_up_at, Some(world.clock.now()));
     assert_eq!(push.last_error.as_deref(), Some(NO_ATTEMPTS_LEFT));
 }
@@ -1126,13 +1114,13 @@ async fn a_push_with_no_attempts_left_is_given_up_without_a_request() {
 #[tokio::test]
 async fn old_pushes_are_pruned_after_push_keep_days() {
     let world = world().await;
-    let (stub, origin) = Stub::start(201).await;
     let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
     let device = ::push::encrypt::ReceiverKeys::generate();
     let target = world
         .register(
             &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
+            encrypted("t", "https://push.example/up/1", &device, None),
         )
         .await;
     let mut orders = Vec::new();
@@ -1144,12 +1132,20 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
     world.queue(&world.event(1, &orders[0], "order.paid"));
     world.queue(&world.event(2, &orders[1], "order.unconfirmed"));
     world.queue(&world.event(3, &orders[1], "order.confirming"));
-    assert_eq!(world.tick().await, 2);
+    let delivered = PushAttempt {
+        at: start,
+        status: Some(201),
+        result: PushResult::Delivered,
+    };
+    for push in [0, 2] {
+        let id = world.pushes(&target)[push].id;
+        world.record_attempt(&app, &target, id, delivered.clone());
+    }
     // Given up on an hour later (evt_4: refused as too large).
     world.clock.advance(3_600);
-    stub.answer(413, None);
     world.queue(&world.event(4, &orders[2], "order.paid"));
-    assert_eq!(world.tick().await, 1);
+    let id = world.pushes(&target)[3].id;
+    world.record_attempt(&app, &target, id, world.failed(413, None));
     // Still waiting (evt_5).
     world.queue(&world.event(5, &orders[3], "order.paid"));
     let pushes = world.pushes(&target);
@@ -1472,6 +1468,47 @@ async fn a_live_activity_target_gets_plain_json_over_http() {
         .unwrap()
         .starts_with("monero:"));
     assert!(by_path("/la/plain").1.get("paymentURI").is_none());
+}
+
+/// A push whose row can't be read (a name no sale event has, written by
+/// hand) is given up on, saying so, and the ones beside it are sent.
+#[tokio::test]
+async fn an_unreadable_push_is_given_up_and_the_others_are_sent_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
+    world.queue(&world.event(1, &first, "order.paid"));
+    world.queue(&world.event(2, &second, "order.paid"));
+    world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "UPDATE push_deliveries SET event_type = 'sale.refunded' WHERE event_id = 'evt_1'",
+            [],
+        )
+        .unwrap();
+
+    assert_eq!(world.tick().await, 2);
+    assert_eq!(stub.count(), 1);
+    let pushes = world.pushes(&target);
+    assert_eq!(pushes[0].gave_up_at, Some(world.clock.now()));
+    let error = pushes[0].last_error.as_deref().unwrap();
+    assert!(
+        error.starts_with("unreadable: ") && error.contains("sale.refunded"),
+        "{error}"
+    );
+    assert_eq!(pushes[1].delivered_at, Some(world.clock.now()));
 }
 
 // -- Edge and failure cases --------------------------------------------------
