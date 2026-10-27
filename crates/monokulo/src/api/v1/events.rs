@@ -36,7 +36,8 @@ struct Lagged {
     missed: u64,
 }
 
-/// A change to an order one of the store's apps made.
+/// A change to an order one of the store's apps made. Also what an
+/// `encrypted` push target's pushes say (`crate::push::payload`).
 #[api::object]
 struct Sale {
     /// What happened, the same as the `event:` name: `sale.waiting`,
@@ -65,7 +66,7 @@ struct Sale {
 }
 
 impl Sale {
-    fn of(sale: &SaleEvent) -> Self {
+    pub(crate) fn of(sale: &SaleEvent) -> Self {
         let order_id = OrderId::new(sale.order_id.clone());
         Sale {
             event: sale.event.as_str().to_owned(),

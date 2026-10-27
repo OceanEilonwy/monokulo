@@ -43,7 +43,8 @@ pub struct Webhooks {
 }
 
 /// This Monokulo's addresses, read as each event is queued, for the
-/// links in its webhook bodies ([`body::LinkBases`]).
+/// links in its webhook bodies ([`body::LinkBases`]) and its pushes
+/// ([`crate::push::Queueing`]).
 #[derive(Clone)]
 pub struct Addresses {
     settings: Arc<crate::settings::MonokuloSettings>,
@@ -61,6 +62,12 @@ impl Addresses {
             web: self.settings.public_uri(),
             onion: crate::network::onion_uri(&self.settings, &self.tor),
         }
+    }
+
+    /// What pushes are queued with now: their links on the web address,
+    /// and the push settings.
+    pub fn push_queueing(&self) -> crate::push::Queueing {
+        crate::push::Queueing::now(&self.settings)
     }
 }
 

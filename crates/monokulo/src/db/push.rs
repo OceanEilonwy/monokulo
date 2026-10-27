@@ -1,13 +1,17 @@
 //! Push targets and this instance's VAPID key (migration 0052,
 //! `crate::push`): where connected apps want their store's sales pushed,
-//! and the key the pushes are signed with.
+//! and the key the pushes are signed with. And the pushes themselves
+//! (migration 0053): queued with each sale event, in the event's own
+//! transaction, and sent by the delivery worker (`crate::push::delivery`).
 
 use rusqlite::{params, OptionalExtension as _};
+use sqlite::Unsigned;
 
-use super::{AppId, ConnectionId, Db, Result};
+use super::{AppId, AppOrder, ConnectionId, Db, LoggedEvent, Result};
 use crate::api::runtime::scalars::ClientId;
-use crate::apps::SaleKind;
-use crate::push::PushTargetKind;
+use crate::apps::{SaleEvent, SaleKind};
+use crate::push::payload::{notification, LiveActivityState};
+use crate::push::{policy, PushTargetKind, Queueing};
 pub use engine_protocol::ids::PushTargetId;
 
 /// The most push targets one app may have: a till has one or two
@@ -165,6 +169,150 @@ fn events_json(events: &[SaleKind]) -> String {
     serde_json::Value::from(kept.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()).to_string()
 }
 
+/// Why a push was given up on without being sent: its TTL ran out first.
+pub const EXPIRED_UNSENT: &str = "expired before it could be sent";
+
+/// A push due now, with the target it goes to.
+#[derive(Debug, Clone)]
+pub struct DuePush {
+    pub id: i64,
+    pub target: PushTarget,
+    pub event: SaleKind,
+    pub urgency: ::push::Urgency,
+    pub topic: ::push::Topic,
+    /// The plaintext: JSON, encrypted afresh at each attempt for an
+    /// `encrypted` target.
+    pub payload: String,
+    /// When its TTL ends.
+    pub expires_at: i64,
+    /// Attempts made so far.
+    pub attempt_count: u32,
+}
+
+/// A due push whose row, or whose target's, doesn't hold what its table
+/// promises: given up on, never sent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnreadablePush {
+    pub id: i64,
+    pub target_id: PushTargetId,
+    pub error: String,
+}
+
+/// One attempt at a push, for [`Db::record_push_attempt`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushAttempt {
+    pub at: i64,
+    /// The push service's status code; `None` when nothing answered.
+    pub status: Option<u16>,
+    pub result: PushResult,
+}
+
+/// How an attempt went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PushResult {
+    /// The push service took it.
+    Delivered,
+    Failed {
+        error: String,
+        /// When to try again; `None` gives up on it.
+        retry_at: Option<i64>,
+        /// How many failures in a row delete the target, when this one
+        /// counts towards them; `None` when it doesn't (the push service
+        /// limiting this sender says nothing about the target).
+        failure_limit: Option<u32>,
+    },
+}
+
+/// What became of a push's target after an attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetAfter {
+    Kept,
+    /// Its run of failures reached the limit: it and its pushes are gone.
+    Deleted,
+}
+
+/// Where a push is, as a test reads it.
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PushDeliveryRow {
+    pub id: i64,
+    pub event_seq: i64,
+    pub event_id: String,
+    pub event_type: String,
+    pub order_id: super::OrderId,
+    pub topic: String,
+    pub urgency: String,
+    pub payload: String,
+    pub expires_at: i64,
+    pub created_at: i64,
+    pub attempt_count: u32,
+    pub next_attempt_at: Option<i64>,
+    pub last_attempt_at: Option<i64>,
+    pub last_status_code: Option<u16>,
+    pub last_error: Option<String>,
+    pub delivered_at: Option<i64>,
+    pub gave_up_at: Option<i64>,
+    pub superseded_at: Option<i64>,
+}
+
+/// Where a sale event is in the engine's order-event log: its place (0 for
+/// `sale.waiting` from the order API, which the log never has) and its id.
+#[derive(Clone, Copy)]
+struct Logged<'a> {
+    seq: i64,
+    id: &'a str,
+}
+
+/// The sale events after which an order still waits for a payment, as
+/// `app_orders.last_sale_event` keeps them (with NULL, none yet).
+const STILL_WAITING: &str = "('sale.waiting', 'sale.partial')";
+
+fn due_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<std::result::Result<DuePush, UnreadablePush>> {
+    let id: i64 = row.get("delivery_id")?;
+    let target_id: PushTargetId = row.get("id")?;
+    let unreadable = |error: String| UnreadablePush {
+        id,
+        target_id: target_id.clone(),
+        error,
+    };
+    let target = match target_from_row(row) {
+        Ok(target) => target,
+        Err(e) => {
+            return Ok(Err(unreadable(format!(
+                "its push target can't be read: {e}"
+            ))))
+        }
+    };
+    let event: String = row.get("d_event_type")?;
+    let urgency: String = row.get("d_urgency")?;
+    let topic: String = row.get("d_topic")?;
+    let parsed = (|| {
+        Ok::<_, String>((
+            event.parse::<SaleKind>().map_err(|e| e.to_string())?,
+            urgency
+                .parse::<::push::Urgency>()
+                .map_err(|_| format!("{urgency:?} isn't an urgency"))?,
+            ::push::Topic::parse(&topic).map_err(|e| format!("{topic:?} isn't a topic: {e}"))?,
+        ))
+    })();
+    let (event, urgency, topic) = match parsed {
+        Ok(parsed) => parsed,
+        Err(e) => return Ok(Err(unreadable(format!("it can't be read: {e}")))),
+    };
+    Ok(Ok(DuePush {
+        id,
+        target,
+        event,
+        urgency,
+        topic,
+        payload: row.get("d_payload")?,
+        expires_at: row.get("d_expires_at_utc")?,
+        attempt_count: row.get::<_, Unsigned<u32>>("d_attempt_count")?.0,
+    }))
+}
+
 impl Db {
     /// Registers an app's push target, in one transaction: the app's
     /// target with the same `client_id` gets the new subscription in place
@@ -290,6 +438,333 @@ impl Db {
             params![app_id, id],
         )?;
         Ok(deleted > 0)
+    }
+
+    /// Queues the pushes of the sale event `event` is, inside the caller's
+    /// transaction ([`Db::queue_order_event`]): nothing unless an app made
+    /// its order and apps hear of that kind of event. Records it as the
+    /// order's latest; then one push per target of the order's store that
+    /// wants it, each superseding that target's unsent push about the same
+    /// order. Returns how many were queued.
+    pub(super) fn queue_pushes_for_event(
+        &self,
+        event: &LoggedEvent,
+        at: i64,
+        queueing: &Queueing,
+    ) -> Result<usize> {
+        let Some(order) = self.app_order(&event.order_id)? else {
+            return Ok(0);
+        };
+        let Some(sale) = SaleEvent::from_logged(&order, event) else {
+            return Ok(0);
+        };
+        let event = Logged {
+            seq: event.seq,
+            id: &event.event_id,
+        };
+        self.queue_sale_pushes(&order, &sale, event, None, at, queueing)
+    }
+
+    /// Queues the `sale.waiting` pushes of `order`, which an app just made,
+    /// inside the caller's transaction (`orders::record`): the engine's log
+    /// never has it, so its place there is 0 and its id is made here. The
+    /// app that made the order isn't pushed it: it shows the sale already.
+    /// Returns how many were queued.
+    pub fn queue_waiting_push(
+        &self,
+        order: &AppOrder,
+        at: i64,
+        queueing: &Queueing,
+    ) -> Result<usize> {
+        let event_id = format!("evt_{}", uuid::Uuid::new_v4().simple());
+        let event = Logged {
+            seq: 0,
+            id: &event_id,
+        };
+        let sale = SaleEvent::waiting(order);
+        self.queue_sale_pushes(order, &sale, event, Some(&order.app_id), at, queueing)
+    }
+
+    /// Queues `sale`'s pushes for every target of `order`'s store that
+    /// wants it but `except`'s: records it as the order's latest, then one
+    /// push per target, each superseding that target's unsent push about
+    /// the same order.
+    fn queue_sale_pushes(
+        &self,
+        order: &AppOrder,
+        sale: &SaleEvent,
+        event: Logged<'_>,
+        except: Option<&AppId>,
+        at: i64,
+        queueing: &Queueing,
+    ) -> Result<usize> {
+        let (event_seq, event_id) = (event.seq, event.id);
+        self.conn.execute(
+            "UPDATE app_orders SET last_sale_event = ?2 WHERE order_id = ?1",
+            params![order.order_id, sale.event.as_str()],
+        )?;
+        let targets: Vec<PushTarget> = self
+            .store_push_targets(&order.store_id)?
+            .into_iter()
+            .filter(|target| target.events.contains(&sale.event))
+            .filter(|target| except != Some(&target.app_id))
+            .collect();
+        if targets.is_empty() {
+            return Ok(0);
+        }
+        let topic = policy::topic(&order.order_id);
+        let urgency = policy::urgency(sale.event);
+        let ttl = policy::ttl(sale.event, order.expires_at, at, queueing.default_ttl);
+        let expires_at = at.saturating_add(i64::from(ttl.as_secs()));
+        // Each made once, for the targets that take it.
+        let mut encrypted: Option<String> = None;
+        let mut waiting_count: Option<u64> = None;
+        let mut queued = 0;
+        for target in &targets {
+            let payload = match target.kind {
+                TargetKind::Encrypted { .. } => encrypted
+                    .get_or_insert_with(|| notification(sale, &queueing.link_base))
+                    .clone(),
+                TargetKind::LiveActivity {
+                    include_payment_uri,
+                } => {
+                    let waiting = match waiting_count {
+                        Some(count) => count,
+                        None => {
+                            *waiting_count.insert(self.waiting_app_orders(&order.store_id, at)?)
+                        }
+                    };
+                    LiveActivityState::of(sale, waiting, include_payment_uri).to_json()
+                }
+            };
+            self.conn.execute(
+                "UPDATE push_deliveries SET superseded_at_utc = ?3, next_attempt_at_utc = NULL
+                 WHERE push_target_id = ?1 AND topic = ?2 AND next_attempt_at_utc IS NOT NULL
+                   AND event_id <> ?4",
+                params![target.id, topic.as_str(), at, event_id],
+            )?;
+            queued += self.conn.execute(
+                "INSERT INTO push_deliveries
+                     (push_target_id, event_seq, event_id, event_type, order_id, topic, urgency,
+                      payload, expires_at_utc, created_at_utc, next_attempt_at_utc)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+                 ON CONFLICT (push_target_id, event_id) DO NOTHING",
+                params![
+                    target.id,
+                    event_seq,
+                    event_id,
+                    sale.event.as_str(),
+                    order.order_id,
+                    topic.as_str(),
+                    urgency.header_value(),
+                    payload,
+                    expires_at,
+                    at
+                ],
+            )?;
+        }
+        Ok(queued)
+    }
+
+    /// Every push target of the store's apps, oldest first.
+    fn store_push_targets(&self, store_id: &ConnectionId) -> Result<Vec<PushTarget>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT * FROM push_targets WHERE store_id = ?1 ORDER BY created_at_utc, rowid",
+        )?;
+        let rows = stmt
+            .query_map(params![store_id], target_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The store's app orders still waiting for a payment at `now`: none
+    /// seen yet, or only part, and not expired.
+    fn waiting_app_orders(&self, store_id: &ConnectionId, now: i64) -> Result<u64> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM app_orders
+                     WHERE store_id = ?1 AND expires_at > ?2
+                       AND (last_sale_event IS NULL OR last_sale_event IN {STILL_WAITING})"
+                ),
+                params![store_id, now],
+                |row| row.get::<_, Unsigned<u64>>(0),
+            )?
+            .0)
+    }
+
+    /// At most `limit` pushes due by `now`, soonest first, each with its
+    /// target; one that can't be read comes back as such, to be given up
+    /// on, rather than stopping every other.
+    pub fn due_push_deliveries(
+        &self,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<std::result::Result<DuePush, UnreadablePush>>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT d.id AS delivery_id, d.event_type AS d_event_type, d.urgency AS d_urgency,
+                    d.topic AS d_topic, d.payload AS d_payload,
+                    d.expires_at_utc AS d_expires_at_utc, d.attempt_count AS d_attempt_count,
+                    t.*
+             FROM push_deliveries d
+             JOIN push_targets t ON t.id = d.push_target_id
+             WHERE d.next_attempt_at_utc <= ?1
+             ORDER BY d.next_attempt_at_utc, d.id
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![now, limit], due_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Records one attempt at the push `id` to `target_id`, and what it
+    /// says about the target, in one transaction. Delivered: the target's
+    /// run of failures ends. Failed: it is tried again at `retry_at` or
+    /// given up on, and a failure that counts lengthens the target's run,
+    /// which at its limit deletes the target. A push superseded while it
+    /// was being sent keeps its attempt but isn't tried again.
+    pub fn record_push_attempt(
+        &self,
+        id: i64,
+        target_id: &PushTargetId,
+        attempt: &PushAttempt,
+    ) -> Result<TargetAfter> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
+        let (error, retry_at, delivered_at, gave_up_at) = match &attempt.result {
+            PushResult::Delivered => (None, None, Some(attempt.at), None),
+            PushResult::Failed {
+                error, retry_at, ..
+            } => (
+                Some(error.as_str()),
+                *retry_at,
+                None,
+                retry_at.is_none().then_some(attempt.at),
+            ),
+        };
+        self.conn.execute(
+            "UPDATE push_deliveries
+             SET attempt_count = MIN(attempt_count + 1, 4294967295),
+                 next_attempt_at_utc = CASE WHEN superseded_at_utc IS NULL THEN ?2 END,
+                 last_attempt_at_utc = ?3, last_status_code = ?4, last_error = ?5,
+                 delivered_at_utc = ?6,
+                 gave_up_at_utc = CASE WHEN superseded_at_utc IS NULL THEN ?7 END
+             WHERE id = ?1 AND delivered_at_utc IS NULL AND gave_up_at_utc IS NULL",
+            params![
+                id,
+                retry_at,
+                attempt.at,
+                attempt.status,
+                error,
+                delivered_at,
+                gave_up_at
+            ],
+        )?;
+        let after = match &attempt.result {
+            PushResult::Delivered => {
+                self.conn.execute(
+                    "UPDATE push_targets SET failures = 0, last_ok_at_utc = ?2 WHERE id = ?1",
+                    params![target_id, attempt.at],
+                )?;
+                TargetAfter::Kept
+            }
+            PushResult::Failed {
+                failure_limit: None,
+                ..
+            } => TargetAfter::Kept,
+            PushResult::Failed {
+                failure_limit: Some(limit),
+                ..
+            } => {
+                let deleted = self.conn.execute(
+                    "DELETE FROM push_targets WHERE id = ?1 AND failures + 1 >= ?2",
+                    params![target_id, limit],
+                )?;
+                if deleted == 0 {
+                    self.conn.execute(
+                        "UPDATE push_targets SET failures = MIN(failures + 1, 4294967295)
+                         WHERE id = ?1",
+                        params![target_id],
+                    )?;
+                    TargetAfter::Kept
+                } else {
+                    TargetAfter::Deleted
+                }
+            }
+        };
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Gives up on the push `id` without an attempt, saying why: it expired
+    /// unsent ([`EXPIRED_UNSENT`]), has no attempts left, or can't be sent.
+    pub fn give_up_push(&self, id: i64, at: i64, error: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE push_deliveries SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2,
+                 last_error = ?3
+             WHERE id = ?1 AND next_attempt_at_utc IS NOT NULL",
+            params![id, at, error],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes a push target its push service said is gone (`404`, `410`),
+    /// with its pushes: whether it was still there.
+    pub fn delete_dead_push_target(&self, id: &PushTargetId) -> Result<bool> {
+        let deleted = self
+            .conn
+            .execute("DELETE FROM push_targets WHERE id = ?1", params![id])?;
+        Ok(deleted > 0)
+    }
+
+    /// Deletes pushes delivered, given up on or superseded before `before`
+    /// (unix seconds). Returns how many.
+    pub fn prune_push_deliveries(&self, before: i64) -> Result<u64> {
+        let deleted = self.conn.execute(
+            "DELETE FROM push_deliveries
+             WHERE delivered_at_utc < ?1 OR gave_up_at_utc < ?1 OR superseded_at_utc < ?1",
+            params![before],
+        )?;
+        Ok(u64::try_from(deleted).unwrap_or(u64::MAX))
+    }
+
+    /// Every push queued for `target_id`, oldest first.
+    #[cfg(test)]
+    pub fn push_deliveries(&self, target_id: &PushTargetId) -> Result<Vec<PushDeliveryRow>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT * FROM push_deliveries WHERE push_target_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map(params![target_id], |row| {
+                Ok(PushDeliveryRow {
+                    id: row.get("id")?,
+                    event_seq: row.get("event_seq")?,
+                    event_id: row.get("event_id")?,
+                    event_type: row.get("event_type")?,
+                    order_id: row.get("order_id")?,
+                    topic: row.get("topic")?,
+                    urgency: row.get("urgency")?,
+                    payload: row.get("payload")?,
+                    expires_at: row.get("expires_at_utc")?,
+                    created_at: row.get("created_at_utc")?,
+                    attempt_count: row.get::<_, Unsigned<u32>>("attempt_count")?.0,
+                    next_attempt_at: row.get("next_attempt_at_utc")?,
+                    last_attempt_at: row.get("last_attempt_at_utc")?,
+                    last_status_code: row
+                        .get::<_, Option<Unsigned<u16>>>("last_status_code")?
+                        .map(|s| s.0),
+                    last_error: row.get("last_error")?,
+                    delivered_at: row.get("delivered_at_utc")?,
+                    gave_up_at: row.get("gave_up_at_utc")?,
+                    superseded_at: row.get("superseded_at_utc")?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// This instance's VAPID key, once one is stored.

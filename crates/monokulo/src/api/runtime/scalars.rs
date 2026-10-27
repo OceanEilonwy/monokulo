@@ -90,9 +90,17 @@ pub struct Amount(String);
 #[api::scalar(pattern = r"^[A-Za-z0-9]{2,10}$", example = "EUR", trim)]
 pub struct CurrencyCode(String);
 
+/// The longest [`MerchantRef`], in characters.
+pub const MAX_MERCHANT_REF_CHARS: usize = 120;
+
 /// The shop's own reference for an order (its order or cart number), shown
 /// on the dashboard and in webhooks.
-#[api::scalar(example = "1042", min_length = 1, max_length = 120, trim)]
+#[api::scalar(
+    example = "1042",
+    min_length = 1,
+    max_length = MAX_MERCHANT_REF_CHARS,
+    trim
+)]
 pub struct MerchantRef(String);
 
 /// What an order is for, shown to the payer under the store's name: one

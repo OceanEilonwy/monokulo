@@ -142,10 +142,14 @@ fn event(seq: i64, store: &str, order: &str, event_type: &str) -> LoggedEvent {
 
 fn queue(db: &Database, event: &LoggedEvent, now: i64) -> usize {
     db.lock()
-        .queue_order_event(event, now, |store, metadata| {
-            body::body_v2(event, store, metadata, &Default::default())
-        })
+        .queue_order_event(
+            event,
+            now,
+            &crate::push::Queueing::now(&crate::settings::MonokuloSettings::defaults()),
+            |store, metadata| body::body_v2(event, store, metadata, &Default::default()),
+        )
         .unwrap()
+        .webhooks
 }
 
 /// A webhook of `store` sending to `url`, and its signing secret.
@@ -652,6 +656,7 @@ impl Shop {
                 &db,
                 &engine,
                 &webhooks,
+                &crate::push::Push::for_tests(),
                 &Default::default(),
                 &addresses,
                 &delivery::SystemClock,
@@ -1157,6 +1162,7 @@ async fn the_subscriber_tells_the_stores_apps_about_their_orders_only() {
             &db,
             &engine,
             &webhooks,
+            &crate::push::Push::for_tests(),
             &listening,
             &addresses,
             &delivery::SystemClock,

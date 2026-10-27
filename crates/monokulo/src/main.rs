@@ -227,16 +227,24 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     {
         tracing::error!(error = %e, "could not run the start-up backfills");
     }
-    // Stores' webhooks: the engine's order events read into deliveries,
-    // and the deliveries sent.
+    // This instance's VAPID key, made at the first start: a stored one
+    // that can't be read stops the process, as any other secret does.
+    let push = Arc::new(
+        monokulo::push::Push::load_or_make(&db, &encryption_key)
+            .await
+            .unwrap_or_else(|e| stop(format!("failed to read this Monokulo's VAPID key: {e}"))),
+    );
+    // Stores' webhooks and connected apps' pushes: the engine's order
+    // events read into deliveries, and the deliveries sent.
     let webhooks = Arc::new(monokulo::webhooks::Webhooks::default());
     // Connected apps' event streams hear of their orders from the same log.
     let apps = Arc::new(monokulo::apps::AppEvents::default());
     {
-        let (db, engine, webhooks, apps) = (
+        let (db, engine, webhooks, push, apps) = (
             db.clone(),
             engine_client.clone(),
             webhooks.clone(),
+            push.clone(),
             apps.clone(),
         );
         let addresses = monokulo::webhooks::Addresses::new(monokulo_settings.clone(), tor.clone());
@@ -245,6 +253,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
                 db.clone(),
                 engine.clone(),
                 webhooks.clone(),
+                push.clone(),
                 apps.clone(),
                 addresses.clone(),
             )
@@ -266,11 +275,12 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             )
         });
     }
-    // This instance's VAPID key, made at the first start: a stored one
-    // that can't be read stops the process, as any other secret does.
-    let push = monokulo::push::Push::load_or_make(&db, &encryption_key)
-        .await
-        .unwrap_or_else(|e| stop(format!("failed to read this Monokulo's VAPID key: {e}")));
+    {
+        let (db, settings, push) = (db.clone(), monokulo_settings.clone(), push.clone());
+        service_runtime::supervise::supervise("push delivery", move || {
+            monokulo::push::delivery::run_delivery_loop(db.clone(), settings.clone(), push.clone())
+        });
+    }
     let engine = monokulo::http::Engine::new(engine_client);
     monokulo::http::status_page::set_status_cache_ttl(
         &engine,
@@ -288,7 +298,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         log_store,
         webhooks,
         apps,
-        push: Arc::new(push),
+        push,
         revocations: Default::default(),
         stopping: stopping.clone(),
         tor: tor.clone(),

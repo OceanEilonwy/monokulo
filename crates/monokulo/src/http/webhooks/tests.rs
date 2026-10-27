@@ -196,6 +196,7 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         state.db.clone(),
         state.engine.client.clone(),
         state.webhooks.clone(),
+        state.push.clone(),
         state.apps.clone(),
         crate::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
     ));
@@ -347,9 +348,14 @@ async fn store_with_deliveries(
             description: None,
             xmr_amount_piconero: pricing::xmr_amount::Piconero(1),
         };
-        db.queue_order_event(&event, now - 600, |store, metadata| {
-            crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
-        })
+        db.queue_order_event(
+            &event,
+            now - 600,
+            &crate::push::Queueing::now(&crate::settings::MonokuloSettings::defaults()),
+            |store, metadata| {
+                crate::webhooks::body::body_v2(&event, store, metadata, &Default::default())
+            },
+        )
         .unwrap();
         let id = db.deliveries_page(&created.webhook.id, 0, 1).unwrap()[0].id;
         for n in 1..=attempts {
