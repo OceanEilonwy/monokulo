@@ -627,6 +627,7 @@ take the numbers after them; their content stands.
 96. **The principal opens the draft PR**, `push-delivery` onto
     `push-targets`, as for P2 (#246): the engineer's brief left it open,
     and the stack's PRs are opened at approval so each carries its review.
+
 ## The push relay (rust-engineer-1)
 
 Numbered from 100: the push deliveries (P3) are built at the same time
@@ -897,3 +898,87 @@ principal renumbers, or not, when the stack is merged.
      the handle's limit let through would let a sender hammer one spent
      handle without touching its own budget. The order (sender first,
      then handle) is documented in `limits.rs` with its unit test.
+
+## Integration (the principal)
+
+The stack rebased into one line and checked as a whole, 2026-10-27, after
+every package was approved.
+
+131. **One rebased line of four stacked draft PRs, merged without
+     squashing.** `push-relay` was rebased onto `push-delivery` at
+     `8416a6d04` (the one conflict was this log, both runs kept in order as
+     128 has it; `main.rs`, `settings.rs` and `Cargo.lock` merged by
+     themselves), so the stack is push-crate ← push-targets ←
+     push-delivery ← push-relay and PR #248's base is `push-delivery`. The
+     four PRs stay as they are: each is the review of its package, with its
+     own body, checks and section here, and merges bottom-up (GitHub
+     retargets the next onto `main` as each lands). One integration PR of
+     38 commits and 20 000 lines was the alternative, which nobody could
+     review as a whole. Merge commits or rebases, not squashes: the Bell
+     pins a commit of this stack (134), which a squash would leave
+     unreachable.
+132. **The whole chain is run once, in monokulo's own tests**
+     (`push::pipeline_tests::relay_tests`, three tests named `over_http`):
+     a relay built from its settings as `monokulo::relay` builds the
+     embedded one, served on `127.0.0.1:0` and pointed at stand-in APNs
+     (HTTP/2 with prior knowledge) and FCM on this machine; handles
+     registered with this Monokulo's VAPID key as an app does; the
+     endpoints registered as push targets; a paid sale queued by the
+     subscriber from the engine's event and sent by the worker, then read
+     off the stand-ins as the device would: the APNs alert's ciphertext
+     decrypts to the sale, the FCM data message carries the same, and a
+     Live Activity's update holds the state with its payment URI while
+     waiting and its alert when paid. In monokulo rather than in
+     `push-relay`, which would otherwise dev-depend on monokulo (its
+     engine, Tor and all) to make a sale. The relay's test keys are read
+     from its `tests/fixtures` by path, and `base64` (in the lock) joins
+     monokulo's dev-dependencies to read what the providers carry.
+133. **A paid Live Activity's alert is titled with the sale's currency
+     when the state names one** ("Paid · 24.50 USD"). Decision 74 split
+     `amount` from `currency`, so the relay's "Paid · {amount}" would have
+     read "Paid · 24.50" on the lock screen; found by the chain test (132).
+     A state with `amount` alone, another sender's own formatting, keeps
+     "Paid · {amount}".
+134. **The Bell pins the stack's head, not `push-crate`'s** (decision 22
+     refined). After `push-crate`, the push crate gained
+     `Es256Key::from_pkcs8_pem` and live-settings the handling of several
+     embedded services (both on `push-relay`), and one `rev` serves all six
+     crates the Bell takes, so the one commit that has everything is the
+     final commit of `push-relay`; monokular #14's `Cargo.toml` names it.
+     After the stack is on `main`, the pin moves to `main`'s commit with
+     `cargo update -p push --precise`, as 22 planned.
+135. **The design document follows the build in the Bell's PR** (94's
+     follow-up, monokular #14, `docs/design.md`): §5 (the key read from the
+     collection, `currency` in the state, the two crates' layouts and the
+     crates table as built, the relay API without an unregister route and
+     with its problems, the hashed topic, every Live Activity push an
+     update, the two-part settings under `[relay.*]` and port 8444, the
+     push targets' resources and `POST`, the events' TTL and topic, the
+     delivery path's retries and no `push.enabled`), §6 (`currency`,
+     `waitingCount`'s meaning, the app idles the activity), §8 (layout,
+     migrations, settings, tests without provider traits), §10 (what is
+     built) and §11 (the pin, `crypto-bigint`). The sections stay the
+     design's: what changed is stated, not rewritten around.
+136. **`crypto-bigint` stays at 0.7.5 in monokulo's lock until
+     2026-11-09** (Bell decision 30, logged here as it said). It is yanked
+     under RUSTSEC-2026-0387; the fixed 0.7.9 and 0.7.10 are from
+     2026-10-25 and 2026-10-26, inside the two-week window, and 0.7.6 to
+     0.7.8 were each yanked within days, which is the churn the rule is
+     for. Exposure here: one VAPID signing per push-service origin every
+     11 hours and one ECDH per push, none of it timed from outside. Both
+     repositories move together, or at once if the owner says the fix wins
+     over the rule.
+137. **The gates were run on the final stack** (`push-relay` at its head,
+     with 131 to 136 in): the results are in
+     `docs/reports/bell-and-relay.md` §7. All passed: fmt, the seven clippy runs, the fuzz lock, the
+     test-support grep, nextest over the workspace (2358 passed, 27
+     skipped, 26.5 s) and xtask (112), the doctests, the OpenAPI document,
+     the slow-test summary, `xtask ui --check` and the browser suite (90
+     passed). The Bell's `rust.yml` steps were run on stable against its
+     pin (70 tests).
+138. **The report is `docs/reports/bell-and-relay.md`**, a new directory
+     (`docs/` had plans and audits, no reports), linked from each of the
+     five PRs; monokular carries `docs/reports/bell.md` with the Bell's
+     part and a pointer here. Everything the owner needs to review the
+     build is in those two files and the two decision logs; nothing is
+     only in a chat.
