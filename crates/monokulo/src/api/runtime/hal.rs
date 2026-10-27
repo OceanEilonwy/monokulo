@@ -38,6 +38,10 @@ pub trait Body: Serialize + JsonSchema {
 
 /// A handler, as a form (`Form<orders::create>`).
 pub trait FormTarget {
+    /// Its route's template: a form another resource offers targets it as
+    /// it is, so it has no parameters (the macros check).
+    const TEMPLATE: &'static str;
+
     fn info() -> &'static HandlerInfo;
 }
 
@@ -321,33 +325,39 @@ impl Serialize for LinksBuilder {
     }
 }
 
-/// A body's `_templates` while it's written: the forms the caller may use.
+/// A body's `_templates` while it's written: the forms the caller may use,
+/// each with where it's sent.
 pub struct TemplatesBuilder {
-    forms: Vec<&'static HandlerInfo>,
+    forms: Vec<(&'static HandlerInfo, String)>,
 }
 
 impl TemplatesBuilder {
     /// Starts with the resource's own forms (its `post` and `delete`
-    /// handlers with a `form`).
-    pub fn for_resource<P: Resource>() -> Self {
+    /// handlers with a `form`), each sent to `own`, the resource itself:
+    /// its parameters filled in, so a form on one push target unregisters
+    /// that one.
+    pub fn for_resource<P: Resource>(own: &P) -> Self {
         let mut builder = TemplatesBuilder { forms: Vec::new() };
+        let target = format!("{}{own}", auth::base());
         for handler in catalog::handlers_of(P::info()) {
-            builder.push(handler);
+            builder.push(handler, target.clone());
         }
         builder
     }
 
-    /// Adds the form `H`.
+    /// Adds the form `H`, sent to its route (which has no parameters).
     pub fn add<H: FormTarget>(&mut self) {
-        self.push(H::info());
+        self.push(H::info(), format!("{}{}", auth::base(), H::TEMPLATE));
     }
 
-    fn push(&mut self, handler: &'static HandlerInfo) {
+    fn push(&mut self, handler: &'static HandlerInfo, target: String) {
         let Some(name) = handler.form else { return };
-        if !handler.who.admits(auth::current()) || self.forms.iter().any(|f| f.form == Some(name)) {
+        if !handler.who.admits(auth::current())
+            || self.forms.iter().any(|(f, _)| f.form == Some(name))
+        {
             return;
         }
-        self.forms.push(handler);
+        self.forms.push((handler, target));
     }
 
     pub fn is_empty(&self) -> bool {
@@ -358,9 +368,15 @@ impl TemplatesBuilder {
 impl Serialize for TemplatesBuilder {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(self.forms.len()))?;
-        for handler in &self.forms {
+        for (handler, target) in &self.forms {
             if let Some(name) = handler.form {
-                map.serialize_entry(name, &template(handler))?;
+                map.serialize_entry(
+                    name,
+                    &Template {
+                        target: target.clone(),
+                        ..template(handler)
+                    },
+                )?;
             }
         }
         map.end()
@@ -399,14 +415,15 @@ pub struct Property {
 }
 
 /// The form `handler` is: its title (its doc's first line), method,
-/// target and fields.
+/// target and fields. The target is its route's template, as the docs show
+/// it (`{push_target_id}` and all); a body offers it at its resource's
+/// own path ([`TemplatesBuilder`]).
 pub fn template(handler: &HandlerInfo) -> Template {
     let mut generator = schemars::generate::SchemaSettings::draft2020_12().into_generator();
     let mut operation = OperationDoc::new(&mut generator);
     (handler.describe)(&mut operation);
     let body = operation.body.take();
     let definitions = generator.take_definitions(true);
-    // The macros refuse a form on a path with parameters.
     let target = format!("{}{}", auth::base(), handler.template);
     Template {
         title: catalog::summary(handler.doc),

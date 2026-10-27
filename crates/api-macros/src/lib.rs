@@ -522,10 +522,6 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
     let wrapper = format_ident!("api_handler_{}", name);
     let marker_who = format_ident!("ApiWho_{}", name);
     let routing = format_ident!("{}", method.to_ascii_lowercase());
-    // A form's target is its handler's route template, so a form on a path
-    // with parameters would be offered with `{...}` in it: refused when it
-    // compiles.
-    let mut form_check = quote!();
     let form = match &args.form {
         Some(form) => {
             let value = form.value();
@@ -545,19 +541,6 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
                     "a form changes something: it's a `post` or `delete`",
                 ));
             }
-            form_check = quote_spanned! {form.span()=>
-                const _: () = {
-                    let template = Path::TEMPLATE.as_bytes();
-                    let mut i = 0;
-                    while i < template.len() {
-                        ::core::assert!(
-                            template[i] != b'{',
-                            "a form's target is its path, so a form is only on a path without parameters"
-                        );
-                        i += 1;
-                    }
-                };
-            };
             quote!(::core::option::Option::Some(#form))
         }
         None => quote!(::core::option::Option::None),
@@ -574,13 +557,13 @@ fn expand_handler(method: &str, args: HandlerArgs, function: ItemFn) -> syn::Res
     Ok(quote! {
         #function
 
-        #form_check
-
         /// This handler as a form target (`api::Form<...>`).
         #[allow(non_camel_case_types, dead_code)]
         pub(crate) struct #name {}
 
         impl #p::FormTarget for #name {
+            const TEMPLATE: &'static str = Path::TEMPLATE;
+
             fn info() -> &'static #p::HandlerInfo {
                 &#info
             }
@@ -900,9 +883,26 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
     let href_schemas = hrefs
         .iter()
         .map(|(_, rel)| quote!(links.push((::std::string::String::from(#rel), ::std::string::String::new()));));
-    let form_adds = forms
-        .iter()
-        .map(|(_, target)| quote!(templates.add::<#target>();));
+    // A form another resource offers targets its own path, so one on a
+    // path with parameters would be offered with `{...}` in it: refused
+    // when it compiles. (A resource's own forms target the resource,
+    // parameters filled in.)
+    let form_adds = forms.iter().map(|(_, target)| {
+        quote_spanned! {target.span()=>
+            const _: () = {
+                let template = <#target as #p::FormTarget>::TEMPLATE.as_bytes();
+                let mut i = 0;
+                while i < template.len() {
+                    ::core::assert!(
+                        template[i] != b'{',
+                        "a form offered by another resource targets its own path, so it is only on a path without parameters"
+                    );
+                    i += 1;
+                }
+            };
+            templates.add::<#target>();
+        }
+    });
     let onion_adds = onions.iter().map(|(ident, target, rel, doc)| {
         let key = format!("mk:{rel}");
         let title = summary(doc);
@@ -960,12 +960,13 @@ fn expand_body(item: ItemStruct, resource: bool) -> syn::Result<Tokens> {
     };
     let serialize_links = if resource {
         quote! {
-            let mut links = #p::LinksBuilder::new(&<#name as #p::Body>::self_path(self));
+            let own = <#name as #p::Body>::self_path(self);
+            let mut links = #p::LinksBuilder::new(&own);
             #(#link_adds)*
             #(#onion_adds)*
             #(#href_adds)*
             map.serialize_entry("_links", &links)?;
-            let mut templates = #p::TemplatesBuilder::for_resource::<Path>();
+            let mut templates = #p::TemplatesBuilder::for_resource(&own);
             #(#form_adds)*
             if !templates.is_empty() {
                 map.serialize_entry("_templates", &templates)?;
