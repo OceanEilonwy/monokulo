@@ -993,6 +993,7 @@ pub(super) async fn render_store_settings_page_with(
     .await;
 
     let row = row.into_row();
+    let base_currency = crate::currencies::KnownCurrency::base_of(&row);
     let wallet = store_wallet_view(state, &row, user, wallet_state).await;
     let sites = super::store_site::site_view(state, &row, &sk, &chrome.clock).await;
     let apps = super::apps::apps_view(state, &row, &chrome.clock).await;
@@ -1008,7 +1009,7 @@ pub(super) async fn render_store_settings_page_with(
             confirmations_required,
             fx_provider_options,
             haveno_settings,
-            base_currency: row.base_currency,
+            base_currency,
             base_currency_options,
             confirmation_thresholds,
             webhooks,
@@ -4168,6 +4169,61 @@ mod tests {
         }
     }
 
+    /// In an XMR store a tier's amount is XMR as typed ("0.125" stays
+    /// "0.125"), and a piconero count typed there is refused rather than
+    /// saved as an unreachable tier.
+    #[tokio::test]
+    async fn an_xmr_store_takes_tier_amounts_in_xmr_never_piconero() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "threshold-xmr@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &state, &session_token).await;
+        let save = format!("/stores/{connection_id}/settings");
+        let post = |fields: &'static [(&'static str, &'static str)]| {
+            router
+                .clone()
+                .oneshot(form_post_request(&save, &session_token, fields))
+        };
+        assert_eq!(
+            post(&[("base_currency", "XMR")]).await.unwrap().status(),
+            StatusCode::SEE_OTHER
+        );
+
+        let refused = post(&[
+            ("new_unit_amount", "125000000000"),
+            ("new_confirmations_required", "3"),
+        ])
+        .await
+        .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(refused).await;
+        assert!(html.contains("not piconero"), "{html}");
+
+        let saved = post(&[
+            ("new_unit_amount", "0.125"),
+            ("new_confirmations_required", "3"),
+        ])
+        .await
+        .unwrap();
+        assert_eq!(saved.status(), StatusCode::SEE_OTHER);
+        let amounts: Vec<String> = state
+            .db
+            .lock()
+            .list_confirmation_thresholds(&engine_protocol::ids::ConnectionId::new(
+                connection_id.to_string(),
+            ))
+            .unwrap()
+            .into_iter()
+            .map(|t| t.unit_amount)
+            .collect();
+        assert_eq!(amounts, ["0.125"]);
+    }
+
     #[tokio::test]
     async fn the_confirmation_settings_refuse_what_they_cannot_hold() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -4182,7 +4238,10 @@ mod tests {
         let save = format!("/stores/{connection_id}/settings");
 
         for (amount, confirmations, message) in [
-            ("-5.00", "20", "non-negative"),
+            ("-5.00", "20", "with a dot for decimals"),
+            // A comma is refused, never read as grouping or as a decimal.
+            ("1,250", "20", "with a dot for decimals"),
+            ("1.0000000000001", "20", "decimal places"),
             ("50.00", "721", "from 0 to 720"),
             ("50.00", "", "from 0 to 720"),
         ] {

@@ -6,6 +6,8 @@ import { attachHelpTip } from './HelpTip';
 import { attachSortableList } from './SortableList';
 import { attachAvatar } from './Avatar';
 import { attachDialog } from './Dialog';
+import { attachMoneyInput } from './MoneyInput';
+import { attachStepper } from './Stepper';
 import { attachRowsEditor } from './RowsEditor';
 import { attachSelect } from './Select';
 import { attachCountdown } from './Countdown';
@@ -29,6 +31,8 @@ export const islands: Record<string, () => Promise<Attach>> = {
   SortableList: () => Promise.resolve(attachSortableList),
   Avatar: () => Promise.resolve(attachAvatar),
   Dialog: () => Promise.resolve(attachDialog),
+  MoneyInput: () => Promise.resolve(attachMoneyInput),
+  Stepper: () => Promise.resolve(attachStepper),
   RowsEditor: () => Promise.resolve(attachRowsEditor),
   Select: () => Promise.resolve(attachSelect),
   Countdown: () => Promise.resolve(attachCountdown),

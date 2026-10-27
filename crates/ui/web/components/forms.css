@@ -70,3 +70,37 @@ a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: va
 .mk-rows[data-adding] .mk-rows-add { display: none; }
 .mk-rows-foot { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin-top: var(--space-sm); }
 .mk-rows-note { margin: 0; color: var(--muted); font-size: var(--text-sm); }
+
+/* An amount of money (MoneyInput): one box, the number right-aligned so
+   amounts line up, its currency in a sunken cell at the right edge. */
+.mk-money { box-sizing: border-box; display: inline-flex; align-items: stretch; max-width: 100%; min-width: 0; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); overflow: hidden; vertical-align: middle; }
+.mk-money > .mk-input { flex: 1 1 auto; width: 9rem; border: 0; border-radius: 0; text-align: right; font-variant-numeric: tabular-nums; font-weight: 700; }
+.mk-money > .mk-input:focus-visible { outline: none; }
+.mk-money:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }
+.mk-money:has(> [aria-invalid="true"]), .mk-money:has(> :user-invalid) { border-color: var(--error); }
+.mk-money:has(> :disabled) { opacity: .55; }
+.mk-money:has(> :disabled) > .mk-input { opacity: 1; }
+.mk-money-unit { display: flex; align-items: center; padding: 0 var(--space-md); border-left: 1px solid var(--line); background: var(--surface-sunken); color: var(--muted); font-size: var(--text-sm); font-weight: 700; }
+.mk-money[data-size="compact"] > .mk-input { min-height: 2rem; padding: var(--space-xs) var(--space-sm); font-size: var(--text-sm); }
+.mk-money[data-size="compact"] > .mk-money-unit { padding: 0 var(--space-sm); font-size: var(--text-xs); }
+
+/* A whole number with − and + (Stepper). Without the behaviour, a narrow
+   number input; with it, one box with the buttons at its ends, and the
+   browser's own spin arrows gone. */
+.mk-stepper { box-sizing: border-box; display: inline-flex; align-items: stretch; vertical-align: middle; }
+.mk-stepper > .mk-input { width: 5.5rem; text-align: center; font-variant-numeric: tabular-nums; font-weight: 700; }
+.mk-stepper[data-ready] { border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--control-bg); overflow: hidden; }
+.mk-stepper[data-ready] > .mk-input { width: 4.5rem; border: 0; border-radius: 0; padding-inline: var(--space-xs); appearance: textfield; -moz-appearance: textfield; }
+.mk-stepper[data-ready] > .mk-input::-webkit-inner-spin-button, .mk-stepper[data-ready] > .mk-input::-webkit-outer-spin-button { appearance: none; margin: 0; }
+.mk-stepper[data-ready] > .mk-input:focus-visible { outline: none; }
+.mk-stepper[data-ready]:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-color: var(--focus-ring); }
+.mk-stepper[data-ready]:has(> [aria-invalid="true"]) { border-color: var(--error); }
+.mk-stepper:has(> :disabled) { opacity: .55; }
+.mk-stepper:has(> :disabled) > .mk-input { opacity: 1; }
+.mk-stepper-btn { width: 2.25rem; margin: 0; padding: 0; border: 0; background: var(--surface-sunken); color: var(--ink); font: inherit; font-size: var(--text-lg); font-weight: 700; cursor: pointer; }
+.mk-stepper-btn:first-child { border-right: 1px solid var(--line); }
+.mk-stepper-btn:last-child { border-left: 1px solid var(--line); }
+.mk-stepper-btn:hover:not(:disabled) { background: var(--btn-hover-bg); }
+.mk-stepper-btn:disabled { color: var(--muted); cursor: not-allowed; }
+.mk-stepper[data-size="compact"] > .mk-input { min-height: 2rem; padding-block: var(--space-xs); font-size: var(--text-sm); }
+.mk-stepper[data-size="compact"] > .mk-stepper-btn { width: 1.9rem; }

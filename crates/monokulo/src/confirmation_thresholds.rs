@@ -17,6 +17,7 @@
 use crate::db::{ConfirmationThresholdRow, StoreConnectionRow};
 use crate::exchange_rate_config::ExchangeRateLookupError;
 use crate::http::AppState;
+use pricing::unit_amount::UnitAmount;
 use pricing::xmr_amount::{Piconero, PiconeroPerUnit, PICONERO_PER_XMR};
 
 /// The most custom thresholds a store can have: the store settings page
@@ -91,40 +92,15 @@ fn policy_lock(pk: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     lock
 }
 
-/// A currency amount in exact units of 10^-12. This covers XMR's precision
-/// and keeps fiat thresholds exact without floating-point boundary errors.
-/// Spelled, read and written as an order's amount is
-/// (`pricing::xmr_amount::parse_scaled`), zero allowed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ThresholdAmount(u128);
-
-impl ThresholdAmount {
-    pub fn parse(raw: &str) -> Result<Self, &'static str> {
-        use pricing::xmr_amount::AmountError;
-        match pricing::xmr_amount::parse_scaled(raw.trim()) {
-            Ok(scaled) => Ok(Self(scaled)),
-            Err(AmountError::TooLarge | AmountError::AboveOrderLimit) => Err("amount is too large"),
-            Err(
-                AmountError::InvalidDecimal
-                | AmountError::NotPositive
-                | AmountError::TooManyDecimalPlaces { .. },
-            ) => Err("amount must be a non-negative decimal with at most 12 fractional digits"),
-        }
-    }
-
-    pub fn canonical(self) -> String {
-        pricing::xmr_amount::format_scaled_trimmed(self.0)
-    }
-
-    /// Whether an order of `piconero`, at `rate` piconero per unit, is at
-    /// least this many units.
-    fn is_met_by(self, piconero: Piconero, rate: PiconeroPerUnit) -> bool {
-        // One unit of the scale is one piconero (`parse_scaled`).
-        let order = u128::from(piconero.get()) * u128::from(PICONERO_PER_XMR);
-        self.0
-            .checked_mul(u128::from(rate.get()))
-            .is_some_and(|boundary| order >= boundary)
-    }
+/// Whether an order of `piconero`, at `rate` piconero per unit, is at
+/// least `amount` units.
+fn is_met_by(amount: UnitAmount, piconero: Piconero, rate: PiconeroPerUnit) -> bool {
+    // One unit of the scale is one piconero (`UnitAmount::scaled`).
+    let order = u128::from(piconero.get()) * u128::from(PICONERO_PER_XMR);
+    amount
+        .scaled()
+        .checked_mul(u128::from(rate.get()))
+        .is_some_and(|boundary| order >= boundary)
 }
 
 /// The confirmations shown for an order when neither its own snapshot nor
@@ -145,17 +121,18 @@ pub fn resolve_confirmations_required(
     {
         return Err("invalid confirmation policy");
     }
-    let mut best: Option<(ThresholdAmount, u64)> = None;
+    let mut best: Option<(UnitAmount, u64)> = None;
     let mut seen = std::collections::HashSet::new();
     for threshold in thresholds {
-        let amount = ThresholdAmount::parse(&threshold.unit_amount)?;
+        let amount = UnitAmount::parse(&threshold.unit_amount)
+            .map_err(|_| "invalid confirmation threshold amount")?;
         if threshold.confirmations_required
             > engine_protocol::order_status::MAX_CONFIRMATIONS_REQUIRED
-            || !seen.insert(amount.0)
+            || !seen.insert(amount)
         {
             return Err("invalid or duplicate confirmation threshold");
         }
-        if amount.is_met_by(piconero, piconero_per_unit)
+        if is_met_by(amount, piconero, piconero_per_unit)
             && best.is_none_or(|(current, _)| amount > current)
         {
             best = Some((amount, threshold.confirmations_required));
@@ -359,20 +336,6 @@ mod tests {
             confirmations_required,
             created_at: 0,
         }
-    }
-
-    #[test]
-    fn amount_spellings_canonicalize_without_floating_point() {
-        assert_eq!(
-            ThresholdAmount::parse("00050.0500").unwrap().canonical(),
-            "50.05"
-        );
-        assert_eq!(ThresholdAmount::parse(".05").unwrap().canonical(), "0.05");
-        assert_eq!(
-            ThresholdAmount::parse("50.0").unwrap(),
-            ThresholdAmount::parse("50").unwrap()
-        );
-        assert!(ThresholdAmount::parse("5e1").is_err());
     }
 
     #[test]

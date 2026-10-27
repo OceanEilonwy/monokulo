@@ -351,14 +351,15 @@ async fn plan(
                         .to_string(),
                 )),
             };
-        match crate::confirmation_thresholds::ThresholdAmount::parse(new_amount) {
-            Ok(amount) => Some((confirmations, amount.canonical())),
-            Err(_) => {
-                return Err((
-                    CONFIRMATIONS,
-                    "Enter a non-negative amount for the new threshold.".to_string(),
-                ))
-            }
+        if new_amount.is_empty() {
+            return Err((
+                CONFIRMATIONS,
+                "Enter an amount for the new threshold.".to_string(),
+            ));
+        }
+        match crate::currencies::KnownCurrency::base_of(row).parse_entered(new_amount) {
+            Ok(amount) => Some((confirmations, amount.to_string())),
+            Err(problem) => return Err((CONFIRMATIONS, problem.to_string())),
         }
     };
     let store_id = row.id.clone();
@@ -381,7 +382,7 @@ async fn plan(
             ));
         }
         let kept = |t: &&crate::db::ConfirmationThresholdRow| !deleted.contains(&t.id);
-        let parse = crate::confirmation_thresholds::ThresholdAmount::parse;
+        let parse = pricing::unit_amount::UnitAmount::parse;
         if existing
             .iter()
             .filter(kept)
@@ -399,7 +400,7 @@ async fn plan(
             if existing
                 .iter()
                 .filter(kept)
-                .any(|t| parse(&t.unit_amount).is_ok_and(|a| a.canonical() == *amount))
+                .any(|t| parse(&t.unit_amount).is_ok_and(|a| a.to_string() == *amount))
             {
                 return Err((
                     CONFIRMATIONS,

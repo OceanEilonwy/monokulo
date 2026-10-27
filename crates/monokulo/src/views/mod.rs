@@ -599,6 +599,32 @@ pub fn fiat_amount(amount: &str, currency: &str) -> String {
     }
 }
 
+/// An amount field in `currency`, holding `value`: the one way a page asks
+/// for an amount of money. Its decimals come from the currency, an XMR
+/// field refuses more than the largest order before it is sent (as
+/// [`KnownCurrency::parse_entered`] does after), and its value is always
+/// plain, so what the server reads back is what it rendered.
+///
+/// [`KnownCurrency::parse_entered`]: crate::currencies::KnownCurrency::parse_entered
+pub fn money_input(
+    name: &str,
+    currency: &crate::currencies::KnownCurrency,
+    value: Option<pricing::unit_amount::UnitAmount>,
+) -> ui::MoneyInput {
+    let field = ui::MoneyInput::new(name, currency.as_str())
+        .decimals(u32::from(currency.decimals()))
+        .maybe_value(value.map(|v| v.to_string()));
+    if currency.as_str() == "XMR" {
+        field
+            .max(pricing::xmr_amount::format_xmr_trimmed(
+                pricing::xmr_amount::MAX_ORDER_PICONERO,
+            ))
+            .over_max(pricing::unit_amount::EnteredAmountError::AboveXmrLimit.to_string())
+    } else {
+        field
+    }
+}
+
 /// An exact XMR amount without trailing zeros (`0.001000000000` is `0.001`).
 pub fn trim_xmr(amount: &str) -> &str {
     if amount.contains('.') {
