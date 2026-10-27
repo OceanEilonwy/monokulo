@@ -878,6 +878,45 @@ pub(crate) mod tests {
         assert!(config.fcm.is_some());
     }
 
+    /// `handles.apps` as the docs and `--init` write it, a TOML table per
+    /// app, read into the apps with their bundle and project.
+    #[tokio::test]
+    async fn apps_written_as_a_toml_table_are_read() {
+        let file = live_settings::OptionsFile::in_memory(
+            "[server]\npublic_uri = \"https://relay.example.org\"\n\n\
+             [apns]\nteam_id = \"TEAM123456\"\nkey_id = \"KEY1234567\"\n\n\
+             [handles.apps.monokular]\n\
+             apns_topic = \"com.example.monokular\"\n\
+             fcm_project_id = \"monokular-test\"\n",
+        );
+        let stored = file.read(ALL).unwrap();
+        let config = load(
+            stored,
+            Env::fixed([
+                ("MONOKULO_RELAY_APNS_KEY", APNS_KEY_PEM),
+                (
+                    "MONOKULO_RELAY_FCM_CREDENTIALS",
+                    &*fcm_account(GOOGLE_TOKEN_URI),
+                ),
+            ]),
+            Host::Standalone,
+        )
+        .await
+        .unwrap();
+        let app = config
+            .apps
+            .get(&AppName::try_from("monokular".to_owned()).unwrap())
+            .unwrap();
+        assert_eq!(
+            app.apns_topic.as_ref().map(BundleId::as_str),
+            Some("com.example.monokular")
+        );
+        assert_eq!(
+            app.fcm_project_id.as_ref().map(ProjectId::as_str),
+            Some("monokular-test")
+        );
+    }
+
     /// Each rule that ties settings together stops the relay with the
     /// setting named.
     #[tokio::test]
