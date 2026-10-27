@@ -401,11 +401,15 @@ test('a stepper steps from what is typed and stops at its ends', async ({ page }
   await fewer.click();
   await expect(input).toHaveValue('719');
   await expect(more).toBeEnabled();
+  // The arrow keys step it too.
+  await input.press('ArrowDown');
+  await expect(input).toHaveValue('718');
+  await expect(input).toHaveAttribute('aria-valuenow', '718');
   const low = page.locator('#component-stepper-2');
   await expect(low.getByRole('button', { name: 'Fewer confirmations' })).toBeDisabled();
 });
 
-test('without JavaScript a stepper is a number input with no buttons', async ({ browser }) => {
+test('without JavaScript a stepper is a plain field with no buttons, sending what is typed', async ({ browser }) => {
   const { context, page } = await noScript(browser);
   const example = page.locator('#component-stepper-1');
   await expect(example.getByRole('spinbutton', { name: 'confirmations' })).toHaveValue('10');

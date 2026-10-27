@@ -1,6 +1,6 @@
 // The Stepper component's behaviour (crates/ui/src/components/forms.rs):
-// − and + take one off and add one, from what's typed, each stopping at its
-// end. A step is an `input` and a `change` event on the input, as typing
+// − and + (and the arrow keys) take one off and add one, from what's typed,
+// each stopping at its end. A step is an `input` and a `change` event on the input, as typing
 // is, so a settings form counts it.
 import { createSignal } from 'solid-js';
 import type { StepperBehaviour, StepperProps } from '../../solid/Stepper';
@@ -18,6 +18,8 @@ export function setup(props: StepperProps): StepperBehaviour {
     const known = input.value.trim() !== '' && Number.isFinite(n);
     setAtMin(input.disabled || (known && n <= min()));
     setAtMax(input.disabled || (known && props.max !== undefined && n >= props.max));
+    if (known) input.setAttribute('aria-valuenow', String(n));
+    else input.removeAttribute('aria-valuenow');
   };
 
   const step = (by: number) => {
@@ -41,11 +43,13 @@ export function setup(props: StepperProps): StepperBehaviour {
       input = element as HTMLInputElement;
       input.addEventListener('input', sync);
       input.addEventListener('change', sync);
-      // A wheel over the focused field scrolls the page, not the number:
-      // scrolling past it must not change what will be saved.
-      input.addEventListener('wheel', event => {
-        if (document.activeElement === input) event.preventDefault();
-      }, { passive: false });
+      // The arrow keys step it, as a spin button's do.
+      input.addEventListener('keydown', event => {
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          step(event.key === 'ArrowUp' ? 1 : -1);
+        }
+      });
       sync();
     },
   };

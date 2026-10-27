@@ -11,12 +11,15 @@ import type { ControlSize } from './types';
 
 /**
  * A whole number with buttons to take one off and add one: a count
- * of confirmations, of items. Without JavaScript a number input; once
- * its island attaches, − and + either side of it, each stopping at
- * its end and announcing the new value as an `input` event (so a
- * settings form sees the change).
+ * of confirmations, of items. A text field for digits (a spin button
+ * to screen readers), never the browser's number input: what is typed
+ * is sent as typed and the server says what's wrong, as every other
+ * setting does, rather than the browser refusing to send it. Once its
+ * island attaches, − and + either side of it and the arrow keys step
+ * it, each stopping at its end and announcing the new value as an
+ * `input` event (so a settings form sees the change).
  */
-export interface StepperProps extends Omit<JSX.IntrinsicElements["input"], "aria-describedby" | "aria-invalid" | "aria-label" | "class" | "classList" | "described_by" | "disabled" | "id" | "inputmode" | "invalid" | "label" | "max" | "min" | "name" | "ref" | "required" | "size" | "step" | "style" | "type" | "value"> {
+export interface StepperProps extends Omit<JSX.IntrinsicElements["input"], "aria-describedby" | "aria-invalid" | "aria-label" | "aria-valuemax" | "aria-valuemin" | "autocomplete" | "class" | "classList" | "described_by" | "disabled" | "id" | "inputmode" | "invalid" | "label" | "max" | "min" | "name" | "ref" | "required" | "role" | "size" | "style" | "type" | "value"> {
   name: string;
   id?: string;
   /**
@@ -56,10 +59,13 @@ export interface StepperProps extends Omit<JSX.IntrinsicElements["input"], "aria
 
 /**
  * A whole number with buttons to take one off and add one: a count
- * of confirmations, of items. Without JavaScript a number input; once
- * its island attaches, − and + either side of it, each stopping at
- * its end and announcing the new value as an `input` event (so a
- * settings form sees the change).
+ * of confirmations, of items. A text field for digits (a spin button
+ * to screen readers), never the browser's number input: what is typed
+ * is sent as typed and the server says what's wrong, as every other
+ * setting does, rather than the browser refusing to send it. Once its
+ * island attaches, − and + either side of it and the arrow keys step
+ * it, each stopping at its end and announcing the new value as an
+ * `input` event (so a settings form sees the change).
  */
 export function Stepper(props: StepperProps): JSX.Element {
   const rest = omit(props, "name", "id", "value", "min", "max", "label", "described_by", "invalid", "required", "disabled", "size", "enhanced");
@@ -75,7 +81,7 @@ export function Stepper(props: StepperProps): JSX.Element {
       ) : (
         null
       )}
-      <input class="mk-input" type="number" inputmode="numeric" step="1" min={(props.min ?? 0)} max={props.max} name={props.name} id={props.id} value={props.value} aria-label={props.label} aria-describedby={props.described_by} aria-invalid={(props.invalid ?? false) ? `true` : undefined} required={(props.required ?? false)} disabled={(props.disabled ?? false)} ref={(el) => runWithOwner(owner, () => b.input(el))} {...rest} />
+      <input class="mk-input" type="text" inputmode="numeric" autocomplete="off" role="spinbutton" aria-valuemin={(props.min ?? 0)} aria-valuemax={props.max} name={props.name} id={props.id} value={props.value} aria-label={props.label} aria-describedby={props.described_by} aria-invalid={(props.invalid ?? false) ? `true` : undefined} required={(props.required ?? false)} disabled={(props.disabled ?? false)} ref={(el) => runWithOwner(owner, () => b.input(el))} {...rest} />
       {enhanced ? (
         <button class="mk-stepper-btn" type="button" tabindex="-1" aria-label={`More ${props.label}`} disabled={enhanced ? b.at_max() : undefined} onClick={b.up}>
           +
