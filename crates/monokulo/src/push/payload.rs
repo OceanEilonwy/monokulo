@@ -73,8 +73,9 @@ pub struct LiveActivityState {
     pub payment_uri: Option<String>,
 }
 
-/// A Live Activity's phase: its layout and colour. The relay ends the
-/// activity, with an alert, at `paid` and `expired`.
+/// A Live Activity's phase: its layout and colour. The relay tells APNs of
+/// `paid` and `expired` with an alert; it never ends the activity, which
+/// the app idles or ends itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {

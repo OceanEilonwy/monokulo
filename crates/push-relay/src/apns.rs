@@ -128,9 +128,24 @@ struct State {
     /// iOS shows the activity as stale.
     #[serde(rename = "expiresAt", default)]
     expires_at: Option<i64>,
-    /// Shown in the alert when the sale is paid.
+    /// Shown in the alert when the sale is paid, with the currency when
+    /// the state names one apart (monokulo sends `"24.50"` and `"USD"`,
+    /// not `"$24.50"`: no server formats money for the device's locale).
     #[serde(default)]
     amount: Option<String>,
+    #[serde(default)]
+    currency: Option<String>,
+}
+
+impl State {
+    /// The alert's title for a paid sale.
+    fn paid_title(&self) -> String {
+        match (&self.amount, &self.currency) {
+            (Some(amount), Some(currency)) => format!("Paid · {amount} {currency}"),
+            (Some(amount), None) => format!("Paid · {amount}"),
+            (None, _) => "Paid".to_owned(),
+        }
+    }
 }
 
 /// What a push-to-start's JSON holds: the activity's static attributes,
@@ -221,11 +236,7 @@ fn live_activity_update(json: &PlainJson, now: i64) -> Result<Value, TranslateEr
     aps.insert("content-state".into(), Value::Object(content));
     match state.phase {
         Phase::Paid => {
-            let title = match &state.amount {
-                Some(amount) => format!("Paid · {amount}"),
-                None => "Paid".to_owned(),
-            };
-            aps.insert("alert".into(), json!({"title": title}));
+            aps.insert("alert".into(), json!({"title": state.paid_title()}));
         }
         Phase::Expired => {
             aps.insert("alert".into(), json!({"title": "No payment yet"}));
@@ -551,6 +562,20 @@ mod tests {
                 "timestamp": NOW, "event": "update", "content-state": paid,
                 "alert": {"title": "Paid · $24.50"},
             }})
+        );
+        // Monokulo's state names the currency apart from the amount.
+        let paid =
+            json!({"phase": "paid", "amount": "24.50", "currency": "USD", "waitingCount": 0});
+        let push = translate(
+            &handle(Platform::ApnsLiveActivity),
+            &bundle(),
+            &request(json(paid), Urgency::High, 1800),
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            body(&push)["aps"]["alert"],
+            json!({"title": "Paid · 24.50 USD"})
         );
         let expired = json!({"phase": "expired", "waitingCount": 2});
         let push = translate(
