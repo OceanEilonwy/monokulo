@@ -369,6 +369,7 @@ mod tests {
             .unwrap_or_default();
         for secret in [
             "MONOKULO_ENCRYPTION_KEY",
+            "MONOKULO_RELAY_HANDLE_KEY",
             "MONOKULO_RELAY_APNS_KEY",
             "MONOKULO_RELAY_FCM_CREDENTIALS",
         ] {
@@ -383,6 +384,7 @@ mod tests {
         write_init(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        assert!(text.contains("#   MONOKULO_RELAY_HANDLE_KEY\n"), "{text}");
         assert!(text.contains("#   MONOKULO_RELAY_APNS_KEY\n"), "{text}");
         let relay = text.find("[relay.server]\n").expect("the relay's tables");
         assert!(text.find("[engine.payment]\n").unwrap() < relay, "{text}");

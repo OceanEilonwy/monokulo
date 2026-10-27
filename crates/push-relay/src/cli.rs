@@ -28,7 +28,7 @@ run a relay inside monokulo, under its options file's [relay.*] tables.";
 const EXAMPLES: &str = "Examples:
   monokulo-push-relay --init
       Write the options file, with every setting described, and say where.
-  MONOKULO_RELAY_APNS_KEY=\"$(cat AuthKey_ABCDE12345.p8)\" monokulo-push-relay --server-public-uri https://relay.example.org
+  MONOKULO_RELAY_HANDLE_KEY=\"$(cat handle.key)\" MONOKULO_RELAY_APNS_KEY=\"$(cat AuthKey_ABCDE12345.p8)\" monokulo-push-relay --server-public-uri https://relay.example.org
       Start the relay, handing pushes on to APNs.";
 
 /// The relay's options file, in `~/.config/monokulo/` unless `--options`
@@ -71,16 +71,20 @@ mod tests {
         command().debug_assert();
     }
 
-    /// Every setting that takes one is an option; both secrets are listed
+    /// Every setting that takes one is an option; the secrets are listed
     /// by their variables and have none.
     #[test]
-    fn the_help_lists_every_option_and_both_secrets() {
+    fn the_help_lists_every_option_and_every_secret() {
         let help = command().render_long_help().to_string();
         for setting in crate::settings::ALL {
             let flag = format!("--{} <", live_settings::cli_flag(setting.key()));
             assert_eq!(help.contains(&flag), setting.sources().cli, "{flag}");
         }
-        for secret in ["MONOKULO_RELAY_APNS_KEY", "MONOKULO_RELAY_FCM_CREDENTIALS"] {
+        for secret in [
+            "MONOKULO_RELAY_HANDLE_KEY",
+            "MONOKULO_RELAY_APNS_KEY",
+            "MONOKULO_RELAY_FCM_CREDENTIALS",
+        ] {
             assert!(help.contains(secret), "{secret}: {help}");
         }
         assert!(parse_args(["monokulo-push-relay", "--apns-key", "x"]).is_err());

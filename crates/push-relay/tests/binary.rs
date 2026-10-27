@@ -45,6 +45,7 @@ fn init_writes_the_options_file_and_never_over_one() {
     assert!(output.status.success(), "{}", text(&output));
     let written = std::fs::read_to_string(&path).unwrap();
     for line in [
+        "#   MONOKULO_RELAY_HANDLE_KEY\n",
         "#   MONOKULO_RELAY_APNS_KEY\n",
         "#   MONOKULO_RELAY_FCM_CREDENTIALS\n",
         "[server]\n",
@@ -64,11 +65,15 @@ fn init_writes_the_options_file_and_never_over_one() {
 }
 
 #[test]
-fn the_help_names_both_secrets() {
+fn the_help_names_every_secret() {
     let output = run(&["--help"], &[]);
     assert!(output.status.success());
     let help = text(&output);
-    for secret in ["MONOKULO_RELAY_APNS_KEY", "MONOKULO_RELAY_FCM_CREDENTIALS"] {
+    for secret in [
+        "MONOKULO_RELAY_HANDLE_KEY",
+        "MONOKULO_RELAY_APNS_KEY",
+        "MONOKULO_RELAY_FCM_CREDENTIALS",
+    ] {
         assert!(help.contains(secret), "{secret}: {help}");
     }
 }
@@ -81,7 +86,7 @@ fn invalid_settings_stop_the_relay_before_it_listens() {
     let store = store.to_str().unwrap();
     // The options file, the environment, and what the relay says.
     type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
-    let cases: [Case; 4] = [
+    let cases: [Case; 6] = [
         (
             "[handles.apps.monokular]\napns_topik = \"com.example.app\"\n",
             &[],
@@ -96,6 +101,16 @@ fn invalid_settings_stop_the_relay_before_it_listens() {
             "[server]\npublic_uri = \"https://relay.example.org\"\n",
             &[("MONOKULO_RELAY_APNS_KEY", "not a key")],
             "MONOKULO_RELAY_APNS_KEY",
+        ),
+        (
+            "[server]\npublic_uri = \"https://relay.example.org\"\n",
+            &[],
+            "MONOKULO_RELAY_HANDLE_KEY must be set",
+        ),
+        (
+            "[server]\npublic_uri = \"https://relay.example.org\"\n",
+            &[("MONOKULO_RELAY_HANDLE_KEY", "too short")],
+            "handles.id_key",
         ),
         (
             "[relay.server]\nlisten = \"127.0.0.1:0\"\n",
@@ -138,6 +153,7 @@ fn the_relay_listens_and_stops_on_sigterm() {
     let mut child = Command::new(BINARY)
         .args(["--options", path.to_str().unwrap()])
         .env_clear()
+        .env("MONOKULO_RELAY_HANDLE_KEY", "0123456789abcdef".repeat(4))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

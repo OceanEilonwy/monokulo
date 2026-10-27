@@ -2,8 +2,8 @@
 //! registered by both binaries: `monokulo-push-relay` reads them from
 //! `relay.toml` and `--…` options, monokulo from the `[relay.*]` tables of
 //! its own options file and `--relay-…` options, by the same keys (the
-//! embedded engine's pattern). Secrets (the APNs key, the FCM service
-//! account) come from the environment only, in both.
+//! embedded engine's pattern). Secrets (the handle key, the APNs key, the
+//! FCM service account) come from the environment only, in both.
 //!
 //! The relay reads its settings once, at start: nothing here reloads.
 //! Anything invalid stops the process ([`load`]), every problem named.
@@ -29,7 +29,7 @@ use push::{Endpoint, Origin};
 use serde::{Deserialize, Serialize};
 
 use crate::fcm::ServiceAccount;
-use crate::handles::{AppName, Lifetimes};
+use crate::handles::{AppName, HandleKey, Lifetimes};
 
 settings! {
     SERVER_LISTEN: BindAddr {
@@ -85,6 +85,15 @@ settings! {
         description: "Days a handle no push has reached yet lasts after its registration: at most handles.ttl_days. Registering needs no credential, so this is how long a made-up token's handle is kept; an app registers again whenever it starts, which pushes it back.",
         example: "7",
         applies: Restart,
+    },
+    HANDLES_ID_KEY: Secret {
+        key: "handles.id_key",
+        env: "MONOKULO_RELAY_HANDLE_KEY",
+        default: Secret::default(),
+        check: check_handle_key,
+        description: "The key every handle's id (the last part of its endpoint) is made under, at least 32 characters: generate one with `openssl rand -hex 32`. Required to run the relay. Keep it apart from store.path and its backups: a copy of the file with a sender's endpoints opens those handles, and with this key too it links each of those devices to every other sender it takes pushes from. Keep it, too: under another key a device's next registration gets another endpoint, while its old ones work until they expire.",
+        applies: Restart,
+        sources: [Env],
     },
     HANDLES_APPS: Json<Apps> {
         key: "handles.apps",
@@ -254,6 +263,8 @@ pub struct RelayConfig {
     pub upstream_timeout: Duration,
     pub store_path: PathBuf,
     pub handle_lifetimes: Lifetimes,
+    /// Required to start, as `public_uri` is.
+    pub handle_key: Option<HandleKey>,
     pub apps: Apps,
     pub limits: LimitsConfig,
     /// Set when the APNs key is.
@@ -314,6 +325,7 @@ impl Section for RelayConfig {
             &STORE_PATH,
             &HANDLES_TTL_DAYS,
             &HANDLES_UNUSED_TTL_DAYS,
+            &HANDLES_ID_KEY,
             &HANDLES_APPS,
             &LIMITS_PER_SENDER_PER_MINUTE,
             &LIMITS_PER_HANDLE_PER_MINUTE,
@@ -365,9 +377,12 @@ impl Section for RelayConfig {
                 ),
             ));
         }
-        // Checked by the setting itself.
+        // Checked by the settings themselves.
         let trusted_proxies =
             TrustedProxies::parse(&snapshot.get(&SERVER_TRUSTED_PROXIES)).unwrap_or_default();
+        let handle_key = Some(snapshot.get(&HANDLES_ID_KEY))
+            .filter(|key| !key.is_empty())
+            .and_then(|key| HandleKey::parse(&key).ok());
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -381,6 +396,7 @@ impl Section for RelayConfig {
                 unused: days(unused_ttl_days),
                 delivered: days(ttl_days),
             },
+            handle_key,
             apps,
             limits: LimitsConfig {
                 per_sender: snapshot.get(&LIMITS_PER_SENDER_PER_MINUTE),
@@ -494,6 +510,13 @@ impl Section for LoggingConfig {
 
 fn check_trusted_proxies(value: &str) -> Result<(), String> {
     TrustedProxies::parse(value).map(|_| ())
+}
+
+fn check_handle_key(value: &Secret) -> Result<(), String> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    HandleKey::parse(value).map(|_| ())
 }
 
 fn check_apns_key(value: &Secret) -> Result<(), String> {
@@ -864,6 +887,8 @@ pub(crate) mod tests {
             }
         );
         assert!(config.apns.is_none() && config.fcm.is_none());
+        // Required to start, not to load.
+        assert_eq!(config.handle_key, None);
         assert!(
             config.store_path.ends_with("push-relay.db"),
             "{:?}",
@@ -881,6 +906,7 @@ pub(crate) mod tests {
                 ("apns.key_id", "KEY1234567"),
             ],
             &[
+                ("MONOKULO_RELAY_HANDLE_KEY", &"5a".repeat(16)),
                 ("MONOKULO_RELAY_APNS_KEY", APNS_KEY_PEM),
                 (
                     "MONOKULO_RELAY_FCM_CREDENTIALS",
@@ -891,6 +917,10 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(
+            config.handle_key,
+            Some(HandleKey::parse(&Secret::new("5a".repeat(16))).unwrap())
+        );
         assert_eq!(
             config.public_uri.unwrap().origin().as_str(),
             "https://relay.example.org"
@@ -1054,6 +1084,11 @@ pub(crate) mod tests {
                 &[("MONOKULO_RELAY_FCM_CREDENTIALS", "{}")],
                 "MONOKULO_RELAY_FCM_CREDENTIALS",
             ),
+            (
+                &[],
+                &[("MONOKULO_RELAY_HANDLE_KEY", "a-key-too-short")],
+                "shorter than 32 characters",
+            ),
         ];
         for (values, vars, expected) in cases {
             let error = load_with(values, vars, Host::Standalone)
@@ -1061,6 +1096,8 @@ pub(crate) mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(error.contains(expected), "{expected}: {error}");
+            // A secret too short to use isn't quoted either.
+            assert!(!error.contains("a-key-too-short"), "{error}");
         }
     }
 

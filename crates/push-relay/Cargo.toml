@@ -28,6 +28,9 @@ base64 = "0.23.1"
 clap = "4.6.7"
 hex = "0.4.3"
 hkdf = "0.13.0"
+# A handle's id: HMAC-SHA-256 under the relay's handle key, so one
+# device's handle for one sender can't be worked out from another's.
+hmac = "0.13.0"
 # A `Retry-After` from APNs or FCM given as an HTTP date.
 httpdate = "1.0.3"
 live-settings = { path = "../live-settings" }
