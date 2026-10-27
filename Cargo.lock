@@ -4694,10 +4694,12 @@ name = "push-relay"
 version = "0.1.0"
 dependencies = [
  "abuse",
+ "aes-gcm",
  "axum",
  "base64 0.23.1",
  "clap",
  "hex",
+ "hkdf 0.13.0",
  "http-body-util",
  "httpdate",
  "hyper",
@@ -4714,6 +4716,7 @@ dependencies = [
  "serde",
  "serde_json",
  "service-runtime",
+ "sha2 0.11.0",
  "sqlite",
  "telemetry",
  "thiserror 2.0.20",
@@ -4722,6 +4725,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zeroize",
 ]
 
 [[package]]

@@ -315,24 +315,22 @@ impl TestRelay {
     /// Sets the handle's expiry to `expires_at`, as if that much time had
     /// passed.
     pub fn expire(&self, endpoint: &str, expires_at: i64) {
-        let id = endpoint.rsplit('/').next().unwrap();
         let connection = rusqlite::Connection::open(&self.store_path).unwrap();
         connection
             .execute(
-                "UPDATE handles SET expires_at = ?2 WHERE id = ?1",
-                rusqlite::params![id, expires_at],
+                "UPDATE handles SET expires_at = ?2 WHERE key = ?1",
+                rusqlite::params![row_key(endpoint).as_slice(), expires_at],
             )
             .unwrap();
     }
 
     /// When the handle's database row says it expires (Unix seconds).
     pub fn expires_at(&self, endpoint: &str) -> i64 {
-        let id = endpoint.rsplit('/').next().unwrap();
         let connection = rusqlite::Connection::open(&self.store_path).unwrap();
         connection
             .query_row(
-                "SELECT expires_at FROM handles WHERE id = ?1",
-                rusqlite::params![id],
+                "SELECT expires_at FROM handles WHERE key = ?1",
+                rusqlite::params![row_key(endpoint).as_slice()],
                 |row| row.get(0),
             )
             .unwrap()
@@ -554,4 +552,16 @@ impl Drop for CaptureGuard {
     fn drop(&mut self) {
         SINK.with(|sink| sink.borrow_mut().take());
     }
+}
+
+/// The handles row of `endpoint` (one of a relay's): SHA-256 of its
+/// handle's id, as the relay keeps it.
+pub fn row_key(endpoint: &str) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(endpoint.rsplit('/').next().unwrap().as_bytes()).into()
+}
+
+/// How the relay's log lines name `endpoint`'s handle.
+pub fn log_tag(endpoint: &str) -> String {
+    format!("h_{}", hex::encode(&row_key(endpoint)[..6]))
 }

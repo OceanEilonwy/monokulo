@@ -105,15 +105,18 @@ async fn register(
                 sender: registration.vapid_public_key,
             },
             now,
-            shared.handle_ttl,
         )
         .await
         .map_err(internal)?;
-    tracing::info!(handle = %handle.id, platform = %handle.platform, app = %handle.app, "registered");
+    tracing::info!(handle = %handle.id.tag(), platform = %handle.platform, app = %handle.app, "registered");
     Ok((
         StatusCode::CREATED,
         Json(Registered {
-            endpoint: format!("{}/v1/push/{}", shared.public_uri.origin(), handle.id),
+            endpoint: format!(
+                "{}/v1/push/{}",
+                shared.public_uri.origin(),
+                handle.id.as_str()
+            ),
             expires_at: handle.expires_at,
         }),
     )
@@ -150,20 +153,20 @@ async fn push(
         .map_err(rate_limited)?;
 
     let delivery = hand_on(&shared, &handle, &request, now).await?;
-    tracing::debug!(handle = %handle.id, platform = %handle.platform, app = %handle.app, outcome = ?delivery, "push handed on");
+    tracing::debug!(handle = %handle.id.tag(), platform = %handle.platform, app = %handle.app, outcome = ?delivery, "push handed on");
     // Past here the push is handed on or the token is gone: the answer
     // says so even when the bookkeeping fails, since a 500 would have the
     // sender send the same push again.
     match delivery {
         Delivery::Delivered => {
-            if let Err(error) = shared.store.touch(&handle.id, now, shared.handle_ttl).await {
-                tracing::error!(handle = %handle.id, error = %error, "a delivered push's handle can't be kept alive");
+            if let Err(error) = shared.store.touch(&handle.id, now).await {
+                tracing::error!(handle = %handle.id.tag(), error = %error, "a delivered push's handle can't be kept alive");
             }
             Ok(StatusCode::CREATED.into_response())
         }
         Delivery::Gone => {
             if let Err(error) = shared.store.delete(&handle.id).await {
-                tracing::error!(handle = %handle.id, error = %error, "a gone handle can't be forgotten");
+                tracing::error!(handle = %handle.id.tag(), error = %error, "a gone handle can't be forgotten");
             }
             Err(unknown_handle())
         }
@@ -266,7 +269,7 @@ fn unknown_handle() -> ProblemDetails {
 /// relay's settings: gone, as one whose token APNs or FCM refuses. The
 /// app registers again if it comes back.
 fn not_served(handle: &Handle) -> Delivery {
-    tracing::warn!(handle = %handle.id, platform = %handle.platform, app = %handle.app, "a push to a handle whose app or platform this relay no longer serves: forgetting it");
+    tracing::warn!(handle = %handle.id.tag(), platform = %handle.platform, app = %handle.app, "a push to a handle whose app or platform this relay no longer serves: forgetting it");
     Delivery::Gone
 }
 

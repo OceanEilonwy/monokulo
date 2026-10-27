@@ -11,6 +11,10 @@ name = "monokulo-push-relay"
 path = "src/main.rs"
 
 [dependencies]
+# Each handle's row sealed (AES-256-GCM) under a key derived (HKDF-SHA-256)
+# from its id, and found by the id's SHA-256: the RustCrypto generation
+# the push crate is on.
+aes-gcm = "0.11.1"
 # The client's address behind a trusted proxy (`X-Forwarded-For`), with
 # IPv6 grouped by its /64, as monokulo counts its visitors: the
 # registration limit's key.
@@ -23,6 +27,7 @@ base64 = "0.23.1"
 # `monokulo-push-relay`'s command line, from the settings' declarations.
 clap = "4.6.7"
 hex = "0.4.3"
+hkdf = "0.13.0"
 # A `Retry-After` from APNs or FCM given as an HTTP date.
 httpdate = "1.0.3"
 live-settings = { path = "../live-settings" }
@@ -42,6 +47,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 service-runtime = { path = "../service-runtime" }
+sha2 = "0.11.0"
 # The handles' own database file: its pool and migration runner.
 sqlite = { path = "../sqlite" }
 telemetry = { path = "../telemetry" }
@@ -50,6 +56,8 @@ tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "s
 tracing = "0.1.44"
 # The OAuth token request's form body.
 url = "2.5.8"
+# A row's seal key and plaintext, wiped once used.
+zeroize = "1.9.0"
 
 [dev-dependencies]
 # Stand-ins for APNs, FCM and FCM's token endpoint on loopback: HTTP/2 with

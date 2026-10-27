@@ -38,7 +38,12 @@ async fn registering_mints_a_handle_under_the_public_uri_and_again_keeps_it() {
     assert_eq!(handle.len(), 32);
     let now = service_runtime::time::now_unix();
     let expires_at = body["expires_at"].as_i64().unwrap();
-    assert!((now + 90 * 86_400 - 5..=now + 90 * 86_400).contains(&expires_at));
+    // No push has reached it yet: `handles.unused_ttl_days`, to the hour.
+    let unused = now + 7 * 86_400;
+    assert!(
+        (unused - 5..=unused + 3_600).contains(&expires_at),
+        "{expires_at}"
+    );
 
     let again = relay
         .call(registration("apns", &apns_token(), &sender))

@@ -1172,3 +1172,49 @@ after group 2's last entry (150).
      store from spreading a flood over many handles; the setting's
      description and the docs page now say to size
      `limits.per_sender_per_minute` for a whole hosted monokulo or Bell.
+152. **A handle no push has reached lives `handles.unused_ttl_days` (7)
+     from its registration, and tokens are capped per platform** (push
+     audit #9). Registering needs no credential, so made-up tokens kept a
+     row for the full 90 days, and one address could grow the file by
+     about 100 MB a day. Now a row is marked `delivered` by its first push
+     APNs or FCM takes, and only then lives `handles.ttl_days` from its
+     last registration or delivery; a registration never shortens an
+     expiry. Seven days, not the one the audit first suggested: an app
+     registers again when it starts, not continuously, and a till whose
+     shop is shut for a long weekend with the app in the background would
+     otherwise lose its handle before its first sale. Tokens are taken up
+     to 256 hex digits for APNs (device tokens are 32 bytes, activity
+     tokens longer) and 512 characters for FCM (about 160 today), not
+     1024. A cap on rows per (app, sender) was the audit's optional third
+     step; the sender is sealed in the row now (153), so there is nothing
+     to count by, and the remaining bound (registrations per /64 times the
+     unused lifetime) is the registration limit's to tighten.
+     `handles.unused_ttl_days` above `handles.ttl_days` stops the relay.
+153. **The handles file can't link a device's handles** (push audit #14).
+     Each row kept its token and sender key in the clear, so one
+     `GROUP BY token` named every sender a device took pushes from, which
+     the module doc, the migration, the design and the docs page all said
+     could not happen. Making the file match the promise, rather than
+     taking the promise back: a handle's id is now the first 128 bits of
+     SHA-256 over its platform, app, token and sender key (so registering
+     again finds the row, as before), the row is keyed by SHA-256 of the
+     id, and the token and key are sealed with AES-256-GCM under a key
+     HKDF derives from the id, bound to the row's platform and app. A row
+     opens only with its endpoint in hand, and two rows of one device
+     share nothing but the platform and app. `created_at` and
+     `last_used_at` were written and never read, and timed two
+     registrations at one launch to the second, so they go; expiries are
+     kept to the hour for the same reason. Log lines name a handle by
+     `h_` and 12 hex digits of its row key (`HandleId::tag`), never its
+     id, which with the file would open the row. No relay secret: the
+     audit suggested an HMAC keyed by one from the environment, but the
+     id is already unguessable without the token, which only the device,
+     APNs or FCM and the relay see, and a secret would be one more
+     required setting whose loss orphans every handle. Two things this
+     doesn't hide, and the docs say so: the relay itself sees a token and
+     its sender at every registration and push, and a copy of the file
+     together with a sender's database (which holds the endpoints) opens
+     that sender's rows. The first shape's rows can't be carried over
+     (their ids were random), so migration 2 drops them, with
+     `secure_delete` on so their bytes are overwritten; apps register
+     again at their next start. Nothing of this shape was ever released.

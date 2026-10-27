@@ -368,7 +368,7 @@ impl Fcm {
         let token = match self.access_token(now).await {
             Ok(token) => token,
             Err(error) => {
-                tracing::warn!(handle = %handle.id, error = %error, "no FCM access token");
+                tracing::warn!(handle = %handle.id.tag(), error = %error, "no FCM access token");
                 return Delivery::Unavailable {
                     retry_after: upstream::DEFAULT_RETRY_AFTER,
                 };
@@ -388,7 +388,7 @@ impl Fcm {
         {
             Ok(response) => response,
             Err(error) => {
-                tracing::warn!(handle = %handle.id, error = %error.without_url(), "FCM can't be reached");
+                tracing::warn!(handle = %handle.id.tag(), error = %error.without_url(), "FCM can't be reached");
                 return Delivery::Unavailable {
                     retry_after: upstream::DEFAULT_RETRY_AFTER,
                 };
@@ -443,13 +443,13 @@ fn log_refusal(
 ) {
     match delivery {
         Delivery::Gone => {
-            tracing::info!(handle = %handle, status = status.as_u16(), reason, code, "FCM says the token is gone: forgetting the handle");
+            tracing::info!(handle = %handle.tag(), status = status.as_u16(), reason, code, "FCM says the token is gone: forgetting the handle");
         }
         Delivery::Refused => {
-            tracing::error!(handle = %handle, status = status.as_u16(), reason, code, "FCM refused a push: check the relay's FCM settings");
+            tracing::error!(handle = %handle.tag(), status = status.as_u16(), reason, code, "FCM refused a push: check the relay's FCM settings");
         }
         Delivery::TooLarge | Delivery::Unavailable { .. } | Delivery::Delivered => {
-            tracing::warn!(handle = %handle, status = status.as_u16(), reason, code, "FCM didn't take a push");
+            tracing::warn!(handle = %handle.tag(), status = status.as_u16(), reason, code, "FCM didn't take a push");
         }
     }
 }
