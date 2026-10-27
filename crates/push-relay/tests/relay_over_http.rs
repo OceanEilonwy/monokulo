@@ -743,31 +743,108 @@ async fn retry_after_from_apns_and_fcm_reaches_the_sender_as_seconds_over_http()
 /// unavailable: nothing is sent to FCM without a token.
 #[tokio::test]
 async fn no_fcm_access_token_is_upstream_unavailable_and_nothing_is_sent_over_http() {
-    let (apns, fcm) = (
-        Stub::accepting().await,
-        Stub::start(|_| Answer::status(500)).await,
-    );
-    let relay = TestRelay::start(&apns, &fcm, &[]).await;
-    let sender = Arc::new(VapidKey::generate());
-    let keys = ReceiverKeys::generate();
-    let endpoint = relay.register("fcm", FCM_TOKEN, &sender).await;
-    let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
     for answer in [
         Answer::status(500),
         Answer::status(400).json(json!({"error": "invalid_grant"})),
         Answer::status(200).json(json!({"token_type": "Bearer"})),
     ] {
-        fcm.answer(move |_| answer.clone());
-        let answered = relay.push(&endpoint, push()).await;
+        let (apns, fcm) = (
+            Stub::accepting().await,
+            Stub::start(move |_| answer.clone()).await,
+        );
+        let relay = TestRelay::start(&apns, &fcm, &[]).await;
+        let sender = Arc::new(VapidKey::generate());
+        let keys = ReceiverKeys::generate();
+        let endpoint = relay.register("fcm", FCM_TOKEN, &sender).await;
+        let push = || PushBuilder::new(&sender, encrypted(&keys, b"{}"));
+        // The failed exchange is remembered: the push straight after is
+        // answered the same, with what is left of the wait, and tries none.
+        for _ in 0..2 {
+            let answered = relay.push(&endpoint, push()).await;
+            assert_eq!(
+                (answered.status, answered.problem().as_str()),
+                (StatusCode::SERVICE_UNAVAILABLE, "upstream-unavailable")
+            );
+            let retry_after: u64 = answered.headers[header::RETRY_AFTER]
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((28..=30).contains(&retry_after), "{retry_after}");
+        }
+        let asked: Vec<String> = fcm.drain().await.into_iter().map(|r| r.path).collect();
+        assert_eq!(asked, ["/token"]);
+        assert_eq!(relay.handles(), 1);
+    }
+}
+
+/// A token endpoint that takes the request and never answers (black-holed
+/// beyond the first hop): pushes arriving together wait for one exchange,
+/// and all are answered 503 within the upstream timeout, before a
+/// sender's own timeout (monokulo's is 5 s), rather than one exchange
+/// each in turn. The push after them tries none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pushes_behind_a_token_endpoint_that_never_answers_are_503_within_the_timeout_over_http() {
+    let apns = Stub::accepting().await;
+    let fcm = Stub::start(|received| {
+        if received.path == "/token" {
+            Answer::never()
+        } else {
+            Answer::status(200).json(json!({"name": "projects/x/messages/1"}))
+        }
+    })
+    .await;
+    let timeout = Duration::from_millis(1000);
+    let relay = TestRelay::start(&apns, &fcm, &[("server.upstream_timeout_ms", "1000")]).await;
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let mut endpoints = Vec::new();
+    for n in 0..10 {
+        endpoints.push(
+            relay
+                .register("fcm", &format!("{FCM_TOKEN}-{n}"), &sender)
+                .await,
+        );
+    }
+    let retry_after = |answered: &Answered| -> u64 {
         assert_eq!(
             (answered.status, answered.problem().as_str()),
-            (StatusCode::SERVICE_UNAVAILABLE, "upstream-unavailable")
+            (StatusCode::SERVICE_UNAVAILABLE, "upstream-unavailable"),
+            "{}",
+            answered.text()
         );
-        assert_eq!(answered.headers[header::RETRY_AFTER], "30");
+        answered.headers[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let started = std::time::Instant::now();
+    let mut pushing = tokio::task::JoinSet::new();
+    for endpoint in &endpoints {
+        let request = PushBuilder::new(&sender, encrypted(&keys, b"{}")).request(endpoint);
+        let router = relay.router.clone();
+        pushing.spawn(async move { call_router(router, "192.0.2.1:1", request).await });
     }
-    let asked: Vec<String> = fcm.drain().await.into_iter().map(|r| r.path).collect();
-    assert_eq!(asked, ["/token", "/token", "/token"]);
-    assert_eq!(relay.handles(), 1);
+    while let Some(answered) = pushing.join_next().await {
+        let waited = retry_after(&answered.unwrap());
+        assert!((28..=30).contains(&waited), "{waited}");
+    }
+    let took = started.elapsed();
+    assert!(took < timeout * 3 / 2, "{took:?}");
+
+    let started = std::time::Instant::now();
+    let answered = relay
+        .push(
+            &endpoints[0],
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    assert!((28..=30).contains(&retry_after(&answered)));
+    assert!(started.elapsed() < timeout / 2);
+    let exchanges = fcm.drain().await;
+    assert_eq!(exchanges.len(), 1);
+    assert_eq!(exchanges[0].path, "/token");
 }
 
 /// FCM refusing the access token (`401`) is "try again", and the next

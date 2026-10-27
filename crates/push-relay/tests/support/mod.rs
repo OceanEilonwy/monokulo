@@ -97,6 +97,9 @@ pub struct Answer {
     pub status: StatusCode,
     pub headers: Vec<(&'static str, String)>,
     pub body: Vec<u8>,
+    /// Never answered: the request is taken and the connection held, as
+    /// by an endpoint black-holed beyond the first hop.
+    pub never: bool,
 }
 
 impl Answer {
@@ -105,6 +108,15 @@ impl Answer {
             status: StatusCode::from_u16(code).unwrap(),
             headers: Vec::new(),
             body: Vec::new(),
+            never: false,
+        }
+    }
+
+    /// No answer at all.
+    pub fn never() -> Self {
+        Answer {
+            never: true,
+            ..Answer::status(200)
         }
     }
 
@@ -161,6 +173,9 @@ impl Stub {
                             let answer =
                                 (answers.lock().unwrap_or_else(PoisonError::into_inner))(&received);
                             let _ = sent.send(received);
+                            if answer.never {
+                                std::future::pending::<()>().await;
+                            }
                             let mut response = hyper::Response::new(Full::new(
                                 axum::body::Bytes::from(answer.body),
                             ));
