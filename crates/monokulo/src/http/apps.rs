@@ -91,7 +91,8 @@ pub async fn connect_form(
     let path = format!("/stores/{id}/settings/apps/connect");
     match load(&state, &user, &id, path).await {
         Ok((_, view, chrome)) => {
-            crate::views::connected_apps::connect_form_page(&chrome, &view, None).into_response()
+            crate::views::connected_apps::connect_form_page(&chrome, &view, "", None)
+                .into_response()
         }
         Err(status) => status.into_response(),
     }
@@ -120,7 +121,12 @@ pub async fn connect_submit(
     let refuse = |message: &str| {
         (
             StatusCode::UNPROCESSABLE_ENTITY,
-            crate::views::connected_apps::connect_form_page(&chrome, &view, Some(message)),
+            crate::views::connected_apps::connect_form_page(
+                &chrome,
+                &view,
+                &form.device_name,
+                Some(message),
+            ),
         )
             .into_response()
     };
@@ -141,15 +147,12 @@ pub async fn connect_submit(
     };
     let raw = credentials::auth::generate_app_connect_token();
     let hash = raw.hash();
-    let (store_id, device_name, stored_hash) = (
-        row.id.clone(),
-        clean_device_name(&form.device_name),
-        hash.clone(),
-    );
+    let device_name = clean_device_name(&form.device_name);
+    let (store_id, stored_name, stored_hash) = (row.id.clone(), device_name.clone(), hash.clone());
     if let Err(e) = state
         .db
         .write(move |db| {
-            db.create_app_connect_token(&stored_hash, &store_id, &device_name, now_unix())
+            db.create_app_connect_token(&stored_hash, &store_id, &stored_name, now_unix())
         })
         .await
     {
@@ -165,8 +168,16 @@ pub async fn connect_submit(
         }
     };
     let status_path = status_path(&row.id, &hash);
-    crate::views::connected_apps::code_page(&chrome, &view, &link, &qr, &status_path, onion)
-        .into_response()
+    crate::views::connected_apps::code_page(
+        &chrome,
+        &view,
+        &device_name,
+        &link,
+        &qr,
+        &status_path,
+        onion,
+    )
+    .into_response()
 }
 
 /// The link a connect code is: on this instance's public address, with the
@@ -185,27 +196,53 @@ fn status_path(store_id: &ConnectionId, hash: &credentials::auth::TokenHash) -> 
 }
 
 /// `GET /stores/{id}/settings/apps/connect/{code_hash}`: whether the code
-/// was used, and by which app.
+/// was used, and by which app. Asked for by fixi (the code page's status,
+/// every couple of seconds while it waits), only the status.
 pub async fn connect_status(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path((id, code_hash)): Path<(ConnectionId, String)>,
+    fx: super::fx::FxRequest,
 ) -> Response {
+    use crate::views::connected_apps::{code_status, status_page, CodeState};
     let path = format!("/stores/{id}/settings/apps/connect/{code_hash}");
     let (row, view, chrome) = match load(&state, &user, &id, path.clone()).await {
         Ok(loaded) => loaded,
         Err(status) => return status.into_response(),
     };
-    let app = state
+    let store_id = row.id.clone();
+    let code = match state
         .db
-        .read(move |db| db.app_connected_by_token(&code_hash))
+        .read(move |db| db.app_connect_code(&store_id, &code_hash))
         .await
-        .ok()
-        .flatten()
-        // Only one of this store's apps: a hash from another store says nothing.
-        .filter(|app| app.store_id == row.id);
-    let app = app.map(|app| app_row(&app, &chrome.clock));
-    crate::views::connected_apps::status_page(&chrome, &view, app.as_ref(), &path).into_response()
+    {
+        Ok(code) => code,
+        Err(e) => {
+            tracing::error!(store.id = %row.id, error = %e, "a connect code could not be read");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    // A hash of another store's code, or one long gone, says nothing more
+    // than one that ran out.
+    let (device_name, code_state) = match code {
+        Some(code) => {
+            let age = now_unix().saturating_sub(code.created_at);
+            let code_state = match code.app {
+                Some(app) => CodeState::Connected(app_row(&app, &chrome.clock)),
+                None if age < CONNECT_TOKEN_TTL_SECONDS => CodeState::Waiting {
+                    remaining: (CONNECT_TOKEN_TTL_SECONDS - age.max(0)).unsigned_abs(),
+                },
+                None => CodeState::RanOut,
+            };
+            (code.device_name, code_state)
+        }
+        None => (String::new(), CodeState::RanOut),
+    };
+    if fx.0 {
+        return axum::response::Html(code_status(&view, &code_state, &path, true).into_string())
+            .into_response();
+    }
+    status_page(&chrome, &view, &device_name, &code_state, &path).into_response()
 }
 
 /// `POST /stores/{id}/settings/apps/{app_id}/disconnect`: the app's key

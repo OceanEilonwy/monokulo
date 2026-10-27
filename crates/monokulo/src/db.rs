@@ -22,7 +22,7 @@ mod apps;
 mod order_changes;
 mod order_requests;
 mod webhooks;
-pub use apps::{AppConnection, AppId, AppOrder, DeletedApp, NewApp};
+pub use apps::{AppConnection, AppId, AppOrder, ConnectCode, DeletedApp, NewApp};
 pub use order_requests::{OrderPrice, Reserved};
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{

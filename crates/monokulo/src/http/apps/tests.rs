@@ -319,6 +319,104 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
     assert!(ended.is_ok(), "the disconnected app's stream should end");
 }
 
+/// The connect pages walk the strip under the title: the name, with how
+/// the app will read under Apps; the code, whose status asks for itself
+/// (fixi) until an app uses it, then moves the strip on and stops; and a
+/// code it can't vouch for reads as run out.
+#[tokio::test]
+async fn the_connect_pages_follow_the_code_until_an_app_uses_it() {
+    let (state, _engine) = state_with_engine(&format!("public_uri = \"{PUBLIC_URI}\"\n")).await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+
+    let form = body_text(
+        get(
+            &router,
+            &format!("/stores/{id}/settings/apps/connect"),
+            &cookie,
+        )
+        .await,
+    )
+    .await;
+    assert!(
+        form.contains("aria-current=\"step\"><span>Name it"),
+        "{form}"
+    );
+    assert!(form.contains("Under Apps it will read"), "{form}");
+    assert!(
+        form.contains("data-preview=\"connect-app-preview\""),
+        "{form}"
+    );
+    assert!(form.contains("/static/connect-app."), "{form}");
+
+    let (token, status) = code(&router, &id, &cookie, "Front counter").await;
+    let status_uri = format!("/stores/{id}/settings/apps/connect/{status}");
+    let fx_get = |uri: String| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("cookie", cookie)
+                        .header(crate::http::fx::FX_REQUEST, "true")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            body_text(response).await
+        }
+    };
+
+    // Waiting: only the status, asking again; no page around it.
+    let waiting = fx_get(status_uri.clone()).await;
+    assert!(waiting.contains("fx-poll=\"2000\""), "{waiting}");
+    assert!(waiting.contains("Waiting for the app"), "{waiting}");
+    assert!(!waiting.contains("mk-page-header"), "{waiting}");
+    // Without JavaScript, the page: the card named for the device, the time left.
+    let page = body_text(get(&router, &status_uri, &cookie).await).await;
+    assert!(page.contains("aria-current=\"step\"><span>Scan"), "{page}");
+    assert!(page.contains("Front counter"), "{page}");
+    assert!(page.contains("left to scan"), "{page}");
+
+    let response = redeem(&router, connect_body(&token)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let connected = fx_get(status_uri.clone()).await;
+    assert!(
+        connected.contains("Monokular · Front counter is connected."),
+        "{connected}"
+    );
+    assert!(
+        !connected.contains("fx-poll"),
+        "it stops asking: {connected}"
+    );
+    assert!(
+        connected.contains("id=\"connect-app-steps\" data-fx-oob")
+            && !connected.contains("aria-current=\"step\""),
+        "every step done: {connected}"
+    );
+    assert!(
+        connected.contains("id=\"connect-app-time\" data-fx-oob"),
+        "{connected}"
+    );
+
+    // Not a code of this store's: nothing to wait for.
+    let unknown = body_text(
+        get(
+            &router,
+            &format!("/stores/{id}/settings/apps/connect/{}", "ab".repeat(32)),
+            &cookie,
+        )
+        .await,
+    )
+    .await;
+    assert!(unknown.contains("it has run out"), "{unknown}");
+    assert!(!unknown.contains("fx-poll"), "{unknown}");
+}
+
 /// An app disconnects itself with its own key; the store's key can't do it
 /// for an app, and an app's key is no good for another store's orders.
 #[tokio::test]

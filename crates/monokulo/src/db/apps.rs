@@ -26,6 +26,16 @@ pub struct AppConnection {
     pub last_seen_at: Option<i64>,
 }
 
+/// A code the dashboard showed, as [`Db::app_connect_code`] reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectCode {
+    pub created_at: i64,
+    /// What the merchant named the device; empty when they didn't.
+    pub device_name: String,
+    /// The app it connected, once it has (while it stays connected).
+    pub app: Option<AppConnection>,
+}
+
 /// An app redeeming a code, for [`Db::redeem_app_connect_token`].
 pub struct NewApp<'a> {
     pub slug: &'a str,
@@ -185,18 +195,40 @@ impl Db {
         Ok(Some(app))
     }
 
-    /// The app a code connected, once it has: for the page that showed it,
-    /// which has the code's hash (as hex) in its address.
-    pub fn app_connected_by_token(&self, token_hash: &str) -> Result<Option<AppConnection>> {
-        self.conn
+    /// A code this store's dashboard showed, by its hash (as hex), for the
+    /// page that showed it: when it was made, the device's name, and the
+    /// app it connected once it has. `None` for another store's code.
+    pub fn app_connect_code(
+        &self,
+        store_id: &ConnectionId,
+        token_hash: &str,
+    ) -> Result<Option<ConnectCode>> {
+        let Some((created_at, device_name)) = self
+            .conn
+            .query_row(
+                "SELECT created_at_utc, device_name FROM app_connect_tokens
+                 WHERE token_hash = ?1 AND store_id = ?2",
+                params![token_hash, store_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let app = self
+            .conn
             .query_row(
                 "SELECT a.* FROM app_connect_tokens t JOIN app_connections a ON a.id = t.app_id
                  WHERE t.token_hash = ?1",
                 params![token_hash],
                 app_from_row,
             )
-            .optional()
-            .map_err(Into::into)
+            .optional()?;
+        Ok(Some(ConnectCode {
+            created_at,
+            device_name,
+            app,
+        }))
     }
 
     /// The app holding the key whose hash is `key_hash`.

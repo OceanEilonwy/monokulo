@@ -432,8 +432,26 @@ table[data-table="wallets"] .card-unit { display: none; }
 .confirm-dialog .setting-field.first, .confirm-dialog-page .setting-field.first { margin-top: 0; }
 /* A store's plugins (`views::store_site`): the Shop plugins card, one row each. */
 .int-rows { list-style: none; margin: 0; padding: 0; }
-.connect-app-qr { display: grid; place-items: center; margin: var(--space-md) 0; }
-.connect-app-qr svg { width: min(280px, 100%); height: auto; }
+/* Connect an app (views::connected_apps): the strip under the title, a
+   card with the name and a preview of its Apps row, then the code beside
+   its time left and whether it was used. */
+.connect-app .mk-page-header .mk-wizard-steps { margin-top: var(--space-md); }
+.connect-app .connect-app-preview { margin: 0 0 var(--space-md); padding: var(--space-sm) var(--space-md); border: 1px dashed var(--line-strong); border-radius: var(--radius-md); list-style: none; }
+.connect-app .connect-app-preview li { padding: 0; }
+.connect-app .connect-app-preview .int-mark svg { width: 1.2rem; height: 1.2rem; }
+.connect-app-code { display: grid; grid-template-columns: minmax(0, 13rem) minmax(0, 1fr); gap: var(--space-lg); align-items: start; }
+.connect-app-qr { background: var(--qr-bg); border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm); }
+.connect-app-qr svg { display: block; width: 100%; height: auto; }
+.connect-app-text { display: grid; gap: var(--space-md); min-width: 0; align-content: start; }
+.connect-app-text > p, .connect-app-text > .hint { margin: 0; }
+.connect-app-status { display: grid; gap: var(--space-sm); justify-items: start; }
+.connect-app-status > .connect-app-preview { justify-self: stretch; margin: 0; }
+.connect-app-wait { display: flex; gap: var(--space-sm); align-items: center; margin: 0; color: var(--muted); }
+.connect-app-wait .check-spinner { width: 1.1rem; height: 1.1rem; border-width: 2px; }
+@media (max-width: 40rem) {
+  .connect-app-code { grid-template-columns: minmax(0, 1fr); }
+  .connect-app-qr { width: min(15rem, 100%); justify-self: center; box-sizing: border-box; }
+}
 .int-rows li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) 0; border-top: 1px solid var(--line); }
 .int-rows li:first-child { border-top: 0; padding-top: 0; }
 .int-rows .int-name { font-weight: 700; }
