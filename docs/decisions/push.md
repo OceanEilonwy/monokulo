@@ -756,3 +756,18 @@ The push audit's second fix group (findings 1, 7, 5 and 19), on
      for it: only the reader skipping the row knows its id and why, and
      carrying a list of skipped rows up through `Queued` and the order API
      would add a field to every caller for a log line.
+148. **A push's TTL runs from when its sale event happened** (push audit
+     #7): `SaleEvent.at`, the engine's `created_at` for a logged event and
+     the order's `created_at` for `sale.waiting`, capped at the time it is
+     queued so an engine clock ahead can't lengthen it. `MIN_TTL` runs from
+     the event too, so a payment seen just after its sale expired still
+     gets its minute. A push whose TTL has ended when the subscriber reads
+     the event (a backlog after monokulo was down, or a reconnect) isn't
+     queued at all, rather than queued as given up: a two-hour backlog
+     would otherwise write a dead row per event and target. The event
+     still records the order's latest state and supersedes the order's
+     older unsent pushes, which are staler still. An engine clock behind
+     monokulo's by more than a TTL would now drop pushes; the engine is
+     private to monokulo, on its host or its network, and
+     `push.default_ttl_secs` is 30 minutes, so that is a broken clock,
+     not skew.
