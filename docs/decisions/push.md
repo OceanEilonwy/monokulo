@@ -259,69 +259,39 @@ overrule any of them; a replacement is recorded under the same number.
     stable from a git pin, and every other build here is nightly, so a
     nightly-only feature would otherwise reach the Bell unnoticed.
 
-## Push targets (rust-engineer-2)
+## The `push` crate's tests (the test engineer)
 
-44. **`SaleKind` is the API's sale event name; there is no second enum.**
-    The plan's `SaleEventName` would have been `SaleKind` again with a
-    serde impl. `SaleKind` reads and writes as its stream name
-    (`sale.paid`), and its schema (named `SaleEventName`) lists
-    `SaleKind::ALL`'s names, so the stream, the push target's `events` and
-    the stored JSON can't disagree. An unknown name is refused by
-    deserialization, with the list of names in `detail`.
-45. **A resource's own forms are sent to the resource itself.** The
-    macros refused a form on a path with parameters (its target was the
-    route template, `{…}` and all), so `unregister-push-target` couldn't
-    be the plan's `#[delete(app, form = …)]`. A body's own forms now
-    target its own path with the parameters filled in; a form another body
-    offers (`Form<H>`) still targets its route, and a `Form<H>` whose
-    route has parameters fails to compile (`FormTarget::TEMPLATE`). The
-    alternative, a `DELETE` without a form, would have left the target's
-    removal undiscoverable from its body, against the API layout.
-46. **Both `GET`s answer `internal`.** The plan gave the list no problems;
-    both read the database, which can fail, and the OpenAPI document must
-    list what a route really answers. The recording shows each `500`
-    with the table renamed away (and a trigger for `DELETE`).
-47. **Registering a `client_id` again replaces everything about the
-    subscription**: endpoint, kind, keys, events and
-    `include_payment_uri`, and forgets `failures` and `last_ok_at_utc`,
-    which were the old subscription's. Only the id and `created_at` stay.
-    A replacement never counts against the limit of 8.
-48. **The form is strict about what belongs to which kind.** `keys` with
-    `live-activity`, no `keys` with `encrypted`, and `include_payment_uri`
-    with `encrypted` (even `false`) are each `invalid-request` with a
-    reason, rather than ignored: a client sending them has misunderstood
-    the kind. An empty `events` is refused too ("leave it out for every
-    one, or unregister"): a target that wants nothing is a target that
-    shouldn't exist. Duplicated events are kept once, in `SaleKind::ALL`'s
-    order.
-49. **A target's `store_id` is read from its app in the same statement**
-    (`INSERT … SELECT store_id FROM app_connections WHERE id = ?`), never
-    passed in, so a target can't sit under a store its app isn't on. An app
-    disconnected between its key check and the insert inserts nothing and
-    is answered `401` as a disconnected app's key is.
-50. **What a target's body shows.** Its keys never (they were the app's to
-    give, not to read back); its endpoint yes, to its own app only (the app
-    gave it, and comparing it is how an app knows a registration is
-    current); `include_payment_uri` only for a `live-activity` target.
-    Log lines carry the endpoint's host, never the URL (decision 34).
-51. **The Query page hides a target's `endpoint` and `auth`, and the VAPID
-    private key.** An endpoint is a capability (whoever holds it can push
-    to the device), `auth` is a secret by name; `p256dh`, the public key,
-    stays visible.
-52. **How the VAPID key is kept.** The private scalar is hex inside
-    `crypto::encrypt` (whose API takes text; the hex is zeroized after),
-    bound to `vapid_keys.private_key:1`. Loading checks the stored public
-    key is the private key's (a row edited by hand would otherwise hand
-    apps a key their pushes don't verify against). `store_vapid_key` keeps
-    the first row stored (`ON CONFLICT DO NOTHING`) and the loader uses
-    what it reads back, so two starts racing can't end up with two keys.
-    `AppState::for_tests` has a fresh key of its own (`Push::for_tests`);
-    the recording stores a fixed one and loads it as a start does, so its
-    examples are the same each run.
-53. **Registration doesn't check whether the endpoint's host is
-    private.** As for webhooks, that is checked at every send (decision
-    19): DNS can change in between, and a check here would pass a name
-    that later points inside.
-54. **`crate::push` shares its name with the `push` crate**, as the plan
-    laid it out; code in monokulo writes the crate as `::push::` and
-    `db.rs` re-exports its module as `self::push`.
+44. **An endpoint's 2048-character bound is checked on the URL as
+    stored, as well as on the text given.** The check was on the text
+    alone, and `Url` writes a non-ASCII path character as a percent-escape
+    of each byte: a 2025-byte endpoint whose path was 1000 `é` passed, and
+    stored 6025 characters. The text
+    is still checked first, so a long one isn't parsed only to be refused.
+    Found by a test; fixed in `Endpoint::parse`.
+45. **Empty list elements in `Authorization: vapid …` are ignored**
+    (`t=…,, k=…`, a leading or trailing comma), which RFC 9110 §5.6.1.2
+    says a recipient MUST do; they were refused. A parameter given twice
+    is still refused.
+46. **`Sender::send` has one real-HTTP test file,
+    `crates/push/tests/send_over_http.rs`**, every test named
+    `…_over_http`: a push is the one thing that has to land, so the
+    headers, signature and body on the wire, the answers read from real
+    responses (201, 200, 404, 410, 413, 429, 5xx with `Retry-After`, 400,
+    401, a 307 not followed), 16 sends at once, and a request error that
+    leaves the endpoint's path out are checked over a socket. The status
+    mapping itself stays tested in-process too. The five tests take about
+    0.1 s.
+47. **The stub push service speaks TLS with a committed test
+    certificate** (`crates/push/tests/fixtures/`: a CA, and a certificate
+    and P-256 key for `push.test`, made with the openssl CLI, valid to
+    2126; the CA's key was discarded). An endpoint is https only, and no
+    test-only way round that belongs in the crate. The alternative,
+    generating certificates in the test with `rcgen`, would add a lock
+    entry and, by default, `ring`. The client trusts only that CA
+    (`tls_certs_only`) and resolves `push.test` to the stub.
+48. **Test-only dependencies are crates already in Cargo.lock, at their
+    locked versions:** `tokio`, `tokio-rustls` (on `aws-lc-rs`, the
+    provider reqwest's rustls already uses, so no second one), `hyper`,
+    `hyper-util` and `http-body-util`, plus `push` itself with
+    `test-support` for decryption. The lock gains no package; the stable
+    clippy and test runs build them too.
