@@ -56,10 +56,10 @@ settings! {
     },
     SERVER_UPSTREAM_TIMEOUT_MS: u64 {
         key: "server.upstream_timeout_ms",
-        default: 10_000,
+        default: 4000,
         check: range(100, 120_000),
-        description: "Milliseconds the relay waits for APNs or FCM to take a push (and for FCM's token endpoint) before answering the sender 503, to try again later.",
-        example: "10000",
+        description: "Milliseconds the relay gives each push to reach APNs or FCM (FCM's token endpoint included) before answering the sender 503, to try again later. Keep it below the timeouts of the relay's senders (monokulo's push.delivery_timeout_ms, 5000 by default; the Monokular Bell's bell.timeout_ms), so they hear the 503 rather than give up first and send a push APNs or FCM may have taken again.",
+        example: "4000",
         applies: Restart,
     },
     STORE_PATH: PathBuf {

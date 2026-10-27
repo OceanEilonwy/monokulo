@@ -7,9 +7,16 @@
 //! assertion (RFC 7523) exchanged at the account's `token_uri`, kept until
 //! five minutes before it expires. No credentials are looked for in the
 //! environment, gcloud's files or a metadata server.
+//!
+//! Each push has one budget, `server.upstream_timeout_ms`, for waiting on
+//! another push's exchange, its own, and the send, so its sender hears
+//! the relay's 503 within it. An exchange that fails is remembered for
+//! [`FAILURE_HOLD`], the pushes meanwhile answered 503 at once.
 
 use std::fmt;
 use std::time::Duration;
+
+use tokio::time::Instant;
 
 use axum::http::StatusCode;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -36,6 +43,11 @@ const ASSERTION_LIFETIME: i64 = 3600;
 
 /// A token is renewed this long before it expires.
 pub const RENEW_BEFORE: i64 = 5 * 60;
+
+/// Seconds a failed token exchange is remembered: pushes meanwhile are
+/// answered 503, to come back once it has passed, rather than each
+/// waiting out an exchange of its own.
+pub const FAILURE_HOLD: u64 = upstream::DEFAULT_RETRY_AFTER;
 
 /// The most FCM carries in a message's data.
 pub const MAX_DATA: usize = 4096;
@@ -248,6 +260,18 @@ struct AccessToken {
     expires_at: i64,
 }
 
+/// What the relay knows of its access token.
+enum TokenState {
+    /// None yet, or the last one refused.
+    Unknown,
+    Held(AccessToken),
+    /// The last exchange failed; none is tried before `retry_at` (Unix
+    /// seconds).
+    Failed {
+        retry_at: i64,
+    },
+}
+
 /// What the token endpoint answers.
 #[derive(Deserialize)]
 struct TokenAnswer {
@@ -281,9 +305,11 @@ pub struct Fcm {
     client: reqwest::Client,
     endpoint: ServiceUrl,
     account: ServiceAccount,
+    /// Each push's budget, `server.upstream_timeout_ms`.
+    timeout: Duration,
     /// Held across a token exchange, so pushes at once wait for one
     /// exchange rather than each making its own.
-    token: tokio::sync::Mutex<Option<AccessToken>>,
+    token: tokio::sync::Mutex<TokenState>,
 }
 
 /// Why no access token could be had.
@@ -295,6 +321,24 @@ enum TokenError {
     Refused(StatusCode),
     #[error("the token endpoint's answer doesn't read: {0}")]
     Answer(String),
+    #[error("the token endpoint didn't answer within the upstream timeout")]
+    TimedOut,
+    #[error("another push's token exchange took the whole upstream timeout")]
+    Waited,
+    #[error("the last token exchange failed; the next is tried in {retry_after} s")]
+    Failing { retry_after: u64 },
+}
+
+impl TokenError {
+    /// Seconds until a push may find a token: what is left of a failure's
+    /// hold, or the whole of it for the exchange that failed (or is still
+    /// running).
+    fn retry_after(&self) -> u64 {
+        match self {
+            TokenError::Failing { retry_after } => *retry_after,
+            _ => FAILURE_HOLD,
+        }
+    }
 }
 
 impl Fcm {
@@ -303,20 +347,51 @@ impl Fcm {
             client: reqwest::Client::builder().timeout(timeout).build()?,
             endpoint: config.endpoint.clone(),
             account: config.account.clone(),
-            token: tokio::sync::Mutex::new(None),
+            timeout,
+            token: tokio::sync::Mutex::new(TokenState::Unknown),
         })
     }
 
-    /// An access token good at `now`: the last one until [`RENEW_BEFORE`]
-    /// its expiry, else a new one from the token endpoint.
-    async fn access_token(&self, now: i64) -> Result<String, TokenError> {
-        let mut cached = self.token.lock().await;
-        if let Some(token) = cached
-            .as_ref()
-            .filter(|token| now < token.expires_at - RENEW_BEFORE)
-        {
-            return Ok(token.value.clone());
+    /// An access token good at `now`, by `deadline`: the last one until
+    /// [`RENEW_BEFORE`] its expiry, else a new one from the token endpoint,
+    /// unless the last exchange failed under [`FAILURE_HOLD`] ago. An
+    /// exchange that fails or runs past `deadline` is remembered as failed.
+    async fn access_token(&self, now: i64, deadline: Instant) -> Result<String, TokenError> {
+        let mut state = tokio::time::timeout_at(deadline, self.token.lock())
+            .await
+            .map_err(|_| TokenError::Waited)?;
+        match &*state {
+            TokenState::Held(token) if now < token.expires_at - RENEW_BEFORE => {
+                return Ok(token.value.clone());
+            }
+            TokenState::Failed { retry_at } if now < *retry_at => {
+                return Err(TokenError::Failing {
+                    retry_after: retry_at.abs_diff(now),
+                });
+            }
+            _ => {}
         }
+        let exchanged = tokio::time::timeout_at(deadline, self.exchange(now))
+            .await
+            .unwrap_or(Err(TokenError::TimedOut));
+        match exchanged {
+            Ok(token) => {
+                let value = token.value.clone();
+                *state = TokenState::Held(token);
+                Ok(value)
+            }
+            Err(error) => {
+                *state = TokenState::Failed {
+                    retry_at: now.saturating_add_unsigned(FAILURE_HOLD),
+                };
+                Err(error)
+            }
+        }
+    }
+
+    /// A new access token from the token endpoint, for an assertion signed
+    /// at `now`.
+    async fn exchange(&self, now: i64) -> Result<AccessToken, TokenError> {
         let assertion = self
             .account
             .assertion(now)
@@ -341,18 +416,17 @@ impl Fcm {
         }
         let answer: TokenAnswer = serde_json::from_slice(&upstream::error_body(response).await)
             .map_err(|error| TokenError::Answer(error.to_string()))?;
-        *cached = Some(AccessToken {
-            value: answer.access_token.clone(),
+        Ok(AccessToken {
+            value: answer.access_token,
             expires_at: now.saturating_add(answer.expires_in),
-        });
-        Ok(answer.access_token)
+        })
     }
 
     /// Forgets the access token when FCM refused it.
     async fn forget(&self, used: &str) {
-        let mut cached = self.token.lock().await;
-        if cached.as_ref().is_some_and(|token| token.value == used) {
-            *cached = None;
+        let mut state = self.token.lock().await;
+        if matches!(&*state, TokenState::Held(token) if token.value == used) {
+            *state = TokenState::Unknown;
         }
     }
 
@@ -365,12 +439,13 @@ impl Fcm {
         push: &FcmPush,
         now: i64,
     ) -> Delivery {
-        let token = match self.access_token(now).await {
+        let deadline = Instant::now() + self.timeout;
+        let token = match self.access_token(now, deadline).await {
             Ok(token) => token,
             Err(error) => {
                 tracing::warn!(handle = %handle.id.tag(), error = %error, "no FCM access token");
                 return Delivery::Unavailable {
-                    retry_after: upstream::DEFAULT_RETRY_AFTER,
+                    retry_after: error.retry_after(),
                 };
             }
         };
@@ -383,6 +458,7 @@ impl Fcm {
             .bearer_auth(&token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(push.body.clone())
+            .timeout(deadline.saturating_duration_since(Instant::now()))
             .send()
             .await
         {
@@ -686,25 +762,42 @@ mod tests {
     }
 
     /// The token is reused until five minutes before it expires; the one
-    /// after that comes from the endpoint, which here can't be reached.
+    /// after that comes from the endpoint, which here can't be reached, and
+    /// that failure is remembered for [`FAILURE_HOLD`].
     #[tokio::test]
     async fn an_access_token_is_reused_until_five_minutes_before_it_expires() {
         let fcm = Fcm::new(&fcm_config(), Duration::from_millis(200)).unwrap();
-        *fcm.token.lock().await = Some(AccessToken {
-            value: "cached".into(),
-            expires_at: NOW + 3600,
-        });
-        assert_eq!(fcm.access_token(NOW).await.unwrap(), "cached");
+        let held = || {
+            TokenState::Held(AccessToken {
+                value: "cached".into(),
+                expires_at: NOW + 3600,
+            })
+        };
+        let token = |now: i64| fcm.access_token(now, Instant::now() + Duration::from_millis(200));
+        *fcm.token.lock().await = held();
+        assert_eq!(token(NOW).await.unwrap(), "cached");
         assert_eq!(
-            fcm.access_token(NOW + 3600 - RENEW_BEFORE - 1)
-                .await
-                .unwrap(),
+            token(NOW + 3600 - RENEW_BEFORE - 1).await.unwrap(),
             "cached"
         );
-        assert!(fcm.access_token(NOW + 3600 - RENEW_BEFORE).await.is_err());
+        let renewal = NOW + 3600 - RENEW_BEFORE;
+        assert!(matches!(
+            token(renewal).await,
+            Err(TokenError::Unreachable(_))
+        ));
+        assert!(matches!(
+            token(renewal + 10).await,
+            Err(TokenError::Failing { retry_after: 20 })
+        ));
+        let hold = i64::try_from(FAILURE_HOLD).unwrap();
+        assert!(matches!(
+            token(renewal + hold).await,
+            Err(TokenError::Unreachable(_))
+        ));
+        *fcm.token.lock().await = held();
         fcm.forget("another").await;
-        assert!(fcm.token.lock().await.is_some());
+        assert!(matches!(&*fcm.token.lock().await, TokenState::Held(_)));
         fcm.forget("cached").await;
-        assert!(fcm.token.lock().await.is_none());
+        assert!(matches!(&*fcm.token.lock().await, TokenState::Unknown));
     }
 }
