@@ -3766,6 +3766,7 @@ dependencies = [
  "api-reference",
  "axum",
  "axum-extra",
+ "base64 0.23.1",
  "brotli",
  "bytes",
  "clap",
