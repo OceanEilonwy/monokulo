@@ -465,6 +465,13 @@ settings! {
         description: "Failed attempts in a row after which a connected app's push target is deleted; the app registers it again when it next runs.",
         example: "20",
     },
+    PUSH_PER_STORE_PER_MINUTE: u32 {
+        key: "push.per_store_per_minute",
+        default: 120,
+        check: range(1, 100_000),
+        description: "Pushes one store's apps are sent a minute, retries included; the rest wait for the next minute. Every store signs with this Monokulo's one key, so keep it well below the push relay's per-sender limit (600 a minute on relay.monokulo.com), or one busy store spends the relay's budget for all of them.",
+        example: "120",
+    },
     ABUSE_STREAM_CAP: usize {
         key: "abuse.stream_cap",
         default: abuse::AbuseConfig::default().stream_cap,
@@ -826,6 +833,8 @@ pub struct PushConfig {
     pub keep_secs: i64,
     /// Failed attempts in a row that delete a target.
     pub target_failure_limit: u32,
+    /// Pushes one store's targets are sent a minute, retries included.
+    pub per_store_per_minute: u32,
 }
 
 impl Default for PushConfig {
@@ -838,6 +847,7 @@ impl Default for PushConfig {
             default_ttl: ::push::Ttl::seconds(PUSH_DEFAULT_TTL_SECS.default_value()),
             keep_secs: days(PUSH_KEEP_DAYS.default_value()),
             target_failure_limit: PUSH_TARGET_FAILURE_LIMIT.default_value(),
+            per_store_per_minute: PUSH_PER_STORE_PER_MINUTE.default_value(),
         }
     }
 }
@@ -851,6 +861,7 @@ impl Section for PushConfig {
             &PUSH_DEFAULT_TTL_SECS,
             &PUSH_KEEP_DAYS,
             &PUSH_TARGET_FAILURE_LIMIT,
+            &PUSH_PER_STORE_PER_MINUTE,
         ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
@@ -862,6 +873,7 @@ impl Section for PushConfig {
             default_ttl: ::push::Ttl::seconds(snapshot.get(&PUSH_DEFAULT_TTL_SECS)),
             keep_secs: days(snapshot.get(&PUSH_KEEP_DAYS)),
             target_failure_limit: snapshot.get(&PUSH_TARGET_FAILURE_LIMIT),
+            per_store_per_minute: snapshot.get(&PUSH_PER_STORE_PER_MINUTE),
         })
     }
 }
@@ -2235,7 +2247,7 @@ mod tests {
             }
         };
         let settings = load(
-            "[push]\ndelivery_timeout_ms = 2500\nmax_attempts = 3\ndefault_ttl_secs = 600\nkeep_days = 2\ntarget_failure_limit = 50\n",
+            "[push]\ndelivery_timeout_ms = 2500\nmax_attempts = 3\ndefault_ttl_secs = 600\nkeep_days = 2\ntarget_failure_limit = 50\nper_store_per_minute = 30\n",
         )
         .await
         .unwrap();
@@ -2247,6 +2259,7 @@ mod tests {
                 default_ttl: ::push::Ttl::seconds(600),
                 keep_secs: 2 * 86_400,
                 target_failure_limit: 50,
+                per_store_per_minute: 30,
             }
         );
         for (bad, key) in [
@@ -2260,6 +2273,10 @@ mod tests {
             (
                 "[push]\ntarget_failure_limit = 1001\n",
                 "push.target_failure_limit",
+            ),
+            (
+                "[push]\nper_store_per_minute = 0\n",
+                "push.per_store_per_minute",
             ),
         ] {
             let refused = match load(bad).await {

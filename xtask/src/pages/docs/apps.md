@@ -241,6 +241,8 @@ alert or its payment code there would be about the wrong sale). The
 `sale.waiting` of a new order isn't pushed to the app that made it: it
 shows the sale already. One target's pushes are sent one after another,
 in the order they were queued, so the last to arrive is the latest.
+Targets of the store with the same `endpoint` are one subscription, and
+are pushed once per event, as the oldest of them that wants it.
 
 An `encrypted` target gets the event's JSON, as the stream sends it, with
 the `api_version` webhooks carry, encrypted to the subscription's keys
@@ -292,7 +294,9 @@ of a store carry the same value:
 admin's `push.default_ttl_secs`). A push is never sent after its `TTL`, and
 a newer one about the same order replaces one not sent yet. One that
 fails is tried again 5, 20, 80 and 320 seconds later (or when the push
-service's `Retry-After` says), five times at most.
+service's `Retry-After` says), five times at most. A store's apps are sent
+at most 120 pushes a minute (the admin's `push.per_store_per_minute`),
+retries included; the rest wait for the next minute.
 
 A push service answering `404` or `410` has dropped the subscription:
 Monokulo deletes the target. So it does after 20 failures in a row. Read

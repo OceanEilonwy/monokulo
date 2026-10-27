@@ -16,13 +16,13 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use super::delivery::{run_delivery_tick, PushClient, NO_ATTEMPTS_LEFT};
+use super::delivery::{run_delivery_tick, PushClient, NO_ATTEMPTS_LEFT, OVER_BUDGET};
 use super::Queueing;
 use crate::api::runtime::recording::{connect_app, fixture, Fixture, Recorder, PUBLIC_URI};
 use crate::db::{
     AppId, LoggedEvent, OrderId, PushDeliveryRow, PushTargetId, Queued, EXPIRED_UNSENT,
 };
-use crate::http::test_support::{api_request, body_json};
+use crate::http::test_support::{api_request, body_json, store_with_keys};
 use crate::outbound::Reach;
 use crate::settings::PushConfig;
 use crate::webhooks::delivery::Clock;
@@ -243,6 +243,9 @@ struct Stub {
     delay: Arc<Mutex<std::time::Duration>>,
     in_flight: Arc<AtomicUsize>,
     most_in_flight: Arc<AtomicUsize>,
+    /// Pushes it takes before answering `429` to every later one, as the
+    /// push relay limits one sender (one VAPID key) a minute.
+    sender_limit: Arc<Mutex<Option<usize>>>,
 }
 
 impl Stub {
@@ -255,11 +258,22 @@ impl Stub {
             body: axum::body::Bytes,
         ) -> axum::response::Response {
             use axum::response::IntoResponse as _;
-            stub.received.lock().push(Received {
-                path: uri.path().to_owned(),
-                headers,
-                body: body.to_vec(),
-            });
+            let received = {
+                let mut received = stub.received.lock();
+                received.push(Received {
+                    path: uri.path().to_owned(),
+                    headers,
+                    body: body.to_vec(),
+                });
+                received.len()
+            };
+            if stub
+                .sender_limit
+                .lock()
+                .is_some_and(|limit| received > limit)
+            {
+                return StatusCode::TOO_MANY_REQUESTS.into_response();
+            }
             let held = stub.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
             stub.most_in_flight.fetch_max(held, Ordering::SeqCst);
             let delay = *stub.delay.lock();
@@ -292,6 +306,16 @@ impl Stub {
 
     fn count(&self) -> usize {
         self.received.lock().len()
+    }
+
+    /// Takes `limit` pushes, and answers `429` to every one after.
+    fn limit_sender(&self, limit: usize) {
+        *self.sender_limit.lock() = Some(limit);
+    }
+
+    /// Takes every push again: the relay's minute is over.
+    fn unlimit_sender(&self) {
+        *self.sender_limit.lock() = None;
     }
 
     /// Answers each push only after `delay`.
@@ -622,6 +646,55 @@ async fn each_target_gets_its_own_topic_for_an_order() {
         world.pushes(&mine).last().unwrap().topic,
         world.pushes(&theirs).last().unwrap().topic
     );
+}
+
+/// A store's targets that share an endpoint are one subscription, pushed
+/// once per event, as the oldest of them that wants it: an app's eight
+/// targets, or another app's, on one relay handle don't make eight pushes
+/// out of one sale.
+#[tokio::test]
+async fn targets_that_share_an_endpoint_are_pushed_once_per_event() {
+    let world = world().await;
+    let other = world.another_app().await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let handle = "https://relay.example/h/one-handle";
+    let only_paid = world
+        .register(
+            &other,
+            encrypted("paid", handle, &device, Some(&["sale.paid"])),
+        )
+        .await;
+    let mut targets = vec![only_paid.clone()];
+    for n in 1..8 {
+        targets.push(
+            world
+                .register(&other, encrypted(&format!("t{n}"), handle, &device, None))
+                .await,
+        );
+    }
+    let third = world.another_app().await;
+    let theirs = world
+        .register(&third, encrypted("t", handle, &device, None))
+        .await;
+    let elsewhere = world
+        .register(
+            &third,
+            encrypted("elsewhere", "https://push.example/own", &device, None),
+        )
+        .await;
+    let order = world.order(&world.fixture.ak.clone()).await;
+    let pushed = |target: &PushTargetId| world.pushes(target).len();
+    // `sale.waiting`: the oldest target that wants it.
+    assert_eq!(pushed(&only_paid), 0);
+    assert_eq!(pushed(&targets[1]), 1);
+    assert_eq!(pushed(&elsewhere), 1);
+    for target in targets[2..].iter().chain([&theirs]) {
+        assert_eq!(pushed(target), 0, "{target}");
+    }
+    assert_eq!(world.queue(&world.event(1, &order, "order.paid")).pushes, 2);
+    assert_eq!(pushed(&only_paid), 1);
+    assert_eq!(pushed(&targets[1]), 1);
+    assert_eq!(pushed(&elsewhere), 2);
 }
 
 /// A disconnected app's targets went with it: its store's later events
@@ -2099,4 +2172,123 @@ async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
     let plain = ::push::encrypt::decrypt(&device, &stub.received.lock()[1].body).unwrap();
     let sale: Value = serde_json::from_slice(&plain).unwrap();
     assert_eq!(sale["event"], "sale.confirming");
+}
+
+/// Every store of this Monokulo signs with its one VAPID key, and the push
+/// relay limits each sender a minute: one store flooding its apps' targets
+/// is sent only `push.per_store_per_minute` pushes a minute, so another
+/// store's push still goes out on its first attempt. The flood's others
+/// wait, unattempted, for the store's next minute, and those that would
+/// expire first are given up.
+#[tokio::test]
+async fn a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http() {
+    let world = world().await;
+    let (relay, origin) = Stub::start(201).await;
+    let budget = PushConfig::default().per_store_per_minute;
+    // The relay takes one store's budget and one push more this minute.
+    relay.limit_sender(budget as usize + 1);
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let order = world.order(&ak).await;
+    let mut flooded = Vec::new();
+    for n in 0..8 {
+        let endpoint = format!("{origin}/bakery/{n}");
+        flooded.push(
+            world
+                .register(&ak, encrypted(&format!("t{n}"), &endpoint, &device, None))
+                .await,
+        );
+    }
+    world.queue(&world.event(1, &order, "order.paid"));
+    // Twice the budget in all: a burst of sales. The last target's copies,
+    // queued last, are sent after the budget is spent, and would expire
+    // within the minute.
+    for target in &flooded {
+        world.copy_push(target, budget / 4 - 1);
+    }
+    let short_lived: Vec<i64> = world.pushes(&flooded[7])[1..]
+        .iter()
+        .map(|p| p.id)
+        .collect();
+    world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "UPDATE push_deliveries SET expires_at_utc = ?2
+             WHERE push_target_id = ?1 AND event_id <> 'evt_1'",
+            rusqlite::params![flooded[7], world.clock.now() + 30],
+        )
+        .unwrap();
+
+    // Another store, whose one sale is paid after the burst.
+    let session = world.fixture.cookie.strip_prefix("session=").unwrap();
+    let cafe = store_with_keys(
+        &world.fixture.router,
+        &world.fixture.state,
+        session,
+        "cafe.example",
+        "XMR",
+    )
+    .await;
+    let till = connect_app(&world.fixture.router, &cafe.id, &world.fixture.cookie).await;
+    let till = till["app_key"].as_str().unwrap();
+    let cafes = world
+        .register(
+            till,
+            encrypted("t", &format!("{origin}/cafe"), &device, None),
+        )
+        .await;
+    let sale = world.order(till).await;
+    let paid = LoggedEvent {
+        tenant_public_key: cafe.public_key.clone(),
+        ..world.event(2, &sale, "order.paid")
+    };
+    assert_eq!(world.queue(&paid).pushes, 1);
+
+    while world.tick().await > 0 {}
+    let push = &world.pushes(&cafes)[0];
+    assert_eq!(
+        (push.attempt_count, push.delivered_at.is_some()),
+        (1, true),
+        "{push:?}"
+    );
+    assert_eq!(relay.count(), budget as usize + 1);
+    let flood =
+        || -> Vec<PushDeliveryRow> { flooded.iter().flat_map(|t| world.pushes(t)).collect() };
+    let pushes = flood();
+    assert_eq!(pushes.len(), 2 * budget as usize);
+    let delivered = pushes.iter().filter(|p| p.delivered_at.is_some()).count();
+    assert_eq!(delivered, budget as usize);
+    let (now, next_minute) = (world.clock.now(), world.clock.now() + 60);
+    let mut put_off = 0;
+    for push in pushes.iter().filter(|p| p.delivered_at.is_none()) {
+        assert_eq!(push.attempt_count, 0, "{push:?}");
+        if short_lived.contains(&push.id) {
+            assert_eq!(push.last_error.as_deref(), Some(OVER_BUDGET), "{push:?}");
+            assert!(push.gave_up_at.is_some(), "{push:?}");
+        } else {
+            // Put off to the next minute, or held behind one that was.
+            assert!(
+                [Some(now), Some(next_minute)].contains(&push.next_attempt_at),
+                "{push:?}"
+            );
+            put_off += usize::from(push.next_attempt_at == Some(next_minute));
+        }
+    }
+    assert!(put_off > 0);
+
+    // The next minute: the rest of the flood goes out.
+    relay.unlimit_sender();
+    world.clock.advance(60);
+    while world.tick().await > 0 {}
+    for push in flood() {
+        assert!(
+            push.delivered_at.is_some() || short_lived.contains(&push.id),
+            "{push:?}"
+        );
+    }
+    assert_eq!(relay.count(), 2 * budget as usize + 1 - short_lived.len(),);
 }

@@ -2273,6 +2273,7 @@ mod tests {
             ("push.default_ttl_secs", "600"),
             ("push.keep_days", "3"),
             ("push.target_failure_limit", "40"),
+            ("push.per_store_per_minute", "90"),
         ];
         // Every monokulo setting the page can save must be covered here, or
         // this test would silently stop proving anything about a setting

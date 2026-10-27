@@ -525,9 +525,9 @@ impl Db {
 
     /// Queues `sale`'s pushes for every target of `order`'s store that
     /// wants it and hears of the order ([`PushTarget::hears_of`]) but
-    /// `except`'s: records it as the order's latest, then one push per
-    /// target, each superseding that target's unsent push about the same
-    /// order.
+    /// `except`'s, once per endpoint: records it as the order's latest,
+    /// then one push per target, each superseding that target's unsent
+    /// push about the same order.
     fn queue_sale_pushes(
         &self,
         order: &AppOrder,
@@ -542,11 +542,15 @@ impl Db {
             "UPDATE app_orders SET last_sale_event = ?2 WHERE order_id = ?1",
             params![order.order_id, sale.event.as_str()],
         )?;
+        // Targets that share an endpoint are one subscription: it is
+        // pushed once, as the oldest of them that wants it.
+        let mut endpoints = std::collections::HashSet::new();
         let targets: Vec<PushTarget> = self
             .store_push_targets(&order.store_id)?
             .into_iter()
             .filter(|target| target.events.contains(&sale.event) && target.hears_of(order))
             .filter(|target| except != Some(&target.app_id))
+            .filter(|target| endpoints.insert(target.endpoint.as_url().as_str().to_owned()))
             .collect();
         if targets.is_empty() {
             return Ok(0);
@@ -746,8 +750,20 @@ impl Db {
         Ok(after)
     }
 
+    /// Puts the push `id` off until `until` without an attempt: its
+    /// store's pushes for this minute are spent (`push.per_store_per_minute`).
+    pub fn defer_push(&self, id: i64, until: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE push_deliveries SET next_attempt_at_utc = ?2
+             WHERE id = ?1 AND next_attempt_at_utc IS NOT NULL",
+            params![id, until],
+        )?;
+        Ok(())
+    }
+
     /// Gives up on the push `id` without an attempt, saying why: it expired
-    /// unsent ([`EXPIRED_UNSENT`]), has no attempts left, or can't be sent.
+    /// unsent ([`EXPIRED_UNSENT`]), has no attempts left, would expire
+    /// before its store's next minute of pushes, or can't be sent.
     pub fn give_up_push(&self, id: i64, at: i64, error: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE push_deliveries SET next_attempt_at_utc = NULL, gave_up_at_utc = ?2,
