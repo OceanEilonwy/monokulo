@@ -37,6 +37,8 @@ use tokio::sync::mpsc;
 use tower::ServiceExt as _;
 
 pub const APNS_KEY: &str = include_str!("../fixtures/apns-test.p8");
+/// The handle key every test relay runs under.
+pub const HANDLE_KEY: &str = "0123456789abcdef0123456789abcdef";
 /// A service account getting its tokens at `token_uri`.
 pub fn fcm_account(token_uri: &str) -> String {
     json!({
@@ -275,6 +277,7 @@ impl TestRelay {
             stored.insert((*key).to_owned(), (*value).to_owned());
         }
         let env = live_settings::Env::fixed([
+            ("MONOKULO_RELAY_HANDLE_KEY", HANDLE_KEY.to_owned()),
             ("MONOKULO_RELAY_APNS_KEY", APNS_KEY.to_owned()),
             (
                 "MONOKULO_RELAY_FCM_CREDENTIALS",

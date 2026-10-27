@@ -9,16 +9,28 @@
 //! or a monokulo and a Bell) has two handles, each taking pushes signed by
 //! its own sender only.
 //!
-//! The file can't link them. A handle's id is derived from the four it was
-//! registered for, and a row keeps only a hash of the id, the platform
-//! and app, and the token and sender key sealed under a key derived from
-//! the id: a row is readable only with its endpoint in hand, and two rows
-//! of one device share no value but those every device of that app and
-//! platform shares. The relay itself sees the token and the sender
-//! together at every registration and push, as it must to hand pushes on;
-//! a copy of the file (a backup, or the one moved from inside monokulo to
-//! a relay of its own) is what this keeps from linking them. Log lines
-//! name a handle by a tag of its row, never its id.
+//! The file can't link them. A handle's id is a MAC, under the relay's
+//! handle key (`handles.id_key`, from the environment only, never in the
+//! file), of the four it was registered for, and a row keeps only a hash
+//! of the id, the platform and app, and the token and sender key sealed
+//! under a key derived from the id: a row is readable only with its
+//! endpoint in hand, and two rows of one device share no value but those
+//! every device of that app and platform shares. What a copy of the file
+//! (a backup, or the one moved from inside monokulo to a relay of its
+//! own) gives:
+//!
+//! - alone, nothing about any device or sender;
+//! - with a sender's endpoints (its database's push targets), those rows'
+//!   tokens, so that sender's devices, but no other sender's handle of
+//!   them: that handle's id needs the key;
+//! - with the key too, every handle of a device whose token is known, for
+//!   every sender whose public key is known: the key is what keeps a
+//!   sender's devices from being linked to the other senders they take
+//!   pushes from, so it is kept apart from the file and its backups.
+//!
+//! The relay itself sees the token and the sender together at every
+//! registration and push, as it must to hand pushes on. Log lines name a
+//! handle by a tag of its row, never its id.
 //!
 //! A handle no push has reached yet lives `handles.unused_ttl_days` from
 //! its registration; once APNs or FCM has taken a push for it,
@@ -34,6 +46,8 @@ use std::time::Duration;
 use aes_gcm::aead::{Aead as _, Key, KeyInit as _, Nonce, Payload};
 use aes_gcm::Aes256Gcm;
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac as _};
+use live_settings::Secret;
 use push::VapidPublicKey;
 use rand::Rng as _;
 use rusqlite::{params, Connection, OptionalExtension as _};
@@ -48,9 +62,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_sealed_handles.sql")),
 ];
 
-/// What a handle's id is derived from, before the four it was registered
-/// for.
-const ID_CONTEXT: &[u8] = b"monokulo push-relay handle id v1";
+/// What a handle's id is a MAC of, before the four it was registered for.
+const ID_CONTEXT: &[u8] = b"monokulo push-relay handle id v2";
 
 /// HKDF's `info` for the key a row is sealed under.
 const SEAL_CONTEXT: &[u8] = b"monokulo push-relay handle seal v1";
@@ -62,12 +75,46 @@ const NONCE_LEN: usize = 12;
 /// can't be told apart by theirs.
 const EXPIRY_STEP: i64 = 60 * 60;
 
+/// The relay's handle key (`handles.id_key`): what a handle's id is a MAC
+/// under, so the id of a device's handle for one sender can't be worked
+/// out from its handle for another, even with its token in hand. At least
+/// [`HandleKey::MIN_LEN`] characters; `Debug` doesn't print it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct HandleKey(Secret);
+
+impl HandleKey {
+    /// As the engine token: `openssl rand -hex 32` gives 64.
+    pub const MIN_LEN: usize = 32;
+
+    pub fn parse(secret: &Secret) -> Result<Self, String> {
+        if secret.expose().chars().count() < Self::MIN_LEN {
+            return Err(format!(
+                "is shorter than {} characters. Generate one with `openssl rand -hex 32`, and keep it: a device registering under another key gets another endpoint.",
+                Self::MIN_LEN
+            ));
+        }
+        Ok(HandleKey(secret.clone()))
+    }
+
+    fn mac(&self) -> Hmac<Sha256> {
+        <Hmac<Sha256>>::new_from_slice(self.0.expose().as_bytes())
+            .unwrap_or_else(|_| unreachable!("HMAC takes a key of any length"))
+    }
+}
+
+impl fmt::Debug for HandleKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HandleKey(..)")
+    }
+}
+
 /// A handle's id: `ph_` and 32 hex digits, the last part of its endpoint:
-/// the first 128 bits of a hash of the platform, app, token and sender
-/// key it was registered for ([`HandleId::of`]). Unguessable without the
-/// token, which nobody but the device, APNs or FCM and the relay sees; it
-/// is still useless without the sender's signature. The file keeps only
-/// its hash ([`HandleId::row_key`]), and it is the key to the row's
+/// the first 128 bits of an HMAC-SHA-256, under the relay's
+/// [`HandleKey`], of the platform, app, token and sender key it was
+/// registered for ([`HandleId::of`]). Unguessable without the key, even
+/// to whoever holds the token (a sender's endpoint opens its row to it);
+/// it is still useless without the sender's signature. The file keeps
+/// only its hash ([`HandleId::row_key`]), and it is the key to the row's
 /// sealed token and sender, so it is never logged: [`HandleId::tag`] is.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct HandleId(String);
@@ -82,10 +129,10 @@ impl fmt::Debug for HandleId {
 impl HandleId {
     const PREFIX: &'static str = "ph_";
 
-    /// The id of the handle `new` asks for: the same four, the same id, so
-    /// registering again finds the row.
-    fn of(new: &NewHandle) -> Self {
-        let mut hash = Sha256::new();
+    /// The id of the handle `new` asks for under `key`: the same four, the
+    /// same id, so registering again finds the row.
+    fn of(key: &HandleKey, new: &NewHandle) -> Self {
+        let mut mac = key.mac();
         for part in [
             ID_CONTEXT,
             new.platform.as_str().as_bytes(),
@@ -94,13 +141,13 @@ impl HandleId {
             new.sender.to_base64url().as_bytes(),
         ] {
             // None of them holds a NUL, so the parts can't run together.
-            hash.update(part);
-            hash.update([0]);
+            mac.update(part);
+            mac.update(&[0]);
         }
         HandleId(format!(
             "{}{}",
             Self::PREFIX,
-            hex::encode(&hash.finalize()[..16])
+            hex::encode(&mac.finalize().into_bytes()[..16])
         ))
     }
 
@@ -447,12 +494,13 @@ fn bound(platform: Platform, app: &AppName) -> String {
 pub struct HandleStore {
     pool: sqlite::Pool<Connection>,
     lifetimes: Lifetimes,
+    key: HandleKey,
 }
 
 impl HandleStore {
     /// Opens the database at `path`, making it and its directory if they
     /// aren't there, and brings its schema up to date.
-    pub fn open(path: &Path, lifetimes: Lifetimes) -> Result<Self, StoreError> {
+    pub fn open(path: &Path, lifetimes: Lifetimes, key: HandleKey) -> Result<Self, StoreError> {
         let open_error = |error: String| StoreError::Open {
             path: path.display().to_string(),
             error,
@@ -469,14 +517,18 @@ impl HandleStore {
         sqlite::migrations::apply(&connection, MIGRATIONS)?;
         let pool = sqlite::Pool::start("push-relay-db", vec![connection])
             .map_err(|error| open_error(error.to_string()))?;
-        Ok(HandleStore { pool, lifetimes })
+        Ok(HandleStore {
+            pool,
+            lifetimes,
+            key,
+        })
     }
 
     /// The handle for `new`, made if there is none. A new one lives the
     /// unused lifetime from `now`; one a push has reached, the delivered
     /// lifetime. Never shortened.
     pub async fn register(&self, new: NewHandle, now: i64) -> Result<Handle, StoreError> {
-        let id = HandleId::of(&new);
+        let id = HandleId::of(&self.key, &new);
         let sealed = seal(&id, &new);
         let unused = expiry(now, self.lifetimes.unused);
         let delivered = expiry(now, self.lifetimes.delivered);
@@ -618,6 +670,13 @@ mod tests {
         delivered: Duration::from_secs(90 * 86_400),
     };
 
+    /// The handle key the tests' stores run under.
+    const KEY: &str = "0123456789abcdef0123456789abcdef";
+
+    fn key(text: &str) -> HandleKey {
+        HandleKey::parse(&Secret::new(text)).unwrap()
+    }
+
     pub(crate) fn temp_path(tag: &str) -> std::path::PathBuf {
         let mut unique = [0u8; 8];
         rand::rng().fill_bytes(&mut unique);
@@ -631,7 +690,7 @@ mod tests {
     }
 
     fn open_store(path: &Path) -> HandleStore {
-        HandleStore::open(path, LIFETIMES).unwrap()
+        HandleStore::open(path, LIFETIMES, key(KEY)).unwrap()
     }
 
     fn new(platform: Platform, token: &str, sender: &VapidKey) -> NewHandle {
@@ -781,6 +840,62 @@ mod tests {
         assert_eq!(store.find(&one.id, NOW).await.unwrap(), Some(one.clone()));
         let found = store.find(&two.id, NOW).await.unwrap().unwrap();
         assert_eq!((found.token, found.sender), (two.token, bell.public()));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A copy of the file and one sender's endpoint open that one row, so
+    /// its token is out; the same device's handle for another sender
+    /// still can't be found without the relay's key: not by the id an
+    /// unkeyed hash of the token and the other sender's public key would
+    /// give, nor under any other key.
+    #[tokio::test]
+    async fn a_second_senders_handle_cant_be_found_from_an_opened_row_without_the_key() {
+        let path = temp_path("keyed");
+        let store = open_store(&path);
+        let (monokulo, bell) = (VapidKey::generate(), VapidKey::generate());
+        let token = "4f".repeat(32);
+        let known = store
+            .register(new(Platform::Apns, &token, &monokulo), NOW)
+            .await
+            .unwrap();
+        let hidden = store
+            .register(new(Platform::Apns, &token, &bell), NOW)
+            .await
+            .unwrap();
+        drop(store);
+
+        // What the copy and the first sender's endpoint give.
+        let copy = HandleStore::open(&path, LIFETIMES, key(&"9".repeat(32))).unwrap();
+        let opened = copy.find(&known.id, NOW).await.unwrap().unwrap();
+        let guess = NewHandle {
+            platform: opened.platform,
+            app: opened.app,
+            token: opened.token,
+            sender: bell.public(),
+        };
+        let mut unkeyed = Sha256::new();
+        for part in [
+            ID_CONTEXT,
+            guess.platform.as_str().as_bytes(),
+            guess.app.as_str().as_bytes(),
+            guess.token.as_str().as_bytes(),
+            guess.sender.to_base64url().as_bytes(),
+        ] {
+            unkeyed.update(part);
+            unkeyed.update([0]);
+        }
+        let unkeyed = HandleId(format!("ph_{}", hex::encode(&unkeyed.finalize()[..16])));
+        for wrong in [
+            unkeyed,
+            HandleId::of(&key(&"9".repeat(32)), &guess),
+            HandleId::of(&HandleKey(Secret::default()), &guess),
+        ] {
+            assert_ne!(wrong, hidden.id);
+            assert_eq!(copy.find(&wrong, NOW).await.unwrap(), None);
+        }
+        // Under the relay's own key it is the hidden handle's id.
+        assert_eq!(HandleId::of(&key(KEY), &guess), hidden.id);
+        assert!(copy.find(&hidden.id, NOW).await.unwrap().is_some());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -961,12 +1076,20 @@ mod tests {
     #[test]
     fn handle_ids_are_ph_and_32_hex_digits_derived_from_the_registration() {
         let sender = VapidKey::generate();
-        let id = HandleId::of(&new(Platform::Apns, &"ab".repeat(32), &sender));
+        let id = HandleId::of(&key(KEY), &new(Platform::Apns, &"ab".repeat(32), &sender));
         assert_eq!(id.as_str().len(), 35);
         assert_eq!(id.as_str().parse::<HandleId>(), Ok(id.clone()));
         // Either spelling of the token's hex is the one handle.
         assert_eq!(
-            HandleId::of(&new(Platform::Apns, &"AB".repeat(32), &sender)),
+            HandleId::of(&key(KEY), &new(Platform::Apns, &"AB".repeat(32), &sender)),
+            id
+        );
+        // Another key, another id.
+        assert_ne!(
+            HandleId::of(
+                &key(&"f".repeat(32)),
+                &new(Platform::Apns, &"ab".repeat(32), &sender)
+            ),
             id
         );
         let tag = id.tag().to_string();

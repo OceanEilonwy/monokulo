@@ -56,6 +56,8 @@ const SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
 pub enum StartError {
     #[error("server.public_uri must be set: it is the address every endpoint the relay hands out is under, and the one pushes are signed for")]
     NoPublicUri,
+    #[error("MONOKULO_RELAY_HANDLE_KEY must be set (handles.id_key, from the environment only): every handle's id is made under it. Generate one with `openssl rand -hex 32`")]
+    NoHandleKey,
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error("the {0} client can't be built: {1}")]
@@ -86,8 +88,9 @@ impl Relay {
     pub async fn start(config: &RelayConfig) -> Result<Relay, StartError> {
         let public_uri = config.public_uri.clone().ok_or(StartError::NoPublicUri)?;
         let path = config.store_path.clone();
+        let key = config.handle_key.clone().ok_or(StartError::NoHandleKey)?;
         let lifetimes = config.handle_lifetimes;
-        let store = tokio::task::spawn_blocking(move || HandleStore::open(&path, lifetimes))
+        let store = tokio::task::spawn_blocking(move || HandleStore::open(&path, lifetimes, key))
             .await
             .map_err(|error| {
                 StartError::Store(StoreError::Open {

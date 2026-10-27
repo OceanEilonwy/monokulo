@@ -146,6 +146,7 @@ impl ServedRelay {
             "token_uri": format!("{fcm}/token"),
         });
         let env = Env::fixed([
+            ("MONOKULO_RELAY_HANDLE_KEY", "0123456789abcdef".repeat(4)),
             ("MONOKULO_RELAY_APNS_KEY", APNS_KEY.to_owned()),
             ("MONOKULO_RELAY_FCM_CREDENTIALS", account.to_string()),
         ]);
