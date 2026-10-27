@@ -86,9 +86,25 @@ pub enum JwtError {
     Serialize(serde_json::Error),
 }
 
+/// Why a PEM text isn't a P-256 private key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("not a PKCS #8 PEM P-256 private key")]
+pub struct PemKeyError;
+
 impl Es256Key {
     pub(crate) fn from_secret(secret: &p256::SecretKey) -> Self {
         Es256Key(SigningKey::from(secret))
+    }
+
+    /// A key as Apple hands out an APNs signing key (`AuthKey_<id>.p8`):
+    /// PKCS #8, PEM, `-----BEGIN PRIVATE KEY-----`. Surrounding whitespace
+    /// is allowed, as an environment variable holding a file often has a
+    /// final newline.
+    pub fn from_pkcs8_pem(pem: &str) -> Result<Self, PemKeyError> {
+        use p256::pkcs8::DecodePrivateKey as _;
+        p256::SecretKey::from_pkcs8_pem(pem.trim())
+            .map(|secret| Es256Key::from_secret(&secret))
+            .map_err(|_| PemKeyError)
     }
 
     pub fn sign(
@@ -418,6 +434,47 @@ mod tests {
         let input = token.as_str().rsplit_once('.').unwrap().0;
         let zero = format!("{input}.{}", base64url::encode(&[0; 64]));
         assert!(matches!(CompactJwt::parse(&zero), Err(JwtError::Malformed)));
+    }
+
+    /// A throwaway P-256 key in the form of Apple's `.p8` files, made with
+    /// `openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256`.
+    const TEST_P8: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg+qa2A1tgzGx4l2FG
+L2NZHhYYvB/g0uIR9eC0izOwoQ2hRANCAARd/kMMeP3BwVhKhgpUor/tMhB9Arwn
+qhbglHArwPQkyhaZRkQEHRWVZv9moBupXXu3QuOUEpC9IT20RmPJDH05
+-----END PRIVATE KEY-----
+";
+
+    #[test]
+    fn an_apns_p8_key_reads_and_signs() {
+        let key = Es256Key::from_pkcs8_pem(TEST_P8).unwrap();
+        let token = key
+            .sign(
+                &Header {
+                    typ: None,
+                    kid: Some("ABC123DEFG"),
+                },
+                &json!({"iss": "T"}),
+            )
+            .unwrap();
+        let claims: Value = verify_es256(&token, key.0.verifying_key()).unwrap();
+        assert_eq!(claims, json!({"iss": "T"}));
+        // The public point the file carries is the private key's.
+        let point = key.0.verifying_key().to_sec1_point(false);
+        assert_eq!(
+            base64url::encode(point.as_bytes()),
+            "BF3-Qwx4_cHBWEqGClSiv-0yEH0CvCeqFuCUcCvA9CTKFplGRAQdFZVm_2agG6lde7dC45QSkL0hPbRGY8kMfTk"
+        );
+        // Padded with whitespace, as a variable read from a file may be.
+        assert!(Es256Key::from_pkcs8_pem(&format!("\n{TEST_P8}\n\n")).is_ok());
+        for bad in [
+            "",
+            "-----BEGIN PRIVATE KEY-----\n-----END PRIVATE KEY-----",
+            &TEST_P8.replace("MIGH", "MIGI"),
+            &TEST_P8.replace("PRIVATE KEY", "EC PRIVATE KEY"),
+        ] {
+            assert!(Es256Key::from_pkcs8_pem(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
