@@ -635,10 +635,7 @@ pub fn validate_public_uri(value: &str) -> Result<String, String> {
     let problem =
         "Enter this instance's web address, like https://pay.example.com, or https://example.com/monokulo when a proxy serves it under a path.";
     let parsed = url::Url::parse(value).map_err(|_| problem.to_string())?;
-    if parsed
-        .host_str()
-        .is_some_and(tor_service::onion::is_onion_host)
-    {
+    if parsed.host_str().is_some_and(outbound::is_onion_host) {
         return Err("That's an onion address: put it in onion_uri (with tor.mode = external), and set this to the web address or leave it empty.".to_string());
     }
     let ok = matches!(parsed.scheme(), "http" | "https")

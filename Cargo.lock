@@ -1108,7 +1108,6 @@ dependencies = [
  "serde",
  "sha2 0.11.0",
  "subtle",
- "telemetry",
  "tokio",
 ]
 
@@ -1805,6 +1804,7 @@ dependencies = [
  "key-custody",
  "live-settings",
  "monero",
+ "outbound",
  "parking_lot",
  "proptest",
  "rand 0.10.2",
@@ -1845,6 +1845,7 @@ dependencies = [
  "key-custody",
  "monero",
  "monero-epee",
+ "outbound",
  "parking_lot",
  "reqwest",
  "serde",
@@ -3791,6 +3792,7 @@ dependencies = [
  "maud",
  "monero",
  "monokulo",
+ "outbound",
  "parking_lot",
  "pricing",
  "push",
@@ -4139,6 +4141,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2355d85b9a3786f481747ced0e0ff2ba35213a1f9bd406ed906554d7af805a1"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "outbound"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -4675,6 +4687,7 @@ dependencies = [
  "httpdate",
  "hyper",
  "hyper-util",
+ "outbound",
  "p256 0.14.0",
  "push",
  "rand 0.10.2",
@@ -6294,6 +6307,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
+ "outbound",
  "parking_lot",
  "prost",
  "reqwest",
@@ -7699,6 +7713,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "outbound",
  "parking_lot",
  "safelog",
  "service-runtime",

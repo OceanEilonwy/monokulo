@@ -79,6 +79,9 @@ rate-limit = { path = "../rate-limit" }
 pricing = { path = "../pricing" }
 # Web Push to connected apps (`crate::push`): their subscriptions, checked
 # where they're registered, and this instance's VAPID key.
+# Stores' webhook and connected apps' push endpoints are reached only at
+# public addresses, by a resolver that checks each answer.
+outbound = { path = "../outbound" }
 push = { path = "../push" }
 push-relay = { path = "../push-relay", optional = true }
 # Reads a verified domain's TXT records (`embed_domains::LiveDns`).

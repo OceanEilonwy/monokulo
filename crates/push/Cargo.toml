@@ -5,9 +5,9 @@ repository.workspace = true
 edition = "2021"
 description = "Web Push for a sender and a relay: RFC 8291 encryption, VAPID (RFC 8292) and the RFC 8030 request both sides read"
 
-# No workspace crate here, and nothing that needs nightly: the Monokular
-# Bell (another repository, on stable) depends on this crate by git
-# revision.
+# No workspace crate here but `outbound` (itself without any), and
+# nothing that needs nightly: the Monokular Bell (another repository, on
+# stable) depends on this crate by git revision.
 
 [features]
 # Decryption and a receiver's key pair, for other crates' tests that check
@@ -25,6 +25,8 @@ hkdf = "0.13.0"
 http = "1.5.0"
 # `Retry-After` given as an HTTP date.
 httpdate = "1.0.3"
+# An endpoint on an onion name is refused, as every outbound request is.
+outbound = { path = "../outbound" }
 # ECDH for RFC 8291, ECDSA (ES256) for VAPID and APNs tokens.
 p256 = { version = "0.14.0", features = ["ecdh", "ecdsa"] }
 rand = "0.10.2"

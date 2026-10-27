@@ -24,9 +24,9 @@ use crate::db::{
     EXPIRED_UNSENT,
 };
 use crate::http::test_support::{api_request, body_json, store_with_keys};
-use crate::outbound::Reach;
 use crate::settings::PushConfig;
 use crate::webhooks::delivery::Clock;
+use outbound::Reach;
 
 /// A clock the test sets.
 struct ManualClock(AtomicI64);

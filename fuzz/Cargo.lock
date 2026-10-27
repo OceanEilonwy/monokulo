@@ -523,7 +523,6 @@ dependencies = [
  "serde",
  "sha2 0.11.0",
  "subtle",
- "telemetry",
  "tokio",
 ]
 
@@ -788,6 +787,7 @@ dependencies = [
  "key-custody",
  "live-settings",
  "monero",
+ "outbound",
  "parking_lot",
  "rand 0.10.3",
  "rate-limit",
@@ -824,6 +824,7 @@ dependencies = [
  "key-custody",
  "monero",
  "monero-epee",
+ "outbound",
  "parking_lot",
  "reqwest",
  "serde",
@@ -1858,6 +1859,16 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "outbound"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "thiserror 2.0.21",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2943,6 +2954,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
+ "outbound",
  "parking_lot",
  "prost",
  "reqwest",

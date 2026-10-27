@@ -25,8 +25,9 @@ use std::time::Duration;
 use credentials::webhook_sign::sign_payload;
 
 use crate::db::{Attempt, AttemptOutcome, Database, DbError, DueDelivery};
-use crate::outbound::{check_host, request_error_text, Outbound, Reach};
+use crate::outbound::{request_error_text, Outbound};
 use crate::settings::WebhookConfig;
+use outbound::{check_host, Reach};
 
 /// What the worker tells the time by: the system's clock, or a test's.
 pub trait Clock: Send + Sync {
