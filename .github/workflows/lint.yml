@@ -50,15 +50,15 @@ jobs:
         # (refusing relay.enabled and the [relay.*] tables), which no test
         # build compiles.
         run: cargo clippy -p monokulo --lib --bins --locked --no-default-features --features embedded-engine,tor -- -D warnings
-      - name: Clippy, push on stable, as the Monokular Bell builds it
-        # The Bell (another repository, on stable Rust) takes the push crate
-        # as a git dependency, so nothing nightly-only may reach it: this
-        # repository's own builds, all on nightly, wouldn't notice. Its
-        # library alone too, without the test-support decryption that test
-        # builds of the crates using it turn on.
+      - name: Clippy, push and outbound on stable, as the Monokular Bell builds them
+        # The Bell (another repository, on stable Rust) takes the push and
+        # outbound crates as git dependencies, so nothing nightly-only may
+        # reach them: this repository's own builds, all on nightly, wouldn't
+        # notice. Push's library alone too, without the test-support
+        # decryption that test builds of the crates using it turn on.
         run: |
           rustup toolchain install stable --profile minimal --component clippy
-          cargo +stable clippy -p push --all-targets --locked -- -D warnings
+          cargo +stable clippy -p push -p outbound --all-targets --locked -- -D warnings
           cargo +stable clippy -p push --lib --locked -- -D warnings
       - name: Fuzz workspace's lock file is current
         # fuzz/ is its own workspace, so the clippy run above never sees

@@ -82,7 +82,7 @@ pub fn normalize_domain(input: &str) -> Result<String, &'static str> {
     if !domain.is_ascii() {
         return Err("Enter the domain in its ASCII form (the xn-- version) - international characters can't be checked.");
     }
-    if tor_service::onion::is_onion_host(&domain) {
+    if outbound::is_onion_host(&domain) {
         // The service itself: its subdomains are the same service, and
         // covered anyway.
         return tor_service::onion::v3_host(&domain)
@@ -118,7 +118,7 @@ pub const WELL_KNOWN_MAX_BYTES: usize = 4096;
 
 /// Whether `domain` is an onion address, proved by its file rather than DNS.
 pub fn is_onion(domain: &str) -> bool {
-    tor_service::onion::is_onion_host(domain)
+    outbound::is_onion_host(domain)
 }
 
 /// The scheme a page on `domain` is served over: onion services are plain

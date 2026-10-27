@@ -24,6 +24,8 @@ hex = "0.4.3"
 # rather than dev-only/feature-gated).
 http-body = "1.1.0"
 http-body-util = "0.1.5"
+# A configured node on an onion name is refused at start.
+outbound = { path = "../outbound" }
 # Key custody: the boundary, the backends and the router.
 key-custody = { path = "../key-custody", default-features = false, features = ["backends"] }
 # AMD SEV-SNP report types; with the `snp` feature, the snp backend's

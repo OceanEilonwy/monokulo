@@ -24,6 +24,8 @@
 use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+use outbound::embedded_ipv4;
+
 /// What a redacted value is replaced with.
 pub const REDACTED: &str = "[redacted]";
 
@@ -119,39 +121,6 @@ fn anonymize_ip(ip: IpAddr) -> IpAddr {
                 IpAddr::V6(Ipv6Addr::new(s[0], s[1], s[2], 0, 0, 0, 0, 0))
             }
         },
-    }
-}
-
-/// The IPv4 address an IPv6 address carries, if it carries one: the
-/// IPv4-mapped (`::ffff:0:0/96`) and the deprecated IPv4-compatible
-/// (`::/96`) forms, NAT64 (`64:ff9b::/96`, RFC 6052, and the local-use
-/// `64:ff9b:1::/48` of RFC 8215), 6to4 (`2002::/16`, the IPv4 address in
-/// bits 16-47) and Teredo (`2001::/32`, the client's IPv4 address in the
-/// last 32 bits, inverted). `::` and `::1` come out as 0.0.0.0 and
-/// 0.0.0.1.
-///
-/// The log redactor anonymizes the IPv4 address in place of the IPv6 one,
-/// and the webhook guard judges a destination by it, so neither lets an
-/// IPv4 address through dressed as an IPv6 one.
-pub fn embedded_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
-    if let Some(v4) = v6.to_ipv4() {
-        return Some(v4);
-    }
-    let segments = v6.segments();
-    let octets = v6.octets();
-    let last_four = |invert: bool| {
-        let mut bytes = [octets[12], octets[13], octets[14], octets[15]];
-        if invert {
-            bytes = bytes.map(|b| !b);
-        }
-        Ipv4Addr::from(bytes)
-    };
-    match segments {
-        [0x0064, 0xff9b, 0, 0, 0, 0, _, _] => Some(last_four(false)),
-        [0x0064, 0xff9b, 0x0001, ..] => Some(last_four(false)),
-        [0x2002, ..] => Some(Ipv4Addr::from([octets[2], octets[3], octets[4], octets[5]])),
-        [0x2001, 0x0000, ..] => Some(last_four(true)),
-        _ => None,
     }
 }
 

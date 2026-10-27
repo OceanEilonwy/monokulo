@@ -12,6 +12,9 @@ axum = ["dep:axum"]
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["matched-path", "tokio"], optional = true }
 live-settings = { path = "../live-settings" }
+# The IPv4 address inside an IPv6 one, judged as the outbound guard judges
+# it, so a client's address is anonymized as the IPv4 it really is.
+outbound = { path = "../outbound" }
 # Trace and span ids (OpenTelemetry's data model), so a request can be
 # followed across monokulo, the engine, the plugin and the browser.
 opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }

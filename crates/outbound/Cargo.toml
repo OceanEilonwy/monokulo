@@ -1,0 +1,24 @@
+[package]
+name = "outbound"
+version.workspace = true
+repository.workspace = true
+edition = "2021"
+description = "Requests to addresses other people give: which hosts and addresses are no place to send one (private, loopback, link-local, onion), and an HTTP client whose resolver refuses them"
+
+# No workspace crate here, and nothing that needs nightly: the Monokular
+# Bell (another repository, on stable) depends on this crate by git
+# revision, as monokulo, its telemetry and the push crate do by path.
+
+[dependencies]
+# The client's builder and its resolver hook (`reqwest::dns::Resolve`).
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+thiserror = "2.0.20"
+# The system resolver (`lookup_host`) the checking resolver asks.
+tokio = { version = "1.53.1", features = ["net"] }
+url = "2.5.8"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "net", "rt"] }
+
+[lints]
+workspace = true

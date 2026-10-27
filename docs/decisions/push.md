@@ -861,3 +861,25 @@ after group 2's last entry (150).
      (their ids were random), so migration 2 drops them, with
      `secure_delete` on so their bytes are overwritten; apps register
      again at their next start. Nothing of this shape was ever released.
+154. **The outbound guard is its own crate, `outbound`, for monokulo and
+     the Bell** (push audit #2's shared half; the Bell drops its copy at
+     its next pin). The Bell had copied monokulo's guard by hand, because
+     the address rule lived in `credentials` (password hashing) and
+     `embedded_ipv4` in `telemetry`, and the copies had drifted: the
+     Bell's `check_host` refused `localhost` by name, monokulo's resolver
+     and `check_host` refused onion names. `outbound` holds the address
+     rule, `embedded_ipv4`, the onion and localhost name rules, `Reach`,
+     the checking resolver behind `client_builder` and `check_host`, with
+     both refusals, and one table test with both copies' addresses. Its
+     own crate rather than `abuse`: it is about where requests go, not who
+     they come from, and it needs reqwest, which abuse doesn't. Like
+     `push`, it has no workspace dependency and builds on stable (the lint
+     job's stable clippy step now covers it). The other copies of the
+     onion name rule go too: `tor-service`'s, `engine-daemon`'s and the
+     push crate's private one all call `outbound::is_onion_host`, which
+     takes `onion` itself as one, as the push crate's did; `credentials`
+     and `telemetry` lose theirs. Monokulo now refuses a webhook or push
+     endpoint on `localhost` by name before the request, as the Bell did,
+     where before its resolver refused the loopback answer. Monokulo's
+     `Outbound` (its two clients, one per reach) and `request_error_text`
+     stay in monokulo, built on `outbound::client_builder`.

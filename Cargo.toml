@@ -16,6 +16,7 @@ members = [
     "crates/pricing",
     "crates/push",
     "crates/push-relay",
+    "crates/outbound",
     "crates/live-settings",
     "crates/telemetry",
     "crates/monokulo",

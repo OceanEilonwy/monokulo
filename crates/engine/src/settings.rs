@@ -44,7 +44,7 @@ impl MoneroNodeSetting {
     pub fn onion_node(&self) -> Option<&Self> {
         std::iter::once(self)
             .chain(&self.fallbacks)
-            .find(|node| engine_daemon::rpc::is_onion_host(&node.host))
+            .find(|node| outbound::is_onion_host(&node.host))
     }
 }
 
