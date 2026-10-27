@@ -54,8 +54,9 @@ nav.mk-tabs { margin-block-end: var(--space-lg); }
 .mk-segmented > .mk-btn:hover { background: none; color: var(--ink); }
 .mk-segmented > .mk-btn[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--tab-current); }
 
-/* A state a list is in (StatusBanner): the icon, the state in bold with a
-   "?" after it, the action at the right. Its tone's tint, a thin edge. */
+/* A state a list is in (StatusBanner): the icon, the state in bold with
+   what it means under it, the action at the right. Its tone's tint, a thin
+   edge. */
 .mk-status-banner { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm) var(--space-md); margin: 0 0 var(--space-lg); padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--tint-neutral); }
 .mk-status-banner[data-tone="success"] { background: var(--tint-success); }
 .mk-status-banner[data-tone="warning"] { background: var(--tint-warning); }
@@ -64,10 +65,9 @@ nav.mk-tabs { margin-block-end: var(--space-lg); }
 .mk-status-banner[data-tone="success"] > .mk-status-banner-icon { color: var(--success); }
 .mk-status-banner[data-tone="warning"] > .mk-status-banner-icon { color: var(--warning); }
 .mk-status-banner-title { flex: 1 1 14rem; min-width: 0; }
-.mk-status-banner-title > .help-tip { margin-left: var(--space-xs); vertical-align: middle; }
+.mk-status-banner-title > strong, .mk-status-banner-detail { display: block; }
+.mk-status-banner-detail { font-size: var(--text-sm); color: var(--muted); }
 .mk-status-banner-action { margin-left: auto; }
-/* Its "?" opens across the banner, so the help stays inside it. */
-.mk-status-banner .help-tip[data-anchor="container"] > .help-tip-body { right: 0; width: auto; }
 
 /* One thing in a list, as a card (ItemCard): the name, its state right
    after it and its actions at the right on one line; a muted line under

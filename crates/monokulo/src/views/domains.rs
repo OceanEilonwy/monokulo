@@ -247,24 +247,24 @@ pub fn restriction_banner_oob(store: &StoreRef, restricted: bool, can_restrict: 
 }
 
 fn banner(store: &StoreRef, restricted: bool, can_restrict: bool, oob: bool) -> Markup {
-    let tip = |text: &str| {
-        ui::HelpTip::new("What this means", text.to_string()).anchor(ui::TipAnchor::Container)
-    };
     let banner = if restricted {
-        ui::StatusBanner::new("Only your verified domains can show this checkout.", ui::Tone::Success)
-            .icon(icon(icons::LOCK))
-            .tip(tip("Browsers won't show this checkout on any other website, and orders started there are refused. Subdomains of a verified domain count. The till and payment links always work."))
-            .action(
-                ui::Button::new(with_icon(icons::LOCK_OPEN, "Allow any website"))
-                    .variant(ui::ButtonVariant::Caution)
-                    .size(ui::ControlSize::Compact)
-                    .kind(ui::ButtonType::Submit)
-                    .attr("data-opens-dialog", "allow-any"),
-            )
+        ui::StatusBanner::new(
+            "Only your verified domains can show this checkout.",
+            ui::Tone::Success,
+        )
+        .icon(icon(icons::LOCK))
+        .detail("Other websites can't show it or take orders for your store.")
+        .action(
+            ui::Button::new(with_icon(icons::LOCK_OPEN, "Allow any website"))
+                .variant(ui::ButtonVariant::Caution)
+                .size(ui::ControlSize::Compact)
+                .kind(ui::ButtonType::Submit)
+                .attr("data-opens-dialog", "allow-any"),
+        )
     } else if can_restrict {
         ui::StatusBanner::new("Any website can show this checkout.", ui::Tone::Warning)
             .icon(icon(icons::LOCK_OPEN))
-            .tip(tip("Allow only your verified domains to stop other websites showing this checkout and taking orders for your store."))
+            .detail("Allow only your domains to stop copycat sites showing it or taking orders in your name.")
             .action(
                 ui::Button::new(with_icon(icons::LOCK, "Only allow my domains"))
                     .variant(ui::ButtonVariant::Primary)
@@ -274,7 +274,7 @@ fn banner(store: &StoreRef, restricted: bool, can_restrict: bool, oob: bool) -> 
     } else {
         ui::StatusBanner::new("Any website can show this checkout.", ui::Tone::Warning)
             .icon(icon(icons::LOCK_OPEN))
-            .tip(tip("A domain must be verified before you can allow only your own. Add one below and publish its DNS record."))
+            .detail("Verify one of your websites first, then you can allow only your own.")
             .action(
                 ui::Button::new(with_icon(icons::LOCK, "Only allow my domains"))
                     .size(ui::ControlSize::Compact)
@@ -305,6 +305,78 @@ fn banner(store: &StoreRef, restricted: bool, can_restrict: bool, oob: bool) -> 
     }
 }
 
+/// The Verified domains card's "How this works": what a verified domain
+/// is, what the store's setting means right now, and the questions a shop
+/// owner asks, the first one open.
+pub fn guide(restricted: bool, can_restrict: bool) -> Markup {
+    let grace_days = crate::embed_domains::GRACE_SECS / (24 * 60 * 60);
+    let questions = [
+        (
+            "How do I add my website?",
+            "Choose Add a domain and type its address. We'll show you a short code to add to your domain's DNS settings, at the company you bought the domain from. We look for it on our own while that page is open. A shop on a .onion address serves a file instead.".to_string(),
+        ),
+        (
+            "Does it cover www and other parts of my site?",
+            "Yes. Verifying shop.example also covers www.shop.example and anything else ending in shop.example.".to_string(),
+        ),
+        (
+            "Will this stop my till or payment links?",
+            "No. They always work, whatever you choose here.".to_string(),
+        ),
+        (
+            "What if the code gets removed?",
+            format!("We check every day. If the code goes missing, we warn you here and the domain keeps working for {grace_days} days while you put it back."),
+        ),
+    ];
+    html! {
+        p { "Your checkout can appear inside your own website. A verified domain is a website you've proved is yours." }
+        (guide_now(restricted, can_restrict, false))
+        div class="guide-questions" {
+            @for (i, (question, answer)) in questions.iter().enumerate() {
+                details open[i == 0] {
+                    summary { (question) }
+                    p { (answer) }
+                }
+            }
+        }
+    }
+}
+
+/// The guide's "Right now" again, to replace the page's (`data-fx-oob`)
+/// after a check, beside the banner.
+pub fn guide_now_oob(restricted: bool, can_restrict: bool) -> Markup {
+    guide_now(restricted, can_restrict, true)
+}
+
+fn guide_now(restricted: bool, can_restrict: bool, oob: bool) -> Markup {
+    let (tone, state, meaning) = if restricted {
+        (
+            "success",
+            "Only your verified domains can show your checkout.",
+            "Copycat sites can't show it or take orders in your name.",
+        )
+    } else if can_restrict {
+        (
+            "warning",
+            "Any website can show your checkout.",
+            "Choose Only allow my domains to stop copycat sites showing it or taking orders in your name.",
+        )
+    } else {
+        (
+            "warning",
+            "Any website can show your checkout.",
+            "Verify one of your websites first. Then you can allow only your own.",
+        )
+    };
+    html! {
+        div id="domains-now" class="guide-now" data-tone=(tone) data-fx-oob[oob] {
+            small { "Right now" }
+            strong { (state) }
+            span { (meaning) }
+        }
+    }
+}
+
 fn add_button(store: &StoreRef, primary: bool) -> Markup {
     let button = ui::LinkButton::new(
         with_icon(icons::PLUS, "Add a domain"),
@@ -328,7 +400,6 @@ pub fn domains_body(
     can_restrict: bool,
 ) -> Markup {
     html! {
-        (ui::Hint::new("Prove you own the websites that show this store's checkout. A verified domain covers all of its subdomains. A web domain is proved with a DNS record; an onion shop with a file it serves over Tor."))
         (restriction_banner(store, restricted, can_restrict))
         @if domains.is_empty() {
             div class="box domains-empty" {

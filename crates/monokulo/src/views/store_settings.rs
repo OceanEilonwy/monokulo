@@ -18,7 +18,9 @@
 
 use maud::{html, Markup};
 
-use super::settings::{plain_card, toast_region, Card, Field, Save, Toast, ToastKind};
+use super::settings::{
+    plain_card, plain_card_with_guide, toast_region, Card, Field, Save, Toast, ToastKind,
+};
 use super::PageChrome;
 use crate::confirmation_thresholds::MAX_CUSTOM_THRESHOLDS;
 use ui::{Choice, Select};
@@ -1163,9 +1165,10 @@ fn verified_domains_card(store: &StoreSettingsData) -> Markup {
         id: store.connection_id.as_str(),
         name: &store.display_name,
     };
-    plain_card(
+    plain_card_with_guide(
         StoreSection::Domains.id(),
         "Verified domains",
+        super::domains::guide(store.embed_restricted, store.embed_can_restrict),
         html! {
             (action_error(store, StoreSection::Domains))
             (super::domains::domains_body(&store_ref, &store.embed_domains, store.embed_restricted, store.embed_can_restrict))
@@ -1348,6 +1351,65 @@ mod tests {
             .unwrap_or_else(|| panic!("the restriction banner in {html}"))
     }
 
+    /// The Verified domains card's "How this works": in its head, closed
+    /// until asked, and what it says right now following the setting.
+    fn guide(html: &str) -> &str {
+        html.split(r#"<details class="card-guide">"#)
+            .nth(1)
+            .and_then(|rest| rest.split(r#"<div class="card-body">"#).next())
+            .unwrap_or_else(|| panic!("the domains guide in {html}"))
+    }
+
+    #[test]
+    fn verified_domains_explains_itself_from_the_card_head() {
+        let html = render(on(StoreTab::Domains));
+        let help = guide(&html);
+        assert!(
+            help.starts_with(r#"<summary class="card-head"><h3 id="card-verified-domains-title">Verified domains</h3>"#),
+            "{help}"
+        );
+        assert!(help.contains("How this works</span></summary>"), "{help}");
+        assert!(
+            help.contains("A verified domain is a website you've proved is yours."),
+            "{help}"
+        );
+        assert!(
+            help.contains(r#"<div id="domains-now" class="guide-now" data-tone="warning"><small>Right now</small><strong>Any website can show your checkout.</strong><span>Verify one of your websites first."#),
+            "{help}"
+        );
+        // Adding a website is the open question; the rest wait.
+        assert!(
+            help.contains("<details open><summary>How do I add my website?</summary>"),
+            "{help}"
+        );
+        assert_eq!(help.matches("<details>").count(), 3, "{help}");
+        assert!(
+            help.contains("the domain keeps working for 3 days while you put it back."),
+            "{help}"
+        );
+        // The banner says what it means itself, with no "?" left in it.
+        assert!(!banner(&html).contains("help-tip"), "{html}");
+
+        let html = render(StoreSettingsData {
+            embed_can_restrict: true,
+            ..on(StoreTab::Domains)
+        });
+        assert!(
+            guide(&html).contains("<span>Choose Only allow my domains to stop copycat sites"),
+            "{html}"
+        );
+
+        let html = render(StoreSettingsData {
+            embed_can_restrict: true,
+            embed_restricted: true,
+            ..on(StoreTab::Domains)
+        });
+        assert!(
+            guide(&html).contains(r#"data-tone="success"><small>Right now</small><strong>Only your verified domains can show your checkout.</strong>"#),
+            "{html}"
+        );
+    }
+
     #[test]
     fn the_restriction_banner_needs_a_verified_domain_to_turn_on() {
         let html = render(on(StoreTab::Domains));
@@ -1362,7 +1424,7 @@ mod tests {
             "{off}"
         );
         assert!(
-            off.contains("A domain must be verified before you can allow only your own."),
+            off.contains(r#"<span class="mk-status-banner-detail">Verify one of your websites first, then you can allow only your own.</span>"#),
             "{off}"
         );
         // Nothing verified: the button is the plain disabled one.
