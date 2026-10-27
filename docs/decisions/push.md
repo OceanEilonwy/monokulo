@@ -730,3 +730,29 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      what passes the handle's limit, and size `per_sender_per_minute` for
      a multi-store instance and the Bell) is fixed on `push-relay`, where
      the relay is.
+
+## Push audit fixes: reads, registrations, times (the fixer of group 2)
+
+The push audit's second fix group (findings 1, 7, 5 and 19), on
+`push-delivery`, numbered after group 1's last entry (146).
+
+147. **A push target this build can't read costs only its own pushes**
+     (push audit #1; narrows decision 70 for the reads of many targets).
+     Pushes are queued in the order event's transaction, and a store's
+     targets were read strictly, so one drifted row (a rollback past a
+     release that added a sale event, a tightened endpoint rule, a hand
+     edit) failed every order event of that store, and with it the
+     subscriber's one log: every store's webhooks stopped behind it, as
+     did that store's app orders (`sale.waiting` is queued in the order's
+     transaction). Now the store's targets and an app's list
+     (`GET /api/v1/push-targets`) leave such a row out and log it with its
+     id, as an unreadable push is given up alone (decision 83). One
+     target read by id still answers `500`: it is that row's own error.
+     Left out of the list, it is the app's cue to register its
+     `client_id` again (the documented start-up check), which rewrites the
+     row. Queueing pushes in a savepoint whose error is swallowed was the
+     other way; it would also swallow a real database error and lose the
+     whole event's pushes for one row. The `db` layer logs here, a first
+     for it: only the reader skipping the row knows its id and why, and
+     carrying a list of skipped rows up through `Queued` and the order API
+     would add a field to every caller for a log line.

@@ -1013,36 +1013,55 @@ async fn a_path_that_names_no_target_is_not_found() {
 }
 
 /// A row that no longer reads as a target (an event name this version
-/// doesn't know, as after a downgrade) is `500` `internal` to read, never
-/// something else quietly, and the app can still put it right:
-/// unregistering it works, and so does registering its `client_id` again.
+/// doesn't know, as after a downgrade) is `500` `internal` to read alone,
+/// never something else quietly, and is left out of the app's list (logged)
+/// rather than failing it: the app's other targets are still listed, and
+/// one missing from the list is the app's cue to register it again. The
+/// app can put it right: registering its `client_id` again works, and so
+/// does unregistering it.
 #[tokio::test]
-async fn an_unreadable_target_is_internal_and_the_app_can_replace_or_remove_it() {
+async fn an_unreadable_target_is_internal_alone_and_left_out_of_the_list() {
     let engine = engine().await;
     let fixture = fixture(engine.router(), PUBLIC_URI, &Recorder::default()).await;
     let ak = fixture.ak.as_str();
-    let spoil = |fixture: &Fixture| {
-        fixture
-            .state
-            .db
-            .lock()
-            .conn_for_test()
-            .execute("UPDATE push_targets SET events = '[\"sale.refunded\"]'", [])
-            .unwrap();
-    };
     let made = register(
         &fixture,
         ak,
         subscription("unifiedpush", "https://ntfy.sh/up"),
     )
     .await;
+    let fine = register(&fixture, ak, subscription("fcm", "https://ntfy.sh/fcm")).await;
+    let spoil = |fixture: &Fixture| {
+        fixture
+            .state
+            .db
+            .lock()
+            .conn_for_test()
+            .execute(
+                "UPDATE push_targets SET events = '[\"sale.refunded\"]' WHERE id = ?1",
+                [made["push_target_id"].as_str().unwrap()],
+            )
+            .unwrap();
+    };
+    let listed = |answer: Value| -> Vec<Value> {
+        answer["push_targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|target| target["push_target_id"].clone())
+            .collect()
+    };
     let one = format!("{TARGETS}/{}", made["push_target_id"].as_str().unwrap());
     spoil(&fixture);
-    for uri in [TARGETS, one.as_str()] {
-        let answer = call(&fixture, "GET", uri, ak, None).await;
-        assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR, "{uri}");
-        assert_problem(answer, "internal").await;
-    }
+    let answer = call(&fixture, "GET", &one, ak, None).await;
+    assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_problem(answer, "internal").await;
+    let list = call(&fixture, "GET", TARGETS, ak, None).await;
+    assert_eq!(list.status(), StatusCode::OK);
+    assert_eq!(
+        listed(body_json(list).await),
+        [fine["push_target_id"].clone()]
+    );
     let again = register(
         &fixture,
         ak,
@@ -1054,10 +1073,12 @@ async fn an_unreadable_target_is_internal_and_the_app_can_replace_or_remove_it()
         call(&fixture, "GET", &one, ak, None).await.status(),
         StatusCode::OK
     );
+    let list = call(&fixture, "GET", TARGETS, ak, None).await;
+    assert_eq!(listed(body_json(list).await).len(), 2);
     spoil(&fixture);
     let gone = call(&fixture, "DELETE", &one, ak, None).await;
     assert_eq!(gone.status(), StatusCode::NO_CONTENT);
-    assert_eq!(rows(&fixture), 0);
+    assert_eq!(rows(&fixture), 1);
 }
 
 /// The table itself refuses what the types do: a kind it doesn't know,

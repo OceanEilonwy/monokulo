@@ -1453,6 +1453,71 @@ async fn a_retried_order_is_pushed_as_waiting_once_and_a_shops_order_not_at_all(
     assert_eq!(world.pushes(&target).len(), 1);
 }
 
+/// A push target whose row this build can't read (an event kind it
+/// doesn't know, as after a downgrade) is pushed nothing, and holds
+/// nothing else up: the order event's webhook delivery and the store's
+/// other targets' pushes are queued, the position moves past it and the
+/// next event is queued too, and an app's new order still queues its
+/// `sale.waiting` for the others. One such row used to fail every order
+/// event's transaction, stopping every store's webhooks behind it.
+#[tokio::test]
+async fn an_unreadable_push_target_costs_only_its_own_pushes() {
+    let world = world().await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let spoilt = world
+        .register(
+            &ak,
+            encrypted("spoilt", "https://push.example/a", &device, None),
+        )
+        .await;
+    let fine = world
+        .register(
+            &ak,
+            encrypted("fine", "https://push.example/b", &device, None),
+        )
+        .await;
+    let (first, second) = (world.order(&ak).await, world.order(&ak).await);
+    world
+        .fixture
+        .state
+        .db
+        .lock()
+        .conn_for_test()
+        .execute(
+            "UPDATE push_targets SET events = '[\"sale.refunded\"]' WHERE id = ?1",
+            [spoilt.as_str()],
+        )
+        .unwrap();
+
+    for (seq, order) in [(1, &first), (2, &second)] {
+        assert_eq!(
+            world.queue(&world.event(seq, order, "order.paid")),
+            Queued {
+                webhooks: 1,
+                pushes: 1
+            }
+        );
+        assert_eq!(world.position(), seq);
+    }
+    let other = world.another_app().await;
+    let third = world.order(&other).await;
+    let pushed: Vec<(OrderId, String)> = world
+        .pushes(&fine)
+        .into_iter()
+        .map(|push| (push.order_id, push.event_type))
+        .collect();
+    assert_eq!(
+        pushed,
+        [
+            (first, "sale.paid".to_owned()),
+            (second, "sale.paid".to_owned()),
+            (third, "sale.waiting".to_owned()),
+        ]
+    );
+    assert!(world.pushes(&spoilt).is_empty());
+}
+
 /// A newer push about an order supersedes only its own target's unsent
 /// one: each target keeps the latest about the order.
 #[tokio::test]
