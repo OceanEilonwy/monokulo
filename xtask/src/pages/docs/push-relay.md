@@ -39,7 +39,7 @@ Content-Type: application/json
 - `platform`: `apns` (notifications, encrypted), `apns-liveactivity` (a
   Live Activity's updates, by its push token), `apns-pushtostart` (starting
   a Live Activity, iOS 17.2), or `fcm`.
-- `token`: the APNs token in hex, or the FCM registration token.
+- `token`: the APNs token in hex (either case), or the FCM registration token.
 - `app`: the app's name, as the relay's operator set it up
   (`handles.apps`).
 

@@ -165,8 +165,9 @@ impl From<AppName> for String {
 }
 
 /// A device's token for one platform: an APNs device, activity or
-/// push-to-start token (hex, as iOS hands it over as bytes), or an FCM
-/// registration token (letters, digits, `-`, `_` and `:`). Bounded, so a
+/// push-to-start token (hex, as iOS hands it over as bytes; kept in
+/// lowercase), or an FCM registration token (letters, digits, `-`, `_`
+/// and `:`). Bounded, so a
 /// row stays small, and of characters that go into a URL path as they
 /// are. Whoever holds it can address the device through APNs or FCM with
 /// the app's credentials, so `Debug` doesn't print it and no log line
@@ -192,7 +193,16 @@ impl DeviceToken {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':')),
         };
         if fits {
-            Ok(DeviceToken(text.to_owned()))
+            Ok(DeviceToken(match platform {
+                // Hex is the app's spelling of the token's bytes, in
+                // either case: one spelling, so one device and sender
+                // are one handle however the app writes them.
+                Platform::Apns | Platform::ApnsLiveActivity | Platform::ApnsPushToStart => {
+                    text.to_ascii_lowercase()
+                }
+                // FCM's tokens are case-sensitive.
+                Platform::Fcm => text.to_owned(),
+            }))
         } else {
             Err(match platform {
                 Platform::Fcm => {
@@ -525,6 +535,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// An expired handle the hourly sweep hasn't reached yet is unknown to
+    /// pushes, and the same registration takes it back, endpoint and all:
+    /// the app needn't hand its sender a new one.
+    #[tokio::test]
+    async fn registering_again_takes_back_an_expired_handle_not_yet_swept() {
+        let path = temp_path("revive");
+        let store = HandleStore::open(&path).unwrap();
+        let sender = VapidKey::generate();
+        let token = "c3".repeat(32);
+        let handle = store
+            .register(new(Platform::Apns, &token, &sender), NOW, TTL)
+            .await
+            .unwrap();
+        let later = NOW + 90 * 86_400 + 10;
+        assert_eq!(store.find(&handle.id, later).await.unwrap(), None);
+        let back = store
+            .register(new(Platform::Apns, &token, &sender), later, TTL)
+            .await
+            .unwrap();
+        assert_eq!(back.id, handle.id);
+        assert_eq!(back.expires_at, later + 90 * 86_400);
+        assert!(store.find(&handle.id, later).await.unwrap().is_some());
+        assert_eq!(store.sweep(later).await.unwrap(), 0);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn handle_ids_are_ph_and_32_hex_digits() {
         let id = HandleId::generate();
@@ -545,7 +581,17 @@ mod tests {
     #[test]
     fn tokens_are_checked_for_their_platform() {
         assert!(DeviceToken::parse(Platform::Apns, &"ab".repeat(32)).is_ok());
-        assert!(DeviceToken::parse(Platform::ApnsLiveActivity, "ABCDEF01").is_ok());
+        assert_eq!(
+            DeviceToken::parse(Platform::ApnsLiveActivity, "ABCDEF01")
+                .unwrap()
+                .as_str(),
+            "abcdef01"
+        );
+        // FCM's are taken as they are.
+        assert_eq!(
+            DeviceToken::parse(Platform::Fcm, "AbC:d").unwrap().as_str(),
+            "AbC:d"
+        );
         for bad in ["", "abc", "zz", "ab/cd", &"ab".repeat(513)] {
             assert!(DeviceToken::parse(Platform::Apns, bad).is_err(), "{bad}");
         }
