@@ -82,9 +82,7 @@ async fn register(
         ))
     })?;
     let served = match registration.platform {
-        Platform::Apns | Platform::ApnsLiveActivity | Platform::ApnsPushToStart => {
-            app.apns_topic.is_some()
-        }
+        Platform::Apns | Platform::ApnsLiveActivity => app.apns_topic.is_some(),
         Platform::Fcm => app.fcm_project_id.is_some(),
     };
     if !served {
@@ -193,7 +191,7 @@ async fn hand_on(
     // `handles.apps`, or out of a platform, takes no more pushes.
     let app = shared.apps.get(&handle.app);
     match handle.platform {
-        Platform::Apns | Platform::ApnsLiveActivity | Platform::ApnsPushToStart => {
+        Platform::Apns | Platform::ApnsLiveActivity => {
             let (Some(apns), Some(bundle)) = (
                 shared.apns.as_ref(),
                 app.and_then(|app| app.apns_topic.as_ref()),

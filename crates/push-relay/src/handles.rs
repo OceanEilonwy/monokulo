@@ -219,10 +219,6 @@ pub enum Platform {
     /// iOS applies them with no code of the app's to decrypt.
     #[serde(rename = "apns-liveactivity")]
     ApnsLiveActivity,
-    /// Starting a Live Activity remotely (iOS 17.2), by the app's
-    /// push-to-start token: plain JSON.
-    #[serde(rename = "apns-pushtostart")]
-    ApnsPushToStart,
     /// An Android data message through Firebase, the ciphertext carried for
     /// the app to decrypt.
     #[serde(rename = "fcm")]
@@ -234,20 +230,14 @@ impl Platform {
         match self {
             Platform::Apns => "apns",
             Platform::ApnsLiveActivity => "apns-liveactivity",
-            Platform::ApnsPushToStart => "apns-pushtostart",
             Platform::Fcm => "fcm",
         }
     }
 
     fn from_stored(text: &str) -> Option<Self> {
-        [
-            Platform::Apns,
-            Platform::ApnsLiveActivity,
-            Platform::ApnsPushToStart,
-            Platform::Fcm,
-        ]
-        .into_iter()
-        .find(|platform| platform.as_str() == text)
+        [Platform::Apns, Platform::ApnsLiveActivity, Platform::Fcm]
+            .into_iter()
+            .find(|platform| platform.as_str() == text)
     }
 }
 
@@ -302,10 +292,9 @@ impl From<AppName> for String {
     }
 }
 
-/// A device's token for one platform: an APNs device, activity or
-/// push-to-start token (hex, as iOS hands it over as bytes; kept in
-/// lowercase), or an FCM registration token (letters, digits, `-`, `_`
-/// and `:`). Bounded by what the platforms issue, with room to grow
+/// A device's token for one platform: an APNs device or activity token
+/// (hex, as iOS hands it over as bytes; kept in lowercase), or an FCM
+/// registration token (letters, digits, `-`, `_` and `:`). Bounded by what the platforms issue, with room to grow
 /// ([`DeviceToken::max_len`]), so a made-up one makes no large row, and of
 /// characters that go into a URL path as they are. Whoever holds it can
 /// address the device through APNs or FCM with the app's credentials, so
@@ -319,7 +308,7 @@ impl DeviceToken {
     /// registration tokens are about 160 characters, so 512.
     pub const fn max_len(platform: Platform) -> usize {
         match platform {
-            Platform::Apns | Platform::ApnsLiveActivity | Platform::ApnsPushToStart => 256,
+            Platform::Apns | Platform::ApnsLiveActivity => 256,
             Platform::Fcm => 512,
         }
     }
@@ -330,7 +319,7 @@ impl DeviceToken {
             return Err(format!("a {platform} token is 1 to {max} characters"));
         }
         let fits = match platform {
-            Platform::Apns | Platform::ApnsLiveActivity | Platform::ApnsPushToStart => {
+            Platform::Apns | Platform::ApnsLiveActivity => {
                 text.len() % 2 == 0 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
             }
             Platform::Fcm => text
@@ -342,9 +331,7 @@ impl DeviceToken {
                 // Hex is the app's spelling of the token's bytes, in
                 // either case: one spelling, so one device and sender
                 // are one handle however the app writes them.
-                Platform::Apns | Platform::ApnsLiveActivity | Platform::ApnsPushToStart => {
-                    text.to_ascii_lowercase()
-                }
+                Platform::Apns | Platform::ApnsLiveActivity => text.to_ascii_lowercase(),
                 // FCM's tokens are case-sensitive.
                 Platform::Fcm => text.to_owned(),
             }))
