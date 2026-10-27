@@ -78,8 +78,10 @@ Bell). Each PR's diff is its package alone, its body says what it adds and
 which checks ran, and `docs/decisions/push.md` has a section per package,
 its tests and its review. Merge in the same order; after #245 merges GitHub
 retargets #246 onto `main`, and so on. **Merge with merge commits or
-rebases, not squashes**: the Bell pins the head commit of `push-relay`, and
-a squash would leave that commit unreachable (decision 134). After the
+rebases, not squashes**: the Bell pins a commit of `push-relay` (its head
+when the Bell was last checked; a later commit that changes none of the
+crates the Bell takes needs no re-pin), and a squash would leave that
+commit unreachable (decision 134). After the
 stack is on `main`, move the Bell's pin to `main`'s commit (`rev` in
 monokular's `Cargo.toml`, then `cargo update -p push --precise <commit>`),
 as decision 22 planned.
@@ -137,7 +139,7 @@ stand-in Square (`tools/fake-square/fake_square.py`) sends a signed
 `payment.created` to the Bell for each sale rung up at its `/fake/sale`,
 and the Bell dings a Web Push endpoint on loopback. Its over-HTTP test
 suite does the same with a stub endpoint and decrypts the ding:
-`cargo nextest run -p monokular-bell` (70 tests, about 0.1 s).
+`cargo nextest run -p monokular-bell` (71 tests, about a second).
 
 ## 5. The decisions, in brief
 
@@ -308,7 +310,7 @@ so it says what was built (decisions 94, 135, B34).
 | `crates/push` | 93 (89 in the crate, 4 `over_http`) | RFC 8291 Appendix A byte for byte; RFC 8292's example token; every parser's refusals (endpoints, keys, topics, headers, JWTs); `Sender`'s answer mapping for 201, 200, 404, 410, 413, 429, 5xx with `Retry-After`, 400, 401, a 307 not followed; 16 sends sharing one token; the request error leaving the endpoint out. The stub push service speaks TLS with a committed test certificate. |
 | `crates/push-relay` | 59 (26 unit, 13 in-process, 18 `over_http`, 4 of the binary) | Settings (every key two parts, rules that tie them, the TOML form of `handles.apps`), handles (idempotent registration, lowercase APNs tokens, expiry only on delivery, the sweep), every refusal (forged VAPID, bad headers, oversize, unknown app or platform, limits with `Retry-After`, the sender's budget), APNs and FCM translation and their answers (gone, too large, unavailable with `Retry-After`, refused), the FCM token exchange shared and renewed, the served relay reached with `push::Sender`, the log holding no token, endpoint or body at any level, the binary's `--init`, `--help`, invalid settings and SIGTERM. |
 | `crates/monokulo` | 80 (21 API scenarios, 6 on the key, 29 pipeline of which 11 `over_http`, 3 chain, 9 policy/payload/delivery units, 12 in `db`, the binary's key check) | `sk_`/`pk_` refused; another app's target 404; idempotent re-registration; the 9th target 409; kind-specific fields refused; the key surviving a restart and a wrong encryption key stopping the process; cascade on disconnect; racing registrations; queueing per target in the event's transaction; `sale.waiting` to the other apps and once on a retried order; superseding; TTL expiry without a request; give-up; pruning; the paid sale arriving `aes128gcm`, `Urgency: high`, a 32-character topic and a verifying VAPID header, decrypting to the Sale JSON; `429` with `Retry-After`; `410` deleting the target; 20 failures; `413`; private addresses refused without a request; timeouts; 16 in flight and 50 a batch; one token per origin; the whole chain through a served relay to stand-in APNs (alert and Live Activity) and FCM. |
-| `crates/monokular-bell` | 70 (24 in-process, 25 `over_http`, 4 of the binary, 17 unit) | Square's documented signature example (recomputed); registration proving the location, refused tokens, another merchant's location, a redirecting or slow Square, the token left nowhere after a failed check; a completed payment dinging every till at its location and nothing else; other events dinging nothing; a webhook leaving no trace of its payment in the database files or a trace-level log; gone and failing subscriptions deleted; `429` not counted; redirects not followed; one VAPID token per origin; private endpoints refused; 32 per location, exactly, under racing registrations; fresh encryption per ding; the binary's `--init`, missing secrets and SIGTERM. |
+| `crates/monokular-bell` | 71 (16 in-process, 25 `over_http`, 4 of the binary, 26 unit) | Square's documented signature example (recomputed); registration proving the location, refused tokens, another merchant's location, a redirecting or slow Square, the token left nowhere after a failed check; a completed payment dinging every till at its location and nothing else; other events dinging nothing; a webhook leaving no trace of its payment in the database files or a trace-level log; gone and failing subscriptions deleted; `429` not counted; redirects not followed; one VAPID token per origin; private endpoints refused; 32 per location, exactly, under racing registrations; fresh encryption per ding; the binary's `--init`, missing secrets and SIGTERM. |
 
 The pipeline tests, the chain tests and the Bell's suite each run in well
 under a second; the full monokulo nextest run stays within the owner's
@@ -342,8 +344,8 @@ the principal again at each review (decisions 68, 90, 124, 129).
 
 monokular (`rust.yml`, on stable): `cargo fmt -p monokular-bell --check`, `cargo test --locked -p orf-codec
 -p orf-codec-ffi -p monokular-bell`, `cargo nextest run -p monokular-bell`
-(70 tests) and `cargo clippy --locked --workspace --all-targets -- -D
-warnings`, on stable, against the pinned monokulo commit: all passed, 70 tests in about 0.1 s.
+(71 tests) and `cargo clippy --locked --workspace --all-targets -- -D
+warnings`, on stable, against the pinned monokulo commit: all passed.
 
 ## 8. Risks
 
