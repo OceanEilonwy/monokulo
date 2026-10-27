@@ -583,3 +583,47 @@ take the numbers after them; their content stands.
     registered again for other pushes`). A new endpoint or new keys alone
     keep them: the payload is kept plain and encrypted at each attempt, so
     a moved UnifiedPush subscription still gets the sale in flight.
+
+## Push deliveries' review (the principal)
+
+90. **P3 is approved as it stands** (review round 1, at `7757f6704` plus
+    this entry). The whole diff against `origin/push-targets` was read
+    and the gates run again: `cargo fmt --check`, `cargo clippy
+    --workspace --all-targets --all-features --locked -D warnings`, `cargo
+    nextest run --workspace --locked --features monokulo/snp --exclude
+    xtask` (2126 passed, 13.5 s), `cargo nextest run -p xtask` (112
+    passed), `cargo xtask api openapi`, the test-support grep and the fuzz
+    manifest. Decisions 73 to 89 stand, the test engineer's 89 included:
+    giving up a re-registered target's unsent pushes in the registration's
+    transaction is the right layer, as the payload is shaped there.
+    Nothing below changes code.
+91. **The numbering holds: 73 to 89 are P3's; the relay (P4) numbers from
+    92 on.** `origin/push-relay` has no numbered entries yet, so nothing
+    clashes; the final rebase of the stack onto `main` keeps these numbers.
+92. **The engine logs `order.pending` only on a change of status back to
+    pending** (`scanner::recompute_and_notify_in_tx`, never at an order's
+    making), so the order API's `sale.waiting` (decision 76) is the only
+    one an order's making queues; it isn't doubled by the log. Checked,
+    because a second `sale.waiting` would have reached the app that made
+    the order after all.
+93. **`waitingCount` stays "orders still waiting for a payment"** (none
+    seen yet, `sale.waiting`, `sale.partial`; decision 75), not every sale
+    in progress: the field is named for the waiting phase, and a till
+    learns of its store's seen and confirming sales from its own stream.
+    The design's "+1 more when sales overlap" is read as overlapping
+    waits.
+94. **The monokular design document follows these decisions, as a
+    follow-up in that repository**: §5's Live Activity fields gain
+    `currency` (decision 74), its `Topic` example becomes a hash (73),
+    and §6's `waitingCount` gets 93's meaning. The Monokular app's
+    `ContentState` must decode `currency`. P5 (the Bell) touches §3 only;
+    the planner carries the §5/§6 edit into the Bell PR or a docs PR.
+95. **Two smaller things stand rather than being reshaped in review.**
+    `PushClient` builds its own `Outbound` (two `reqwest` clients beside
+    the webhooks' two): one shared `Outbound` on `AppState` is worth it
+    when a third sender appears, not for two. And the worker tells the
+    time by `webhooks::delivery::Clock`; a `crate::clock` is the move
+    when a third worker needs it.
+96. **The principal opens the draft PR**, `push-delivery` onto
+    `push-targets`, as for P2 (#246): the engineer's brief left it open,
+    and the stack's PRs are opened at approval so each carries its review.
