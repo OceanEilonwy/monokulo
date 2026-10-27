@@ -785,3 +785,8 @@ The push audit's second fix group (findings 1, 7, 5 and 19), on
      Comparing endpoints was the other way; it misses a re-registration
      with the same endpoint and new keys, and `registered_seq` needs no
      migration.
+150. **The worker tests that only check bookkeeping run in process**
+     (push audit #19, decision 26): "no attempts left" and pruning record
+     their attempts with `Db::record_push_attempt` instead of making them
+     against a stub, and the unreadable-push test, which needs its
+     neighbour to land, is `…_over_http`, under "Over HTTP".
