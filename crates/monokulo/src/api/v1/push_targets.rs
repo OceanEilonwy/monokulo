@@ -59,7 +59,10 @@ struct Input {
     kind: PushTargetKind,
     /// Where its pushes go: the subscription's endpoint, an `https` URL
     /// (never an onion address: Monokulo doesn't push over Tor) of at most
-    /// 2048 characters.
+    /// 2048 characters as Monokulo writes it, with non-ASCII characters
+    /// percent-escaped. Plain `http` only to this machine (`127.0.0.1`,
+    /// `[::1]`, `localhost`), which Monokulo pushes to only when its admin
+    /// allows private addresses.
     endpoint: String,
     /// The subscription's keys, which its pushes are encrypted with: for an
     /// `encrypted` target, and only for one.

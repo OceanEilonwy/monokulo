@@ -397,3 +397,32 @@ overrule any of them; a replacement is recorded under the same number.
 63. **`crate::push` shares its name with the `push` crate**, as the plan
     laid it out; code in monokulo writes the crate as `::push::` and
     `db.rs` re-exports its module as `self::push`.
+
+## Push targets' tests (the test engineer)
+
+64. **`push-targets` takes `origin/push-crate` by a merge, not a rebase.**
+    The branch was built on the crate's first commit; the crate's later
+    endpoint bound (decision 44) is what keeps a stored endpoint readable:
+    without it an app could register 1000 `é` (2025 bytes, stored as 6025
+    characters), which then failed `Endpoint::parse` on every read, so
+    that app's whole push-target list answered `500` for good. A rebase
+    would have meant force-pushing rust-engineer-2's branch, so it is a
+    merge, and the push targets' decisions (first numbered 44 to 54, the
+    numbers the crate's review took meanwhile) are 53 to 63. A rebase of
+    the stack later drops the merge commit.
+65. **Registration takes plain `http` to loopback, as `Endpoint` does**
+    (decision 49): the form's doc and the apps guide say so, and that
+    Monokulo pushes there only when its admin allows private addresses
+    (the send-time check, decision 19). Refusing it at registration
+    would leave the delivery worker's real-HTTP tests nothing to register.
+66. **A form sent as a JSON array is left as serde takes it.** A derived
+    `Deserialize` reads a struct from a sequence too, so
+    `["unifiedpush", "encrypted", …]` registers like the object. Every
+    field's check still applies, and the same holds for every
+    `#[api::input]`; refusing it belongs to `extract::json_body` for all
+    routes at once, not to this one. Recorded, not changed.
+67. **The `store_id` cascade isn't tested by deleting a store.** Nothing
+    in Monokulo deletes a store, and older tables reference
+    `store_connections` without a cascade, so the delete fails. The
+    cascade that runs is the app's, tested from the dashboard and from
+    `DELETE /api/v1/app`.
