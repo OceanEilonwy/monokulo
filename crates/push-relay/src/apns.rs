@@ -382,7 +382,7 @@ impl Apns {
             Ok(response) => response,
             Err(error) => {
                 // Without the URL: it carries the device token.
-                tracing::warn!(handle = %handle.id, error = %error.without_url(), "APNs can't be reached");
+                tracing::warn!(handle = %handle.id.tag(), error = %error.without_url(), "APNs can't be reached");
                 return Delivery::Unavailable {
                     retry_after: upstream::DEFAULT_RETRY_AFTER,
                 };
@@ -425,13 +425,13 @@ fn outcome(status: StatusCode, reason: &str, retry_after: u64) -> Delivery {
 fn log_refusal(handle: &HandleId, status: StatusCode, reason: &str, delivery: Delivery) {
     match delivery {
         Delivery::Gone => {
-            tracing::info!(handle = %handle, status = status.as_u16(), reason, "APNs says the token is gone: forgetting the handle");
+            tracing::info!(handle = %handle.tag(), status = status.as_u16(), reason, "APNs says the token is gone: forgetting the handle");
         }
         Delivery::Refused => {
-            tracing::error!(handle = %handle, status = status.as_u16(), reason, "APNs refused a push: check the relay's APNs settings");
+            tracing::error!(handle = %handle.tag(), status = status.as_u16(), reason, "APNs refused a push: check the relay's APNs settings");
         }
         Delivery::TooLarge | Delivery::Unavailable { .. } | Delivery::Delivered => {
-            tracing::warn!(handle = %handle, status = status.as_u16(), reason, "APNs didn't take a push");
+            tracing::warn!(handle = %handle.tag(), status = status.as_u16(), reason, "APNs didn't take a push");
         }
     }
 }

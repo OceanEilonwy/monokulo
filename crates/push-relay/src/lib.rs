@@ -66,7 +66,6 @@ pub enum StartError {
 pub(crate) struct Shared {
     public_uri: PublicUri,
     trusted_proxies: TrustedProxies,
-    handle_ttl: Duration,
     apps: Apps,
     store: HandleStore,
     limits: Limits,
@@ -87,7 +86,8 @@ impl Relay {
     pub async fn start(config: &RelayConfig) -> Result<Relay, StartError> {
         let public_uri = config.public_uri.clone().ok_or(StartError::NoPublicUri)?;
         let path = config.store_path.clone();
-        let store = tokio::task::spawn_blocking(move || HandleStore::open(&path))
+        let lifetimes = config.handle_lifetimes;
+        let store = tokio::task::spawn_blocking(move || HandleStore::open(&path, lifetimes))
             .await
             .map_err(|error| {
                 StartError::Store(StoreError::Open {
@@ -119,7 +119,6 @@ impl Relay {
             shared: Arc::new(Shared {
                 public_uri,
                 trusted_proxies: config.trusted_proxies.clone(),
-                handle_ttl: config.handle_ttl,
                 apps: config.apps.clone(),
                 store,
                 limits: Limits::new(config.limits),

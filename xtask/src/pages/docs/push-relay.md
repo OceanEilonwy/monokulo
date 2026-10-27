@@ -12,9 +12,15 @@ iPhone the way it pushes anywhere else.
 The relay learns as little as it can. A notification is encrypted to the
 device ([RFC 8291](https://www.rfc-editor.org/rfc/rfc8291)) and the relay
 hands the ciphertext on; only a Live Activity's state is plain JSON, as iOS
-applies it with no code of the app's to decrypt it. It keeps no push, no
-store and nothing linking a device's handles, and logs no body, token or
-endpoint.
+applies it with no code of the app's to decrypt it. It keeps no push and
+no store, and logs no body, token or endpoint. Its file can't link a
+device's handles: each row is found by a hash of its endpoint and holds
+its token and sender key sealed under a key only the endpoint gives, so a
+copy of the file (a backup, or one moved from inside Monokulo to a relay
+of its own) says neither which devices take pushes from which senders nor
+which handles are one device's. The relay itself sees a token and its
+sender together at every registration and push, as it must to hand pushes
+on.
 
 ## 1. Register
 
@@ -39,7 +45,8 @@ Content-Type: application/json
 - `platform`: `apns` (notifications, encrypted), `apns-liveactivity` (a
   Live Activity's updates, by its push token), `apns-pushtostart` (starting
   a Live Activity, iOS 17.2), or `fcm`.
-- `token`: the APNs token in hex (either case), or the FCM registration token.
+- `token`: the APNs token in hex (either case, at most 256 hex digits), or
+  the FCM registration token (at most 512 characters).
 - `app`: the app's name, as the relay's operator set it up
   (`handles.apps`).
 
@@ -47,8 +54,10 @@ Hand `endpoint` to the sender as your subscription's, with `kind`
 `encrypted` and the subscription's own keys, or `live-activity` for a Live
 Activity. It answers `201 Created`. Registering the same token, platform,
 app and key again gives the same endpoint, its expiry pushed back: do so
-whenever the app starts or the platform hands it a new token. A handle
-lasts 90 days after its last registration or its last push, and goes as
+whenever the app starts or the platform hands it a new token. A handle no
+push has reached yet lasts 7 days after its registration
+(`handles.unused_ttl_days`); once APNs or FCM has taken a push for it, 90
+days after its last registration or push (`handles.ttl_days`). It goes as
 soon as APNs or FCM says its token is gone. A device with two senders (two
 stores, or a store and a Monokular Bell) registers once for each and gets
 two endpoints, which take pushes only from their own sender.

@@ -293,7 +293,7 @@ async fn a_push_handed_on_is_answered_so_when_the_handles_database_fails_over_ht
     let sender = Arc::new(VapidKey::generate());
     let keys = ReceiverKeys::generate();
     let endpoint = relay.register("apns", &apns_token(), &sender).await;
-    let id = endpoint.rsplit('/').next().unwrap().to_owned();
+    let id = log_tag(&endpoint);
     // Reads still work; every write to the handles fails.
     rusqlite::Connection::open(&relay.store_path)
         .unwrap()
@@ -621,8 +621,15 @@ async fn the_log_carries_no_token_endpoint_or_body_over_http() {
 
     let text = log.text();
     assert!(text.contains("registered"), "the relay logged: {text}");
-    let handle = endpoints[0].rsplit('/').next().unwrap();
-    assert!(text.contains(handle), "lines name the handle: {text}");
+    assert!(
+        text.contains(&log_tag(&endpoints[0])),
+        "lines name the handle by its tag: {text}"
+    );
+    // Never by its id: with a copy of the handles file, that opens its row.
+    for endpoint in &endpoints {
+        let id = endpoint.rsplit('/').next().unwrap();
+        assert!(!text.contains(&id[3..]), "{id} is in the log: {text}");
+    }
     for secret in [
         apns_token().as_str(),
         "4e4e4e4e4e4e4e4e",
@@ -656,7 +663,13 @@ async fn only_a_delivered_push_moves_a_handles_expiry_over_http() {
         relay.push(&endpoint, push()).await.status,
         StatusCode::CREATED
     );
-    assert!(within(relay.expires_at(&endpoint), now() + 90 * 86_400));
+    // Kept to the hour.
+    let expires_at = relay.expires_at(&endpoint);
+    let delivered = now() + 90 * 86_400;
+    assert!(
+        (delivered - 5..=delivered + 3_600).contains(&expires_at),
+        "{expires_at}"
+    );
 
     relay.expire(&endpoint, soon);
     for answer in [
