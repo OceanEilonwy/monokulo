@@ -1332,3 +1332,25 @@ after group 2's last entry (150).
      either; a step back of more than a minute still signs anew. APNs
      takes an `iat` a few seconds ahead of its own clock. FCM's access
      token keeps the request's `now`: a stale one only renews it earlier.
+159. **An FCM push has one budget, and a failed token exchange is
+     remembered for 30 s; `server.upstream_timeout_ms` is 4000 by
+     default** (push audit #12; amends 102 and 115). The token mutex was
+     held across an exchange bounded only by the upstream timeout (10 s),
+     a failure wasn't kept, so each push waiting on the lock made its own
+     exchange in turn, and the FCM send after it had another 10 s:
+     monokulo, which waits 5 s (`push.delivery_timeout_ms`), timed out
+     rather than hear the relay's 503 and its `Retry-After`, and sent
+     again a push APNs or FCM had taken in 5 to 10 s. Now each FCM push's
+     wait for the lock, its exchange and its send share one deadline,
+     `server.upstream_timeout_ms` from its start; the exchange is timed
+     out inside the lock, so its failure is kept (`TokenState::Failed`)
+     for `FAILURE_HOLD`, the default `Retry-After` (30 s), and pushes
+     meanwhile are answered 503 at once with what is left of it. Pushes
+     queued behind an exchange that runs out are answered 503 at their
+     own deadline. The default timeout drops to 4000 ms, below monokulo's
+     5000 and the Bell's 10 000 (`bell.timeout_ms`), and its description
+     says to keep it below the senders'. An APNs push is one request on
+     the same client timeout (its token is signed here), so the lower
+     default covers it too. A 30 s hold means one failed exchange holds
+     every FCM push for 30 s even if the endpoint is back sooner; that is
+     what the senders are told to wait anyway.
