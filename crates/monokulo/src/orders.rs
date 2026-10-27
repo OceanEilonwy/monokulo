@@ -410,22 +410,29 @@ pub async fn make(
     };
     // The order's local record (its price, what made it, and how its
     // checkout finds its store), its key's order, and the surface's own
-    // record, in one transaction: without the record the checkout can't
-    // find its store, so a key never names an unrecorded order.
+    // record, with an app's order's pushes, in one transaction: without the
+    // record the checkout can't find its store, so a key never names an
+    // unrecorded order.
     let (id, recorded_order) = (row.id.clone(), order_record(&order));
+    let queueing = crate::push::Queueing::now(&state.settings);
     let recorded = state
         .db
         .write(move |db| {
-            db.in_transaction(|db| record(db, &id, &recorded_order, key.as_deref(), &origin))
+            db.in_transaction(|db| {
+                record(db, &id, &recorded_order, key.as_deref(), &origin, &queueing)
+            })
         })
         .await;
     match recorded {
-        Ok(Recorded::Now(app_order)) => {
+        Ok(Recorded::Now { app_order, pushes }) => {
             if let Some(app_order) = app_order {
                 state.apps.announce(
                     &row.tenant_public_key,
                     crate::apps::SaleEvent::waiting(&app_order),
                 );
+            }
+            if pushes > 0 {
+                state.push.wake();
             }
             Ok(Made::Created(Box::new(order)))
         }
@@ -549,8 +556,12 @@ fn order_record(order: &NewOrder) -> OrderRecord {
 
 /// Whether [`record`] recorded the order.
 enum Recorded {
-    /// Now: an app's order is announced to the store's streams.
-    Now(Option<Box<AppOrder>>),
+    /// Now: an app's order is announced to the store's streams, and the
+    /// pushes it queued are sent.
+    Now {
+        app_order: Option<Box<AppOrder>>,
+        pushes: usize,
+    },
     /// Already, by an earlier attempt that got the same order.
     Before,
 }
@@ -562,6 +573,7 @@ fn record(
     order: &OrderRecord,
     key: Option<&str>,
     origin: &Origin,
+    queueing: &crate::push::Queueing,
 ) -> Result<Recorded, crate::db::DbError> {
     let (source, plugin) = source_of(db, store, origin);
     seen(db, store, origin, &source, plugin, crate::now_unix())?;
@@ -606,7 +618,11 @@ fn record(
                 created_at: order.created_at,
             };
             db.record_app_order(&app_order)?;
-            Ok(Recorded::Now(Some(Box::new(app_order))))
+            let pushes = db.queue_waiting_push(&app_order, crate::now_unix(), queueing)?;
+            Ok(Recorded::Now {
+                app_order: Some(Box::new(app_order)),
+                pushes,
+            })
         }
         (Origin::Pos, None) => {
             db.insert_pos_order(
@@ -615,9 +631,15 @@ fn record(
                 order.merchant_order_id.as_deref(),
                 order.created_at,
             )?;
-            Ok(Recorded::Now(None))
+            Ok(Recorded::Now {
+                app_order: None,
+                pushes: 0,
+            })
         }
-        (Origin::Api(_) | Origin::Dashboard, None) => Ok(Recorded::Now(None)),
+        (Origin::Api(_) | Origin::Dashboard, None) => Ok(Recorded::Now {
+            app_order: None,
+            pushes: 0,
+        }),
     }
 }
 

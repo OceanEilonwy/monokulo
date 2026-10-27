@@ -1,9 +1,10 @@
 //! Reads the engine's order-event log (`GET /api/v1/admin/order-events`,
 //! server-sent events) for as long as monokulo runs, and queues each event's
-//! webhook deliveries (`db::Db::queue_order_event`).
+//! webhook deliveries and, for an order a connected app made, its pushes to
+//! the store's apps (`db::Db::queue_order_event`, `crate::push`).
 //!
 //! Where it has read up to is saved in monokulo's database in the same
-//! transaction as the deliveries an event queues, so a restart of either
+//! transaction as the deliveries and pushes an event queues, so a restart of either
 //! side carries on from the next event: none is queued twice, none is
 //! skipped. Each event about an order a connected app made is also
 //! announced to the store's app event streams (`crate::apps`). The
@@ -105,10 +106,15 @@ pub enum FollowError {
 /// Opens the stream from the saved position and handles what arrives
 /// until it ends (`Ok`) or fails. `on_open` runs once it's open, for the
 /// caller's backoff.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is one thing an event reaches or is read with; a struct of them would be one more name"
+)]
 pub async fn follow(
     db: &Database,
     engine: &EngineClient,
     webhooks: &super::Webhooks,
+    push: &crate::push::Push,
     apps: &AppEvents,
     addresses: &super::Addresses,
     clock: &dyn Clock,
@@ -133,7 +139,7 @@ pub async fn follow(
             Err(_) => return Err(FollowError::Quiet),
         };
         for event in parser.push(&chunk) {
-            handle(db, webhooks, apps, addresses, clock, &event).await?;
+            handle(db, webhooks, push, apps, addresses, clock, &event).await?;
         }
     }
 }
@@ -142,6 +148,7 @@ pub async fn follow(
 async fn handle(
     db: &Database,
     webhooks: &super::Webhooks,
+    push: &crate::push::Push,
     apps: &AppEvents,
     addresses: &super::Addresses,
     clock: &dyn Clock,
@@ -176,9 +183,10 @@ async fn handle(
             let (order_id, kind) = (logged.order_id.clone(), logged.kind.clone());
             let for_apps = apps.watched().then(|| logged.clone());
             let bases = addresses.now();
+            let queueing = addresses.push_queueing();
             let queued = db
                 .write(move |db| {
-                    db.queue_order_event(&logged, now, |store, metadata| {
+                    db.queue_order_event(&logged, now, &queueing, |store, metadata| {
                         super::body::body_v2(&logged, store, metadata, &bases)
                     })
                 })
@@ -190,11 +198,15 @@ async fn handle(
                 order_events.seq = seq,
                 order.id = %order_id,
                 webhook.event = %kind,
-                webhook.deliveries = queued,
+                webhook.deliveries = queued.webhooks,
+                push.deliveries = queued.pushes,
                 "order event read"
             );
-            if queued > 0 {
+            if queued.webhooks > 0 {
                 webhooks.wake();
+            }
+            if queued.pushes > 0 {
+                push.wake();
             }
         }
         "events_lost" => {
@@ -256,6 +268,7 @@ pub async fn run_subscriber(
     db: Database,
     engine: EngineClient,
     webhooks: Arc<super::Webhooks>,
+    push: Arc<crate::push::Push>,
     apps: Arc<AppEvents>,
     addresses: super::Addresses,
 ) {
@@ -266,6 +279,7 @@ pub async fn run_subscriber(
             &db,
             &engine,
             &webhooks,
+            &push,
             &apps,
             &addresses,
             &super::delivery::SystemClock,

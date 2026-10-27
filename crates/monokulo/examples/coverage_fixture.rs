@@ -636,9 +636,14 @@ async fn seed_webhooks(
                 description: None,
                 xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
             };
-            db.queue_order_event(&event, at, |store, metadata| {
-                monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
-            })
+            db.queue_order_event(
+                &event,
+                at,
+                &monokulo::push::Queueing::now(&monokulo::settings::MonokuloSettings::defaults()),
+                |store, metadata| {
+                    monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
+                },
+            )
             .map_err(failed)?;
             let id = db
                 .deliveries_page(&created.webhook.id, 0, 1)
@@ -794,9 +799,14 @@ async fn seed_webhooks(
                 xmr_amount_piconero: pricing::xmr_amount::Piconero(81_245_310_000),
             };
             let db = control.db.lock();
-            db.queue_order_event(&event, event.created_at, |store, metadata| {
-                monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
-            })
+            db.queue_order_event(
+                &event,
+                event.created_at,
+                &monokulo::push::Queueing::now(&monokulo::settings::MonokuloSettings::defaults()),
+                |store, metadata| {
+                    monokulo::webhooks::body::body_v2(&event, store, metadata, &Default::default())
+                },
+            )
             .map_err(failed)?;
             for other in &earlier {
                 let copy = db.deliveries_page(&other.id, 0, 1).map_err(failed)?[0].id;

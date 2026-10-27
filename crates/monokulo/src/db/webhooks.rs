@@ -155,6 +155,15 @@ pub struct AttemptOutcome {
     pub next_attempt_at: Option<i64>,
 }
 
+/// What [`Db::queue_order_event`] queued for one event.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Queued {
+    /// Deliveries to the store's webhooks.
+    pub webhooks: usize,
+    /// Pushes to its apps' push targets.
+    pub pushes: usize,
+}
+
 /// One event from the engine's order-event log, as monokulo keeps it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoggedEvent {
@@ -326,31 +335,34 @@ impl Db {
     }
 
     /// Queues `event` for each of its store's webhooks, with the
-    /// body `body` makes for each, and moves the position past it, in one
-    /// transaction: a restart never queues an event twice nor skips one.
-    /// An event at or before the position was handled already and is left
-    /// alone. Returns how many deliveries were queued.
+    /// body `body` makes for each, and its pushes to the store's apps'
+    /// push targets (`Db::queue_pushes_for_event`, read with `queueing`),
+    /// and moves the position past it, in one transaction: a restart never
+    /// queues an event twice nor skips one. An event at or before the
+    /// position was handled already and is left alone. Returns how many of
+    /// each were queued.
     pub fn queue_order_event(
         &self,
         event: &LoggedEvent,
         at: i64,
+        queueing: &crate::push::Queueing,
         body: impl Fn(&super::StoreConnectionRow, Option<&super::OrderCurrencyMetadataRow>) -> String,
-    ) -> Result<usize> {
+    ) -> Result<Queued> {
         let tx = rusqlite::Transaction::new_unchecked(
             &self.conn,
             rusqlite::TransactionBehavior::Immediate,
         )?;
         if event.seq <= self.order_event_position()?.seq {
-            return Ok(0);
+            return Ok(Queued::default());
         }
-        let mut queued = 0;
+        let mut queued = Queued::default();
         if let Some(store) = self.get_store_connection_by_public_key(&event.tenant_public_key)? {
             let webhooks = self.list_webhooks(&store.id)?;
             if !webhooks.is_empty() {
                 let metadata = self.get_order_currency_metadata(&store.id, &event.order_id)?;
                 let body = body(&store, metadata.as_ref());
                 for webhook in &webhooks {
-                    queued += self.conn.execute(
+                    queued.webhooks += self.conn.execute(
                         "INSERT INTO webhook_deliveries
                             (webhook_id, event_seq, event_id, event_type, order_id, body,
                              created_at_utc, next_attempt_at_utc)
@@ -368,6 +380,7 @@ impl Db {
                     )?;
                 }
             }
+            queued.pushes = self.queue_pushes_for_event(event, at, queueing)?;
         }
         self.save_order_event_position(
             &LogPosition {

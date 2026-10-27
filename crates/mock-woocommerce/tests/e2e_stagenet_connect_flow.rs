@@ -130,6 +130,7 @@ async fn spawn_test_monokulo(engine: &engine_test_support::TestEngineHandle) -> 
         state.db.clone(),
         state.engine.client.clone(),
         state.webhooks.clone(),
+        state.push.clone(),
         state.apps.clone(),
         monokulo::webhooks::Addresses::new(state.settings.clone(), state.tor.clone()),
     );
