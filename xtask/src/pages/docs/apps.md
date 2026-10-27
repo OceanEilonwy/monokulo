@@ -233,9 +233,13 @@ pushes. An app may have 8 push targets.
 ### What arrives
 
 Each sale event of [Follow them](#4-follow-them) that a target wants is
-pushed to it, for every order any of the store's apps makes. The
+pushed to it: to an `encrypted` target for every order any of the store's
+apps makes, to a `live-activity` target only for the orders its own app
+makes (a Live Activity is one till's island: another till's sale, its
+alert or its payment code there would be about the wrong sale). The
 `sale.waiting` of a new order isn't pushed to the app that made it: it
-shows the sale already.
+shows the sale already. One target's pushes are sent one after another,
+in the order they were queued, so the last to arrive is the latest.
 
 An `encrypted` target gets the event's JSON, as the stream sends it, with
 the `api_version` webhooks carry, encrypted to the subscription's keys
@@ -267,7 +271,7 @@ for its first payment:
 still come; a part payment's push has no `paymentURI`, as the order's full
 `xmr` is no longer what is owed: send the customer to the checkout, which
 asks for what is left), `seen`, `confirming`, `paid`, or `expired` (`sale.expired`,
-and `sale.double_spend`: no payment). `waitingCount` is the store's app
+and `sale.double_spend`: no payment). `waitingCount` is the app's own
 orders still waiting for a payment, this one included while it is.
 
 Every push about one order to one target has the same `Topic`, so a push
