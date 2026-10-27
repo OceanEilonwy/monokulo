@@ -628,6 +628,363 @@ take the numbers after them; their content stands.
     `push-targets`, as for P2 (#246): the engineer's brief left it open,
     and the stack's PRs are opened at approval so each carries its review.
 
+## The push relay (rust-engineer-1)
+
+Numbered from 100: the push deliveries (P3) are built at the same time
+and number theirs from 73, so the two branches don't collide; the
+principal renumbers, or not, when the stack is merged.
+
+100. **Every relay setting has a two-part key**: `server.listen`,
+     `server.public_uri`, `server.trusted_proxies`,
+     `server.upstream_timeout_ms`, `store.path`, `handles.ttl_days`,
+     `handles.apps`, `limits.*`, `apns.*`, `fcm.*`, `logging.*`, where the
+     plan had `listen`, `public_uri`, `store_path`, `handle_ttl_days` and
+     `apps`. Inside monokulo the relay reads `[relay.*]` through
+     `OptionsFile::scoped("relay")`, which takes only the tables under
+     `[relay]`: a value directly in `[relay]` is monokulo's own
+     (`relay.enabled`), as `engine.mode` is beside `[engine.payment]`. A
+     one-part key would have been read by neither handle, or refused by
+     monokulo's. A test holds every key to two parts.
+101. **`server.listen` is not standalone-only; `logging.*` alone is.** The
+     plan listed `listen` in `STANDALONE_ONLY` and had `relay::start` bind
+     `listen` too; the design gives the embedded relay its own listener
+     (its limits and logs apart from the store pages). So
+     `STANDALONE_ONLY = [logging.level, logging.format]`: inside monokulo
+     the relay logs through monokulo's logger, under the service name
+     `push-relay`.
+102. **Two settings beyond the plan.** `server.trusted_proxies` (empty by
+     default): a relay is reached over https, so it normally sits behind
+     a reverse proxy, and the per-address registration limit would
+     otherwise count every app as the proxy. It uses the abuse crate's
+     `client_address` (the last `X-Forwarded-For` address no trusted
+     proxy wrote) and `ClientIdentity` (IPv6 by its /64), as monokulo
+     counts visitors. `server.upstream_timeout_ms` (10 000, 100 to
+     120 000): how long APNs, FCM and FCM's token endpoint get; a tunable
+     is a setting, not a constant.
+103. **`server.public_uri` is `Option<PublicUri>`, not `required`.** It
+     is needed to start a relay, not to load its settings: monokulo checks
+     `[relay.*]` at every start with the relay off, and must not stop for
+     a missing address then. `Relay::start` refuses `None`
+     (`server.public_uri must be set`), so both binaries stop on it.
+     `PublicUri` is an origin alone (no path): pushes are signed for the
+     origin and the routes are at the root, so a path would be a promise
+     the relay can't keep.
+104. **The relay's addresses follow `push::Endpoint`'s rule.**
+     `server.public_uri`, `apns.endpoint`, `fcm.endpoint` and a service
+     account's `token_uri` are `https`, or `http` only to this machine
+     (where tests run their stand-ins), never an onion address, never
+     with credentials in them (`settings::ServiceUrl` wraps an
+     `Endpoint`). The provider tokens and device tokens never cross a
+     network in the clear.
+105. **`Relay::start(&RelayConfig)`, not `(config, env, store)`.** The
+     environment is read once, by `settings::load`, which builds a
+     live-settings `Registry` over the file's values, the command line and
+     the environment: every problem (a bad value wherever it came from, a
+     secret that doesn't parse, settings that need each other) stops the
+     process with all of them named. The section holds the parsed APNs key
+     and service account, not their text. The store is opened from
+     `store.path` by `start`. Both binaries serve through
+     `Relay::serve(listener, shutdown)`, with each connection's address.
+106. **Settings that need each other.** The APNs key needs `apns.team_id`
+     and `apns.key_id`, and either id without the key is refused too (a
+     forgotten variable, not a choice); an app with `apns_topic` needs the
+     APNs key, one with `fcm_project_id` the service account. An app's
+     table refuses an unknown field (`deny_unknown_fields`), so a
+     misspelt `apns_topic` stops the relay instead of leaving a platform
+     silently unserved.
+107. **What a push is checked against, in order:** the handle id's shape
+     (anything else is `404`, as an expired one), the body's size (read no
+     further than 4096 bytes), the RFC 8030 request (`PushRequest::parse`),
+     the handle, the VAPID signature against the handle's key and this
+     relay's origin, then the limits, sender first. A push is counted only
+     once its signature verifies, so nobody can spend a sender's or a
+     handle's budget with pushes the sender never signed.
+108. **A handle's life is pushed back only when APNs or FCM took a push**
+     (or the app registered again), never by a request as such: otherwise
+     anyone holding an endpoint could keep a dead device's handle forever.
+     Lookups treat an expired handle as unknown; an hourly supervised
+     sweep deletes them, so their tokens don't linger in the file. A
+     handle whose app or platform has since left `handles.apps` is treated
+     as gone (deleted, `404`).
+109. **Problems beyond the plan's: `upstream-refused` (502) and
+     `internal` (500).** APNs or FCM refusing a push for the relay's own
+     reason (`BadTopic`, `InvalidProviderToken` that persists,
+     `SENDER_ID_MISMATCH`, …) is neither the device's death nor a busy
+     service: it is logged as an error and answered 502, which
+     `push::Sender` takes as a server failure, retried and given up like
+     any. A database failure is `500`. Each problem's `type` is a section
+     of a new docs page, `https://docs.monokulo.com/push-relay/`, which is
+     also the relay API's contract for app makers.
+110. **APNs and FCM answers.** APNs: `410` and `400 BadDeviceToken` are
+     gone; `413` too large; `429`, `5xx` and `403
+     Expired/InvalidProviderToken` (the token is forgotten and signed
+     anew) are `503`; anything else `502`. FCM: `UNREGISTERED`,
+     `NOT_FOUND` or `404` are gone; `401` (the access token is forgotten),
+     `429` and `5xx` are `503`; `413` too large; anything else `502`.
+     `503` carries the service's `Retry-After` (seconds or a date) or 30
+     seconds, kept within 1 second and a day. An answer's body is read to
+     16 KiB at most, for its reason.
+111. **APNs is reached with HTTP/2 prior knowledge always**, not only for
+     an `http` endpoint: over TLS reqwest then offers only `h2` by ALPN,
+     which is all APNs speaks, and over plain `http` it speaks h2c. One
+     client either way.
+112. **The 4096 bytes are APNs's and FCM's too.** A Web Push body may be
+     4096 bytes, but base64 in a JSON envelope it no longer fits APNs's
+     payload or FCM's data: the relay measures what it would send and
+     answers `413` before sending (about 3000 bytes of ciphertext fit).
+113. **The relay never ends a Live Activity: every Live Activity push is
+     `event: update`** (replaced by the principal at review; the
+     engineer's version ended it when the sale was paid or expired and
+     `waitingCount` was 0, and asked for this call). Design §6 has one
+     activity per shift, started by the app, back to idle between sales
+     (set by the app) and ended by iOS after 8 hours or by the app. An
+     `end` from the relay would take the shift's activity off the island
+     at the first finished sale, and the app can't start another from the
+     background; `update` keeps every option open, since the app can
+     always end its own activity locally. So `paid` and `expired` are
+     updates carrying their alert ("Paid · {amount} {currency}", "No payment yet"),
+     `stale-date` is `expiresAt` while the sale is open, and the relay
+     reads `phase` (`waiting`, `seen`, `confirming`, `paid`, `expired`),
+     `expiresAt` (Unix seconds), `amount` and `currency` only: `waitingCount` is the
+     app's to show and the relay no longer reads it. If a sender ever
+     needs to end an activity remotely, that is a new field in the state,
+     decided then. P3's `LiveActivityState` writes those names and types;
+     its `Phase` comment saying the relay ends the activity changes at
+     its rebase.
+114. **A push-to-start's JSON is `{"attributes-type", "attributes",
+     "content-state"}`**, each handed to APNs as it is, with event
+     `start` and an alert (iOS shows a started activity only with one).
+     The plan's "the plain JSON as attributes and content state" left the
+     attribute type's name nowhere; this way the sender (or the app, which
+     knows its Swift type) says it.
+115. **FCM's access token is had once at a time.** A `tokio` mutex is held
+     across the exchange, so pushes arriving together wait for one
+     exchange rather than each signing an assertion; the token is reused
+     until five minutes before it expires, and forgotten when FCM refuses
+     it. The assertion is RS256 (PKCS #1 v1.5, `rsa::sha2::Sha256`) with
+     the account's `private_key_id` as `kid`.
+116. **Handles on one SQLite connection, in a `STRICT` table.** Every push
+     reads its handle and, once delivered, writes its expiry, so a pool of
+     readers would buy nothing. `STRICT` makes SQLite refuse a value of
+     the wrong type, which the relay's own columns never need to hold.
+117. **Device tokens are checked per platform**: APNs tokens are hex
+     (an even number of digits), FCM's letters, digits, `-`, `_` and
+     `:`, at most 1024 characters, so a token goes into a URL path as it
+     is. `DeviceToken`'s `Debug` prints nothing, and no log line names a
+     token, an endpoint, a provider token or a push; the error of a
+     failed request is logged `without_url` (the APNs URL holds the
+     token). A test captures every line at every level through a
+     register-and-push of each platform and finds none of them.
+118. **reqwest's `http2` feature reaches every reqwest client in a
+     monokulo built with the relay** (Cargo unifies features): webhook
+     deliveries, rate providers and OTLP may now negotiate HTTP/2 by ALPN
+     with servers that offer it. HTTP's meaning is the same and rustls's
+     ALPN is standard, so this is accepted rather than worked around. The
+     one new lock entry is `h2` 0.4.20 (2026-10-06).
+119. **Test keys.** A throwaway P-256 key in `.p8` form and a 2048-bit RSA
+     key are committed under `tests/fixtures`; the service account around
+     the RSA key is built in code, because GitHub's push protection
+     refused the branch with it as a JSON file. The stand-ins are hyper on
+     loopback (HTTP/1.1 and h2c), with dev-dependencies already in the
+     lock; the tests that reach them, and the one that serves the relay
+     and pushes to it with `push::Sender`, are named `…_over_http`. The
+     binary's own tests run it as a process (`--init`, `--help`, invalid
+     settings, listening and stopping on SIGTERM).
+120. **Monokulo embeds the relay behind the default feature `relay`.**
+     `relay.enabled` (false) is monokulo's own setting, in a section of
+     its own (`RelaySwitch`, read at start), shown in the admin page's
+     Server tab with monokulo's server settings, and `editable: false`:
+     turning it on needs the `[relay.*]` settings the admin page can't
+     edit (decision 16), and on without `server.public_uri` it would stop
+     the next start. `[relay.*]` is read and checked at every start, the
+     relay on or off. The relay's database defaults to `push-relay.db`
+     beside monokulo's, as the engine's `engine.db` does (`store.path`
+     still wins). Without the feature, `relay.enabled = true` stops
+     monokulo naming `monokulo-push-relay`, and `[relay.*]` is refused with
+     the same hint, also when the engine is remote.
+121. **live-settings grows three things for two embedded services in one
+     file:** an `OptionsFile` handle leaves several tables and carries a
+     hint for each; `render_init_nested` takes a list of `Nested`
+     services, so `monokulo --init` writes `[engine.*]` then `[relay.*]`,
+     naming every service's secrets at the top; and
+     `with_nested_settings` lists a nested service's environment-only
+     secrets with the process's own after the options, so
+     `monokulo --help` names `MONOKULO_RELAY_APNS_KEY` and
+     `MONOKULO_RELAY_FCM_CREDENTIALS`.
+122. **CI** (`lint.yml`) gains two clippy runs: `push-relay`'s library and
+     binary without the test-support features its tests turn on, and
+     monokulo without the relay feature, whose refusing code no test
+     build compiles (monokulo's dev-dependency on itself turns the default
+     features back on, so it can't have a unit test either; it was run by
+     hand: `relay.enabled = true` and a `[relay.server]` table each stop a
+     `--no-default-features --features embedded-engine,tor` monokulo with
+     the messages above). The Docker image builds `monokulo-push-relay` beside
+     `monokulo-engine` (decision 27); its port, 8444, is published only by
+     a setup that runs a relay. The standalone relay logs to stderr only:
+     it has no admin page to read a log store.
+123. **APNs tokens are kept in lowercase** (test engineer). An APNs token
+     is the app's hex spelling of the token's bytes, in either case; kept
+     as sent, the same device, app and sender registered in both
+     spellings had two handles, against the rule that the same four are
+     one handle. FCM tokens are case-sensitive and kept as sent. No stored
+     handles exist yet, so nothing is migrated.
+
+## The push relay's review (the principal)
+
+124. **P4 is not approved as it stands** (review round 1, at `143f9cea4`).
+     The whole diff against `origin/push-targets` was read (40 files) and
+     the gates run again: `cargo fmt --all --check`, `cargo clippy
+     --workspace --all-targets --all-features --locked -D warnings`,
+     `-p push-relay --lib --bins`, `-p monokulo --lib --bins
+     --no-default-features --features embedded-engine,tor`, `cargo
+     +stable clippy -p push --all-targets`, and `cargo nextest run -p
+     monokulo -p live-settings -p push-relay -p push -p xtask --features
+     monokulo/snp` (1075 passed, 2 skipped). All green. What must change
+     before it merges: the Live Activity's `end` (113, replaced above),
+     the answer to a delivered push whose expiry write fails (125), two
+     re-exports nothing names (126), and one missing test (127). Decisions
+     100 to 112 and 114 to 123 stand as written, 118 (reqwest's `http2`
+     reaching every client) included: the workspace's `rustls` feature
+     already brings reqwest's platform verifier and aws-lc-rs everywhere,
+     so the relay adds no new TLS stack, only ALPN `h2`.
+125. **A push APNs or FCM took is answered `201` even when the handle's
+     expiry can't be written**, and one they said is gone is answered
+     `404` even when the handle can't be deleted: the database failure is
+     logged as an error and the sender is told what became of the push.
+     As written, a failed `touch` after a delivered push answered `500`,
+     which `push::Sender` takes as a server failure and retries, so a
+     database hiccup would deliver the same notification twice. The
+     database's state is a cache of what APNs or FCM know; the answer to
+     the sender is the truth about the push.
+126. **`push_relay::ServiceAccount` and `push_relay::AppName` are not
+     re-exported**: nothing outside the crate names them (monokulo and the
+     tests reach the relay through `settings` and `Relay`). A `pub use`
+     nothing uses is dead code, as the standing rule has it.
+127. **The documented options-file form of `handles.apps` is tested
+     end to end**: the docs page and `--init` give `[handles.apps.monokular]`
+     with `apns_topic` and `fcm_project_id` as a TOML table, and the only
+     test of that form was a negative one (a misspelt field refused). One
+     test reads such a table through `OptionsFile` and `settings::load`
+     into `Apps` with the right bundle and project.
+128. **The decision numbers stay as they are.** P3's run from 73 and the
+     relay's from 100; the gap is harmless, and renumbering would break
+     the references the entries, commits and reviews make to each other.
+     The merged log keeps both runs, in the order the stack merges.
+129. **P4 is approved** (review round 2, at `e625a6fd2`, draft PR #248
+     with base `push-targets`). The whole diff against
+     `origin/push-targets` was read again (41 files) and each of round 1's
+     four changes checked: the Live Activity is never ended and
+     `waitingCount` is no longer read (113), a delivered or gone push is
+     answered `201` or `404` whatever the handles database then does, the
+     failure logged with the handle and a test with triggers that refuse
+     every write (125), the two re-exports are gone (126), and
+     `[handles.apps.monokular]` as a TOML table is read end to end (127).
+     The gates were run again on the final commit: `cargo fmt --all
+     --check`; `cargo clippy --workspace --all-targets --all-features
+     --locked -D warnings`; `-p push-relay --lib --bins`; `-p monokulo
+     --lib --bins --no-default-features --features embedded-engine,tor`;
+     `cargo nextest run -p monokulo -p live-settings -p push-relay -p push
+     -p xtask --features monokulo/snp` (1076 passed, 2 skipped). The Docker
+     image was not rebuilt: no build input (`Dockerfile`, any
+     `Cargo.toml`, `Cargo.lock`, the toolchain) changed after the
+     engineer's successful build at `e7c4c5c5b`, and every source change
+     since compiles under the same clippy runs. Left for the wave end, as
+     planned: the rebase onto `push-delivery`, with P3's `Phase` comment
+     changed as 113 says.
+130. **A push the handle's limit refuses still counts against its
+     sender** (raised by the test engineer; kept as is). The sender did
+     sign and send it, and the sender's limit is the one that keeps one
+     monokulo or Bell from crowding out the others; counting only pushes
+     the handle's limit let through would let a sender hammer one spent
+     handle without touching its own budget. The order (sender first,
+     then handle) is documented in `limits.rs` with its unit test.
+
+## Integration (the principal)
+
+The stack rebased into one line and checked as a whole, 2026-10-27, after
+every package was approved.
+
+131. **One rebased line of four stacked draft PRs, merged without
+     squashing.** `push-relay` was rebased onto `push-delivery` at
+     `8416a6d04` (the one conflict was this log, both runs kept in order as
+     128 has it; `main.rs`, `settings.rs` and `Cargo.lock` merged by
+     themselves), so the stack is push-crate ← push-targets ←
+     push-delivery ← push-relay and PR #248's base is `push-delivery`. The
+     four PRs stay as they are: each is the review of its package, with its
+     own body, checks and section here, and merges bottom-up (GitHub
+     retargets the next onto `main` as each lands). One integration PR of
+     38 commits and 20 000 lines was the alternative, which nobody could
+     review as a whole. Merge commits or rebases, not squashes: the Bell
+     pins a commit of this stack (134), which a squash would leave
+     unreachable.
+132. **The whole chain is run once, in monokulo's own tests**
+     (`push::pipeline_tests::relay_tests`, three tests named `over_http`):
+     a relay built from its settings as `monokulo::relay` builds the
+     embedded one, served on `127.0.0.1:0` and pointed at stand-in APNs
+     (HTTP/2 with prior knowledge) and FCM on this machine; handles
+     registered with this Monokulo's VAPID key as an app does; the
+     endpoints registered as push targets; a paid sale queued by the
+     subscriber from the engine's event and sent by the worker, then read
+     off the stand-ins as the device would: the APNs alert's ciphertext
+     decrypts to the sale, the FCM data message carries the same, and a
+     Live Activity's update holds the state with its payment URI while
+     waiting and its alert when paid. In monokulo rather than in
+     `push-relay`, which would otherwise dev-depend on monokulo (its
+     engine, Tor and all) to make a sale. The relay's test keys are read
+     from its `tests/fixtures` by path, and `base64` (in the lock) joins
+     monokulo's dev-dependencies to read what the providers carry.
+133. **A paid Live Activity's alert is titled with the sale's currency
+     when the state names one** ("Paid · 24.50 USD"). Decision 74 split
+     `amount` from `currency`, so the relay's "Paid · {amount}" would have
+     read "Paid · 24.50" on the lock screen; found by the chain test (132).
+     A state with `amount` alone, another sender's own formatting, keeps
+     "Paid · {amount}".
+134. **The Bell pins the stack's head, not `push-crate`'s** (decision 22
+     refined). After `push-crate`, the push crate gained
+     `Es256Key::from_pkcs8_pem` and live-settings the handling of several
+     embedded services (both on `push-relay`), and one `rev` serves all six
+     crates the Bell takes, so the pin is `push-relay`'s head when the
+     Bell's gates were last run against it; monokular #14's `Cargo.toml`
+     names it. A later commit of the stack that changes none of those six
+     crates (this log, the report) needs no re-pin; one that does, does.
+     After the stack is on `main`, the pin moves to `main`'s commit with
+     `cargo update -p push --precise`, as 22 planned.
+135. **The design document follows the build in the Bell's PR** (94's
+     follow-up, monokular #14, `docs/design.md`): §5 (the key read from the
+     collection, `currency` in the state, the two crates' layouts and the
+     crates table as built, the relay API without an unregister route and
+     with its problems, the hashed topic, every Live Activity push an
+     update, the two-part settings under `[relay.*]` and port 8444, the
+     push targets' resources and `POST`, the events' TTL and topic, the
+     delivery path's retries and no `push.enabled`), §6 (`currency`,
+     `waitingCount`'s meaning, the app idles the activity), §8 (layout,
+     migrations, settings, tests without provider traits), §10 (what is
+     built) and §11 (the pin, `crypto-bigint`). The sections stay the
+     design's: what changed is stated, not rewritten around.
+136. **`crypto-bigint` stays at 0.7.5 in monokulo's lock until
+     2026-11-09** (Bell decision 30, logged here as it said). It is yanked
+     under RUSTSEC-2026-0387; the fixed 0.7.9 and 0.7.10 are from
+     2026-10-25 and 2026-10-26, inside the two-week window, and 0.7.6 to
+     0.7.8 were each yanked within days, which is the churn the rule is
+     for. Exposure here: one VAPID signing per push-service origin every
+     11 hours and one ECDH per push, none of it timed from outside. Both
+     repositories move together, or at once if the owner says the fix wins
+     over the rule.
+137. **The gates were run on the final stack** (`push-relay` at its head,
+     with 131 to 136 in): the results are in
+     `docs/reports/bell-and-relay.md` §7. All passed: fmt, the seven clippy runs, the fuzz lock, the
+     test-support grep, nextest over the workspace (2358 passed, 27
+     skipped, 26.5 s) and xtask (112), the doctests, the OpenAPI document,
+     the slow-test summary, `xtask ui --check` and the browser suite (90
+     passed). The Bell's `rust.yml` steps were run on stable against its
+     pin (71 tests).
+138. **The report is `docs/reports/bell-and-relay.md`**, a new directory
+     (`docs/` had plans and audits, no reports), linked from each of the
+     five PRs; monokular carries `docs/reports/bell.md` with the Bell's
+     part and a pointer here. Everything the owner needs to review the
+     build is in those two files and the two decision logs; nothing is
+     only in a chat.
+
 ## Push audit fixes: one sale, one target (the fixer of group 1)
 
 The push audit's first fix group (`scripts/audit/REPORT.md` on the audit
