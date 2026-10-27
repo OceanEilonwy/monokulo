@@ -367,4 +367,169 @@ mod tests {
             Err(WireError::ContentType)
         ));
     }
+
+    /// `TTL: 0` (deliver now or never) is written and read back as zero,
+    /// not taken for a missing header.
+    #[test]
+    fn a_ttl_of_zero_travels_as_zero() {
+        let authorization = authorization();
+        let message = encrypted();
+        let options = Options {
+            urgency: Urgency::VeryLow,
+            ttl: Ttl::ZERO,
+            topic: None,
+        };
+        let headers = headers(&message, &options, &authorization);
+        assert_eq!(headers[header::TTL], "0");
+        assert!(!headers.contains_key(header::TOPIC));
+        let request = PushRequest::parse(&headers, message.body()).unwrap();
+        assert_eq!(request.options, options);
+    }
+
+    /// Every urgency is written as its header value and read back.
+    #[test]
+    fn every_urgency_travels_as_itself() {
+        let authorization = authorization();
+        let message = encrypted();
+        for urgency in [
+            Urgency::VeryLow,
+            Urgency::Low,
+            Urgency::Normal,
+            Urgency::High,
+        ] {
+            let options = Options {
+                urgency,
+                ..options()
+            };
+            let headers = headers(&message, &options, &authorization);
+            assert_eq!(headers[header::URGENCY], urgency.header_value());
+            assert_eq!(
+                PushRequest::parse(&headers, message.body())
+                    .unwrap()
+                    .options
+                    .urgency,
+                urgency
+            );
+        }
+    }
+
+    /// Header values that aren't visible ASCII are refused as the header
+    /// they are in, never read lossily.
+    #[test]
+    fn a_header_that_is_not_visible_ascii_is_refused_as_itself() {
+        let opaque = HeaderValue::from_bytes(b"\xff60").unwrap();
+        type Expected = fn(&WireError) -> bool;
+        let cases: [(HeaderName, Expected); 5] = [
+            (AUTHORIZATION, |e| {
+                matches!(e, WireError::Authorization(VapidError::Header))
+            }),
+            (header::TTL, |e| matches!(e, WireError::Ttl)),
+            (header::URGENCY, |e| matches!(e, WireError::Urgency)),
+            (header::TOPIC, |e| matches!(e, WireError::Topic)),
+            (CONTENT_ENCODING, |e| matches!(e, WireError::ContentType)),
+        ];
+        for (name, expected) in cases {
+            let (mut headers, body) = base();
+            headers.insert(name.clone(), opaque.clone());
+            let error = PushRequest::parse(&headers, &body).unwrap_err();
+            assert!(expected(&error), "{name}: {error:?}");
+        }
+    }
+
+    /// The parts of the request a sender may write in another case or with
+    /// spaces around them.
+    #[test]
+    fn content_coding_and_type_are_read_in_any_case() {
+        let (mut headers, body) = base();
+        headers.insert(CONTENT_ENCODING, HeaderValue::from_static("AES128GCM"));
+        headers.insert(header::TTL, HeaderValue::from_static(" 60 "));
+        let request = PushRequest::parse(&headers, &body).unwrap();
+        assert!(matches!(request.message, Message::Encrypted(_)));
+        assert_eq!(request.options.ttl, Ttl::seconds(60));
+
+        let (mut headers, _) = base();
+        headers.remove(CONTENT_ENCODING);
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("Application/JSON ;charset=UTF-8"),
+        );
+        assert!(matches!(
+            PushRequest::parse(&headers, b"{}").unwrap().message,
+            Message::PlainJson(_)
+        ));
+    }
+
+    /// The largest JSON a push may carry goes through; a byte more is too
+    /// large, and JSON with something after it isn't JSON.
+    #[test]
+    fn a_json_push_of_4096_bytes_reads_and_more_does_not() {
+        let (mut headers, _) = base();
+        headers.remove(CONTENT_ENCODING);
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static(header::JSON));
+        let largest = serde_json::to_vec(&"a".repeat(MAX_BODY - 2)).unwrap();
+        assert_eq!(largest.len(), MAX_BODY);
+        let request = PushRequest::parse(&headers, &largest).unwrap();
+        assert_eq!(request.message.body(), largest.as_slice());
+
+        let over = serde_json::to_vec(&"a".repeat(MAX_BODY - 1)).unwrap();
+        assert!(matches!(
+            PushRequest::parse(&headers, &over),
+            Err(WireError::TooLarge(4097))
+        ));
+        for body in [&b"{} {}"[..], b"{}x", b"\xff"] {
+            assert!(
+                matches!(PushRequest::parse(&headers, body), Err(WireError::Json(_))),
+                "{}",
+                String::from_utf8_lossy(body)
+            );
+        }
+    }
+
+    /// A relay's whole check of an incoming push: the request parses, then
+    /// its signature is verified against the key the handle was made for
+    /// and the relay's own origin. A sender signing for another push
+    /// service, or with another key, is turned away at the second step.
+    #[test]
+    fn a_relay_verifies_what_it_parsed_against_the_handle_key_and_its_origin() {
+        let relay = Origin::parse("https://relay.example.net").unwrap();
+        let sender = VapidKey::generate();
+        let message = encrypted();
+        let now = 1_800_000_000;
+        let parse_and_verify = |authorization: &Authorization, at: &Origin| {
+            let headers = headers(&message, &options(), authorization);
+            let request = PushRequest::parse(&headers, message.body()).unwrap();
+            crate::vapid::verify(&request.authorization, &sender.public(), at, now)
+        };
+
+        let signed = sender.authorization(&relay, None, now).unwrap();
+        assert!(parse_and_verify(&signed, &relay).is_ok());
+
+        let elsewhere = sender
+            .authorization(
+                &Origin::parse("https://fcm.googleapis.com").unwrap(),
+                None,
+                now,
+            )
+            .unwrap();
+        assert!(matches!(
+            parse_and_verify(&elsewhere, &relay),
+            Err(VapidError::Audience)
+        ));
+
+        let stranger = VapidKey::generate()
+            .authorization(&relay, None, now)
+            .unwrap();
+        assert!(matches!(
+            parse_and_verify(&stranger, &relay),
+            Err(VapidError::KeyMismatch)
+        ));
+
+        let stale = sender
+            .authorization(&relay, None, now - crate::vapid::EXPIRY.as_secs() as i64)
+            .unwrap();
+        assert!(matches!(
+            parse_and_verify(&stale, &relay),
+            Err(VapidError::Expired)
+        ));
+    }
 }
