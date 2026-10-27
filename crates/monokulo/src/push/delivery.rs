@@ -18,6 +18,15 @@
 //! `429` doesn't count: the push service is limiting this sender, not
 //! refusing the device). The app registers again when it next runs.
 //!
+//! Each store's apps are sent at most `push.per_store_per_minute` pushes
+//! (120) a minute, retries included: every store signs with this
+//! instance's one VAPID key, and the push relay limits each sender, so
+//! one busy or hostile store would otherwise spend the relay's budget for
+//! every other. A push over its store's budget waits, unattempted, for the
+//! store's next minute, or is given up when that is past its TTL. And a
+//! store's targets that share an endpoint are pushed once per event
+//! (`db::push`).
+//!
 //! An endpoint is a capability: whoever has it can push to the device
 //! (with its keys) or at least wake it. So it is never written to a log
 //! line or a delivery's error, only its host.
@@ -34,9 +43,11 @@ use ::push::{
     encrypt, EncryptError, Message, Options, PlainJson, SendError, Sender, SubscriptionKeys, Ttl,
 };
 
+use rate_limit::RateLimiter;
+
 use crate::db::{
-    Database, DbError, DuePush, PushAttempt, PushResult, PushTargetId, TargetAfter, TargetKind,
-    EXPIRED_UNSENT,
+    ConnectionId, Database, DbError, DuePush, PushAttempt, PushResult, PushTargetId, TargetAfter,
+    TargetKind, EXPIRED_UNSENT,
 };
 use crate::outbound::{check_host, request_error_text, Outbound, Reach};
 use crate::settings::PushConfig;
@@ -53,6 +64,10 @@ const PRUNE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// was lowered below what it had made.
 pub const NO_ATTEMPTS_LEFT: &str = "no attempts left";
 
+/// Why a push is given up on unsent when its store's pushes for the
+/// minute are spent and it would expire before the next.
+pub const OVER_BUDGET: &str = "its store's pushes for the minute were spent until it expired";
+
 /// The wait after a failed attempt, `attempts_made` counting it: 5 seconds
 /// after the first, four times longer each time, up to 320 seconds.
 pub fn backoff_seconds(attempts_made: u32) -> i64 {
@@ -61,13 +76,15 @@ pub fn backoff_seconds(attempts_made: u32) -> i64 {
 
 /// What pushes are sent with: this instance's VAPID key, a sender for each
 /// [`Reach`] over the outbound clients (each sender reuses its signed
-/// tokens per push service), and the `sub` claim they carry.
+/// tokens per push service), the `sub` claim they carry, and what each
+/// store has been sent this minute (`push.per_store_per_minute`).
 pub struct PushClient {
     outbound: Outbound,
     vapid: Arc<::push::VapidKey>,
     contact: Option<::push::Contact>,
     public: Sender,
     any_address: Sender,
+    budget: RateLimiter<ConnectionId>,
 }
 
 impl PushClient {
@@ -90,6 +107,7 @@ impl PushClient {
             outbound,
             vapid,
             contact,
+            budget: RateLimiter::new(PushConfig::default().per_store_per_minute),
         })
     }
 
@@ -134,6 +152,8 @@ pub fn contact(settings: &crate::settings::MonokuloSettings) -> Option<::push::C
 enum Done {
     /// Given up on before any request: why.
     GaveUp(String),
+    /// Put off, unattempted, until then: its store's budget is spent.
+    Deferred(i64),
     /// Attempted.
     Attempted(PushAttempt),
     /// Its push service said the subscription is gone.
@@ -152,6 +172,7 @@ pub async fn run_delivery_tick(
 ) -> Result<usize, DbError> {
     use futures_util::stream::{self, StreamExt as _};
 
+    client.budget.set_limit(config.per_store_per_minute);
     let now = clock.now();
     let due = db
         .read(move |db| db.due_push_deliveries(now, DELIVERY_BATCH))
@@ -214,6 +235,14 @@ pub async fn run_delivery_tick(
             Done::GaveUp(reason) => {
                 let at = clock.now();
                 db.write(move |db| db.give_up_push(id, at, &reason)).await
+            }
+            Done::Deferred(until) => {
+                tracing::info!(
+                    store.id = %push.target.store_id,
+                    push_target.id = %target_id,
+                    "the store's pushes for this minute are spent; put off"
+                );
+                db.write(move |db| db.defer_push(id, until)).await
             }
             Done::Gone => {
                 tracing::info!(
@@ -296,6 +325,17 @@ async fn deliver(
             return Done::GaveUp(error);
         }
     };
+    if let Err(wait) = client
+        .budget
+        .check_with_retry(push.target.store_id.clone(), at)
+    {
+        let until = at.saturating_add(i64::try_from(wait).unwrap_or(i64::MAX));
+        if until >= push.expires_at {
+            tracing::info!("a push's store spent its pushes until it expired; given up");
+            return Done::GaveUp(OVER_BUDGET.to_owned());
+        }
+        return Done::Deferred(until);
+    }
     let options = Options {
         urgency: push.urgency,
         ttl,
