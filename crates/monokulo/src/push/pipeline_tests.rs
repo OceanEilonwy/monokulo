@@ -1836,3 +1836,8 @@ async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
     let sale: Value = serde_json::from_slice(&plain).unwrap();
     assert_eq!(sale["event"], "sale.confirming");
 }
+
+// Through the push relay, to stand-ins for APNs and FCM: every test there
+// goes over real HTTP.
+#[cfg(feature = "relay")]
+mod relay_tests;
