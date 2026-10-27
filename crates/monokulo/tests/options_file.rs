@@ -326,6 +326,36 @@ fn monokulo_starts_without_a_file_and_follows_one() {
     assert!(dir.0.join("engine.db").exists());
 }
 
+/// The first start makes this Monokulo's VAPID key and stores it, its
+/// private half encrypted with `MONOKULO_ENCRYPTION_KEY`; a start with
+/// another encryption key can't read it back and stops, saying so, rather
+/// than making a new key that every app's push subscription would refuse.
+#[test]
+fn monokulo_stops_when_its_vapid_key_cannot_be_read_back() {
+    let dir = TempDir::new("vapid");
+    let path = dir.0.join("monokulo.toml");
+    std::fs::write(&path, "[server]\nbind = \"127.0.0.1:0\"\n").unwrap();
+    let (child, _) = start_listening(
+        with_secrets(&dir.0).arg("--options").arg(&path),
+        "monokulo listening",
+    )
+    .unwrap();
+    stop(child);
+    let output = with_secrets(&dir.0)
+        .env("MONOKULO_ENCRYPTION_KEY", "09".repeat(32))
+        .arg("--options")
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output));
+    let said = text(&output);
+    assert!(
+        said.contains("failed to read this Monokulo's VAPID key")
+            && said.contains("MONOKULO_ENCRYPTION_KEY isn't the key it was stored with"),
+        "{said}"
+    );
+}
+
 /// Stopped as an operator's service manager stops it (SIGTERM), after
 /// serving a page, monokulo and the engine inside it shut down cleanly:
 /// exit status 0, it says so, and nothing panics on the way out.

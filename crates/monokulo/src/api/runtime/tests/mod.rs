@@ -201,7 +201,10 @@ async fn an_unknown_key_is_refused_on_every_route() {
     ];
     let mut routes = 0;
     for handler in catalog::handlers() {
-        let uri = handler.template.replace("{order_id}", order_id);
+        let uri = handler
+            .template
+            .replace("{order_id}", order_id)
+            .replace("{push_target_id}", "pt_00000000000000000000000000000000");
         for authorization in &unknown {
             let request = Request::builder()
                 .method(handler.method)
@@ -245,7 +248,7 @@ async fn the_entry_offers_each_key_its_own_forms() {
         ),
         (
             Some(fixture.ak.as_str()),
-            vec!["create-order", "disconnect"],
+            vec!["create-order", "disconnect", "register-push-target"],
         ),
     ] {
         let body = body_json(get(&fixture.router, "/api/v1", key).await).await;
@@ -569,3 +572,4 @@ async fn the_entry_can_be_cached() {
 }
 
 mod orders;
+mod push_targets;

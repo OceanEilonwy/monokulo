@@ -28,6 +28,7 @@ pub mod logs;
 pub mod network;
 pub mod orders;
 pub mod plugins;
+pub mod push;
 pub mod qr;
 pub mod revocation;
 pub mod settings;

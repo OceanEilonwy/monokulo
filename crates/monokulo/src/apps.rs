@@ -96,6 +96,65 @@ impl SaleKind {
     }
 }
 
+/// A name that isn't a sale event's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownSaleEvent(pub String);
+
+impl std::fmt::Display for UnknownSaleEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = SaleKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        write!(
+            f,
+            "{:?} isn't a sale event: it is one of {}",
+            self.0,
+            names.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for UnknownSaleEvent {}
+
+impl std::str::FromStr for SaleKind {
+    type Err = UnknownSaleEvent;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        SaleKind::ALL
+            .into_iter()
+            .find(|kind| kind.as_str() == name)
+            .ok_or_else(|| UnknownSaleEvent(name.to_owned()))
+    }
+}
+
+/// A sale event is written by its stream name (`sale.paid`): in a push
+/// target's `events`, and where a push target keeps them.
+impl serde::Serialize for SaleKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for SaleKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let name = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        name.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl schemars::JsonSchema for SaleKind {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "SaleEventName".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let names: Vec<&str> = SaleKind::ALL.iter().map(|kind| kind.as_str()).collect();
+        schemars::json_schema!({
+            "type": "string",
+            "enum": names,
+            "description": "A sale event, by its name on the store's event stream (`mk:events`): `sale.waiting` (an app made an order), `sale.seen`, `sale.confirming`, `sale.paid`, `sale.partial`, `sale.expired` or `sale.double_spend`."
+        })
+    }
+}
+
 /// One change to an order an app made, as the store's apps see it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaleEvent {
@@ -242,6 +301,28 @@ mod tests {
         // A newer engine's kind.
         assert!(SaleEvent::from_logged(&o, &logged("order.refunded")).is_none());
         assert_eq!(SaleEvent::waiting(&o).event, SaleKind::Waiting);
+    }
+
+    /// A sale event reads and writes as its stream name, and nothing else
+    /// reads as one.
+    #[test]
+    fn a_sale_event_is_its_stream_name() {
+        for kind in SaleKind::ALL {
+            let json = serde_json::to_value(kind).unwrap();
+            assert_eq!(json, kind.as_str());
+            assert_eq!(serde_json::from_value::<SaleKind>(json).unwrap(), kind);
+        }
+        let refused = serde_json::from_str::<SaleKind>(r#""sale.refunded""#).unwrap_err();
+        assert!(
+            refused.to_string().contains("isn't a sale event"),
+            "{refused}"
+        );
+        assert!("order.paid".parse::<SaleKind>().is_err());
+        let schema = schemars::schema_for!(SaleKind).to_value();
+        assert_eq!(
+            schema["enum"].as_array().unwrap().len(),
+            SaleKind::ALL.len()
+        );
     }
 
     #[tokio::test]

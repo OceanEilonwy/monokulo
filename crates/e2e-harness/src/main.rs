@@ -348,6 +348,7 @@ async fn main() {
         engine: monokulo::http::Engine::new(EngineClient::for_tests(engine_base_url.clone())),
         webhooks: Arc::default(),
         apps: Default::default(),
+        push: Arc::new(monokulo::push::Push::for_tests()),
         revocations: Default::default(),
         stopping: Default::default(),
     };
