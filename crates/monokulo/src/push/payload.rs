@@ -68,7 +68,8 @@ pub struct LiveActivityState {
     /// included while it is: "+1 more" at 2.
     pub waiting_count: u64,
     /// `monero:{address}?tx_amount={xmr}`, only to a target registered
-    /// with `include_payment_uri` and only while the sale takes a payment.
+    /// with `include_payment_uri` and only while the sale waits for its
+    /// first payment: after a part payment `xmr` is no longer what is owed.
     #[serde(rename = "paymentURI", skip_serializing_if = "Option::is_none")]
     pub payment_uri: Option<String>,
 }
@@ -102,7 +103,10 @@ impl Phase {
 impl LiveActivityState {
     /// The state `sale` puts a Live Activity in, with `waiting_count` of
     /// the store's sales waiting; the payment URI only if
-    /// `include_payment_uri`.
+    /// `include_payment_uri`, and only at `sale.waiting`. A part payment
+    /// (`sale.partial`) keeps the phase but not the code: it would ask for
+    /// the whole price again, and the engine's event doesn't say what is
+    /// left, which the checkout shows.
     pub fn of(sale: &SaleEvent, waiting_count: u64, include_payment_uri: bool) -> Self {
         let phase = Phase::of(sale.event);
         let xmr = format_xmr_trimmed(sale.xmr_amount_piconero);
@@ -111,7 +115,7 @@ impl LiveActivityState {
             sale: sale.merchant_order_id.clone(),
             amount: sale.amount.clone(),
             currency: sale.currency.clone(),
-            payment_uri: (include_payment_uri && phase == Phase::Waiting)
+            payment_uri: (include_payment_uri && sale.event == SaleKind::Waiting)
                 .then(|| format!("monero:{}?tx_amount={xmr}", sale.address)),
             xmr,
             expires_at: sale.expires_at,
@@ -185,7 +189,8 @@ mod tests {
     }
 
     /// Every phase, and the payment URI only where it was asked for and
-    /// the sale still takes a payment.
+    /// the sale waits for its first payment: after a part payment it would
+    /// ask for the whole price again.
     #[test]
     fn a_live_activity_shows_the_phase_and_the_payment_uri_only_when_asked() {
         let state = LiveActivityState::of(&sale(SaleKind::Waiting), 2, true);
@@ -211,11 +216,14 @@ mod tests {
                 (SaleKind::Seen, Phase::Seen, false),
                 (SaleKind::Confirming, Phase::Confirming, false),
                 (SaleKind::Paid, Phase::Paid, false),
-                (SaleKind::Partial, Phase::Waiting, true),
+                (SaleKind::Partial, Phase::Waiting, false),
                 (SaleKind::Expired, Phase::Expired, false),
                 (SaleKind::DoubleSpend, Phase::Expired, false),
             ]
         );
+        let partial = LiveActivityState::of(&sale(SaleKind::Partial), 1, true).to_json();
+        assert!(!partial.contains("paymentURI"), "{partial}");
+        assert!(!partial.contains("tx_amount"), "{partial}");
         for kind in SaleKind::ALL {
             let json = LiveActivityState::of(&sale(kind), 1, false).to_json();
             assert!(!json.contains("paymentURI"), "{json}");

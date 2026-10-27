@@ -627,3 +627,20 @@ take the numbers after them; their content stands.
 96. **The principal opens the draft PR**, `push-delivery` onto
     `push-targets`, as for P2 (#246): the engineer's brief left it open,
     and the stack's PRs are opened at approval so each carries its review.
+
+## Push audit fixes: one sale, one target (the fixer of group 1)
+
+The push audit's first fix group (`scripts/audit/REPORT.md` on the audit
+worktree: findings 13, 22, 15's monokulo half and 6), on `push-delivery`.
+Numbered after `push-relay`'s last entry (138), so the numbers hold when
+`push-delivery` is merged up into it.
+
+139. **After `sale.partial` a Live Activity gets no `paymentURI`** (push
+     audit #6; replaces decision 74's "`waiting`, `partial`"). The URI's
+     `tx_amount` is the order's full amount, and the engine's partial event
+     doesn't say what arrived, so a code then would ask the customer for
+     the whole price again. The phase stays `waiting` (the rest can still
+     come); the merchant sends the customer to the checkout, whose code
+     asks for what is left. Carrying the amount due in the engine's event
+     was the other way; it changes the engine's protocol for one field the
+     checkout already shows.
