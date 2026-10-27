@@ -1,7 +1,10 @@
 //! What each sale event's push asks of the push service (RFC 8030 §5): how
 //! urgently the device should be woken for it, how long it is worth
 //! delivering, and the topic it collapses under, so a device that was
-//! away gets the sale's latest state, not every step of it.
+//! away gets the sale's latest state, not every step of it. The topic is
+//! each target's own: a push service collapses within one subscription
+//! (RFC 8030 §5.4), so one shared across a store's targets would collapse
+//! nothing more and would tell it which devices are one store's.
 //!
 //! | Event | Urgency | TTL |
 //! | --- | --- | --- |
@@ -17,7 +20,7 @@ use ::push::{Topic, Ttl, Urgency};
 use sha2::{Digest as _, Sha256};
 
 use crate::apps::SaleKind;
-use crate::db::OrderId;
+use crate::db::{OrderId, PushTargetId};
 
 /// The shortest a push about a sale in progress lasts: one about a sale
 /// already past its expiry (a payment confirming late) still gets a minute.
@@ -60,12 +63,20 @@ pub fn ttl(kind: SaleKind, expires_at: i64, now: i64, default_ttl: Ttl) -> Ttl {
     Ttl::seconds(u32::try_from(clamped).unwrap_or(default_ttl.as_secs()))
 }
 
-/// The topic every push about `order_id` collapses under: the first 32
-/// hex digits of its SHA-256. One per order, and not the order's id: the
-/// `Topic` header crosses the push service and any relay in the clear, and
-/// an order's id opens its checkout, which shows its address and amount.
-pub fn topic(order_id: &OrderId) -> Topic {
-    let digest = Sha256::digest(order_id.as_str().as_bytes());
+/// The topic every push about `order_id` to `target` collapses under: the
+/// first 32 hex digits of SHA-256(target id ‖ 0x00 ‖ order id). One per
+/// order and target, and neither id: the `Topic` header crosses the push
+/// service and any relay in the clear, and an order's id opens its
+/// checkout, which shows its address and amount. Per target, so two
+/// devices of one store never carry the same value: it would link them
+/// for the relay, Apple, Google or a UnifiedPush distributor, however many
+/// stores share this instance's one VAPID key.
+pub fn topic(target: &PushTargetId, order_id: &OrderId) -> Topic {
+    let digest = Sha256::new()
+        .chain_update(target.as_str().as_bytes())
+        .chain_update([0])
+        .chain_update(order_id.as_str().as_bytes())
+        .finalize();
     let hex = hex::encode(&digest[..Topic::MAX_LEN / 2]);
     Topic::parse(&hex).unwrap_or_else(|_| unreachable!("32 hex digits are a topic"))
 }
@@ -136,16 +147,28 @@ mod tests {
         );
     }
 
-    /// One topic per order, 32 characters, the same each time and not the
-    /// order's id.
+    /// One topic per order and target, 32 characters, the same each time,
+    /// neither id, and not the hash of the order's id alone (which every
+    /// target of the store would share).
     #[test]
-    fn an_orders_topic_is_32_hex_digits_of_its_hash() {
+    fn a_topic_is_32_hex_digits_of_the_target_and_order_hashed_together() {
         let order = OrderId::new("order_5f01c9a7d5e2493b8a1f6c0e9b7d2a41");
-        let topic = topic(&order);
+        let target = PushTargetId::new("pt_0d6b9e2f4a3c4e1f8b7a6c5d4e3f2a1b");
+        let topic = topic(&target, &order);
         assert_eq!(topic.as_str().len(), 32);
         assert!(topic.as_str().bytes().all(|b| b.is_ascii_hexdigit()));
-        assert_eq!(super::topic(&order), topic);
+        assert_eq!(super::topic(&target, &order), topic);
         assert!(!order.as_str().contains(topic.as_str()));
-        assert_ne!(super::topic(&OrderId::new("order_other")), topic);
+        assert!(!target.as_str().contains(topic.as_str()));
+        assert_ne!(super::topic(&target, &OrderId::new("order_other")), topic);
+        let sibling = PushTargetId::new("pt_9a8b7c6d5e4f4a3b2c1d0e9f8a7b6c5d");
+        assert_ne!(super::topic(&sibling, &order), topic);
+        let order_alone = hex::encode(&Sha256::digest(order.as_str().as_bytes())[..16]);
+        assert_ne!(topic.as_str(), order_alone);
+        // The separator: no id's end can run into the other's start.
+        assert_ne!(
+            super::topic(&PushTargetId::new("pt_a"), &OrderId::new("border")),
+            super::topic(&PushTargetId::new("pt_ab"), &OrderId::new("order")),
+        );
     }
 }

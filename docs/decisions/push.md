@@ -644,3 +644,14 @@ Numbered after `push-relay`'s last entry (138), so the numbers hold when
      asks for what is left. Carrying the amount due in the engine's event
      was the other way; it changes the engine's protocol for one field the
      checkout already shows.
+140. **A push's `Topic` is per target: the first 32 hex digits of
+     SHA-256(target id ‖ 0x00 ‖ order id)** (push audit #22; replaces
+     decision 73's "of the order id"). The topic crosses the push service,
+     the relay (as `apns-collapse-id` and FCM's `collapse_key`) and any
+     distributor in the clear, and one value per order across every target
+     of the store told each of them exactly which devices are one store's,
+     even with one VAPID key for thousands of stores. RFC 8030 collapses
+     within one subscription, so sharing gained nothing. Supersession stays
+     keyed on (target, topic). A plain hash rather than an HMAC: the target
+     id is random and never leaves monokulo but in the app's own API
+     answers, so nobody who sees a topic can recompute it.
