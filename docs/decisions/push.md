@@ -790,3 +790,28 @@ The push audit's second fix group (findings 1, 7, 5 and 19), on
      their attempts with `Db::record_push_attempt` instead of making them
      against a stub, and the unreadable-push test, which needs its
      neighbour to land, is `…_over_http`, under "Over HTTP".
+
+## Push audit fixes: relay budgets, secrets, handles (the fixer of group 3)
+
+The push audit's third fix group (findings 15's relay half, 17, 14, 9 and
+8, and the shared outbound guard #2 needs), on `push-relay`, numbered
+after group 2's last entry (150).
+
+151. **A push counts against its sender only once its handle's limit lets
+     it through, and one the sender's limit refuses is given back to the
+     handle** (push audit #15, the relay's half; replaces 130). Every store
+     of a monokulo, and every merchant's tills of a Bell, share one sender
+     key, so pushes a spent handle refused used up the budget of every
+     other store: one store flooding one device stopped them all.
+     Decision 130 kept the count so a sender couldn't hammer a spent
+     handle for free, but those pushes cost the relay a signature check
+     and a 429, never an APNs or FCM request, and the per-handle limit is
+     what keeps a device's battery; the sender's limit is about sharing
+     APNs and FCM between senders, so it counts what is handed on. The
+     handle is checked first and refunded (`RateLimiter::refund`) when the
+     sender refuses, rather than peeking at both and charging after, so
+     each check stays one locked step and two pushes at once can't both
+     pass a last unit. Monokulo's per-store budget (144) is what keeps a
+     store from spreading a flood over many handles; the setting's
+     description and the docs page now say to size
+     `limits.per_sender_per_minute` for a whole hosted monokulo or Bell.

@@ -135,6 +135,19 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
         }
     }
 
+    /// Gives back the unit a passed check took for `key`, when what it let
+    /// through was refused by something checked after it: one request
+    /// held to two limits is counted by both only when both let it
+    /// through. Nothing happens once the window has moved on.
+    pub fn refund(&self, key: &K, now: i64) {
+        let mut state = self.state.lock();
+        if let Some((count, window_start)) = state.buckets.get_mut(key) {
+            if now >= *window_start && now.saturating_sub(*window_start) < WINDOW_SECONDS {
+                *count = count.saturating_sub(1);
+            }
+        }
+    }
+
     #[cfg(test)]
     fn tracked_addresses(&self) -> usize {
         self.state.lock().buckets.len()
@@ -278,6 +291,27 @@ mod tests {
             limiter.check(b, 1000),
             "a different IP must not be affected by another IP's usage"
         );
+    }
+
+    #[test]
+    fn a_refund_gives_back_one_unit_of_the_current_window_only() {
+        let limiter: RateLimiter<String> = RateLimiter::new(2);
+        let key = "sender".to_string();
+        assert!(limiter.check(key.clone(), 100));
+        assert!(limiter.check(key.clone(), 100));
+        assert!(!limiter.check(key.clone(), 100));
+        limiter.refund(&key, 110);
+        assert!(limiter.check(key.clone(), 110), "one unit given back");
+        assert!(!limiter.check(key.clone(), 110));
+        // A refund for a window that has passed takes nothing from the next.
+        assert!(limiter.check(key.clone(), 160));
+        limiter.refund(&key, 230);
+        assert!(limiter.check(key.clone(), 230));
+        assert!(limiter.check(key.clone(), 230));
+        assert!(!limiter.check(key.clone(), 230));
+        // Nor does one for a key never seen.
+        limiter.refund(&"other".to_string(), 230);
+        assert_eq!(limiter.tracked_addresses(), 1);
     }
 
     #[test]

@@ -89,7 +89,7 @@ settings! {
         key: "limits.per_sender_per_minute",
         default: 600,
         check: range(1, 1_000_000),
-        description: "Pushes a minute each sender (a VAPID key: one monokulo, or one Bell) may hand on, to all its handles together.",
+        description: "Pushes a minute each sender (a VAPID key) may hand on, to all its handles together. A sender is a whole monokulo, every store on it, or a whole Bell, every merchant's tills: size this for the busiest you serve (for a hosted monokulo, its stores' push.per_store_per_minute together at their busiest). Pushes a handle's own limit refuses don't count.",
         example: "600",
         applies: Restart,
     },
