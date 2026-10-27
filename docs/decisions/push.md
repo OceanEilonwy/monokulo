@@ -741,10 +741,10 @@ principal renumbers, or not, when the stack is merged.
      at the first finished sale, and the app can't start another from the
      background; `update` keeps every option open, since the app can
      always end its own activity locally. So `paid` and `expired` are
-     updates carrying their alert ("Paid · {amount}", "No payment yet"),
+     updates carrying their alert ("Paid · {amount} {currency}", "No payment yet"),
      `stale-date` is `expiresAt` while the sale is open, and the relay
      reads `phase` (`waiting`, `seen`, `confirming`, `paid`, `expired`),
-     `expiresAt` (Unix seconds) and `amount` only: `waitingCount` is the
+     `expiresAt` (Unix seconds), `amount` and `currency` only: `waitingCount` is the
      app's to show and the relay no longer reads it. If a sender ever
      needs to end an activity remotely, that is a new field in the state,
      decided then. P3's `LiveActivityState` writes those names and types;
