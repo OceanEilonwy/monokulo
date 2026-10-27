@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use live_settings::OptionsFile;
+use tokio_util::sync::CancellationToken;
 
 use crate::settings::RELAY_TABLE;
 
@@ -92,9 +93,14 @@ mod embedded {
     }
 
     /// Checks every relay setting, together and with its secrets, and, when
-    /// the relay is enabled, starts it on its own listener until the stop
-    /// signal. Any problem is the error monokulo stops on.
-    pub async fn start(prepared: Prepared, monokulo_db: &Path) -> Result<Option<Running>, String> {
+    /// the relay is enabled, starts it on its own listener until `stop`,
+    /// the process's (`service_runtime::shutdown::on_signal`). Any problem
+    /// is the error monokulo stops on.
+    pub async fn start(
+        prepared: Prepared,
+        monokulo_db: &Path,
+        stop: CancellationToken,
+    ) -> Result<Option<Running>, String> {
         let Prepared {
             values,
             env,
@@ -124,17 +130,14 @@ mod embedded {
             })?;
         let address = listener.local_addr().unwrap_or(config.listen);
         tracing::info!(relay.address = %address, "push relay listening");
-        let served = tokio::spawn(async move {
-            relay
-                .serve(listener, service_runtime::shutdown::signal())
-                .await
-        });
+        let served =
+            tokio::spawn(async move { relay.serve(listener, stop.cancelled_owned()).await });
         Ok(Some(Running { served }))
     }
 
     impl Running {
         /// Waits, up to the grace period, for requests in flight to finish
-        /// after the stop signal.
+        /// after the stop.
         pub async fn stop(self) {
             let grace = service_runtime::shutdown::GRACE;
             match tokio::time::timeout(grace, self.served).await {
@@ -190,6 +193,7 @@ mod without {
     pub async fn start(
         _prepared: Prepared,
         _monokulo_db: &Path,
+        _stop: CancellationToken,
     ) -> Result<Option<Running>, String> {
         Ok(None)
     }
@@ -267,20 +271,29 @@ mod tests {
         let text = format!("[relay.server]\nlisten = \"127.0.0.1:{port}\"\n");
         let prepared = prepare(&file(&text), HashMap::new(), false).unwrap();
         let db = monokulo_db("off");
-        assert!(start(prepared, &db).await.unwrap().is_none());
+        assert!(start(prepared, &db, CancellationToken::new())
+            .await
+            .unwrap()
+            .is_none());
         assert!(!db.with_file_name(STORE_FILE).exists());
         std::net::TcpListener::bind(("127.0.0.1", port)).expect("nothing listens there");
 
         let ids_alone = "[relay.apns]\nteam_id = \"TEAM123456\"\n";
         let prepared = prepare(&file(ids_alone), HashMap::new(), false).unwrap();
-        let error = start(prepared, &db).await.err().unwrap();
+        let error = start(prepared, &db, CancellationToken::new())
+            .await
+            .err()
+            .unwrap();
         assert!(error.contains("apns.team_id"), "{error}");
     }
 
     #[tokio::test]
     async fn an_enabled_relay_without_its_public_address_stops_monokulo() {
         let prepared = prepare_in(&file(""), with_key(HashMap::new()), true).unwrap();
-        let error = start(prepared, &monokulo_db("no-uri")).await.err().unwrap();
+        let error = start(prepared, &monokulo_db("no-uri"), CancellationToken::new())
+            .await
+            .err()
+            .unwrap();
         assert!(error.contains("server.public_uri must be set"), "{error}");
     }
 
@@ -290,7 +303,10 @@ mod tests {
         let env = Env::fixed::<&str, &str>([]);
         let prepared = prepare_in(&file(text), env, true).unwrap();
         let db = monokulo_db("no-key");
-        let error = start(prepared, &db).await.err().unwrap();
+        let error = start(prepared, &db, CancellationToken::new())
+            .await
+            .err()
+            .unwrap();
         assert!(
             error.contains("MONOKULO_RELAY_HANDLE_KEY must be set"),
             "{error}"
@@ -307,7 +323,9 @@ mod tests {
         let text = "[relay.server]\npublic_uri = \"https://relay.example.org\"\n";
         let prepared = prepare_in(&file(text), with_key(cli), true).unwrap();
         let db = monokulo_db("on");
-        let running = start(prepared, &db).await.unwrap();
+        let running = start(prepared, &db, CancellationToken::new())
+            .await
+            .unwrap();
         assert!(running.is_some());
         assert!(db.with_file_name(STORE_FILE).exists());
         let answer = reqwest::Client::new()
@@ -328,6 +346,25 @@ mod tests {
             problem["type"],
             "https://docs.monokulo.com/push-relay/#unknown-app"
         );
+        let _ = std::fs::remove_dir_all(db.parent().unwrap());
+    }
+
+    /// A stop that came while monokulo was still starting (the relay
+    /// starts first) stops the relay too, with nothing left listening.
+    #[tokio::test]
+    async fn an_enabled_relay_given_a_stop_that_already_came_stops() {
+        let port = free_port();
+        let cli = HashMap::from([("server.listen".to_owned(), format!("127.0.0.1:{port}"))]);
+        let text = "[relay.server]\npublic_uri = \"https://relay.example.org\"\n";
+        let prepared = prepare_in(&file(text), with_key(cli), true).unwrap();
+        let db = monokulo_db("stopped");
+        let stop = CancellationToken::new();
+        stop.cancel();
+        let running = start(prepared, &db, stop).await.unwrap().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), running.stop())
+            .await
+            .expect("the relay stopped without waiting out its grace period");
+        std::net::TcpListener::bind(("127.0.0.1", port)).expect("nothing listens there");
         let _ = std::fs::remove_dir_all(db.parent().unwrap());
     }
 

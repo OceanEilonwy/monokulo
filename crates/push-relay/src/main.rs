@@ -68,13 +68,14 @@ fn main() {
         let address = listener.local_addr().unwrap_or(config.listen);
         tracing::info!(server.address = %address, "push relay listening");
         // On SIGTERM or Ctrl-C: stop accepting connections, and let
-        // requests in flight finish for up to the grace period.
-        let serving = tokio::spawn(async move {
-            relay
-                .serve(listener, service_runtime::shutdown::signal())
-                .await
-        });
-        service_runtime::shutdown::signal().await;
+        // requests in flight finish for up to the grace period. One stop
+        // for the process, which the server and the wait below both see.
+        let stopping = service_runtime::shutdown::on_signal();
+        let serving = {
+            let stopping = stopping.clone();
+            tokio::spawn(async move { relay.serve(listener, stopping.cancelled_owned()).await })
+        };
+        stopping.cancelled().await;
         tracing::info!(grace = ?service_runtime::shutdown::GRACE, "shutting down: finishing requests in flight");
         match tokio::time::timeout(service_runtime::shutdown::GRACE, serving).await {
             Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),

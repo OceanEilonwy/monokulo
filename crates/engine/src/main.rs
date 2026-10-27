@@ -125,16 +125,18 @@ async fn run(config: EngineConfig) {
     }
     // On SIGTERM or Ctrl-C (task 7.11): stop accepting connections and let
     // requests in flight finish, for up to service_runtime::shutdown::GRACE, then stop
-    // the engine's loops.
+    // the engine's loops. One stop for the process, which the server and
+    // the wait below both see.
+    let stop = service_runtime::shutdown::on_signal();
     let server = axum::serve(
         listener,
         engine
             .router()
             .into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(service_runtime::shutdown::signal());
+    .with_graceful_shutdown(stop.clone().cancelled_owned());
     let serving = tokio::spawn(async move { server.await });
-    service_runtime::shutdown::signal().await;
+    stop.cancelled().await;
     tracing::info!(grace = ?service_runtime::shutdown::GRACE, "shutting down: finishing requests in flight");
     match tokio::time::timeout(service_runtime::shutdown::GRACE, serving).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),

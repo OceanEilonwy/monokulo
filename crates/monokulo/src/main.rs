@@ -171,9 +171,14 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // its lines (named `engine`) come here too.
     let log_store = telemetry::global().and_then(|t| t.open_store_beside(&db_path));
 
+    // The process's one stop, on SIGTERM or Ctrl-C, made before anything
+    // waits for it: a signal while monokulo is still starting is seen once
+    // it has started, by every part.
+    let stopping = service_runtime::shutdown::on_signal();
+
     // The push relay, when it runs here: every setting of it checked
     // first, on or off.
-    let relay = monokulo::relay::start(relay, &db_path)
+    let relay = monokulo::relay::start(relay, &db_path, stopping.clone())
         .await
         .unwrap_or_else(|e| stop(e));
 
@@ -302,8 +307,6 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         &engine,
         monokulo_settings.server.load().status_cache,
     );
-    // Cancelled on the stop signal: it ends every event stream.
-    let stopping = tokio_util::sync::CancellationToken::new();
     let app_state = AppState {
         db,
         encryption_key,
@@ -361,13 +364,12 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         listener,
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
-    .with_graceful_shutdown(service_runtime::shutdown::signal());
+    .with_graceful_shutdown(stopping.clone().cancelled_owned());
     let served = tokio::spawn(async move { server.await });
-    service_runtime::shutdown::signal().await;
-    // Event streams never finish by themselves: ended now, so the grace
-    // period is for ordinary requests, and running past it means one of
-    // those is stuck.
-    stopping.cancel();
+    // The stop also ends every event stream (`AppState::stopping`), which
+    // never finish by themselves, so the grace period is for ordinary
+    // requests, and running past it means one of those is stuck.
+    stopping.cancelled().await;
     tracing::info!(grace = ?service_runtime::shutdown::GRACE, "shutting down: finishing requests in flight");
     match tokio::time::timeout(service_runtime::shutdown::GRACE, served).await {
         Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
