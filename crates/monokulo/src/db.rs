@@ -31,6 +31,7 @@ pub use self::push::PushDeliveryRow;
 pub use self::push::{
     DuePush, NewPushTarget, PushAttempt, PushResult, PushTarget, PushTargetId, Registration,
     StoredVapidKey, TargetAfter, TargetKind, UnreadablePush, EXPIRED_UNSENT, MAX_TARGETS_PER_APP,
+    REREGISTERED,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{

@@ -8,7 +8,7 @@
 //! Only the tests where a push has to land go over real HTTP (to a stub
 //! UnifiedPush endpoint on `127.0.0.1:0`), and say `over_http`.
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode};
@@ -234,11 +234,15 @@ struct Received {
 }
 
 /// A push service on this machine answering every push with `status`
-/// (and `Retry-After`, when set), both changeable while it runs.
+/// (and `Retry-After`, when set), after `delay`, all changeable while it
+/// runs; it counts the pushes it holds at once.
 #[derive(Clone, Default)]
 struct Stub {
     received: Arc<Mutex<Vec<Received>>>,
     answer: Arc<Mutex<(u16, Option<&'static str>)>>,
+    delay: Arc<Mutex<std::time::Duration>>,
+    in_flight: Arc<AtomicUsize>,
+    most_in_flight: Arc<AtomicUsize>,
 }
 
 impl Stub {
@@ -256,6 +260,11 @@ impl Stub {
                 headers,
                 body: body.to_vec(),
             });
+            let held = stub.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            stub.most_in_flight.fetch_max(held, Ordering::SeqCst);
+            let delay = *stub.delay.lock();
+            tokio::time::sleep(delay).await;
+            stub.in_flight.fetch_sub(1, Ordering::SeqCst);
             let (status, retry_after) = *stub.answer.lock();
             let mut answer = StatusCode::from_u16(status).unwrap().into_response();
             if let Some(retry_after) = retry_after {
@@ -283,6 +292,11 @@ impl Stub {
 
     fn count(&self) -> usize {
         self.received.lock().len()
+    }
+
+    /// Answers each push only after `delay`.
+    fn hold(&self, delay: std::time::Duration) {
+        *self.delay.lock() = delay;
     }
 }
 
@@ -1072,4 +1086,753 @@ async fn a_live_activity_target_gets_plain_json_over_http() {
         .unwrap()
         .starts_with("monero:"));
     assert!(by_path("/la/plain").1.get("paymentURI").is_none());
+}
+
+// -- Edge and failure cases --------------------------------------------------
+
+impl World {
+    /// An order made with `key` under `idempotency_key`, as a till retrying
+    /// after a lost answer sends it.
+    async fn order_keyed(&self, key: &str, idempotency_key: &str) -> OrderId {
+        let made = self
+            .call(
+                "POST",
+                "/api/v1/orders",
+                key,
+                Some(json!({
+                    "amount": "24.50", "currency": "XMR", "merchant_order_id": "#1042",
+                    "idempotency_key": idempotency_key,
+                })),
+            )
+            .await;
+        OrderId::new(made["order_id"].as_str().unwrap())
+    }
+
+    fn target(&self, app: &AppId, target: &PushTargetId) -> Option<crate::db::PushTarget> {
+        self.fixture
+            .state
+            .db
+            .lock()
+            .get_push_target(app, target)
+            .unwrap()
+    }
+
+    /// `copies` more of the target's one queued push, each its own event,
+    /// all due with it: a store with many sales at once.
+    fn copy_push(&self, target: &PushTargetId, copies: u32) {
+        let copied = self
+            .fixture
+            .state
+            .db
+            .lock()
+            .conn_for_test()
+            .execute(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+                 INSERT INTO push_deliveries
+                     (push_target_id, event_seq, event_id, event_type, order_id, topic, urgency,
+                      payload, expires_at_utc, created_at_utc, next_attempt_at_utc)
+                 SELECT d.push_target_id, d.event_seq, d.event_id || '_' || n.i, d.event_type,
+                        d.order_id, d.topic, d.urgency, d.payload, d.expires_at_utc,
+                        d.created_at_utc, d.next_attempt_at_utc
+                 FROM push_deliveries d, n WHERE d.push_target_id = ?1",
+                rusqlite::params![target, copies],
+            )
+            .unwrap();
+        assert_eq!(copied, copies as usize);
+    }
+}
+
+/// A till retrying an order after a lost answer (the same idempotency
+/// key) gets the first order back, and the store's other apps are pushed
+/// its `sale.waiting` once. An order the store's own server makes pushes
+/// no one.
+#[tokio::test]
+async fn a_retried_order_is_pushed_as_waiting_once_and_a_shops_order_not_at_all() {
+    let world = world().await;
+    let other = world.another_app().await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &other,
+            encrypted("t", "https://push.example/t", &device, None),
+        )
+        .await;
+    let ak = world.fixture.ak.clone();
+    let first = world.order_keyed(&ak, "till-1-sale-77").await;
+    let again = world.order_keyed(&ak, "till-1-sale-77").await;
+    assert_eq!(first, again);
+    let pushes = world.pushes(&target);
+    assert_eq!(pushes.len(), 1, "{pushes:?}");
+    assert_eq!(pushes[0].order_id, first);
+
+    world.order(&world.fixture.sk.clone()).await;
+    assert_eq!(world.pushes(&target).len(), 1);
+}
+
+/// A newer push about an order supersedes only its own target's unsent
+/// one: each target keeps the latest about the order.
+#[tokio::test]
+async fn a_newer_push_supersedes_only_its_own_targets_unsent_push() {
+    let world = world().await;
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let a = world
+        .register(&ak, encrypted("a", "https://push.example/a", &device, None))
+        .await;
+    let b = world
+        .register(&ak, encrypted("b", "https://push.example/b", &device, None))
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.unconfirmed"));
+    world.queue(&world.event(2, &order, "order.confirming"));
+    for target in [&a, &b] {
+        let pushes = world.pushes(target);
+        let state: Vec<(&str, bool, bool)> = pushes
+            .iter()
+            .map(|p| {
+                (
+                    p.event_type.as_str(),
+                    p.superseded_at.is_some(),
+                    p.next_attempt_at.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            state,
+            [("sale.seen", true, false), ("sale.confirming", false, true)],
+            "{target}"
+        );
+    }
+}
+
+/// A target registered again as another kind of target, or no longer
+/// showing the payment code, or for fewer events, isn't sent what was
+/// queued for it as it was: an `encrypted` payload (the whole sale, the
+/// order's id and address among it) would go out in the clear to a Live
+/// Activity's relay, and a payment URI to a device that turned "show code"
+/// off. Those pushes are given up on, saying why, and nothing is sent.
+#[tokio::test]
+async fn a_target_registered_again_for_other_pushes_is_not_sent_the_old_ones() {
+    let world = world().await;
+    let other = world.another_app().await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let was_encrypted = world
+        .register(
+            &other,
+            encrypted("phone", "https://push.example/phone", &device, None),
+        )
+        .await;
+    let showed_code = world
+        .register(
+            &other,
+            live_activity("island", "https://relay.example/island", true),
+        )
+        .await;
+    let wanted_waiting = world
+        .register(
+            &other,
+            encrypted("tablet", "https://push.example/tablet", &device, None),
+        )
+        .await;
+    world.order(&world.fixture.ak.clone()).await;
+    for target in [&was_encrypted, &showed_code, &wanted_waiting] {
+        assert_eq!(world.pushes(target).len(), 1, "{target}");
+    }
+    let showing: Value = serde_json::from_str(&world.pushes(&showed_code)[0].payload).unwrap();
+    assert!(showing.get("paymentURI").is_some(), "{showing}");
+
+    let now_live = world
+        .register(
+            &other,
+            live_activity("phone", "https://relay.example/phone", false),
+        )
+        .await;
+    let now_hidden = world
+        .register(
+            &other,
+            live_activity("island", "https://relay.example/island", false),
+        )
+        .await;
+    let now_paid_only = world
+        .register(
+            &other,
+            encrypted(
+                "tablet",
+                "https://push.example/tablet",
+                &device,
+                Some(&["sale.paid"]),
+            ),
+        )
+        .await;
+    assert_eq!(
+        [&now_live, &now_hidden, &now_paid_only],
+        [&was_encrypted, &showed_code, &wanted_waiting],
+        "registered again in place"
+    );
+    for target in [&was_encrypted, &showed_code, &wanted_waiting] {
+        let push = &world.pushes(target)[0];
+        assert_eq!(
+            (push.next_attempt_at, push.gave_up_at.is_some()),
+            (None, true),
+            "{target}: {push:?}"
+        );
+        assert_eq!(
+            push.last_error.as_deref(),
+            Some(crate::db::REREGISTERED),
+            "{target}"
+        );
+    }
+    assert_eq!(world.tick().await, 0);
+}
+
+/// A subscription the app moved (a new endpoint and keys, as a
+/// UnifiedPush distributor hands out) under the same `client_id` still
+/// gets the push queued before, at its new endpoint, encrypted to its new
+/// keys: the payload is kept plain and encrypted at each attempt.
+#[tokio::test]
+async fn a_moved_subscription_gets_its_waiting_push_at_the_new_endpoint_over_http() {
+    let world = world().await;
+    let (old_stub, old_origin) = Stub::start(201).await;
+    let (new_stub, new_origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let old_device = ::push::encrypt::ReceiverKeys::generate();
+    let new_device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("up", &format!("{old_origin}/up/1"), &old_device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let moved = world
+        .register(
+            &ak,
+            encrypted("up", &format!("{new_origin}/up/2"), &new_device, None),
+        )
+        .await;
+    assert_eq!(moved, target);
+
+    assert_eq!(world.tick().await, 1);
+    assert_eq!(old_stub.count(), 0);
+    let received = new_stub.received.lock();
+    assert_eq!(received.len(), 1);
+    assert!(::push::encrypt::decrypt(&old_device, &received[0].body).is_err());
+    let sale: Value =
+        serde_json::from_slice(&::push::encrypt::decrypt(&new_device, &received[0].body).unwrap())
+            .unwrap();
+    assert_eq!(sale["event"], "sale.paid");
+}
+
+/// Each attempt is encrypted afresh (RFC 8291: a new salt and key every
+/// time; both decrypt to the same sale) and asks for what is left of the
+/// TTL. A failure starts the target's run of failures; the next success
+/// ends it. A newer push about the order leaves the delivered one as it
+/// was.
+#[tokio::test]
+async fn each_attempt_is_encrypted_afresh_with_what_is_left_of_the_ttl_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(503).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let start = world.clock.now();
+
+    assert_eq!(world.tick().await, 1);
+    assert_eq!(world.target(&app, &target).unwrap().failures, 1);
+    stub.answer(201, None);
+    world.clock.advance(5);
+    assert_eq!(world.tick().await, 1);
+
+    let received = stub.received.lock();
+    assert_eq!(received.len(), 2);
+    let ttls: Vec<&str> = received
+        .iter()
+        .map(|p| p.headers["ttl"].to_str().unwrap())
+        .collect();
+    assert_eq!(ttls, ["1800", "1795"]);
+    assert_ne!(received[0].body, received[1].body);
+    // The salt and the sender's key, the header's first 16 and last 65
+    // bytes (RFC 8188 §2.1), both new.
+    assert_ne!(received[0].body[..16], received[1].body[..16]);
+    assert_ne!(received[0].body[21..86], received[1].body[21..86]);
+    let plain: Vec<Vec<u8>> = received
+        .iter()
+        .map(|p| ::push::encrypt::decrypt(&device, &p.body).unwrap())
+        .collect();
+    assert_eq!(plain[0], plain[1]);
+    drop(received);
+
+    let stored = world.target(&app, &target).unwrap();
+    assert_eq!((stored.failures, stored.last_ok_at), (0, Some(start + 5)));
+    world.queue(&world.event(2, &order, "order.paid"));
+    let pushes = world.pushes(&target);
+    assert_eq!(
+        (pushes[0].delivered_at, pushes[0].superseded_at),
+        (Some(start + 5), None)
+    );
+}
+
+/// A `404` says the subscription is gone as a `410` does: the target is
+/// deleted with its pushes, the ones in flight beside it in the same batch
+/// included, and the batch's pushes to other targets are sent.
+#[tokio::test]
+async fn a_404_deletes_the_target_and_its_pushes_in_the_same_batch_over_http() {
+    let world = world().await;
+    let (gone, gone_origin) = Stub::start(404).await;
+    let (fine, fine_origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let dead = world
+        .register(
+            &ak,
+            encrypted("dead", &format!("{gone_origin}/up/1"), &device, None),
+        )
+        .await;
+    let alive = world
+        .register(
+            &ak,
+            encrypted("alive", &format!("{fine_origin}/up/2"), &device, None),
+        )
+        .await;
+    for seq in 1..=3 {
+        let order = world.order(&ak).await;
+        world.queue(&world.event(seq, &order, "order.paid"));
+    }
+
+    assert_eq!(world.tick().await, 6);
+    assert!(world.target(&app, &dead).is_none());
+    assert!(world.pushes(&dead).is_empty());
+    assert!(gone.count() >= 1);
+    assert_eq!(fine.count(), 3);
+    assert!(world
+        .pushes(&alive)
+        .iter()
+        .all(|p| p.delivered_at.is_some()));
+    assert_eq!(world.tick().await, 0);
+}
+
+/// A `413` gives the push up at once and counts nothing against the
+/// target: the payload, not the device, was the trouble. The target's
+/// next push is sent.
+#[tokio::test]
+async fn a_413_gives_the_push_up_without_counting_against_the_target_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(413).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let first = world.order(&ak).await;
+    world.queue(&world.event(1, &first, "order.paid"));
+    assert_eq!(world.tick().await, 1);
+    let push = &world.pushes(&target)[0];
+    assert_eq!(
+        (
+            push.attempt_count,
+            push.last_status_code,
+            push.next_attempt_at,
+            push.gave_up_at
+        ),
+        (1, Some(413), None, Some(world.clock.now()))
+    );
+    assert_eq!(world.target(&app, &target).unwrap().failures, 0);
+
+    stub.answer(201, None);
+    let second = world.order(&ak).await;
+    world.queue(&world.event(2, &second, "order.paid"));
+    assert_eq!(world.tick().await, 1);
+    assert!(world.pushes(&target)[1].delivered_at.is_some());
+}
+
+/// A wait the push's TTL wouldn't outlast gives it up at the attempt,
+/// rather than sending it stale: a `503` asking for an hour, and a `429`
+/// asking for exactly what is left (the retry would fall at the TTL's
+/// end). The `503` counts against the target; the `429` doesn't.
+#[tokio::test]
+async fn a_wait_past_the_ttl_gives_the_push_up_at_once_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(503).await;
+    stub.answer(503, Some("3600"));
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let first = world.order(&ak).await;
+    world.queue(&world.event(1, &first, "order.paid"));
+    assert_eq!(world.tick().await, 1);
+
+    stub.answer(429, Some("1800"));
+    let second = world.order(&ak).await;
+    world.queue(&world.event(2, &second, "order.paid"));
+    assert_eq!(world.tick().await, 1);
+
+    let now = world.clock.now();
+    let pushes = world.pushes(&target);
+    let outcomes: Vec<_> = pushes
+        .iter()
+        .map(|p| {
+            (
+                p.attempt_count,
+                p.last_status_code,
+                p.next_attempt_at,
+                p.gave_up_at,
+            )
+        })
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            (1, Some(503), None, Some(now)),
+            (1, Some(429), None, Some(now))
+        ]
+    );
+    assert_eq!(world.target(&app, &target).unwrap().failures, 1);
+}
+
+/// Any other refusal (`400`, or `401` for a token the push service won't
+/// take) is tried again on the schedule and counts against the target.
+#[tokio::test]
+async fn a_refused_push_is_tried_again_on_the_schedule_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(400).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let start = world.clock.now();
+    assert_eq!(world.tick().await, 1);
+    stub.answer(401, None);
+    world.clock.advance(5);
+    assert_eq!(world.tick().await, 1);
+
+    let push = &world.pushes(&target)[0];
+    assert_eq!(
+        (
+            push.attempt_count,
+            push.last_status_code,
+            push.next_attempt_at
+        ),
+        (2, Some(401), Some(start + 5 + 20))
+    );
+    assert_eq!(world.target(&app, &target).unwrap().failures, 2);
+}
+
+/// With private addresses off (`webhooks.allow_private_urls`, as in
+/// production), an endpoint on one is refused before any request, and the
+/// refusal counts like any failure of the target's. The refusal names no
+/// URL.
+#[tokio::test]
+async fn an_endpoint_on_a_private_address_is_refused_without_a_request() {
+    let world = world().await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let secret = "upPrivateCapability";
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("https://10.0.0.1/up/{secret}"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let start = world.clock.now();
+    let sent = run_delivery_tick(
+        &world.fixture.state.db,
+        &world.client,
+        &PushConfig::default(),
+        Reach::Public,
+        &world.clock,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sent, 1);
+    let push = &world.pushes(&target)[0];
+    let error = push.last_error.as_deref().unwrap();
+    assert!(error.contains("private or loopback"), "{error}");
+    assert!(!error.contains(secret), "{error}");
+    assert_eq!(
+        (
+            push.attempt_count,
+            push.last_status_code,
+            push.next_attempt_at
+        ),
+        (1, None, Some(start + 5))
+    );
+    assert_eq!(world.target(&app, &target).unwrap().failures, 1);
+}
+
+/// A push service that can't be connected to is tried again on the
+/// schedule; the recorded error and the log lines say why without the
+/// endpoint's URL.
+#[tokio::test]
+async fn a_push_service_that_cant_be_reached_is_retried_without_its_url_over_http() {
+    let (lines, _guard) = Lines::capture();
+    let world = world().await;
+    // A port nothing listens on: bound, then let go.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap()
+    };
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let secret = "upUnreachableCapability";
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("http://{closed}/up/{secret}"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let start = world.clock.now();
+    assert_eq!(world.tick().await, 1);
+
+    let push = &world.pushes(&target)[0];
+    let error = push.last_error.as_deref().unwrap();
+    assert!(error.starts_with("could not connect"), "{error}");
+    assert!(!error.contains(secret), "{error}");
+    assert_eq!(push.next_attempt_at, Some(start + 5));
+    let logged = lines.text();
+    assert!(logged.contains("push failed; will retry"), "{logged}");
+    assert!(!logged.contains(secret), "an endpoint reached a log line");
+}
+
+/// A push service that takes a push and never answers is given up on at
+/// `push.delivery_timeout_ms` (here its least, 100 ms) and tried again on
+/// the schedule, counted against the target.
+#[tokio::test]
+async fn a_push_service_that_never_answers_times_out_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    stub.hold(std::time::Duration::from_secs(30));
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let start = world.clock.now();
+    let config = PushConfig {
+        delivery_timeout: std::time::Duration::from_millis(100),
+        ..PushConfig::default()
+    };
+    let began = std::time::Instant::now();
+    assert_eq!(world.tick_with(&config).await, 1);
+    assert!(began.elapsed() < std::time::Duration::from_secs(5));
+
+    let push = &world.pushes(&target)[0];
+    let error = push.last_error.as_deref().unwrap();
+    assert!(error.starts_with("timed out"), "{error}");
+    assert_eq!(
+        (push.attempt_count, push.next_attempt_at, push.delivered_at),
+        (1, Some(start + 5), None)
+    );
+    assert_eq!(world.target(&app, &target).unwrap().failures, 1);
+    assert_eq!(stub.count(), 1);
+}
+
+/// A batch is 50 pushes, 16 of them in flight at once, so a slow push
+/// service holds a batch up for a few of its answers, not all of them;
+/// the rest go in the next batch.
+#[tokio::test]
+async fn a_batch_sends_sixteen_pushes_at_once_and_fifty_in_all_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    let hold = std::time::Duration::from_millis(100);
+    stub.hold(hold);
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    world.copy_push(&target, 59);
+
+    let began = std::time::Instant::now();
+    assert_eq!(world.tick().await, super::delivery::DELIVERY_BATCH as usize);
+    let took = began.elapsed();
+    assert_eq!(stub.most_in_flight.load(Ordering::SeqCst), 16);
+    // One at a time would take 50 holds; 16 at a time, four. Half of 50
+    // leaves room for a loaded machine.
+    assert!(took < hold * 25, "{took:?}");
+    assert_eq!(world.tick().await, 10);
+    assert_eq!(stub.count(), 60);
+    assert!(world
+        .pushes(&target)
+        .iter()
+        .all(|p| p.delivered_at.is_some()));
+}
+
+/// Each push service gets a token for its own origin, carrying this
+/// Monokulo's web address as `sub`, signed with its key: it verifies
+/// there, and nowhere else (another origin, another key, after it
+/// expires); a token another key signed doesn't pass for this one's.
+#[tokio::test]
+async fn each_push_service_gets_a_token_for_its_own_origin_only_over_http() {
+    let world = world().await;
+    let (one, one_origin) = Stub::start(201).await;
+    let (two, two_origin) = Stub::start(201).await;
+    let contact = super::delivery::contact(&world.fixture.state.settings);
+    assert!(contact.is_some(), "the fixture has an https web address");
+    let client = PushClient::build(world.fixture.state.push.vapid(), contact.clone()).unwrap();
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    for (name, origin) in [("one", &one_origin), ("two", &two_origin)] {
+        world
+            .register(
+                &ak,
+                encrypted(name, &format!("{origin}/up/{name}"), &device, None),
+            )
+            .await;
+    }
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    let sent = run_delivery_tick(
+        &world.fixture.state.db,
+        &client,
+        &PushConfig::default(),
+        Reach::AnyAddress,
+        &world.clock,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sent, 2);
+
+    let key = world.fixture.state.push.vapid_public_key();
+    let origin = |text: &str| ::push::Origin::parse(text).unwrap();
+    let now = world.clock.now();
+    let header = |stub: &Stub| {
+        let received = stub.received.lock();
+        assert_eq!(received.len(), 1);
+        received[0].headers["authorization"]
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    let (one_header, two_header) = (header(&one), header(&two));
+    assert_ne!(one_header, two_header);
+    for (header, own, other) in [
+        (&one_header, &one_origin, &two_origin),
+        (&two_header, &two_origin, &one_origin),
+    ] {
+        let authorization = ::push::vapid::Authorization::parse(header).unwrap();
+        let claims = ::push::vapid::verify(&authorization, &key, &origin(own), now).unwrap();
+        assert_eq!(claims.sub, contact);
+        assert!(matches!(
+            ::push::vapid::verify(&authorization, &key, &origin(other), now),
+            Err(::push::vapid::VapidError::Audience)
+        ));
+        let stranger = ::push::VapidKey::generate().public();
+        assert!(matches!(
+            ::push::vapid::verify(&authorization, &stranger, &origin(own), now),
+            Err(::push::vapid::VapidError::KeyMismatch)
+        ));
+        let expiry = i64::try_from(::push::vapid::EXPIRY.as_secs()).unwrap();
+        assert!(matches!(
+            ::push::vapid::verify(&authorization, &key, &origin(own), now + expiry),
+            Err(::push::vapid::VapidError::Expired)
+        ));
+    }
+
+    // Another key's token, passed off under this Monokulo's key.
+    let forger = ::push::VapidKey::generate();
+    let forged = forger
+        .authorization(&origin(&one_origin), None, now)
+        .unwrap();
+    let forged = forged
+        .header_value()
+        .to_str()
+        .unwrap()
+        .replace(&forger.public().to_string(), &key.to_string());
+    let forged = ::push::vapid::Authorization::parse(&forged).unwrap();
+    assert!(matches!(
+        ::push::vapid::verify(&forged, &key, &origin(&one_origin), now),
+        Err(::push::vapid::VapidError::Jwt(_))
+    ));
+}
+
+/// A push superseded while its attempt is in flight keeps that attempt
+/// (it was made) but, failing, isn't tried again: the newer one is sent
+/// instead, alone.
+#[tokio::test]
+async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(503).await;
+    stub.hold(std::time::Duration::from_millis(300));
+    let ak = world.fixture.ak.clone();
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("t", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.unconfirmed"));
+
+    let (sent, ()) = tokio::join!(world.tick(), async {
+        while stub.in_flight.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        world.queue(&world.event(2, &order, "order.confirming"));
+    });
+    assert_eq!(sent, 1);
+    let pushes = world.pushes(&target);
+    let old = &pushes[0];
+    assert_eq!(
+        (
+            old.attempt_count,
+            old.last_status_code,
+            old.next_attempt_at,
+            old.gave_up_at,
+            old.superseded_at.is_some()
+        ),
+        (1, Some(503), None, None, true)
+    );
+    assert_eq!(pushes[1].next_attempt_at, Some(world.clock.now()));
+
+    stub.hold(std::time::Duration::ZERO);
+    stub.answer(201, None);
+    assert_eq!(world.tick().await, 1);
+    assert_eq!(stub.count(), 2);
+    let plain = ::push::encrypt::decrypt(&device, &stub.received.lock()[1].body).unwrap();
+    let sale: Value = serde_json::from_slice(&plain).unwrap();
+    assert_eq!(sale["event"], "sale.confirming");
 }

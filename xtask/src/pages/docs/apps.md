@@ -200,7 +200,10 @@ Content-Type: application/json
 - `client_id` is your app's own name for the subscription (visible ASCII,
   at most 64 characters). Registering again with the same one replaces that
   target's subscription and keeps its id: do so whenever your push service
-  hands out a new endpoint.
+  hands out a new endpoint. Pushes not yet sent go to the new endpoint,
+  encrypted to the new keys; those made for what the target no longer
+  takes (another `kind`, a payment URI it no longer shows, an event it no
+  longer wants) are dropped.
 - `kind` is `encrypted`, Web Push encrypted with the subscription's `keys`
   (`p256dh` and `auth`, base64url, as a `PushSubscription` or a UnifiedPush
   distributor gives them); or `live-activity`, plain JSON to the push relay
