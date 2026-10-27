@@ -406,7 +406,60 @@ Follow-ups, none of them needed for the server side to be merged:
    the Connected apps card doesn't list an app's push targets; the `--init`
    header from live-settings mentions an admin page the Bell and the relay
    don't have; `cargo xtask pages docs` wasn't run for the new docs pages
-   (it needs artifacts fetched in CI); the Bell's `localhost` rule (B29)
-   could be mirrored in monokulo's `outbound::check_host`, where today a
-   `localhost` endpoint is refused by the resolver at connect time (one
-   counted attempt) rather than before it.
+   (it needs artifacts fetched in CI). (The Bell's `localhost` rule, B29,
+   is now monokulo's too: the `outbound` crate's `check_host` refuses it
+   before the request, push audit #2 below.)
+
+## 10. Audit fixes
+
+The stack was audited at `3304e560b` (monokular `99a0c3b`) before the
+owner's review: 22 findings, 20 confirmed (2 high, 11 medium, 7 low), 1
+rejected, 1 duplicate. The audit's report, database and fix log live on
+the `audit-push` branch under `scripts/audit/` (`REPORT.md`, `FIXES.md`).
+Every confirmed finding is fixed on the draft branches, each with the
+regression test the audit asked for unless the fix makes the bug
+impossible by construction; each test was run once against the reverted
+fix and failed. The fixes are decisions 139 to 159 (monokulo) and 36 to
+42 (the Bell). The commits are on `push-delivery` (#247, merged up into
+`push-relay` at `de50b8001`), `push-relay` (#248) and `monokular-bell`
+(monokular #14); `push-crate` and `push-targets` needed no change.
+
+| # | Finding | Fix | Test | Commit |
+| --- | --- | --- | --- | --- |
+| 13 (high) | Every store sale went to each till's one Live Activity | A `live-activity` target is pushed only its own app's orders, `waitingCount` counts that app's, and one target's pushes go one at a time in queue order (139, 141 to 143) | `pipeline_tests`: `a_live_activity_is_pushed_only_its_own_apps_sales`, `a_live_activity_counts_its_apps_waiting_sales_and_shows_the_code_only_when_asked`, `one_targets_pushes_go_one_at_a_time_in_queue_order_over_http`, `a_failed_push_holds_its_targets_newer_one_in_the_same_batch_over_http` | `fe61311f7`, `58c2c8b48` |
+| 15 (high) | One store could spend the instance's whole relay budget | Each store's apps get `push.per_store_per_minute` (144); targets sharing an endpoint are pushed once, as the last registered (145); the relay charges a sender only for a push its handle's limit let through (146, 151); the Bell gives each merchant a share (B42) | `pipeline_tests`: `a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http`, `targets_that_share_an_endpoint_are_pushed_once_per_event`; `push-relay` `limits`: `a_push_a_spent_handle_refuses_leaves_the_senders_budget`, `a_push_the_senders_limit_refuses_leaves_the_handles_budget`; Bell: `one_merchant_cant_spend_another_merchants_dings_over_http` | `39e0561a1`, `9e1d588a6`, `2c0d68c2c`; monokular `1e84895` |
+| 22 | One `Topic` per order linked a store's devices | The topic is per target: SHA-256 of target id and order id (140) | `each_target_gets_its_own_topic_for_an_order`, `a_topic_is_32_hex_digits_of_the_target_and_order_hashed_together` | `c88351bef` |
+| 6 | After `sale.partial` the island still asked the full amount | No `paymentURI` after a part payment (139, revising 74) | `payload`: `a_live_activity_shows_the_phase_and_the_payment_uri_only_when_asked` (extended) | `f96f451aa` |
+| 1 | An unreadable target row stopped every store's webhooks | An unreadable target is left out of its store's and app's reads and costs only its own pushes (147) | `an_unreadable_push_target_costs_only_its_own_pushes`, `an_unreadable_target_is_internal_alone_and_left_out_of_the_list` | `783de11a2` |
+| 7 | A push's TTL ran from queueing, so a backlog was pushed fresh | The TTL runs from the sale event's time (148) | `a_backlog_read_late_is_pushed_nothing_past_its_ttl` | `07ed7df1b` |
+| 5 | A 404/410 from an old endpoint deleted the re-registered target | A push service's answer applies only to the registration the push went to (149) | `an_answer_from_a_replaced_subscription_leaves_the_new_one_alone_over_http` | `e17d05d5c` |
+| 19 | Three worker tests sent real pushes under "in process" | Two run in process; the one that needs a push is `..._over_http` (150) | none (a naming fix) | `72a1fd90f` |
+| 8 | Registration limits read only the first `X-Forwarded-For` line | `abuse::client_address` reads every line from the last, for the relay and the Bell (B39) | `abuse`: `every_forwarded_for_line_is_read_from_the_last`; relay and Bell: `registrations_behind_a_line_adding_proxy_are_limited_by_its_line` | `46e69cd85`; monokular `5516491` |
+| 17 | A JSON-string service-account key was logged whole | An FCM key file's fault is named by place and kind only (none of it quoted) | `a_key_file_encoded_twice_is_refused_without_quoting_it`, `a_service_account_encoded_twice_stops_the_relay_without_its_key` | `1a84c56de` |
+| 14 | The handles file linked a device's handles by its plaintext token | Each handle's token and sender are sealed in the file (153) and the id is an HMAC under the relay's handle key, a required secret (155) | `two_handles_of_one_device_share_nothing_in_the_file`, `a_row_changed_in_the_file_does_not_open`, `a_second_senders_handle_cant_be_found_from_an_opened_row_without_the_key`, `an_enabled_relay_without_its_handle_key_stops_monokulo` | `d8a669bef`, `31c3cab9d` |
+| 9 | Made-up registrations stayed the full 90 days | A handle no push has reached goes after `handles.unused_ttl_days` (7) (152) | `a_handle_no_push_reached_goes_after_the_unused_lifetime` | `d8a669bef` |
+| 10 | The embedded relay took SIGTERM during start-up | One stop token per process, `shutdown::on_signal`, made before anything waits (156); the old `signal()` is private, so the bug can't come back by construction | `service-runtime`: `a_signal_before_a_part_waits_for_the_stop_is_still_seen`; `relay`: `an_enabled_relay_given_a_stop_that_already_came_stops` | `2aea6dffb`, `6f167df3b` (the fuzz lock) |
+| 18 | `apns-pushtostart` had no sender, so every push failed | Taken out of the relay until a sender writes push-to-start (157) | `relay`: `registrations_the_relay_cannot_serve_are_refused_with_their_problem` (extended) | `cbc1aaea8`, `a0ff005f0` |
+| 12 | FCM pushes queued behind a token exchange past every timeout | One budget per push under the senders' timeouts; a failed exchange is remembered 30 s and answered 503 (159) | `pushes_behind_a_token_endpoint_that_never_answers_are_503_within_the_timeout_over_http` | `5aeb44d88` |
+| 11 | A `now` a second behind signed a second APNs token | The clock is read under the token's lock, a minute backwards allowed (158) | `a_clock_a_moment_behind_the_renewal_reuses_its_token` | `9be7c4f42` |
+| 2 | The Bell's SSRF guard was a drifting copy | One `outbound` crate holds the guard, with the localhost and onion refusals, for monokulo and the Bell (154, B41) | `outbound`: `internal_addresses_are_disallowed_in_either_family_and_public_ones_not`, `onion_and_localhost_names_in_any_spelling`; the Bell's copy and its tests are gone | `f7bfd3276`; monokular `c778067` |
+| 16 | Anyone with a till's endpoint could move its registration | A registered endpoint moves only for its own merchant or with its auth secret, else 409 without the id (B37) | Bell: `another_merchant_cant_take_a_tills_registration_by_its_endpoint_over_http`, `another_merchant_moves_a_registration_only_with_its_keys` | monokular `d0debba` |
+| 3 | Every `payment.updated` dinged again, refunds included | A payment rings once and a refund never (B38) | Bell: `a_payment_rings_once_and_a_refund_never_over_http`, `a_payment_rings_once_until_it_is_forgotten` | monokular `7dcd133` |
+| 4 | `location_id` `main` always came back 503 | A location Square names by another id is the till's mistake, 400 (B36) | Bell: `a_location_named_by_squares_main_alias_is_refused_over_http`, `a_square_answer_that_isnt_the_location_asked_for_is_refused_over_http` | monokular `4f98d4b` |
+
+Rejected: #20 (no test runs the embedded relay: `relay::start` is tested
+in process since 156). Duplicate: #21 (of #19).
+
+The gates of section 7, run again on `push-relay` at its head with every
+fix in, on 2026-10-28: `cargo fmt --all --check`; the six clippy runs of
+`lint.yml` (`--workspace --all-targets --all-features`, engine without its
+features, engine-pow and engine-daemon libraries, `push-relay --lib
+--bins`, monokulo without the relay, `+stable` on `push` and `outbound`);
+the fuzz lock check (the lock now holds `tokio-util`, which
+`service-runtime`'s stop token needs) and the `test-support` grep;
+`cargo nextest run --workspace --locked --profile ci --features
+monokulo/snp --exclude xtask`, 2385 passed, 0 failed, 27 skipped, 26.8 s;
+`cargo nextest run -p xtask`, 112 passed; the doctests; `cargo xtask api
+openapi`; `cargo xtask test-summary --fail-slow`; `cargo xtask ui
+--check`; the browser suite, 90 passed, 1.4 min. All passed. The Bell's
+gates against the re-pinned head are in `docs/reports/bell.md`.
