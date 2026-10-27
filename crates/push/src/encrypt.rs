@@ -15,6 +15,8 @@
 //! [`P256dh`]: crate::P256dh
 //! [`AuthSecret`]: crate::AuthSecret
 
+use std::fmt;
+
 use aes_gcm::aead::{Aead as _, Key, KeyInit as _, Nonce};
 use aes_gcm::Aes128Gcm;
 use hkdf::Hkdf;
@@ -44,8 +46,15 @@ const LAST_RECORD: u8 = 0x02;
 pub const MAX_PLAINTEXT: usize = MAX_BODY - HEADER_LEN - 1 - TAG_LEN;
 
 /// An `aes128gcm` body: what is sent with `Content-Encoding: aes128gcm`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Debug` prints only its length, as a request body is never logged.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Encrypted(Vec<u8>);
+
+impl fmt::Debug for Encrypted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Encrypted({} bytes)", self.0.len())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EncryptError {
@@ -428,6 +437,10 @@ mod tests {
         let encrypted = encrypt(&receiver.subscription_keys(), b"").unwrap();
         assert_eq!(encrypted.as_bytes().len(), HEADER_LEN + 1 + TAG_LEN);
         assert_eq!(decrypt(&receiver, encrypted.as_bytes()).unwrap(), b"");
+        assert_eq!(
+            format!("{encrypted:?}"),
+            format!("Encrypted({} bytes)", HEADER_LEN + 1 + TAG_LEN)
+        );
     }
 
     #[test]

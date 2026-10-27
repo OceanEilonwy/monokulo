@@ -295,3 +295,38 @@ overrule any of them; a replacement is recorded under the same number.
     `hyper-util` and `http-body-util`, plus `push` itself with
     `test-support` for decryption. The lock gains no package; the stable
     clippy and test runs build them too.
+
+## Review of the `push` crate (the principal Rust engineer)
+
+49. **An endpoint may be plain `http` when its host is this machine**
+    (`127.0.0.0/8`, `[::1]`, `localhost`); anywhere else it is `https`.
+    The plan's delivery tests (decision 26) post to a stub push service on
+    `127.0.0.1:0`, as the webhook tests do with a receiver, and the
+    delivery worker's client is production code with the platform's
+    roots: trusting a test certificate there would be a `cfg(test)` swap,
+    which the test rules forbid, and the push crate's own TLS stub can't
+    be reached from it. TLS on loopback protects nothing (nothing is on
+    the wire), and the private-address check (decision 19) refuses a
+    loopback endpoint by default whatever its scheme, so a sender is as
+    safe as before. The relay's `public_uri` already has this rule. `Url`
+    canonicalizes every spelling of an IPv4 address, so `127.1` and
+    `0x7f000001` are seen as loopback; `::ffff:127.0.0.1` and
+    `push.localhost` are not.
+50. **`PlainJson` and `Encrypted` print only their length in `Debug`.**
+    They derived it, so `?request` on a `PushRequest` in a relay's log line
+    would have written the body out as bytes. A Live Activity state is a
+    sale's amount and, when the device asked for it, its address; the
+    rule is that no request body reaches a log.
+51. **`Retry-After` is read as at most `u32::MAX` seconds, the longest
+    TTL.** A header of `99999999999999999999999` read as
+    `Duration::from_secs(u64::MAX)`, which panics when added to an
+    `Instant` or `SystemTime`; a library shouldn't hand back a value its
+    caller can't add to a time. The caller still caps the wait at the
+    push's own expiry (decision 15).
+52. **The "pushes at once share one token" test signs every push at one
+    second.** It had the 16 threads sign at `NOW`, `NOW + 1` and `NOW + 2`
+    in whatever order the scheduler ran them: when a `NOW + 2` thread
+    signed first, a `NOW` thread saw a token from its future and re-signed,
+    as decision 39 has it, and the test failed once in a few hundred runs.
+    The rule under test is sharing, not the clock; the clock-set-back case
+    has its own assertion.

@@ -8,7 +8,8 @@
 //! ([`wire::PushRequest`]) and checks the signature ([`vapid::verify`]).
 //!
 //! Every value that crosses a boundary is parsed into its own type once:
-//! an [`Endpoint`] is https and never an onion address, a [`Topic`] is at
+//! an [`Endpoint`] is https (or http to this machine) and never an onion
+//! address, a [`Topic`] is at
 //! most 32 URL-safe characters, a [`P256dh`] is a point on the curve. What
 //! a type holds is valid, so nothing downstream checks it again.
 //!

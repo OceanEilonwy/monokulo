@@ -141,17 +141,26 @@ fn outcome(status: StatusCode, headers: &HeaderMap, now: i64) -> Result<Sent, Se
     }
 }
 
+/// The longest wait `Retry-After` is read as: as long as the longest
+/// [`Ttl`](crate::Ttl), so a caller adding it to a time can't overflow.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(u32::MAX as u64);
+
 /// `Retry-After` (RFC 9110 §10.2.3) as a wait from `now`: seconds, or an
-/// HTTP date (a date already past is no wait). `None` when there is none
-/// or it reads as neither.
+/// HTTP date (a date already past is no wait), at most [`MAX_RETRY_AFTER`].
+/// `None` when there is none or it reads as neither.
 fn retry_after(headers: &HeaderMap, now: i64) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+        let seconds = value.parse::<u32>().unwrap_or(u32::MAX);
+        return Some(Duration::from_secs(u64::from(seconds)));
     }
     let at = httpdate::parse_http_date(value).ok()?;
     let now = UNIX_EPOCH + Duration::from_secs(u64::try_from(now).unwrap_or(0));
-    Some(at.duration_since(now).unwrap_or(Duration::ZERO))
+    Some(
+        at.duration_since(now)
+            .unwrap_or(Duration::ZERO)
+            .min(MAX_RETRY_AFTER),
+    )
 }
 
 #[cfg(test)]
@@ -341,12 +350,18 @@ mod tests {
             assert_eq!(wait(value), Some(Duration::from_secs(45)), "{value}");
         }
         assert_eq!(wait("0"), Some(Duration::ZERO));
-        // Larger than any wait, not an error: the caller caps it at the
-        // push's own expiry.
-        assert_eq!(
-            wait("99999999999999999999999"),
-            Some(Duration::from_secs(u64::MAX))
-        );
+        // Larger than any wait, not an error, but read as the longest TTL
+        // so that adding it to a time can't overflow; the caller caps it
+        // at the push's own expiry.
+        assert_eq!(wait("99999999999999999999999"), Some(MAX_RETRY_AFTER));
+        assert_eq!(wait("4294967296"), Some(MAX_RETRY_AFTER));
+        assert_eq!(wait("Fri, 31 Dec 9999 23:59:59 GMT"), Some(MAX_RETRY_AFTER));
+        assert!(std::time::Instant::now()
+            .checked_add(MAX_RETRY_AFTER)
+            .is_some());
+        assert!(std::time::SystemTime::now()
+            .checked_add(MAX_RETRY_AFTER)
+            .is_some());
         for value in ["", "1.5", "+5", "5s", "15 Jan 2027"] {
             assert_eq!(wait(value), None, "{value:?}");
         }
@@ -415,7 +430,9 @@ mod tests {
     }
 
     /// Many pushes to one push service at once sign one token between
-    /// them, not one each.
+    /// them, not one each. All at the same second: threads run in any
+    /// order, and one whose clock reads earlier than the token's signing
+    /// time re-signs by design (the clock-set-back rule).
     #[test]
     fn pushes_at_once_to_one_origin_share_one_token() {
         let sender = sender();
@@ -423,7 +440,7 @@ mod tests {
         let (shared, at) = (&sender, &origin);
         let tokens: Vec<Authorization> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..16)
-                .map(|i| scope.spawn(move || shared.authorization(at, NOW + i % 3).unwrap()))
+                .map(|_| scope.spawn(move || shared.authorization(at, NOW).unwrap()))
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
