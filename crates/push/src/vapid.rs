@@ -239,14 +239,15 @@ pub enum VapidError {
 impl Authorization {
     /// Reads the header's value. The scheme and parameter names are
     /// matched in any case and the parameters in any order (RFC 9110
-    /// §11); a parameter given twice is refused, one not known ignored.
+    /// §11); a parameter given twice is refused, one not known ignored,
+    /// and so are empty list elements (`t=…,, k=…`, RFC 9110 §5.6.1.2).
     pub fn parse(value: &str) -> Result<Self, VapidError> {
         let (scheme, params) = value.trim().split_once(' ').ok_or(VapidError::Header)?;
         if !scheme.eq_ignore_ascii_case("vapid") {
             return Err(VapidError::Header);
         }
         let (mut token, mut key) = (None, None);
-        for param in params.split(',') {
+        for param in params.split(',').filter(|param| !param.trim().is_empty()) {
             let (name, value) = param.split_once('=').ok_or(VapidError::Header)?;
             let value = value.trim();
             let value = value
@@ -540,5 +541,204 @@ mod tests {
             Contact::parse("ops@example.net"),
             Err(ContactError::Invalid(_))
         ));
+    }
+
+    /// A token signed by hand with `key`'s private key, claims as given.
+    fn hand_signed(
+        key: &VapidKey,
+        header: &jwt::Header<'_>,
+        claims: serde_json::Value,
+    ) -> Authorization {
+        Authorization {
+            token: Es256Key::from_secret(&key.0).sign(header, &claims).unwrap(),
+            key: key.public(),
+        }
+    }
+
+    /// A token with no `exp` would never expire; one whose `exp` isn't a
+    /// whole number of seconds isn't one RFC 8292 describes.
+    #[test]
+    fn an_authorization_without_a_whole_expiry_is_refused() {
+        let key = VapidKey::generate();
+        for claims in [
+            json!({"aud": "https://push.example.net"}),
+            json!({"aud": "https://push.example.net", "exp": "1800000060"}),
+            json!({"aud": "https://push.example.net", "exp": 1_800_000_060.5}),
+            json!({"aud": "https://push.example.net", "exp": null}),
+            json!({"exp": NOW + 60}),
+        ] {
+            assert!(
+                matches!(
+                    verify(
+                        &hand_signed(&key, &jwt::Header::default(), claims.clone()),
+                        &key.public(),
+                        &origin(),
+                        NOW
+                    ),
+                    Err(VapidError::Jwt(JwtError::Claims(_)))
+                ),
+                "{claims}"
+            );
+        }
+    }
+
+    /// Other senders' libraries add `iat`, `jti` and such, and write `typ`
+    /// or not: what they add is ignored, what RFC 8292 asks is checked.
+    #[test]
+    fn an_authorization_from_another_library_with_extra_claims_verifies() {
+        let key = VapidKey::generate();
+        let authorization = hand_signed(
+            &key,
+            &jwt::Header::default(),
+            json!({
+                "aud": "https://push.example.net",
+                "exp": NOW + 3600,
+                "iat": NOW,
+                "jti": "x",
+                "sub": "mailto:ops@example.net",
+            }),
+        );
+        let claims = verify(&authorization, &key.public(), &origin(), NOW).unwrap();
+        assert_eq!(claims.exp, NOW + 3600);
+        assert_eq!(claims.sub.unwrap().as_str(), "mailto:ops@example.net");
+
+        // A `sub` that isn't a contact URL makes the claims unreadable.
+        let bad_sub = hand_signed(
+            &key,
+            &jwt::Header::default(),
+            json!({"aud": "https://push.example.net", "exp": NOW + 60, "sub": "ops"}),
+        );
+        assert!(matches!(
+            verify(&bad_sub, &key.public(), &origin(), NOW),
+            Err(VapidError::Jwt(JwtError::Claims(_)))
+        ));
+    }
+
+    /// What a relay sees from a forger: a header naming the subscription's
+    /// key with a token signed by another, `alg: none`, a claim changed
+    /// after signing. Each read cleanly and fail at `verify`.
+    #[test]
+    fn a_forged_authorization_header_reads_but_does_not_verify() {
+        let key = VapidKey::generate();
+        let forger = VapidKey::generate();
+        let genuine = key.authorization(&origin(), None, NOW).unwrap();
+        let header = |token: &str| format!("vapid t={token}, k={}", key.public());
+
+        let forged = forger.authorization(&origin(), None, NOW).unwrap();
+        let read = Authorization::parse(&header(forged.token.as_str())).unwrap();
+        assert!(matches!(
+            verify(&read, &key.public(), &origin(), NOW),
+            Err(VapidError::Jwt(JwtError::Signature))
+        ));
+
+        let segment =
+            |value: serde_json::Value| base64url::encode(&serde_json::to_vec(&value).unwrap());
+        let (_, claims, signature) = {
+            let mut parts = genuine.token.as_str().split('.');
+            (
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+                parts.next().unwrap(),
+            )
+        };
+        let none = format!(
+            "{}.{claims}.{signature}",
+            segment(json!({"typ": "JWT", "alg": "none"}))
+        );
+        let read = Authorization::parse(&header(&none)).unwrap();
+        assert!(matches!(
+            verify(&read, &key.public(), &origin(), NOW),
+            Err(VapidError::Jwt(JwtError::Algorithm(ref alg))) if alg == "none"
+        ));
+
+        let longer = segment(json!({"aud": "https://push.example.net", "exp": NOW + 20 * 60 * 60}));
+        let header_segment = genuine.token.as_str().split('.').next().unwrap();
+        let stretched = format!("{header_segment}.{longer}.{signature}");
+        let read = Authorization::parse(&header(&stretched)).unwrap();
+        assert!(matches!(
+            verify(&read, &key.public(), &origin(), NOW),
+            Err(VapidError::Jwt(JwtError::Signature))
+        ));
+
+        assert!(verify(&genuine, &key.public(), &origin(), NOW).is_ok());
+    }
+
+    /// The RFC's example, checked as a relay at another origin would: the
+    /// audience is part of what is signed for.
+    #[test]
+    fn the_rfc_8292_example_is_refused_at_another_origin_or_key() {
+        let authorization = Authorization::parse(RFC8292_HEADER).unwrap();
+        let key = *authorization.key();
+        assert!(matches!(
+            verify(
+                &authorization,
+                &key,
+                &Origin::parse("https://relay.example.net").unwrap(),
+                RFC8292_EXP - 60
+            ),
+            Err(VapidError::Audience)
+        ));
+        assert!(matches!(
+            verify(
+                &authorization,
+                &VapidKey::generate().public(),
+                &origin(),
+                RFC8292_EXP - 60
+            ),
+            Err(VapidError::KeyMismatch)
+        ));
+        // Long expired by now.
+        assert!(matches!(
+            verify(&authorization, &key, &origin(), NOW),
+            Err(VapidError::Expired)
+        ));
+    }
+
+    /// Edges of the header's grammar: the key given padded or as a
+    /// compressed point, empty list elements, parameters with nothing in
+    /// them.
+    #[test]
+    fn an_authorization_header_with_a_bad_key_or_empty_parameters_is_refused() {
+        let key = VapidKey::generate();
+        let authorization = key.authorization(&origin(), None, NOW).unwrap();
+        let t = authorization.token.as_str();
+        let k = key.public().to_base64url();
+
+        let padded = Authorization::parse(&format!("vapid t={t}, k={k}=")).unwrap();
+        assert_eq!(padded, authorization);
+        // Empty list elements are ignored, as RFC 9110 §5.6.1.2 has a
+        // recipient do.
+        for text in [
+            format!("vapid t={t},, k={k}"),
+            format!("vapid , t={t}, k={k},"),
+        ] {
+            assert_eq!(
+                Authorization::parse(&text).unwrap(),
+                authorization,
+                "{text}"
+            );
+        }
+
+        use p256::elliptic_curve::sec1::ToSec1Point as _;
+        let compressed = base64url::encode(key.0.public_key().to_sec1_point(true).as_bytes());
+        for text in [
+            format!("vapid t={t}, k={compressed}"),
+            format!("vapid t=, k={k}"),
+            format!("vapid t={t}, k="),
+            format!("vapid t=\"{t}, k={k}"),
+            "vapid ".to_owned(),
+            String::new(),
+        ] {
+            assert!(Authorization::parse(&text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_authorization_prints_only_its_key() {
+        let key = VapidKey::generate();
+        let authorization = key.authorization(&origin(), None, NOW).unwrap();
+        let printed = format!("{authorization:?}");
+        assert_eq!(printed, format!("Authorization(k={})", key.public()));
+        assert!(!printed.contains(authorization.token.as_str()));
     }
 }

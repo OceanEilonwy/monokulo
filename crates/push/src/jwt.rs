@@ -306,4 +306,125 @@ mod tests {
         ));
         assert!(CompactJwt::parse(text).is_ok());
     }
+
+    /// `header.claims` signed by hand, so a token can say what no
+    /// `Es256Key::sign` call would write.
+    fn signed_raw(signer: &Es256Key, header: &[u8], claims: &[u8]) -> CompactJwt {
+        let input = format!(
+            "{}.{}",
+            base64url::encode(header),
+            base64url::encode(claims)
+        );
+        let signature: Signature = signer.0.sign(input.as_bytes());
+        CompactJwt(format!(
+            "{input}.{}",
+            base64url::encode(&signature.to_bytes())
+        ))
+    }
+
+    #[test]
+    fn a_token_with_any_signature_bit_changed_does_not_verify() {
+        let (signer, verifying) = key();
+        let token = signer.sign(&Header::default(), &json!({"a": 1})).unwrap();
+        let (input, signature) = token.as_str().rsplit_once('.').unwrap();
+        let signature = base64url::decode_segment(signature).unwrap();
+        for index in [0, 31, 32, 63] {
+            let mut flipped = signature.clone();
+            flipped[index] ^= 1;
+            let tampered = CompactJwt(format!("{input}.{}", base64url::encode(&flipped)));
+            assert!(
+                matches!(
+                    verify_es256::<Value>(&tampered, &verifying),
+                    Err(JwtError::Signature | JwtError::Malformed)
+                ),
+                "{index}"
+            );
+        }
+        // Another token's signature from the same key.
+        let other = signer.sign(&Header::default(), &json!({"a": 2})).unwrap();
+        let spliced = CompactJwt(format!(
+            "{input}.{}",
+            other.as_str().rsplit_once('.').unwrap().1
+        ));
+        assert!(matches!(
+            verify_es256::<Value>(&spliced, &verifying),
+            Err(JwtError::Signature)
+        ));
+    }
+
+    /// The header is read strictly enough that a second `alg`, or one that
+    /// isn't a string, can't slip an algorithm past the check.
+    #[test]
+    fn a_header_that_is_not_one_es256_object_is_refused() {
+        let (signer, verifying) = key();
+        for header in [
+            &br#"{"alg":"ES256","alg":"none"}"#[..],
+            br#"{"alg":"none","alg":"ES256"}"#,
+            br#"{"alg":["ES256"]}"#,
+            br#"{"typ":"JWT"}"#,
+            br#"["ES256"]"#,
+            b"not json",
+        ] {
+            let token = signed_raw(&signer, header, b"{}");
+            assert!(
+                matches!(
+                    verify_es256::<Value>(&token, &verifying),
+                    Err(JwtError::Malformed)
+                ),
+                "{}",
+                String::from_utf8_lossy(header)
+            );
+        }
+        // Fields a verifier doesn't read are fine, as RFC 7515 has them.
+        let token = signed_raw(&signer, br#"{"alg":"ES256","typ":"JWT","x5u":"u"}"#, b"{}");
+        assert!(verify_es256::<Value>(&token, &verifying).is_ok());
+    }
+
+    /// A correctly signed token whose claims aren't the JSON the caller
+    /// expects is an error, not a default.
+    #[test]
+    fn signed_claims_that_do_not_read_are_refused() {
+        #[derive(Debug, Deserialize)]
+        struct Expected {
+            exp: i64,
+        }
+        let (signer, verifying) = key();
+        let token = signed_raw(&signer, br#"{"alg":"ES256"}"#, br#"{"exp":7}"#);
+        assert_eq!(verify_es256::<Expected>(&token, &verifying).unwrap().exp, 7);
+        for claims in [
+            &b"not json"[..],
+            b"{}",
+            br#"{"exp":"soon"}"#,
+            br#"{"exp":1.5}"#,
+        ] {
+            let token = signed_raw(&signer, br#"{"alg":"ES256"}"#, claims);
+            assert!(
+                matches!(
+                    verify_es256::<Expected>(&token, &verifying),
+                    Err(JwtError::Claims(_))
+                ),
+                "{}",
+                String::from_utf8_lossy(claims)
+            );
+        }
+    }
+
+    /// A zero `r` or `s` is no signature at all; it never reaches the
+    /// verifier.
+    #[test]
+    fn a_zero_signature_is_malformed() {
+        let (signer, _) = key();
+        let token = signer.sign(&Header::default(), &json!({})).unwrap();
+        let input = token.as_str().rsplit_once('.').unwrap().0;
+        let zero = format!("{input}.{}", base64url::encode(&[0; 64]));
+        assert!(matches!(CompactJwt::parse(&zero), Err(JwtError::Malformed)));
+    }
+
+    #[test]
+    fn a_token_prints_as_nothing_but_its_type() {
+        let (signer, _) = key();
+        let token = signer.sign(&Header::default(), &json!({})).unwrap();
+        assert_eq!(format!("{token:?}"), "CompactJwt(..)");
+        assert_eq!(format!("{signer:?}"), "Es256Key(..)");
+    }
 }
