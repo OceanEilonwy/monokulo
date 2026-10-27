@@ -9,8 +9,10 @@
 //!   for the app's Notification Service Extension to decrypt and replace
 //!   the fallback title ("New sale") with.
 //! - `apns-liveactivity`: the plain JSON as the Live Activity's
-//!   `content-state`; an alert for `paid` and `expired`, and the activity
-//!   ended there unless other sales are waiting.
+//!   `content-state`, always an update: an alert for `paid` and
+//!   `expired`, and a stale date while the sale is open. The relay never
+//!   ends an activity: there is one per shift, which only the app idles or
+//!   ends, and the app can't start one again from the background.
 //! - `apns-pushtostart`: a Live Activity started, its attributes and first
 //!   state from the plain JSON.
 
@@ -129,9 +131,6 @@ struct State {
     /// Shown in the alert when the sale is paid.
     #[serde(default)]
     amount: Option<String>,
-    /// Other sales still waiting: the activity isn't ended while any are.
-    #[serde(rename = "waitingCount", default)]
-    waiting_count: u32,
 }
 
 /// What a push-to-start's JSON holds: the activity's static attributes,
@@ -209,25 +208,16 @@ fn live_activity_topic(bundle: &BundleId) -> String {
     format!("{}.push-type.liveactivity", bundle.as_str())
 }
 
-/// An update to a running activity, or its end when its sale is paid or
-/// expired and no other sale waits.
+/// An update to a running activity; a paid or expired sale is told with
+/// an alert, never by ending the activity.
 fn live_activity_update(json: &PlainJson, now: i64) -> Result<Value, TranslateError> {
     let content: serde_json::Map<String, Value> = serde_json::from_slice(json.as_bytes())
         .map_err(|error| TranslateError::State(error.to_string()))?;
     let state: State = serde_json::from_value(Value::Object(content.clone()))
         .map_err(|error| TranslateError::State(error.to_string()))?;
-    let finished = matches!(state.phase, Phase::Paid | Phase::Expired);
     let mut aps = serde_json::Map::new();
     aps.insert("timestamp".into(), now.into());
-    aps.insert(
-        "event".into(),
-        if finished && state.waiting_count == 0 {
-            "end"
-        } else {
-            "update"
-        }
-        .into(),
-    );
+    aps.insert("event".into(), "update".into());
     aps.insert("content-state".into(), Value::Object(content));
     match state.phase {
         Phase::Paid => {
@@ -545,7 +535,7 @@ mod tests {
     }
 
     #[test]
-    fn a_paid_or_expired_sale_ends_the_activity_with_an_alert_unless_others_wait() {
+    fn a_paid_or_expired_sale_updates_the_activity_with_an_alert() {
         let paid = json!({"phase": "paid", "amount": "$24.50", "waitingCount": 0});
         let push = translate(
             &handle(Platform::ApnsLiveActivity),
@@ -558,7 +548,7 @@ mod tests {
         assert_eq!(
             body(&push),
             json!({"aps": {
-                "timestamp": NOW, "event": "end", "content-state": paid,
+                "timestamp": NOW, "event": "update", "content-state": paid,
                 "alert": {"title": "Paid · $24.50"},
             }})
         );
