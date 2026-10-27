@@ -154,8 +154,10 @@ engine-pow = { path = "../engine-pow" }
 # The in-thread database pool (`db::Db` in tests).
 sqlite = { path = "../sqlite", features = ["test-support"] }
 # Reads a push as the device would (`push::pipeline_tests`): its
-# `test-support` decryption.
+# `test-support` decryption, and the ciphertext APNs and FCM carry as
+# base64url (`push::pipeline_tests::relay_tests`).
 push = { path = "../push", features = ["test-support"] }
+base64 = "0.23.1"
 engine-test-support = { path = "../engine-test-support" }
 # Paused time (`test-util`): a test watching the engine page for a minute
 # runs in an instant.
