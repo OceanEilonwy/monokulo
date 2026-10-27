@@ -49,20 +49,28 @@ impl Limits {
     }
 
     /// One push from `sender` to `handle`, or which of the two is spent.
-    /// The sender's budget is checked first, so a sender over its limit
-    /// doesn't use up its handles' budgets as well.
+    /// Counted against the sender only when the handle's limit lets it
+    /// through, so pushes a spent handle refuses don't use up the
+    /// sender's budget for its other handles (one store's flood to one
+    /// device can't stop every store's pushes on a shared monokulo). And
+    /// one the sender's limit refuses is given back to the handle, so a
+    /// sender over its limit doesn't use up its handles' budgets either:
+    /// each limit counts only pushes handed on.
     pub fn push(
         &self,
         sender: &VapidPublicKey,
         handle: &HandleId,
         now: i64,
     ) -> Result<(), Refused> {
-        self.senders
-            .check_with_retry(*sender, now)
-            .map_err(Refused::Sender)?;
         self.handles
             .check_with_retry(handle.clone(), now)
-            .map_err(Refused::Handle)
+            .map_err(Refused::Handle)?;
+        self.senders
+            .check_with_retry(*sender, now)
+            .map_err(|seconds| {
+                self.handles.refund(handle, now);
+                Refused::Sender(seconds)
+            })
     }
 
     /// One registration from `client`.
@@ -103,17 +111,61 @@ mod tests {
         assert_eq!(limits.push(&a, &handle(1), NOW), Ok(()));
         assert_eq!(limits.push(&a, &handle(1), NOW), Ok(()));
         assert_eq!(limits.push(&a, &handle(1), NOW), Err(Refused::Handle(60)));
-        // The refused push still counted against the sender: three this
-        // minute.
-        assert_eq!(
-            limits.push(&a, &handle(2), NOW + 10),
-            Err(Refused::Sender(50))
-        );
         // Another sender has its own budget, and the handle's is spent.
         assert_eq!(limits.push(&b, &handle(2), NOW), Ok(()));
         assert_eq!(limits.push(&b, &handle(1), NOW), Err(Refused::Handle(60)));
         // A minute on, all is allowed again.
         assert_eq!(limits.push(&a, &handle(1), NOW + 60), Ok(()));
+    }
+
+    /// A push the handle's limit refuses isn't counted against its sender:
+    /// a store flooding one device leaves the sender's budget to the
+    /// others.
+    #[test]
+    fn a_push_a_spent_handle_refuses_leaves_the_senders_budget() {
+        let limits = limits(3, 2, 1);
+        let sender = VapidKey::generate().public();
+        for _ in 0..2 {
+            assert_eq!(limits.push(&sender, &handle(1), NOW), Ok(()));
+        }
+        for _ in 0..50 {
+            assert_eq!(
+                limits.push(&sender, &handle(1), NOW + 1),
+                Err(Refused::Handle(59))
+            );
+        }
+        // Two pushes handed on, so one more is left for another handle.
+        assert_eq!(limits.push(&sender, &handle(2), NOW + 10), Ok(()));
+        assert_eq!(
+            limits.push(&sender, &handle(3), NOW + 10),
+            Err(Refused::Sender(50))
+        );
+    }
+
+    /// A push the sender's limit refuses is given back to its handle: the
+    /// handle's budget is there when the sender's comes back.
+    #[test]
+    fn a_push_the_senders_limit_refuses_leaves_the_handles_budget() {
+        let limits = limits(2, 2, 1);
+        let sender = VapidKey::generate().public();
+        for _ in 0..2 {
+            assert_eq!(limits.push(&sender, &handle(1), NOW), Ok(()));
+        }
+        // Handle 2's minute starts here, with the sender's spent.
+        for _ in 0..5 {
+            assert_eq!(
+                limits.push(&sender, &handle(2), NOW + 30),
+                Err(Refused::Sender(30))
+            );
+        }
+        // The sender's minute is over, handle 2's isn't: it has both its
+        // pushes.
+        assert_eq!(limits.push(&sender, &handle(2), NOW + 60), Ok(()));
+        assert_eq!(limits.push(&sender, &handle(2), NOW + 60), Ok(()));
+        assert_eq!(
+            limits.push(&sender, &handle(2), NOW + 61),
+            Err(Refused::Handle(29))
+        );
     }
 
     #[test]

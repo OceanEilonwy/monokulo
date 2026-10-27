@@ -161,3 +161,11 @@ options file (`--relay-…` on its command line) and `enabled = true` in
 even while it is off. The APNs key and the service account come from the
 environment only, in both cases. `monokulo-push-relay --help` describes
 every setting.
+
+A relay's fairness limit is per sender, `limits.per_sender_per_minute`
+(600 by default), and a sender is a VAPID key: every store of one Monokulo
+signs with the same key, as every merchant's tills of one Monokular Bell
+are dinged with the Bell's. Size it for the busiest sender you serve: a
+hosted Monokulo holds each store to `push.per_store_per_minute`, so a few
+stores at their busiest at once is the mark. A push a handle's own limit
+(`limits.per_handle_per_minute`) refuses doesn't count against its sender.

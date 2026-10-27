@@ -475,10 +475,9 @@ async fn pushes_past_a_limit_are_rate_limited_with_retry_after_over_http() {
         (StatusCode::TOO_MANY_REQUESTS, "rate-limited")
     );
     assert!(refused.headers.contains_key(header::RETRY_AFTER));
-    assert_eq!(
-        relay.push(&two, push()).await.status,
-        StatusCode::TOO_MANY_REQUESTS
-    );
+    // The push handle one refused didn't count against the sender: it has
+    // one left, for handle two.
+    assert_eq!(relay.push(&two, push()).await.status, StatusCode::CREATED);
     let refused = relay.push(&three, push()).await;
     assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
     assert!(refused.json()["detail"]
@@ -495,7 +494,7 @@ async fn pushes_past_a_limit_are_rate_limited_with_retry_after_over_http() {
             .status,
         StatusCode::CREATED
     );
-    assert_eq!(apns.drain().await.len(), 2);
+    assert_eq!(apns.drain().await.len(), 3);
 }
 
 /// The relay served on a socket, as both binaries serve it: an app
