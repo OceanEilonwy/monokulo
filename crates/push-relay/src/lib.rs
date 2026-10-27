@@ -40,9 +40,6 @@ use std::time::Duration;
 
 use abuse::TrustedProxies;
 
-pub use crate::fcm::ServiceAccount;
-pub use crate::handles::AppName;
-
 use crate::apns::Apns;
 use crate::fcm::Fcm;
 use crate::handles::{HandleStore, StoreError};
