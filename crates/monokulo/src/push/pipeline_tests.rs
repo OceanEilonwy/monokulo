@@ -654,34 +654,39 @@ async fn a_disconnected_apps_targets_are_pushed_nothing() {
     assert_eq!(world.queue(&world.event(1, &order, "order.paid")).pushes, 0);
 }
 
-/// A Live Activity's state counts the store's app orders still waiting,
-/// and carries the payment URI only to a target that asked for it.
+/// A Live Activity's state counts its own app's orders still waiting
+/// (another till's aren't on its island), and carries the payment URI
+/// only to a target that asked for it, only while the sale waits for its
+/// first payment.
 #[tokio::test]
-async fn a_live_activity_counts_the_waiting_sales_and_shows_the_code_only_when_asked() {
+async fn a_live_activity_counts_its_apps_waiting_sales_and_shows_the_code_only_when_asked() {
     let world = world().await;
+    let ak = world.fixture.ak.clone();
     let other = world.another_app().await;
     let with_code = world
-        .register(
-            &other,
-            live_activity("code", "https://relay.example/a", true),
-        )
+        .register(&ak, live_activity("code", "https://relay.example/a", true))
         .await;
     let without = world
         .register(
-            &other,
+            &ak,
             live_activity("plain", "https://relay.example/b", false),
         )
         .await;
-    let first = world.order(&world.fixture.ak.clone()).await;
-    let second = world.order(&world.fixture.ak.clone()).await;
+    let first = world.order(&ak).await;
+    let second = world.order(&ak).await;
+    // Another till's sale, waiting too: not counted here.
+    world.order(&other).await;
+    // The till that made them shows them already.
+    assert!(world.pushes(&with_code).is_empty());
     let state = |target: &PushTargetId, n: usize| -> Value {
         serde_json::from_str(&world.pushes(target)[n].payload).unwrap()
     };
-    // The second sale was made while the first still waited.
-    assert_eq!(state(&with_code, 1)["phase"], "waiting");
-    assert_eq!(state(&with_code, 1)["waitingCount"], 2);
-    assert_eq!(state(&with_code, 1)["sale"], "#1042");
-    let uri = state(&with_code, 1)["paymentURI"]
+    // Waiting again, its payment spent twice, while the second waits too.
+    world.queue(&world.event(1, &first, "order.pending"));
+    assert_eq!(state(&with_code, 0)["phase"], "waiting");
+    assert_eq!(state(&with_code, 0)["waitingCount"], 2);
+    assert_eq!(state(&with_code, 0)["sale"], "#1042");
+    let uri = state(&with_code, 0)["paymentURI"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -689,17 +694,122 @@ async fn a_live_activity_counts_the_waiting_sales_and_shows_the_code_only_when_a
         uri.starts_with("monero:") && uri.ends_with("?tx_amount=24.5"),
         "{uri}"
     );
-    assert!(state(&without, 1).get("paymentURI").is_none());
+    assert!(state(&without, 0).get("paymentURI").is_none());
 
-    world.queue(&world.event(1, &first, "order.paid"));
+    // Part paid: still waiting for the rest, but no code for the whole
+    // price.
+    world.queue(&world.event(2, &first, "order.partial"));
+    let partial = state(&with_code, 1);
+    assert_eq!(
+        (&partial["phase"], &partial["waitingCount"]),
+        (&json!("waiting"), &json!(2))
+    );
+    assert!(partial.get("paymentURI").is_none(), "{partial}");
+
+    world.queue(&world.event(3, &first, "order.paid"));
     let paid = state(&with_code, 2);
     assert_eq!(
         (&paid["phase"], &paid["waitingCount"]),
         (&json!("paid"), &json!(1))
     );
     assert!(paid.get("paymentURI").is_none(), "{paid}");
-    world.queue(&world.event(2, &second, "order.expired"));
+    world.queue(&world.event(4, &second, "order.expired"));
     assert_eq!(state(&without, 3)["waitingCount"], 0);
+}
+
+/// Two tills, X and Y, each with a Live Activity showing the payment code
+/// and an encrypted subscription. Y's sale never reaches X's island, in
+/// any phase: its code there would have X's customer pay Y's sale, and
+/// its "paid" would have X's cashier hand over goods for a sale still
+/// waiting. X's encrypted subscription still hears of it, and Y's own
+/// island gets every later phase of it.
+#[tokio::test]
+async fn a_live_activity_is_pushed_only_its_own_apps_sales() {
+    let world = world().await;
+    let x = world.fixture.ak.clone();
+    let y = world.another_app().await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let x_island = world
+        .register(&x, live_activity("island", "https://relay.example/x", true))
+        .await;
+    let x_phone = world
+        .register(
+            &x,
+            encrypted("phone", "https://push.example/x", &device, None),
+        )
+        .await;
+    let y_island = world
+        .register(&y, live_activity("island", "https://relay.example/y", true))
+        .await;
+    let x_sale = world.order(&x).await;
+    let y_sale = world.order(&y).await;
+    let kinds = [
+        "order.unconfirmed",
+        "order.partial",
+        "order.confirming",
+        "order.pending",
+        "order.paid",
+        "order.expired",
+        "order.double_spend_detected",
+    ];
+    for (seq, kind) in (1..).zip(kinds) {
+        world.queue(&world.event(seq, &y_sale, kind));
+    }
+    assert!(
+        world.pushes(&x_island).is_empty(),
+        "{:?}",
+        world.pushes(&x_island)
+    );
+    let heard: Vec<String> = world
+        .pushes(&x_phone)
+        .iter()
+        .map(|p| p.event_type.clone())
+        .collect();
+    assert_eq!(
+        heard,
+        [
+            "sale.waiting",
+            "sale.seen",
+            "sale.partial",
+            "sale.confirming",
+            "sale.waiting",
+            "sale.paid",
+            "sale.expired",
+            "sale.double_spend",
+        ]
+    );
+    let y_pushes = world.pushes(&y_island);
+    let phases: Vec<(String, bool)> = y_pushes
+        .iter()
+        .map(|p| {
+            let state: Value = serde_json::from_str(&p.payload).unwrap();
+            (
+                state["phase"].as_str().unwrap().to_owned(),
+                state.get("paymentURI").is_some(),
+            )
+        })
+        .collect();
+    let phase = |name: &str, code| (name.to_owned(), code);
+    assert_eq!(
+        phases,
+        [
+            phase("seen", false),
+            phase("waiting", false),
+            phase("confirming", false),
+            phase("waiting", true),
+            phase("paid", false),
+            phase("expired", false),
+            phase("expired", false),
+        ]
+    );
+    assert!(y_pushes.iter().all(|p| p.order_id == y_sale));
+
+    // X's own sale reaches X's island, and not Y's.
+    world.queue(&world.event(8, &x_sale, "order.unconfirmed"));
+    let x_pushes = world.pushes(&x_island);
+    assert_eq!(x_pushes.len(), 1);
+    assert_eq!(x_pushes[0].order_id, x_sale);
+    assert_eq!(world.pushes(&y_island).len(), 7);
 }
 
 // -- The worker, in process --------------------------------------------------
@@ -1107,20 +1217,22 @@ async fn twenty_failures_in_a_row_delete_the_target_over_http() {
 async fn a_live_activity_target_gets_plain_json_over_http() {
     let world = world().await;
     let (stub, origin) = Stub::start(201).await;
-    let other = world.another_app().await;
+    let ak = world.fixture.ak.clone();
     world
         .register(
-            &other,
+            &ak,
             live_activity("code", &format!("{origin}/la/code"), true),
         )
         .await;
     world
         .register(
-            &other,
+            &ak,
             live_activity("plain", &format!("{origin}/la/plain"), false),
         )
         .await;
-    world.order(&world.fixture.ak.clone()).await;
+    let order = world.order(&ak).await;
+    // Waiting again, after its payment was spent twice.
+    world.queue(&world.event(1, &order, "order.pending"));
     assert_eq!(world.tick().await, 2);
 
     let received = stub.received.lock();
@@ -1290,7 +1402,10 @@ async fn a_target_registered_again_for_other_pushes_is_not_sent_the_old_ones() {
             encrypted("tablet", "https://push.example/tablet", &device, None),
         )
         .await;
-    world.order(&world.fixture.ak.clone()).await;
+    // Its own sale, waiting again (its payment spent twice): pushed to
+    // its Live Activity too, with the code.
+    let order = world.order(&other).await;
+    world.queue(&world.event(1, &order, "order.pending"));
     for target in [&was_encrypted, &showed_code, &wanted_waiting] {
         assert_eq!(world.pushes(target).len(), 1, "{target}");
     }
@@ -1729,17 +1844,30 @@ async fn a_batch_sends_sixteen_pushes_at_once_and_fifty_in_all_over_http() {
     let (stub, origin) = Stub::start(201).await;
     let hold = std::time::Duration::from_millis(100);
     stub.hold(hold);
-    let ak = world.fixture.ak.clone();
     let device = ::push::encrypt::ReceiverKeys::generate();
-    let target = world
-        .register(
-            &ak,
-            encrypted("t", &format!("{origin}/up/1"), &device, None),
-        )
-        .await;
-    let order = world.order(&ak).await;
+    // Made before the targets, so none is pushed its `sale.waiting`.
+    let order = world.order(&world.fixture.ak.clone()).await;
+    // Twenty targets (one target's pushes go one at a time), three pushes
+    // each.
+    let mut targets = Vec::new();
+    for app in 0..3 {
+        let key = match app {
+            0 => world.fixture.ak.clone(),
+            _ => world.another_app().await,
+        };
+        for n in 0..if app == 2 { 4 } else { 8 } {
+            let endpoint = format!("{origin}/up/{app}-{n}");
+            targets.push(
+                world
+                    .register(&key, encrypted(&format!("t{n}"), &endpoint, &device, None))
+                    .await,
+            );
+        }
+    }
     world.queue(&world.event(1, &order, "order.paid"));
-    world.copy_push(&target, 59);
+    for target in &targets {
+        world.copy_push(target, 2);
+    }
 
     let began = std::time::Instant::now();
     assert_eq!(world.tick().await, super::delivery::DELIVERY_BATCH as usize);
@@ -1750,10 +1878,90 @@ async fn a_batch_sends_sixteen_pushes_at_once_and_fifty_in_all_over_http() {
     assert!(took < hold * 25, "{took:?}");
     assert_eq!(world.tick().await, 10);
     assert_eq!(stub.count(), 60);
-    assert!(world
-        .pushes(&target)
-        .iter()
-        .all(|p| p.delivered_at.is_some()));
+    for target in &targets {
+        assert!(world
+            .pushes(target)
+            .iter()
+            .all(|p| p.delivered_at.is_some()));
+    }
+}
+
+/// One target's pushes due together go one at a time, in the order they
+/// were queued, while another target's go beside them: a Live Activity
+/// shows whichever state lands last, so a till's later sale must not be
+/// overtaken by its earlier one.
+#[tokio::test]
+async fn one_targets_pushes_go_one_at_a_time_in_queue_order_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    stub.hold(std::time::Duration::from_millis(50));
+    let ak = world.fixture.ak.clone();
+    world
+        .register(
+            &ak,
+            live_activity("island", &format!("{origin}/la/island"), false),
+        )
+        .await;
+    world
+        .register(
+            &ak,
+            live_activity("watch", &format!("{origin}/la/watch"), false),
+        )
+        .await;
+    let sale = |seq: i64, amount: &'static str| {
+        let (world, ak) = (&world, &ak);
+        async move {
+            let made = world
+                .call(
+                    "POST",
+                    "/api/v1/orders",
+                    ak,
+                    Some(json!({"amount": amount, "currency": "XMR"})),
+                )
+                .await;
+            let order = OrderId::new(made["order_id"].as_str().unwrap());
+            world.queue(&world.event(seq, &order, "order.unconfirmed"));
+        }
+    };
+    let sent = |path: &str| -> Vec<String> {
+        stub.received
+            .lock()
+            .iter()
+            .filter(|p| p.path == path)
+            .map(|p| {
+                let state: Value = serde_json::from_slice(&p.body).unwrap();
+                state["amount"].as_str().unwrap().to_owned()
+            })
+            .collect()
+    };
+    for (seq, amount) in (1..).zip(["1.00", "2.00", "3.00"]) {
+        sale(seq, amount).await;
+    }
+
+    assert_eq!(world.tick().await, 6);
+    // One push in flight per target at most: two at once.
+    assert_eq!(stub.most_in_flight.load(Ordering::SeqCst), 2);
+    for path in ["/la/island", "/la/watch"] {
+        assert_eq!(sent(path), ["1.00", "2.00", "3.00"], "{path}");
+    }
+
+    // A push waiting for a retry holds its target's newer ones back, and
+    // goes first when it is due.
+    stub.answer(500, None);
+    sale(4, "4.00").await;
+    assert_eq!(world.tick().await, 2);
+    stub.answer(201, None);
+    sale(5, "5.00").await;
+    assert_eq!(world.tick().await, 0);
+    world.clock.advance(super::delivery::backoff_seconds(1));
+    assert_eq!(world.tick().await, 4);
+    for path in ["/la/island", "/la/watch"] {
+        assert_eq!(
+            sent(path),
+            ["1.00", "2.00", "3.00", "4.00", "4.00", "5.00"],
+            "{path}"
+        );
+    }
 }
 
 /// Each push service gets a token for its own origin, carrying this
