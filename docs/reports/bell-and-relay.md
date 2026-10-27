@@ -49,7 +49,7 @@ Four stacked branches, each a package of the plan and a draft PR:
 | `push-crate`, [#245](https://github.com/OceanEilonwy/monokulo/pull/245) onto `main` | P1 | `crates/push`: Web Push as a library with no monokulo types, built on stable. `Endpoint`, `Origin`, `P256dh`, `AuthSecret`, `Subscription`; `Urgency`, `Ttl`, `Topic`, `PlainJson`, `Message`, `Options`; RFC 8291 `encrypt` (fresh salt and key per message; `decrypt` and `ReceiverKeys` behind `test-support`); `jwt::Es256Key`; VAPID (`VapidKey`, `Authorization`, `verify`); `wire::PushRequest::parse` (what a relay reads, exactly what `Sender` writes); `Sender` over the caller's `reqwest::Client`, one token per origin for 11 h, answers sorted into `Sent`/`SendError`. lint.yml checks it on stable. |
 | `push-targets`, [#246](https://github.com/OceanEilonwy/monokulo/pull/246) onto `push-crate` | P2 | Migration `0052_push_targets.sql` (`vapid_keys`, `push_targets` with `CHECK`s tying kind to keys); `db/push.rs` (`TargetKind::Encrypted{p256dh,auth} \| LiveActivity{include_payment_uri}`, register as an upsert on `(app_id, client_id)`, 8 per app); `push::Push` holding the VAPID key, made at first start, private scalar encrypted under `Binding::VapidKey`; `/api/v1/push-targets` (GET with `vapid_public_key`, POST `register-push-target`) and `/api/v1/push-targets/{id}` (GET, DELETE `unregister-push-target`), `ak_` keys only; `Problem::TooManyPushTargets`; `SaleKind` as the event name; a macros change so a resource's own forms target the resource; recorded examples for every answer; apps guide "6. Get pushes". |
 | `push-delivery`, [#247](https://github.com/OceanEilonwy/monokulo/pull/247) onto `push-targets` | P3 | `crate::outbound` (the webhooks' checking client, shared); `push.*` settings (`PushConfig`, a "Pushes to apps" card); migration `0053_push_deliveries.sql` (`push_deliveries`, `app_orders.last_sale_event`); queueing in `Db::queue_order_event` and from the order API (`sale.waiting` to the other apps); `push::policy` (urgency, TTL, hashed topic), `push::payload` (the Sale JSON; the Live Activity state), `push::delivery` (the supervised worker: batches of 50, 16 in flight, 5/20/80/320 s or `Retry-After`, never past the TTL, 404/410 and 20 counted failures delete the target, pruning); apps guide "What arrives". |
-| `push-relay`, [#248](https://github.com/OceanEilonwy/monokulo/pull/248) onto `push-delivery` | P4 | `crates/push-relay` (library and `monokulo-push-relay`): settings declared once with live-settings (`server.*`, `store.*`, `handles.*`, `limits.*`, `apns.*`, `fcm.*`, `logging.*`; secrets `MONOKULO_RELAY_HANDLE_KEY`, `MONOKULO_RELAY_APNS_KEY`, `MONOKULO_RELAY_FCM_CREDENTIALS` from the environment only); `POST /v1/register` and `POST /v1/push/{handle}`; handles in their own SQLite file; APNs over HTTP/2 with a 50-minute ES256 token (alert, Live Activity update, push-to-start), FCM HTTP v1 with an RS256 service-account token; limits per sender, handle and address; problem+json answers; no body, token or endpoint in any log line. In monokulo: the default `relay` feature, `relay.enabled`, `crates/monokulo/src/relay.rs` (reads `[relay.*]` at every start, serves on 8444 when enabled), `--init`/`--help` covering two embedded services, the Dockerfile builds the binary, a docs page `/push-relay/`. Also, from the integration: `push::pipeline_tests::relay_tests`, the whole chain in three tests, and the paid alert's title with its currency. |
+| `push-relay`, [#248](https://github.com/OceanEilonwy/monokulo/pull/248) onto `push-delivery` | P4 | `crates/push-relay` (library and `monokulo-push-relay`): settings declared once with live-settings (`server.*`, `store.*`, `handles.*`, `limits.*`, `apns.*`, `fcm.*`, `logging.*`; secrets `MONOKULO_RELAY_HANDLE_KEY`, `MONOKULO_RELAY_APNS_KEY`, `MONOKULO_RELAY_FCM_CREDENTIALS` from the environment only); `POST /v1/register` and `POST /v1/push/{handle}`; handles in their own SQLite file; APNs over HTTP/2 with a 50-minute ES256 token (alert and Live Activity update; push-to-start, built here, was taken out by the push audit, decision 157), FCM HTTP v1 with an RS256 service-account token; limits per sender, handle and address; problem+json answers; no body, token or endpoint in any log line. In monokulo: the default `relay` feature, `relay.enabled`, `crates/monokulo/src/relay.rs` (reads `[relay.*]` at every start, serves on 8444 when enabled), `--init`/`--help` covering two embedded services, the Dockerfile builds the binary, a docs page `/push-relay/`. Also, from the integration: `push::pipeline_tests::relay_tests`, the whole chain in three tests, and the paid alert's title with its currency. |
 
 Also in the stack: `docs/decisions/push.md` (this build's decision log) and
 this report.
@@ -226,7 +226,8 @@ webhooks' `Clock` stand. 96 the principal opens P3's PR.
 
 **The push relay (100–130).** 100 two-part keys. 101 `logging.*` alone is
 standalone-only. 102 `server.trusted_proxies` and
-`server.upstream_timeout_ms`. 103 `server.public_uri` is `Option`, refused
+`server.upstream_timeout_ms` (its default is 4 s since the push audit,
+decision 159). 103 `server.public_uri` is `Option`, refused
 at start. 104 the relay's addresses follow `push::Endpoint`'s rule. 105
 `Relay::start(&RelayConfig)`. 106 settings that need each other. 107 the
 order of checks on a push; counted only once signed. 108 a handle lives on
@@ -234,7 +235,8 @@ only when APNs or FCM took a push. 109 `upstream-refused` 502 and
 `internal` 500. 110 how APNs's and FCM's answers map. 111 HTTP/2 prior
 knowledge always. 112 the 4096 bytes are APNs's and FCM's too. 113 the
 relay never ends a Live Activity (replaced at review). 114 push-to-start's
-JSON shape. 115 one FCM token exchange at a time. 116 handles on one
+JSON shape (push-to-start since taken out, 157). 115 one FCM token
+exchange at a time (one budget with the send since, 159). 116 handles on one
 connection, `STRICT`. 117 device tokens checked per platform, never
 logged. 118 reqwest's `http2` reaches every client. 119 committed test
 keys. 120 the `relay` feature and `relay.enabled`. 121 live-settings for
@@ -388,7 +390,8 @@ Follow-ups, none of them needed for the server side to be merged:
    endpoint, the receiver decrypting with the subscription's keys;
    Settings › Wake-ups against the Bell's `/v1/info` and `/v1/register`.
    iOS: the Notification Service Extension and the Live Activity's
-   `ContentState` (with `currency`), push-to-start opt-in. The contracts
+   `ContentState` (with `currency`); no push-to-start opt-in, since the
+   relay has none (decision 157). The contracts
    are the apps guide "6. Get pushes", the relay's page and `docs/bell.md`.
 2. **Deployments**: the official relay and Bell (hosts are placeholders;
    Apple and Google keys; a release job for `monokular-bell`).
