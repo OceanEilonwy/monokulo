@@ -141,17 +141,26 @@ fn outcome(status: StatusCode, headers: &HeaderMap, now: i64) -> Result<Sent, Se
     }
 }
 
+/// The longest wait `Retry-After` is read as: as long as the longest
+/// [`Ttl`](crate::Ttl), so a caller adding it to a time can't overflow.
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(u32::MAX as u64);
+
 /// `Retry-After` (RFC 9110 §10.2.3) as a wait from `now`: seconds, or an
-/// HTTP date (a date already past is no wait). `None` when there is none
-/// or it reads as neither.
+/// HTTP date (a date already past is no wait), at most [`MAX_RETRY_AFTER`].
+/// `None` when there is none or it reads as neither.
 fn retry_after(headers: &HeaderMap, now: i64) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Some(Duration::from_secs(value.parse().unwrap_or(u64::MAX)));
+        let seconds = value.parse::<u32>().unwrap_or(u32::MAX);
+        return Some(Duration::from_secs(u64::from(seconds)));
     }
     let at = httpdate::parse_http_date(value).ok()?;
     let now = UNIX_EPOCH + Duration::from_secs(u64::try_from(now).unwrap_or(0));
-    Some(at.duration_since(now).unwrap_or(Duration::ZERO))
+    Some(
+        at.duration_since(now)
+            .unwrap_or(Duration::ZERO)
+            .min(MAX_RETRY_AFTER),
+    )
 }
 
 #[cfg(test)]
@@ -326,5 +335,129 @@ mod tests {
 
         // A clock set back doesn't reuse a token from its future.
         assert_ne!(sender.authorization(&one, NOW).unwrap(), renewed);
+    }
+
+    /// RFC 9110 §5.6.7 has a recipient read all three date formats.
+    #[test]
+    fn retry_after_reads_every_http_date_format_and_any_number() {
+        let wait = |value: &'static str| retry_after(&retry(value), NOW);
+        // NOW is Friday 2027-01-15 08:00:00 UTC.
+        for value in [
+            "Fri, 15 Jan 2027 08:00:45 GMT",
+            "Friday, 15-Jan-27 08:00:45 GMT",
+            "Fri Jan 15 08:00:45 2027",
+        ] {
+            assert_eq!(wait(value), Some(Duration::from_secs(45)), "{value}");
+        }
+        assert_eq!(wait("0"), Some(Duration::ZERO));
+        // Larger than any wait, not an error, but read as the longest TTL
+        // so that adding it to a time can't overflow; the caller caps it
+        // at the push's own expiry.
+        assert_eq!(wait("99999999999999999999999"), Some(MAX_RETRY_AFTER));
+        assert_eq!(wait("4294967296"), Some(MAX_RETRY_AFTER));
+        assert_eq!(wait("Fri, 31 Dec 9999 23:59:59 GMT"), Some(MAX_RETRY_AFTER));
+        assert!(std::time::Instant::now()
+            .checked_add(MAX_RETRY_AFTER)
+            .is_some());
+        assert!(std::time::SystemTime::now()
+            .checked_add(MAX_RETRY_AFTER)
+            .is_some());
+        for value in ["", "1.5", "+5", "5s", "15 Jan 2027"] {
+            assert_eq!(wait(value), None, "{value:?}");
+        }
+        let mut opaque = HeaderMap::new();
+        opaque.insert(RETRY_AFTER, HeaderValue::from_bytes(b"\xff").unwrap());
+        assert_eq!(retry_after(&opaque, NOW), None);
+    }
+
+    /// Only 429 and 5xx carry a wait; a Retry-After on any other answer
+    /// changes nothing about it.
+    #[test]
+    fn retry_after_is_read_only_where_a_retry_is_meant() {
+        let headers = retry("30");
+        assert!(matches!(
+            outcome(StatusCode::GONE, &headers, NOW),
+            Err(SendError::Gone)
+        ));
+        assert!(matches!(
+            outcome(StatusCode::PAYLOAD_TOO_LARGE, &headers, NOW),
+            Err(SendError::TooLarge)
+        ));
+        assert!(matches!(
+            outcome(StatusCode::BAD_REQUEST, &headers, NOW),
+            Err(SendError::Refused {
+                status: StatusCode::BAD_REQUEST
+            })
+        ));
+        assert!(matches!(
+            outcome(StatusCode::CREATED, &headers, NOW),
+            Ok(Sent {
+                status: StatusCode::CREATED
+            })
+        ));
+        match outcome(
+            StatusCode::BAD_GATEWAY,
+            &retry("Fri, 15 Jan 2027 08:00:10 GMT"),
+            NOW,
+        ) {
+            Err(SendError::Server {
+                status,
+                retry_after,
+            }) => {
+                assert_eq!(status, StatusCode::BAD_GATEWAY);
+                assert_eq!(retry_after, Some(Duration::from_secs(10)));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The delivery worker shares one `Sender` across tasks and spawns
+    /// `send`'s future onto the runtime: both have to be thread-safe.
+    #[test]
+    fn a_sender_and_its_sends_can_cross_threads() {
+        fn shared<T: Send + Sync>(_: &T) {}
+        fn spawnable<T: Send>(_: T) {}
+        let sender = sender();
+        shared(&sender);
+        let endpoint = Endpoint::parse("https://push.example.net/x").unwrap();
+        let message = Message::PlainJson(crate::PlainJson::new(&()).unwrap());
+        let options = Options {
+            urgency: Urgency::Normal,
+            ttl: Ttl::ZERO,
+            topic: None,
+        };
+        spawnable(sender.send(&endpoint, &message, &options, NOW));
+    }
+
+    /// Many pushes to one push service at once sign one token between
+    /// them, not one each. All at the same second: threads run in any
+    /// order, and one whose clock reads earlier than the token's signing
+    /// time re-signs by design (the clock-set-back rule).
+    #[test]
+    fn pushes_at_once_to_one_origin_share_one_token() {
+        let sender = sender();
+        let origin = Origin::parse("https://push.example.net").unwrap();
+        let (shared, at) = (&sender, &origin);
+        let tokens: Vec<Authorization> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| scope.spawn(move || shared.authorization(at, NOW).unwrap()))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(tokens.windows(2).all(|pair| pair[0] == pair[1]));
+        assert_eq!(sender.signed.lock().unwrap().len(), 1);
+    }
+
+    /// The `sub` claim is the contact the sender was made with, on every
+    /// token.
+    #[test]
+    fn every_token_carries_the_senders_contact() {
+        let contact = Contact::parse("mailto:ops@example.net").unwrap();
+        let key = Arc::new(VapidKey::generate());
+        let sender = Sender::new(reqwest::Client::new(), key.clone(), Some(contact.clone()));
+        let origin = Origin::parse("https://push.example.net").unwrap();
+        let token = sender.authorization(&origin, NOW).unwrap();
+        let claims = crate::vapid::verify(&token, &key.public(), &origin, NOW).unwrap();
+        assert_eq!(claims.sub, Some(contact));
     }
 }

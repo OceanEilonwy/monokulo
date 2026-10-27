@@ -141,8 +141,18 @@ impl FromStr for Topic {
 /// application/json`), for a relay that has to read it: an iOS Live
 /// Activity's state goes to APNs as JSON, which the device can't decrypt
 /// first. At most [`MAX_BODY`] bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` prints only its length: the JSON is the push's content (a
+/// sale's amount, its address when the device asked for it), which a
+/// relay never logs.
+#[derive(Clone, PartialEq, Eq)]
 pub struct PlainJson(Vec<u8>);
+
+impl fmt::Debug for PlainJson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "PlainJson({} bytes)", self.0.len())
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlainJsonError {
@@ -267,5 +277,17 @@ mod tests {
             PlainJson::from_slice(b"{\"phase\":"),
             Err(PlainJsonError::Json(_))
         ));
+    }
+
+    /// The body is the push's content, which no log line gets to print.
+    #[test]
+    fn plain_json_debug_prints_only_its_length() {
+        let json = PlainJson::new(&serde_json::json!({"amount": "12.50"})).unwrap();
+        let printed = format!("{json:?}");
+        assert_eq!(printed, "PlainJson(18 bytes)");
+        assert_eq!(
+            format!("{:?}", Message::PlainJson(json)),
+            "PlainJson(PlainJson(18 bytes))"
+        );
     }
 }

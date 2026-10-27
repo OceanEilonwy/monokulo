@@ -15,6 +15,8 @@
 //! [`P256dh`]: crate::P256dh
 //! [`AuthSecret`]: crate::AuthSecret
 
+use std::fmt;
+
 use aes_gcm::aead::{Aead as _, Key, KeyInit as _, Nonce};
 use aes_gcm::Aes128Gcm;
 use hkdf::Hkdf;
@@ -44,8 +46,15 @@ const LAST_RECORD: u8 = 0x02;
 pub const MAX_PLAINTEXT: usize = MAX_BODY - HEADER_LEN - 1 - TAG_LEN;
 
 /// An `aes128gcm` body: what is sent with `Content-Encoding: aes128gcm`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Debug` prints only its length, as a request body is never logged.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Encrypted(Vec<u8>);
+
+impl fmt::Debug for Encrypted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Encrypted({} bytes)", self.0.len())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum EncryptError {
@@ -428,6 +437,10 @@ mod tests {
         let encrypted = encrypt(&receiver.subscription_keys(), b"").unwrap();
         assert_eq!(encrypted.as_bytes().len(), HEADER_LEN + 1 + TAG_LEN);
         assert_eq!(decrypt(&receiver, encrypted.as_bytes()).unwrap(), b"");
+        assert_eq!(
+            format!("{encrypted:?}"),
+            format!("Encrypted({} bytes)", HEADER_LEN + 1 + TAG_LEN)
+        );
     }
 
     #[test]
@@ -470,5 +483,150 @@ mod tests {
             Encrypted::parse(&over),
             Err(EncryptedError::TooLarge(MAX_BODY + 1))
         );
+    }
+
+    /// The RFC's own receiver gets a fresh push it can read: the fixed
+    /// example isn't the only thing the key schedule gets right.
+    #[test]
+    fn a_fresh_push_to_the_rfc_8291_receiver_decrypts() {
+        let receiver = rfc_receiver();
+        let plaintext = bytes(rfc8291::PLAINTEXT);
+        let encrypted = encrypt(&receiver.subscription_keys(), &plaintext).unwrap();
+        assert_ne!(base64url::encode(encrypted.as_bytes()), rfc8291::BODY);
+        assert_eq!(decrypt(&receiver, encrypted.as_bytes()).unwrap(), plaintext);
+    }
+
+    /// The header says what RFC 8291 §4 has a sender write: record size
+    /// 4096, a 65-byte key id that is the sender's fresh public key (a
+    /// point on the curve, not the device's).
+    #[test]
+    fn a_push_header_carries_record_size_4096_and_the_sender_key() {
+        let receiver = ReceiverKeys::generate();
+        let keys = receiver.subscription_keys();
+        let body = encrypt(&keys, b"{}").unwrap();
+        let body = body.as_bytes();
+        assert_eq!(body[16..20], 4096u32.to_be_bytes());
+        assert_eq!(body[20], 65);
+        let sender = p256::PublicKey::from_sec1_bytes(&body[21..HEADER_LEN]).unwrap();
+        assert_ne!(sender, *keys.p256dh.key());
+        assert_eq!(body.len(), HEADER_LEN + 2 + 1 + TAG_LEN);
+    }
+
+    /// Every part of the header is bound into the key: changing any of it
+    /// is caught by the tag, not read as another message.
+    #[test]
+    fn a_push_with_any_header_byte_changed_does_not_decrypt() {
+        let receiver = ReceiverKeys::generate();
+        let body = encrypt(&receiver.subscription_keys(), b"{\"sale\":1}").unwrap();
+        let body = body.as_bytes();
+
+        let mut salt = body.to_vec();
+        salt[0] ^= 1;
+        assert_eq!(decrypt(&receiver, &salt), Err(DecryptError::Authentication));
+
+        // Another valid point as the sender key: the agreed secret changes.
+        let mut sender = body.to_vec();
+        let other = ReceiverKeys::generate().subscription_keys().p256dh;
+        sender[21..HEADER_LEN].copy_from_slice(&base64url::point_bytes(other.key()));
+        assert_eq!(
+            decrypt(&receiver, &sender),
+            Err(DecryptError::Authentication)
+        );
+
+        // A sender key off the curve is refused before any ECDH.
+        let mut off_curve = body.to_vec();
+        off_curve[HEADER_LEN - 1] ^= 1;
+        assert_eq!(decrypt(&receiver, &off_curve), Err(DecryptError::SenderKey));
+
+        let mut first = body.to_vec();
+        first[HEADER_LEN] ^= 0x80;
+        assert_eq!(
+            decrypt(&receiver, &first),
+            Err(DecryptError::Authentication)
+        );
+    }
+
+    /// A body one byte short of the tag, cut anywhere in the header, or
+    /// with its key id length naming another size never reads as a push.
+    #[test]
+    fn a_body_cut_short_anywhere_is_truncated() {
+        let receiver = ReceiverKeys::generate();
+        let body = encrypt(&receiver.subscription_keys(), b"x").unwrap();
+        let body = body.as_bytes();
+        for len in [
+            1,
+            SALT_LEN,
+            SALT_LEN + 4,
+            SALT_LEN + 5,
+            HEADER_LEN - 1,
+            HEADER_LEN,
+        ] {
+            assert_eq!(
+                Encrypted::parse(&body[..len]),
+                Err(EncryptedError::Truncated),
+                "{len}"
+            );
+        }
+        assert_eq!(
+            Encrypted::parse(&body[..HEADER_LEN + TAG_LEN]),
+            Err(EncryptedError::Truncated)
+        );
+        assert!(Encrypted::parse(&body[..HEADER_LEN + TAG_LEN + 1]).is_ok());
+        assert_eq!(
+            decrypt(&receiver, &body[..body.len() - 1]),
+            Err(DecryptError::Authentication)
+        );
+
+        let mut key_id = body.to_vec();
+        key_id[20] = 0;
+        assert_eq!(Encrypted::parse(&key_id), Err(EncryptedError::KeyId(0)));
+        assert_eq!(
+            decrypt(&receiver, &key_id),
+            Err(DecryptError::Malformed(EncryptedError::KeyId(0)))
+        );
+    }
+
+    /// A record exactly as long as the record size the header gives is
+    /// one record; a byte longer is the start of a second.
+    #[test]
+    fn a_record_exactly_its_record_size_is_one_record() {
+        let receiver = ReceiverKeys::generate();
+        let body = encrypt(&receiver.subscription_keys(), b"0123456789").unwrap();
+        let mut body = body.as_bytes().to_vec();
+        let record = (body.len() - HEADER_LEN) as u32;
+        body[16..20].copy_from_slice(&record.to_be_bytes());
+        assert!(Encrypted::parse(&body).is_ok());
+        body[16..20].copy_from_slice(&(record - 1).to_be_bytes());
+        assert_eq!(
+            Encrypted::parse(&body),
+            Err(EncryptedError::MultipleRecords)
+        );
+    }
+
+    /// Senders on many tasks at once (the delivery worker sends 16 in
+    /// flight) each get their own salt and key.
+    #[test]
+    fn pushes_encrypted_at_once_on_many_threads_are_all_different() {
+        let receiver = ReceiverKeys::generate();
+        let keys = receiver.subscription_keys();
+        let bodies: Vec<Encrypted> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..16)
+                .map(|_| scope.spawn(|| encrypt(&keys, b"same").unwrap()))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let salts: std::collections::HashSet<_> = bodies
+            .iter()
+            .map(|b| b.as_bytes()[..SALT_LEN].to_vec())
+            .collect();
+        let senders: std::collections::HashSet<_> = bodies
+            .iter()
+            .map(|b| b.as_bytes()[21..HEADER_LEN].to_vec())
+            .collect();
+        assert_eq!(salts.len(), bodies.len());
+        assert_eq!(senders.len(), bodies.len());
+        for body in &bodies {
+            assert_eq!(decrypt(&receiver, body.as_bytes()).unwrap(), b"same");
+        }
     }
 }
