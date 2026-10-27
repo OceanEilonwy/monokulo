@@ -5787,6 +5787,7 @@ dependencies = [
  "serde",
  "sysinfo 0.39.6",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

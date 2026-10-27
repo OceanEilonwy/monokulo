@@ -1273,3 +1273,25 @@ after group 2's last entry (150).
      its tests give the key without touching the process's. Rows made
      under 153's unkeyed ids (never released) are still found by their
      endpoints and age out.
+156. **One stop per process, a token made before anything waits for it**
+     (push audit #10). `service_runtime::shutdown::signal()` made a new
+     listener for SIGTERM and Ctrl-C at each call, and each binary called
+     it twice (the server's graceful shutdown and the wait). A listener
+     hears only signals after it is made, and the first one made takes
+     over the default of ending the process, so monokulo's embedded relay,
+     started before the engine, the settings and the bind, took a signal
+     during start-up alone: the relay stopped, monokulo finished starting
+     and waited for a signal that had come. Now `signal()` is private and
+     the only way to hear one is `shutdown::on_signal()`, a
+     `CancellationToken` cancelled from one task, with both handlers
+     installed before it returns. A token stays cancelled, so a part that
+     waits after the signal still sees it. Monokulo makes it right before
+     the relay starts and hands it to the relay, the server and the wait;
+     it is also `AppState::stopping`, which was cancelled at the same
+     moment anyway. A signal while monokulo is still starting therefore
+     stops it gracefully once it has started, rather than killing it
+     (which, before the relay, it did by default; with the relay on it
+     did neither). The engine and `monokulo-push-relay` binaries had the
+     same two-listener shape, a microsecond apart: each now makes the
+     token where it made the first listener, so their start-up behaviour
+     is unchanged.
