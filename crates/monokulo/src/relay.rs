@@ -60,6 +60,16 @@ mod embedded {
         cli: HashMap<String, String>,
         enabled: bool,
     ) -> Result<Prepared, String> {
+        prepare_in(file, Env::process().with_cli(cli), enabled)
+    }
+
+    /// [`prepare`] with the relay's secrets and `--relay-…` options read
+    /// from `env`.
+    pub(super) fn prepare_in(
+        file: &OptionsFile,
+        env: Env,
+        enabled: bool,
+    ) -> Result<Prepared, String> {
         let values = file
             .scoped(RELAY_TABLE)
             .read(&settings::embedded_settings())
@@ -71,7 +81,7 @@ mod embedded {
         }
         Ok(Prepared {
             values,
-            env: Env::process().with_cli(cli),
+            env,
             enabled,
         })
     }
@@ -193,6 +203,8 @@ mod without {
 
 #[cfg(all(test, feature = "relay"))]
 mod tests {
+    use live_settings::Env;
+
     use super::*;
 
     /// A directory of the test's own, with monokulo's database path in it.
@@ -208,6 +220,12 @@ mod tests {
 
     fn file(text: &str) -> OptionsFile {
         OptionsFile::in_memory(text)
+    }
+
+    /// An environment holding only the relay's handle key, with `cli` as
+    /// its `--relay-…` options.
+    fn with_key(cli: HashMap<String, String>) -> Env {
+        Env::fixed([("MONOKULO_RELAY_HANDLE_KEY", "0123456789abcdef".repeat(4))]).with_cli(cli)
     }
 
     /// A port nothing listens on, for a relay that is to listen there.
@@ -261,9 +279,23 @@ mod tests {
 
     #[tokio::test]
     async fn an_enabled_relay_without_its_public_address_stops_monokulo() {
-        let prepared = prepare(&file(""), HashMap::new(), true).unwrap();
+        let prepared = prepare_in(&file(""), with_key(HashMap::new()), true).unwrap();
         let error = start(prepared, &monokulo_db("no-uri")).await.err().unwrap();
         assert!(error.contains("server.public_uri must be set"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_enabled_relay_without_its_handle_key_stops_monokulo() {
+        let text = "[relay.server]\npublic_uri = \"https://relay.example.org\"\n";
+        let env = Env::fixed::<&str, &str>([]);
+        let prepared = prepare_in(&file(text), env, true).unwrap();
+        let db = monokulo_db("no-key");
+        let error = start(prepared, &db).await.err().unwrap();
+        assert!(
+            error.contains("MONOKULO_RELAY_HANDLE_KEY must be set"),
+            "{error}"
+        );
+        assert!(!db.with_file_name(STORE_FILE).exists());
     }
 
     /// On, it listens where its settings say, its database beside
@@ -273,7 +305,7 @@ mod tests {
         let port = free_port();
         let cli = HashMap::from([("server.listen".to_owned(), format!("127.0.0.1:{port}"))]);
         let text = "[relay.server]\npublic_uri = \"https://relay.example.org\"\n";
-        let prepared = prepare(&file(text), cli, true).unwrap();
+        let prepared = prepare_in(&file(text), with_key(cli), true).unwrap();
         let db = monokulo_db("on");
         let running = start(prepared, &db).await.unwrap();
         assert!(running.is_some());

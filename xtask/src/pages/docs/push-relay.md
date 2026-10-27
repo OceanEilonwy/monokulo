@@ -15,12 +15,18 @@ hands the ciphertext on; only a Live Activity's state is plain JSON, as iOS
 applies it with no code of the app's to decrypt it. It keeps no push and
 no store, and logs no body, token or endpoint. Its file can't link a
 device's handles: each row is found by a hash of its endpoint and holds
-its token and sender key sealed under a key only the endpoint gives, so a
-copy of the file (a backup, or one moved from inside Monokulo to a relay
-of its own) says neither which devices take pushes from which senders nor
-which handles are one device's. The relay itself sees a token and its
-sender together at every registration and push, as it must to hand pushes
-on.
+its token and sender key sealed under a key only the endpoint gives, and
+an endpoint is made under the relay's handle key, which is never in the
+file. So a copy of the file (a backup, or one moved from inside Monokulo
+to a relay of its own) says neither which devices take pushes from which
+senders nor which handles are one device's. With a sender's endpoints (a
+copy of that sender's database) it opens that sender's handles, and so
+gives their tokens, but still not the same devices' handles for any other
+sender: those need the handle key too. With the key as well, it links
+each of those devices to every sender whose public key is known, so keep
+the key apart from the file and its backups. The relay itself sees a
+token and its sender together at every registration and push, as it must
+to hand pushes on.
 
 ## 1. Register
 
@@ -142,6 +148,8 @@ the apps it serves. On its own:
 
 ```sh
 monokulo-push-relay --init     # writes ~/.config/monokulo/relay.toml
+(umask 077; openssl rand -hex 32 > handle.key)   # once; keep it
+MONOKULO_RELAY_HANDLE_KEY="$(cat handle.key)" \
 MONOKULO_RELAY_APNS_KEY="$(cat AuthKey_ABCDE12345.p8)" \
 MONOKULO_RELAY_FCM_CREDENTIALS="$(cat service-account.json)" \
   monokulo-push-relay
@@ -167,9 +175,13 @@ Or inside Monokulo, with the same settings under `[relay.*]` of its own
 options file (`--relay-…` on its command line) and `enabled = true` in
 `[relay]`: it listens on its own port, keeps its handles in its own
 `push-relay.db` beside Monokulo's database, and is checked at every start
-even while it is off. The APNs key and the service account come from the
-environment only, in both cases. `monokulo-push-relay --help` describes
-every setting.
+even while it is off. The handle key, the APNs key and the service account
+come from the environment only, in both cases. The handle key is required:
+every endpoint is made under it, so keep it, and keep it apart from
+`push-relay.db` and its backups. Under a new key the endpoints already
+handed out keep working until they expire, and each device gets a new one
+at its next registration. `monokulo-push-relay --help` describes every
+setting.
 
 A relay's fairness limit is per sender, `limits.per_sender_per_minute`
 (600 by default), and a sender is a VAPID key: every store of one Monokulo

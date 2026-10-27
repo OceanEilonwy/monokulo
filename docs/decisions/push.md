@@ -883,3 +883,36 @@ after group 2's last entry (150).
      where before its resolver refused the loopback answer. Monokulo's
      `Outbound` (its two clients, one per reach) and `request_error_text`
      stay in monokulo, built on `outbound::client_builder`.
+155. **A handle's id is an HMAC under the relay's handle key,
+     `MONOKULO_RELAY_HANDLE_KEY`** (push audit #14, the verifier's second
+     round; replaces 153's "no relay secret"). 153 said the id was
+     unguessable without the token, but an endpoint is the id, and the id
+     opens its row to the token: a copy of the file and one sender's
+     endpoints (every sender's database holds them) gave each of its
+     devices' tokens, and from a token and another sender's public key
+     (the Bell's at `/v1/info`, a monokulo's at `/api/v1/push-targets`)
+     the unkeyed hash gave that device's handle for the other sender, and
+     its row opened too: the device-to-store link the finding was about.
+     Now the id is the first 128 bits of HMAC-SHA-256, under
+     `handles.id_key`, over the same four parts; the row key (SHA-256 of
+     the id) and the seal (HKDF from the id) are as 153 made them. With
+     the file and a sender's endpoints, only that sender's rows open; the
+     same devices' handles for other senders need the key. With the key
+     as well, every handle of a known token for every known sender is
+     found, which the setting's description, the module doc, the
+     migration and the docs page say, with: keep the key apart from the
+     file and its backups. The key is a `Secret` from the environment
+     only, at least 32 characters (as the engine token,
+     `openssl rand -hex 32`), and, as `server.public_uri`, required to
+     start rather than to load, so a monokulo whose relay is off needs
+     none; a short one stops the process at load. Losing or changing it
+     orphans nothing: a push finds its row by the id in its endpoint, so
+     handed-out endpoints work until they expire, and a device's next
+     registration makes it a new one, as a new relay would. Monokulo's
+     embedded relay reads the same variable; deriving it from
+     `MONOKULO_ENCRYPTION_KEY` there was the other way, but it would give
+     the two hosts different rules and tie the relay's file to monokulo's
+     key. `relay::prepare` takes its environment through `prepare_in`, so
+     its tests give the key without touching the process's. Rows made
+     under 153's unkeyed ids (never released) are still found by their
+     endpoints and age out.

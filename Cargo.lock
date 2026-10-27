@@ -4713,6 +4713,7 @@ dependencies = [
  "clap",
  "hex",
  "hkdf 0.13.0",
+ "hmac 0.13.0",
  "http-body-util",
  "httpdate",
  "hyper",

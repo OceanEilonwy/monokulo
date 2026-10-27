@@ -195,7 +195,7 @@ settings! {
     RELAY_ENABLED: bool {
         key: "relay.enabled",
         default: false,
-        description: "Run a push relay inside monokulo, on its own listener: the Web Push service that hands pushes on to APNs and FCM for apps with your own Apple and Google keys. Its settings are this file's [relay.*] tables (server.public_uri is required) and its keys MONOKULO_RELAY_APNS_KEY and MONOKULO_RELAY_FCM_CREDENTIALS. Off, the tables are still checked, and nothing listens.",
+        description: "Run a push relay inside monokulo, on its own listener: the Web Push service that hands pushes on to APNs and FCM for apps with your own Apple and Google keys. Its settings are this file's [relay.*] tables (server.public_uri is required) and its keys MONOKULO_RELAY_HANDLE_KEY (required), MONOKULO_RELAY_APNS_KEY and MONOKULO_RELAY_FCM_CREDENTIALS. Off, the tables are still checked, and nothing listens.",
         example: "false",
         applies: Restart,
         editable: false,
