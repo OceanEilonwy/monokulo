@@ -1,5 +1,5 @@
 //! Connected apps on a store's settings (`crate::apps`, `http::apps`): the
-//! Apps card on the Connections tab, the page that shows a connect code,
+//! Apps card on the Apps tab, the page that shows a connect code,
 //! the page that says whether it was used, and the public page a connect
 //! code's link opens in a browser. None of them names an app: monokulo
 //! keeps no list of apps.
@@ -31,7 +31,7 @@ pub struct AppRow {
 impl AppsView {
     fn settings(&self) -> String {
         crate::base::url(format!(
-            "/stores/{}/settings?tab=connections#card-apps",
+            "/stores/{}/settings?tab=apps#card-apps",
             self.store_id
         ))
     }

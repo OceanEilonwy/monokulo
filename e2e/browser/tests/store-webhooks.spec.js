@@ -30,7 +30,7 @@ const webhook = (page, url) => card(page).locator('.wh').filter({ has: page.loca
 test('each webhook says how it is doing; the deliveries of one that needs you are open', async ({ page, context }) => {
   await login(context);
   await seed();
-  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  await page.goto(`${settings()}?tab=webhooks#card-webhooks`);
   await expect(card(page).locator('.card-meta')).toHaveText('3 webhooks');
 
   const healthy = webhook(page, 'https://bakery.example/hooks/monokulo');
@@ -92,7 +92,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   // A webhook with many deliveries pages through them in place, 20 at a time.
   const response = await fetch(`${fixture.base_url}/__coverage/webhooks?many=45`, { method: 'POST' });
   expect(response.ok).toBe(true);
-  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  await page.goto(`${settings()}?tab=webhooks#card-webhooks`);
   const hook = webhook(page, 'https://bakery.example/hooks/monokulo');
   await hook.locator('details[data-disclosure="deliveries"] > summary').click();
   const rows = hook.locator('table[data-table="deliveries"] tbody tr');
@@ -100,7 +100,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
   const newest = await rows.first().locator('td[data-label="Order"]').innerText();
   await hook.getByRole('link', { name: 'Older →' }).click();
   // Swapped in place by fixi: still the settings page.
-  await expect(page).toHaveURL(/\/settings\?tab=connections#card-webhooks$/);
+  await expect(page).toHaveURL(/\/settings\?tab=webhooks#card-webhooks$/);
   await expect(hook.getByRole('link', { name: '← Newer' })).toBeVisible();
   await expect(rows).toHaveCount(20);
   await expect(rows.first().locator('td[data-label="Order"]')).not.toHaveText(newest);
@@ -129,7 +129,7 @@ const receiver = (page) => card(page).locator('.wh').filter({ has: page.locator(
 test('Send a test webhook delivers one in place and lists it as a test', async ({ page, context }) => {
   await login(context);
   await seedReceiver();
-  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  await page.goto(`${settings()}?tab=webhooks#card-webhooks`);
   const hook = receiver(page);
   await expect(hook.locator('.wh-health .tag')).toHaveText('no deliveries yet');
   const send = hook.getByRole('button', { name: 'Send a test webhook' });
@@ -140,7 +140,7 @@ test('Send a test webhook delivers one in place and lists it as a test', async (
   const result = hook.locator('[data-test-result]');
   await expect(result).toContainText('Test webhook delivered.');
   await expect(result).toContainText('Your server answered 200 in');
-  await expect(page).toHaveURL(/\/settings\?tab=connections#card-webhooks$/);
+  await expect(page).toHaveURL(/\/settings\?tab=webhooks#card-webhooks$/);
   await expect(hook.locator('.wh-health .tag')).toHaveText('delivering');
   await expect(hook.locator('details[data-disclosure="deliveries"]')).toHaveAttribute('open', '');
   const row = hook.locator('table[data-table="deliveries"] tbody tr').first();
@@ -155,7 +155,7 @@ test('Send a test webhook delivers one in place and lists it as a test', async (
   await row.getByRole('link', { name: 'Details' }).click();
   const dialog = page.getByRole('dialog', { name: 'Delivery of webhook.test' });
   await expect(dialog).toBeVisible();
-  await expect(page).toHaveURL(/\/settings\?tab=connections#card-webhooks$/);
+  await expect(page).toHaveURL(/\/settings\?tab=webhooks#card-webhooks$/);
   await expect(dialog.locator('[data-facts="delivery"]')).toContainText('a test delivery');
   await dialog.getByText('Request', { exact: true }).click();
   await expect(dialog.locator('pre').first()).toContainText('X-Monokulo-Event: webhook.test');
@@ -171,7 +171,7 @@ test('Send a test webhook delivers one in place and lists it as a test', async (
 test('a test webhook the receiver refuses says what it answered and when it is tried again', async ({ page, context }) => {
   await login(context);
   await seedReceiver(500);
-  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  await page.goto(`${settings()}?tab=webhooks#card-webhooks`);
   const hook = receiver(page);
   await hook.getByRole('button', { name: 'Send a test webhook' }).click();
   const result = hook.locator('[data-test-result]');
@@ -191,9 +191,9 @@ test('without JavaScript, Send a test webhook is a form that comes back showing 
   await login(context);
   const page = await context.newPage();
   await seedReceiver();
-  await page.goto(`${settings()}?tab=connections#card-webhooks`);
+  await page.goto(`${settings()}?tab=webhooks#card-webhooks`);
   await receiver(page).getByRole('button', { name: 'Send a test webhook' }).click();
-  await expect(page).toHaveURL(/\/settings\?tab=connections&tested=\d+#webhook-wh_[0-9a-f]+$/);
+  await expect(page).toHaveURL(/\/settings\?tab=webhooks&tested=\d+#webhook-wh_[0-9a-f]+$/);
   const hook = receiver(page);
   await expect(hook.locator('[data-test-result]')).toContainText('Test webhook delivered.');
   await expect(hook.locator('table[data-table="deliveries"] tbody tr').first().locator('td[data-label="Event"]')).toHaveText('webhook.test');

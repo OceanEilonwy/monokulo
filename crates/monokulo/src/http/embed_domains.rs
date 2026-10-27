@@ -1634,8 +1634,8 @@ mod tests {
         let session = session_for(&router, "domains@example.com").await;
         let id = create_store(&router, &state, &session).await;
         let settings = format!("/stores/{id}/settings");
-        // Verified domains are on the Connections tab.
-        let connections = format!("{settings}?tab=connections");
+        // Verified domains are on the Domains tab.
+        let connections = format!("{settings}?tab=domains");
         let store_page = format!("/stores/{id}");
 
         // The store's own site is already on its list, waiting for DNS.
@@ -1901,8 +1901,8 @@ mod tests {
         let session = session_for(&router, "in-place@example.com").await;
         let id = create_store(&router, &state, &session).await;
         let settings = format!("/stores/{id}/settings");
-        // Verified domains are on the Connections tab.
-        let connections = format!("{settings}?tab=connections");
+        // Verified domains are on the Domains tab.
+        let connections = format!("{settings}?tab=domains");
         let row = state
             .db
             .lock()
@@ -1967,7 +1967,7 @@ mod tests {
         );
         assert!(
             fragment.contains(&format!(
-                r##"href="{settings}?tab=connections#domain-{}""##,
+                r##"href="{settings}?tab=domains#domain-{}""##,
                 row.id
             )),
             "{fragment}"
@@ -2027,8 +2027,8 @@ mod tests {
         let session = session_for(&router, "dns-outage@example.com").await;
         let id = create_store(&router, &state, &session).await;
         let settings = format!("/stores/{id}/settings");
-        // Verified domains are on the Connections tab.
-        let connections = format!("{settings}?tab=connections");
+        // Verified domains are on the Domains tab.
+        let connections = format!("{settings}?tab=domains");
         let store_page = format!("/stores/{id}");
         let row = state
             .db

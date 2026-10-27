@@ -229,7 +229,7 @@ pub async fn disconnect_submit(
         // Its open streams end.
         Ok(Some(deleted)) => {
             state.revocations.revoke(deleted.key_hash());
-            crate::base::see_other(format!("/stores/{id}/settings?tab=connections#card-apps"))
+            crate::base::see_other(format!("/stores/{id}/settings?tab=apps#card-apps"))
         }
         // Not one of this store's apps: nothing to disconnect.
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
@@ -300,7 +300,7 @@ static CONNECT_HANDSHAKE: crate::api::runtime::catalog::Handshake =
         method: "POST",
         template: CONNECT,
         operation: "app-connect.redeem",
-        doc: "Connect an app: its own key, for a connect code.\n\nThe merchant makes the code on the store's settings (Connections, Apps, Connect an app); it is the `token` in the `#` part of the link they show, works once, for 10 minutes. Send it to this route on the link's own address. Monokulo-Client: `<slug>/<version>` records the app's version. See the docs' Connected apps page.",
+        doc: "Connect an app: its own key, for a connect code.\n\nThe merchant makes the code on the store's settings (Apps tab, Connect an app); it is the `token` in the `#` part of the link they show, works once, for 10 minutes. Send it to this route on the link's own address. Monokulo-Client: `<slug>/<version>` records the app's version. See the docs' Connected apps page.",
         request: |g| g.subschema_for::<RedeemRequest>().to_value(),
         response: |g| g.subschema_for::<RedeemResponse>().to_value(),
         problems: &[

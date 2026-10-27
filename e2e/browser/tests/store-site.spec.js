@@ -1,7 +1,7 @@
 // @ts-check
 // A store's website and its plugins (docs/design/user-testing/
 // store-site-integrations.html: A3, B1, C1). A connected WooCommerce plugin
-// locks the website and lists in Connections; disconnecting it waits while
+// locks the website and lists under Integrations; disconnecting it waits while
 // an order it made can be paid, then removes its webhook and changes the
 // store's key, and the website unlocks; changing the website then asks
 // first, the store's name typed. Without JavaScript the dialogs are pages.
@@ -31,21 +31,22 @@ async function connectPlugin() {
 test('a connected plugin locks the website; disconnecting it removes its webhook and unlocks the website, which then changes behind its own dialog', async ({ page, context }) => {
   await login(context);
   await connectPlugin();
-  // The website is on the General tab; the plugin and its webhook are on
-  // Connections.
+  // The website is on the General tab, the plugin on Integrations and its
+  // webhook on Webhooks.
   await page.goto(`${settings()}?tab=general`);
   const store = page.locator('#card-store');
   await expect(store.locator('.locked-input input')).toHaveValue('shop.localhost');
-  await expect(store.locator('#store-site-lock')).toHaveText('Set by WooCommerce · see Connections');
+  await expect(store.locator('#store-site-lock')).toHaveText('Set by WooCommerce · see Integrations');
   await expect(store.locator('input[name="store_site"]')).toHaveCount(0);
-  await page.goto(`${settings()}?tab=connections`);
-  const connections = page.locator('#card-connections');
+  await page.goto(`${settings()}?tab=webhooks`);
+  await expect(page.locator('#card-webhooks')).toContainText('https://shop.localhost/?wc-api=monokulo');
+  await page.goto(`${settings()}?tab=integrations`);
+  const connections = page.locator('#card-integrations');
   await expect(connections.locator('.int-meta')).toContainText('shop.localhost · plugin 0.4.0 · connected ');
   await expect(connections.locator('.int-meta')).toContainText('last order ');
   await captureCoverageStage(page, 'store-site-connected', test.info(), { group: GROUP });
 
-  await expect(page.locator('#card-webhooks')).toContainText('https://shop.localhost/?wc-api=monokulo');
-  await page.locator('#card-connections').getByRole('link', { name: 'Disconnect…' }).click();
+  await page.locator('#card-integrations').getByRole('link', { name: 'Disconnect…' }).click();
   const dialog = page.getByRole('dialog', { name: 'Disconnect WooCommerce from “shop.localhost”?' });
   await expect(dialog.locator('.checks li.ok')).toContainText('No order from shop.localhost can still be paid');
   await expect(dialog.locator('.checks')).toContainText("The plugin's webhook is removed");
@@ -56,10 +57,11 @@ test('a connected plugin locks the website; disconnecting it removes its webhook
   await dialog.getByRole('button', { name: 'Disconnect WooCommerce' }).click();
 
   await expect(page.getByText('Plugin disconnected')).toBeVisible();
-  await expect(page.locator('#card-webhooks')).not.toContainText('https://shop.localhost/?wc-api=monokulo');
-  const after = page.locator('#card-connections');
+  const after = page.locator('#card-integrations');
   await expect(after.locator('h4')).toHaveText('Before');
   await expect(after).toContainText('No plugin is connected.');
+  await page.goto(`${settings()}?tab=webhooks`);
+  await expect(page.locator('#card-webhooks')).not.toContainText('https://shop.localhost/?wc-api=monokulo');
   await page.goto(`${settings()}?tab=general`);
   const site = page.locator('#card-store input[name="store_site"]');
   await expect(site).toHaveValue('shop.localhost');
@@ -96,7 +98,7 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
   await captureCoverageStage(page, 'store-site-disconnect-page', test.info(), { group: GROUP, shapes: ['desktop'] });
   await page.getByLabel('Type “shop.localhost” to confirm').fill('shop.localhost');
   await page.getByRole('button', { name: 'Disconnect WooCommerce' }).click();
-  await expect(page).toHaveURL(/\/settings\?saved=connections/);
+  await expect(page).toHaveURL(/\/settings\?saved=integrations/);
   await page.goto(`${settings()}?tab=general`);
   // Emptying the website and saving goes to the remove page.
   await page.locator('#card-store input[name="store_site"]').fill('');
@@ -110,12 +112,12 @@ test('without JavaScript the dialogs are pages', async ({ browser }) => {
 test('disconnecting waits while an order from the shop can be paid', async ({ page, context }) => {
   await login(context);
   await connectPlugin();
-  await page.goto(`${settings()}?tab=connections`);
+  await page.goto(`${settings()}?tab=integrations`);
   // An order from the shop can still be paid: the dialog waits.
   const order = await fetch(`${fixture.base_url}/__coverage/integration/order`, { method: 'POST' });
   expect(order.ok).toBe(true);
   await page.reload();
-  await page.locator('#card-connections').getByRole('link', { name: 'Disconnect…' }).click();
+  await page.locator('#card-integrations').getByRole('link', { name: 'Disconnect…' }).click();
   const blocked = page.getByRole('dialog', { name: 'Disconnect WooCommerce from “shop.localhost”?' });
   await expect(blocked.locator('.checks li.no')).toContainText('No order from shop.localhost can still be paid');
   await expect(blocked.locator('.checks .fix')).toContainText('1 can be paid until about');

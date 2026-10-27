@@ -13,9 +13,8 @@ Once connected, an app uses the [HTTP API](../api/) with its own key.
 
 ## 1. Connect
 
-The merchant opens the store's settings, **Connections › Apps › Connect an
-app**, and Monokulo shows a code: a QR code of a link, and the same link to
-copy.
+The merchant opens the store's settings, **Apps › Connect an app**, and
+Monokulo shows a code: a QR code of a link, and the same link to copy.
 
 ```
 https://www.monokulo.com/apps/connect#token=ct_…

@@ -287,15 +287,8 @@ async fn an_app_connects_with_a_code_makes_orders_and_hears_of_them() {
         .unwrap()
         .expect("the order is recorded as the app's");
     assert_eq!(app_order.amount, "0.5");
-    let settings = body_text(
-        get(
-            &router,
-            &format!("/stores/{id}/settings?tab=connections"),
-            &cookie,
-        )
-        .await,
-    )
-    .await;
+    let settings =
+        body_text(get(&router, &format!("/stores/{id}/settings?tab=apps"), &cookie).await).await;
     assert!(settings.contains("Monokular · Front counter"), "{settings}");
     assert!(
         settings.contains("version 0.1.1"),

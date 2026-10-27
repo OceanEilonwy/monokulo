@@ -146,7 +146,7 @@ async fn the_dashboard_button_sends_a_signed_test_and_shows_it() {
     assert_eq!(
         location,
         format!(
-            "/stores/{}/settings?tab=connections&tested={}#webhook-{}",
+            "/stores/{}/settings?tab=webhooks&tested={}#webhook-{}",
             shop.store, delivery.id, webhook.id
         )
     );
