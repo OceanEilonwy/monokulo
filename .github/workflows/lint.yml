@@ -41,6 +41,15 @@ jobs:
         # Its library alone, without the test-support scripted node: every
         # test build turns it on, through the engine's dev-dependency.
         run: cargo clippy -p engine-daemon --lib --locked -- -D warnings
+      - name: Clippy, push-relay as production builds it
+        # Its library and binary alone, without the test-support features
+        # its tests turn on in push and service-runtime.
+        run: cargo clippy -p push-relay --lib --bins --locked -- -D warnings
+      - name: Clippy, monokulo without the push relay
+        # What a monokulo built without its relay feature has in its place
+        # (refusing relay.enabled and the [relay.*] tables), which no test
+        # build compiles.
+        run: cargo clippy -p monokulo --lib --bins --locked --no-default-features --features embedded-engine,tor -- -D warnings
       - name: Clippy, push on stable, as the Monokular Bell builds it
         # The Bell (another repository, on stable Rust) takes the push crate
         # as a git dependency, so nothing nightly-only may reach it: this
