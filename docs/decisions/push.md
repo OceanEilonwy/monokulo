@@ -258,3 +258,40 @@ overrule any of them; a replacement is recorded under the same number.
     push`, with its tests and as the library alone). The Bell builds it on
     stable from a git pin, and every other build here is nightly, so a
     nightly-only feature would otherwise reach the Bell unnoticed.
+
+## The `push` crate's tests (the test engineer)
+
+44. **An endpoint's 2048-character bound is checked on the URL as
+    stored, as well as on the text given.** The check was on the text
+    alone, and `Url` writes a non-ASCII path character as a percent-escape
+    of each byte: a 2025-byte endpoint whose path was 1000 `é` passed, and
+    stored 6025 characters. The text
+    is still checked first, so a long one isn't parsed only to be refused.
+    Found by a test; fixed in `Endpoint::parse`.
+45. **Empty list elements in `Authorization: vapid …` are ignored**
+    (`t=…,, k=…`, a leading or trailing comma), which RFC 9110 §5.6.1.2
+    says a recipient MUST do; they were refused. A parameter given twice
+    is still refused.
+46. **`Sender::send` has one real-HTTP test file,
+    `crates/push/tests/send_over_http.rs`**, every test named
+    `…_over_http`: a push is the one thing that has to land, so the
+    headers, signature and body on the wire, the answers read from real
+    responses (201, 200, 404, 410, 413, 429, 5xx with `Retry-After`, 400,
+    401, a 307 not followed), 16 sends at once, and a request error that
+    leaves the endpoint's path out are checked over a socket. The status
+    mapping itself stays tested in-process too. The five tests take about
+    0.1 s.
+47. **The stub push service speaks TLS with a committed test
+    certificate** (`crates/push/tests/fixtures/`: a CA, and a certificate
+    and P-256 key for `push.test`, made with the openssl CLI, valid to
+    2126; the CA's key was discarded). An endpoint is https only, and no
+    test-only way round that belongs in the crate. The alternative,
+    generating certificates in the test with `rcgen`, would add a lock
+    entry and, by default, `ring`. The client trusts only that CA
+    (`tls_certs_only`) and resolves `push.test` to the stub.
+48. **Test-only dependencies are crates already in Cargo.lock, at their
+    locked versions:** `tokio`, `tokio-rustls` (on `aws-lc-rs`, the
+    provider reqwest's rustls already uses, so no second one), `hyper`,
+    `hyper-util` and `http-body-util`, plus `push` itself with
+    `test-support` for decryption. The lock gains no package; the stable
+    clippy and test runs build them too.
