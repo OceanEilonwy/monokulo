@@ -738,6 +738,16 @@ fn wait(confirmations: u64) -> String {
     }
 }
 
+/// A new row's amount as the page shows it: blank, or what a refused save
+/// sent, as it was sent.
+fn typed_amount(text: &str) -> super::AmountValue<'_> {
+    if text.is_empty() {
+        super::AmountValue::Empty
+    } else {
+        super::AmountValue::Refused(text)
+    }
+}
+
 /// The tiers, smallest amount first under the default: each removable, and
 /// a blank one to add while there's room (one per save).
 fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
@@ -783,9 +793,7 @@ fn confirmation_tiers(store: &StoreSettingsData) -> Markup {
     let new_row = (!at_max).then(|| {
         html! {
             "From"
-            // As typed when the save refused it, so it can be put right.
-            (super::money_input("new_unit_amount", &store.base_currency, None)
-                .value(store.shown("new_unit_amount", ""))
+            (super::money_input("new_unit_amount", &store.base_currency, typed_amount(&store.shown("new_unit_amount", "")))
                 .label(format!("New tier's amount ({currency})"))
                 .maybe_attr("data-saved", store.saved_attr("")))
             "need"

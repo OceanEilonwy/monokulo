@@ -168,13 +168,17 @@ pub fn parse_haveno_form(
                 "Minimum offers per side must be a whole number from 1 to {MAX_OFFERS_PER_SIDE}."
             )
         })?;
-    let min_depth_xmr_per_side = field(HAVENO_MIN_DEPTH_XMR_PER_SIDE)?
-        .parse::<f64>()
-        .ok()
-        .filter(|v| v.is_finite() && (0.0..=MAX_DEPTH_XMR).contains(v))
-        .ok_or_else(|| {
-            format!("Minimum XMR per side must be a number from 0 to {MAX_DEPTH_XMR}.")
-        })?;
+    // An XMR amount as typed (digits and a dot, never piconero), not
+    // whatever a float parser takes ("1e3", "inf").
+    let min_depth_xmr_per_side = pricing::unit_amount::UnitAmount::parse_entered(
+        field(HAVENO_MIN_DEPTH_XMR_PER_SIDE)?,
+        "XMR",
+        pricing::xmr_amount::MAX_AMOUNT_DECIMALS,
+    )
+    .ok()
+    .and_then(|amount| amount.to_string().parse::<f64>().ok())
+    .filter(|v| v.is_finite() && (0.0..=MAX_DEPTH_XMR).contains(v))
+    .ok_or_else(|| format!("Minimum XMR per side must be a number from 0 to {MAX_DEPTH_XMR}."))?;
 
     Ok(Some(HavenoSettings {
         currencies,
@@ -221,6 +225,16 @@ mod tests {
 
     fn parse(form: &HashMap<String, String>) -> Result<Option<HavenoSettings>, String> {
         parse_haveno_form(form, &resolve)
+    }
+
+    /// The minimum depth is XMR as typed, not whatever a float parser takes.
+    #[test]
+    fn the_minimum_depth_is_an_xmr_amount_as_typed() {
+        for depth in ["1e3", "inf", "NaN", "1,5", "-1", "1000001"] {
+            assert!(parse(&full("", "5", "1", depth)).is_err(), "{depth}");
+        }
+        let settings = parse(&full("", "5", "1", "2.5")).unwrap().unwrap();
+        assert_eq!(settings.min_depth_xmr_per_side, 2.5);
     }
 
     #[test]

@@ -599,6 +599,16 @@ pub fn fiat_amount(amount: &str, currency: &str) -> String {
     }
 }
 
+/// What an amount field holds: nothing yet, a saved amount (always
+/// written plain), or what a save refused, shown back exactly as it was
+/// typed so it can be put right.
+#[derive(Clone, Copy)]
+pub enum AmountValue<'a> {
+    Empty,
+    Saved(pricing::unit_amount::UnitAmount),
+    Refused(&'a str),
+}
+
 /// An amount field in `currency`, holding `value`: the one way a page asks
 /// for an amount of money. Its decimals come from the currency, an XMR
 /// field refuses more than the largest order before it is sent (as
@@ -609,11 +619,16 @@ pub fn fiat_amount(amount: &str, currency: &str) -> String {
 pub fn money_input(
     name: &str,
     currency: &crate::currencies::KnownCurrency,
-    value: Option<pricing::unit_amount::UnitAmount>,
+    value: AmountValue<'_>,
 ) -> ui::MoneyInput {
     let field = ui::MoneyInput::new(name, currency.as_str())
         .decimals(u32::from(currency.decimals()))
-        .maybe_value(value.map(|v| v.to_string()));
+        .maybe_value(match value {
+            AmountValue::Empty => None,
+            AmountValue::Saved(amount) => Some(amount.to_string()),
+            AmountValue::Refused(text) => Some(text.to_owned()),
+        })
+        .invalid(matches!(value, AmountValue::Refused(_)));
     if currency.as_str() == "XMR" {
         field
             .max(pricing::xmr_amount::format_xmr_trimmed(

@@ -4,7 +4,7 @@
 // form, and so a new store; the old one goes with its form.
 import { createMemo, createRoot, createSignal } from 'solid-js';
 import type { Accessor } from 'solid-js';
-import { plain } from './money-mask';
+import { canonical } from './money-mask';
 
 /** A card, as the form and the bar see it. */
 export interface CardHandle {
@@ -123,19 +123,19 @@ const ticks = (el: Control): el is HTMLInputElement => el.type === 'checkbox' ||
 
 function savedValue(el: Control): string | boolean {
   const saved = el.getAttribute('data-saved');
-  if (saved !== null) return ticks(el) ? saved === 'on' : money(el) ? plain(saved) : saved;
+  if (saved !== null) return ticks(el) ? saved === 'on' : money(el) ? canonical(saved) : saved;
   if (ticks(el)) return el.defaultChecked;
   if (el instanceof HTMLSelectElement) {
     const chosen = Array.from(el.options).find(option => option.defaultSelected);
     return chosen ? chosen.value : (el.options[0]?.value ?? '');
   }
-  return money(el) ? plain(el.defaultValue) : el.defaultValue;
+  return money(el) ? canonical(el.defaultValue) : el.defaultValue;
 }
 
 // A MoneyInput shows `1,250.50` for a saved `1250.5`: the same amount.
 const money = (el: Control) => el instanceof HTMLInputElement && el.parentElement?.classList.contains('mk-money') === true;
 
-const currentValue = (el: Control) => (ticks(el) ? el.checked : money(el) ? plain(el.value) : el.value);
+const currentValue = (el: Control) => (ticks(el) ? el.checked : money(el) ? canonical(el.value) : el.value);
 
 /** What a setting is sent under: its own controls, not hidden ones. */
 export function controls(setting: Element): Control[] {

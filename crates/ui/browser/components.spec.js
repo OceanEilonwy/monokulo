@@ -343,6 +343,40 @@ test('a paste is read for what it means, and an ambiguous one is asked about', a
   expect(await refused.evaluate(el => el.validationMessage)).toContain('a comma for thousands, or for decimals');
 });
 
+test('a money input never drops a digit or rereads a comma it did not write', async ({ page }) => {
+  await page.goto('/#component-money-input');
+  const usd = page.getByRole('textbox', { name: 'Amount in USD' }).first();
+  // A pasted third decimal stays, and the field says why it won't do.
+  await usd.evaluate(input => {
+    const data = new DataTransfer();
+    data.setData('text', '1234,567');
+    input.focus();
+    input.select();
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await expect(usd).toHaveValue('1,234.567');
+  expect(await usd.evaluate(el => el.validationMessage)).toContain('at most 2 decimal places');
+  // A full fraction takes no more digits.
+  await usd.fill('');
+  await usd.pressSequentially('12.349');
+  await expect(usd).toHaveValue('12.34');
+  // A comma from somewhere else (a keyboard's composing, autofill) is kept, and asked about.
+  await usd.evaluate(input => {
+    input.value = '1,25';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(usd).toHaveValue('1,25');
+  expect(await usd.evaluate(el => el.validationMessage)).toContain('a comma for thousands, or for decimals');
+  const sent = await usd.evaluate(el => {
+    const box = el.closest('.mk-money');
+    const form = document.createElement('form');
+    box.before(form);
+    form.append(box);
+    return new FormData(form).get('book_usd');
+  });
+  expect(sent).toBe('1,25');
+});
+
 test('without JavaScript a money input is plain and sends what is typed', async ({ browser }) => {
   const { context, page } = await noScript(browser);
   const xmr = page.getByRole('textbox', { name: 'Amount in XMR' });

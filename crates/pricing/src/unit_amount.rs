@@ -1,12 +1,11 @@
 //! An amount of a currency in that currency's own units (`0.125` XMR,
 //! `12.50` USD), held exactly: never a float, and never piconero. The one
 //! type a typed, stored or sent amount becomes before anything is done with
-//! it; turning it into piconero needs a rate (`exchange_rate`), or, for an
-//! XMR amount, [`UnitAmount::xmr_to_piconero`].
+//! it; turning it into piconero needs a rate (`exchange_rate`).
 
 use crate::xmr_amount::{
-    format_scaled_trimmed, parse_scaled, AmountError, Piconero, AMOUNT_SCALE, MAX_AMOUNT_DECIMALS,
-    MAX_ORDER_PICONERO, PICONERO_PER_XMR,
+    format_scaled_trimmed, parse_scaled, AmountError, AMOUNT_SCALE, MAX_AMOUNT_DECIMALS,
+    MAX_ORDER_PICONERO,
 };
 
 /// `amount` units of a currency, times 10^[`MAX_AMOUNT_DECIMALS`]. Zero is
@@ -34,8 +33,6 @@ pub enum EnteredAmountError {
 }
 
 impl UnitAmount {
-    pub const ZERO: Self = Self(0);
-
     /// What a stored or API amount says: digits with at most one `.`
     /// (`50`, `.05`, `00050.0500`), at most [`MAX_AMOUNT_DECIMALS`]
     /// significant decimals, surrounding spaces ignored.
@@ -99,16 +96,6 @@ impl UnitAmount {
         }
         places
     }
-
-    /// This amount, read as XMR, in piconero: one piconero is the last
-    /// place. Only for an amount the caller knows is in XMR; anything else
-    /// is priced with a rate.
-    pub fn xmr_to_piconero(self) -> Result<Piconero, AmountError> {
-        const _: () = assert!(AMOUNT_SCALE == PICONERO_PER_XMR as u128);
-        u64::try_from(self.0)
-            .map(Piconero)
-            .map_err(|_| AmountError::TooLarge)
-    }
 }
 
 /// The shortest plain spelling (`50.05`, `0.125`, `12`): no grouping, a dot
@@ -142,7 +129,8 @@ mod tests {
     fn an_xmr_amount_typed_in_comes_back_as_typed() {
         let amount = UnitAmount::parse_entered("0.125", "XMR", 12).unwrap();
         assert_eq!(amount.to_string(), "0.125");
-        assert_eq!(amount.xmr_to_piconero().unwrap(), Piconero(125_000_000_000));
+        // In XMR, one unit of the scale is one piconero.
+        assert_eq!(amount.scaled(), 125_000_000_000);
     }
 
     #[test]

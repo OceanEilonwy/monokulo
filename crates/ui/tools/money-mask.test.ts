@@ -1,7 +1,7 @@
 // How a MoneyInput writes, reads and pastes amounts (web/components/money-mask.ts).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { above, caretAfter, format, marksBefore, plain, readPasted } from '../web/components/money-mask.ts';
+import { above, canonical, caretAfter, format, marksBefore, plain, readPasted } from '../web/components/money-mask.ts';
 
 test('amounts are grouped with commas and keep a dot for decimals', () => {
   assert.equal(format('1250.5', 2), '1,250.50');
@@ -13,9 +13,10 @@ test('amounts are grouped with commas and keep a dot for decimals', () => {
   assert.equal(format('', 2), '');
 });
 
-test('while typing, a trailing point stays and extra places are not taken', () => {
+test('while typing, a trailing point stays and no place is ever cut', () => {
   assert.equal(format('12.', 2, true), '12.');
-  assert.equal(format('12.345', 2, true), '12.34');
+  assert.equal(format('12.345', 2, true), '12.345');
+  assert.equal(format('0.1234567890123', 12, true), '0.1234567890123');
   assert.equal(format('1250', 2, true), '1,250');
 });
 
@@ -41,6 +42,18 @@ test('a paste is read for what it means, or refused when it could be either', ()
   // 1250 or 1.25: a thousandfold apart in Monero.
   assert.equal(readPasted('1,250'), undefined);
   assert.equal(readPasted('1,25,0'), undefined);
+  // Signs and exponents are refused, not stripped.
+  assert.equal(readPasted('-5.00'), undefined);
+  assert.equal(readPasted('5e1'), undefined);
+  assert.equal(readPasted('1,250 EUR'), undefined);
+  assert.equal(readPasted('12.50 EUR'), '12.50');
+});
+
+test('one amount has one canonical spelling', () => {
+  assert.equal(canonical('1,250.50'), canonical('1250.5'));
+  assert.equal(canonical('12.50'), '12.5');
+  assert.equal(canonical('100'), '100');
+  assert.equal(canonical(''), '');
 });
 
 test('the caret stays after the same digits as grouping comes and goes', () => {
