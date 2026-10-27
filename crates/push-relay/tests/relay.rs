@@ -105,6 +105,12 @@ async fn registrations_the_relay_cannot_serve_are_refused_with_their_problem() {
             json!({"platform": "web", "token": apns_token(), "app": APP, "vapid_public_key": sender}),
             "invalid-request",
         ),
+        // No sender writes a push-to-start, so no endpoint is minted for
+        // one (decisions/push.md 157).
+        (
+            json!({"platform": "apns-pushtostart", "token": apns_token(), "app": APP, "vapid_public_key": sender}),
+            "invalid-request",
+        ),
         (
             json!({"platform": "apns", "token": apns_token(), "app": APP, "vapid_public_key": sender, "store": "s"}),
             "invalid-request",
@@ -535,20 +541,15 @@ async fn a_body_the_handles_platform_does_not_take_is_an_invalid_request() {
     let activity = relay
         .register("apns-liveactivity", &"2e".repeat(32), &sender)
         .await;
-    let start = relay
-        .register("apns-pushtostart", &"3e".repeat(32), &sender)
-        .await;
     let cases = [
         (&to_fcm, plain(json!({"phase": "paid"}))),
         (&activity, encrypted(&keys, b"{}")),
-        (&start, encrypted(&keys, b"{}")),
         (&activity, plain(json!({"phase": "idle"}))),
         (&activity, plain(json!({"phase": "paid", "amount": 24.5}))),
         (
             &activity,
             plain(json!({"phase": "seen", "expiresAt": "soon"})),
         ),
-        (&start, plain(json!({"phase": "waiting"}))),
     ];
     for (n, (endpoint, message)) in cases.into_iter().enumerate() {
         let answered = relay
@@ -563,7 +564,7 @@ async fn a_body_the_handles_platform_does_not_take_is_an_invalid_request() {
     }
     assert!(apns.drain().await.is_empty(), "nothing reached APNs");
     assert!(fcm.drain().await.is_empty(), "nothing reached FCM");
-    assert_eq!(relay.handles(), 3);
+    assert_eq!(relay.handles(), 2);
 }
 
 /// A push may be 4096 bytes, but base64 inside APNs's or FCM's JSON

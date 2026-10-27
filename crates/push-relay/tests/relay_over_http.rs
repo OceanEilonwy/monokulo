@@ -163,43 +163,6 @@ async fn a_live_activity_is_updated_then_told_of_the_payment_with_an_alert_over_
     assert_eq!(aps.get("stale-date"), None);
 }
 
-#[tokio::test]
-async fn a_push_to_start_starts_a_live_activity_over_http() {
-    let (apns, fcm) = (Stub::accepting().await, Stub::accepting().await);
-    let relay = TestRelay::start(&apns, &fcm, &[]).await;
-    let sender = Arc::new(VapidKey::generate());
-    let endpoint = relay
-        .register("apns-pushtostart", &apns_token(), &sender)
-        .await;
-    let start = json!({
-        "attributes-type": "SaleAttributes",
-        "attributes": {"location": "Front Counter", "store": "Geomart"},
-        "content-state": {"phase": "waiting", "amount": "$3.00"},
-    });
-    let answered = relay
-        .push(&endpoint, PushBuilder::new(&sender, plain(start)))
-        .await;
-    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
-    let received = apns.next().await;
-    assert_eq!(received.header("apns-push-type"), "liveactivity");
-    assert_eq!(
-        received.header("apns-topic"),
-        "com.example.monokular.push-type.liveactivity"
-    );
-    let aps = &received.json()["aps"];
-    assert_eq!(aps["event"], "start");
-    assert_eq!(aps["attributes-type"], "SaleAttributes");
-    assert_eq!(
-        aps["attributes"],
-        json!({"location": "Front Counter", "store": "Geomart"})
-    );
-    assert_eq!(
-        aps["content-state"],
-        json!({"phase": "waiting", "amount": "$3.00"})
-    );
-    assert_eq!(aps["alert"], json!({"title": "New sale"}));
-}
-
 /// FCM gets a data message, its priority from the push's urgency; the
 /// access token is fetched once and reused.
 #[tokio::test]

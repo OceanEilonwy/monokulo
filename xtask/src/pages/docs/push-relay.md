@@ -49,8 +49,8 @@ Content-Type: application/json
 ```
 
 - `platform`: `apns` (notifications, encrypted), `apns-liveactivity` (a
-  Live Activity's updates, by its push token), `apns-pushtostart` (starting
-  a Live Activity, iOS 17.2), or `fcm`.
+  Live Activity's updates, by its push token), or `fcm`. There is no
+  push-to-start yet: no sender writes one.
 - `token`: the APNs token in hex (either case, at most 256 hex digits), or
   the FCM registration token (at most 512 characters).
 - `app`: the app's name, as the relay's operator set it up
@@ -80,7 +80,6 @@ The relay answers `201 Created` once APNs or FCM took it.
 | --- | --- |
 | `apns` | An alert, `mutable-content` on, titled "New sale" until the app's Notification Service Extension decrypts the ciphertext it carries as `aes128gcm` (base64url) and writes its own. Priority 10 for a high-urgency push, 5 otherwise; expires after the push's TTL; collapsed by its topic. |
 | `apns-liveactivity` | The JSON as the activity's `content-state`, read for `phase` (`waiting`, `seen`, `confirming`, `paid` or `expired`), `expiresAt` (Unix seconds: the activity's stale date), `amount` and `currency`; the rest goes to APNs as it came. Every push is an `update`: `paid` and `expired` come with an alert ("Paid · 24.50 USD", "No payment yet"), and the relay never ends the activity, which the app idles or ends itself. |
-| `apns-pushtostart` | A new activity: the JSON is `{"attributes-type", "attributes", "content-state"}`, handed on as they are, with an alert. |
 | `fcm` | A data message carrying the ciphertext as `aes128gcm`, priority `HIGH` for a high-urgency push and `NORMAL` otherwise, kept for the TTL (at most 28 days), collapsed by its topic. |
 
 APNs and FCM carry 4096 bytes, so a push whose ciphertext is over about

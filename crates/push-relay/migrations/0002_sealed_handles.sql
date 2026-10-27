@@ -20,7 +20,7 @@ CREATE TABLE handles (
     -- endpoints open its own rows and no other sender's of those devices.
     key BLOB PRIMARY KEY NOT NULL CHECK (length(key) = 32),
     platform TEXT NOT NULL
-        CHECK (platform IN ('apns', 'apns-liveactivity', 'apns-pushtostart', 'fcm')),
+        CHECK (platform IN ('apns', 'apns-liveactivity', 'fcm')),
     app TEXT NOT NULL,
     -- The device token and the sender's VAPID key, AES-256-GCM under a key
     -- derived from the handle's id and bound to its platform and app: the
