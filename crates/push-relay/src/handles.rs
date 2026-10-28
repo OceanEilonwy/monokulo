@@ -624,6 +624,20 @@ impl HandleStore {
             .await
     }
 
+    /// How many handles haven't expired by `now`.
+    pub async fn count(&self, now: i64) -> Result<u64, StoreError> {
+        self.pool
+            .run(move |connection| {
+                let count: i64 = connection.query_row(
+                    "SELECT COUNT(*) FROM handles WHERE expires_at > ?1",
+                    params![now],
+                    |row| row.get(0),
+                )?;
+                Ok(u64::try_from(count).unwrap_or(0))
+            })
+            .await
+    }
+
     /// Forgets every handle expired by `now`, and says how many there were.
     pub async fn sweep(&self, now: i64) -> Result<usize, StoreError> {
         self.pool

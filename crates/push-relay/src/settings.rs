@@ -22,14 +22,15 @@ use std::time::Duration;
 use abuse::TrustedProxies;
 use live_settings::{
     settings, AnySetting, BindAddr, Env, FieldError, Json, MemoryStore, Registry, Secret, Section,
-    SettingKind, SettingValue, Snapshot,
+    SettingKind, SettingValue, SettingsStore, Snapshot,
 };
 use push::jwt::Es256Key;
 use push::{Endpoint, Origin};
 use serde::{Deserialize, Serialize};
 
 use crate::fcm::ServiceAccount;
-use crate::handles::{AppName, HandleKey, Lifetimes};
+pub use crate::handles::AppName;
+use crate::handles::{HandleKey, Lifetimes};
 
 settings! {
     SERVER_LISTEN: BindAddr {
@@ -233,22 +234,54 @@ pub async fn load(
     env: Env,
     host: Host,
 ) -> Result<RelayConfig, LoadError> {
+    let registry = registry(Arc::new(MemoryStore::with(stored)), env, host).await?;
+    config(&registry)
+}
+
+/// Every relay setting `host` has, over `store` and `env`, checked as
+/// [`load`] checks them (anything wrong is the error) and booted, so it
+/// can describe, check and save them: what monokulo's admin page edits
+/// the `[relay.*]` tables of its options file through. Every setting is
+/// restart-only, so a save stores it and changes nothing running; the
+/// relay that is started next reads it ([`config`]).
+pub async fn registry(
+    store: Arc<dyn SettingsStore>,
+    env: Env,
+    host: Host,
+) -> Result<Registry, LoadError> {
     let declared = match host {
         Host::Standalone => ALL.to_vec(),
         Host::Embedded => embedded_settings(),
     };
-    let store = Arc::new(MemoryStore::with(stored));
     let mut builder = Registry::builder_with_env(store, &declared, env).await;
-    let relay = builder.section::<RelayConfig>();
+    builder.section::<RelayConfig>();
     if host == Host::Standalone {
         // Read before the registry (logging starts first); registered so
         // a bad value there stops the relay like any other.
         builder.section::<LoggingConfig>();
     }
-    builder
+    let registry = builder
         .build()
         .map_err(|error| LoadError(error.to_string()))?;
-    Ok((*relay.load()).clone())
+    registry
+        .boot()
+        .await
+        .map_err(|error| LoadError(error.to_string()))?;
+    Ok(registry)
+}
+
+/// The settings a relay started now runs on: what `registry` holds,
+/// saves included.
+pub fn config(registry: &Registry) -> Result<RelayConfig, LoadError> {
+    registry.read::<RelayConfig>().map_err(|errors| {
+        LoadError(
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+    })
 }
 
 /// The settings the relay runs on, checked together.
@@ -705,9 +738,138 @@ impl Apps {
         self.0.get(name)
     }
 
-    fn iter(&self) -> impl Iterator<Item = (&AppName, &AppConfig)> {
+    /// Every app, by name.
+    pub fn iter(&self) -> impl Iterator<Item = (&AppName, &AppConfig)> {
         self.0.iter()
     }
+
+    /// The apps a list of rows gives (monokulo's admin page edits
+    /// `handles.apps` as one row per app): a row left blank is no app;
+    /// every other one must be a whole app, named once. Every row's
+    /// problem is given, by its place in `rows`.
+    pub fn from_rows(rows: &[AppRow]) -> Result<Apps, Vec<AppRowError>> {
+        let mut apps = BTreeMap::new();
+        let mut errors = Vec::new();
+        for (at, row) in rows.iter().enumerate() {
+            let text =
+                |value: &str| Some(value.trim().to_owned()).filter(|value| !value.is_empty());
+            let (name, apns_topic, fcm_project_id) = (
+                text(&row.name),
+                text(&row.apns_topic),
+                text(&row.fcm_project_id),
+            );
+            if name.is_none() && apns_topic.is_none() && fcm_project_id.is_none() {
+                continue;
+            }
+            let mut problem = |field, message: String| {
+                errors.push(AppRowError {
+                    row: at,
+                    field,
+                    message,
+                })
+            };
+            let name = match name.map(AppName::try_from) {
+                None => {
+                    problem(
+                        AppField::Name,
+                        "Give the app the name it registers with.".to_owned(),
+                    );
+                    None
+                }
+                Some(Err(message)) => {
+                    problem(AppField::Name, format!("{message}."));
+                    None
+                }
+                Some(Ok(name)) if apps.contains_key(&name) => {
+                    problem(AppField::Name, format!("{name} is listed twice."));
+                    None
+                }
+                Some(Ok(name)) => Some(name),
+            };
+            if apns_topic.is_none() && fcm_project_id.is_none() {
+                problem(
+                    AppField::ApnsTopic,
+                    "needs an iOS bundle ID or a Firebase project ID, or both.".to_owned(),
+                );
+            }
+            let apns_topic = match apns_topic.map(BundleId::try_from).transpose() {
+                Ok(topic) => topic,
+                Err(message) => {
+                    problem(AppField::ApnsTopic, format!("{message}."));
+                    None
+                }
+            };
+            let fcm_project_id = match fcm_project_id.map(ProjectId::try_from).transpose() {
+                Ok(project) => project,
+                Err(message) => {
+                    problem(AppField::FcmProjectId, format!("{message}."));
+                    None
+                }
+            };
+            if let Some(name) = name {
+                apps.insert(
+                    name,
+                    AppConfig {
+                        apns_topic,
+                        fcm_project_id,
+                    },
+                );
+            }
+        }
+        if errors.is_empty() {
+            Ok(Apps(apps))
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// The apps as rows, in name order, for editing.
+    pub fn rows(&self) -> Vec<AppRow> {
+        self.0
+            .iter()
+            .map(|(name, app)| AppRow {
+                name: name.as_str().to_owned(),
+                apns_topic: app
+                    .apns_topic
+                    .as_ref()
+                    .map_or_else(String::new, |topic| topic.as_str().to_owned()),
+                fcm_project_id: app
+                    .fcm_project_id
+                    .as_ref()
+                    .map_or_else(String::new, |project| project.as_str().to_owned()),
+            })
+            .collect()
+    }
+
+    /// `handles.apps` as it is saved.
+    pub fn to_setting(&self) -> String {
+        Json(self.clone()).render()
+    }
+}
+
+/// One app as a row of text, as a form edits it ([`Apps::from_rows`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppRow {
+    pub name: String,
+    pub apns_topic: String,
+    pub fcm_project_id: String,
+}
+
+/// Which part of an app's row is wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppField {
+    Name,
+    ApnsTopic,
+    FcmProjectId,
+}
+
+/// What is wrong with one row of [`Apps::from_rows`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppRowError {
+    /// The row's place in the list given.
+    pub row: usize,
+    pub field: AppField,
+    pub message: String,
 }
 
 /// Where one app's pushes go: its iOS bundle ID for APNs, its Firebase

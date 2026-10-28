@@ -300,7 +300,10 @@ impl TestRelay {
             ),
         ]);
         let config = settings::load(stored, env, Host::Standalone).await.unwrap();
-        let relay = Relay::start(&config).await.unwrap();
+        // Stopped with the test's runtime.
+        let relay = Relay::start(&config, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
         TestRelay {
             router: relay.router(),
             relay,

@@ -56,6 +56,8 @@ sqlite = { path = "../sqlite" }
 telemetry = { path = "../telemetry" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+# The stop a relay is started with: its sweep ends with it.
+tokio-util = "0.7.20"
 tracing = "0.1.44"
 # The OAuth token request's form body.
 url = "2.5.8"
