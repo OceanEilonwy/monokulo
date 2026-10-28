@@ -3113,3 +3113,202 @@ url = \"http://node:18081\"
         );
     }
 }
+
+/// One table of an options file as a store of its own (`FileStore`): a
+/// service embedded in another process whose settings are all in its
+/// table, with nothing kept in a database (a push relay inside monokulo).
+mod file_store {
+    use super::*;
+
+    settings! {
+        LISTEN: BindAddr {
+            key: "server.listen",
+            default: parsed_default("0.0.0.0:8444"),
+            description: "Where it listens.",
+            applies: Restart,
+        },
+        DAYS: u32 {
+            key: "handles.ttl_days",
+            default: 90,
+            check: range(1, 3650),
+            description: "Days.",
+            applies: Restart,
+        },
+        APPS: Json<BTreeMapApps> {
+            key: "handles.apps",
+            default: Json(BTreeMapApps::default()),
+            description: "Apps.",
+            applies: Restart,
+        },
+        KEY: Secret {
+            key: "handles.id_key",
+            env: "TEST_RELAY_KEY",
+            default: Secret::default(),
+            description: "Key.",
+            sources: [Env],
+            applies: Restart,
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+    #[serde(transparent)]
+    pub struct BTreeMapApps(std::collections::BTreeMap<String, App>);
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct App {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub topic: Option<String>,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Relay {
+        listen: std::net::SocketAddr,
+        days: u32,
+        apps: BTreeMapApps,
+    }
+
+    impl Section for Relay {
+        const NAME: &'static str = "relay";
+        fn keys() -> &'static [&'static dyn AnySetting] {
+            &[&LISTEN, &DAYS, &APPS, &KEY]
+        }
+        fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+            Ok(Relay {
+                listen: snapshot.get(&LISTEN).0,
+                days: snapshot.get(&DAYS),
+                apps: snapshot.get(&APPS).0,
+            })
+        }
+    }
+
+    const TEXT: &str = "\
+# The host's own.
+[relay]
+enabled = true
+
+# Where it listens.
+[relay.server]
+listen = \"127.0.0.1:9000\"
+";
+
+    async fn booted(file: &OptionsFile, env: Env) -> (Registry, Live<Relay>) {
+        let store = Arc::new(FileStore::new(file.scoped("relay"), ALL));
+        let mut builder = Registry::builder_with_env(store, ALL, env).await;
+        let live = builder.section::<Relay>();
+        let registry = builder.build().unwrap();
+        registry.boot().await.unwrap();
+        (registry, live)
+    }
+
+    /// Read from its table, saved into it, leaving the host's value
+    /// directly in the table and every comment as they were.
+    #[tokio::test]
+    async fn a_table_of_a_file_is_read_and_saved_in_place() {
+        let file = OptionsFile::in_memory(TEXT);
+        let (registry, live) = booted(&file, Env::fixed::<&str, &str>([])).await;
+        assert_eq!(live.load().listen, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(registry.options_file().unwrap().path, "(in memory)");
+
+        let report = registry
+            .save(vec![
+                ("server.listen".into(), Some("127.0.0.1:9001".into())),
+                ("handles.ttl_days".into(), Some("30".into())),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(report.changed, ["server.listen", "handles.ttl_days"]);
+        let text = file.read_text().unwrap();
+        assert!(text.starts_with("# The host's own.\n[relay]\nenabled = true\n\n# Where it listens.\n[relay.server]\nlisten = \"127.0.0.1:9001\"\n"), "{text}");
+        assert!(text.contains("[relay.handles]\nttl_days = 30\n"), "{text}");
+        // Restart-only: stored, not installed; what a restart would read.
+        assert_eq!(live.load().days, 90);
+        let now = registry.read::<Relay>().unwrap();
+        assert_eq!(
+            (now.listen, now.days),
+            ("127.0.0.1:9001".parse().unwrap(), 30)
+        );
+
+        // Read back by a registry of its own, as the next start reads it.
+        let (_, again) = booted(&file, Env::fixed::<&str, &str>([])).await;
+        assert_eq!(*again.load(), now);
+    }
+
+    /// A JSON object of objects, one per name, is written as a table per
+    /// name, as an operator writes it by hand, and read back the same.
+    #[tokio::test]
+    async fn an_object_of_objects_is_written_as_a_table_each() {
+        let file = OptionsFile::in_memory(TEXT);
+        let (registry, _) = booted(&file, Env::fixed::<&str, &str>([])).await;
+        registry
+            .save(vec![(
+                "handles.apps".into(),
+                Some(r#"{"monokular":{"topic":"com.example.monokular"},"till":{}}"#.into()),
+            )])
+            .await
+            .unwrap();
+        let text = file.read_text().unwrap();
+        assert!(
+            text.contains("[relay.handles.apps.monokular]\ntopic = \"com.example.monokular\"\n"),
+            "{text}"
+        );
+        assert!(text.contains("[relay.handles.apps.till]\n"), "{text}");
+        assert!(!text.contains("[relay.handles]\n"), "{text}");
+        let (_, again) = booted(&file, Env::fixed::<&str, &str>([])).await;
+        assert_eq!(again.load().apps, registry.read::<Relay>().unwrap().apps);
+        assert_eq!(again.load().apps.0.len(), 2);
+
+        // Saved again with one taken out, the tables follow.
+        registry
+            .save(vec![("handles.apps".into(), Some(r#"{"till":{}}"#.into()))])
+            .await
+            .unwrap();
+        let text = file.read_text().unwrap();
+        assert!(!text.contains("monokular"), "{text}");
+        assert!(text.contains("[relay.handles.apps.till]\n"), "{text}");
+    }
+
+    /// A secret from the environment alone can't be saved into the file,
+    /// and a store that is asked to anyway refuses.
+    #[tokio::test]
+    async fn a_setting_the_file_may_not_hold_is_refused() {
+        let file = OptionsFile::in_memory(TEXT);
+        let store = FileStore::new(file.scoped("relay"), ALL);
+        let refused = store
+            .write_all(vec![("handles.id_key", Some("x".repeat(32)))])
+            .await
+            .unwrap_err();
+        assert!(
+            refused.0.contains("isn't kept in the options file"),
+            "{refused}"
+        );
+        let refused = store
+            .write_all(vec![("handles.nothing", Some("1".into()))])
+            .await
+            .unwrap_err();
+        assert!(refused.0.contains("no setting called"), "{refused}");
+        assert_eq!(file.read_text().unwrap(), TEXT);
+    }
+
+    /// Options given under the host's table on the command line lock the
+    /// setting, and the page is told the option as it was typed.
+    #[tokio::test]
+    async fn a_nested_option_is_named_with_its_table() {
+        let file = OptionsFile::in_memory(TEXT);
+        let env = Env::fixed::<&str, &str>([]).with_nested_cli(
+            "relay",
+            HashMap::from([("server.listen".to_owned(), "127.0.0.1:9002".to_owned())]),
+        );
+        let (registry, live) = booted(&file, env).await;
+        assert_eq!(live.load().listen, "127.0.0.1:9002".parse().unwrap());
+        let view = registry
+            .describe()
+            .into_iter()
+            .find(|view| view.key == "server.listen")
+            .unwrap();
+        assert_eq!(view.cli_flag, "relay-server-listen");
+        assert_eq!(
+            view.locked.as_deref(),
+            Some("This is set with --relay-server-listen when the process starts; remove it there to change it here.")
+        );
+    }
+}

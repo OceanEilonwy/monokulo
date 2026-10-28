@@ -190,7 +190,7 @@ impl OptionsFile {
         }
     }
 
-    fn read_text(&self) -> Result<String, StoreError> {
+    pub(crate) fn read_text(&self) -> Result<String, StoreError> {
         match &self.shared.place {
             Place::Disk(path) if !path.exists() => Ok(String::new()),
             Place::Disk(path) => std::fs::read_to_string(path)
@@ -286,7 +286,7 @@ impl OptionsFile {
             // An empty value is a value (`key = ""`, or `[]`), kept as the
             // database keeps it; only taking the value away removes the key.
             match raw.as_deref() {
-                Some(raw) => set(&mut doc, &key, toml_value(&setting.kind(), raw)),
+                Some(raw) => set(&mut doc, &key, toml_item(&setting.kind(), raw)),
                 None => remove(&mut doc, &key),
             }
         }
@@ -403,6 +403,60 @@ impl SettingsStore for LayeredStore {
                 }
                 return Err(e);
             }
+        }
+        Ok(())
+    }
+
+    fn file_info(&self) -> Option<FileInfo> {
+        Some(self.file.info())
+    }
+}
+
+/// The options file alone as a store: for a service with no runtime
+/// switch kept in a database (a push relay inside monokulo, whose settings
+/// are the `[relay.*]` tables of monokulo's file), so every setting is
+/// read from and saved to the file, as [`LayeredStore`] does for the
+/// file's share of a process's settings.
+pub struct FileStore {
+    file: OptionsFile,
+    declared: Vec<&'static dyn AnySetting>,
+}
+
+impl FileStore {
+    /// `file` (often one table of a file, [`OptionsFile::scoped`]) holding
+    /// the settings `declared`.
+    pub fn new(file: OptionsFile, declared: &[&'static dyn AnySetting]) -> Self {
+        FileStore {
+            file,
+            declared: declared.to_vec(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SettingsStore for FileStore {
+    async fn read_all(&self) -> Result<HashMap<String, String>, StoreError> {
+        self.file.read_values(&self.declared)
+    }
+
+    async fn write_all(
+        &self,
+        changes: Vec<(&'static str, Option<String>)>,
+    ) -> Result<(), StoreError> {
+        let mut to_file = Vec::with_capacity(changes.len());
+        for (key, value) in changes {
+            match self.declared.iter().copied().find(|s| s.key() == key) {
+                Some(setting) if setting.sources().toml => to_file.push((setting, value)),
+                Some(_) => {
+                    return Err(StoreError::new(format!(
+                        "{key} isn't kept in the options file"
+                    )))
+                }
+                None => return Err(StoreError::new(format!("there is no setting called {key}"))),
+            }
+        }
+        if !to_file.is_empty() {
+            self.file.write_values(&to_file)?;
         }
         Ok(())
     }
@@ -633,6 +687,34 @@ fn table_json(table: &Table) -> serde_json::Value {
     )
 }
 
+/// A stored value as it is written into the file: a JSON object of
+/// objects (one entry per name, as `handles.apps` is) as a table per entry,
+/// `[handles.apps.monokular]`, the way the docs and `--init` write it;
+/// anything else as a value ([`toml_value`]).
+fn toml_item(kind: &SettingKind, raw: &str) -> Item {
+    if *kind == SettingKind::Json {
+        if let Ok(serde_json::Value::Object(entries)) = serde_json::from_str(raw) {
+            if !entries.is_empty() && entries.values().all(serde_json::Value::is_object) {
+                let mut table = Table::new();
+                table.set_implicit(true);
+                for (name, entry) in &entries {
+                    let mut inner = Table::new();
+                    if let serde_json::Value::Object(fields) = entry {
+                        for (field, value) in fields {
+                            if let Some(value) = json_value(value) {
+                                inner.insert(field, Item::Value(value));
+                            }
+                        }
+                    }
+                    table.insert(name, Item::Table(inner));
+                }
+                return Item::Table(table);
+            }
+        }
+    }
+    Item::Value(toml_value(kind, raw))
+}
+
 /// A stored value as TOML, by the setting's kind.
 fn toml_value(kind: &SettingKind, raw: &str) -> Value {
     match kind {
@@ -685,8 +767,8 @@ fn json_value(json: &serde_json::Value) -> Option<Value> {
     })
 }
 
-/// Sets `key` (one table per prefix) to `value`, keeping everything else.
-fn set(doc: &mut DocumentMut, key: &str, value: Value) {
+/// Sets `key` (one table per prefix) to `item`, keeping everything else.
+fn set(doc: &mut DocumentMut, key: &str, item: Item) {
     let mut parts: Vec<&str> = key.split('.').collect();
     let Some(name) = parts.pop() else {
         return;
@@ -705,15 +787,15 @@ fn set(doc: &mut DocumentMut, key: &str, value: Value) {
         };
         table = next;
     }
-    match table.get_mut(name) {
+    match (table.get_mut(name), item) {
         // In place, so the comment above it stays.
-        Some(Item::Value(existing)) => {
+        (Some(Item::Value(existing)), Item::Value(value)) => {
             let decor = existing.decor().clone();
             *existing = value;
             *existing.decor_mut() = decor;
         }
-        _ => {
-            table.insert(name, Item::Value(value));
+        (_, item) => {
+            table.insert(name, item);
         }
     }
 }

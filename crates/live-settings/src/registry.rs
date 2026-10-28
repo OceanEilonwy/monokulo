@@ -938,10 +938,21 @@ impl Registry {
                     problem,
                     sources: setting.sources(),
                     locked: locked(*setting, &inner.env),
-                    cli_flag: crate::setting::cli_flag(key),
+                    cli_flag: inner.env.cli_flag(key),
                 }
             })
             .collect()
+    }
+
+    /// The section `S` as the values stored now (the last read, save or
+    /// reload) and the environment give it, whether or not it has been
+    /// installed: for a restart-only section, what its next start reads.
+    /// A save stores such a section's values but leaves its `Live` as the
+    /// process started with ([`Registry::save`]); a host that restarts the
+    /// piece itself, in-process, starts it from this.
+    pub fn read<S: Section>(&self) -> Result<S, Vec<FieldError>> {
+        let stored = self.inner.stored.read().clone();
+        S::from_snapshot(&Snapshot::new(stored, self.inner.env.clone()))
     }
 
     /// Sections running on their defaults because the stored values broke
@@ -972,7 +983,7 @@ fn locked(setting: &'static dyn AnySetting, env: &Env) -> Option<String> {
     if sources.cli && env.cli(setting.key()).is_some() {
         return Some(format!(
             "This is set with --{} when the process starts; remove it there to change it here.",
-            crate::setting::cli_flag(setting.key())
+            env.cli_flag(setting.key())
         ));
     }
     if !sources.stored() {

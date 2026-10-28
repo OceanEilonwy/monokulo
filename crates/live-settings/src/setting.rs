@@ -573,6 +573,11 @@ pub struct Env {
     given: Arc<HashMap<String, String>>,
     /// The host's own defaults, by setting key ([`Env::with_defaults`]).
     defaults: Arc<HashMap<String, String>>,
+    /// The table the command-line options are under, for a service
+    /// embedded in another process (`relay`: `--relay-server-listen` gives
+    /// `server.listen`), so what the admin page says names the option as
+    /// it is typed ([`Env::cli_flag`]).
+    cli_table: Option<Arc<str>>,
 }
 
 /// Names only: a variable's value may be a secret (an admin token).
@@ -615,9 +620,7 @@ impl Env {
                     .map(|(k, v)| (k.into(), v.into()))
                     .collect(),
             )),
-            cli: Arc::default(),
-            given: Arc::default(),
-            defaults: Arc::default(),
+            ..Env::default()
         }
     }
 
@@ -642,9 +645,7 @@ impl Env {
                 vars.insert(var.to_string(), value.to_string());
                 Env {
                     fixed: Some(Arc::new(vars)),
-                    cli: self.cli,
-                    given: self.given,
-                    defaults: self.defaults,
+                    ..self
                 }
             }
             _ => self,
@@ -656,6 +657,27 @@ impl Env {
     pub fn with_cli(mut self, values: HashMap<String, String>) -> Self {
         self.cli = Arc::new(values);
         self
+    }
+
+    /// This environment with values given on the command line as options
+    /// under `table` (`--relay-server-listen`), by the setting's own key
+    /// (`server.listen`, as [`crate::cli::nested_values`] reads them):
+    /// they win over everything else, and are named with the table's
+    /// prefix wherever they are named ([`Env::cli_flag`]).
+    pub fn with_nested_cli(mut self, table: &str, values: HashMap<String, String>) -> Self {
+        self.cli = Arc::new(values);
+        self.cli_table = Some(Arc::from(table));
+        self
+    }
+
+    /// The command-line option for the setting `key` here, without the
+    /// leading `--`: [`cli_flag`], under its table for options given with
+    /// [`Env::with_nested_cli`].
+    pub fn cli_flag(&self, key: &str) -> String {
+        match &self.cli_table {
+            Some(table) => format!("{table}-{}", cli_flag(key)),
+            None => cli_flag(key),
+        }
     }
 
     /// This environment with the host's own defaults for the named
