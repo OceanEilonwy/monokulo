@@ -176,12 +176,6 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
     // it has started, by every part.
     let stopping = service_runtime::shutdown::on_signal();
 
-    // The push relay, when it runs here: every setting of it checked
-    // first, on or off.
-    let relay = monokulo::relay::start(relay, &db_path, stopping.clone())
-        .await
-        .unwrap_or_else(|e| stop(e));
-
     // The engine, inside or over HTTP.
     let (engine_client, embedded) = match (mode, engine) {
         (EngineMode::Embedded, Some(prepared)) => {
@@ -234,6 +228,18 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         Ok(settings) => settings,
         Err(e) => stop(format!("failed to load settings: {e}")),
     };
+
+    // The push relay, when it runs here: every setting of it checked
+    // first, on or off. Its handle is the admin page's, which restarts it
+    // after a save.
+    let relay = monokulo::relay::start(
+        relay,
+        &db_path,
+        stopping.clone(),
+        monokulo_settings.relay.clone(),
+    )
+    .await
+    .unwrap_or_else(|e| stop(e));
 
     monokulo::embed_domains::spawn_rechecks(db.clone(), proofs.clone());
     // Changes to existing stores that need the running process, each run
@@ -318,9 +324,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         webhooks,
         apps,
         push,
-        // The relay's handle for the admin page: wired when the card lands
-        // (`push-settings-ui`); until then the card has nothing to show.
-        relay: Default::default(),
+        relay: relay.clone(),
         revocations: Default::default(),
         stopping: stopping.clone(),
         tor: tor.clone(),
@@ -382,9 +386,7 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
             tracing::warn!(grace = ?service_runtime::shutdown::GRACE, "requests still running after the grace period, exiting anyway")
         }
     }
-    if let Some(relay) = relay {
-        relay.stop().await;
-    }
+    relay.stop().await;
     match embedded {
         Some(running) => Some(running.stop().await),
         None => None,

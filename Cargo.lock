@@ -4735,6 +4735,7 @@ dependencies = [
  "telemetry",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "tracing-subscriber",

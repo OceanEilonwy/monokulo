@@ -59,7 +59,12 @@ fn main() {
         let config = settings::load(values, start.env, Host::Standalone)
             .await
             .unwrap_or_else(|e| stop(e));
-        let relay = Relay::start(&config)
+        // On SIGTERM or Ctrl-C: stop accepting connections, and let
+        // requests in flight finish for up to the grace period. One stop
+        // for the process, which the relay's sweep, the server and the
+        // wait below all see.
+        let stopping = service_runtime::shutdown::on_signal();
+        let relay = Relay::start(&config, stopping.clone())
             .await
             .unwrap_or_else(|e| stop(format!("the push relay didn't start: {e}")));
         let listener = tokio::net::TcpListener::bind(config.listen)
@@ -67,12 +72,8 @@ fn main() {
             .unwrap_or_else(|e| stop(format!("failed to listen on {}: {e}", config.listen)));
         let address = listener.local_addr().unwrap_or(config.listen);
         tracing::info!(server.address = %address, "push relay listening");
-        // On SIGTERM or Ctrl-C: stop accepting connections, and let
-        // requests in flight finish for up to the grace period. One stop
-        // for the process, which the server and the wait below both see.
-        let stopping = service_runtime::shutdown::on_signal();
         let serving = {
-            let stopping = stopping.clone();
+            let (relay, stopping) = (relay.clone(), stopping.clone());
             tokio::spawn(async move { relay.serve(listener, stopping.cancelled_owned()).await })
         };
         stopping.cancelled().await;
@@ -83,6 +84,7 @@ fn main() {
             Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
             Err(_) => tracing::warn!(grace = ?service_runtime::shutdown::GRACE, "requests still running after the grace period, exiting anyway"),
         }
+        relay.stopped().await;
         telemetry.flush(service_runtime::shutdown::LOG_FLUSH).await;
     });
 }

@@ -151,7 +151,9 @@ impl ServedRelay {
             ("MONOKULO_RELAY_FCM_CREDENTIALS", account.to_string()),
         ]);
         let config = settings::load(stored, env, Host::Embedded).await.unwrap();
-        let relay = Relay::start(&config).await.unwrap();
+        let relay = Relay::start(&config, tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         tokio::spawn(async move {
             relay

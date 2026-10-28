@@ -2291,6 +2291,9 @@ mod tests {
                 // Checked against the engine's before saving: their own
                 // test below.
                 .filter(|s| !s.key().starts_with("key_custody.snp_entry_"))
+                // On the Push relay card, which this monokulo (no relay)
+                // doesn't show: the relay's own tests.
+                .filter(|s| s.key() != crate::settings::RELAY_ENABLED.key)
                 .count(),
             "this test must cover every known monokulo setting"
         );

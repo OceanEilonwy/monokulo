@@ -39,6 +39,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use abuse::TrustedProxies;
+use parking_lot::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::apns::Apns;
 use crate::fcm::Fcm;
@@ -79,13 +81,18 @@ pub(crate) struct Shared {
 #[derive(Clone)]
 pub struct Relay {
     shared: Arc<Shared>,
+    /// The hourly sweep, which ends with the stop the relay was started
+    /// with ([`Relay::stopped`]).
+    sweep: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl Relay {
     /// Opens the handles' database at `store.path` (making it if need
     /// be), builds the APNs and FCM clients the settings ask for, and
-    /// starts the hourly sweep of expired handles on this runtime.
-    pub async fn start(config: &RelayConfig) -> Result<Relay, StartError> {
+    /// starts the hourly sweep of expired handles on this runtime, until
+    /// `stop`: a relay that is started again (monokulo's admin page saving
+    /// its settings) leaves no sweep of the old one behind.
+    pub async fn start(config: &RelayConfig, stop: CancellationToken) -> Result<Relay, StartError> {
         let public_uri = config.public_uri.clone().ok_or(StartError::NoPublicUri)?;
         let path = config.store_path.clone();
         let key = config.handle_key.clone().ok_or(StartError::NoHandleKey)?;
@@ -117,8 +124,19 @@ impl Relay {
             "push relay ready"
         );
         let sweeping = store.clone();
-        service_runtime::supervise::supervise("push relay sweep", move || sweep(sweeping.clone()));
+        // The sweep's supervisor stops once the sender goes, which it does
+        // with the stop.
+        let (stopping, stopped) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            stop.cancelled().await;
+            drop(stopping);
+        });
+        let sweep =
+            service_runtime::supervise::supervise_until("push relay sweep", stopped, move || {
+                sweep(sweeping.clone())
+            });
         Ok(Relay {
+            sweep: Arc::new(Mutex::new(Some(sweep))),
             shared: Arc::new(Shared {
                 public_uri,
                 trusted_proxies: config.trusted_proxies.clone(),
@@ -135,6 +153,23 @@ impl Relay {
     /// ([`Relay::serve`] does), which the registration limit reads.
     pub fn router(&self) -> axum::Router {
         routes::router(Arc::clone(&self.shared))
+    }
+
+    /// Handles stored that haven't expired by `now`: what the admin page
+    /// shows of a relay inside monokulo.
+    pub async fn handles_stored(&self, now: i64) -> Result<u64, StoreError> {
+        self.shared.store.count(now).await
+    }
+
+    /// Waits for the sweep to end, once the stop it was started with has
+    /// come.
+    pub async fn stopped(&self) {
+        let sweep = self.sweep.lock().take();
+        if let Some(sweep) = sweep {
+            if let Err(error) = sweep.await {
+                tracing::warn!(error = %error, "the push relay's sweep ended badly");
+            }
+        }
     }
 
     /// Serves the relay on `listener` until `shutdown` completes, then
@@ -164,5 +199,147 @@ async fn sweep(store: HandleStore) {
             Ok(swept) => tracing::info!(swept, "expired handles deleted"),
             Err(error) => tracing::warn!(error = %error, "expired handles couldn't be deleted"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{AppField, AppRow, Apps, Host};
+
+    /// A relay's settings with its database in a directory of the test's
+    /// own.
+    async fn config(tag: &str) -> RelayConfig {
+        let path = std::env::temp_dir()
+            .join(format!(
+                "push-relay-lib-{tag}-{}-{}",
+                std::process::id(),
+                rand::random::<u64>()
+            ))
+            .join("relay.db");
+        settings::tests::load_with(
+            &[
+                ("server.public_uri", "https://relay.example.org"),
+                ("store.path", path.to_str().unwrap()),
+            ],
+            &[("MONOKULO_RELAY_HANDLE_KEY", &"5a".repeat(16))],
+            Host::Embedded,
+        )
+        .await
+        .unwrap()
+    }
+
+    fn sweep_restarts() -> u64 {
+        service_runtime::supervise::restart_counts()
+            .into_iter()
+            .find(|(name, _)| *name == "push relay sweep")
+            .map_or(0, |(_, count)| count)
+    }
+
+    /// The sweep lives as long as the stop the relay was started with,
+    /// and its supervisor doesn't start it again after the stop: a relay
+    /// started again and again (each save on monokulo's admin page)
+    /// leaves no sweep of the old one running.
+    #[tokio::test]
+    async fn the_sweep_stops_with_the_relay() {
+        let restarts = sweep_restarts();
+        let stop = CancellationToken::new();
+        let relay = Relay::start(&config("sweep").await, stop.clone())
+            .await
+            .unwrap();
+        stop.cancel();
+        tokio::time::timeout(Duration::from_secs(2), relay.stopped())
+            .await
+            .expect("the sweep ended with the stop");
+        assert!(relay.sweep.lock().is_none());
+        // A second wait has nothing left to wait for.
+        relay.stopped().await;
+        assert_eq!(sweep_restarts(), restarts);
+    }
+
+    /// The handles stored are counted until each expires.
+    #[tokio::test]
+    async fn the_handles_stored_are_counted_until_they_expire() {
+        let relay = Relay::start(&config("count").await, CancellationToken::new())
+            .await
+            .unwrap();
+        let now = service_runtime::time::now_unix();
+        assert_eq!(relay.handles_stored(now).await.unwrap(), 0);
+        let sender = push::VapidKey::generate();
+        for token in ["00ab", "00cd"] {
+            relay
+                .shared
+                .store
+                .register(
+                    handles::NewHandle {
+                        platform: handles::Platform::Apns,
+                        app: settings::AppName::try_from("monokular".to_owned()).unwrap(),
+                        token: handles::DeviceToken::parse(handles::Platform::Apns, token).unwrap(),
+                        sender: sender.public(),
+                    },
+                    now,
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(relay.handles_stored(now).await.unwrap(), 2);
+        // Unused handles last a week (`handles.unused_ttl_days`).
+        assert_eq!(relay.handles_stored(now + 8 * 86_400).await.unwrap(), 0);
+    }
+
+    fn row(name: &str, apns_topic: &str, fcm_project_id: &str) -> AppRow {
+        AppRow {
+            name: name.into(),
+            apns_topic: apns_topic.into(),
+            fcm_project_id: fcm_project_id.into(),
+        }
+    }
+
+    /// The apps from a form's rows: blank rows are none, each other row
+    /// a whole app, and each problem is the row's and the field's.
+    #[test]
+    fn apps_come_from_rows_and_each_rows_problem_is_its_own() {
+        let apps = Apps::from_rows(&[
+            row("monokular", "com.example.monokular", "monokular-test"),
+            row("", " ", ""),
+            row("till", "", "till-project"),
+        ])
+        .unwrap();
+        assert_eq!(
+            apps.rows(),
+            [
+                row("monokular", "com.example.monokular", "monokular-test"),
+                row("till", "", "till-project")
+            ]
+        );
+        assert_eq!(
+            Apps::from_rows(&apps.rows()).unwrap().to_setting(),
+            apps.to_setting()
+        );
+
+        let errors = Apps::from_rows(&[
+            row("Monokular", "com.example.monokular", ""),
+            row("till", "", ""),
+            row("till", "not a bundle", "UPPER"),
+            row("", "com.example.x", ""),
+        ])
+        .unwrap_err();
+        let found: Vec<(usize, AppField)> = errors.iter().map(|e| (e.row, e.field)).collect();
+        assert_eq!(
+            found,
+            [
+                (0, AppField::Name),
+                (1, AppField::ApnsTopic),
+                (2, AppField::Name),
+                (2, AppField::ApnsTopic),
+                (2, AppField::FcmProjectId),
+                (3, AppField::Name),
+            ]
+        );
+        assert_eq!(
+            errors[1].message,
+            "needs an iOS bundle ID or a Firebase project ID, or both."
+        );
+        assert_eq!(errors[2].message, "till is listed twice.");
     }
 }

@@ -195,10 +195,8 @@ settings! {
     RELAY_ENABLED: bool {
         key: "relay.enabled",
         default: false,
-        description: "Run a push relay inside monokulo, on its own listener: the Web Push service that hands pushes on to APNs and FCM for apps with your own Apple and Google keys. Its settings are this file's [relay.*] tables (server.public_uri is required) and its keys MONOKULO_RELAY_HANDLE_KEY (required), MONOKULO_RELAY_APNS_KEY and MONOKULO_RELAY_FCM_CREDENTIALS. Off, the tables are still checked, and nothing listens.",
+        description: "Run a push relay inside monokulo, on its own listener: the Web Push service that hands pushes on to APNs and FCM for apps with your own Apple and Google keys. Off, its settings ([relay.*]) are still checked, and nothing listens.",
         example: "false",
-        applies: Restart,
-        editable: false,
     },
     ENGINE_STATUS_CACHE_MS: u64 {
         key: "engine.status_cache_ms",
@@ -1028,8 +1026,9 @@ impl Section for DatabaseConfig {
     }
 }
 
-/// Read once at start (`main.rs`, `crate::relay`): whether a push relay
-/// runs inside monokulo.
+/// Whether a push relay runs inside monokulo: read at start (`main.rs`,
+/// `crate::relay`), and again by the relay's restart after a save on the
+/// admin page (`MonokuloSettings::relay`), which applies it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelaySwitch {
     pub enabled: bool,
@@ -1624,6 +1623,9 @@ pub struct MonokuloSettings {
     pub admin_tools: live_settings::Live<AdminTools>,
     /// How visitors on Tor reach this instance: read per request.
     pub tor: live_settings::Live<TorConfig>,
+    /// Whether a push relay runs inside monokulo: read by its restart
+    /// (`crate::relay::Handle::restart`) after a save.
+    pub relay: live_settings::Live<RelaySwitch>,
 }
 
 impl MonokuloSettings {
@@ -1681,6 +1683,9 @@ impl MonokuloSettings {
             admin_tools: live_settings::Live::new(AdminTools {
                 query_enabled: ADMIN_QUERY_ENABLED.default_value(),
             }),
+            relay: live_settings::Live::new(RelaySwitch {
+                enabled: RELAY_ENABLED.default_value(),
+            }),
             tor: live_settings::Live::new(TorConfig::defaults()),
         })
     }
@@ -1699,6 +1704,7 @@ impl MonokuloSettings {
             webhooks: live_settings::Live::new(webhooks),
             push: self.push.clone(),
             admin_tools: self.admin_tools.clone(),
+            relay: self.relay.clone(),
             tor: self.tor.clone(),
         })
     }
@@ -1717,6 +1723,7 @@ impl MonokuloSettings {
             webhooks: self.webhooks.clone(),
             push: self.push.clone(),
             admin_tools: self.admin_tools.clone(),
+            relay: self.relay.clone(),
             tor: live_settings::Live::new(tor),
         })
     }
@@ -1781,9 +1788,10 @@ impl MonokuloSettings {
         let webhooks = builder.section::<WebhookConfig>();
         let push = builder.section::<PushConfig>();
         let admin_tools = builder.section::<AdminTools>();
-        // Read once at start, before the registry exists (`main.rs`).
+        // Read once at start, before the registry exists (`main.rs`); the
+        // relay's switch by its restarts too (`crate::relay`).
         builder.section::<DatabaseConfig>();
-        builder.section::<RelaySwitch>();
+        let relay = builder.section::<RelaySwitch>();
         builder.section::<BootConfig>();
         let server = builder.section::<ServerConfig>();
         builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
@@ -1810,6 +1818,7 @@ impl MonokuloSettings {
             push,
             admin_tools,
             tor,
+            relay,
         }))
     }
 }

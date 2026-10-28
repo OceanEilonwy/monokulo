@@ -867,6 +867,7 @@ mod tests {
             push: base.push.clone(),
             admin_tools: base.admin_tools.clone(),
             tor: base.tor.clone(),
+            relay: base.relay.clone(),
             snp_bundle_limits: live_settings::Live::new(crate::settings::SnpBundleLimits {
                 per_user: 20,
                 per_user_per_min: 2,
