@@ -318,6 +318,9 @@ async fn run(boot: Boot) -> Option<tokio::runtime::Runtime> {
         webhooks,
         apps,
         push,
+        // The relay's handle for the admin page: wired when the card lands
+        // (`push-settings-ui`); until then the card has nothing to show.
+        relay: Default::default(),
         revocations: Default::default(),
         stopping: stopping.clone(),
         tor: tor.clone(),

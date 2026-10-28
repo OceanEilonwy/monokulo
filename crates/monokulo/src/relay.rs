@@ -23,6 +23,59 @@ use tokio_util::sync::CancellationToken;
 
 use crate::settings::RELAY_TABLE;
 
+/// The embedded relay as the dashboard reaches it (`http::AppState::relay`):
+/// what the admin page's Push relay card shows, and what a save of the
+/// relay's settings restarts. `Handle::default()` is a monokulo with no
+/// relay to show: built without the feature, or a test's state.
+///
+/// The card's state comes from here and nowhere else, so the page can't
+/// say the relay listens where it doesn't.
+#[derive(Clone, Default)]
+pub struct Handle(());
+
+impl Handle {
+    /// The relay as it is now, or `None` when this monokulo has none.
+    pub async fn view(&self) -> Option<RelayView> {
+        None
+    }
+}
+
+/// The relay's state and settings as the admin page's card shows them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayView {
+    /// `relay.enabled`.
+    pub enabled: bool,
+    pub state: RelayState,
+    /// `server.listen`, as set.
+    pub listen: String,
+    /// `server.public_uri`, when set.
+    pub public_uri: Option<String>,
+    /// The apps devices may register for (`handles.apps`), by name.
+    pub apps: Vec<String>,
+    /// Handles in the relay's database that haven't expired; `None` while
+    /// the relay isn't running (its database is open only then).
+    pub handles_stored: Option<u64>,
+    /// Whether the APNs key, and its ids, are set.
+    pub apns_ready: bool,
+    /// Whether the FCM service account is set.
+    pub fcm_ready: bool,
+}
+
+/// Whether the embedded relay is serving.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayState {
+    /// `relay.enabled` is off: nothing listens.
+    Off,
+    /// Listening at `address` since `since` (Unix seconds).
+    Running {
+        address: std::net::SocketAddr,
+        since: i64,
+    },
+    /// Enabled, but its last start (at `since`) failed: nothing listens
+    /// until the next save or start fixes `error`.
+    Failed { error: String, since: i64 },
+}
+
 #[cfg(feature = "relay")]
 pub use embedded::*;
 
