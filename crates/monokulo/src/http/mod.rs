@@ -227,6 +227,10 @@ pub struct AppState {
     pub apps: Arc<crate::apps::AppEvents>,
     /// What pushes to connected apps are signed with (`crate::push`).
     pub push: Arc<crate::push::Push>,
+    /// The push relay inside this process (`crate::relay`), when it is
+    /// built in: what the admin page's Push relay card shows, and what a
+    /// save of `[relay.*]` restarts.
+    pub relay: crate::relay::Handle,
     /// The keys and sessions open streams were opened with: revoking one
     /// ends its streams (`crate::revocation`).
     pub revocations: Arc<crate::revocation::Revocations>,
@@ -313,6 +317,7 @@ impl AppState {
             webhooks: Arc::default(),
             apps: Arc::default(),
             push: Arc::new(crate::push::Push::for_tests()),
+            relay: Default::default(),
             revocations: Arc::default(),
             stopping: Default::default(),
             tor: tor_service::Tor::default(),
