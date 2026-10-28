@@ -1,0 +1,62 @@
+[package]
+name = "monokular-bell"
+version = "0.1.0"
+description = "The Monokular Bell: turns Square's payment webhooks into Web Push dings for the tills registered at that location"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+# The client's address behind a trusted reverse proxy (`X-Forwarded-For`),
+# IPv6 grouped by its /64: the registration limit's key.
+abuse.workspace = true
+# Axum's defaults less what four JSON routes don't use.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+# Square's webhook signature is standard base64.
+base64 = "0.23.1"
+# `monokular-bell`'s command line, from the settings' declarations.
+clap = "4.6.7"
+hex = "0.4.3"
+# The webhook signature: HMAC-SHA256, its tag compared in constant time
+# (`Mac::verify_slice`, on `subtle`).
+hmac = "0.13.0"
+live-settings.workspace = true
+# Where a ding may go: the private-address rule, and a client whose resolver
+# holds to it, as monokulo sends its webhooks and pushes.
+outbound.workspace = true
+# Encrypting and signing the dings (RFC 8291, RFC 8292) and sending them.
+push.workspace = true
+rand = "0.10.2"
+rate-limit.workspace = true
+# Square's API and the push services, over rustls as everything here.
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# The shutdown signal and its grace period, and the clock, as monokulo's
+# services have them.
+service-runtime.workspace = true
+sha2 = "0.11.0"
+# A registration moved to another merchant only by its auth secret,
+# compared in constant time.
+subtle = "2.6.1"
+# The registrations' own database file: its pool and migration runner.
+sqlite.workspace = true
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", default-features = false, features = ["ansi", "env-filter", "fmt", "std"] }
+url = "2.5.8"
+# The Square access token, wiped once its one request is made.
+zeroize = "1.9.0"
+
+[dev-dependencies]
+# Stand-ins for Square and for a push service on loopback.
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", features = ["tokio"] }
+# What a till would read of a ding.
+push = { workspace = true, features = ["test-support"] }
+# The router called in-process (`ServiceExt::oneshot`).
+tower = { version = "0.5.3", features = ["util"] }
