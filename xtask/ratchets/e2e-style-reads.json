@@ -1,7 +1,5 @@
 {
   "e2e/browser/tests/admin-settings-and-nodes.spec.js:boundingBox": 2,
-  "e2e/browser/tests/settings-section-updates.spec.js:getComputedStyle": 1,
-  "e2e/browser/tests/status-network-card.spec.js:getComputedStyle": 3,
-  "e2e/browser/tests/wallet-page.spec.js:boundingBox": 2,
+  "e2e/browser/tests/status-network-card.spec.js:getComputedStyle": 1,
   "e2e/browser/tests/wallet-setup.spec.js:boundingBox": 1
 }
