@@ -1,0 +1,17 @@
+#!/bin/sh
+# A traffic rule that lets the internet reach the Bell's port, made off:
+# turn it on in Network > Firewall > Traffic Rules once the Bell is set up.
+# Behind a TLS proxy on this router, open the proxy's 443 instead.
+[ -f /etc/config/firewall ] || exit 0
+uci -q get firewall.monokulo_bell >/dev/null && exit 0
+uci -q batch <<-'UCI'
+	set firewall.monokulo_bell=rule
+	set firewall.monokulo_bell.name='Allow-monokulo-bell'
+	set firewall.monokulo_bell.src='wan'
+	set firewall.monokulo_bell.proto='tcp'
+	set firewall.monokulo_bell.dest_port='8445'
+	set firewall.monokulo_bell.target='ACCEPT'
+	set firewall.monokulo_bell.enabled='0'
+	commit firewall
+UCI
+exit 0

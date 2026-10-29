@@ -1,0 +1,79 @@
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+# monokulo-bell, the Monokular Bell: a point of sale's payments as dings
+# to its tills. Its settings are in /etc/config/monokulo-bell, or LuCI:
+# Services > Bell; each start writes them into the options file the Bell
+# reads, and checks them with the Bell's own --check first (service.sh).
+# Its secrets are files in /etc/monokulo-bell/secrets/, root's alone, one
+# per variable, passed to it in its environment: it takes secrets from
+# nowhere else.
+
+START=99
+STOP=10
+USE_PROCD=1
+EXTRA_COMMANDS="secrets check"
+EXTRA_HELP="	secrets	Make the VAPID key if there is none yet (done on install)
+	check	Check the settings and secrets as the next start would take them"
+
+NAME=monokulo-bell
+PAGE="Services > Bell"
+# The VAPID key is made on install; each point of sale's (Square's webhook
+# signature key, Clover's Auth Code) is set in LuCI, or written into the
+# secrets folder by hand.
+SECRETS="MONOKULO_BELL_VAPID_KEY MONOKULO_BELL_SQUARE_WEBHOOK_KEY MONOKULO_BELL_CLOVER_AUTH_CODE"
+GENERATED_SECRET=MONOKULO_BELL_VAPID_KEY
+GENERATED_WHY="the tills' push subscriptions are made for it, and refuse a new key's dings."
+# Written again at each start and holding no secret, so kept in memory.
+OPTIONS=/var/etc/monokulo-bell/bell.toml
+LISTEN_KEY=bell.listen
+DEFAULT_PORT=8445
+# An https proxy on this router in front, as the Bell's own default.
+DEFAULT_LISTEN=loopback
+STORE_KEY=bell.store_path
+STORE_FILE=bell.db
+STATUS_LISTEN=127.0.0.1:8447
+
+# The main section's settings: the setting's key, its UCI option and the
+# option's kind. bell.listen (port and listen),
+# bell.store_path (data_dir) and status.listen are written apart, and each
+# point of sale's settings from its own section (SQUARE_MAP, CLOVER_MAP).
+OPTIONS_MAP='
+bell.public_uri public_uri value
+bell.trusted_proxies trusted_proxy list
+bell.timeout_ms timeout_ms value
+bell.registrations_per_minute registrations_per_minute value
+bell.registration_failure_limit registration_failure_limit value
+bell.dings_per_merchant_per_minute dings_per_merchant_per_minute value
+bell.allow_private_endpoints allow_private_endpoints flag
+logging.level log_level value
+logging.format log_format value
+'
+
+# Each point of sale's section, the same options in each.
+SQUARE_MAP='
+bell.square.application_id application_id value
+bell.square.environment environment value
+bell.square.api_url api_url value
+'
+CLOVER_MAP='
+bell.clover.application_id application_id value
+bell.clover.environment environment value
+bell.clover.api_url api_url value
+'
+
+. /usr/share/monokulo-bell/service.sh
+
+render_more() {
+	toml_options square "$SQUARE_MAP" && toml_options clover "$CLOVER_MAP"
+}
+
+# The Bell has nothing it must not run beside.
+blocked() {
+	return 1
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$NAME"
+	# In "LAN only" mode the listen address follows the LAN interface.
+	procd_add_interface_trigger "interface.*.up" lan "/etc/init.d/$NAME" reload
+}
