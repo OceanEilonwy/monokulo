@@ -256,6 +256,19 @@ impl RegistrationStore {
             .await
     }
 
+    /// How many registrations there are, every point of sale's: what the
+    /// status says.
+    pub async fn count(&self) -> Result<u64, StoreError> {
+        self.pool
+            .run(|connection| {
+                let count: i64 =
+                    connection
+                        .query_row("SELECT COUNT(*) FROM registrations", [], |row| row.get(0))?;
+                Ok(u64::try_from(count).unwrap_or(0))
+            })
+            .await
+    }
+
     /// Deletes `id`, and says whether there was one.
     pub async fn delete(&self, id: &RegistrationId) -> Result<bool, StoreError> {
         let id = id.clone();
