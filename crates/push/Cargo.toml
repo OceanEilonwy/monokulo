@@ -5,9 +5,8 @@ repository.workspace = true
 edition = "2021"
 description = "Web Push for a sender and a relay: RFC 8291 encryption, VAPID (RFC 8292) and the RFC 8030 request both sides read"
 
-# No workspace crate here but `outbound` (itself without any), and
-# nothing that needs nightly: the Monokular Bell (another repository, on
-# stable) depends on this crate by git revision.
+# No workspace crate here but `outbound` (itself without any): monokulo,
+# the push relay and the Monokular Bell (`monokulo-bell`) each take it.
 
 [features]
 # Decryption and a receiver's key pair, for other crates' tests that check

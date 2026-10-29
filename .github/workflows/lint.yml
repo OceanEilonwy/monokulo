@@ -50,16 +50,23 @@ jobs:
         # (refusing relay.enabled and the [relay.*] tables), which no test
         # build compiles.
         run: cargo clippy -p monokulo --lib --bins --locked --no-default-features --features embedded-engine,tor -- -D warnings
-      - name: Clippy, push and outbound on stable, as the Monokular Bell builds them
-        # The Bell (another repository, on stable Rust) takes the push and
-        # outbound crates as git dependencies, so nothing nightly-only may
-        # reach them: this repository's own builds, all on nightly, wouldn't
-        # notice. Push's library alone too, without the test-support
-        # decryption that test builds of the crates using it turn on.
+      - name: Clippy, monokulo-bell as production builds it
+        # Its library and binary alone, without the test-support decryption
+        # its tests turn on in push.
+        run: cargo clippy -p monokulo-bell --lib --bins --locked -- -D warnings
+      - name: Monokulo never depends on the Bell
+        # The gateway must never hold point-of-sale code: the Bell is its own
+        # binary. Every edge kind (normal, build, dev) and every feature, so
+        # not even a test build of monokulo pulls it in. `-p monokulo` takes
+        # in the engine and everything under it, so this one tree is the
+        # whole binary.
         run: |
-          rustup toolchain install stable --profile minimal --component clippy
-          cargo +stable clippy -p push -p outbound --all-targets --locked -- -D warnings
-          cargo +stable clippy -p push --lib --locked -- -D warnings
+          cargo tree -p monokulo-bell --depth 0 --prefix none --locked | grep '^monokulo-bell v' > /dev/null \
+            || { echo '::error::no crate monokulo-bell: the check below would pass for the wrong reason'; exit 1; }
+          if cargo tree -p monokulo --all-features --locked --prefix none | grep -E '^monokulo-bell v'; then
+            echo '::error::the monokulo binary depends on monokulo-bell; the gateway must never hold point-of-sale code.'
+            exit 1
+          fi
       - name: Fuzz workspace's lock file is current
         # fuzz/ is its own workspace, so the clippy run above never sees
         # its Cargo.lock; the nightly fuzz job builds it with --locked.
