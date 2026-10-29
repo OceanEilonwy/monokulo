@@ -1387,3 +1387,9 @@ after group 2's last entry (150).
      takes a loopback address only and refuses another host, it carries
      counts, readiness and the last delivery's outcome, never a token or
      an endpoint, and inside monokulo the admin card stays the status.
+
+163. **The standalone relay ships as `monokulo-push-relay-<version>-<target>.zip`
+     for monokulo's five targets**, with its README, its own `--init`
+     options file and service files for systemd, launchd and a Windows
+     startup task, each installed and started on its release runner.
+     Recorded with the Bell's in `docs/decisions/packaging.md` 13 to 20.
