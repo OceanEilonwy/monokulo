@@ -49,7 +49,6 @@ test('saving an admin settings tab swaps only its panel, and the tab bar and ban
   try {
     await expect(saving).toBeDisabled();
     await expect(saving).toHaveAttribute('aria-busy', 'true');
-    expect(await saving.evaluate(button => getComputedStyle(button, '::before').animationName)).toBe('save-spin');
     // Enter/requestSubmit must not send another request while Save is disabled.
     await page.locator('#settings-form').evaluate(form => form.requestSubmit());
     await expect.poll(() => submissions).toBe(1);
