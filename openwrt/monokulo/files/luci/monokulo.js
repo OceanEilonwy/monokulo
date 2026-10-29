@@ -10,10 +10,12 @@
 // running, and the settings it starts with. Everything else (Monero nodes, stores, abuse
 // protection...) is on monokulo's own admin page.
 
-var callServiceList = rpc.declare({
-	object: 'service',
-	method: 'list',
-	params: [ 'name' ],
+// The package's rpcd plugin (ubus object monokulo): whether it runs and
+// which build, without procd's service list, whose instance holds the
+// encryption key in its environment.
+var callStatus = rpc.declare({
+	object: 'monokulo',
+	method: 'status',
 	expect: { '': {} }
 });
 
@@ -24,27 +26,8 @@ var callInitAction = rpc.declare({
 	expect: { result: false }
 });
 
-function instances() {
-	return L.resolveDefault(callServiceList('monokulo'), {}).then(function(res) {
-		return (res && res.monokulo && res.monokulo.instances) || {};
-	});
-}
-
-function state(instances, name) {
-	var i = instances[name];
-	return i && i.running ? _('Running') : _('Not running');
-}
-
-// The build in the package's version file, or the one procd keeps with the
-// running instance (the init script hands it the same file's values).
-function build(text) {
-	var b = {};
-	(text || '').split('\n').forEach(function(line) {
-		var kv = line.match(/^(version|commit)=(.*)$/);
-		if (kv)
-			b[kv[1]] = kv[2].trim();
-	});
-	return b;
+function state(st) {
+	return st.running ? _('Running') : _('Not running');
 }
 
 // Where a build's commit link points.
@@ -61,22 +44,21 @@ function describe(b) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([ uci.load('monokulo'), instances() ]).then(function(data) {
+		return Promise.all([ uci.load('monokulo'), L.resolveDefault(callStatus(), {}) ]).then(function(data) {
 			// The onion address Tor inside monokulo wrote, once it has one.
 			var dir = uci.get('monokulo', 'main', 'data_dir') || '/srv/monokulo';
-			return Promise.all([
-				L.resolveDefault(fs.read(dir + '/tor/hostname'), ''),
-				L.resolveDefault(fs.read('/usr/share/monokulo/version'), '')
-			]).then(function(files) {
-				return data.concat([ (files[0] || '').trim(), build(files[1]) ]);
+			return L.resolveDefault(fs.read(dir + '/tor/hostname'), '').then(function(hostname) {
+				return data.concat([ (hostname || '').trim() ]);
 			});
 		});
 	},
 
 	render: function(data) {
-		var running = data[1];
+		// The build procd keeps with the running instance (the init script
+		// hands it the package's version file), and the one installed.
+		var st = data[1] || {};
 		var onion = data[2];
-		var installed = data[3];
+		var installed = st.installed || {};
 		var m, s, o;
 
 		m = new form.Map('monokulo', _('Monokulo'),
@@ -90,8 +72,8 @@ return view.extend({
 		o.cfgvalue = function() {
 			var port = parseInt(uci.get('monokulo', 'main', 'port'), 10) || 8081;
 			var listen = uci.get('monokulo', 'main', 'listen') || 'lan';
-			var text = '<strong>' + state(running, 'monokulo') + '</strong> &middot; ' + _('the engine runs inside it');
-			if (running.monokulo && running.monokulo.running && listen !== 'loopback') {
+			var text = '<strong>' + state(st) + '</strong> &middot; ' + _('the engine runs inside it');
+			if (st.running && listen !== 'loopback') {
 				var url = 'http://' + window.location.hostname + ':' + port + '/';
 				text += ' &middot; <a href="' + url + '" target="_blank" rel="noreferrer">' + _('Open monokulo') + '</a>';
 			}
@@ -101,8 +83,7 @@ return view.extend({
 		o = s.option(form.DummyValue, '_version', _('Version'));
 		o.rawhtml = true;
 		o.cfgvalue = function() {
-			var instance = running.monokulo;
-			var current = (instance && instance.running && instance.data) || {};
+			var current = st.running_build || {};
 			if (!current.version)
 				return installed.version
 					? describe(installed) + ' &middot; ' + _('installed; runs when monokulo starts')
@@ -118,7 +99,7 @@ return view.extend({
 		o.cfgvalue = function() {
 			if (uci.get('monokulo', 'main', 'onion') !== '1')
 				return _('Off here: turn on “Onion service” below, or set it on monokulo’s admin page (Tor tab).');
-			if (!(running.monokulo && running.monokulo.running))
+			if (!st.running)
 				return _('Starts with monokulo.');
 			if (!onion)
 				return '<strong>' + _('Starting Tor') + '</strong> &middot; ' + _('a first start takes up to a minute; on a slow router, up to three.');
