@@ -342,3 +342,43 @@ entries in `docs/decisions/push.md` point here (162).
     page's ACL is its whole grant, so it holds the least that page needs.
     The rootfs test holds the three ACLs to refusing `setInitAction` and
     starts each service through its own `restart`.
+
+## The docs and the report (2026-10-29)
+
+41. **One docs page for both services, `/services/` ("The push relay and
+    the Bell", under Run Monokulo), drawn in Rust as the install pages
+    are** (`xtask/src/pages/install/services.rs`): both LuCI pages and both
+    READMEs already link `docs.monokulo.com/services/`, and the steps on a
+    router and on a computer have the same shape for the two programs, so
+    one page with the relay's commands and the Bell's differences says
+    more than two that repeat each other. It carries the router steps
+    (the repository line from the site's newest feed, `apk add`, the LuCI
+    page, the proxy and the firewall rule, the terminal equivalents and
+    where settings, secrets and data live), the computer steps as a tab
+    per operating system (the zip, `--check` first, then the systemd
+    unit, the launchd daemon or the Windows task, as each file's own
+    header says), the TLS proxy (Caddy and nginx recipes, which the LuCI
+    pages promise), the status listeners and the logs. What each setting
+    means and each API stays on `/push-relay/` and `/bell/`: the page
+    links their "Run one" sections rather than repeat them. Markdown was
+    the alternative; the Rust pages have the tabs and the Copy buttons,
+    and the feed's address, which Markdown can't.
+42. **The router page gets one `apk add` block for the two services and a
+    link, not steps of its own**: its steps are Monokulo's, and the
+    services' setup (an https address, a proxy, secrets) is the `/services/`
+    page's. The computer page points there in one sentence, after its own
+    steps.
+43. **QA's D (the zip's starter options file names the runner's home in a
+    commented-out path) and E (`--check`'s doubled prefix and the FCM
+    wording) stay open, recorded in the report with the fix each needs**,
+    rather than ride in the docs pull request: each is a change in its
+    crate (release.yml's `--init` step, or `live-settings`' section
+    problems and `push-relay`'s settings) with its own test table, and
+    neither is wrong in what it does, only in what it says. The report
+    says where each is and what to change.
+44. **The report is `docs/reports/packaging.md`, shaped as
+    `docs/reports/bell-and-relay.md`**: what was built and where (each
+    pull request with its merge commit), how to install on a router and a
+    computer, every decision with its reason in a line (bell.md 59 to 74,
+    this log 1 to 44, push.md 161 to 163), the tests and gates, the
+    licence flag bell.md 65 asked for, and what is left.
