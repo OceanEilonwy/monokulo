@@ -211,10 +211,22 @@ mod zmq {
             );
         }
     }
-    async fn history(actions: Vec<(u8, bool, u8)>) {
+    /// A subscriber connected to the first of two real publishers, on
+    /// paused time the test moves. Fields drop in order, so the subscriber
+    /// goes first and the clock hold last.
+    struct Story {
+        subscriber: Task,
+        wakes: Arc<NodeWakes>,
+        settings: Arc<crate::engine_settings::EngineSettings>,
+        endpoints: [String; 2],
+        publishers: [Publisher; 2],
+        _clock: crate::property_support::VirtualClockHold,
+    }
+
+    async fn connected() -> Story {
         tokio::time::pause();
-        let _clock = crate::property_support::hold_virtual_clock();
-        let mut publishers = [
+        let clock = crate::property_support::hold_virtual_clock();
+        let publishers = [
             Publisher::bind("tcp://127.0.0.1:0").await,
             Publisher::bind("tcp://127.0.0.1:0").await,
         ];
@@ -231,7 +243,7 @@ mod zmq {
         .await
         .unwrap();
         let wakes = Arc::new(NodeWakes::default());
-        let mut subscriber = Task(tokio::spawn(run_subscriber(
+        let subscriber = Task(tokio::spawn(run_subscriber(
             monero::Network::Mainnet,
             Arc::clone(&wakes),
             Arc::clone(&settings),
@@ -242,11 +254,30 @@ mod zmq {
         })
         .await;
         send_until(&publishers[0], &wakes, POOL_TOPIC).await;
+        Story {
+            subscriber,
+            wakes,
+            settings,
+            endpoints,
+            publishers,
+            _clock: clock,
+        }
+    }
+
+    /// A real transport disconnect and bind to the same endpoint: recovery
+    /// must happen without saving settings or replacing `NodeWakes`.
+    async fn reconnect(story: &mut Story) {
+        let Story {
+            subscriber: _,
+            wakes,
+            settings: _,
+            endpoints,
+            publishers,
+            _clock: _,
+        } = story;
         let before = wakes.announcements().unwrap().publishers[0].clone();
-        // A real transport disconnect and bind to the same endpoint: recovery
-        // must happen without saving settings or replacing NodeWakes.
         publishers[0].close();
-        until(&wakes, |a| {
+        until(wakes, |a| {
             !a.publishers[0].connected && a.publishers[0].last_error.is_some()
         })
         .await;
@@ -256,7 +287,7 @@ mod zmq {
         // Tokio's timers fire on whole milliseconds after their deadline,
         // hence the extra one.
         tokio::time::advance(subscriber::FIRST_RETRY + Duration::from_millis(1)).await;
-        until(&wakes, |a| {
+        until(wakes, |a| {
             a.publishers[0].connected && a.publishers[0].connections > before.connections
         })
         .await;
@@ -264,30 +295,43 @@ mod zmq {
             wakes.announcements().unwrap().publishers[0].pool_announcements
                 >= before.pool_announcements
         );
-        send_until(&publishers[0], &wakes, CHAIN_TOPIC).await;
+        send_until(&publishers[0], wakes, CHAIN_TOPIC).await;
         // A pool frame on this same ordered connection acknowledges that all
         // earlier chain frames were processed before taking topic baselines.
-        send_until(&publishers[0], &wakes, POOL_TOPIC).await;
+        send_until(&publishers[0], wakes, POOL_TOPIC).await;
+    }
+
+    /// Saves each `(endpoint, duplicate, burst)` in turn (endpoint 2 clears
+    /// the setting), then clears it, checking the subscriber follows.
+    async fn configure(mut story: Story, actions: Vec<(u8, bool, u8)>) {
+        let Story {
+            subscriber,
+            wakes,
+            settings,
+            endpoints,
+            publishers,
+            _clock: _,
+        } = &mut story;
         for (endpoint, duplicate, burst) in actions.into_iter().chain([(2, false, 1)]) {
             if endpoint == 2 {
-                save(&settings, None, false).await;
+                save(settings, None, false).await;
                 within("the subscriber to stop", || wakes.announcements().is_none()).await;
                 continue;
             }
             let index = usize::from(endpoint);
-            save(&settings, Some(&endpoints[index]), duplicate).await;
-            until(&wakes, |a| {
+            save(settings, Some(&endpoints[index]), duplicate).await;
+            until(wakes, |a| {
                 a.publishers.len() == 1
                     && a.publishers[0].endpoint == endpoints[index]
                     && a.publishers[0].connected
             })
             .await;
-            send_until(&publishers[index], &wakes, POOL_TOPIC).await;
+            send_until(&publishers[index], wakes, POOL_TOPIC).await;
             let before = wakes.announcements().unwrap().publishers[0].clone();
             for _ in 0..burst {
                 publishers[index].send("json-minimal-txpool_addx:{}");
             }
-            send_until(&publishers[index], &wakes, POOL_TOPIC).await;
+            send_until(&publishers[index], wakes, POOL_TOPIC).await;
             let after = wakes.announcements().unwrap().publishers[0].clone();
             assert_eq!(
                 after.block_announcements, before.block_announcements,
@@ -297,7 +341,7 @@ mod zmq {
             // Previously configured publishers must no longer affect this one.
             let count = after.block_announcements;
             publishers[1 - index].send(&format!("{CHAIN_TOPIC}:{{}}"));
-            send_until(&publishers[index], &wakes, POOL_TOPIC).await;
+            send_until(&publishers[index], wakes, POOL_TOPIC).await;
             assert_eq!(
                 wakes.announcements().unwrap().publishers[0].block_announcements,
                 count
@@ -306,14 +350,28 @@ mod zmq {
         subscriber.0.abort();
         let _ = (&mut subscriber.0).await;
     }
+
+    /// The reconnect after a dropped transport runs here, every run; the
+    /// generated configurations below start from a connected subscriber.
     #[test]
     fn publisher_switch_disable_reenable_and_duplicate_endpoints() {
-        runtime().block_on(history(vec![
-            (1, true, 4),
-            (2, false, 1),
-            (0, false, 4),
-            (1, false, 4),
-        ]));
+        runtime().block_on(async {
+            let mut story = connected().await;
+            reconnect(&mut story).await;
+            configure(
+                story,
+                vec![
+                    // The property's recorded regression seed, which shrank
+                    // to [(0, true, 1)] after this reconnect.
+                    (0, true, 1),
+                    (1, true, 4),
+                    (2, false, 1),
+                    (0, false, 4),
+                    (1, false, 4),
+                ],
+            )
+            .await;
+        });
     }
 
     /// The generated cases (`proptest!`): left out of the local
@@ -325,7 +383,7 @@ mod zmq {
             #![proptest_config(persisted_config(config()))]
             #[test]
             fn real_subscriber_recovers_and_tracks_generated_publisher_configuration(actions in prop::collection::vec((0u8..3,any::<bool>(),1u8..9),1..8)) {
-                runtime().block_on(history(actions));
+                runtime().block_on(async { configure(connected().await, actions).await });
             }
         }
     }
