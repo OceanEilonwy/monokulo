@@ -15,6 +15,9 @@ so a quantity of 2 is two line items. A fractional quantity, such as
 (Clover's thousandths). "tender" is "Monero" (the tender the till created or
 found, by its label) unless it says "Cash", Clover's system tender: a payment
 the till must not pick up, which still rings the Bell, as the Bell can't tell.
+The Monero tender exists once a till has signed in; to ring the Bell with no
+till, "add_tender": true adds it first if it's missing, as a merchant adding
+it in Clover's dashboard would (FAKE_CLOVER_DENY_TENDER_WRITE doesn't stop it).
 
 With FAKE_CLOVER_WEBHOOK_URL (a Bell's bell.public_uri followed by
 /v1/clover/webhook) and FAKE_CLOVER_AUTH_CODE (its
@@ -24,7 +27,7 @@ bell.clover.application_id must be FAKE_CLOVER_APP_ID (default FAKECLOVERAPP).
 
 The cashier's side and QA's switches:
 
-    POST /fake/sale     {"items": [...], "tender": "Monero"|"Cash", "merchant_id"?}
+    POST /fake/sale     {"items": [...], "tender": "Monero"|"Cash", "merchant_id"?, "add_tender"?}
     POST /fake/refund   {"payment_id": "..."}   the cashier refunding in Clover's Orders app
     POST /fake/verify   Clover's {"verificationCode"} handshake, sent with no auth header
     POST /fake/webhook  {"objectId": "O:...", "type": "DELETE", "merchant_id"?, "appId"?}
@@ -479,8 +482,16 @@ class Clover(BaseHTTPRequestHandler):
     def sale(self, merchant, body):
         label = body.get("tender", "Monero")
         tender = find_tender(merchant, label)
+        monero = label.strip().lower() == "monero"
+        if tender is None and monero and body.get("add_tender") is True:
+            tender = {"id": new_id(), "label": "Monero", "labelKey": "com.clover.tender.external_payment",
+                      "enabled": True, "visible": True, "opensCashDrawer": False, "supportsTipping": False,
+                      "editable": True}
+            state["tenders"][merchant].append(tender)
+            log("tenders: Monero added in the dashboard as %s" % tender["id"])
         if tender is None:
-            hint = " (sign in with the till first: it creates the Monero tender)" if label.lower() == "monero" else ""
+            hint = (" (sign in with the till first: it creates the Monero tender; or send \"add_tender\": true)"
+                    if monero else "")
             return self.message(400, "no tender labelled %s%s" % (label, hint))
         items = body.get("items") or [["Flat white, oat milk", 2, 450], ["Almond croissant", 1, 375],
                                        ["Granola, per 100 g", 2.5, 120]]

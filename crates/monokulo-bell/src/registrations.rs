@@ -1,15 +1,17 @@
-//! Registrations: which tills a payment at a Square location dings. A till
-//! registers its Web Push subscription for one location, once the
-//! merchant's token has shown Square that the location is theirs; the
-//! registration keeps the merchant and location Square named, the
-//! subscription, and how its dings have gone. It lives in the Bell's own
+//! Registrations: which tills a payment at a point of sale's location
+//! dings. A till registers its Web Push subscription for one location (a
+//! Square location, or a Clover merchant, which is its own one location),
+//! once the merchant's token has shown the point of sale that the location
+//! is theirs; the registration keeps the point of sale, the merchant and
+//! location it named, the subscription, and how its dings have gone. It lives in the Bell's own
 //! SQLite file (`bell.store_path`), and nothing else does.
 //!
 //! One subscription is one registration: registered again (a till moved
 //! to another location, or its app started again), its row is updated,
 //! keeping its id. An endpoint alone proves nothing (a push service, a
 //! distributor's log or a shared server can show it), so only its own
-//! merchant, or a caller holding its keys, may change its registration.
+//! merchant at its own point of sale, or a caller holding its keys, may
+//! change its registration.
 
 use std::fmt;
 use std::path::Path;
@@ -20,14 +22,17 @@ use rand::Rng as _;
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use subtle::ConstantTimeEq as _;
 
-use crate::square::{LocationId, MerchantId};
+use crate::pos::{LocationId, MerchantId, PointOfSale};
 
-/// The registrations table and its index.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_registrations.sql"))];
+/// The registrations table and its index, then the point of sale.
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_registrations.sql")),
+    (2, include_str!("../migrations/0002_point_of_sale.sql")),
+];
 
 /// The most registrations one location may have: a shop has a till or a
 /// few, and each is a push per payment. A bound, so one merchant's token
-/// can't fill the database.
+/// can't fill the database. Counted within a point of sale.
 pub const MAX_PER_LOCATION: u32 = 32;
 
 /// A registration's id: `br_` and 32 random hex digits, what the till
@@ -77,10 +82,11 @@ impl FromStr for RegistrationId {
     }
 }
 
-/// What a registration asks for: Square has shown the location is the
-/// merchant's.
+/// What a registration asks for: its point of sale has shown the location
+/// is the merchant's.
 #[derive(Debug, Clone)]
 pub struct NewRegistration {
+    pub point_of_sale: PointOfSale,
     pub merchant_id: MerchantId,
     pub location_id: LocationId,
     pub subscription: Subscription,
@@ -122,8 +128,9 @@ pub enum StoreError {
 pub enum RegisterError {
     #[error("the location has {MAX_PER_LOCATION} registrations already")]
     Full,
-    /// The endpoint is registered for another merchant, and the keys given
-    /// aren't the ones it was registered with.
+    /// The endpoint is registered for another merchant (or the same id at
+    /// another point of sale), and the keys given aren't the ones it was
+    /// registered with.
     #[error("the endpoint is another merchant's registration")]
     Taken,
     #[error(transparent)]
@@ -165,8 +172,9 @@ impl RegistrationStore {
     /// Registers `new`'s subscription for its location at `now`: a new
     /// registration, or its existing one moved there with its keys
     /// replaced and its failures forgotten. An existing one moves only for
-    /// its own merchant, or for a caller giving the auth secret it was
-    /// registered with (a till signed in to another account): otherwise
+    /// its own merchant at its own point of sale, or for a caller giving
+    /// the auth secret it was registered with (a till signed in to another
+    /// account, or to another point of sale): otherwise
     /// [`RegisterError::Taken`], and it is left as it was. Refused when
     /// the location has [`MAX_PER_LOCATION`] others.
     pub async fn register(
@@ -185,26 +193,29 @@ impl RegistrationStore {
                 .map_err(StoreError::from)?;
                 let endpoint = new.subscription.endpoint.as_str();
                 let auth = new.subscription.keys.auth.to_base64url();
-                let existing: Option<(String, String)> = transaction
+                let pos = new.point_of_sale.as_str();
+                let existing: Option<(String, String, String)> = transaction
                     .query_row(
-                        "SELECT merchant_id, auth FROM registrations WHERE endpoint = ?1",
+                        "SELECT point_of_sale, merchant_id, auth FROM registrations WHERE endpoint = ?1",
                         params![endpoint],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                     )
                     .optional()
                     .map_err(StoreError::from)?;
-                if let Some((merchant_id, stored_auth)) = existing {
+                if let Some((stored_pos, merchant_id, stored_auth)) = existing {
                     // Compared in constant time: the secret is the proof.
                     let holds_keys: bool = stored_auth.as_bytes().ct_eq(auth.as_bytes()).into();
-                    if merchant_id != new.merchant_id.as_str() && !holds_keys {
+                    let same_merchant = stored_pos == pos && merchant_id == new.merchant_id.as_str();
+                    if !same_merchant && !holds_keys {
                         return Err(RegisterError::Taken);
                     }
                 }
                 let others: u32 = transaction
                     .query_row(
                         "SELECT COUNT(*) FROM registrations
-                         WHERE merchant_id = ?1 AND location_id = ?2 AND endpoint != ?3",
-                        params![new.merchant_id.as_str(), new.location_id.as_str(), endpoint],
+                         WHERE point_of_sale = ?1 AND merchant_id = ?2 AND location_id = ?3
+                           AND endpoint != ?4",
+                        params![pos, new.merchant_id.as_str(), new.location_id.as_str(), endpoint],
                         |row| row.get(0),
                     )
                     .map_err(StoreError::from)?;
@@ -214,10 +225,12 @@ impl RegistrationStore {
                 let id: String = transaction
                     .query_row(
                         "INSERT INTO registrations
-                             (id, merchant_id, location_id, endpoint, p256dh, auth, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                             (id, point_of_sale, merchant_id, location_id, endpoint, p256dh, auth,
+                              created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                          ON CONFLICT (endpoint)
-                         DO UPDATE SET merchant_id = excluded.merchant_id,
+                         DO UPDATE SET point_of_sale = excluded.point_of_sale,
+                                       merchant_id = excluded.merchant_id,
                                        location_id = excluded.location_id,
                                        p256dh = excluded.p256dh,
                                        auth = excluded.auth,
@@ -225,6 +238,7 @@ impl RegistrationStore {
                          RETURNING id",
                         params![
                             id.as_str(),
+                            pos,
                             new.merchant_id.as_str(),
                             new.location_id.as_str(),
                             endpoint,
@@ -256,9 +270,11 @@ impl RegistrationStore {
             .await
     }
 
-    /// Every registration of `merchant_id`'s location `location_id`.
+    /// Every registration of `merchant_id`'s location `location_id` at
+    /// `point_of_sale`.
     pub async fn at_location(
         &self,
+        point_of_sale: PointOfSale,
         merchant_id: &MerchantId,
         location_id: &LocationId,
     ) -> Result<Vec<Registration>, StoreError> {
@@ -267,24 +283,25 @@ impl RegistrationStore {
             .run(move |connection| {
                 let mut statement = connection.prepare_cached(
                     "SELECT id, endpoint, p256dh, auth FROM registrations
-                     WHERE merchant_id = ?1 AND location_id = ?2 ORDER BY created_at, id",
+                     WHERE point_of_sale = ?1 AND merchant_id = ?2 AND location_id = ?3
+                     ORDER BY created_at, id",
                 )?;
                 let rows = statement.query_map(
-                    params![merchant_id.as_str(), location_id.as_str()],
+                    params![
+                        point_of_sale.as_str(),
+                        merchant_id.as_str(),
+                        location_id.as_str()
+                    ],
                     |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                        ))
+                        Ok(Row {
+                            id: row.get(0)?,
+                            endpoint: row.get(1)?,
+                            p256dh: row.get(2)?,
+                            auth: row.get(3)?,
+                        })
                     },
                 )?;
-                rows.map(|row| {
-                    let (id, endpoint, p256dh, auth) = row?;
-                    read_registration(id, &endpoint, &p256dh, &auth)
-                })
-                .collect()
+                rows.map(|row| read_registration(row?)).collect()
             })
             .await
     }
@@ -333,23 +350,26 @@ impl RegistrationStore {
     }
 }
 
-/// A stored row, read back into the types it was written from.
-fn read_registration(
+/// A stored row, as SQLite gives it.
+struct Row {
     id: String,
-    endpoint: &str,
-    p256dh: &str,
-    auth: &str,
-) -> Result<Registration, StoreError> {
-    let corrupt = |what: &str| StoreError::Corrupt(format!("{id}: its {what}"));
+    endpoint: String,
+    p256dh: String,
+    auth: String,
+}
+
+/// A stored row, read back into the types it was written from.
+fn read_registration(row: Row) -> Result<Registration, StoreError> {
+    let corrupt = |what: &str| StoreError::Corrupt(format!("{}: its {what}", row.id));
     let subscription = Subscription {
-        endpoint: Endpoint::parse(endpoint).map_err(|_| corrupt("endpoint"))?,
+        endpoint: Endpoint::parse(&row.endpoint).map_err(|_| corrupt("endpoint"))?,
         keys: SubscriptionKeys {
-            p256dh: P256dh::from_base64url(p256dh).map_err(|_| corrupt("p256dh"))?,
-            auth: AuthSecret::from_base64url(auth).map_err(|_| corrupt("auth"))?,
+            p256dh: P256dh::from_base64url(&row.p256dh).map_err(|_| corrupt("p256dh"))?,
+            auth: AuthSecret::from_base64url(&row.auth).map_err(|_| corrupt("auth"))?,
         },
     };
     Ok(Registration {
-        id: id.parse().map_err(|_| corrupt("id"))?,
+        id: row.id.parse().map_err(|_| corrupt("id"))?,
         subscription,
     })
 }
@@ -387,7 +407,17 @@ pub(crate) mod tests {
     }
 
     fn new(merchant_id: &str, location_id: &str, endpoint: &str) -> NewRegistration {
+        at(PointOfSale::Square, merchant_id, location_id, endpoint)
+    }
+
+    fn at(
+        point_of_sale: PointOfSale,
+        merchant_id: &str,
+        location_id: &str,
+        endpoint: &str,
+    ) -> NewRegistration {
         NewRegistration {
+            point_of_sale,
             merchant_id: merchant(merchant_id),
             location_id: location(location_id),
             subscription: subscription(endpoint),
@@ -434,12 +464,12 @@ pub(crate) mod tests {
         let again = store.register(moved, NOW + 1).await.unwrap();
         assert_eq!(again, first);
         let at_l1 = store
-            .at_location(&merchant("M1"), &location("L1"))
+            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
             .await
             .unwrap();
         assert_eq!(at_l1.iter().map(|r| &r.id).collect::<Vec<_>>(), [&other]);
         let at_l2 = store
-            .at_location(&merchant("M1"), &location("L2"))
+            .at_location(PointOfSale::Square, &merchant("M1"), &location("L2"))
             .await
             .unwrap();
         assert_eq!(at_l2.len(), 1);
@@ -466,7 +496,7 @@ pub(crate) mod tests {
         let taken = store.register(new("M2", "L9", till), NOW + 1).await;
         assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
         let at_l1 = store
-            .at_location(&merchant("M1"), &location("L1"))
+            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
             .await
             .unwrap();
         assert_eq!(at_l1.len(), 1);
@@ -481,14 +511,14 @@ pub(crate) mod tests {
         );
         assert!(
             store
-                .at_location(&merchant("M1"), &location("L1"))
+                .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
                 .await
                 .unwrap()
                 .is_empty()
         );
         assert_eq!(
             store
-                .at_location(&merchant("M2"), &location("L9"))
+                .at_location(PointOfSale::Square, &merchant("M2"), &location("L9"))
                 .await
                 .unwrap()
                 .len(),
@@ -508,7 +538,7 @@ pub(crate) mod tests {
             .unwrap();
         assert!(
             store
-                .at_location(&merchant("M2"), &location("L1"))
+                .at_location(PointOfSale::Square, &merchant("M2"), &location("L1"))
                 .await
                 .unwrap()
                 .is_empty()
@@ -570,7 +600,7 @@ pub(crate) mod tests {
         let refused = store.register(new("M1", "L1", till), NOW + 1).await;
         assert!(matches!(refused, Err(RegisterError::Full)), "{refused:?}");
         let at_l2 = store
-            .at_location(&merchant("M1"), &location("L2"))
+            .at_location(PointOfSale::Square, &merchant("M1"), &location("L2"))
             .await
             .unwrap();
         assert_eq!(at_l2.len(), 1);
@@ -596,7 +626,9 @@ pub(crate) mod tests {
                 [],
             )
             .unwrap();
-        let read = store.at_location(&merchant("M1"), &location("L1")).await;
+        let read = store
+            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+            .await;
         assert!(matches!(read, Err(StoreError::Corrupt(_))), "{read:?}");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
@@ -617,6 +649,163 @@ pub(crate) mod tests {
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Deleted);
         assert!(!store.delete(&id).await.unwrap());
         assert_eq!(store.failed(&id, 3).await.unwrap(), Failed::Gone);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A database the first Bell made: its rows are Square's, at their
+    /// locations, the index is the one with the point of sale, and opening
+    /// it again runs nothing twice.
+    #[tokio::test]
+    async fn a_database_from_before_the_point_of_sale_reads_as_squares() {
+        let path = temp_path("migrate");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        {
+            let connection = Connection::open(&path).unwrap();
+            sqlite::migrations::apply(&connection, &MIGRATIONS[..1]).unwrap();
+            for (id, endpoint) in [
+                (
+                    "br_00000000000000000000000000000001",
+                    "https://push.example.org/a",
+                ),
+                (
+                    "br_00000000000000000000000000000002",
+                    "https://push.example.org/b",
+                ),
+            ] {
+                let keys = ReceiverKeys::generate().subscription_keys();
+                connection
+                    .execute(
+                        "INSERT INTO registrations
+                             (id, merchant_id, location_id, endpoint, p256dh, auth, created_at)
+                         VALUES (?1, 'M1', 'L1', ?2, ?3, ?4, ?5)",
+                        params![
+                            id,
+                            endpoint,
+                            keys.p256dh.to_base64url(),
+                            keys.auth.to_base64url(),
+                            NOW
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        let store = RegistrationStore::open(&path).unwrap();
+        let square = store
+            .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+            .await
+            .unwrap();
+        assert_eq!(square.len(), 2);
+        assert!(
+            store
+                .at_location(PointOfSale::Clover, &merchant("M1"), &location("L1"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        drop(store);
+        RegistrationStore::open(&path).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        let index: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name = 'registrations_location'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            index.contains("(point_of_sale, merchant_id, location_id)"),
+            "{index}"
+        );
+        let versions: Vec<i64> = connection
+            .prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(versions, [1, 2]);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// The same merchant and location text at two points of sale are two
+    /// locations: each has its tills, and its own room for them.
+    #[tokio::test]
+    async fn the_same_ids_at_two_points_of_sale_are_two_locations() {
+        let path = temp_path("two-rooms");
+        let store = RegistrationStore::open(&path).unwrap();
+        for n in 0..MAX_PER_LOCATION {
+            store
+                .register(
+                    new("M1", "M1", &format!("https://push.example.org/{n}")),
+                    NOW,
+                )
+                .await
+                .unwrap();
+        }
+        let clover = store
+            .register(
+                at(
+                    PointOfSale::Clover,
+                    "M1",
+                    "M1",
+                    "https://push.example.org/clover",
+                ),
+                NOW,
+            )
+            .await
+            .unwrap();
+        let at_clover = store
+            .at_location(PointOfSale::Clover, &merchant("M1"), &location("M1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            at_clover.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            [&clover]
+        );
+        assert_eq!(
+            store
+                .at_location(PointOfSale::Square, &merchant("M1"), &location("M1"))
+                .await
+                .unwrap()
+                .len(),
+            MAX_PER_LOCATION as usize
+        );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// A merchant id at another point of sale is another merchant: it can't
+    /// take a registration by its endpoint, and the till moves it there
+    /// with its own keys.
+    #[tokio::test]
+    async fn another_point_of_sale_moves_a_registration_only_with_its_keys() {
+        let path = temp_path("pos-taken");
+        let store = RegistrationStore::open(&path).unwrap();
+        let till = "https://push.example.org/till-1";
+        let first = new("M1", "L1", till);
+        let keys = first.subscription.keys.clone();
+        let id = store.register(first, NOW).await.unwrap();
+        let taken = store
+            .register(at(PointOfSale::Clover, "M1", "M1", till), NOW + 1)
+            .await;
+        assert!(matches!(taken, Err(RegisterError::Taken)), "{taken:?}");
+        let mut moving = at(PointOfSale::Clover, "M1", "M1", till);
+        moving.subscription.keys = keys;
+        assert_eq!(store.register(moving, NOW + 2).await.unwrap(), id);
+        assert!(
+            store
+                .at_location(PointOfSale::Square, &merchant("M1"), &location("L1"))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .at_location(PointOfSale::Clover, &merchant("M1"), &location("M1"))
+                .await
+                .unwrap()[0]
+                .id,
+            id
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

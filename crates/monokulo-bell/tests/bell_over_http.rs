@@ -27,7 +27,14 @@ async fn registration_over_http_keeps_the_merchant_square_names() {
         .unwrap()
         .to_owned();
     assert!(id.starts_with("br_") && id.len() == 35, "{id}");
-    assert_eq!(answered.json()["square_application_id"], APPLICATION_ID);
+    assert_eq!(
+        answered.json(),
+        serde_json::json!({
+            "registration_id": id,
+            "point_of_sale": "square",
+            "application_id": APPLICATION_ID,
+        })
+    );
 
     let asked = square.next().await;
     assert_eq!(asked.path, format!("/v2/locations/{LOCATION}"));
@@ -467,7 +474,7 @@ async fn a_sandbox_bell_asks_the_square_it_is_pointed_at_over_http() {
         .await;
     assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
     assert_eq!(
-        answered.json()["square_application_id"],
+        answered.json()["application_id"],
         "sandbox-sq0idb-MonokularTest"
     );
     assert_eq!(
@@ -1068,4 +1075,558 @@ async fn one_merchant_cant_spend_another_merchants_dings_over_http() {
         "a dropped ding counted as a failure: {:?}",
         bell.rows()
     );
+}
+
+/// What a ding says, read as `till` reads it.
+fn wake(ding: &Received, till: &Till) -> Vec<u8> {
+    let request = PushRequest::parse(&ding.headers, &ding.body).unwrap();
+    let Message::Encrypted(body) = request.message else {
+        panic!("a ding is encrypted");
+    };
+    push::encrypt::decrypt(&till.keys, body.as_bytes()).unwrap()
+}
+
+/// Registered with the merchant's Clover token, the till is kept at that
+/// merchant, its own location; the token went to Clover once, for the
+/// merchant asked, and is nowhere in the database or the log, nor is the
+/// owner Clover named beside it.
+#[tokio::test]
+async fn a_clover_registration_over_http_proves_the_merchant_with_its_token() {
+    let (_guard, log) = capture_log();
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let till = Till::at(&push, "till-1");
+    let answered = bell
+        .register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    let id = answered.json()["registration_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        answered.json(),
+        serde_json::json!({
+            "registration_id": id,
+            "point_of_sale": "clover",
+            "application_id": CLOVER_APP_ID,
+        })
+    );
+    let asked = clover.next().await;
+    assert_eq!(asked.method, axum::http::Method::GET);
+    assert_eq!(asked.path, format!("/v3/merchants/{CLOVER_MERCHANT}"));
+    assert_eq!(
+        asked.header("authorization"),
+        format!("Bearer {CLOVER_TOKEN}")
+    );
+    assert_eq!(asked.header("accept"), "application/json");
+    assert!(asked.header("user-agent").starts_with("monokular-bell/"));
+    assert!(clover.drain().await.is_empty(), "one request");
+
+    let rows = bell.rows();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        (&rows[0].0, rows[0].1.as_str(), rows[0].2.as_str()),
+        (&id, CLOVER_MERCHANT, CLOVER_MERCHANT)
+    );
+    let stored = String::from_utf8_lossy(&bell.stored_bytes()).into_owned();
+    let log = log.text();
+    for secret in [CLOVER_TOKEN, CLOVER_OWNER_EMAIL, "Dana Bean"] {
+        assert!(!stored.contains(secret), "{secret} is in the database");
+        assert!(!log.contains(secret), "{secret} is in the log: {log}");
+    }
+    assert!(!log.contains(&till.endpoint), "{log}");
+    assert_eq!(
+        bell.registered_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+            .await,
+        id
+    );
+}
+
+/// A payment created at a Clover merchant dings each of its tills, and
+/// only those: `{"wake":"clover"}`, with the headers Square's dings have.
+#[tokio::test]
+async fn a_clover_payment_dings_every_till_at_its_merchant_over_http() {
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let (front, back) = (Till::at(&push, "front"), Till::at(&push, "back"));
+    bell.registered_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &front)
+        .await;
+    bell.registered_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &back)
+        .await;
+    bell.registered_clover(
+        OTHER_CLOVER_TOKEN,
+        OTHER_CLOVER_MERCHANT,
+        &Till::at(&push, "other"),
+    )
+    .await;
+
+    let answered = bell
+        .clover_webhook(&clover_webhook(
+            CLOVER_MERCHANT,
+            &clover_payment(),
+            "CREATE",
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.text());
+    let mut dings = push.drain().await;
+    dings.sort_by(|a, b| a.path.cmp(&b.path));
+    assert_eq!(
+        dings
+            .iter()
+            .map(|ding| ding.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/push/back", "/push/front"]
+    );
+    let now = now();
+    for (ding, till) in dings.iter().zip([&back, &front]) {
+        assert_eq!(ding.header("urgency"), "high");
+        assert_eq!(ding.header("ttl"), "60");
+        assert_eq!(ding.header("topic"), "wake");
+        assert_eq!(ding.header("content-encoding"), "aes128gcm");
+        let request = PushRequest::parse(&ding.headers, &ding.body).unwrap();
+        push::vapid::verify(
+            &request.authorization,
+            &vapid_public_key(),
+            &Origin::parse(&push.url()).unwrap(),
+            now,
+        )
+        .unwrap();
+        assert_eq!(wake(ding, till), br#"{"wake":"clover"}"#);
+    }
+    assert!(bell.rows().iter().all(|row| row.4 == 0));
+}
+
+/// Only a payment's `CREATE` dings: its updates (a refund, a tip, a void
+/// days later), its deletion, any other object, a merchant nobody
+/// registered and another app's batch ding nobody. A payment rings once.
+#[tokio::test]
+async fn only_a_created_clover_payment_dings_and_once_over_http() {
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    bell.registered_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &Till::at(&push, "front"))
+        .await;
+    let payment = clover_payment();
+    for body in [
+        clover_webhook(CLOVER_MERCHANT, &payment, "UPDATE"),
+        clover_webhook(CLOVER_MERCHANT, &payment, "DELETE"),
+        clover_webhook(CLOVER_MERCHANT, "O:CLVORDER0001", "CREATE"),
+        clover_webhook(CLOVER_MERCHANT, "M:CLVMERCHANT01", "UPDATE"),
+        // A merchant nobody here registered.
+        clover_webhook(OTHER_CLOVER_MERCHANT, &clover_payment(), "CREATE"),
+        clover_batch(
+            "OTHERAPP00001",
+            serde_json::json!({CLOVER_MERCHANT: [clover_update(&payment, "CREATE")]}),
+        ),
+    ] {
+        assert_eq!(
+            bell.clover_webhook(&body).await.status,
+            StatusCode::OK,
+            "{body}"
+        );
+    }
+    assert!(push.drain().await.is_empty());
+    let created = clover_webhook(CLOVER_MERCHANT, &payment, "CREATE");
+    bell.clover_webhook(&created).await;
+    assert_eq!(push.drain().await.len(), 1);
+    // Sent again (Clover retrying, or replayed): rung already.
+    bell.clover_webhook(&created).await;
+    assert!(push.drain().await.is_empty(), "a payment rang twice");
+    bell.clover_webhook(&clover_webhook(
+        CLOVER_MERCHANT,
+        &clover_payment(),
+        "CREATE",
+    ))
+    .await;
+    assert_eq!(push.drain().await.len(), 1, "another payment dings");
+}
+
+/// A batch naming two merchants and three payments dings each merchant's
+/// tills for its own payments only.
+#[tokio::test]
+async fn a_clover_batch_dings_each_merchant_for_its_own_payments_over_http() {
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    bell.registered_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &Till::at(&push, "one"))
+        .await;
+    bell.registered_clover(
+        OTHER_CLOVER_TOKEN,
+        OTHER_CLOVER_MERCHANT,
+        &Till::at(&push, "two"),
+    )
+    .await;
+    let body = clover_batch(
+        CLOVER_APP_ID,
+        serde_json::json!({
+            CLOVER_MERCHANT: [
+                clover_update(&clover_payment(), "CREATE"),
+                clover_update(&clover_payment(), "CREATE"),
+                clover_update("O:CLVORDER0001", "CREATE"),
+            ],
+            OTHER_CLOVER_MERCHANT: [
+                clover_update(&clover_payment(), "CREATE"),
+                clover_update(&clover_payment(), "UPDATE"),
+            ],
+        }),
+    );
+    assert_eq!(bell.clover_webhook(&body).await.status, StatusCode::OK);
+    let mut paths: Vec<String> = push
+        .drain()
+        .await
+        .into_iter()
+        .map(|ding| ding.path)
+        .collect();
+    paths.sort();
+    assert_eq!(paths, ["/push/one", "/push/one", "/push/two"]);
+}
+
+/// A Clover webhook leaves nothing of itself in the database or the log,
+/// at any level: not its payment, not its merchant key beyond the
+/// registration that already held it, not its app or its times.
+#[tokio::test]
+async fn a_clover_webhook_leaves_no_trace_over_http() {
+    let (_guard, log) = capture_log();
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let till = Till::at(&push, "front");
+    bell.registered_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+        .await;
+    let unregistered = "CLVSTRANGER01";
+    let body = clover_batch(
+        CLOVER_APP_ID,
+        serde_json::json!({
+            CLOVER_MERCHANT: [
+                {"objectId": "P:CLVTRACEPAY1", "type": "CREATE", "ts": 1_761_699_999_123_u64},
+                {"objectId": "P:CLVTRACEPAY2", "type": "UPDATE", "ts": 1_761_699_999_124_u64},
+            ],
+            unregistered: [clover_update("P:CLVTRACEPAY3", "CREATE")],
+        }),
+    );
+    assert_eq!(bell.clover_webhook(&body).await.status, StatusCode::OK);
+    let unreadable = body.replace("CLVTRACEPAY3", "CLV/TRACE/PAY4");
+    assert_eq!(
+        bell.clover_webhook(&unreadable).await.status,
+        StatusCode::OK
+    );
+    let refused = bell.call(clover_request(&body, Some("not-the-code"))).await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(push.drain().await.len(), 1);
+
+    let log = log.text();
+    assert!(log.contains("a Clover webhook was dropped"), "{log}");
+    let stored = String::from_utf8_lossy(&bell.stored_bytes()).into_owned();
+    for trace in [
+        "CLVTRACEPAY1",
+        "CLVTRACEPAY2",
+        "CLVTRACEPAY3",
+        "CLV/TRACE/PAY4",
+        unregistered,
+        "1761699999123",
+        "not-the-code",
+        CLOVER_AUTH_CODE,
+        CLOVER_TOKEN,
+    ] {
+        assert!(!log.contains(trace), "{trace} is in the log: {log}");
+        assert!(!stored.contains(trace), "{trace} is in the database");
+    }
+    // The merchant is in the database as its registration, and in no log
+    // line.
+    assert!(!log.contains(CLOVER_MERCHANT), "{log}");
+    assert!(stored.contains(CLOVER_MERCHANT));
+    assert!(!log.contains(&till.endpoint), "{log}");
+}
+
+/// Clover refusing the token, or the merchant being another's, is
+/// `clover-refused`; Clover answering for another merchant than asked is
+/// the till's mistake; Clover down, limiting the Bell, slow, silent or
+/// answering with something that isn't a merchant is `clover-unavailable`.
+/// Nothing is kept.
+#[tokio::test]
+async fn clovers_answers_map_to_its_problems_over_http() {
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let till = Till::at(&push, "front");
+    for (token, merchant) in [
+        ("clv-a-token-clover-never-gave", CLOVER_MERCHANT),
+        (CLOVER_TOKEN, OTHER_CLOVER_MERCHANT),
+        (OTHER_CLOVER_TOKEN, CLOVER_MERCHANT),
+    ] {
+        let answered = bell.register_clover(token, merchant, &till).await;
+        assert_eq!(
+            answered.status,
+            StatusCode::UNAUTHORIZED,
+            "{}",
+            answered.text()
+        );
+        assert_eq!(answered.problem(), "clover-refused");
+        assert_eq!(answered.json()["title"], "Refused by Clover");
+    }
+    for status in [403, 404, 400] {
+        clover.answer(move |_| Answer::status(status));
+        assert_eq!(
+            bell.register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+                .await
+                .problem(),
+            "clover-refused",
+            "{status}"
+        );
+    }
+    clover.answer(|_| {
+        Answer::status(200).json(serde_json::json!({"id": OTHER_CLOVER_MERCHANT, "name": "x"}))
+    });
+    let answered = bell
+        .register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+        .await;
+    assert_eq!(
+        answered.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        answered.text()
+    );
+    assert_eq!(answered.problem(), "invalid-request");
+    assert!(
+        answered.json()["detail"]
+            .as_str()
+            .unwrap()
+            .contains("merchant ID")
+    );
+    for status in [500, 503, 429] {
+        clover.answer(move |_| Answer::status(status));
+        let answered = bell
+            .register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+            .await;
+        assert_eq!(answered.status, StatusCode::SERVICE_UNAVAILABLE, "{status}");
+        assert_eq!(answered.problem(), "clover-unavailable");
+        assert_eq!(answered.json()["title"], "Clover unavailable");
+    }
+    for body in [
+        serde_json::json!({"name": "no id"}),
+        serde_json::json!({"id": "not/a/merchant"}),
+        serde_json::json!(CLOVER_MERCHANT),
+    ] {
+        clover.answer(move |_| Answer::status(200).json(body.clone()));
+        assert_eq!(
+            bell.register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+                .await
+                .problem(),
+            "clover-unavailable"
+        );
+    }
+    let gone = TestBell::clover(&unreachable_url(), &[]).await;
+    assert_eq!(
+        gone.register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+            .await
+            .problem(),
+        "clover-unavailable"
+    );
+    let (_silent, slow) = silent_url();
+    let slow = TestBell::clover(&slow, &[("bell.timeout_ms", "100")]).await;
+    let started = std::time::Instant::now();
+    assert_eq!(
+        slow.register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+            .await
+            .problem(),
+        "clover-unavailable"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(bell.rows().is_empty() && gone.rows().is_empty() && slow.rows().is_empty());
+}
+
+/// Whatever Clover answers, and whatever it says in its errors, the token
+/// is in no log line, no answer and not the database.
+#[tokio::test]
+async fn a_failed_clover_check_leaves_the_token_nowhere_over_http() {
+    let (_guard, log) = capture_log();
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let till = Till::at(&push, "front");
+    for status in [401, 404, 500, 429] {
+        clover.answer(move |_| {
+            Answer::status(status).json(serde_json::json!({"message": CLOVER_TOKEN}))
+        });
+        let answered = bell
+            .register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+            .await;
+        assert!(
+            !answered.text().contains(CLOVER_TOKEN),
+            "{}",
+            answered.text()
+        );
+    }
+    clover.answer(|_| Answer::status(200).json(serde_json::json!({"merchant": CLOVER_TOKEN})));
+    let answered = bell
+        .register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &till)
+        .await;
+    assert_eq!(answered.problem(), "clover-unavailable");
+    assert!(
+        !answered.text().contains(CLOVER_TOKEN),
+        "{}",
+        answered.text()
+    );
+    let log = log.text();
+    assert!(log.contains("Clover"), "{log}");
+    assert!(
+        !log.contains(CLOVER_TOKEN),
+        "the token is in the log: {log}"
+    );
+    assert!(!String::from_utf8_lossy(&bell.stored_bytes()).contains(CLOVER_TOKEN));
+}
+
+/// A Clover that redirects isn't followed: the merchant's token goes to
+/// the API it was configured for and nowhere else.
+#[tokio::test]
+async fn a_redirecting_clover_never_gets_the_token_followed_over_http() {
+    let elsewhere = Stub::start(|_| Answer::status(200)).await;
+    let clover = Stub::start({
+        let target = format!("{}/v3/merchants/{CLOVER_MERCHANT}", elsewhere.url());
+        move |_| Answer::status(307).header("location", &target)
+    })
+    .await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let answered = bell
+        .register_clover(CLOVER_TOKEN, CLOVER_MERCHANT, &Till::at(&push, "front"))
+        .await;
+    assert_eq!(answered.problem(), "clover-refused");
+    assert_eq!(clover.drain().await.len(), 1);
+    assert!(
+        elsewhere.drain().await.is_empty(),
+        "the redirect was followed"
+    );
+    assert!(bell.rows().is_empty());
+}
+
+/// A Bell serving both: the same merchant id text at Square and at Clover
+/// is two merchants. Each point of sale's webhooks ding its own tills
+/// alone, with its own word, and each spends its own share of dings.
+#[tokio::test]
+async fn square_and_clover_are_separate_rooms_over_http() {
+    let square = Stub::square().await;
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::start_with(
+        Points {
+            square: Some(&square.url()),
+            clover: Some(&clover.url()),
+        },
+        &[("bell.dings_per_merchant_per_minute", "2")],
+    )
+    .await;
+    let square_till = Till::at(&push, "square");
+    bell.registered(TOKEN, LOCATION, &square_till).await;
+    // Clover vouches for a merchant whose id is Square's merchant's, and
+    // for one whose id is Square's location's.
+    let clover_till = Till::at(&push, "clover");
+    let at_location = Till::at(&push, "clover-at-location");
+    clover.answer(|received| {
+        let id = received.path.rsplit('/').next().unwrap().to_owned();
+        Answer::status(200).json(serde_json::json!({"id": id}))
+    });
+    bell.registered_clover(CLOVER_TOKEN, MERCHANT, &clover_till)
+        .await;
+    bell.registered_clover(CLOVER_TOKEN, LOCATION, &at_location)
+        .await;
+
+    let dinged = async |body: String, from_clover: bool| {
+        let answered = if from_clover {
+            bell.clover_webhook(&body).await
+        } else {
+            bell.webhook(&body).await
+        };
+        assert_eq!(answered.status, StatusCode::OK);
+        let mut dings: Vec<(String, Received)> = push
+            .drain()
+            .await
+            .into_iter()
+            .map(|ding| (ding.path.clone(), ding))
+            .collect();
+        dings.sort_by(|a, b| a.0.cmp(&b.0));
+        dings
+    };
+    // Square's payment at its merchant and location: Square's till alone.
+    let dings = dinged(completed_payment(), false).await;
+    assert_eq!(
+        dings.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+        ["/push/square"]
+    );
+    assert_eq!(wake(&dings[0].1, &square_till), br#"{"wake":"square"}"#);
+    // Clover's payment at the merchant of the same id: Clover's till alone.
+    for _ in 0..2 {
+        let dings = dinged(clover_webhook(MERCHANT, &clover_payment(), "CREATE"), true).await;
+        assert_eq!(
+            dings.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+            ["/push/clover"]
+        );
+        assert_eq!(wake(&dings[0].1, &clover_till), br#"{"wake":"clover"}"#);
+    }
+    // Clover's merchant has spent its share; Square's of the same id
+    // hasn't (one of two).
+    assert!(
+        dinged(clover_webhook(MERCHANT, &clover_payment(), "CREATE"), true)
+            .await
+            .is_empty()
+    );
+    assert_eq!(dinged(completed_payment(), false).await.len(), 1);
+    // A Clover payment at the merchant named as Square's location id dings
+    // the Clover till registered there, never Square's.
+    let dings = dinged(clover_webhook(LOCATION, &clover_payment(), "CREATE"), true).await;
+    assert_eq!(
+        dings.iter().map(|d| d.0.as_str()).collect::<Vec<_>>(),
+        ["/push/clover-at-location"]
+    );
+}
+
+/// An endpoint registered for a Square merchant can't be taken by a Clover
+/// registration of the same merchant id with other keys; the till itself,
+/// moving to Clover with its own keys, moves its registration.
+#[tokio::test]
+async fn a_square_till_moves_to_clover_only_with_its_keys_over_http() {
+    let square = Stub::square().await;
+    let clover = Stub::clover().await;
+    let push = Stub::push_service().await;
+    let bell = TestBell::start_with(
+        Points {
+            square: Some(&square.url()),
+            clover: Some(&clover.url()),
+        },
+        &[],
+    )
+    .await;
+    clover.answer(|received| {
+        let id = received.path.rsplit('/').next().unwrap().to_owned();
+        Answer::status(200).json(serde_json::json!({"id": id}))
+    });
+    let till = Till::at(&push, "front");
+    let id = bell.registered(TOKEN, LOCATION, &till).await;
+    let attacker = Till {
+        keys: push::encrypt::ReceiverKeys::generate(),
+        endpoint: till.endpoint.clone(),
+    };
+    let answered = bell
+        .register_clover(CLOVER_TOKEN, MERCHANT, &attacker)
+        .await;
+    assert_eq!(answered.status, StatusCode::CONFLICT, "{}", answered.text());
+    assert_eq!(answered.problem(), "endpoint-registered");
+    assert!(!answered.text().contains(&id));
+
+    assert_eq!(
+        bell.registered_clover(CLOVER_TOKEN, MERCHANT, &till).await,
+        id
+    );
+    bell.webhook(&completed_payment()).await;
+    assert!(
+        push.drain().await.is_empty(),
+        "dinged for Square after moving"
+    );
+    bell.clover_webhook(&clover_webhook(MERCHANT, &clover_payment(), "CREATE"))
+        .await;
+    let ding = push.next().await;
+    assert_eq!(wake(&ding, &till), br#"{"wake":"clover"}"#);
 }

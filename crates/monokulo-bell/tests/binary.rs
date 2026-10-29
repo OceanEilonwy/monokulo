@@ -17,6 +17,11 @@ const SECRETS: [(&str, &str); 2] = [
     ),
 ];
 
+const CLOVER_CODE: (&str, &str) = (
+    "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+    "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d",
+);
+
 /// A directory of the test's own.
 fn dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -56,12 +61,14 @@ fn init_writes_the_options_file_and_never_over_one() {
     assert!(output.status.success(), "{}", text(&output));
     let written = std::fs::read_to_string(&path).unwrap();
     for line in [
-        "#   MONOKULAR_BELL_SQUARE_WEBHOOK_KEY (required)\n",
+        "#   MONOKULAR_BELL_SQUARE_WEBHOOK_KEY\n",
+        "#   MONOKULAR_BELL_CLOVER_AUTH_CODE\n",
         "#   MONOKULAR_BELL_VAPID_KEY (required)\n",
         "[bell]\n",
         "# listen = \"127.0.0.1:8445\"\n",
         "# registration_failure_limit = 20\n",
         "# square.environment = \"production\"\n",
+        "# clover.environment = \"north_america\"\n",
         "[logging]\n",
     ] {
         assert!(written.contains(line), "{line:?} in {written}");
@@ -73,12 +80,13 @@ fn init_writes_the_options_file_and_never_over_one() {
 }
 
 #[test]
-fn the_help_names_both_secrets() {
+fn the_help_names_the_three_secrets() {
     let output = run(&["--help"], &[]);
     assert!(output.status.success());
     let help = text(&output);
     for secret in [
         "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
+        "MONOKULAR_BELL_CLOVER_AUTH_CODE",
         "MONOKULAR_BELL_VAPID_KEY",
     ] {
         assert!(help.contains(secret), "{secret}: {help}");
@@ -96,11 +104,45 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
     );
     // The options file, the environment, and what the Bell says.
     type Case<'a> = (String, &'a [(&'a str, &'a str)], &'a str);
-    let cases: [Case; 6] = [
+    let clover = ready.replace(
+        "[bell.square]\napplication_id = \"sq0idp-Test\"\n",
+        "[bell.clover]\napplication_id = \"MONOKULARBELL\"\n",
+    );
+    let with_clover_code = [SECRETS[0], SECRETS[1], CLOVER_CODE];
+    let clover_only = [SECRETS[1], CLOVER_CODE];
+    let cases: [Case; 11] = [
         (
             ready.clone(),
             &SECRETS[1..],
             "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set",
+        ),
+        (
+            clover.clone(),
+            &SECRETS[1..],
+            "MONOKULAR_BELL_CLOVER_AUTH_CODE must be set",
+        ),
+        (
+            ready.clone(),
+            &with_clover_code,
+            "MONOKULAR_BELL_CLOVER_AUTH_CODE is set but bell.clover.application_id isn't",
+        ),
+        (
+            clover.replace("[bell.clover]", "[bell.clover]\nenvironment = \"mars\""),
+            &clover_only,
+            "sandbox, north_america, europe, latin_america",
+        ),
+        (
+            clover.replace(
+                "[bell.clover]",
+                "[bell.clover]\napi_url = \"http://example.org\"",
+            ),
+            &clover_only,
+            "bell.clover.api_url",
+        ),
+        (
+            clover.replace("application_id = \"MONOKULARBELL\"\n", ""),
+            &SECRETS[1..],
+            "bell.square.application_id or bell.clover.application_id (or both) must be set",
         ),
         (
             ready.clone(),
@@ -115,7 +157,7 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
         (
             ready.replace("application_id = \"sq0idp-Test\"\n", ""),
             &SECRETS,
-            "bell.square.application_id must be set",
+            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY is set but bell.square.application_id isn't",
         ),
         (
             ready.replace("sq0idp-Test", "sandbox-sq0idb-Test"),
@@ -143,20 +185,36 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Started with what it needs, it opens its database, listens, and stops
-/// cleanly on SIGTERM.
+/// Started with what it needs, for Square or for Clover alone, it opens
+/// its database, listens, and stops cleanly on SIGTERM.
 #[cfg(unix)]
 #[test]
 fn the_bell_listens_and_stops_on_sigterm() {
+    listens_and_stops(
+        "listen-square",
+        "[bell.square]\napplication_id = \"sq0idp-Test\"\n",
+        &SECRETS,
+        "serving Square",
+    );
+    listens_and_stops(
+        "listen-clover",
+        "[bell.clover]\napplication_id = \"MONOKULARBELL\"\nenvironment = \"sandbox\"\n",
+        &[SECRETS[1], CLOVER_CODE],
+        "serving Clover",
+    );
+}
+
+#[cfg(unix)]
+fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], serving: &str) {
     use std::io::{BufRead as _, BufReader};
 
-    let dir = dir("listen");
+    let dir = dir(tag);
     let path = dir.join("bell.toml");
     let store = dir.join("data").join("bell.db");
     std::fs::write(
         &path,
         format!(
-            "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = \"{}\"\n\n[bell.square]\napplication_id = \"sq0idp-Test\"\n",
+            "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = \"{}\"\n\n{section}",
             store.display()
         ),
     )
@@ -164,7 +222,7 @@ fn the_bell_listens_and_stops_on_sigterm() {
     let mut child = Command::new(BINARY)
         .args(["--options", path.to_str().unwrap()])
         .env_clear()
-        .envs(SECRETS)
+        .envs(vars.iter().copied())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -187,7 +245,7 @@ fn the_bell_listens_and_stops_on_sigterm() {
             Err(_) => return false,
         }
     };
-    let listening = said("the Bell is listening");
+    let listening = said(serving) && said("the Bell is listening");
     if !listening {
         let _ = child.kill();
     }

@@ -5,6 +5,8 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+use crate::pos::PointOfSale;
+
 /// The media type of an error body.
 pub const PROBLEM_JSON: &str = "application/problem+json";
 
@@ -18,11 +20,12 @@ pub enum Problem {
     /// unknown, an endpoint that isn't https or is private, a key that
     /// isn't one.
     InvalidRequest,
-    /// Square refused the access token, or the location isn't its
-    /// merchant's.
-    SquareRefused,
-    /// Square didn't answer, or couldn't: try again later.
-    SquareUnavailable,
+    /// The point of sale refused the access token, or the location isn't
+    /// its merchant's: `square-refused`, `clover-refused` (decision 46).
+    Refused(PointOfSale),
+    /// The point of sale didn't answer, or couldn't: try again later.
+    /// `square-unavailable`, `clover-unavailable`.
+    Unavailable(PointOfSale),
     /// No such registration: never made, unregistered, or deleted after
     /// its push service said the subscription was gone.
     UnknownRegistration,
@@ -31,8 +34,9 @@ pub enum Problem {
     /// The endpoint is registered for another merchant, and the keys given
     /// aren't its own.
     EndpointRegistered,
-    /// A webhook whose signature isn't Square's for this Bell.
-    InvalidSignature,
+    /// A webhook its point of sale didn't sign, or authenticate, for this
+    /// Bell.
+    InvalidSignature(PointOfSale),
     /// The body is more than the route reads.
     PayloadTooLarge,
     /// Too many registrations from this address: wait `Retry-After`
@@ -46,12 +50,14 @@ impl Problem {
     pub const fn slug(self) -> &'static str {
         match self {
             Problem::InvalidRequest => "invalid-request",
-            Problem::SquareRefused => "square-refused",
-            Problem::SquareUnavailable => "square-unavailable",
+            Problem::Refused(PointOfSale::Square) => "square-refused",
+            Problem::Refused(PointOfSale::Clover) => "clover-refused",
+            Problem::Unavailable(PointOfSale::Square) => "square-unavailable",
+            Problem::Unavailable(PointOfSale::Clover) => "clover-unavailable",
             Problem::UnknownRegistration => "unknown-registration",
             Problem::TooManyRegistrations => "too-many-registrations",
             Problem::EndpointRegistered => "endpoint-registered",
-            Problem::InvalidSignature => "invalid-signature",
+            Problem::InvalidSignature(_) => "invalid-signature",
             Problem::PayloadTooLarge => "payload-too-large",
             Problem::RateLimited => "rate-limited",
             Problem::Internal => "internal",
@@ -61,8 +67,8 @@ impl Problem {
     pub const fn status(self) -> StatusCode {
         match self {
             Problem::InvalidRequest => StatusCode::BAD_REQUEST,
-            Problem::SquareRefused | Problem::InvalidSignature => StatusCode::UNAUTHORIZED,
-            Problem::SquareUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Problem::Refused(_) | Problem::InvalidSignature(_) => StatusCode::UNAUTHORIZED,
+            Problem::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Problem::UnknownRegistration => StatusCode::NOT_FOUND,
             Problem::TooManyRegistrations | Problem::EndpointRegistered => StatusCode::CONFLICT,
             Problem::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -74,12 +80,15 @@ impl Problem {
     const fn title(self) -> &'static str {
         match self {
             Problem::InvalidRequest => "Invalid request",
-            Problem::SquareRefused => "Refused by Square",
-            Problem::SquareUnavailable => "Square unavailable",
+            Problem::Refused(PointOfSale::Square) => "Refused by Square",
+            Problem::Refused(PointOfSale::Clover) => "Refused by Clover",
+            Problem::Unavailable(PointOfSale::Square) => "Square unavailable",
+            Problem::Unavailable(PointOfSale::Clover) => "Clover unavailable",
             Problem::UnknownRegistration => "Unknown registration",
             Problem::TooManyRegistrations => "Too many registrations",
             Problem::EndpointRegistered => "Registered elsewhere",
-            Problem::InvalidSignature => "Not signed by Square",
+            Problem::InvalidSignature(PointOfSale::Square) => "Not signed by Square",
+            Problem::InvalidSignature(PointOfSale::Clover) => "Not from Clover",
             Problem::PayloadTooLarge => "Too large",
             Problem::RateLimited => "Too many requests",
             Problem::Internal => "Bell error",
@@ -145,5 +154,26 @@ impl IntoResponse for ProblemDetails {
                 .insert(header::RETRY_AFTER, HeaderValue::from(seconds));
         }
         response
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Square's slugs are as they were; each point of sale has its own, so
+    /// a till matches `{pos}-refused` for its own.
+    #[test]
+    fn the_point_of_sale_problems_are_named_for_it() {
+        for pos in PointOfSale::ALL {
+            assert_eq!(Problem::Refused(pos).slug(), format!("{pos}-refused"));
+            assert_eq!(
+                Problem::Unavailable(pos).slug(),
+                format!("{pos}-unavailable")
+            );
+            assert_eq!(Problem::InvalidSignature(pos).slug(), "invalid-signature");
+            assert!(Problem::Refused(pos).title().contains(pos.title()));
+            assert!(Problem::Unavailable(pos).title().contains(pos.title()));
+        }
     }
 }
