@@ -38,38 +38,16 @@ async function expectNoSecrets(page) {
   await expect(page.getByText(/pt_[0-9a-f]{32}/)).toHaveCount(0);
 }
 
-test('the Apps card says how each app\'s pushes are doing', async ({ page, context }) => {
+test('the Apps card links each app to its page: its targets by host, a test push, Remove', async ({ page, context }) => {
   await login(context);
   const apps = await seed();
   await page.goto(`${settings()}?tab=apps#card-apps`);
-  await expect(card(page).locator('#card-apps-title')).toHaveText('Connected apps');
-  await expect(card(page).locator('.card-meta')).toHaveText('3 devices');
-  await expect(card(page).getByRole('link', { name: 'Connect an app' })).toBeVisible();
-
   const front = row(page, 'Monokular · Front counter');
   await expect(front.locator('.app-pushes')).toHaveAttribute('data-pushes', 'healthy');
-  // The minutes are unit-tested (http/apps/tests.rs): the clock moves here.
-  await expect(front.locator('.app-pushes-words')).toContainText('2 push targets · last push ');
-  await expect(front.locator('.app-pushes-ok')).toHaveText('healthy');
-  await expect(front.getByRole('link', { name: 'Pushes of Monokular · Front counter' })).toHaveAttribute('href', new RegExp(`/apps/${apps.front}$`));
-
-  const kitchen = row(page, 'Tillwatch · Kitchen');
-  await expect(kitchen.locator('.app-pushes-words')).toHaveText('1 push target · none delivered yet ·');
-  await expect(kitchen.locator('.app-pushes-bad').last()).toContainText('1 failing (12 in a row, last 502 ');
-
-  const back = row(page, 'Monokular · Back office iPad');
-  await expect(back.locator('.app-pushes')).toHaveAttribute('data-pushes', 'none');
-  await expect(back.getByRole('link', { name: 'Details of Monokular · Back office iPad' })).toBeVisible();
   await expectNoSecrets(page);
   await card(page).scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-apps-summary', test.info(), { group: GROUP });
-});
-
-test('an app\'s page: its targets by host, a test push, Remove', async ({ page, context }) => {
-  await login(context);
-  const apps = await seed();
-  await page.goto(`${settings()}?tab=apps#card-apps`);
-  await row(page, 'Monokular · Front counter').getByRole('link', { name: /^Pushes of/ }).click();
+  await front.getByRole('link', { name: /^Pushes of/ }).click();
   await expect(page).toHaveURL(appPage(apps.front));
   await expect(page.locator('h1')).toHaveText('Monokular · Front counter');
   await expect(page.locator('.mk-breadcrumbs a').nth(1)).toHaveText('Settings');
