@@ -242,6 +242,8 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
             )),
         },
         tor: tor_service::Tor::default(),
+        // No push relay to show on the admin page.
+        relay: monokulo::relay::Handle::default(),
         log_store: None,
         webhooks: Arc::default(),
         apps: Default::default(),
