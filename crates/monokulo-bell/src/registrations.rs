@@ -384,7 +384,7 @@ pub(crate) mod tests {
     pub(crate) fn temp_path(tag: &str) -> std::path::PathBuf {
         std::env::temp_dir()
             .join(format!(
-                "monokular-bell-{tag}-{}-{}",
+                "monokulo-bell-{tag}-{}-{}",
                 std::process::id(),
                 RegistrationId::generate()
             ))

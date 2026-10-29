@@ -1,34 +1,39 @@
 [package]
-name = "monokular-bell"
-version = "0.2.0"
-description = "The Monokular Bell: turns a point of sale's payment webhooks (Square's, Clover's) into Web Push dings for the tills registered at that location"
-edition.workspace = true
-license.workspace = true
+name = "monokulo-bell"
+version.workspace = true
 repository.workspace = true
-publish = false
+# The edition it was written in, in the monokular repository; the other
+# crates here are on 2021, and nightly builds both.
+edition = "2024"
+description = "The Monokular Bell: turns a point of sale's payment webhooks (Square's, Clover's) into Web Push dings for the tills registered at that location"
+
+# Named as its crate is, as every binary here is.
+[[bin]]
+name = "monokulo-bell"
+path = "src/main.rs"
 
 [dependencies]
 # The client's address behind a trusted reverse proxy (`X-Forwarded-For`),
 # IPv6 grouped by its /64: the registration limit's key.
-abuse.workspace = true
+abuse = { path = "../abuse" }
 # Axum's defaults less what four JSON routes don't use.
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 # Square's webhook signature is standard base64.
 base64 = "0.23.1"
-# `monokular-bell`'s command line, from the settings' declarations.
+# `monokulo-bell`'s command line, from the settings' declarations.
 clap = "4.6.7"
 hex = "0.4.3"
 # The webhook signature: HMAC-SHA256, its tag compared in constant time
 # (`Mac::verify_slice`, on `subtle`).
 hmac = "0.13.0"
-live-settings.workspace = true
+live-settings = { path = "../live-settings" }
 # Where a ding may go: the private-address rule, and a client whose resolver
 # holds to it, as monokulo sends its webhooks and pushes.
-outbound.workspace = true
+outbound = { path = "../outbound" }
 # Encrypting and signing the dings (RFC 8291, RFC 8292) and sending them.
-push.workspace = true
+push = { path = "../push" }
 rand = "0.10.2"
-rate-limit.workspace = true
+rate-limit = { path = "../rate-limit" }
 # Square's and Clover's APIs and the push services, over rustls as
 # everything here.
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
@@ -37,13 +42,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The shutdown signal and its grace period, and the clock, as monokulo's
 # services have them.
-service-runtime.workspace = true
+service-runtime = { path = "../service-runtime" }
 sha2 = "0.11.0"
 # A registration moved to another merchant only by its auth secret, and
 # Clover's Auth Code, each compared in constant time.
 subtle = "2.6.1"
 # The registrations' own database file: its pool and migration runner.
-sqlite.workspace = true
+sqlite = { path = "../sqlite" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1.44"
@@ -58,6 +63,9 @@ http-body-util = "0.1.5"
 hyper = { version = "1.11.1", features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 # What a till would read of a ding.
-push = { workspace = true, features = ["test-support"] }
+push = { path = "../push", features = ["test-support"] }
 # The router called in-process (`ServiceExt::oneshot`).
 tower = { version = "0.5.3", features = ["util"] }
+
+[lints]
+workspace = true

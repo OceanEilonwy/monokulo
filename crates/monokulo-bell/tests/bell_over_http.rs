@@ -1121,7 +1121,7 @@ async fn a_clover_registration_over_http_proves_the_merchant_with_its_token() {
         format!("Bearer {CLOVER_TOKEN}")
     );
     assert_eq!(asked.header("accept"), "application/json");
-    assert!(asked.header("user-agent").starts_with("monokular-bell/"));
+    assert!(asked.header("user-agent").starts_with("monokulo-bell/"));
     assert!(clover.drain().await.is_empty(), "one request");
 
     let rows = bell.rows();

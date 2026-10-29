@@ -1,4 +1,4 @@
-//! `monokular-bell`: read the command line and the options file, start
+//! `monokulo-bell`: read the command line and the options file, start
 //! logging, load and check every setting, open the registrations' database
 //! and serve on `bell.listen` until SIGTERM or Ctrl-C, then let requests
 //! and the dings they started finish.
@@ -14,8 +14,8 @@ use std::io::IsTerminal as _;
 use std::time::Instant;
 
 use live_settings::{OptionsFile, Snapshot};
-use monokular_bell::Bell;
-use monokular_bell::settings::{self, LOGGING_LEVEL};
+use monokulo_bell::Bell;
+use monokulo_bell::settings::{self, LOGGING_LEVEL};
 use service_runtime::shutdown::GRACE;
 use tracing_subscriber::EnvFilter;
 
@@ -32,9 +32,9 @@ fn stop(message: impl std::fmt::Display) -> ! {
 
 fn main() {
     // `--help`, `--version` and a mistyped option end here.
-    let start = monokular_bell::cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
+    let start = monokulo_bell::cli::parse_args(std::env::args_os()).unwrap_or_else(|e| e.exit());
     if start.init {
-        match live_settings::cli::init("monokular-bell", &start.options, settings::ALL) {
+        match live_settings::cli::init("monokulo-bell", &start.options, settings::ALL) {
             Ok(()) => std::process::exit(0),
             Err(e) => stop(e),
         }

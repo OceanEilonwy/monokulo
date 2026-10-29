@@ -55,7 +55,7 @@ use crate::settings::BellConfig;
 use crate::square::Square;
 
 /// The `User-Agent` of every request the Bell makes.
-pub(crate) const USER_AGENT: &str = concat!("monokular-bell/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("monokulo-bell/", env!("CARGO_PKG_VERSION"));
 
 /// Why a Bell can't start.
 #[derive(Debug, thiserror::Error)]

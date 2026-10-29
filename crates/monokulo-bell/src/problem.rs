@@ -1,5 +1,5 @@
 //! The Bell's errors, as `application/problem+json` (RFC 9457), each
-//! `type` a section of the Bell's page in this repository's docs.
+//! `type` a section of the Bell's page on the docs site.
 
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -11,7 +11,7 @@ use crate::pos::PointOfSale;
 pub const PROBLEM_JSON: &str = "application/problem+json";
 
 /// Where each problem is described: `{DOCS}#{slug}`.
-const DOCS: &str = "https://github.com/OceanEilonwy/monokular/blob/main/docs/bell.md";
+const DOCS: &str = "https://docs.monokulo.com/bell/";
 
 /// A kind of error the Bell answers with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
