@@ -777,6 +777,11 @@ impl TestEngineConfig {
     /// `run_scan_tick_now` against a real daemon then fetches every block
     /// one at a time from 1 up to the real chain tip (millions on stagenet),
     /// which looks exactly like an indefinite hang.
+    ///
+    /// `mock-woocommerce`'s
+    /// `a_genuinely_forced_order_expired_webhook_is_delivered_and_verified`
+    /// pins this: an order on a one-second expiry turns `expired` on a
+    /// background tick and its signed webhook reaches the store.
     pub fn with_background_loops(mut self) -> Self {
         self.background_loops = true;
         self
@@ -1080,103 +1085,6 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
     }
 
-    /// Same fixed-scalar view-key/spend-pubkey construction every other test in this
-    /// workspace uses (see `monokulo/src/engine_client.rs`'s own tests for the
-    /// reasoning).
-    const TEST_VIEW_KEY_HEX: &str =
-        "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str =
-        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-
-    /// Direct proof that [`TestEngineConfig::with_background_loops`] genuinely runs
-    /// the real scanner-tick machinery, entirely through the engine's own admin HTTP
-    /// API - no `mock-woocommerce`/`monokulo` involved, since this crate sits below
-    /// both of them and this capability needs to stand on its own.
-    ///
-    /// Forces the event the same way the real order-event test does: a tenant created
-    /// with `order_expiry_seconds: 1`, then an order created against it with no
-    /// payment ever made. `run_scan_tick`'s non-terminal-order recompute sweep is
-    /// unconditional (see `with_background_loops`'s doc comment) - once one second of
-    /// wall-clock time passes, the very next tick must flip the order to `expired`
-    /// and write a real `order.expired` event, which the order-event stream
-    /// (`GET /api/v1/admin/order-events`, what monokulo reads) then sends.
-    #[tokio::test]
-    async fn background_loops_genuinely_write_a_real_expired_order_event() {
-        let engine = TestEngineConfig::new()
-            .with_networks(&[Network::Mainnet])
-            .with_background_loops()
-            .spawn()
-            .await;
-        let base_url = format!("http://{}", engine.addr);
-        let client = engine_http_client();
-
-        let created: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenants"))
-            .json(&serde_json::json!({
-                "view_key_hex": TEST_VIEW_KEY_HEX,
-                "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
-                "network": "mainnet",
-                "order_expiry_seconds": 1,
-            }))
-            .send()
-            .await
-            .expect("create_tenant request failed")
-            .json()
-            .await
-            .expect("create_tenant response was not valid JSON");
-        let secret_token = created["secret_token"].as_str().unwrap().to_string();
-
-        let order: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/admin/tenant/orders"))
-            .bearer_auth(&secret_token)
-            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }))
-            .send()
-            .await
-            .expect("create_order request failed")
-            .json()
-            .await
-            .expect("create_order response was not valid JSON");
-        let order_id = order["order_id"].as_str().unwrap().to_string();
-
-        // The stream sends the event as it commits; the deadline bounds only a
-        // hung run.
-        let mut stream = client
-            .get(format!("{base_url}/api/v1/admin/order-events?after=0"))
-            .send()
-            .await
-            .expect("opening the order-event stream failed");
-        assert_eq!(stream.status(), reqwest::StatusCode::OK);
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-        let mut text = String::new();
-        let event = loop {
-            if let Some(event) = text
-                .split("\n\n")
-                .filter_map(|block| {
-                    block
-                        .lines()
-                        .find_map(|line| line.strip_prefix("data: "))
-                        .and_then(|data| serde_json::from_str::<serde_json::Value>(data).ok())
-                })
-                .find(|event| {
-                    event["order_id"] == order_id.as_str() && event["event"] == "order.expired"
-                })
-            {
-                break event;
-            }
-            let chunk = tokio::time::timeout_at(deadline, stream.chunk())
-                .await
-                .expect("expected a real order.expired event within the deadline")
-                .expect("reading the order-event stream failed")
-                .expect("the order-event stream ended");
-            text.push_str(std::str::from_utf8(&chunk).unwrap());
-        };
-        assert_eq!(event["status"], serde_json::json!("expired"));
-        assert_eq!(event["tenant"], created["public_key"]);
-        assert!(event["event_id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("evt_")));
-    }
-
     /// The snp backend: the same outcomes as plain, through encrypted keys.
     #[cfg(feature = "snp")]
     mod snp {
@@ -1324,10 +1232,8 @@ mod tests {
 
         /// Runs the real order-creation-plus-chain-scan scenario against a freshly
         /// spawned engine built from `engine_config`, entirely through the engine's
-        /// own public/admin HTTP API plus one real `run_scan_tick_now` call - exactly
-        /// the pattern `background_loops_genuinely_write_a_real_expired_order_event`
-        /// above already established for this crate, generalized to take the
-        /// `KeyCustody` backend as a parameter instead of hardcoding it. Returns
+        /// own public/admin HTTP API plus one real `run_scan_tick_now` call, taking
+        /// the `KeyCustody` backend as a parameter instead of hardcoding it. Returns
         /// `(status, amount_received_piconero)` so the caller can compare two runs for
         /// exact equality rather than each asserting the expected values separately
         /// (a divergence between the two backends would otherwise have to coincidentally
