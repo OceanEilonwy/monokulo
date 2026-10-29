@@ -382,11 +382,11 @@ pub async fn call_router(router: axum::Router, peer: &str, mut request: Request<
     }
 }
 
-/// An `http` address on loopback that nothing listens on: an APNs or FCM
-/// that can't be reached.
+/// An `http` address on loopback for an APNs or FCM that can't be reached:
+/// something listens and hangs up at once, so it fails as fast on every
+/// system as a refusal (`service_runtime::unreachable`).
 pub fn unreachable_url() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    format!("http://{}", listener.local_addr().unwrap())
+    format!("http://{}", service_runtime::unreachable::address())
 }
 
 /// A relay's answer.
