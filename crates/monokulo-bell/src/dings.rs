@@ -1,9 +1,10 @@
-//! The ding: an empty-of-meaning Web Push that tells a till to ask Square
-//! for new payments now (`docs/design.md` §3). It carries no sale data, so
-//! a lost, late, repeated or forged one costs the till one request to
-//! Square at most; the till's timer is the backstop.
+//! The ding: an empty-of-meaning Web Push that tells a till to ask its
+//! point of sale for new payments now (`docs/design.md` §3). It carries no
+//! sale data, so a lost, late, repeated or forged one costs the till one
+//! request to its point of sale at most; the till's timer is the backstop.
 //!
-//! Every ding is `{"wake":"square"}` encrypted to the till's subscription
+//! Every ding says which point of sale to ask, `{"wake":"square"}` or
+//! `{"wake":"clover"}`, encrypted to the till's subscription
 //! (RFC 8291), signed with the Bell's VAPID key (RFC 8292), `Urgency:
 //! high`, `TTL: 60` (a ding a minute late is worth nothing) and `Topic:
 //! wake`, so a push service holding several for an offline till hands
@@ -18,9 +19,12 @@
 //! A payment rings once: Square sends `payment.updated` of a payment that
 //! stays `COMPLETED` (its processing fee filled in, a refund), and on an
 //! iPhone or iPad a ding is an alert the till can't take back. The ids of
-//! the payments rung are kept in memory only, for [`REMEMBERED_FOR`]
-//! seconds and [`REMEMBERED_AT_MOST`] of them; a restart forgets them,
-//! which costs one extra ding at most.
+//! the payments rung, with their point of sale, are kept in memory only,
+//! for [`REMEMBERED_FOR`] seconds and [`REMEMBERED_AT_MOST`] of them; a
+//! restart forgets them, which costs one extra ding at most.
+//!
+//! A merchant, for its share and for the memory, is its point of sale and
+//! its id (decision 52): two points of sale may give out the same id text.
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -30,11 +34,8 @@ use push::{Message, Options, SendError, Sender, Topic, Ttl, Urgency};
 use rate_limit::RateLimiter;
 use tokio::sync::watch;
 
+use crate::pos::{MerchantId, PaymentId, PointOfSale, Ring};
 use crate::registrations::{Failed, Registration, RegistrationStore};
-use crate::square::{LocationId, MerchantId, PaymentId};
-
-/// What a ding says, before it is encrypted.
-pub const WAKE: &[u8] = br#"{"wake":"square"}"#;
 
 /// A ding's time to live.
 pub const TTL: Ttl = Ttl::seconds(60);
@@ -59,7 +60,7 @@ pub struct Dings {
     options: Options,
     /// Each merchant's dings this minute, against
     /// `bell.dings_per_merchant_per_minute`.
-    per_merchant: RateLimiter<MerchantId>,
+    per_merchant: RateLimiter<(PointOfSale, MerchantId)>,
     rung: Mutex<Rung>,
     /// How many rings are running, for [`Dings::idle`].
     running: watch::Sender<usize>,
@@ -89,21 +90,17 @@ impl Dings {
         })
     }
 
-    /// Dings every till registered for `merchant_id`'s `location_id` for
-    /// `payment_id`, on a task of its own: the webhook that asked is
-    /// answered at once. A payment rung already, lately, isn't rung again.
-    pub fn ring(
-        self: &Arc<Self>,
-        payment_id: PaymentId,
-        merchant_id: MerchantId,
-        location_id: LocationId,
-    ) {
+    /// Dings every till registered at `ring`'s point of sale for its
+    /// merchant's location, for its payment, on a task of its own: the
+    /// webhook that asked is answered at once. A payment rung already,
+    /// lately, isn't rung again.
+    pub fn ring(self: &Arc<Self>, ring: Ring) {
         let now = service_runtime::time::now_unix();
         let first = self
             .rung
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .first(payment_id, now);
+            .first((ring.point_of_sale, ring.payment_id.clone()), now);
         if !first {
             tracing::debug!("a payment rung already: no dings");
             return;
@@ -112,7 +109,7 @@ impl Dings {
         let running = Running::start(&self.running);
         tokio::spawn(async move {
             let _running = running;
-            dings.ring_now(&merchant_id, &location_id).await;
+            dings.ring_now(&ring).await;
         });
     }
 
@@ -124,8 +121,12 @@ impl Dings {
         let _ = running.wait_for(|count| *count == 0).await;
     }
 
-    async fn ring_now(self: &Arc<Self>, merchant_id: &MerchantId, location_id: &LocationId) {
-        let registrations = match self.store.at_location(merchant_id, location_id).await {
+    async fn ring_now(self: &Arc<Self>, ring: &Ring) {
+        let registrations = match self
+            .store
+            .at_location(ring.point_of_sale, &ring.merchant_id, &ring.location_id)
+            .await
+        {
             Ok(registrations) => registrations,
             Err(error) => {
                 tracing::error!(error = %error, "a payment's tills couldn't be read: no dings");
@@ -134,17 +135,21 @@ impl Dings {
         };
         let mut sending = tokio::task::JoinSet::new();
         for registration in registrations {
-            let (dings, merchant_id) = (Arc::clone(self), merchant_id.clone());
-            sending.spawn(async move { dings.ding(&merchant_id, registration).await });
+            let (dings, merchant) = (
+                Arc::clone(self),
+                (ring.point_of_sale, ring.merchant_id.clone()),
+            );
+            sending.spawn(async move { dings.ding(merchant, registration).await });
         }
         let rung = sending.len();
         while sending.join_next().await.is_some() {}
         tracing::debug!(rung, "dings sent");
     }
 
-    /// One ding to `merchant_id`'s `registration`, and what its answer
-    /// means for it.
-    async fn ding(&self, merchant_id: &MerchantId, registration: Registration) {
+    /// One ding to `merchant`'s `registration` at its point of sale, and
+    /// what its answer means for it.
+    async fn ding(&self, merchant: (PointOfSale, MerchantId), registration: Registration) {
+        let wake = merchant.0.wake();
         let now = service_runtime::time::now_unix();
         let endpoint = &registration.subscription.endpoint;
         let outcome = match outbound::check_host(endpoint.as_url(), self.reach) {
@@ -152,11 +157,11 @@ impl Dings {
             // costs its merchant's share nothing. Over it, the ding is
             // dropped, not the till's failure, as one a push service
             // limits.
-            Ok(()) if !self.per_merchant.check(merchant_id.clone(), now) => {
+            Ok(()) if !self.per_merchant.check(merchant, now) => {
                 tracing::warn!(registration = %registration.id, host = endpoint.host(), "the merchant's dings for this minute were spent: a ding was dropped");
                 return;
             }
-            Ok(()) => match push::encrypt(&registration.subscription.keys, WAKE) {
+            Ok(()) => match push::encrypt(&registration.subscription.keys, wake) {
                 Ok(encrypted) => {
                     self.sender
                         .send(endpoint, &Message::Encrypted(encrypted), &self.options, now)
@@ -217,17 +222,21 @@ impl Dings {
     }
 }
 
+/// A payment, as the memory knows it: two points of sale may give out the
+/// same id text.
+type Rang = (PointOfSale, PaymentId);
+
 /// The payments rung lately, oldest first.
 #[derive(Default)]
 struct Rung {
-    order: VecDeque<(i64, PaymentId)>,
-    ids: HashSet<PaymentId>,
+    order: VecDeque<(i64, Rang)>,
+    ids: HashSet<Rang>,
 }
 
 impl Rung {
     /// Whether `id` is rung for the first time at `now` (and so is
     /// remembered from now): false for one remembered still.
-    fn first(&mut self, id: PaymentId, now: i64) -> bool {
+    fn first(&mut self, id: Rang, now: i64) -> bool {
         while let Some((at, _)) = self.order.front() {
             if now - at < REMEMBERED_FOR {
                 break;
@@ -275,8 +284,21 @@ mod tests {
 
     const NOW: i64 = 1_800_000_000;
 
-    fn payment(n: usize) -> PaymentId {
-        PaymentId::try_from(format!("P{n}")).unwrap()
+    fn payment(n: usize) -> Rang {
+        (
+            PointOfSale::Square,
+            PaymentId::try_from(format!("P{n}")).unwrap(),
+        )
+    }
+
+    /// The same id text at two points of sale is two payments.
+    #[test]
+    fn a_payment_is_its_point_of_sales() {
+        let mut rung = Rung::default();
+        let id = PaymentId::try_from("P1".to_owned()).unwrap();
+        assert!(rung.first((PointOfSale::Square, id.clone()), NOW));
+        assert!(rung.first((PointOfSale::Clover, id.clone()), NOW));
+        assert!(!rung.first((PointOfSale::Clover, id), NOW + 1));
     }
 
     #[test]

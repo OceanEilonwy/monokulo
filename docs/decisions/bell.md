@@ -348,3 +348,162 @@ be reversed knowingly. The Bell's API is in [../bell.md](../bell.md).
     relay's per-sender limit. The README's sizing note (decision 39)
     stays: many merchants at once can still reach the relay's limit,
     which its operator sizes.
+
+## From the second build: points of sale (2026-10-28)
+
+The owner's decision: the Bell keeps its name and becomes generic across
+points of sale, Square ported unchanged as the first adapter and Clover the
+second. The research is Clover's documentation as of today (the build's
+shared notes, `clover-research.md`); where it was thin the assumption is
+named in the decision.
+
+43. **A point of sale is a variant of one enum, and each adapter a module
+    of its own, not a trait object.** `PointOfSale { Square, Clover }`
+    (`src/pos.rs`) is the wire name everywhere: a registration's
+    `point_of_sale`, `/v1/info`'s keys, a ding's `wake`, the problem slugs,
+    the webhook path and the settings table. `Adapters` (`src/lib.rs`)
+    holds an `Option<Arc<…>>` per adapter. A trait was the alternative:
+    `async fn` in a trait isn't object-safe without `async-trait` (a new
+    dependency), the two adapters differ in kind (an HMAC over URL and body
+    against a static header plus a one-off handshake), and a `match` makes
+    the compiler list every place a third point of sale must touch. The id
+    and token types, `ProofError` (was `LocationError`), `BodyError`, the
+    API client and `request_error` moved from `square.rs` to `pos.rs`,
+    their messages no longer naming Square; `square.rs`'s
+    `read_notification` still answers its `Notification` (the route turns
+    `Completed` into a `Ring`), so its unit tests keep their assertions,
+    only building their ids with `try_from` now that the fields are
+    `pos.rs`'s.
+
+44. **One registration body for every point of sale:
+    `{point_of_sale, access_token, location_id, subscription}`; the
+    adapter says what its location is** (for Clover the merchant id). The
+    answer is `{registration_id, point_of_sale, application_id}`. A clean
+    break from `square_access_token` and `square_application_id`: no Bell
+    is deployed, and the till that speaks to one (Wake-ups, PR #16) is
+    unreleased and changed in the same work, so both spellings would be
+    dead code at once. There is no shim, and the Bell's PR and the app's
+    say they land together or the app's first. A `merchant_id` field for
+    Clover alone was the alternative: two shapes for the till to build and
+    the Bell to check.
+
+45. **`/v1/info` lists `points_of_sale` by wire name, each with
+    `application_id` and `environment`**, the points of sale that are off
+    absent, Square first when both are (a hand-written `Serialize` in
+    `PointOfSale::ALL`'s order, since a map would sort them). The old
+    top-level `square_application_id` and `environment` go (44's reason).
+
+46. **Problem slugs stay per point of sale, `{pos}-refused` and
+    `{pos}-unavailable`, from one variant carrying the point of sale**
+    (`Problem::Refused(pos)`, `Problem::Unavailable(pos)`), so Square's are
+    unchanged and a till matches its own. `invalid-signature` is one slug
+    from `InvalidSignature(pos)`, titled "Not signed by Square" as before
+    and "Not from Clover" for Clover. One generic slug was the
+    alternative, and would have changed Square's.
+
+47. **Migration 0002 adds `point_of_sale` (default `square`) and leads the
+    location index with it; an endpoint is owned by its
+    `(point_of_sale, merchant_id)`, or by whoever holds its auth secret.**
+    Rows from before are Square's, as the Bell served Square alone until
+    then. `MAX_PER_LOCATION` counts within a point of sale. The plan had a
+    stored value that isn't a point of sale read as `Corrupt` (decision
+    31): every query names its point of sale, so such a row is never read
+    and the check would have been dead; the column's `CHECK` bounds its
+    length.
+
+48. **A Clover merchant is its own location**: its row has
+    `location_id = merchant_id`, and a Clover registration's `location_id`
+    is the merchant id. Clover has nothing below a merchant (a business
+    with several sites has a merchant id, and a token, for each); one
+    `NOT NULL` column kept means one query and one index for both.
+
+49. **Clover's webhook is authenticated by its static `X-Clover-Auth`
+    header, the app's Auth Code, compared in constant time; the one-off
+    verification handshake is answered `200` and its code logged at
+    `info`.** Clover has no body signature and no timestamp, so the code
+    is the only integrity there is: a leaked code lets anyone ding the
+    tills, at one request to Clover each within the merchant's share, and
+    a replay is absorbed by the ten-minute memory. The handshake comes
+    without the header, so without it the Bell reads at most 1 KiB and
+    takes only an object of exactly one key, `verificationCode`, whose
+    value is a UUID (8-4-4-4-12 hex digits): anything else is `401`
+    (never `413`) with nothing logged, so nobody writes free text into
+    the Bell's log (the acceptance's D4). With the header, a handshake is
+    logged the same way. The code is the one value of a body the Bell ever
+    logs: Clover's handshake value, not merchant data, and the operator has
+    no other way to see it. A batch whose `appId` isn't
+    `bell.clover.application_id` is dropped with a warning naming nothing
+    (defence in depth, not authentication).
+
+50. **A Clover `P:` `CREATE` dings; `UPDATE`, `DELETE` and every other
+    object never do.** The body carries no tender, amount or status, so an
+    `UPDATE` would be a refund, tip or void days later and, past the
+    ten-minute memory, a false ding to every till; a card payment's
+    `CREATE` dings too, as the Bell can't tell it from a Monero one, and
+    `bell.dings_per_merchant_per_minute` bounds that. This is the main
+    difference from Square, whose webhook says the payment completed. An
+    object's id is read only when it is a payment's; a `P:` id that isn't
+    one makes the batch unreadable (taken and dropped, as Square's).
+
+51. **A point of sale is on iff its `application_id` is set; its secret
+    must be set iff it is on; at least one is on; its webhook route exists
+    only when it is on.** `required: true` on a secret can't say "when the
+    section is on", so the rules are `FieldError`s in
+    `BellConfig::from_snapshot`, every problem named at once, and
+    `StartError::NoPointOfSale` in `Bell::start` (the settings library
+    builds the all-defaults section as a fallback, which must load). A
+    secret set for a point of sale that is off stops the Bell: it is how a
+    misnamed section would otherwise pass unnoticed (the acceptance's
+    D3). A webhook to a point of sale that is off is axum's `404`, its
+    body never read, and a registration for one is `400` naming the ones
+    this Bell runs, its token never used.
+
+52. **The rung-payment memory and each merchant's ding share are keyed by
+    `(point_of_sale, id)`**: two points of sale may give out the same id
+    text. A Clover webhook for merchant `M` never dings a Square
+    registration of `M`, and doesn't spend its share.
+
+53. **A ding says which point of sale woke the till: `{"wake":"square"}`
+    or `{"wake":"clover"}`**, from `PointOfSale::wake`; the headers are
+    unchanged.
+
+54. **`tools/fake-clover` is written with the Bell, by one owner, and
+    cherry-picked onto the app branch unchanged.** The Bell's one-machine
+    run and the till's both need it; two owners on two branches would
+    diverge. Standard library only, Clover's documented shapes, and QA's
+    switches (expiring and revoking tokens, a refresh-token cap of three,
+    refusing tender writes). Its port is 8740, not the acceptance's 8739:
+    `tools/square-sandbox` listens on 8739 and the README runs it beside
+    fake-square. It knows two merchants, each with a never-expiring test
+    API token (as Clover's dashboard issues one) printed at start, so a
+    Bell's registration can be tried with curl alone, and the "another
+    merchant's token" case has a merchant to be.
+
+55. **Clover's registration proof is `GET /v3/merchants/{merchant_id}`
+    with the token, whose answer's `id` must be the one asked** (research
+    assumption A6: a token is one merchant's; to be confirmed in a
+    sandbox). Statuses map as decision 4's: any `4xx` but `429` refused,
+    `429`, `5xx`, no answer or an answer that isn't a merchant
+    unavailable. Only `id` is read (the owner's name and email beside it
+    land in no type); redirects are off; the Bell's `User-Agent` is sent,
+    as Clover requires one. A `200` for another id is `invalid-request`
+    ("location_id must be the merchant ID Clover answers the token for"),
+    as Square's alias is: asking again gives the same answer. The
+    acceptance had it `clover-refused`; the plan's API, which the till
+    builds on, has `400`, and the till treats both as its own mistake.
+
+56. **`[bell.clover].environment` picks one region (`sandbox`,
+    `north_america`, `europe`, `latin_america`; default `north_america`),
+    one Bell serving one.** Each is a developer dashboard and an API host
+    of its own (`apisandbox.dev.clover.com`, `api.clover.com`,
+    `api.eu.clover.com`, `api.la.clover.com`); the web hosts the till signs
+    in on are the till's business. A Clover App ID carries no environment
+    prefix, so the Bell can't check it against the environment as it does
+    Square's (decision 11); `bell.clover.application_id` takes 1 to 64
+    letters, digits, `-` and `_`, Square's id rule (Clover's are 13
+    letters and digits). `bell.clover.api_url` serves a stand-in, as
+    Square's does.
+
+57. **The crate's version is 0.2.0** (its API changed), and
+    `docs/bell.md`, `docs/design.md` §1, §3 and §9, `docs/reports/bell.md`
+    and the README say what is built.

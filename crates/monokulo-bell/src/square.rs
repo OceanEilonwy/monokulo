@@ -1,12 +1,11 @@
-//! What the Bell has to do with Square: check a webhook's signature, read
-//! the fields of a payment webhook it acts on, and check, with a
-//! merchant's access token, that a location is theirs.
+//! The Square adapter: what the Bell has to do with Square. Check a
+//! webhook's signature, read the fields of a payment webhook it acts on,
+//! and check, with a merchant's access token, that a location is theirs.
 //!
 //! A webhook body carries the payment's amount, its card's details and its
 //! buyer's: none of it is kept, logged or put into an error, here or by
 //! any caller. What is read is read into types that hold exactly that.
 
-use std::fmt;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -17,12 +16,11 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use sha2::Sha256;
-use zeroize::Zeroizing;
 
-use crate::settings::ServiceUrl;
-
-/// Where Square sends webhooks, under `bell.public_uri`.
-pub const WEBHOOK_PATH: &str = "/v1/square/webhook";
+use crate::pos::{
+    self, AccessToken, BodyError, LocationId, MerchantId, PaymentId, PointOfSale, ProofError,
+};
+use crate::settings::{ApplicationId, ServiceUrl, SquareEnvironment};
 
 /// The header carrying a webhook's signature.
 pub const SIGNATURE_HEADER: &str = "x-square-hmacsha256-signature";
@@ -86,32 +84,6 @@ pub enum Notification {
     },
     /// Anything else: dropped.
     Ignored,
-}
-
-/// A webhook body that doesn't read as Square's. The error says where it
-/// stopped, never what was there.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("a webhook body that isn't Square's ({category} at line {line}, column {column})")]
-pub struct BodyError {
-    category: &'static str,
-    line: usize,
-    column: usize,
-}
-
-impl From<serde_json::Error> for BodyError {
-    fn from(error: serde_json::Error) -> Self {
-        // `serde_json::Error`'s message can quote the value it refused.
-        BodyError {
-            category: match error.classify() {
-                serde_json::error::Category::Io => "unreadable",
-                serde_json::error::Category::Syntax => "not JSON",
-                serde_json::error::Category::Data => "not the shape expected",
-                serde_json::error::Category::Eof => "cut short",
-            },
-            line: error.line(),
-            column: error.column(),
-        }
-    }
 }
 
 /// The event's type, the only field read of every webhook.
@@ -190,134 +162,16 @@ pub fn read_notification(body: &[u8]) -> Result<Notification, BodyError> {
     })
 }
 
-/// Square's IDs as the Bell keeps them: 1 to 64 letters, digits, `-` and
-/// `_`, so one goes into a URL path as it is.
-fn is_square_id(text: &str) -> bool {
-    (1..=64).contains(&text.len())
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-}
-
-macro_rules! square_id {
-    ($(#[$attr:meta])* $name:ident, $what:literal) => {
-        $(#[$attr])*
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-        #[serde(try_from = "String")]
-        pub struct $name(String);
-
-        impl $name {
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = String;
-
-            fn try_from(text: String) -> Result<Self, Self::Error> {
-                if is_square_id(&text) {
-                    Ok($name(text))
-                } else {
-                    Err(concat!("not a Square ", $what, " ID (1 to 64 letters, digits, - and _)").to_owned())
-                }
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
-            }
-        }
-    };
-}
-
-square_id!(
-    /// A Square merchant (seller account).
-    MerchantId,
-    "merchant"
-);
-square_id!(
-    /// One of a merchant's locations.
-    LocationId,
-    "location"
-);
-/// A payment: what tells one payment's webhooks from another's. Compared,
-/// never shown: it has no `Display`, so no log line names it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
-#[serde(try_from = "String")]
-pub struct PaymentId(String);
-
-impl TryFrom<String> for PaymentId {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        if is_square_id(&text) {
-            Ok(PaymentId(text))
-        } else {
-            Err("not a Square payment ID (1 to 64 letters, digits, - and _)".to_owned())
-        }
-    }
-}
-
-/// A merchant's Square access token, as a till hands it over to register.
-/// Used for one request and dropped, wiped: `Debug` doesn't show it and
-/// nothing stores or logs it.
-#[derive(Deserialize)]
-#[serde(try_from = "String")]
-pub struct AccessToken(Zeroizing<String>);
-
-impl AccessToken {
-    /// The longest token taken; Square's are about 64 characters.
-    const MAX_LEN: usize = 1024;
-}
-
-impl TryFrom<String> for AccessToken {
-    type Error = String;
-
-    fn try_from(text: String) -> Result<Self, Self::Error> {
-        let text = Zeroizing::new(text);
-        // Visible ASCII, so it goes into a header as it is.
-        if (1..=Self::MAX_LEN).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_graphic()) {
-            Ok(AccessToken(text))
-        } else {
-            Err(format!(
-                "not a Square access token (1 to {} visible ASCII characters)",
-                Self::MAX_LEN
-            ))
-        }
-    }
-}
-
-impl fmt::Debug for AccessToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("AccessToken(..)")
-    }
-}
-
-/// Why a location couldn't be shown to be a token's merchant's.
-#[derive(Debug, thiserror::Error)]
-pub enum LocationError {
-    /// Square refused the token (`401`, or `403` without the
-    /// `MERCHANT_PROFILE_READ` scope), or the location isn't this
-    /// merchant's (`404`).
-    #[error("Square refused the token for that location ({0})")]
-    Refused(StatusCode),
-    /// Square answered for another location than the one asked: the ID
-    /// was an alias (`main`, the merchant's main location), not the
-    /// location's own. Asking again gives the same answer.
-    #[error("Square answered for another location")]
-    NotById,
-    /// Square didn't answer, or answered that it couldn't (`429`, `5xx`),
-    /// or answered with something that isn't a location.
-    #[error("Square couldn't be asked: {0}")]
-    Unavailable(String),
-}
-
-/// Square's API, as the Bell calls it.
+/// The Square adapter: the application whose webhooks this Bell takes,
+/// its subscription's key, and Square's API.
 pub struct Square {
     client: reqwest::Client,
     api: ServiceUrl,
+    application_id: ApplicationId,
+    environment: SquareEnvironment,
+    /// `bell.public_uri` followed by the webhook path: what Square signs.
+    notification_url: String,
+    webhook_key: WebhookKey,
 }
 
 #[derive(Deserialize)]
@@ -332,15 +186,46 @@ struct Location {
 }
 
 impl Square {
-    /// A client for Square's API at `api`, waiting `timeout` for each
-    /// answer. Fails only if TLS can't be set up.
-    pub fn new(api: ServiceUrl, timeout: Duration) -> reqwest::Result<Self> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .user_agent(crate::USER_AGENT)
-            .timeout(timeout)
-            .build()?;
-        Ok(Square { client, api })
+    /// The adapter for `application_id` in `environment`, its webhooks
+    /// signed with `webhook_key` for `notification_url`, asking Square's
+    /// API at `api` and waiting `timeout` for each answer. Fails only if
+    /// TLS can't be set up.
+    pub fn new(
+        api: ServiceUrl,
+        application_id: ApplicationId,
+        environment: SquareEnvironment,
+        notification_url: String,
+        webhook_key: WebhookKey,
+        timeout: Duration,
+    ) -> reqwest::Result<Self> {
+        Ok(Square {
+            client: pos::api_client(timeout)?,
+            api,
+            application_id,
+            environment,
+            notification_url,
+            webhook_key,
+        })
+    }
+
+    pub fn application_id(&self) -> &ApplicationId {
+        &self.application_id
+    }
+
+    pub fn environment(&self) -> SquareEnvironment {
+        self.environment
+    }
+
+    /// The URL Square must send webhooks to: it signs them for it.
+    pub fn notification_url(&self) -> &str {
+        &self.notification_url
+    }
+
+    /// Checks `signature` is Square's for `body`, sent to this Bell's
+    /// notification URL.
+    pub fn verify(&self, body: &[u8], signature: Option<&[u8]>) -> Result<(), SignatureError> {
+        self.webhook_key
+            .verify(&self.notification_url, body, signature)
     }
 
     /// The merchant `location` belongs to, asked of Square with `token`
@@ -351,37 +236,28 @@ impl Square {
         &self,
         token: AccessToken,
         location: &LocationId,
-    ) -> Result<MerchantId, LocationError> {
+    ) -> Result<MerchantId, ProofError> {
         let response = self
             .client
             .get(self.api.join(&format!("/v2/locations/{location}")))
-            .bearer_auth(token.0.as_str())
+            .bearer_auth(token.expose())
             .header("Square-Version", API_VERSION)
             .header(reqwest::header::ACCEPT, "application/json")
             .send()
             .await;
         drop(token);
         let response =
-            response.map_err(|error| LocationError::Unavailable(request_error(error)))?;
+            response.map_err(|error| ProofError::Unavailable(pos::request_error(error)))?;
         let status = response.status();
-        match status {
-            StatusCode::OK => {}
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::NOT_FOUND => {
-                return Err(LocationError::Refused(status));
-            }
-            _ if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
-                return Err(LocationError::Unavailable(format!(
-                    "Square answered {status}"
-                )));
-            }
-            _ => return Err(LocationError::Refused(status)),
+        if status != StatusCode::OK {
+            return Err(ProofError::from_status(status, PointOfSale::Square));
         }
         let body = response
             .bytes()
             .await
-            .map_err(|error| LocationError::Unavailable(request_error(error)))?;
+            .map_err(|error| ProofError::Unavailable(pos::request_error(error)))?;
         let answer: LocationAnswer = serde_json::from_slice(&body).map_err(|error| {
-            LocationError::Unavailable(format!(
+            ProofError::Unavailable(format!(
                 "Square's answer isn't a location: {}",
                 BodyError::from(error)
             ))
@@ -389,21 +265,9 @@ impl Square {
         // Not stored as answered: the till matches webhooks by the ID it
         // chose, so a registration by an alias would never ding.
         if answer.location.id != *location {
-            return Err(LocationError::NotById);
+            return Err(ProofError::NotById);
         }
         Ok(answer.location.merchant_id)
-    }
-}
-
-/// A failed request, without its URL.
-fn request_error(error: reqwest::Error) -> String {
-    let error = error.without_url();
-    if error.is_timeout() {
-        "timed out".to_owned()
-    } else if error.is_connect() {
-        "could not connect".to_owned()
-    } else {
-        error.to_string()
     }
 }
 
@@ -511,9 +375,10 @@ mod tests {
             assert_eq!(
                 read_notification(payment(kind, "COMPLETED", "S8GWD5R9QB376").as_bytes()),
                 Ok(Notification::Completed {
-                    payment_id: PaymentId("KkAkhdMsgzn59SM8A89WgKwekxLZY".to_owned()),
-                    merchant_id: MerchantId("6SSW7HV8K2ST5".to_owned()),
-                    location_id: LocationId("S8GWD5R9QB376".to_owned()),
+                    payment_id: PaymentId::try_from("KkAkhdMsgzn59SM8A89WgKwekxLZY".to_owned())
+                        .unwrap(),
+                    merchant_id: MerchantId::try_from("6SSW7HV8K2ST5".to_owned()).unwrap(),
+                    location_id: LocationId::try_from("S8GWD5R9QB376".to_owned()).unwrap(),
                 }),
                 "{kind}"
             );
@@ -566,19 +431,5 @@ mod tests {
             .to_string();
         assert!(!error.contains("4111"), "{error}");
         assert!(error.contains("not JSON"), "{error}");
-    }
-
-    #[test]
-    fn ids_and_tokens_take_only_what_fits_a_url_and_a_header() {
-        assert!(LocationId::try_from("L8GWD5R9QB376".to_owned()).is_ok());
-        for bad in ["", "a/b", "a b", "..%2f", &"L".repeat(65)] {
-            assert!(LocationId::try_from(bad.to_owned()).is_err(), "{bad}");
-        }
-        assert!(AccessToken::try_from("EAAAl-token_123".to_owned()).is_ok());
-        for bad in ["", "a b", "a\nb", &"t".repeat(1025)] {
-            assert!(AccessToken::try_from(bad.to_owned()).is_err(), "{bad:?}");
-        }
-        let token = AccessToken::try_from("EAAAsecret".to_owned()).unwrap();
-        assert_eq!(format!("{token:?}"), "AccessToken(..)");
     }
 }

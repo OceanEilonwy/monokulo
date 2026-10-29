@@ -5,8 +5,8 @@
 //!
 //! Configuration comes from the options file (`--options`, else
 //! `~/.config/monokulo/bell.toml`) or its command-line option, which
-//! wins; the Square webhook key and the VAPID key from the environment
-//! only. Anything invalid stops the Bell before it listens.
+//! wins; the points of sale's secrets and the VAPID key from the
+//! environment only. Anything invalid stops the Bell before it listens.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 

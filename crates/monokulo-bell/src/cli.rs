@@ -6,19 +6,21 @@
 
 use clap::Command;
 
-const ABOUT: &str = "The Monokular Bell: it turns a Square application's payment webhooks into \
-Web Push dings that wake the Monokular tills at that location.";
+const ABOUT: &str = "The Monokular Bell: it turns a point of sale's payment webhooks (Square's, \
+Clover's, or both) into Web Push dings that wake the Monokular tills at that location.";
 
 const LONG_ABOUT: &str =
-    "The Monokular Bell: it turns a Square application's payment webhooks into \
-Web Push dings that wake the Monokular tills at that location.
+    "The Monokular Bell: it turns a point of sale's payment webhooks (Square's, \
+Clover's, or both) into Web Push dings that wake the Monokular tills at that location.
 
-A till registers its push subscription here for one of its merchant's locations, with the \
-merchant's Square access token, which the Bell uses once to check the location with Square and \
-never keeps. Square's webhooks come to bell.public_uri followed by /v1/square/webhook, signed \
-with the subscription's key; a completed payment dings that location's tills. The Bell keeps \
-only the registrations, in its own database file (bell.store_path): no webhook, no payment and \
-no token is stored or logged.
+A point of sale is on when its application is set (bell.square.application_id, \
+bell.clover.application_id), with its secret. A till registers its push subscription here for its \
+point of sale and one of its merchant's locations (a Clover merchant is its own location), with \
+the merchant's access token, which the Bell uses once to check the location and never keeps. \
+Webhooks come to bell.public_uri followed by /v1/square/webhook (signed with the subscription's \
+key) or /v1/clover/webhook (carrying the app's Auth Code); a payment dings that location's tills. \
+The Bell keeps only the registrations, in its own database file (bell.store_path): no webhook, no \
+payment and no token is stored or logged.
 
 Settings are kept in the options file (--options, by default ~/.config/monokulo/bell.toml); \
 --init writes one with every setting described. An option below wins over the file. Secrets \
@@ -30,7 +32,11 @@ const EXAMPLES: &str = "Examples:
       Write the options file, with every setting described, and say where.
   MONOKULAR_BELL_SQUARE_WEBHOOK_KEY=… MONOKULAR_BELL_VAPID_KEY=$(openssl rand -hex 32) \\
     monokular-bell --bell-public-uri https://bell.example.org --bell-square-application-id sq0idp-…
-      Start the Bell. Keep the VAPID key: the tills' subscriptions are made for it.";
+      Start a Bell for Square tills. Keep the VAPID key: the tills' subscriptions are made for it.
+  MONOKULAR_BELL_CLOVER_AUTH_CODE=… MONOKULAR_BELL_VAPID_KEY=… \\
+    monokular-bell --bell-public-uri https://bell.example.org --bell-clover-application-id …
+      Start a Bell for Clover tills in North America (--bell-clover-environment for another).
+      Then send the verification code from Clover's dashboard and read it in the log.";
 
 /// The Bell's options file, in `~/.config/monokulo/` unless `--options`
 /// names another.
@@ -72,10 +78,10 @@ mod tests {
         command().debug_assert();
     }
 
-    /// Every setting that takes one is an option; both secrets are listed
-    /// by their variables and have none.
+    /// Every setting that takes one is an option; the three secrets are
+    /// listed by their variables and have none.
     #[test]
-    fn the_help_lists_every_option_and_both_secrets() {
+    fn the_help_lists_every_option_and_the_secrets() {
         let help = command().render_long_help().to_string();
         for setting in crate::settings::ALL {
             let flag = format!("--{} <", live_settings::cli_flag(setting.key()));
@@ -83,11 +89,13 @@ mod tests {
         }
         for secret in [
             "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
+            "MONOKULAR_BELL_CLOVER_AUTH_CODE",
             "MONOKULAR_BELL_VAPID_KEY",
         ] {
             assert!(help.contains(secret), "{secret}: {help}");
         }
         assert!(parse_args(["monokular-bell", "--bell-vapid-key", "x"]).is_err());
+        assert!(parse_args(["monokular-bell", "--bell-clover-auth-code", "x"]).is_err());
         let args = parse_args([
             "monokular-bell",
             "--bell-public-uri",

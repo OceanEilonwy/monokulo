@@ -24,8 +24,9 @@ async fn info_shows_the_application_and_the_public_key_of_the_vapid_key() {
     assert_eq!(
         answered.json(),
         json!({
-            "square_application_id": APPLICATION_ID,
-            "environment": "production",
+            "points_of_sale": {
+                "square": {"application_id": APPLICATION_ID, "environment": "production"},
+            },
             "vapid_public_key": public.to_base64url(),
             "version": env!("CARGO_PKG_VERSION"),
         })
@@ -38,10 +39,9 @@ async fn info_shows_the_application_and_the_public_key_of_the_vapid_key() {
     let answered = sandbox
         .call(Request::get("/v1/info").body(Body::empty()).unwrap())
         .await;
-    assert_eq!(answered.json()["environment"], "sandbox");
     assert_eq!(
-        answered.json()["square_application_id"],
-        "sandbox-sq0idb-MonokularTest"
+        answered.json()["points_of_sale"]["square"],
+        json!({"application_id": "sandbox-sq0idb-MonokularTest", "environment": "sandbox"})
     );
 }
 
@@ -161,11 +161,18 @@ async fn a_registration_that_doesnt_read_is_refused() {
     let mut bad_keys = till.subscription();
     bad_keys["keys"]["p256dh"] = json!("AAAA");
     let cases = [
-        json!({"location_id": LOCATION, "subscription": till.subscription()}),
-        json!({"square_access_token": TOKEN, "location_id": "a/b", "subscription": till.subscription()}),
-        json!({"square_access_token": "with space", "location_id": LOCATION, "subscription": till.subscription()}),
-        json!({"square_access_token": TOKEN, "location_id": LOCATION, "subscription": bad_keys}),
-        json!({"square_access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription(), "extra": 1}),
+        json!({"point_of_sale": "square", "location_id": LOCATION, "subscription": till.subscription()}),
+        json!({"point_of_sale": "square", "access_token": TOKEN, "location_id": "a/b", "subscription": till.subscription()}),
+        json!({"point_of_sale": "square", "access_token": "with space", "location_id": LOCATION, "subscription": till.subscription()}),
+        json!({"point_of_sale": "square", "access_token": TOKEN, "location_id": LOCATION, "subscription": bad_keys}),
+        json!({"point_of_sale": "square", "access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription(), "extra": 1}),
+        // The point of sale missing, unknown, or in another case.
+        json!({"access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription()}),
+        json!({"point_of_sale": "toast", "access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription()}),
+        json!({"point_of_sale": "Square", "access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription()}),
+        // The first Bell's shape: no shim (decision 44).
+        json!({"square_access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription()}),
+        json!({"point_of_sale": "square", "square_access_token": TOKEN, "location_id": LOCATION, "subscription": till.subscription()}),
     ];
     for case in cases {
         let answered = bell
@@ -507,4 +514,290 @@ async fn the_info_key_is_an_uncompressed_p256_point() {
         push::VapidPublicKey::from_base64url(key).unwrap(),
         vapid_public_key()
     );
+}
+
+fn info() -> Request<Body> {
+    Request::get("/v1/info").body(Body::empty()).unwrap()
+}
+
+/// `/v1/info` lists the points of sale this Bell serves, each with its
+/// application and environment, Square first when both are.
+#[tokio::test]
+async fn info_lists_the_points_of_sale_this_bell_serves() {
+    let clover = TestBell::clover(
+        &unreachable_url(),
+        &[("bell.clover.environment", "sandbox")],
+    )
+    .await;
+    assert_eq!(
+        clover.call(info()).await.json()["points_of_sale"],
+        json!({"clover": {"application_id": CLOVER_APP_ID, "environment": "sandbox"}})
+    );
+    let both = TestBell::start_with(
+        Points {
+            square: Some(&unreachable_url()),
+            clover: Some(&unreachable_url()),
+        },
+        &[],
+    )
+    .await;
+    let answered = both.call(info()).await;
+    assert_eq!(
+        answered.json()["points_of_sale"],
+        json!({
+            "square": {"application_id": APPLICATION_ID, "environment": "production"},
+            "clover": {"application_id": CLOVER_APP_ID, "environment": "north_america"},
+        })
+    );
+    let text = answered.text();
+    assert!(
+        text.find("\"square\"").unwrap() < text.find("\"clover\"").unwrap(),
+        "{text}"
+    );
+    for gone in [
+        "square_application_id",
+        "\"environment\":\"production\",\"vapid",
+    ] {
+        assert!(!text.contains(gone), "{text}");
+    }
+}
+
+/// A point of sale this Bell doesn't serve has no webhook route: `404`,
+/// with nothing read, a body over the size taken included.
+#[tokio::test]
+async fn a_point_of_sale_that_is_off_has_no_webhook_route() {
+    let square = TestBell::without_square(&[]).await;
+    let clover = TestBell::clover(&unreachable_url(), &[]).await;
+    let large = format!("{{\"pad\":\"{}\"}}", "x".repeat(300 * 1024));
+    for body in [
+        clover_webhook(CLOVER_MERCHANT, &clover_payment(), "CREATE"),
+        large.clone(),
+    ] {
+        let answered = square
+            .call(clover_request(&body, Some(CLOVER_AUTH_CODE)))
+            .await;
+        assert_eq!(answered.status, StatusCode::NOT_FOUND);
+        let answered = clover
+            .call(webhook_request(&body, Some(&sign(WEBHOOK_URL, &body))))
+            .await;
+        assert_eq!(answered.status, StatusCode::NOT_FOUND);
+    }
+    // Each serves its own.
+    let body = payment_webhook("payment.updated", "APPROVED", MERCHANT, LOCATION);
+    assert_eq!(square.webhook(&body).await.status, StatusCode::OK);
+    let body = clover_webhook(CLOVER_MERCHANT, &clover_payment(), "UPDATE");
+    assert_eq!(clover.clover_webhook(&body).await.status, StatusCode::OK);
+}
+
+/// A registration for a point of sale this Bell doesn't serve is refused,
+/// naming the ones it does, and its token goes nowhere.
+#[tokio::test]
+async fn a_registration_for_a_point_of_sale_that_is_off_is_refused() {
+    let (_guard, log) = capture_log();
+    let square = Stub::square().await;
+    let clover = Stub::clover().await;
+    let square_bell = TestBell::start(&square.url(), &[]).await;
+    let clover_bell = TestBell::clover(&clover.url(), &[]).await;
+    let till = Till {
+        keys: push::encrypt::ReceiverKeys::generate(),
+        endpoint: "https://push.example.org/push/1".to_owned(),
+    };
+    for (bell, point_of_sale, token, location, runs) in [
+        (
+            &square_bell,
+            "clover",
+            CLOVER_TOKEN,
+            CLOVER_MERCHANT,
+            "square",
+        ),
+        (&clover_bell, "square", TOKEN, LOCATION, "clover"),
+    ] {
+        let answered = bell
+            .call(registration_at(
+                point_of_sale,
+                token,
+                location,
+                &till.subscription(),
+            ))
+            .await;
+        assert_eq!(
+            answered.status,
+            StatusCode::BAD_REQUEST,
+            "{}",
+            answered.text()
+        );
+        assert_eq!(answered.problem(), "invalid-request");
+        let detail = answered.json()["detail"].as_str().unwrap().to_owned();
+        assert!(
+            detail.contains(&format!("this Bell runs {runs}")),
+            "{detail}"
+        );
+        assert!(!answered.text().contains(token));
+    }
+    assert!(square.drain().await.is_empty() && clover.drain().await.is_empty());
+    let log = log.text();
+    for token in [TOKEN, CLOVER_TOKEN] {
+        assert!(!log.contains(token), "{log}");
+    }
+    assert!(square_bell.rows().is_empty() && clover_bell.rows().is_empty());
+}
+
+/// A Clover webhook is taken only with the app's Auth Code, byte for byte:
+/// without it, or with anything near it, `401`.
+#[tokio::test]
+async fn a_clover_webhook_is_taken_only_with_the_auth_code() {
+    let bell = TestBell::clover(&unreachable_url(), &[]).await;
+    let body = clover_webhook(CLOVER_MERCHANT, &clover_payment(), "UPDATE");
+    assert_eq!(bell.clover_webhook(&body).await.status, StatusCode::OK);
+    let one_off = format!("{}0", &CLOVER_AUTH_CODE[..35]);
+    for auth in [
+        None,
+        Some(""),
+        Some(&CLOVER_AUTH_CODE[..35]),
+        Some(one_off.as_str()),
+        Some(&format!("{CLOVER_AUTH_CODE} ")),
+        Some(&format!("{CLOVER_AUTH_CODE}{CLOVER_AUTH_CODE}")),
+        Some(&CLOVER_AUTH_CODE.to_uppercase()),
+    ] {
+        let answered = bell.call(clover_request(&body, auth)).await;
+        assert_eq!(answered.status, StatusCode::UNAUTHORIZED, "{auth:?}");
+        assert_eq!(answered.problem(), "invalid-signature");
+        assert_eq!(answered.json()["title"], "Not from Clover");
+        if let Some(auth) = auth.filter(|auth| auth.len() > 4) {
+            assert!(!answered.text().contains(auth), "{}", answered.text());
+        }
+    }
+}
+
+/// Without the header only the verification handshake is read, and no
+/// more of a body than it takes: anything else is `401`, a body over the
+/// size taken included, never `413`.
+#[tokio::test]
+async fn a_clover_webhook_without_the_header_is_read_no_further_than_the_handshake() {
+    let bell = TestBell::clover(&unreachable_url(), &[]).await;
+    let large = format!("{{\"verificationCode\":\"{}\"}}", "a".repeat(300 * 1024));
+    for body in [
+        large,
+        clover_webhook(CLOVER_MERCHANT, &clover_payment(), "CREATE"),
+        String::new(),
+    ] {
+        let answered = bell.call(clover_request(&body, None)).await;
+        assert_eq!(answered.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answered.problem(), "invalid-signature");
+    }
+    // With the header, the size taken is a webhook's.
+    let large = format!("{{\"pad\":\"{}\"}}", "x".repeat(256 * 1024));
+    let answered = bell
+        .call(clover_request(&large, Some(CLOVER_AUTH_CODE)))
+        .await;
+    assert_eq!(answered.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+/// Clover's verification handshake, a UUID and no header, is answered
+/// `200` and its code logged once at info for the operator; any other
+/// value in its place is `401`, and nothing of it reaches the log.
+#[tokio::test]
+async fn the_clover_handshake_logs_its_code_and_nothing_else_does() {
+    let (_guard, log) = capture_log();
+    let bell = TestBell::clover(&unreachable_url(), &[]).await;
+    let code = "5a237ce7-9866-4f04-bac6-7ddb5524cdea";
+    let answered = bell
+        .call(clover_request(
+            &format!("{{\"verificationCode\":\"{code}\"}}"),
+            None,
+        ))
+        .await;
+    assert_eq!(answered.status, StatusCode::OK, "{}", answered.text());
+    assert!(answered.body.is_empty());
+    let lines: Vec<String> = log
+        .text()
+        .lines()
+        .filter(|line| line.contains(code))
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(lines.len(), 1, "{}", log.text());
+    assert!(lines[0].contains("INFO"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("Clover webhook verification code"),
+        "{}",
+        lines[0]
+    );
+
+    for written in [
+        "<script>alert(1)</script>",
+        "5a237ce7-9866-4f04-bac6-7ddb5524cdeX",
+        "5a237ce7-9866-4f04-bac6-7ddb5524cdea\nINFO forged",
+    ] {
+        let body = json!({ "verificationCode": written }).to_string();
+        let answered = bell.call(clover_request(&body, None)).await;
+        assert_eq!(answered.status, StatusCode::UNAUTHORIZED, "{written}");
+        assert!(!log.text().contains(written), "{written} is in the log");
+    }
+    assert!(!log.text().contains("forged"), "{}", log.text());
+
+    // Sent with the header (as Clover may once the app has one), it is
+    // logged the same way.
+    let other = "0e5b2c1a-3f4d-4b6e-8a9c-1d2e3f4a5b6c";
+    let answered = bell
+        .clover_webhook(&format!("{{\"verificationCode\":\"{other}\"}}"))
+        .await;
+    assert_eq!(answered.status, StatusCode::OK);
+    assert_eq!(log.text().matches(other).count(), 1, "{}", log.text());
+}
+
+/// A Clover webhook with the Auth Code that doesn't read, or is another
+/// app's, is answered as taken, as Square's own are: refusing it would
+/// only have it sent again.
+#[tokio::test]
+async fn a_clover_webhook_that_doesnt_read_is_taken_and_dropped() {
+    let (_guard, log) = capture_log();
+    let bell = TestBell::clover(&unreachable_url(), &[]).await;
+    for body in [
+        "not json".to_owned(),
+        "{\"appId\":\"MONOKULARBELL\"}".to_owned(),
+        clover_batch(
+            "OTHERAPP00001",
+            json!({CLOVER_MERCHANT: [clover_update("P:CLVPAYOTHER1", "CREATE")]}),
+        ),
+    ] {
+        assert_eq!(
+            bell.clover_webhook(&body).await.status,
+            StatusCode::OK,
+            "{body}"
+        );
+    }
+    let log = log.text();
+    assert!(log.contains("a Clover webhook was dropped"), "{log}");
+    assert!(
+        log.contains("another application's Clover webhook was dropped"),
+        "{log}"
+    );
+    assert!(!log.contains("CLVPAYOTHER1"), "{log}");
+}
+
+/// A Clover registration that doesn't read is refused before Clover is
+/// asked: a merchant id that isn't one, a token that isn't one.
+#[tokio::test]
+async fn a_clover_registration_that_doesnt_read_is_refused() {
+    let clover = Stub::clover().await;
+    let bell = TestBell::clover(&clover.url(), &[]).await;
+    let till = Till {
+        keys: push::encrypt::ReceiverKeys::generate(),
+        endpoint: "https://push.example.org/push/1".to_owned(),
+    };
+    for (token, merchant) in [
+        (CLOVER_TOKEN, "a/b"),
+        (CLOVER_TOKEN, ""),
+        ("clv with space", CLOVER_MERCHANT),
+        ("", CLOVER_MERCHANT),
+    ] {
+        let answered = bell.register_clover(token, merchant, &till).await;
+        assert_eq!(
+            answered.status,
+            StatusCode::BAD_REQUEST,
+            "{token} {merchant}"
+        );
+        assert_eq!(answered.problem(), "invalid-request");
+    }
+    assert!(clover.drain().await.is_empty());
 }
