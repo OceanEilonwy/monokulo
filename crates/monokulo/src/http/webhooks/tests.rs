@@ -287,7 +287,8 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
         headers["x-monokulo-event-id"].to_str().unwrap(),
         payload["event_id"].as_str().unwrap()
     );
-    // The card says it's delivering.
+    // The card says it's delivering, with the last answer's status and time
+    // and how many deliveries went through lately.
     let page = body_text(
         get(
             &router,
@@ -299,6 +300,14 @@ async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_cu
     .await;
     assert!(
         page.contains(r#"<span class="tag tag-ok">delivering</span>"#),
+        "{page}"
+    );
+    assert!(page.contains(" · 200 in "), "{page}");
+    assert!(
+        page.contains(&format!(
+            " · 1 delivered in the last {} days",
+            crate::views::webhooks::RECENT_DAYS
+        )),
         "{page}"
     );
 }
