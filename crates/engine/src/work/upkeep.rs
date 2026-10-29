@@ -36,6 +36,7 @@ pub(crate) struct UpkeepState {
 
 impl UpkeepState {
     /// A copy of this state for [`super::ScanState::fork_for_tests`].
+    #[cfg(test)]
     pub(crate) fn fork(&self) -> Self {
         let Self { last_checkpoint } = self;
         Self {
