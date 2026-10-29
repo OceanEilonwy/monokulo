@@ -1279,3 +1279,46 @@ async fn a_test_push_from_the_page_is_delivered_over_http() {
     assert_eq!(payload["test"], true);
     assert_eq!(payload["phase"], "paid");
 }
+
+/// The Apps card's line says how long ago, at the page's moment: the last
+/// delivered push and the worst target's last failure, in minutes.
+#[test]
+fn an_apps_push_line_says_how_long_ago_its_last_push_and_failure_were() {
+    use crate::db::{AppId, AppPushSummary, LastAttempt};
+    use crate::views::connected_apps::PushLine;
+    const NOW: i64 = 1_790_576_527;
+    let clock = crate::views::time::Clock::utc(NOW);
+    let summary = |failing: u32, worst_last: Option<LastAttempt>| AppPushSummary {
+        app_id: AppId::new("app_front"),
+        targets: 2,
+        failing,
+        worst_failures: if failing > 0 { 12 } else { 0 },
+        worst_last,
+        last_delivered_at: Some(NOW - 120),
+    };
+    assert_eq!(
+        super::push_line(Some(&summary(0, None)), &clock),
+        PushLine::Healthy {
+            targets: 2,
+            last_push: Some("2 min ago".into()),
+        }
+    );
+    let failed = LastAttempt {
+        at: NOW - 14 * 60,
+        status: Some(502),
+        error: Some("the push service answered 502".into()),
+        duration_ms: Some(240),
+        delivered: false,
+    };
+    assert_eq!(
+        super::push_line(Some(&summary(1, Some(failed))), &clock),
+        PushLine::Failing {
+            targets: 2,
+            last_push: Some("2 min ago".into()),
+            failing: 1,
+            in_a_row: 12,
+            last_failure: Some(("502".into(), "14 min ago".into())),
+        }
+    );
+    assert_eq!(super::push_line(None, &clock), PushLine::NoTargets);
+}

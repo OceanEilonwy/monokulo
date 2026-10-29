@@ -35,7 +35,7 @@ test('each webhook says how it is doing; the deliveries of one that needs you ar
 
   const healthy = webhook(page, 'https://bakery.example/hooks/monokulo');
   await expect(healthy.locator('.wh-health .tag')).toHaveText('delivering');
-  await expect(healthy.locator('.wh-health .hint')).toContainText('last 2 min ago · 200 in');
+  await expect(healthy.locator('.wh-health .hint')).toContainText(/last .+ · 200 in/);
   await expect(healthy.locator('details[data-disclosure="deliveries"]')).not.toHaveAttribute('open', '');
   await healthy.locator('details[data-disclosure="deliveries"]').scrollIntoViewIfNeeded();
   await captureCoverageStage(page, 'store-webhooks-healthy', test.info(), { group: GROUP });

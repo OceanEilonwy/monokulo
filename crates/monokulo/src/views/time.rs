@@ -203,4 +203,27 @@ mod tests {
             .into_string()
             .contains(" data-local>"));
     }
+
+    #[test]
+    fn how_long_ago_rounds_minutes_up_then_hours_and_days_to_the_nearest() {
+        let clock = Clock::utc(T);
+        let cases = [
+            (-44, "just now"),
+            (44, "in a moment"),
+            (-45, "1 min ago"),
+            (-90, "2 min ago"),
+            (-120, "2 min ago"),
+            // A second past a whole minute is the next one.
+            (-121, "3 min ago"),
+            (-14 * 60, "14 min ago"),
+            (360, "in 6 min"),
+            (-90 * 60, "2 h ago"),
+            (-36 * 3600, "2 days ago"),
+            (-36 * 3600 + 1, "36 h ago"),
+            (-86_400 * 3, "3 days ago"),
+        ];
+        for (delta, words) in cases {
+            assert_eq!(clock.relative(T + delta), words, "{delta}s");
+        }
+    }
 }
