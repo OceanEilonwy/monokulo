@@ -49,10 +49,11 @@ sha2 = "0.11.0"
 subtle = "2.6.1"
 # The registrations' own database file: its pool and migration runner.
 sqlite = { path = "../sqlite" }
+# Its log lines, as the relay and monokulo write theirs.
+telemetry = { path = "../telemetry" }
 thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.20", default-features = false, features = ["ansi", "env-filter", "fmt", "std"] }
 url = "2.5.8"
 # A till's access token, wiped once its one request is made.
 zeroize = "1.9.0"
@@ -66,6 +67,8 @@ hyper-util = { version = "0.1.20", features = ["tokio"] }
 push = { path = "../push", features = ["test-support"] }
 # The router called in-process (`ServiceExt::oneshot`).
 tower = { version = "0.5.3", features = ["util"] }
+# The captured log, checked for tokens, endpoints and payments.
+tracing-subscriber = { version = "0.3.20", default-features = false, features = ["fmt", "std"] }
 
 [lints]
 workspace = true

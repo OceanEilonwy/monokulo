@@ -24,7 +24,6 @@ use live_settings::{
     SettingValue, Snapshot, settings,
 };
 use push::{Contact, Endpoint, VapidKey};
-use tracing_subscriber::EnvFilter;
 
 use crate::clover::AuthCode;
 use crate::pos::PointOfSale;
@@ -169,10 +168,17 @@ settings! {
     },
     LOGGING_LEVEL: String {
         key: "logging.level",
-        default: "info".to_owned(),
-        check: |level: &String| check_level(level),
+        default: telemetry::DEFAULT_LEVEL.to_owned(),
+        check: telemetry::check_level,
         description: "Which log lines the Bell writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs. No line carries a webhook, a point of sale's token or a push endpoint, at any level; the one exception is Clover's webhook verification code, logged at info for the operator to enter in Clover's dashboard.",
         example: "info,monokulo_bell=debug",
+        applies: Restart,
+    },
+    LOGGING_FORMAT: telemetry::LogFormat {
+        key: "logging.format",
+        default: telemetry::LogFormat::Auto,
+        description: "How log lines are written to the console: json, pretty, or auto (pretty at a terminal, JSON everywhere else).",
+        example: "json",
         applies: Restart,
     },
 }
@@ -422,29 +428,22 @@ fn secret_matches_application<T: live_settings::SettingValue>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoggingConfig {
     pub level: String,
+    pub format: telemetry::LogFormat,
 }
 
 impl Section for LoggingConfig {
     const NAME: &'static str = "logging";
 
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&LOGGING_LEVEL]
+        &[&LOGGING_LEVEL, &LOGGING_FORMAT]
     }
 
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(LoggingConfig {
             level: snapshot.get(&LOGGING_LEVEL),
+            format: snapshot.get(&LOGGING_FORMAT),
         })
     }
-}
-
-fn check_level(level: &str) -> Result<(), String> {
-    EnvFilter::builder()
-        .parse(level.trim())
-        .map(|_| ())
-        .map_err(|error| {
-            format!("Not a log filter ({error}). Use a level (error, warn, info, debug, trace), optionally followed by target=level pairs, such as info,monokulo_bell=debug.")
-        })
 }
 
 fn check_vapid_key(value: &Secret) -> Result<(), String> {
