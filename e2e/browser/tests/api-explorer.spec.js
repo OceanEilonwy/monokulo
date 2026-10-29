@@ -7,7 +7,7 @@
 // problem links only this site's page for it, and Stop ends a stream.
 const { test, expect } = require('../coverage-test');
 const { execFileSync } = require('node:child_process');
-const { prebuilt } = require('../real-stack');
+const { BIN } = require('../real-stack');
 const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
@@ -31,11 +31,12 @@ test.use({ reducedMotion: 'reduce' });
 
 test.beforeAll(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'api-explorer-'));
-  // CI's xtask comes built with the other binaries (E2E_PREBUILT_BINARIES,
-  // real-stack.js); Cargo would build it again.
+  // xtask comes built with the other binaries, by the global setup or, in
+  // CI, the job that built them (real-stack.js buildBinaries): never cargo
+  // here, which would hold the build lock other workers' fixture starts
+  // wait on.
   const args = ['pages', 'api', '--site', dir, '--from', 'xtask/src/pages/api_fixture'];
-  if (prebuilt()) execFileSync(path.join(root, 'target/debug/xtask'), args, { cwd: root, stdio: 'inherit' });
-  else execFileSync('cargo', ['xtask', ...args], { cwd: root, stdio: 'inherit' });
+  execFileSync(BIN('xtask'), args, { cwd: root, stdio: 'inherit' });
   site = http.createServer((req, res) => {
     seen.site.push({ url: req.url, authorization: req.headers.authorization });
     let file = path.join(dir, decodeURIComponent(new URL(req.url, 'http://x').pathname));
