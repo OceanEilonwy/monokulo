@@ -186,12 +186,13 @@ static PANIC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\nthread [^\n]+ panicked at [^\n]*:\n").unwrap());
 
 /// Where and how every test command of a run goes: its checkout, the
-/// variables it adds and removes, and how long one command may take.
+/// variables it adds and removes, and how long one command may take (the
+/// CLI's `--timeout` seconds).
 struct Context<'a> {
     cwd: &'a Path,
     env: &'a BTreeMap<String, String>,
     removed: &'a [String],
-    timeout: u64,
+    timeout: Duration,
 }
 
 /// What one test run showed: a healthy pass, the intended assertion
@@ -246,12 +247,7 @@ fn run(
         process.process_group(0);
     }
     let mut child = process.spawn()?;
-    let exit_code = wait_with_deadline(
-        &mut child,
-        Duration::from_secs(timeout),
-        OnTimeout::KillGroup,
-    )?
-    .map(Exit::of);
+    let exit_code = wait_with_deadline(&mut child, timeout, OnTimeout::KillGroup)?.map(Exit::of);
     let text = String::from_utf8_lossy(&fs::read(log)?).into_owned();
     Ok(judge(command, log, exit_code, &text, expected_failure))
 }
@@ -707,7 +703,7 @@ pub(crate) fn mutations(root: &Path, args: &[&str]) -> io::Result<Exit> {
         cwd: &worktree.tree,
         env: &env,
         removed: &removed,
-        timeout: o.timeout,
+        timeout: Duration::from_secs(o.timeout),
     };
     let baselines = baselines(&o, &selected, &context, &output)?;
     let baselines_ok = baselines.iter().all(|b| b.verdict.passed);
@@ -951,7 +947,7 @@ mod tests {
             cwd: root,
             env: &env,
             removed: &[],
-            timeout: 60,
+            timeout: Duration::from_secs(60),
         };
         let v = run(
             &command,
@@ -984,7 +980,9 @@ mod tests {
             cwd: root,
             env: &env,
             removed: &[],
-            timeout: 2,
+            // Only has to outlast sh forking sleep and writing its pid
+            // before the watchdog fires; never shorter (a loaded runner).
+            timeout: Duration::from_millis(500),
         };
         let v = run(&command, &context, &root.join("result.log"), None).unwrap();
         assert!(
@@ -992,7 +990,10 @@ mod tests {
             "{}",
             serde_json::to_value(&v).unwrap()
         );
-        let pid = fs::read_to_string(&pid_path).unwrap().trim().to_string();
+        let pid = fs::read_to_string(&pid_path)
+            .expect("the shell did not write its pid within the 500 ms deadline")
+            .trim()
+            .to_string();
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         let alive = loop {
             let status = Command::new("ps")
