@@ -1,5 +1,5 @@
 //! The Monokular Bell: turns a point of sale's payment webhooks into dings
-//! for the tills registered at that location (`docs/design.md` §3). It
+//! for the tills registered at that location (`docs/bell.md`). It
 //! serves Square, Clover, or both: each point of sale is an adapter, on
 //! when its settings name an application (`[bell.square]`,
 //! `[bell.clover]`).

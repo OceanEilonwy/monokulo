@@ -1,5 +1,5 @@
 //! The ding: an empty-of-meaning Web Push that tells a till to ask its
-//! point of sale for new payments now (`docs/design.md` §3). It carries no
+//! point of sale for new payments now (`docs/bell.md`). It carries no
 //! sale data, so a lost, late, repeated or forged one costs the till one
 //! request to its point of sale at most; the till's timer is the backstop.
 //!

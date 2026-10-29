@@ -8,7 +8,7 @@ at once), locations, payments, orders and refunds. Ring up a sale with:
 
 With FAKE_SQUARE_WEBHOOK_URL (a Bell's bell.public_uri followed by
 /v1/square/webhook) and FAKE_SQUARE_WEBHOOK_KEY (its
-MONOKULAR_BELL_SQUARE_WEBHOOK_KEY) set, each sale is also sent there as a
+MONOKULO_BELL_SQUARE_WEBHOOK_KEY) set, each sale is also sent there as a
 signed payment.created webhook, as Square sends it.
 
 Standard library only. Not Square: shapes follow its API reference closely
