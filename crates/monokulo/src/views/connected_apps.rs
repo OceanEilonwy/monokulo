@@ -114,9 +114,11 @@ fn push_line(view: &AppsView, app: &AppRow) -> Markup {
         let label = format!("{words} of {}", app.title());
         html! { a class="app-pushes-link" href=(href) aria-label=(label) { (words) " " span aria-hidden="true" { "\u{203a}" } } }
     };
-    let last = |last_push: &Option<String>| match last_push {
+    // Before a failing part ("last 502 14 min ago"), "no push yet" would
+    // contradict it: nothing was delivered, but pushes were tried.
+    let last = |last_push: &Option<String>, none: &str| match last_push {
         Some(at) => format!("last push {at}"),
-        None => "no push yet".to_owned(),
+        None => none.to_owned(),
     };
     html! {
         @match &app.pushes {
@@ -133,7 +135,7 @@ fn push_line(view: &AppsView, app: &AppRow) -> Markup {
             PushLine::Healthy { targets, last_push } => {
                 span class="app-pushes" data-pushes="healthy" {
                     span class="app-pushes-icon" { (PreEscaped(BELL)) }
-                    span class="app-pushes-words" { (push_targets(*targets)) " · " (last(last_push)) " ·" }
+                    span class="app-pushes-words" { (push_targets(*targets)) " · " (last(last_push, "no push yet")) " ·" }
                     span class="app-pushes-ok" { "healthy" }
                     (link("Pushes"))
                 }
@@ -141,7 +143,7 @@ fn push_line(view: &AppsView, app: &AppRow) -> Markup {
             PushLine::Failing { targets, last_push, failing, in_a_row, last_failure } => {
                 span class="app-pushes" data-pushes="failing" {
                     span class="app-pushes-icon app-pushes-bad" { (PreEscaped(BELL)) }
-                    span class="app-pushes-words" { (push_targets(*targets)) " · " (last(last_push)) " ·" }
+                    span class="app-pushes-words" { (push_targets(*targets)) " · " (last(last_push, "none delivered yet")) " ·" }
                     span class="app-pushes-bad" {
                         (failing) " failing (" (in_a_row) " in a row"
                         @if let Some((answer, ago)) = last_failure { ", last " (answer) " " (ago) }

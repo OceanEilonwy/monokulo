@@ -417,3 +417,6 @@ Numbered from 41.
     the page wouldn't. Not an in-memory flash (decision 12's reason) and
     not a row kept past the delete (that would keep a dropped target's
     history the delete is there to end).
+53. **"none delivered yet" on a failing app's line, "no push yet" on a
+    healthy one's.** A failing line's "last 502 14 min ago" says pushes
+    were tried, which "no push yet" contradicted.
