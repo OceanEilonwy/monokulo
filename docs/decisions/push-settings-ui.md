@@ -336,6 +336,11 @@ Numbered from 21.
     share three grid rows (label, input, error) through `subgrid`, so one
     field's error doesn't stagger the others' labels and inputs, and Remove
     stays on the inputs' row; a phone stacks as before.
+39. **Every save that restarts the relay says what it does now** (QA round
+    2). `Restarted::sentence` always has words: `StillOff` says "The push
+    relay is off.", so turning the switch off after a failed start (nothing
+    was listening, so nothing "stopped") still tells the operator the relay
+    is off, as does changing a `[relay.*]` key while it is off.
 
 ## The Apps card, the app's page, Remove and the test push (rust-engineer-2)
 
