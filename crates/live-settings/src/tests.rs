@@ -1492,6 +1492,61 @@ fn bind_addr_round_trips_and_refuses_an_address_without_a_port() {
     assert_eq!(BindAddr::kind(), SettingKind::Address);
 }
 
+/// A renamed variable is read under its old name when its new one isn't
+/// set, with a warning to rename it; set under both names it must agree,
+/// or which was meant can't be told and the process stops. Neither the
+/// warnings nor the error carry a value.
+#[test]
+fn a_renamed_variable_is_read_under_its_old_name_with_a_warning() {
+    const RENAMED: &[Renamed] = &[Renamed {
+        old: "OLD_TOKEN",
+        new: "TEST_TOKEN",
+        since: "2026-10-29",
+    }];
+    let env = |vars: &[(&str, &str)]| Env::fixed(vars.iter().copied()).with_renamed(RENAMED);
+    let token = |env: &Env| Snapshot::new(HashMap::new(), env.clone()).get(&TOKEN);
+
+    let old = env(&[("OLD_TOKEN", "hunter2")]);
+    assert_eq!(token(&old).expose(), "hunter2");
+    assert_eq!(
+        Snapshot::new(HashMap::new(), old.clone()).source(&TOKEN),
+        SettingSource::Env
+    );
+    assert_eq!(
+        old.renamed_given().unwrap(),
+        ["OLD_TOKEN was renamed TEST_TOKEN on 2026-10-29 and is read in its place until the next release: rename it"]
+    );
+
+    let new = env(&[("TEST_TOKEN", "hunter2")]);
+    assert_eq!(token(&new).expose(), "hunter2");
+    assert!(new.renamed_given().unwrap().is_empty());
+
+    // The new name wins over the old, blank or not, and a blank old name
+    // is unset.
+    let both = env(&[("TEST_TOKEN", "hunter2"), ("OLD_TOKEN", "hunter2")]);
+    assert_eq!(token(&both).expose(), "hunter2");
+    assert_eq!(
+        both.renamed_given().unwrap(),
+        ["OLD_TOKEN is set as well as TEST_TOKEN, to the same value: OLD_TOKEN was renamed TEST_TOKEN on 2026-10-29, so unset it"]
+    );
+    let blank = env(&[("OLD_TOKEN", "  ")]);
+    assert!(token(&blank).is_empty());
+    assert!(blank.renamed_given().unwrap().is_empty());
+
+    let different = env(&[("TEST_TOKEN", "hunter2"), ("OLD_TOKEN", "swordfish")]);
+    let error = different.renamed_given().unwrap_err();
+    assert_eq!(
+        error,
+        "OLD_TOKEN and TEST_TOKEN are both set, to different values: OLD_TOKEN was renamed TEST_TOKEN on 2026-10-29, so unset OLD_TOKEN and keep the one meant in TEST_TOKEN"
+    );
+    assert!(!error.contains("hunter2") && !error.contains("swordfish"));
+
+    // Without the rename, the old name is nothing.
+    let unrenamed = Env::fixed([("OLD_TOKEN", "hunter2")]);
+    assert!(token(&unrenamed).is_empty());
+    assert!(unrenamed.renamed_given().unwrap().is_empty());
+}
+
 #[test]
 fn http_url_round_trips_and_refuses_other_schemes() {
     let v = HttpUrl::parse(" https://pay.example.com/ ").unwrap();

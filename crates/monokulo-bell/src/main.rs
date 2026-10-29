@@ -60,6 +60,14 @@ fn main() {
         .enable_all()
         .build()
         .unwrap_or_else(|e| stop(format!("failed to start the async runtime: {e}")));
+    // A secret still under its monokular-bell name is read, and said; under
+    // both names with different values, the Bell can't tell which is meant.
+    match start.env.renamed_given() {
+        Ok(warnings) => warnings
+            .iter()
+            .for_each(|warning| tracing::warn!("{warning}")),
+        Err(e) => stop(e),
+    }
     runtime.block_on(async {
         let config = settings::load(values, start.env)
             .await
