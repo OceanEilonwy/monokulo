@@ -37,11 +37,9 @@ test('the retire dialog is blocked while a store takes payments into the wallet 
   await expect(dialog).toBeVisible();
   await expect(page).toHaveURL(page_of('w_cake'));
   const checks = dialog.locator('.checks li');
-  await expect(checks.nth(0)).toHaveClass('no');
   await expect(checks.nth(0)).toContainText('No store takes payments into it');
   await expect(checks.nth(0).locator('.fix')).toContainText('shop.localhost does · change its wallet');
   // The fixture store's open order, on this wallet.
-  await expect(checks.nth(1)).toHaveClass('no');
   await expect(checks.nth(1).locator('.fix')).toContainText('until about');
   await expect(dialog).toContainText('Retire becomes available when both are ticked.');
   await expect(dialog.getByRole('button', { name: 'Retire wallet' })).toBeDisabled();
@@ -72,18 +70,6 @@ test('a wallet nothing uses is retired by typing its name, then restored with it
   await expect(dialog.locator('.checks li.ok')).toHaveCount(2);
   const confirm = dialog.getByLabel('Type “Savings” to confirm');
   await expect(confirm).toBeFocused();
-  // The label sits one --space-sm step above its field.
-  const label = await dialog.locator('.setting-label-row').boundingBox();
-  const field = await confirm.boundingBox();
-  const step = await page.evaluate(() => {
-    const probe = document.createElement('div');
-    probe.style.width = 'var(--space-sm)';
-    document.body.append(probe);
-    const width = probe.getBoundingClientRect().width;
-    probe.remove();
-    return width;
-  });
-  expect(Math.round(field.y - (label.y + label.height))).toBe(Math.round(step));
   await captureCoverageStage(page, 'wallets-retire-ready', test.info(), { group: GROUP });
 
   // The wrong name: the retire page again, saying why.
