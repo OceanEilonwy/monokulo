@@ -53,7 +53,7 @@ MONOKULO_ENCRYPTION_KEY="$(cat monokulo.key)" ./monokulo
 
 Step-by-step instructions are in the install guides, **[for a computer](https://docs.monokulo.com/install-computer/)** and **[for a router](https://docs.monokulo.com/install-router/)**.
 
-Shipping your own till app with your own Apple and Google keys? Pushes to iPhones and to Android phones with Google's services go through a push relay, which runs inside monokulo (`relay.enabled`) or on its own as `monokulo-push-relay`, in the Docker image beside `monokulo-engine`: see **[the push relay](https://docs.monokulo.com/push-relay/)**.
+Shipping your own till app with your own Apple and Google keys? Pushes to iPhones and to Android phones with Google's services go through a push relay, which runs inside monokulo (`relay.enabled`) or on its own as `monokulo-push-relay`, in the Docker image beside `monokulo-engine`: see **[the push relay](https://docs.monokulo.com/push-relay/)**. A Monokular till at a Square or Clover counter can be woken the moment a payment lands by the Monokular Bell, `monokulo-bell` (`crates/monokulo-bell`), its own binary and never part of monokulo: see **[the Monokular Bell](https://docs.monokulo.com/bell/)**.
 
 ## Contributing
 

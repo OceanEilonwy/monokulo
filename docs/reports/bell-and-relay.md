@@ -1,5 +1,14 @@
 # Push, the push relay and the Monokular Bell: project report
 
+> **Moved, 2026-10-29.** The Bell this report describes in the monokular
+> repository (`crates/monokular-bell`, `tools/fake-square`,
+> `tools/fake-clover`, its `docs/bell.md` and `docs/decisions/bell.md`) now
+> lives here, with its history: `crates/monokulo-bell` (crate and binary
+> `monokulo-bell`), `tools/`, the docs site's `/bell/` page
+> (`xtask/src/pages/docs/bell.md`), `docs/bell.md` and
+> `docs/decisions/bell.md` (59 and on record the move). Its secrets are
+> `MONOKULO_BELL_*` now. The report below is left as written.
+
 Written 2026-10-27 by the principal Rust engineer of the five-agent team
 (a project planner, a principal Rust engineer, two Rust engineers and a
 test engineer) that built Monokulo's push system and the Monokular Bell in
