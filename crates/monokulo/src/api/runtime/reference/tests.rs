@@ -14,11 +14,48 @@ use crate::api::runtime::{catalog, openapi};
 /// (`Reference::of` checks them): the document is OpenAPI 3.1 and every
 /// example in it fits its schema, every link names a route, and every
 /// resource, relation, problem and handshake has its page.
+///
+/// And the same, byte for byte, each time they're written: plugins copy
+/// the recorded examples into their own tests and compare them exactly.
+/// Recorded twice, each time on a fresh engine and a fresh Monokulo, some
+/// seconds apart, so nothing that hangs on the clock (a rate limit's
+/// `retry_after`), on chance (an id, a key, a challenge) or on timing gets
+/// through.
 #[tokio::test]
-async fn the_reference_is_written_from_real_exchanges() {
-    let engine =
-        engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-    let written = Reference::of(recording::record(engine.router()).await);
+async fn the_reference_is_written_from_real_exchanges_and_the_same_each_time() {
+    let mut written = Vec::new();
+    for pass in 0..2 {
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let reference = Reference::of(recording::record(engine.router()).await);
+        if pass == 0 {
+            // Checked before the second writing starts, so a failure here
+            // names what the document lacks, not a difference.
+            the_document_holds_what_the_api_promises(&reference);
+        }
+        written.push(reference.files());
+    }
+    for ((name, first), (_, second)) in written[0].iter().zip(&written[1]) {
+        if first != second {
+            let line = first
+                .lines()
+                .zip(second.lines())
+                .position(|(a, b)| a != b)
+                .unwrap_or(0);
+            panic!(
+                "{name} differs from one writing to the next, from line {}:\n{}\n{}",
+                line + 1,
+                first.lines().nth(line).unwrap_or_default(),
+                second.lines().nth(line).unwrap_or_default()
+            );
+        }
+    }
+}
+
+/// What a writing of the reference holds beyond what `Reference::of`
+/// checks: onion links only where there is an onion address, real-looking
+/// order ids, every handshake's answers and problems, the linked pages.
+fn the_document_holds_what_the_api_promises(written: &Reference) {
     // What's written reads back as written.
     for (name, text) in written.files() {
         let _: Value = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -89,37 +126,6 @@ async fn the_reference_is_written_from_real_exchanges() {
             !document["paths"][page]["get"]["responses"]["200"]["content"]["text/html"].is_null(),
             "{page}"
         );
-    }
-}
-
-/// The examples, the OpenAPI document and the reference are the same,
-/// byte for byte, each time they're written: plugins copy the recorded
-/// examples into their own tests and compare them exactly. Recorded twice,
-/// each time on a fresh engine and a fresh Monokulo, some seconds apart,
-/// so nothing that hangs on the clock (a rate limit's `retry_after`), on
-/// chance (an id, a key, a challenge) or on timing gets through.
-#[tokio::test]
-async fn the_reference_is_the_same_each_time_it_is_written() {
-    let mut written = Vec::new();
-    for _ in 0..2 {
-        let engine =
-            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
-        written.push(Reference::of(recording::record(engine.router()).await).files());
-    }
-    for ((name, first), (_, second)) in written[0].iter().zip(&written[1]) {
-        if first != second {
-            let line = first
-                .lines()
-                .zip(second.lines())
-                .position(|(a, b)| a != b)
-                .unwrap_or(0);
-            panic!(
-                "{name} differs from one writing to the next, from line {}:\n{}\n{}",
-                line + 1,
-                first.lines().nth(line).unwrap_or_default(),
-                second.lines().nth(line).unwrap_or_default()
-            );
-        }
     }
 }
 
