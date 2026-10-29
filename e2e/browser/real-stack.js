@@ -68,12 +68,11 @@ function cleanEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('ENGINE_') && !key.startsWith('MONOKULO_')));
 }
 
-// Every binary the browser suites run, in one cargo command: the real
-// stack's three and the coverage fixture server. Cargo unifies features
+// Every binary the browser suites run but xtask, in one cargo command: the
+// real stack's three and the coverage fixture server. Cargo unifies features
 // across the packages a command names, so building them with different
-// commands compiles engine and monokulo twice; with this one, the fixture's
-// own rebuild check (coverage-fixture.js) finds nothing to do. With the snp
-// key custody backend, as every test build is (zmq is on by default).
+// commands compiles engine and monokulo twice. With the snp key custody
+// backend, as every test build is (zmq is on by default).
 const BUILD_ARGS = [
   'build', '--locked', '--features', 'monokulo/snp',
   '-p', 'engine', '--bin', 'monokulo-engine',
@@ -81,8 +80,16 @@ const BUILD_ARGS = [
   '-p', 'engine-test-support', '--bin', 'fake-monerod',
 ];
 
-// The binaries BUILD_ARGS makes, where cargo leaves them.
-const BINARIES = [BIN('monokulo-engine'), BIN('monokulo'), BIN(path.join('examples', 'coverage_fixture')), BIN('fake-monerod')];
+// xtask, which api-explorer.spec.js runs to build the API explorer, in a
+// command of its own: named in BUILD_ARGS, its dependencies' features would
+// change engine's and monokulo's, and every other build of them (cargo
+// xtask, nextest) would compile them again. Built here, as `cargo xtask`
+// builds it, so no spec runs cargo while other workers' specs wait on the
+// build lock it holds.
+const XTASK_BUILD_ARGS = ['build', '--locked', '-p', 'xtask', '--bin', 'xtask'];
+
+// The binaries BUILD_ARGS and XTASK_BUILD_ARGS make, where cargo leaves them.
+const BINARIES = [BIN('monokulo-engine'), BIN('monokulo'), BIN(path.join('examples', 'coverage_fixture')), BIN('fake-monerod'), BIN('xtask')];
 
 // E2E_PREBUILT_BINARIES=1 runs the binaries already in target/debug instead:
 // CI's browser job downloads them from the job that built the Rust tests,
@@ -95,11 +102,12 @@ function buildBinaries() {
   if (prebuilt()) {
     const missing = BINARIES.filter((binary) => !fs.existsSync(binary));
     if (missing.length) throw new Error(`E2E_PREBUILT_BINARIES is set, but these aren't built: ${missing.join(', ')}`);
-    console.log('[real-binaries] running the prebuilt monokulo-engine, monokulo, coverage fixture and fake-monerod in target/debug');
+    console.log('[real-binaries] running the prebuilt monokulo-engine, monokulo, coverage fixture, fake-monerod and xtask in target/debug');
     return;
   }
-  console.log('[real-binaries] building monokulo-engine, monokulo, the coverage fixture and fake-monerod...');
+  console.log('[real-binaries] building monokulo-engine, monokulo, the coverage fixture, fake-monerod and xtask...');
   execFileSync('cargo', BUILD_ARGS, { cwd: REPO_ROOT, stdio: 'inherit' });
+  execFileSync('cargo', XTASK_BUILD_ARGS, { cwd: REPO_ROOT, stdio: 'inherit' });
 }
 
 /**
@@ -269,4 +277,4 @@ async function startFakeNode(nettype) {
   return { address, stop };
 }
 
-module.exports = { BUILD_ARGS, buildBinaries, prebuilt, startStack, startFakeNode };
+module.exports = { BIN, buildBinaries, prebuilt, startStack, startFakeNode };

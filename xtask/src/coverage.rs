@@ -415,10 +415,9 @@ fn collect_browser(log: &Log) -> io::Result<Exit> {
     if !root().join("node_modules/vite/bin/vite.js").is_file() {
         return Ok(log.missing("POS Vite dependencies (run npm ci at the repository root)"));
     }
-    // Build every binary the suites run up front, with the one command the
-    // Playwright run's global setup and each fixture spec's beforeAll repeat
-    // (real-stack.js BUILD_ARGS), so theirs find nothing to do: a cold build
-    // in a beforeAll overruns its 40s hook timeout.
+    // Build every binary the suites run up front, with the commands the
+    // Playwright run's global setup repeats (real-stack.js buildBinaries),
+    // so its build finds nothing to do.
     step!(log.run(
         "node",
         &["-e", "require('./e2e/browser/real-stack').buildBinaries()"],

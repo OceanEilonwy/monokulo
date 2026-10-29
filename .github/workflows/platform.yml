@@ -449,16 +449,14 @@ jobs:
           tar --zstd -xf target-ci/rust-binaries.tar.zst -C target
           echo XTASK=target/debug/xtask >> "$GITHUB_ENV"
           echo E2E_PREBUILT_BINARIES=1 >> "$GITHUB_ENV"
-      # With coverage, every binary the tests run, with the one command the
-      # run's global setup and the fixture specs repeat (real-stack.js
-      # BUILD_ARGS), so theirs find nothing to do and the test step times
-      # only the tests; and xtask, which runs the coverage collector and
+      # With coverage, every binary the tests run, with the commands the
+      # run's global setup repeats (real-stack.js buildBinaries), so its
+      # build finds nothing to do and the test step times only the tests;
+      # xtask among them, which also runs the coverage collector and
       # Summarize.
       - name: Build the binaries
         if: ${{ inputs.coverage }}
-        run: |
-          node -e "require('./e2e/browser/real-stack').buildBinaries()"
-          cargo build -p xtask --locked
+        run: node -e "require('./e2e/browser/real-stack').buildBinaries()"
       - name: Run tests
         id: tests
         continue-on-error: true

@@ -28,8 +28,8 @@ struct Runner {
 }
 
 /// What the runners need built, in order. The browser binaries with the
-/// command the Playwright run's global setup and fixture specs repeat
-/// (real-stack.js BUILD_ARGS), so theirs find nothing to do.
+/// commands the Playwright run's global setup repeats (real-stack.js
+/// buildBinaries), so its build finds nothing to do.
 const BUILD: [Runner; 3] = [
     Runner {
         name: "Rust tests",
