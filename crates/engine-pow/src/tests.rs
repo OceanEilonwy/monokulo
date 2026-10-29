@@ -102,41 +102,49 @@ fn real_blocks_prove_across_a_key_change_and_any_change_fails() {
         assert_eq!(check_header(&window, &candidate), Ok(difficulty));
         assert_eq!(check_time(&candidate, timestamp + 60), Ok(()));
         let key = f.seeds[&seed_height(height)];
-        keys_used.insert(seed_height(height));
         let hash = hasher
             .hash_blocking(&key, vec![candidate.pow_input.clone()])
             .unwrap()[0];
         let proven = accept(&window, &candidate, difficulty, &hash).unwrap();
         assert_eq!(proven.cumulative_difficulty, cumulative);
 
-        // Another nonce, another timestamp, one transaction fewer, or the
-        // wrong key: none meets the difficulty.
-        let mut block: monero::Block = monero::consensus::deserialize(blob).unwrap();
-        let mut tampered = Vec::new();
-        block.header.nonce ^= 1;
-        tampered.push(block.serialize_hashable());
-        block.header.nonce ^= 1;
-        block.header.timestamp.0 += 1;
-        tampered.push(block.serialize_hashable());
-        block.header.timestamp.0 -= 1;
-        if !block.tx_hashes.is_empty() {
-            block.tx_hashes.pop();
+        // What the hash input covers, and that the key matters, is the same
+        // for every block, so the first block under each key checks it.
+        if keys_used.insert(seed_height(height)) {
+            // Another nonce, another timestamp, one transaction fewer, or the
+            // wrong key: none meets the difficulty.
+            let mut block: monero::Block = monero::consensus::deserialize(blob).unwrap();
+            let mut tampered = Vec::new();
+            block.header.nonce ^= 1;
             tampered.push(block.serialize_hashable());
+            block.header.nonce ^= 1;
+            block.header.timestamp.0 += 1;
+            tampered.push(block.serialize_hashable());
+            block.header.timestamp.0 -= 1;
+            if !block.tx_hashes.is_empty() {
+                block.tx_hashes.pop();
+                tampered.push(block.serialize_hashable());
+            }
+            assert_eq!(
+                tampered.len(),
+                3,
+                "block {height} carries transactions to drop"
+            );
+            for hash in hasher.hash_blocking(&key, tampered).unwrap() {
+                assert!(!check_hash(&hash, difficulty), "block {height} tampered");
+            }
+            let wrong_key = f.seeds.values().find(|k| **k != key).copied().unwrap();
+            let hash = hasher
+                .hash_blocking(&wrong_key, vec![candidate.pow_input.clone()])
+                .unwrap()[0];
+            assert!(matches!(
+                accept(&window, &candidate, difficulty, &hash),
+                Err(Rejection::ProofOfWork {
+                    height: _,
+                    difficulty: _
+                })
+            ));
         }
-        for hash in hasher.hash_blocking(&key, tampered).unwrap() {
-            assert!(!check_hash(&hash, difficulty), "block {height} tampered");
-        }
-        let wrong_key = f.seeds.values().find(|k| **k != key).copied().unwrap();
-        let hash = hasher
-            .hash_blocking(&wrong_key, vec![candidate.pow_input.clone()])
-            .unwrap()[0];
-        assert!(matches!(
-            accept(&window, &candidate, difficulty, &hash),
-            Err(Rejection::ProofOfWork {
-                height: _,
-                difficulty: _
-            })
-        ));
         window.push(proven);
     }
     assert_eq!(keys_used.len(), 2, "the fixture crosses a key change");
