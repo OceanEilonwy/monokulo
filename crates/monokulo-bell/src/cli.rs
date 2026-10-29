@@ -1,4 +1,4 @@
-//! The `monokular-bell` command line, with `clap`: `--options` and
+//! The `monokulo-bell` command line, with `clap`: `--options` and
 //! `--init` for its options file, and an option for every setting that
 //! takes one, with help from the settings' own declarations
 //! (`live_settings::cli`). Its secrets are listed after the options, with
@@ -28,13 +28,13 @@ have no option and are never kept in the file, only in their environment variabl
 after the options): every user on the machine can read the process list.";
 
 const EXAMPLES: &str = "Examples:
-  monokular-bell --init
+  monokulo-bell --init
       Write the options file, with every setting described, and say where.
   MONOKULAR_BELL_SQUARE_WEBHOOK_KEY=… MONOKULAR_BELL_VAPID_KEY=$(openssl rand -hex 32) \\
-    monokular-bell --bell-public-uri https://bell.example.org --bell-square-application-id sq0idp-…
+    monokulo-bell --bell-public-uri https://bell.example.org --bell-square-application-id sq0idp-…
       Start a Bell for Square tills. Keep the VAPID key: the tills' subscriptions are made for it.
   MONOKULAR_BELL_CLOVER_AUTH_CODE=… MONOKULAR_BELL_VAPID_KEY=… \\
-    monokular-bell --bell-public-uri https://bell.example.org --bell-clover-application-id …
+    monokulo-bell --bell-public-uri https://bell.example.org --bell-clover-application-id …
       Start a Bell for Clover tills in North America (--bell-clover-environment for another).
       Then send the verification code from Clover's dashboard and read it in the log.";
 
@@ -44,7 +44,7 @@ pub const OPTIONS_FILE: &str = "bell.toml";
 
 /// The command line: the options file, then an option per setting.
 pub fn command() -> Command {
-    let command = Command::new("monokular-bell")
+    let command = Command::new("monokulo-bell")
         .version(env!("CARGO_PKG_VERSION"))
         .about(ABOUT)
         .long_about(LONG_ABOUT)
@@ -94,10 +94,10 @@ mod tests {
         ] {
             assert!(help.contains(secret), "{secret}: {help}");
         }
-        assert!(parse_args(["monokular-bell", "--bell-vapid-key", "x"]).is_err());
-        assert!(parse_args(["monokular-bell", "--bell-clover-auth-code", "x"]).is_err());
+        assert!(parse_args(["monokulo-bell", "--bell-vapid-key", "x"]).is_err());
+        assert!(parse_args(["monokulo-bell", "--bell-clover-auth-code", "x"]).is_err());
         let args = parse_args([
-            "monokular-bell",
+            "monokulo-bell",
             "--bell-public-uri",
             "https://bell.example.org",
         ])
@@ -107,7 +107,7 @@ mod tests {
             Some("https://bell.example.org")
         );
         // Checked as it is parsed.
-        assert!(parse_args(["monokular-bell", "--bell-public-uri", "http://x.org"]).is_err());
+        assert!(parse_args(["monokulo-bell", "--bell-public-uri", "http://x.org"]).is_err());
         assert!(args.options.ends_with(OPTIONS_FILE), "{:?}", args.options);
     }
 }

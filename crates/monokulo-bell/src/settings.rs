@@ -57,7 +57,7 @@ settings! {
         key: "bell.store_path",
         default: live_settings::paths::data_file("bell.db").unwrap_or_else(|| PathBuf::from("bell.db")),
         description: "The Bell's database file, ~/.local/share/monokulo/bell.db unless set (or bell.db in the working directory if that can't be used). It holds the tills' registrations alone: never a webhook, never a point of sale's token.",
-        example: "/var/lib/monokular/bell.db",
+        example: "/var/lib/monokulo/bell.db",
         applies: Restart,
     },
     TIMEOUT_MS: u64 {
@@ -172,7 +172,7 @@ settings! {
         default: "info".to_owned(),
         check: |level: &String| check_level(level),
         description: "Which log lines the Bell writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs. No line carries a webhook, a point of sale's token or a push endpoint, at any level; the one exception is Clover's webhook verification code, logged at info for the operator to enter in Clover's dashboard.",
-        example: "info,monokular_bell=debug",
+        example: "info,monokulo_bell=debug",
         applies: Restart,
     },
 }
@@ -418,7 +418,7 @@ fn secret_matches_application<T: live_settings::SettingValue>(
     }
 }
 
-/// `monokular-bell`'s logging, read before anything else.
+/// `monokulo-bell`'s logging, read before anything else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoggingConfig {
     pub level: String,
@@ -443,7 +443,7 @@ fn check_level(level: &str) -> Result<(), String> {
         .parse(level.trim())
         .map(|_| ())
         .map_err(|error| {
-            format!("Not a log filter ({error}). Use a level (error, warn, info, debug, trace), optionally followed by target=level pairs, such as info,monokular_bell=debug.")
+            format!("Not a log filter ({error}). Use a level (error, warn, info, debug, trace), optionally followed by target=level pairs, such as info,monokulo_bell=debug.")
         })
 }
 

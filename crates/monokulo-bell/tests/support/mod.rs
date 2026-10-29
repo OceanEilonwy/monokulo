@@ -22,8 +22,8 @@ use hmac::{Hmac, KeyInit as _, Mac as _};
 use http_body_util::{BodyExt as _, Full};
 use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
-use monokular_bell::Bell;
-use monokular_bell::settings;
+use monokulo_bell::Bell;
+use monokulo_bell::settings;
 use push::encrypt::ReceiverKeys;
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
@@ -379,7 +379,7 @@ impl TestBell {
     /// A Bell serving the points of sale `points` names.
     pub async fn start_with(points: Points<'_>, values: &[(&str, &str)]) -> TestBell {
         let dir = std::env::temp_dir().join(format!(
-            "monokular-bell-test-{}-{}",
+            "monokulo-bell-test-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
@@ -601,7 +601,7 @@ impl Answered {
         problem["type"]
             .as_str()
             .unwrap()
-            .strip_prefix("https://github.com/OceanEilonwy/monokular/blob/main/docs/bell.md#")
+            .strip_prefix("https://docs.monokulo.com/bell/#")
             .unwrap()
             .to_owned()
     }

@@ -1,10 +1,10 @@
-//! `monokular-bell` as a process: its options file, its help, and what
+//! `monokulo-bell` as a process: its options file, its help, and what
 //! stops it before it listens.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
-const BINARY: &str = env!("CARGO_BIN_EXE_monokular-bell");
+const BINARY: &str = env!("CARGO_BIN_EXE_monokulo-bell");
 
 const SECRETS: [(&str, &str); 2] = [
     (
@@ -25,7 +25,7 @@ const CLOVER_CODE: (&str, &str) = (
 /// A directory of the test's own.
 fn dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "monokular-bell-binary-{tag}-{}-{}",
+        "monokulo-bell-binary-{tag}-{}-{}",
         std::process::id(),
         rand::random::<u64>()
     ));
