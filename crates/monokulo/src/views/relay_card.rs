@@ -12,7 +12,7 @@ use super::{
     card, field_id, help_id, icon, scalar_field, source_chip, AdminScalarFieldView,
     AdminSettingsViewModel, Group, SettingKindView, SettingsTab,
 };
-use crate::relay::{Missing, RelayState, RelayView};
+use crate::relay::{failure_fix, Missing, RelayState, RelayView, NOT_RUNNING};
 use crate::views::settings::Field;
 
 /// The card's state, as the handler read it.
@@ -223,20 +223,14 @@ fn item(title: &str, text: &str) -> Markup {
 
 /// The one panel under the chips: why the relay isn't running, or what is
 /// missing and how to fix it; none when all is well.
-fn panel(relay: &RelayView, apns_ids: (&str, &str)) -> Markup {
+fn panel(relay: &RelayView) -> Markup {
     if let RelayState::Failed { error, .. } = &relay.state {
-        return ui::Alert::new(
-            item(
-                "The push relay isn't running.",
-                &format!("{error}. Fix it and save again, or restart monokulo."),
-            ),
-            ui::Tone::Error,
-        )
-        .icon(html! { (PreEscaped(ui::assets::icons::WARNING)) })
-        .block(true)
-        .quiet(true)
-        .attr("data-relay-panel", "")
-        .render();
+        return ui::Alert::new(item(NOT_RUNNING, &failure_fix(error)), ui::Tone::Error)
+            .icon(html! { (PreEscaped(ui::assets::icons::WARNING)) })
+            .block(true)
+            .quiet(true)
+            .attr("data-relay-panel", "")
+            .render();
     }
     let mut items = Vec::new();
     for missing in &relay.missing {
@@ -247,21 +241,11 @@ fn panel(relay: &RelayView, apns_ids: (&str, &str)) -> Markup {
         items.push(item(title, missing.sentence()));
     }
     if !relay.apns_ready {
-        let ids = match apns_ids {
-            ("", "") => {
-                "No team ID or key ID is saved for it yet: set them under Edit settings.".to_owned()
-            }
-            (team, "") => format!(
-                "Team ID {team} is saved for it; its key ID isn't yet: set it under Edit settings."
-            ),
-            ("", key) => format!(
-                "Key ID {key} is saved for it; its team ID isn't yet: set it under Edit settings."
-            ),
-            (team, key) => format!("Team ID {team} and key ID {key} are saved for it."),
-        };
         items.push(item(
             "Apple (APNs) key not set.",
-            &format!("iOS registrations are refused until MONOKULO_RELAY_APNS_KEY is set in the environment and monokulo restarts. {ids}"),
+            // The relay's settings refuse a team or key ID without the key,
+            // so none is saved while it isn't set.
+            "iOS registrations are refused until MONOKULO_RELAY_APNS_KEY is set in the environment and monokulo restarts. No team ID or key ID is saved for it yet: set them under Edit settings.",
         ));
     }
     if !relay.fcm_ready {
@@ -281,15 +265,6 @@ fn panel(relay: &RelayView, apns_ids: (&str, &str)) -> Markup {
         .render()
 }
 
-/// A relay setting's value as saved (not as a refused save typed it).
-fn saved_value<'a>(fields: &[&'a AdminScalarFieldView], key: &str) -> &'a str {
-    fields
-        .iter()
-        .find(|field| field.key == key)
-        .map(|field| field.saved_value.as_deref().unwrap_or(&field.value))
-        .unwrap_or_default()
-}
-
 /// The sub-section a relay setting starts, before it.
 fn subheading(key: &str) -> Option<&'static str> {
     match key {
@@ -303,7 +278,7 @@ fn subheading(key: &str) -> Option<&'static str> {
 }
 
 /// A secret of the relay's, from the environment alone: set (dots, never
-/// its value) or not set, with the variable to set. No `name`, so never
+/// its value) or not set (in the warning tone), with the variable to set. No `name`, so never
 /// sent.
 fn secret_field(field: &AdminScalarFieldView, note: &str) -> Markup {
     let control = field_id(field.form_name());
@@ -315,7 +290,8 @@ fn secret_field(field: &AdminScalarFieldView, note: &str) -> Markup {
     }
     let locked = ui::LockedValue::new(if set { "" } else { "Not set" })
         .id(control.clone())
-        .secret(set);
+        .secret(set)
+        .warning(!set);
     let locked = match help.clone() {
         Some(help) => locked.described_by(help),
         None => locked,
@@ -454,7 +430,7 @@ pub(super) fn render(data: &AdminSettingsViewModel, relay_card: &RelayCardView) 
         .render(html! {
             @for field in &enabled { (scalar_field(field)) }
             (chips(&relay_card.relay))
-            (panel(&relay_card.relay, (saved_value(&relay_fields, "apns.team_id"), saved_value(&relay_fields, "apns.key_id"))))
+            (panel(&relay_card.relay))
             @if relay_card.open {
                 @for field in &relay_fields {
                     @if let Some(heading) = subheading(&field.key) { h4 { (heading) } }

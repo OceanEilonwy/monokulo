@@ -76,7 +76,8 @@ component! {
     /// A value the page shows but can't change (set on the command line,
     /// by a connected plugin): a disabled box with a padlock, and no
     /// `name`, so it is never sent with a form. A secret shows as dots,
-    /// never its value.
+    /// never its value. One that needs seeing to ("Not set", where nothing
+    /// works until it is) is in the warning tone, a triangle before it.
     pub struct LockedValue {
         value: String,
         /// For a `label for` to name it.
@@ -86,9 +87,16 @@ component! {
         described_by: Option<String>,
         #[default(false)]
         secret: bool,
+        #[default(false)]
+        warning: bool,
     }
     html {
-        span class="locked-input" {
+        span class="locked-input" data-warning[warning] {
+            @if warning {
+                svg class="locked-warning-icon" viewBox="0 0 24 24" aria-hidden="true" {
+                    path d="m12 3 10 18H2Z M12 9v5M12 17v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" {}
+                }
+            }
             @if secret {
                 input class="mk-input" type="password" value="locked" id=[id] aria-labelledby=[labelled_by]
                     aria-describedby=[described_by] disabled;
@@ -113,6 +121,12 @@ pub(super) fn locked_value_examples() -> Vec<(&'static str, LockedValue)> {
         (
             "A secret",
             LockedValue::new("").id("book-locked-secret").secret(true),
+        ),
+        (
+            "Not set, and needed",
+            LockedValue::new("Not set")
+                .id("book-locked-warning")
+                .warning(true),
         ),
     ]
 }

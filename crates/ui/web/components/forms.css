@@ -31,6 +31,8 @@
 .locked-input { position: relative; display: block; }
 .locked-input > .mk-input { padding-right: 2.4em; background: var(--surface-sunken); color: var(--muted); cursor: not-allowed; opacity: 1; }
 .locked-input .lock-icon { position: absolute; right: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.locked-input[data-warning] > .mk-input { padding-left: 2.3em; border-color: var(--warning); color: var(--ink); font-weight: 600; }
+.locked-input .locked-warning-icon { position: absolute; left: 0.8em; top: 50%; width: 1em; height: 1em; transform: translateY(-50%); color: var(--warning); pointer-events: none; }
 /* A tile that opens a tool (LaunchTile): an icon, a title, a line. */
 .mk-launch-tile { box-sizing: border-box; display: flex; align-items: center; gap: var(--space-md); min-width: 11em; padding: var(--space-md) var(--space-lg); border: 1px solid var(--btn-border); border-radius: var(--radius-sm); background: var(--btn-bg); color: var(--btn-ink); text-decoration: none; }
 a.mk-launch-tile[href]:hover { background: var(--btn-hover-bg); border-color: var(--btn-hover-border); color: var(--btn-ink); }

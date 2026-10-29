@@ -3320,7 +3320,8 @@
     "props": {
       "id": "book-locked",
       "secret": false,
-      "value": "https://pay.example.com"
+      "value": "https://pay.example.com",
+      "warning": false
     },
     "title": "Set elsewhere"
   },
@@ -3330,9 +3331,21 @@
     "props": {
       "id": "book-locked-secret",
       "secret": true,
-      "value": ""
+      "value": "",
+      "warning": false
     },
     "title": "A secret"
+  },
+  {
+    "component": "LockedValue",
+    "html": "<span class=\"locked-input\" data-warning><svg class=\"locked-warning-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"m12 3 10 18H2Z M12 9v5M12 17v1\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"></path></svg><input class=\"mk-input\" type=\"text\" value=\"Not set\" id=\"book-locked-warning\" disabled><svg class=\"lock-icon\" viewBox=\"0 0 16 16\" aria-hidden=\"true\"><path d=\"M5 7V5a3 3 0 0 1 6 0v2\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\"></path><rect x=\"3\" y=\"7\" width=\"10\" height=\"7\" rx=\"1.5\" fill=\"currentColor\"></rect></svg></span>",
+    "props": {
+      "id": "book-locked-warning",
+      "secret": false,
+      "value": "Not set",
+      "warning": true
+    },
+    "title": "Not set, and needed"
   },
   {
     "component": "TextArea",

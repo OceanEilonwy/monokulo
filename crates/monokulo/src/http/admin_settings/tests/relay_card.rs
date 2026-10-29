@@ -217,6 +217,10 @@ async fn every_relay_setting_is_on_the_opened_card_and_saves_into_the_relay_tabl
             .unwrap_or(block.len())];
         assert!(!block.contains("which saving does"), "{secret}: {block}");
     }
+    assert!(
+        !relay.contains("data-warning"),
+        "every secret is set: {relay}"
+    );
     assert!(!opened.contains(&HANDLE_KEY[..8]));
     assert!(!opened.contains("BEGIN PRIVATE KEY"));
 
@@ -463,6 +467,16 @@ async fn turning_the_relay_on_without_what_it_needs_is_refused_on_its_switch() {
         relay.contains("MONOKULO_RELAY_HANDLE_KEY is not set"),
         "{relay}"
     );
+    // Each secret that isn't set (the handle key, the APNs key, the FCM
+    // credentials) says so in the warning tone, with the padlock.
+    let unset = r#"<span class="locked-input" data-warning><svg class="locked-warning-icon""#;
+    assert_eq!(relay.matches(unset).count(), 3, "{relay}");
+    for at in relay.match_indices(unset).map(|(at, _)| at) {
+        let locked = &relay[at..at + relay[at..].find("</span>").unwrap()];
+        assert!(locked.contains(r#"value="Not set""#), "{locked}");
+        assert!(locked.contains(r#"class="lock-icon""#), "{locked}");
+        assert!(!locked.contains("name="), "{locked}");
+    }
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
 
     // With a public address in the same save, the key is still missing.
@@ -581,10 +595,13 @@ async fn a_restart_that_fails_is_shown_on_the_card_and_monokulo_carries_on() {
     let page = follow(&router, &cookie, save).await;
     let toast = toast_text(&page);
     assert!(page.contains(r#"class="toast toast-warning""#), "{toast}");
+    // Plain words, the same in the toast and on the card: no "(os error
+    // 98)", no capital mid-sentence.
+    let fix = format!(
+        "It failed to listen on {listen}: address already in use. Fix it and save again, or restart monokulo."
+    );
     assert!(
-        toast.contains(&format!(
-            "The push relay didn't start: the push relay failed to listen on {listen}:"
-        )),
+        toast.contains(&format!("The push relay isn't running. {fix}")),
         "{toast}"
     );
     let shown = card(&page);
@@ -592,7 +609,12 @@ async fn a_restart_that_fails_is_shown_on_the_card_and_monokulo_carries_on() {
         shown.contains("relay-state-words\">Not running<"),
         "{shown}"
     );
-    assert!(shown.contains("The push relay isn't running."), "{shown}");
+    assert!(
+        shown.contains(&format!(
+            "<strong>The push relay isn't running.</strong> {fix}"
+        )),
+        "{shown}"
+    );
     assert!(!shown.contains("Listening on"), "{shown}");
     assert!(
         std::fs::read_to_string(&path).unwrap().contains(&listen),

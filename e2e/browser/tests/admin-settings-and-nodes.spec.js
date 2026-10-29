@@ -247,8 +247,10 @@ test('the push relay card opens, refuses what it can\'t use and saves its public
   await expect(card.locator('[name="relay:server.listen"]')).toHaveCount(0);
   await captureCoverageStage(page, 'admin-settings-relay-closed', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
 
+  // The link asks for its own address alone, not the form's fields
+  // around it, and keeps the card's anchor.
   await card.getByRole('link', { name: 'Edit settings' }).click();
-  await expect(page).toHaveURL(/relay=edit/);
+  await expect(page).toHaveURL(/\/admin\/settings\?tab=server&relay=edit#card-relay$/);
   await expect(card.getByRole('link', { name: 'Close' })).toBeVisible();
   for (const heading of ['Server', 'Handles and apps', 'Limits, a minute each', 'Apple (APNs)', 'Google (FCM)']) {
     await expect(card.locator('h4', { hasText: heading })).toBeVisible();
@@ -256,6 +258,8 @@ test('the push relay card opens, refuses what it can\'t use and saves its public
   // Secrets come from the environment only: never sent, never shown.
   await expect(card.locator('[name="relay:apns.key"], [name="relay:fcm.credentials"], [name="relay:handles.id_key"]')).toHaveCount(0);
   await expect(card).toContainText('Set MONOKULO_RELAY_FCM_CREDENTIALS in the environment and restart monokulo.');
+  // None is set here: each says Not set in the warning tone.
+  await expect(card.locator('.locked-input[data-warning] .locked-warning-icon')).toHaveCount(3);
   await captureCoverageStage(page, 'admin-settings-relay-open', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
 
   // An app for Android, without the FCM account to reach it: refused on
@@ -276,6 +280,13 @@ test('the push relay card opens, refuses what it can\'t use and saves its public
   await card.locator('input[name="relay:server.public_uri"]').fill('https://relay.example.org');
   await pressSave(page);
   await expectSaved(page);
+  // Saved, the card closes, and the address says so.
+  await expect(card.getByRole('link', { name: 'Edit settings' })).toBeVisible();
+  await expect(page).toHaveURL(/\/admin\/settings\?tab=server#card-relay$/);
+  // Close, as Edit settings, carries no field of the form.
+  await card.getByRole('link', { name: 'Edit settings' }).click();
+  await card.getByRole('link', { name: 'Close' }).click();
+  await expect(page).toHaveURL(/\/admin\/settings\?tab=server#card-relay$/);
   await openSettingsTab(page, 'server');
   await expect(card.locator('.relay-chips')).toContainText('https://relay.example.org');
   await expect(card.locator('[data-relay-panel]')).not.toContainText('public_uri');
