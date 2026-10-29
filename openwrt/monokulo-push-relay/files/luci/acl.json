@@ -1,0 +1,19 @@
+{
+	"luci-app-monokulo-push-relay": {
+		"description": "Grant access to the push relay's settings and secrets",
+		"read": {
+			"ubus": {
+				"monokulo-push-relay": [ "status" ]
+			},
+			"uci": [ "monokulo-push-relay" ]
+		},
+		"write": {
+			"ubus": {
+				"monokulo-push-relay": [ "check", "set_secret", "clear_secret" ],
+				"luci": [ "setInitAction" ],
+				"uci": [ "commit" ]
+			},
+			"uci": [ "monokulo-push-relay" ]
+		}
+	}
+}

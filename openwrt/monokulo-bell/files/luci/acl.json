@@ -1,0 +1,19 @@
+{
+	"luci-app-monokulo-bell": {
+		"description": "Grant access to the Monokular Bell's settings and secrets",
+		"read": {
+			"ubus": {
+				"monokulo-bell": [ "status" ]
+			},
+			"uci": [ "monokulo-bell" ]
+		},
+		"write": {
+			"ubus": {
+				"monokulo-bell": [ "check", "set_secret", "clear_secret" ],
+				"luci": [ "setInitAction" ],
+				"uci": [ "commit" ]
+			},
+			"uci": [ "monokulo-bell" ]
+		}
+	}
+}

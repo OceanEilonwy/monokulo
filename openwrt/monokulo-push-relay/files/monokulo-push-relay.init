@@ -1,0 +1,119 @@
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+# monokulo-push-relay: hands the Web Push monokulo and the Monokular Bell
+# send to a till app on to APNs and FCM. Its settings are in
+# /etc/config/monokulo-push-relay, or LuCI: Services > Push relay; each
+# start writes them into the options file the relay reads, and checks
+# them with the relay's own --check first (service.sh). Its secrets are
+# files in /etc/monokulo-push-relay/secrets/, root's alone, one per
+# variable, passed to it in its environment: it takes secrets from
+# nowhere else.
+
+START=99
+STOP=10
+USE_PROCD=1
+EXTRA_COMMANDS="secrets check"
+EXTRA_HELP="	secrets	Make the handle key if there is none yet (done on install)
+	check	Check the settings and secrets as the next start would take them"
+
+NAME=monokulo-push-relay
+PAGE="Services > Push relay"
+# The handle key is made on install; the APNs key (the AuthKey_<id>.p8
+# file) and the FCM service account (its JSON key file) are set in LuCI,
+# or written into the secrets folder by hand.
+SECRETS="MONOKULO_RELAY_HANDLE_KEY MONOKULO_RELAY_APNS_KEY MONOKULO_RELAY_FCM_CREDENTIALS"
+GENERATED_SECRET=MONOKULO_RELAY_HANDLE_KEY
+GENERATED_WHY="under another key every device's next registration gets a new endpoint."
+# Written again at each start and holding no secret, so kept in memory.
+OPTIONS=/var/etc/monokulo-push-relay/relay.toml
+LISTEN_KEY=server.listen
+DEFAULT_PORT=8444
+DEFAULT_LISTEN=lan
+STORE_KEY=store.path
+STORE_FILE=push-relay.db
+STATUS_LISTEN=127.0.0.1:8446
+
+# The main section's settings: the setting's key, its UCI option and the
+# option's kind. server.listen (port and listen),
+# store.path (data_dir), status.listen and handles.apps (the app
+# sections) are written apart.
+OPTIONS_MAP='
+server.public_uri public_uri value
+server.trusted_proxies trusted_proxy list
+server.upstream_timeout_ms upstream_timeout_ms value
+handles.ttl_days ttl_days value
+handles.unused_ttl_days unused_ttl_days value
+limits.per_sender_per_minute per_sender_per_minute value
+limits.per_handle_per_minute per_handle_per_minute value
+limits.registrations_per_minute registrations_per_minute value
+apns.endpoint apns_endpoint value
+apns.team_id apns_team_id value
+apns.key_id apns_key_id value
+fcm.endpoint fcm_endpoint value
+logging.level log_level value
+logging.format log_format value
+'
+
+. /usr/share/monokulo-push-relay/service.sh
+
+# An app section: handles.apps."<name>", its APNs topic and FCM project.
+render_app() {
+	local section="$1" app apns_topic fcm_project_id
+	config_get app "$section" name
+	[ -n "$app" ] || return 0
+	config_get apns_topic "$section" apns_topic
+	config_get fcm_project_id "$section" fcm_project_id
+	app=$(toml_string "$app") || {
+		echo "an app's name holds a control character" >&2
+		return 1
+	}
+	if [ -z "$apns_topic$fcm_project_id" ]; then
+		# The relay says what an app with neither lacks.
+		echo "handles.apps.$app = {}"
+		return 0
+	fi
+	if [ -n "$apns_topic" ]; then
+		toml_set "handles.apps.$app.apns_topic" "$apns_topic" || return 1
+	fi
+	if [ -n "$fcm_project_id" ]; then
+		toml_set "handles.apps.$app.fcm_project_id" "$fcm_project_id" || return 1
+	fi
+}
+
+render_more() {
+	config_foreach render_app app
+}
+
+# monokulo_relay_on <file>: whether monokulo's options file turns its own
+# push relay on (relay.enabled, the one value directly in [relay]).
+monokulo_relay_on() {
+	[ -f "$1" ] && awk '
+		/^[ \t]*\[/ {
+			table = $0
+			sub(/^[ \t]*\[[ \t]*/, "", table)
+			sub(/[ \t]*\].*$/, "", table)
+			next
+		}
+		table == "relay" && /^[ \t]*enabled[ \t]*=[ \t]*true[ \t]*(#.*)?$/ { on = 1 }
+		END { exit !on }
+	' "$1"
+}
+
+# Not while monokulo on this router runs its own relay: both listen on
+# 8444, and two relays on one router is a mistake whatever the ports.
+blocked() {
+	local enabled data_dir file
+	[ -x /etc/init.d/monokulo ] || return 1
+	enabled=$(uci -q get monokulo.main.enabled)
+	[ "${enabled:-1}" = 1 ] || return 1
+	data_dir=$(uci -q get monokulo.main.data_dir)
+	file="${data_dir:-/srv/monokulo}/monokulo.toml"
+	monokulo_relay_on "$file" || return 1
+	echo "monokulo's own push relay is on (relay.enabled in $file). Both listen on 8444: turn it off on monokulo's admin page (Server > Push relay), or don't run monokulo-push-relay on this router."
+}
+
+service_triggers() {
+	procd_add_reload_trigger "$NAME" monokulo
+	# In "LAN only" mode the listen address follows the LAN interface.
+	procd_add_interface_trigger "interface.*.up" lan "/etc/init.d/$NAME" reload
+}

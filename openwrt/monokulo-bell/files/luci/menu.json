@@ -1,0 +1,14 @@
+{
+	"admin/services/monokulo-bell": {
+		"title": "Bell",
+		"order": 92,
+		"action": {
+			"type": "view",
+			"path": "monokulo-bell"
+		},
+		"depends": {
+			"acl": [ "luci-app-monokulo-bell" ],
+			"uci": { "monokulo-bell": true }
+		}
+	}
+}

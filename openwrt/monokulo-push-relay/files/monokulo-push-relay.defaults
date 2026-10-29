@@ -1,0 +1,17 @@
+#!/bin/sh
+# A traffic rule that lets the internet reach the relay's port, made off:
+# turn it on in Network > Firewall > Traffic Rules once the relay is set up.
+# Behind a TLS proxy on this router, open the proxy's 443 instead.
+[ -f /etc/config/firewall ] || exit 0
+uci -q get firewall.monokulo_push_relay >/dev/null && exit 0
+uci -q batch <<-'UCI'
+	set firewall.monokulo_push_relay=rule
+	set firewall.monokulo_push_relay.name='Allow-monokulo-push-relay'
+	set firewall.monokulo_push_relay.src='wan'
+	set firewall.monokulo_push_relay.proto='tcp'
+	set firewall.monokulo_push_relay.dest_port='8444'
+	set firewall.monokulo_push_relay.target='ACCEPT'
+	set firewall.monokulo_push_relay.enabled='0'
+	commit firewall
+UCI
+exit 0

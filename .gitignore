@@ -23,6 +23,8 @@ engine.db-wal
 # scripts/build-openwrt.sh: the binaries it drops into the package, the
 # packages and repository.
 /openwrt/monokulo/files/monokulo
+/openwrt/monokulo-push-relay/files/monokulo-push-relay
+/openwrt/monokulo-bell/files/monokulo-bell
 /dist/
 
 # JavaScript workspace outputs
