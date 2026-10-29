@@ -364,6 +364,7 @@ mod tests {
         let sampler = Sampler::default();
         sampler.host_threads("hosted-test");
         sampler.sample_at(2_000_000);
+        let before = threads_cpu_ticks("hosted-test").unwrap();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let busy = {
             let stop = stop.clone();
@@ -378,7 +379,19 @@ mod tests {
                 })
                 .unwrap()
         };
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // Wait for one clock tick of the hosted thread's CPU, all a share needs.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let now = threads_cpu_ticks("hosted-test").unwrap();
+            if now > before {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the busy thread used no CPU in 10 s: {before} ticks then {now}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         sampler.sample_at(2_000_010);
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         busy.join().unwrap();
