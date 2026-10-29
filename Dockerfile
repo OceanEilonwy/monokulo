@@ -1,13 +1,14 @@
 # Monokulo for production: one image holding monokulo (`monokulo`, with the
 # engine inside it by default, and a push relay inside it when
-# relay.enabled), the standalone engine (`monokulo-engine`) and the
-# standalone push relay (`monokulo-push-relay`).
+# relay.enabled), the standalone engine (`monokulo-engine`), the
+# standalone push relay (`monokulo-push-relay`) and the Monokular Bell
+# (`monokulo-bell`).
 # `docker build -t monokulo .` builds it; compose.yaml runs it.
 #
-# The default command runs monokulo, the engine inside it; `monokulo-engine`
-# and `monokulo-push-relay` are on the PATH for setups that run them as
-# containers of their own. The SQLite databases go in /var/lib/monokulo, the
-# image's one volume.
+# The default command runs monokulo, the engine inside it; `monokulo-engine`,
+# `monokulo-push-relay` and `monokulo-bell` are on the PATH for setups that
+# run them as containers of their own. The SQLite databases go in
+# /var/lib/monokulo, the image's one volume.
 
 # The base image only supplies rustup: the build installs the latest nightly,
 # as rust-toolchain.toml names it.
@@ -52,8 +53,10 @@ RUN cargo build --release --locked \
         -p engine --bin monokulo-engine \
         -p monokulo --bin monokulo \
         -p push-relay --bin monokulo-push-relay \
+        -p monokulo-bell --bin monokulo-bell \
  && mkdir /out \
- && cp target/release/monokulo-engine target/release/monokulo target/release/monokulo-push-relay /out/
+ && cp target/release/monokulo-engine target/release/monokulo target/release/monokulo-push-relay \
+       target/release/monokulo-bell /out/
 
 FROM debian:${DEBIAN_VERSION}-slim
 # libstdc++: the engine's RandomX is C++.
@@ -70,7 +73,8 @@ EXPOSE 8081
 ENTRYPOINT ["tini", "--"]
 # Listen on every interface inside the container (publish only monokulo's
 # port: the engine's API is for monokulo alone; a push relay, inside or as
-# `monokulo-push-relay`, listens on 8444, to publish when it runs), with
+# `monokulo-push-relay`, listens on 8444, to publish when it runs; the
+# Bell on 8445, behind the https proxy its bell.public_uri names), with
 # the options file and
 # database in the volume. Given as options, these are locked on the admin
 # page; everything else is saved to the options file. compose.yaml runs the
