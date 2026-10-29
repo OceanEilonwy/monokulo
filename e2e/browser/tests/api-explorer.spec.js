@@ -100,6 +100,15 @@ test('an address that is not an absolute http(s) URL is refused, and nothing is 
   await openTry(page, 'order-get', stub.base);
   await page.locator('#try-it-path-order_id').fill('order_1');
   seen.site.length = 0;
+  seen.stub.length = 0;
+  // Every request the page sends past this site's own files, to any host:
+  // a refused address that sent anyway would show here even when nothing
+  // of ours is listening there. A preflight is the browser's, not the
+  // page's, so whether Playwright reports one does not decide the test.
+  const sent = [];
+  page.on('request', r => {
+    if (!r.url().startsWith(`${site.base}/`) && r.method() !== 'OPTIONS') sent.push(`${r.method()} ${r.url()}`);
+  });
   for (const address of ['pay.example.com', '/api', '//evil.example', 'javascript:alert(1)', `${stub.base}/?x=1`, `${stub.base}/#x`, 'https://user:pass@example.com']) {
     await page.locator('#try-it-address').fill(address);
     await page.getByRole('button', { name: 'Check connection' }).click();
@@ -111,9 +120,14 @@ test('an address that is not an absolute http(s) URL is refused, and nothing is 
   await page.locator('#try-it-address').fill('pay.example.com');
   await page.getByRole('button', { name: 'Check connection' }).click();
   expect(await page.locator('#try-it-address').evaluate(input => input.validationMessage)).toContain('https://');
-  await page.waitForTimeout(300);
+  // The one address that is one is checked last: a request a refused
+  // address had sent would have gone ahead of this one.
+  await page.locator('#try-it-address').fill(stub.base);
+  await page.getByRole('button', { name: 'Check connection' }).click();
+  await expect(page.locator('#try-it-state')).toContainText('Found it');
+  expect(sent).toEqual([`GET ${stub.base}/api/v1`]);
+  expect(seen.stub).toEqual([{ url: '/api/v1', authorization: `Bearer ${KEY}`, cookie: undefined }]);
   await expect(page.locator('#try-it-response .api-live')).toHaveCount(0);
-  expect(seen.stub).toEqual([]);
   // Nothing went to this site either (past its own files), the key least
   // of all.
   expect(seen.site.filter(r => r.authorization || !r.url.startsWith('/assets/'))).toEqual([]);
