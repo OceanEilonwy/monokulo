@@ -435,3 +435,8 @@ Numbered from 41.
     pushes table is `.table-stack`, which the shared `.table-cards` rule
     for `views::no_reference` doesn't reach, so the page's own CSS block
     swaps the dash for the words under the phone width.
+55. **The app page's code words carry `.app-code`** (QA round 2, the
+    components lint): `.app-page .mk-item-card-meta code` restyled a ui
+    component from site.css, which `npm run lint:ui` refuses, so the `ak_`
+    prefix and a target's client id get the page's own class and the rule
+    sets only the weight; the global `code` rule already sets the face.

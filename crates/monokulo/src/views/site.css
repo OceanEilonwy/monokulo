@@ -609,7 +609,10 @@ table[data-table="wallets"] .card-unit { display: none; }
 .app-page-meta { margin: 0 0 var(--space-lg); color: var(--muted); }
 .app-page .facts dd .muted { font-weight: 400; }
 .app-page-intro { margin: 0 0 var(--space-md); color: var(--muted); font-size: var(--text-sm); }
-.app-page .mk-item-card-meta code, .app-page [data-facts] code { font-family: var(--font-mono); font-weight: 700; }
+/* The app's code words (the ak_ prefix, a target's client id) carry the
+   page's class: the components lint refuses site.css reaching a ui
+   component's inside, and the global code rule already sets the face. */
+.app-page .app-code { font-weight: 700; }
 [data-facts="push-target"], [data-facts="app"] { margin: 0; }
 .app-test-head { margin: var(--space-lg) 0 var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--line); }
 .app-test-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--space-sm) var(--space-md); align-items: end; }
