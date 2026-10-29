@@ -332,7 +332,7 @@ fn details_card(view: &AppPageView) -> Markup {
                     fact("Platform", if platform.is_empty() { dash() } else { html! { (platform) } }),
                     fact("Key", html! {
                         "An app key of its own "
-                        span class="muted" { "(" code { "ak_" } ", never shown again): it makes orders and follows them, never changes the store" }
+                        span class="muted" { "(" code class="app-code" { "ak_" } ", never shown again): it makes orders and follows them, never changes the store" }
                     }),
                     fact("Connected", html! { (view.clock.time(view.connected_at)) }),
                     fact("Last order", last_order),
@@ -462,7 +462,7 @@ fn target_card(view: &AppPageView, target: &TargetView, first: bool) -> Markup {
             "To " strong { (t.host) }
             @if target.relay { " (the push relay)" }
             " · since " (view.clock.time(t.created_at))
-            " · the app calls it " code { (t.client_id) }
+            " · the app calls it " code class="app-code" { (t.client_id) }
         })
         .body(ui::Facts::new(facts).attr("data-facts", "push-target"))
         .attr("data-push-target", t.kind.as_str())
