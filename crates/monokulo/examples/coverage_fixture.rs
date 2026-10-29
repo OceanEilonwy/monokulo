@@ -1519,7 +1519,24 @@ async fn main() {
                 "Tor is unavailable in browser tests".into(),
             )),
         },
-        engine: monokulo::http::Engine::new(engine_client),
+        // The engine page's stream sends its `machine` event every half
+        // second, not every MACHINE_EVERY (5 s), through the relay's explicit
+        // Timing, so a test waiting for a newer report doesn't idle out the
+        // production interval: that is pinned by http::engine_page's
+        // the_machine_event_comes_at_once_then_at_most_every_few_seconds.
+        engine: monokulo::http::Engine {
+            activity: Arc::new(
+                monokulo::engine_relay::Relay::with_timing(
+                    engine_client.clone(),
+                    monokulo::engine_relay::Timing {
+                        machine_every: std::time::Duration::from_millis(500),
+                        ..monokulo::engine_relay::Timing::DEFAULT
+                    },
+                )
+                .expect("the fixture's relay timing is valid"),
+            ),
+            ..monokulo::http::Engine::new(engine_client)
+        },
         ..AppState::for_tests_with_db(db.into_shared())
     };
     // Stores' webhooks may reach this machine: the test webhooks go to the
