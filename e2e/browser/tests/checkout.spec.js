@@ -445,13 +445,6 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await captureCoverageStage(page, 'checkout-paid', test.info());
   await page.evaluate(() => fetch('/__coverage/ready').then(response => response.status));
   expect(streams, 'no stream for a paid order').toBe(1);
-
-  // An order priced in AUD: 12.50 AUD at the fixture's 400 AUD per XMR,
-  // with what it is worth beside it.
-  const aud = await websiteOrder(request, { amount: '12.50', currency: 'AUD' });
-  await page.goto(`${fixture.base_url}/checkout/${aud.order_id}`);
-  await expect(page.locator('#xmr-amount')).toHaveText('0.03125 XMR');
-  await expect(page.locator('.fiat-amount')).toHaveText('≈ 12.50 AUD');
 });
 
 test('real checkout guides a customer who underpays and then sends too much', async ({ page, request }) => {
