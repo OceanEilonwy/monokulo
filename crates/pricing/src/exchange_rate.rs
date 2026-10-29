@@ -162,11 +162,11 @@ pub(crate) struct RateCache {
 #[derive(Debug, Default)]
 struct RateEntry {
     /// The last price the provider gave, and when it was fetched.
-    rate: Option<(u64, std::time::Instant)>,
+    rate: Option<(u64, tokio::time::Instant)>,
     /// When the provider last answered at all, with a price or without
     /// one. An answer with no price counts: a currency the provider never
     /// quotes costs one request per `max_age`, not one per lookup.
-    answered_at: Option<std::time::Instant>,
+    answered_at: Option<tokio::time::Instant>,
 }
 
 impl RateCache {
@@ -203,7 +203,7 @@ impl RateCache {
         if stale {
             match fetch.await {
                 Ok(fetched) => {
-                    let now = std::time::Instant::now();
+                    let now = tokio::time::Instant::now();
                     entry.answered_at = Some(now);
                     if let Some(rate) = fetched {
                         entry.rate = Some((rate, now));
@@ -351,7 +351,7 @@ pub struct CoingeckoRateProvider {
     /// The full list Coingecko itself reports supporting, plus when it was
     /// last fetched - its own independent cache entry/TTL, refreshed lazily
     /// by `supported_currencies_cached`, never eagerly.
-    supported_currencies: tokio::sync::Mutex<Option<(Vec<String>, std::time::Instant)>>,
+    supported_currencies: tokio::sync::Mutex<Option<(Vec<String>, tokio::time::Instant)>>,
 }
 
 impl CoingeckoRateProvider {
@@ -473,7 +473,7 @@ impl CoingeckoRateProvider {
                 Ok(list) => {
                     let uppercased: Vec<String> =
                         list.into_iter().map(|c| c.to_uppercase()).collect();
-                    *supported_currencies = Some((uppercased, std::time::Instant::now()));
+                    *supported_currencies = Some((uppercased, tokio::time::Instant::now()));
                 }
                 Err(error) if supported_currencies.is_some() => {
                     tracing::warn!(
@@ -514,7 +514,15 @@ pub const MIN_STALE_CEILING: std::time::Duration = std::time::Duration::from_sec
 
 /// Whether data fetched at `fetched_at` is still within the stale ceiling
 /// ([`MAX_STALE_FACTOR`] `max_age`s, at least [`MIN_STALE_CEILING`]).
-pub fn within_stale_ceiling(fetched_at: std::time::Instant, max_age: std::time::Duration) -> bool {
+///
+/// The cache keeps `tokio::time::Instant`s (std's own unless a test has
+/// paused the clock) so tests move time forward rather than subtract from
+/// now, which panics on Windows, where `Instant` counts from boot and
+/// cannot go below it.
+pub fn within_stale_ceiling(
+    fetched_at: tokio::time::Instant,
+    max_age: std::time::Duration,
+) -> bool {
     fetched_at.elapsed() <= (max_age * MAX_STALE_FACTOR).max(MIN_STALE_CEILING)
 }
 
@@ -522,7 +530,7 @@ pub fn within_stale_ceiling(fetched_at: std::time::Instant, max_age: std::time::
 /// ([`MAX_STALE_FACTOR`] `max_age`s, at least [`MIN_STALE_CEILING`]).
 pub fn still_usable(
     rate: u64,
-    fetched_at: std::time::Instant,
+    fetched_at: tokio::time::Instant,
     max_age: std::time::Duration,
     provider: &str,
     currency: &str,
@@ -1350,7 +1358,7 @@ mod tests {
             let seed = |age: std::time::Duration| {
                 let provider = &provider;
                 async move {
-                    let fetched_at = std::time::Instant::now().checked_sub(age).unwrap();
+                    let fetched_at = tokio::time::Instant::now();
                     let entry = provider
                         .rates
                         .entries
@@ -1362,6 +1370,11 @@ mod tests {
                         rate: Some((5, fetched_at)),
                         answered_at: Some(fetched_at),
                     };
+                    // Move the clock past the fetch, then let it run again
+                    // before the lookup so the HTTP client sees real time.
+                    tokio::time::pause();
+                    tokio::time::advance(age).await;
+                    tokio::time::resume();
                 }
             };
             // Stale (older than max_age) but within the ceiling: used.
@@ -1493,14 +1506,12 @@ mod stale_tests {
     use super::*;
 
     /// A rate kept through misses is served until the ceiling, never after.
-    #[test]
-    fn a_rate_older_than_the_stale_ceiling_is_not_served() {
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_older_than_the_stale_ceiling_is_not_served() {
         let max_age = std::time::Duration::from_secs(60);
-        let now = std::time::Instant::now();
-        assert_eq!(still_usable(5, now, max_age, "test", "USD"), Some(5));
-        let old = now
-            .checked_sub(MIN_STALE_CEILING + std::time::Duration::from_secs(1))
-            .unwrap();
-        assert_eq!(still_usable(5, old, max_age, "test", "USD"), None);
+        let fetched = tokio::time::Instant::now();
+        assert_eq!(still_usable(5, fetched, max_age, "test", "USD"), Some(5));
+        tokio::time::advance(MIN_STALE_CEILING + std::time::Duration::from_secs(1)).await;
+        assert_eq!(still_usable(5, fetched, max_age, "test", "USD"), None);
     }
 }
