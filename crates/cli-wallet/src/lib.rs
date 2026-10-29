@@ -1283,6 +1283,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_held_lock_names_its_holder_and_lets_the_caller_choose() {
         use crate::file::{BusyChoice, BusyHandler, LockHolder};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::{Arc, Mutex};
 
         let (path, _) = temp_wallet("busy", "spender");
@@ -1311,15 +1312,32 @@ mod tests {
         );
         assert!(seen[0].contains("spender.db is locked by"), "{}", seen[0]);
 
-        let wait: BusyHandler = Arc::new(|_: &LockHolder| BusyChoice::Wait);
+        // The holder lets go only once the handler has been asked, so the
+        // wait branch runs every time rather than when the lock is slow.
+        let asked = Arc::new(tokio::sync::Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let wait: BusyHandler = {
+            let asked = asked.clone();
+            let calls = calls.clone();
+            Arc::new(move |_: &LockHolder| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                asked.notify_one();
+                BusyChoice::Wait
+            })
+        };
         let release = tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            asked.notified().await;
             drop(held);
         });
         WalletFile::lock_with(&path, &wait)
             .await
             .expect("waiting gets the lock once it's released");
         release.await.unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "waiting asked the handler once, then blocked on the lock"
+        );
     }
 
     #[test]
