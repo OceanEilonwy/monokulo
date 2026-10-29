@@ -234,10 +234,15 @@ upgrade_keeps() {
 }
 
 # removal_stops <package>
+# removal_stops <package>: apk del stops the service and takes what the
+# package installed. The prerm's stop returns while procd is still ending
+# the process, so the stop is waited for, not read straight after.
 removal_stops() {
 	pkg=$1
-	check "$pkg's removal stops it and takes its program, LuCI page and firewall rule" \
-		". /tmp/t.sh; apk del $pkg && ! running $pkg && [ ! -e /usr/bin/$pkg ] && [ ! -e /www/luci-static/resources/view/$pkg.js ] && ! uci -q get firewall.$(echo "$pkg" | tr - _) && ! ubus -S list $pkg"
+	check "$pkg is removed" "apk del $pkg"
+	eventually "$pkg's removal stops it" ". /tmp/t.sh; ! running $pkg"
+	check "$pkg's removal takes its program, LuCI page and firewall rule" \
+		"[ ! -e /usr/bin/$pkg ] && [ ! -e /www/luci-static/resources/view/$pkg.js ] && ! uci -q get firewall.$(echo "$pkg" | tr - _) && ! ubus -S list $pkg"
 	check "$pkg's removal keeps its data and secrets, the operator's" "[ -d /srv/$pkg ] && ls /etc/$pkg/secrets | grep -q ."
 }
 
@@ -311,6 +316,8 @@ upgrade_keeps monokulo-bell public_uri
 
 removal_stops monokulo-push-relay
 removal_stops monokulo-bell
-check "monokulo's removal stops it and takes its program" '. /tmp/t.sh; apk del monokulo && ! running monokulo && [ ! -e /usr/bin/monokulo ] && [ -s /etc/monokulo/secrets ]'
+check "monokulo is removed" 'apk del monokulo'
+eventually "monokulo's removal stops it" '. /tmp/t.sh; ! running monokulo'
+check "monokulo's removal takes its program and keeps its key" '[ ! -e /usr/bin/monokulo ] && [ -s /etc/monokulo/secrets ]'
 
 echo "all $passed checks passed"
