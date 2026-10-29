@@ -10110,71 +10110,101 @@ async fn an_undecryptable_amount_is_neither_recorded_nor_staged() {
 /// turn: it reports the failure, and the next call finishes the job.
 #[tokio::test]
 async fn every_sql_failure_in_reconcile_now_is_recovered_from() {
+    // The story up to the reorg (two ticks, then the node reorgs) is run
+    // once; each fault runs on a copy of it. run_scan_tick builds a fresh
+    // ScanState per call, so the store and the node are the only state to
+    // copy. The custody is shared: it is only read after registration, and
+    // reconcile now never asks it anything.
+    let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+    let store = store.into_shared();
+    let daemon = FakeDaemonClient::new();
+    daemon.push_block("h1", vec![]);
+    daemon.push_block("h2", vec![fixture_tx()]);
+    for _ in 0..2 {
+        run_scan_tick(
+            &store,
+            &key_custody,
+            &daemon,
+            "mainnet",
+            &[(
+                engine_protocol::ids::TenantId::new(tenant_id.clone()),
+                handle,
+            )],
+            20,
+            0,
+        )
+        .await
+        .unwrap();
+    }
+    daemon.reorg_from(2, vec![("x2", vec![]), ("x3", vec![fixture_tx()])]);
+    let order = engine_protocol::ids::OrderId::new(order_id);
     let mut faults = 0;
     for fault in 0.. {
-        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
-        let store = store.into_shared();
-        let daemon = FakeDaemonClient::new();
-        daemon.push_block("h1", vec![]);
-        daemon.push_block("h2", vec![fixture_tx()]);
-        run_scan_tick(
-            &store,
-            &key_custody,
-            &daemon,
-            "mainnet",
-            &[(
-                engine_protocol::ids::TenantId::new(tenant_id.clone()),
-                handle,
-            )],
-            20,
-            0,
-        )
-        .await
-        .unwrap();
-        run_scan_tick(
-            &store,
-            &key_custody,
-            &daemon,
-            "mainnet",
-            &[(
-                engine_protocol::ids::TenantId::new(tenant_id.clone()),
-                handle,
-            )],
-            20,
-            0,
-        )
-        .await
-        .unwrap();
-        daemon.reorg_from(2, vec![("x2", vec![]), ("x3", vec![fixture_tx()])]);
-        let seen = store.lock().fail_nth_access(Some(fault));
-        let first =
-            check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix()).await;
-        store.lock().fail_nth_access(None);
-        if seen.load(Ordering::Relaxed) <= fault {
-            first.unwrap();
+        if !reconcile_a_reorg((&store, &daemon, &order), Some(fault)).await {
             break;
         }
         faults += 1;
-        if first.is_err() {
-            check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix())
-                .await
-                .unwrap();
-        }
-        assert!(
-            store.lock().reorg_job(Network::Mainnet).unwrap().is_none(),
-            "fault {fault}"
-        );
-        assert_eq!(
-            store
-                .lock()
-                .get_all_payments(&engine_protocol::ids::OrderId::new(order_id.clone()))
-                .unwrap()[0]
-                .block_height,
-            Some(3),
-            "fault {fault}"
-        );
     }
     assert!(faults > 5, "reached {faults}");
+    assert!(
+        reconcile_a_reorg((&store, &daemon, &order), None).await,
+        "a copy of the story, run clean, ends as the sweep's runs do"
+    );
+    check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix())
+        .await
+        .unwrap();
+    assert_reconciled(&store, &order, "the story itself, run clean");
+}
+
+/// One run of the reconcile-now sweep on a copy of the story, with a fault
+/// at SQL access `fault` in its first call; false if that call ran fewer
+/// statements than that.
+async fn reconcile_a_reorg(
+    (store, daemon, order): (
+        &crate::store::SharedStore,
+        &FakeDaemonClient,
+        &engine_protocol::ids::OrderId,
+    ),
+    fault: Option<usize>,
+) -> bool {
+    let store = store
+        .lock()
+        .copy_in_memory_for_test()
+        .unwrap()
+        .into_shared();
+    let daemon = daemon.snapshot();
+    let seen = store.lock().fail_nth_access(fault);
+    let first =
+        check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix()).await;
+    store.lock().fail_nth_access(None);
+    if fault.is_some_and(|fault| seen.load(Ordering::Relaxed) <= fault) {
+        first.unwrap();
+        return false;
+    }
+    if first.is_err() {
+        check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, crate::now_unix())
+            .await
+            .unwrap();
+    }
+    assert_reconciled(&store, order, &format!("fault {fault:?}"));
+    true
+}
+
+/// The reorg is finished and the payment moved to the new chain's block 3.
+fn assert_reconciled(
+    store: &crate::store::SharedStore,
+    order: &engine_protocol::ids::OrderId,
+    run: &str,
+) {
+    assert!(
+        store.lock().reorg_job(Network::Mainnet).unwrap().is_none(),
+        "{run}"
+    );
+    assert_eq!(
+        store.lock().get_all_payments(order).unwrap()[0].block_height,
+        Some(3),
+        "{run}"
+    );
 }
 
 /// A node that un-voids the payment (as the reorg path might) while the
