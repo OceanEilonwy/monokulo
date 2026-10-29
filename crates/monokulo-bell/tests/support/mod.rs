@@ -1,7 +1,7 @@
 //! What the Bell's tests share: a Bell built from settings as the process
-//! builds it, called in-process; stand-ins for Square and for a push
-//! service on loopback; webhooks signed as Square signs them; tills with
-//! their keys; and a capture of the log.
+//! builds it, called in-process; stand-ins for Square, Clover and a push
+//! service on loopback; webhooks signed as Square signs them, and as
+//! Clover sends them; tills with their keys; and a capture of the log.
 
 #![allow(dead_code, reason = "each test file uses its own part of this")]
 
@@ -49,6 +49,19 @@ pub const OTHER_LOCATION: &str = "LQH2Z0WDD3MZ8";
 pub const OTHER_MERCHANT: &str = "6SSW7HV8K2ST5";
 pub const OTHER_TOKEN: &str = "EAAAl-merchant-two-access-token-9876543210";
 pub const OTHER_MERCHANTS_LOCATION: &str = "S8GWD5R9QB376";
+
+/// The Clover app the Bell serves, and its Auth Code.
+pub const CLOVER_APP_ID: &str = "MONOKULARBELL";
+pub const CLOVER_AUTH_CODE: &str = "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d";
+/// The merchants the stand-in Clover knows, by their access tokens. A
+/// Clover merchant is its own location.
+pub const CLOVER_MERCHANT: &str = "CLVMERCHANT01";
+pub const CLOVER_TOKEN: &str = "clv-merchant-one-access-token-0123";
+pub const OTHER_CLOVER_MERCHANT: &str = "CLVMERCHANT02";
+pub const OTHER_CLOVER_TOKEN: &str = "clv-merchant-two-access-token-9876";
+/// What the owner's name and email are in the stand-in's answer, which
+/// the Bell reads none of.
+pub const CLOVER_OWNER_EMAIL: &str = "owner.of.the.bean.room@example.com";
 
 /// A request a stand-in received.
 #[derive(Debug)]
@@ -222,6 +235,37 @@ impl Stub {
         .await
     }
 
+    /// Clover, knowing two merchants by their tokens ([`CLOVER_MERCHANT`]
+    /// and [`OTHER_CLOVER_MERCHANT`]): `GET /v3/merchants/{id}` answers the
+    /// token's own merchant, with its owner, and refuses (`401`) another's
+    /// or a token it never gave, as Clover does; any other path is `404`.
+    pub async fn clover() -> Arc<Stub> {
+        Stub::start(|received| {
+            let merchants: HashMap<&str, &str> = HashMap::from([
+                (CLOVER_TOKEN, CLOVER_MERCHANT),
+                (OTHER_CLOVER_TOKEN, OTHER_CLOVER_MERCHANT),
+            ]);
+            let token = received
+                .headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "));
+            let Some(merchant) = received.path.strip_prefix("/v3/merchants/") else {
+                return Answer::status(404).json(json!({"message": "404 Not Found"}));
+            };
+            if token.and_then(|token| merchants.get(token)) != Some(&merchant) {
+                return Answer::status(401).json(json!({"message": "401 Unauthorized"}));
+            }
+            Answer::status(200).json(json!({
+                "href": format!("https://api.clover.com/v3/merchants/{merchant}"),
+                "id": merchant,
+                "name": "The Bean Room",
+                "owner": {"id": "OWNER0000001", "name": "Dana Bean", "email": CLOVER_OWNER_EMAIL},
+            }))
+        })
+        .await
+    }
+
     /// Answers from now on as `answer` says.
     pub fn answer(&self, answer: impl FnMut(&Received) -> Answer + Send + 'static) {
         *self.answers.lock().unwrap_or_else(PoisonError::into_inner) = Box::new(answer);
@@ -288,10 +332,19 @@ pub fn completed_payment() -> String {
     payment_webhook("payment.created", "COMPLETED", MERCHANT, LOCATION)
 }
 
+/// Which points of sale a [`TestBell`] serves, and where each one's API
+/// is.
+#[derive(Clone, Copy, Default)]
+pub struct Points<'a> {
+    pub square: Option<&'a str>,
+    pub clover: Option<&'a str>,
+}
+
 /// A Bell built as the process builds it, from options file `values` over
-/// these: at [`PUBLIC_URI`], for [`APPLICATION_ID`], Square at
-/// `square_url`, private push endpoints allowed (the stand-ins are on
-/// loopback), its database in a directory of its own.
+/// these: at [`PUBLIC_URI`], for [`APPLICATION_ID`] with Square at
+/// `square_url` and, when asked, [`CLOVER_APP_ID`] with Clover, each
+/// point of sale's secret set; private push endpoints allowed (the
+/// stand-ins are on loopback), its database in a directory of its own.
 pub struct TestBell {
     pub bell: Bell,
     pub router: axum::Router,
@@ -299,7 +352,32 @@ pub struct TestBell {
 }
 
 impl TestBell {
+    /// A Bell serving Square alone, at `square_url`.
     pub async fn start(square_url: &str, values: &[(&str, &str)]) -> TestBell {
+        TestBell::start_with(
+            Points {
+                square: Some(square_url),
+                clover: None,
+            },
+            values,
+        )
+        .await
+    }
+
+    /// A Bell serving Clover alone, at `clover_url`.
+    pub async fn clover(clover_url: &str, values: &[(&str, &str)]) -> TestBell {
+        TestBell::start_with(
+            Points {
+                square: None,
+                clover: Some(clover_url),
+            },
+            values,
+        )
+        .await
+    }
+
+    /// A Bell serving the points of sale `points` names.
+    pub async fn start_with(points: Points<'_>, values: &[(&str, &str)]) -> TestBell {
         let dir = std::env::temp_dir().join(format!(
             "monokular-bell-test-{}-{}",
             std::process::id(),
@@ -309,22 +387,34 @@ impl TestBell {
         let mut stored: HashMap<String, String> = [
             ("bell.public_uri", PUBLIC_URI),
             ("bell.store_path", store_path.to_str().unwrap()),
-            ("bell.square.application_id", APPLICATION_ID),
-            ("bell.square.api_url", square_url),
             ("bell.allow_private_endpoints", "true"),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
+        let mut vars = vec![("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX)];
+        if let Some(square_url) = points.square {
+            stored.insert(
+                "bell.square.application_id".to_owned(),
+                APPLICATION_ID.to_owned(),
+            );
+            stored.insert("bell.square.api_url".to_owned(), square_url.to_owned());
+            vars.push(("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", WEBHOOK_KEY));
+        }
+        if let Some(clover_url) = points.clover {
+            stored.insert(
+                "bell.clover.application_id".to_owned(),
+                CLOVER_APP_ID.to_owned(),
+            );
+            stored.insert("bell.clover.api_url".to_owned(), clover_url.to_owned());
+            vars.push(("MONOKULAR_BELL_CLOVER_AUTH_CODE", CLOVER_AUTH_CODE));
+        }
         for (key, value) in values {
             stored.insert((*key).to_owned(), (*value).to_owned());
         }
         // A store of another Bell's, when `values` names one.
         let store_path = PathBuf::from(&stored["bell.store_path"]);
-        let env = live_settings::Env::fixed([
-            ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", WEBHOOK_KEY),
-            ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
-        ]);
+        let env = live_settings::Env::fixed(vars);
         let config = settings::load(stored, env).await.unwrap();
         let bell = Bell::start(&config).await.unwrap();
         TestBell {
@@ -363,6 +453,39 @@ impl TestBell {
     pub async fn register(&self, token: &str, location: &str, till: &Till) -> Answered {
         self.call(registration(token, location, &till.subscription()))
             .await
+    }
+
+    /// Registers `till` at Clover for `merchant` with `token`, and hands
+    /// back the answer.
+    pub async fn register_clover(&self, token: &str, merchant: &str, till: &Till) -> Answered {
+        self.call(registration_at(
+            "clover",
+            token,
+            merchant,
+            &till.subscription(),
+        ))
+        .await
+    }
+
+    /// Registers `till` at Clover, which must be accepted, and hands back
+    /// its id.
+    pub async fn registered_clover(&self, token: &str, merchant: &str, till: &Till) -> String {
+        let answered = self.register_clover(token, merchant, till).await;
+        assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+        answered.json()["registration_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// `body` as Clover sends it, with the Auth Code; then waits for the
+    /// dings it started.
+    pub async fn clover_webhook(&self, body: &str) -> Answered {
+        let answered = self
+            .call(clover_request(body, Some(CLOVER_AUTH_CODE)))
+            .await;
+        self.bell.dings_sent().await;
+        answered
     }
 
     /// Registers `till`, which must be accepted, and hands back its id.
@@ -484,12 +607,24 @@ impl Answered {
     }
 }
 
+/// A Square registration, as a till sends it.
 pub fn registration(token: &str, location: &str, subscription: &Value) -> Request<Body> {
+    registration_at("square", token, location, subscription)
+}
+
+/// A registration at `point_of_sale`, as a till sends it.
+pub fn registration_at(
+    point_of_sale: &str,
+    token: &str,
+    location: &str,
+    subscription: &Value,
+) -> Request<Body> {
     json_request(
         Method::POST,
         "/v1/register",
         json!({
-            "square_access_token": token,
+            "point_of_sale": point_of_sale,
+            "access_token": token,
             "location_id": location,
             "subscription": subscription,
         }),
@@ -527,6 +662,43 @@ pub fn webhook_request(body: &str, signature: Option<&str>) -> Request<Body> {
         request = request.header("x-square-hmacsha256-signature", signature);
     }
     request.body(Body::from(body.to_owned())).unwrap()
+}
+
+/// A `POST /v1/clover/webhook` of `body`, with `auth` as its
+/// `X-Clover-Auth` header when there is one.
+pub fn clover_request(body: &str, auth: Option<&str>) -> Request<Body> {
+    let mut request =
+        Request::post("/v1/clover/webhook").header(header::CONTENT_TYPE, "application/json");
+    if let Some(auth) = auth {
+        request = request.header("x-clover-auth", auth);
+    }
+    request.body(Body::from(body.to_owned())).unwrap()
+}
+
+/// A Clover webhook of [`CLOVER_APP_ID`]'s with one update, `type` of
+/// `object` (`P:<payment>` for a payment) at `merchant`, as Clover sends
+/// it.
+pub fn clover_webhook(merchant: &str, object: &str, kind: &str) -> String {
+    clover_batch(
+        CLOVER_APP_ID,
+        json!({merchant: [clover_update(object, kind)]}),
+    )
+}
+
+/// A Clover webhook of `app_id`'s with `merchants`' updates.
+pub fn clover_batch(app_id: &str, merchants: Value) -> String {
+    json!({"appId": app_id, "merchants": merchants}).to_string()
+}
+
+/// One update of a Clover webhook.
+pub fn clover_update(object: &str, kind: &str) -> Value {
+    json!({"objectId": object, "type": kind, "ts": 1_761_600_000_000_u64})
+}
+
+/// A Clover payment's object id, each call another payment.
+pub fn clover_payment() -> String {
+    static PAYMENTS: AtomicU64 = AtomicU64::new(0);
+    format!("P:CLVPAY{:07}", PAYMENTS.fetch_add(1, Ordering::Relaxed))
 }
 
 /// What a card payment is to Square's webhooks: amounts, the card and the
@@ -603,13 +775,17 @@ pub fn payment_webhook_of(
 /// Every log line this thread writes, at every level, until the guard
 /// drops. One global subscriber sends each line to the buffer of the
 /// thread that wrote it (tests run on a current-thread runtime, so the
-/// Bell's lines are the test's thread's).
+/// Bell's lines are the test's thread's). The lines carry no clock: the
+/// trace tests look for a payment's digits in what the Bell wrote, and a
+/// timestamp's microseconds (`06.424210Z`) held `4242` in two runs of
+/// eighty.
 pub fn capture_log() -> (CaptureGuard, Captured) {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
             .with_max_level(tracing::Level::TRACE)
             .with_ansi(false)
+            .without_time()
             .with_writer(|| ThreadSink)
             .finish();
         let _ = tracing::subscriber::set_global_default(subscriber);

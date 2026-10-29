@@ -1,8 +1,13 @@
 //! Every Bell setting, declared once with monokulo's `live-settings`
 //! library: read from the options file (`bell.toml`, `--options`) and the
-//! `--bell-…` command-line options, which win; the Square webhook key and
-//! the VAPID key from the environment only. Anything invalid stops the
-//! Bell before it listens ([`load`]), every problem named.
+//! `--bell-…` command-line options, which win; the points of sale's
+//! secrets (Square's webhook key, Clover's auth code) and the VAPID key
+//! from the environment only. Anything invalid stops the Bell before it
+//! listens ([`load`]), every problem named.
+//!
+//! A point of sale is on when its table has an `application_id`
+//! (`[bell.square]`, `[bell.clover]`), and its secret must be set then and
+//! only then (decision 51); the Bell serves at least one ([`crate::Bell::start`]).
 //!
 //! The Bell reads its settings once, at start: nothing here reloads.
 
@@ -21,6 +26,8 @@ use live_settings::{
 use push::{Contact, Endpoint, VapidKey};
 use tracing_subscriber::EnvFilter;
 
+use crate::clover::AuthCode;
+use crate::pos::PointOfSale;
 use crate::square::WebhookKey;
 
 settings! {
@@ -34,7 +41,7 @@ settings! {
     PUBLIC_URI: Option<PublicUri> {
         key: "bell.public_uri",
         default: None,
-        description: "The https address Square and the tills reach this Bell at, such as https://bell.example.org. Square's webhook subscription must point at it followed by /v1/square/webhook, exactly: Square signs each webhook for that URL. Required to run the Bell.",
+        description: "The https address the points of sale and the tills reach this Bell at, such as https://bell.example.org. Each point of sale's webhooks go to it followed by /v1/square/webhook or /v1/clover/webhook; Square's subscription must name that URL exactly, as Square signs each webhook for it. Required to run the Bell.",
         example: "https://bell.example.org",
         applies: Restart,
     },
@@ -49,7 +56,7 @@ settings! {
     STORE_PATH: PathBuf {
         key: "bell.store_path",
         default: live_settings::paths::data_file("bell.db").unwrap_or_else(|| PathBuf::from("bell.db")),
-        description: "The Bell's database file, ~/.local/share/monokulo/bell.db unless set (or bell.db in the working directory if that can't be used). It holds the tills' registrations alone: never a webhook, never a Square token.",
+        description: "The Bell's database file, ~/.local/share/monokulo/bell.db unless set (or bell.db in the working directory if that can't be used). It holds the tills' registrations alone: never a webhook, never a point of sale's token.",
         example: "/var/lib/monokular/bell.db",
         applies: Restart,
     },
@@ -57,7 +64,7 @@ settings! {
         key: "bell.timeout_ms",
         default: 10_000,
         check: range(100, 120_000),
-        description: "Milliseconds the Bell waits for Square (checking a registration's location) or a push service (taking a ding) to answer.",
+        description: "Milliseconds the Bell waits for a point of sale (checking a registration's location) or a push service (taking a ding) to answer.",
         example: "10000",
         applies: Restart,
     },
@@ -65,7 +72,7 @@ settings! {
         key: "bell.registrations_per_minute",
         default: 30,
         check: range(1, 1_000_000),
-        description: "Registrations a minute from any one address (IPv6 by its /64). Each costs a request to Square.",
+        description: "Registrations a minute from any one address (IPv6 by its /64). Each costs a request to the till's point of sale.",
         example: "30",
         applies: Restart,
     },
@@ -81,7 +88,7 @@ settings! {
         key: "bell.dings_per_merchant_per_minute",
         default: 120,
         check: range(1, 1_000_000),
-        description: "Dings one merchant's tills are sent a minute, across all its locations: a payment dings each till at its location once. The rest of the minute's dings are dropped, as a ding a minute late is worth nothing and the till's timer asks Square anyway. Every merchant's dings are signed with the Bell's one VAPID key, which a push relay counts as one sender, so keep it well below the relay's per-sender limit (600 a minute by default), or one busy merchant spends the relay's budget for all of them.",
+        description: "Dings one merchant's tills are sent a minute, across all its locations: a payment dings each till at its location once. A merchant is its point of sale and its id: a Square merchant and a Clover merchant have a share each. The rest of the minute's dings are dropped, as a ding a minute late is worth nothing and the till's timer asks its point of sale anyway. Clover's webhooks don't say how a payment was paid, so at a Clover merchant every payment dings. Every merchant's dings are signed with the Bell's one VAPID key, which a push relay counts as one sender, so keep it well below the relay's per-sender limit (600 a minute by default), or one busy merchant spends the relay's budget for all of them.",
         example: "120",
         applies: Restart,
     },
@@ -95,7 +102,7 @@ settings! {
     SQUARE_APPLICATION_ID: Option<ApplicationId> {
         key: "bell.square.application_id",
         default: None,
-        description: "The Square application whose webhooks this Bell receives, and which the tills using it sign in through: sq0idp-… in production, sandbox-sq0idb-… in the sandbox. Required to run the Bell.",
+        description: "The Square application whose webhooks this Bell receives, and which the tills using it sign in through: sq0idp-… in production, sandbox-sq0idb-… in the sandbox. Set, the Bell serves Square tills (and MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set too); unset, it serves none.",
         example: "sq0idp-Monokular0Bell0Example",
         applies: Restart,
     },
@@ -117,10 +124,38 @@ settings! {
         key: "bell.square.webhook_key",
         env: "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
         default: Secret::default(),
-        description: "The signature key of the Square application's webhook subscription, from the Developer Console's Webhooks page: a webhook whose signature it doesn't check is answered 401 and dropped.",
+        description: "The signature key of the Square application's webhook subscription, from the Developer Console's Webhooks page: a webhook whose signature it doesn't check is answered 401 and dropped. Set when, and only when, bell.square.application_id is.",
         applies: Restart,
         sources: [Env],
-        required: true,
+    },
+    CLOVER_APPLICATION_ID: Option<CloverApplicationId> {
+        key: "bell.clover.application_id",
+        default: None,
+        description: "The Clover app whose webhooks this Bell receives, and which the tills using it sign in through: its App ID, 13 letters and digits, from the developer dashboard of the environment below. Set, the Bell serves Clover tills (and MONOKULAR_BELL_CLOVER_AUTH_CODE must be set too); unset, it serves none.",
+        example: "MONOKULARBELL",
+        applies: Restart,
+    },
+    CLOVER_ENVIRONMENT: CloverEnvironment {
+        key: "bell.clover.environment",
+        default: CloverEnvironment::NorthAmerica,
+        description: "Which Clover the app is in: sandbox for testing, or the region its merchants are in (north_america, europe, latin_america). One Bell serves one: each is a developer dashboard and an API of its own. A Clover App ID doesn't say which it is, so the Bell can't check it as it checks Square's.",
+        example: "sandbox",
+        applies: Restart,
+    },
+    CLOVER_API_URL: Option<ServiceUrl> {
+        key: "bell.clover.api_url",
+        default: None,
+        description: "Where Clover's API is, instead of the environment's own (https://api.clover.com in North America, https://api.eu.clover.com, https://api.la.clover.com, or https://apisandbox.dev.clover.com in the sandbox): for a stand-in Clover while developing. https, or http on this machine.",
+        example: "http://127.0.0.1:8740",
+        applies: Restart,
+    },
+    CLOVER_AUTH_CODE: Secret {
+        key: "bell.clover.auth_code",
+        env: "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+        default: Secret::default(),
+        description: "The Clover app's Auth Code, from the developer dashboard's Webhooks page: Clover sends it as the X-Clover-Auth header of every webhook, and one without it is answered 401 and dropped. Set when, and only when, bell.clover.application_id is.",
+        applies: Restart,
+        sources: [Env],
     },
     VAPID_KEY: Secret {
         key: "bell.vapid_key",
@@ -136,7 +171,7 @@ settings! {
         key: "logging.level",
         default: "info".to_owned(),
         check: |level: &String| check_level(level),
-        description: "Which log lines the Bell writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs. No line carries a webhook, a Square token or a push endpoint, at any level.",
+        description: "Which log lines the Bell writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs. No line carries a webhook, a point of sale's token or a push endpoint, at any level; the one exception is Clover's webhook verification code, logged at info for the operator to enter in Clover's dashboard.",
         example: "info,monokular_bell=debug",
         applies: Restart,
     },
@@ -167,11 +202,11 @@ pub async fn load(stored: HashMap<String, String>, env: Env) -> Result<BellConfi
 
 /// The settings the Bell runs on, checked together.
 ///
-/// The address, the Square application and the two keys are `None` only
-/// in the section every setting at its default makes, which the settings
-/// library builds as its fallback: a Bell is never started on it, as
-/// [`load`] refuses the unset keys and [`crate::Bell::start`] the unset
-/// address and application.
+/// The address and the VAPID key are `None` only in the section every
+/// setting at its default makes, which the settings library builds as its
+/// fallback: a Bell is never started on it, as [`load`] refuses the unset
+/// key and [`crate::Bell::start`] the unset address, and a Bell serving no
+/// point of sale.
 #[derive(Clone, PartialEq)]
 pub struct BellConfig {
     pub listen: SocketAddr,
@@ -185,17 +220,52 @@ pub struct BellConfig {
     pub dings_per_merchant_per_minute: u32,
     pub allow_private_endpoints: bool,
     pub square: SquareConfig,
-    pub webhook_key: Option<WebhookKey>,
+    pub clover: CloverConfig,
     pub vapid_key: Option<VapidSecret>,
 }
 
-/// The Square application the Bell serves, and where its API is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The Square application the Bell serves, and where its API is. On when
+/// it has an application, and then it has its webhook key.
+#[derive(Clone, PartialEq)]
 pub struct SquareConfig {
     pub application_id: Option<ApplicationId>,
     pub environment: SquareEnvironment,
     /// The environment's API, or `bell.square.api_url` when set.
     pub api_url: ServiceUrl,
+    pub webhook_key: Option<WebhookKey>,
+}
+
+/// The Clover app the Bell serves, and where its API is. On when it has
+/// an application, and then it has its auth code.
+#[derive(Clone, PartialEq)]
+pub struct CloverConfig {
+    pub application_id: Option<CloverApplicationId>,
+    pub environment: CloverEnvironment,
+    /// The environment's API, or `bell.clover.api_url` when set.
+    pub api_url: ServiceUrl,
+    pub auth_code: Option<AuthCode>,
+}
+
+/// Names the settings, never the key.
+impl fmt::Debug for SquareConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SquareConfig")
+            .field("application_id", &self.application_id)
+            .field("environment", &self.environment)
+            .field("api_url", &self.api_url)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Names the settings, never the code.
+impl fmt::Debug for CloverConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CloverConfig")
+            .field("application_id", &self.application_id)
+            .field("environment", &self.environment)
+            .field("api_url", &self.api_url)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Names the settings, never the keys.
@@ -207,6 +277,7 @@ impl fmt::Debug for BellConfig {
             .field("store_path", &self.store_path)
             .field("timeout", &self.timeout)
             .field("square", &self.square)
+            .field("clover", &self.clover)
             .field(
                 "vapid_public_key",
                 &self.vapid_key.as_ref().map(|key| key.key().public()),
@@ -233,17 +304,22 @@ impl Section for BellConfig {
             &SQUARE_ENVIRONMENT,
             &SQUARE_API_URL,
             &SQUARE_WEBHOOK_KEY,
+            &CLOVER_APPLICATION_ID,
+            &CLOVER_ENVIRONMENT,
+            &CLOVER_API_URL,
+            &CLOVER_AUTH_CODE,
             &VAPID_KEY,
         ]
     }
 
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        let mut errors = Vec::new();
         let environment = snapshot.get(&SQUARE_ENVIRONMENT);
         let application_id = snapshot.get(&SQUARE_APPLICATION_ID);
         if let Some(id) = &application_id
             && id.environment() != environment
         {
-            return Err(vec![FieldError::new(
+            errors.push(FieldError::new(
                 SQUARE_APPLICATION_ID.key,
                 format!(
                     "is a {} application's, but {} is {}: Square sends its webhooks from the application's own environment.",
@@ -251,9 +327,29 @@ impl Section for BellConfig {
                     SQUARE_ENVIRONMENT.key,
                     environment.as_str()
                 ),
-            )]);
+            ));
         }
         let webhook_key = snapshot.get(&SQUARE_WEBHOOK_KEY);
+        errors.extend(secret_matches_application(
+            PointOfSale::Square,
+            &SQUARE_APPLICATION_ID,
+            application_id.is_some(),
+            &SQUARE_WEBHOOK_KEY,
+            &webhook_key,
+        ));
+        let clover_id = snapshot.get(&CLOVER_APPLICATION_ID);
+        let clover_environment = snapshot.get(&CLOVER_ENVIRONMENT);
+        let auth_code = snapshot.get(&CLOVER_AUTH_CODE);
+        errors.extend(secret_matches_application(
+            PointOfSale::Clover,
+            &CLOVER_APPLICATION_ID,
+            clover_id.is_some(),
+            &CLOVER_AUTH_CODE,
+            &auth_code,
+        ));
+        if !errors.is_empty() {
+            return Err(errors);
+        }
         let vapid_key = snapshot.get(&VAPID_KEY);
         Ok(BellConfig {
             listen: snapshot.get(&LISTEN).0,
@@ -273,11 +369,52 @@ impl Section for BellConfig {
                 api_url: snapshot
                     .get(&SQUARE_API_URL)
                     .unwrap_or_else(|| environment.api_url()),
+                webhook_key: (!webhook_key.is_empty()).then(|| WebhookKey::new(webhook_key)),
             },
-            // Both are required, so empty only at their defaults.
-            webhook_key: (!webhook_key.is_empty()).then(|| WebhookKey::new(webhook_key)),
+            clover: CloverConfig {
+                application_id: clover_id,
+                environment: clover_environment,
+                api_url: snapshot
+                    .get(&CLOVER_API_URL)
+                    .unwrap_or_else(|| clover_environment.api_url()),
+                auth_code: (!auth_code.is_empty()).then(|| AuthCode::new(auth_code)),
+            },
+            // Required, so empty only at its default.
             vapid_key: VapidSecret::parse(&vapid_key).ok(),
         })
+    }
+}
+
+/// A point of sale's secret is set when, and only when, its application
+/// is (decision 51): missing, the Bell would refuse every webhook; set for one
+/// that is off, it is most likely a section misnamed, which would
+/// otherwise pass unnoticed.
+fn secret_matches_application<T: live_settings::SettingValue>(
+    pos: PointOfSale,
+    application: &live_settings::Setting<T>,
+    on: bool,
+    secret: &live_settings::Setting<Secret>,
+    value: &Secret,
+) -> Option<FieldError> {
+    let variable = secret.env_var;
+    match (on, value.is_empty()) {
+        (true, true) => Some(FieldError::new(
+            secret.key,
+            format!(
+                "{variable} must be set when {} is: without it every {} webhook is refused.",
+                application.key,
+                pos.title()
+            ),
+        )),
+        (false, false) => Some(FieldError::new(
+            secret.key,
+            format!(
+                "{variable} is set but {} isn't: set the application id to serve {} tills, or unset the variable.",
+                application.key,
+                pos.title()
+            ),
+        )),
+        _ => None,
     }
 }
 
@@ -395,17 +532,17 @@ impl SettingValue for ServiceUrl {
 
 /// The Bell's own address, `bell.public_uri`: a [`ServiceUrl`] with no
 /// query or fragment, kept without a trailing slash. A path is allowed
-/// (a reverse proxy serving the Bell under one), and the webhook URL
-/// Square signs is this followed by [`crate::square::WEBHOOK_PATH`].
+/// (a reverse proxy serving the Bell under one), and each point of sale's
+/// webhook URL is this followed by its [`PointOfSale::webhook_path`].
 #[derive(Clone, PartialEq, Eq)]
 pub struct PublicUri {
     base: String,
 }
 
 impl PublicUri {
-    /// The URL Square sends webhooks to, and signs them for.
-    pub fn notification_url(&self) -> String {
-        format!("{}{}", self.base, crate::square::WEBHOOK_PATH)
+    /// The URL `pos` sends webhooks to (and Square signs them for).
+    pub fn notification_url(&self, pos: PointOfSale) -> String {
+        format!("{}{}", self.base, pos.webhook_path())
     }
 
     /// The `sub` of every VAPID token the Bell signs, how a push service's
@@ -514,6 +651,68 @@ impl SettingValue for ApplicationId {
     }
 }
 
+live_settings::choice_value! {
+    /// Which Clover an app is in: the sandbox, or a region's.
+    pub enum CloverEnvironment {
+        Sandbox = "sandbox",
+        NorthAmerica = "north_america",
+        Europe = "europe",
+        LatinAmerica = "latin_america",
+    }
+}
+
+impl CloverEnvironment {
+    /// The environment's API (the till signs in on its web host, which the
+    /// Bell never visits).
+    pub fn api_url(self) -> ServiceUrl {
+        // Each parses; the tests load each environment.
+        live_settings::parsed_default(match self {
+            CloverEnvironment::Sandbox => "https://apisandbox.dev.clover.com",
+            CloverEnvironment::NorthAmerica => "https://api.clover.com",
+            CloverEnvironment::Europe => "https://api.eu.clover.com",
+            CloverEnvironment::LatinAmerica => "https://api.la.clover.com",
+        })
+    }
+}
+
+/// A Clover app's ID: the App ID the developer dashboard shows, 13 letters
+/// and digits; taken as 1 to 64 letters, digits, `-` and `_`, as Square's
+/// ids are. Public: the tills sign in with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloverApplicationId(String);
+
+impl CloverApplicationId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl SettingValue for CloverApplicationId {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let raw = raw.trim();
+        let fits = (1..=64).contains(&raw.len())
+            && raw
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+        if fits {
+            Ok(CloverApplicationId(raw.to_owned()))
+        } else {
+            Err(
+                "Enter the App ID Clover's developer dashboard shows: 13 letters and digits."
+                    .to_owned(),
+            )
+        }
+    }
+
+    fn render(&self) -> String {
+        self.0.clone()
+    }
+
+    fn kind() -> SettingKind {
+        SettingKind::Text
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -535,13 +734,43 @@ pub(crate) mod tests {
         load(stored, Env::fixed(vars.iter().copied())).await
     }
 
-    const SECRETS: &[(&str, &str)] = &[
+    /// The VAPID key alone: what a Bell needs whichever point of sale it
+    /// serves.
+    const SECRETS: &[(&str, &str)] = &[("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX)];
+
+    /// The VAPID key and Square's webhook key: for a Square Bell.
+    const SQUARE_SECRETS: &[(&str, &str)] = &[
         (
             "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
             "Ibxx_5AKakO-3qeNVR61Dw",
         ),
         ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
     ];
+
+    /// The VAPID key and Clover's auth code: for a Clover Bell.
+    const CLOVER_SECRETS: &[(&str, &str)] = &[
+        (
+            "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+            "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d",
+        ),
+        ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+    ];
+
+    /// Both points of sale's secrets and the VAPID key.
+    const BOTH_SECRETS: &[(&str, &str)] = &[
+        (
+            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
+            "Ibxx_5AKakO-3qeNVR61Dw",
+        ),
+        (
+            "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+            "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d",
+        ),
+        ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+    ];
+
+    const SQUARE_ON: (&str, &str) = ("bell.square.application_id", "sq0idp-Test");
+    const CLOVER_ON: (&str, &str) = ("bell.clover.application_id", "MONOKULARBELL");
 
     #[tokio::test]
     async fn the_defaults_load_with_the_secrets() {
@@ -564,7 +793,15 @@ pub(crate) mod tests {
             config.square.api_url.as_url().as_str(),
             "https://connect.squareup.com/"
         );
-        assert!(config.webhook_key.is_some());
+        assert_eq!(config.square.application_id, None);
+        assert!(config.square.webhook_key.is_none());
+        assert_eq!(config.clover.application_id, None);
+        assert_eq!(config.clover.environment, CloverEnvironment::NorthAmerica);
+        assert_eq!(
+            config.clover.api_url.as_url().as_str(),
+            "https://api.clover.com/"
+        );
+        assert!(config.clover.auth_code.is_none());
         assert!(
             config.store_path.ends_with("bell.db"),
             "{:?}",
@@ -593,10 +830,11 @@ pub(crate) mod tests {
                 ("bell.square.environment", "sandbox"),
                 ("bell.square.application_id", "sandbox-sq0idb-Test"),
             ],
-            SECRETS,
+            SQUARE_SECRETS,
         )
         .await
         .unwrap();
+        assert!(sandbox.square.webhook_key.is_some());
         assert_eq!(
             sandbox.square.api_url.join("/v2/locations/L1"),
             "https://connect.squareupsandbox.com/v2/locations/L1"
@@ -636,20 +874,35 @@ pub(crate) mod tests {
         const ZERO_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
         let not_hex = format!("{}zz", &VAPID_HEX[2..]);
         let cases: &[Case] = &[
-            (&[], &[], "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set"),
+            (
+                &[SQUARE_ON],
+                SECRETS,
+                "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set when bell.square.application_id is",
+            ),
+            (
+                &[CLOVER_ON],
+                SECRETS,
+                "MONOKULAR_BELL_CLOVER_AUTH_CODE must be set when bell.clover.application_id is",
+            ),
+            (
+                &[SQUARE_ON],
+                BOTH_SECRETS,
+                "MONOKULAR_BELL_CLOVER_AUTH_CODE is set but bell.clover.application_id isn't",
+            ),
+            (
+                &[CLOVER_ON],
+                BOTH_SECRETS,
+                "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY is set but bell.square.application_id isn't",
+            ),
             (&[], &[], "MONOKULAR_BELL_VAPID_KEY must be set"),
             (
                 &[],
-                &[
-                    ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", "k"),
-                    ("MONOKULAR_BELL_VAPID_KEY", "abc"),
-                ],
+                &[("MONOKULAR_BELL_VAPID_KEY", "abc")],
                 "MONOKULAR_BELL_VAPID_KEY",
             ),
             (
                 &[],
                 &[
-                    ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", "k"),
                     // The curve's order: not a private key.
                     (
                         "MONOKULAR_BELL_VAPID_KEY",
@@ -700,7 +953,7 @@ pub(crate) mod tests {
             ),
             // Set, but to nothing: as unset.
             (
-                &[],
+                &[SQUARE_ON],
                 &[
                     ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", ""),
                     ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
@@ -708,17 +961,41 @@ pub(crate) mod tests {
                 "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
             ),
             (
-                &[],
+                &[CLOVER_ON],
                 &[
-                    ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", "k"),
-                    ("MONOKULAR_BELL_VAPID_KEY", ""),
+                    ("MONOKULAR_BELL_CLOVER_AUTH_CODE", ""),
+                    ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
                 ],
+                "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+            ),
+            (
+                &[("bell.clover.environment", "mars")],
+                SECRETS,
+                "north_america",
+            ),
+            (
+                &[("bell.clover.api_url", "http://example.org")],
+                SECRETS,
+                "bell.clover.api_url",
+            ),
+            (
+                &[("bell.clover.application_id", "MONO KULAR")],
+                SECRETS,
+                "bell.clover.application_id",
+            ),
+            (
+                &[("bell.clover.application_id", "MONOKULAR/BELL")],
+                SECRETS,
+                "bell.clover.application_id",
+            ),
+            (
+                &[],
+                &[("MONOKULAR_BELL_VAPID_KEY", "")],
                 "MONOKULAR_BELL_VAPID_KEY",
             ),
             (
                 &[],
                 &[
-                    ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", "k"),
                     // Zero is no private key.
                     ("MONOKULAR_BELL_VAPID_KEY", ZERO_KEY),
                 ],
@@ -727,7 +1004,6 @@ pub(crate) mod tests {
             (
                 &[],
                 &[
-                    ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", "k"),
                     // 64 characters, not all hex.
                     ("MONOKULAR_BELL_VAPID_KEY", not_hex.as_str()),
                 ],
@@ -764,6 +1040,96 @@ pub(crate) mod tests {
         }
     }
 
+    /// Clover alone, and both, load; Clover's API follows its environment
+    /// unless set.
+    #[tokio::test]
+    async fn clover_alone_or_beside_square_loads() {
+        let clover = load_with(&[CLOVER_ON], CLOVER_SECRETS).await.unwrap();
+        assert_eq!(
+            clover
+                .clover
+                .application_id
+                .as_ref()
+                .map(CloverApplicationId::as_str),
+            Some("MONOKULARBELL")
+        );
+        assert!(clover.clover.auth_code.is_some());
+        assert_eq!(clover.square.application_id, None);
+        let both = load_with(&[SQUARE_ON, CLOVER_ON], BOTH_SECRETS)
+            .await
+            .unwrap();
+        assert!(both.square.webhook_key.is_some() && both.clover.auth_code.is_some());
+        for (environment, api) in [
+            (
+                "sandbox",
+                "https://apisandbox.dev.clover.com/v3/merchants/M1",
+            ),
+            ("north_america", "https://api.clover.com/v3/merchants/M1"),
+            ("europe", "https://api.eu.clover.com/v3/merchants/M1"),
+            ("latin_america", "https://api.la.clover.com/v3/merchants/M1"),
+        ] {
+            let config = load_with(
+                &[CLOVER_ON, ("bell.clover.environment", environment)],
+                CLOVER_SECRETS,
+            )
+            .await
+            .unwrap();
+            assert_eq!(config.clover.environment.as_str(), environment);
+            assert_eq!(config.clover.api_url.join("/v3/merchants/M1"), api);
+        }
+        let local = load_with(
+            &[
+                CLOVER_ON,
+                ("bell.clover.environment", "sandbox"),
+                ("bell.clover.api_url", "http://127.0.0.1:8740"),
+            ],
+            CLOVER_SECRETS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            local.clover.api_url.join("/v3/merchants/M1"),
+            "http://127.0.0.1:8740/v3/merchants/M1"
+        );
+    }
+
+    /// Every problem is named at once: a Square application without its
+    /// key and a Clover code without its application.
+    #[tokio::test]
+    async fn every_point_of_sale_problem_is_named_at_once() {
+        let error = load_with(
+            &[SQUARE_ON],
+            &[
+                ("MONOKULAR_BELL_CLOVER_AUTH_CODE", "c"),
+                ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+            ],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set"),
+            "{error}"
+        );
+        assert!(
+            error.contains("MONOKULAR_BELL_CLOVER_AUTH_CODE is set"),
+            "{error}"
+        );
+    }
+
+    /// The secrets never show in the settings' `Debug`.
+    #[tokio::test]
+    async fn the_settings_debug_names_no_secret() {
+        let config = load_with(&[SQUARE_ON, CLOVER_ON], BOTH_SECRETS)
+            .await
+            .unwrap();
+        let debug = format!("{config:?}");
+        for (_, secret) in BOTH_SECRETS {
+            assert!(!debug.contains(secret), "{debug}");
+        }
+        assert!(debug.contains("MONOKULARBELL"), "{debug}");
+    }
+
     /// The address is kept without a trailing slash, so the webhook URL is
     /// the same however it was written; a path stays.
     #[test]
@@ -787,7 +1153,7 @@ pub(crate) mod tests {
             ),
         ] {
             let uri = PublicUri::parse(raw).unwrap();
-            assert_eq!(uri.notification_url(), url, "{raw}");
+            assert_eq!(uri.notification_url(PointOfSale::Square), url, "{raw}");
             assert_eq!(PublicUri::parse(&uri.render()), Ok(uri));
         }
         assert_eq!(
