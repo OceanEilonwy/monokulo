@@ -1,5 +1,6 @@
 #!/bin/sh /etc/rc.common
-# shellcheck disable=SC2034
+# shellcheck shell=ash
+# shellcheck disable=SC2034,SC3043
 # monokulo-push-relay: hands the Web Push monokulo and the Monokular Bell
 # send to a till app on to APNs and FCM. Its settings are in
 # /etc/config/monokulo-push-relay, or LuCI: Services > Push relay; each

@@ -131,8 +131,8 @@ luci_login() {
 		commit rpcd
 	EOF
 	eventually "LuCI's JSON-RPC answers $pkg's status under its page's ACL" ". /tmp/t.sh; rpc $pkg status | jsonfilter -e '@.secrets' >/dev/null"
-	check "$pkg's page's ACL grants nothing beyond it (not procd's service list, which holds the secrets)" \
-		". /tmp/t.sh; denied $pkg service list && denied $pkg file read"
+	check "$pkg's page's ACL grants nothing beyond it (not procd's service list, which holds the secrets, nor LuCI's setInitAction, which takes any service)" \
+		". /tmp/t.sh; denied $pkg service list && denied $pkg file read && denied $pkg luci setInitAction"
 }
 
 # --- monokulo, as before: install, start, upgrade, removal --------------------
@@ -143,6 +143,10 @@ check "rpcd serves monokulo's ubus object" 'ubus -S list monokulo'
 luci_login monokulo
 check "LuCI's status of monokulo has it running and its build, and no secret" \
 	'. /tmp/t.sh; s=$(rpc monokulo status); [ "$(echo "$s" | jsonfilter -e @.running)" = true ] && echo "$s" | jsonfilter -e @.running_build.version | grep -q -- -r && ! echo "$s" | grep -q "$(sed -n "s/^MONOKULO_ENCRYPTION_KEY=//p" /etc/monokulo/secrets)" && ! rpc monokulo check | grep -q ok'
+check "LuCI restarts monokulo through its backend" \
+	'. /tmp/t.sh; pid monokulo >/tmp/monokulo.pid; [ "$(rpc monokulo restart | jsonfilter -e @.result)" = true ]'
+eventually "monokulo runs again after LuCI's restart, a new process" \
+	'. /tmp/t.sh; running monokulo && [ "$(pid monokulo)" != "$(cat /tmp/monokulo.pid)" ]'
 check "monokulo's encryption key was made, root's alone" '[ "$(ls -ln /etc/monokulo/secrets | cut -c1-10)" = "-rw-------" ] && grep -q "^MONOKULO_ENCRYPTION_KEY=[0-9a-f]\{64\}$" /etc/monokulo/secrets'
 x 'uci set monokulo.main.engine_nice=12; uci commit monokulo; sha256sum /etc/monokulo/secrets >/tmp/monokulo.sum'
 check "monokulo's upgrade keeps its settings and its key" 'apk fix --reinstall monokulo && [ "$(uci get monokulo.main.engine_nice)" = 12 ] && sha256sum -c /tmp/monokulo.sum'
@@ -173,7 +177,7 @@ service_basics() {
 service_runs() {
 	pkg=$1 options=$2 status=$3 listen=$4
 	check "LuCI's check of $pkg passes" ". /tmp/t.sh; [ \"\$(rpc $pkg check | jsonfilter -e '@.ok')\" = true ]"
-	check "$pkg starts" "/etc/init.d/$pkg restart"
+	check "LuCI starts $pkg through its backend" ". /tmp/t.sh; [ \"\$(rpc $pkg restart | jsonfilter -e '@.result')\" = true ]"
 	eventually "$pkg runs, as its own user" \
 		". /tmp/t.sh; running $pkg && [ \"\$(awk '/^Uid:/ { print \$2 }' /proc/\$(pid $pkg)/status)\" = \"\$(id -u $pkg)\" ]"
 	check "$pkg's options file holds the UCI settings" "grep -qx 'status.listen = \"127.0.0.1:$status\"' $options"
@@ -195,10 +199,28 @@ refuses_bad_value() {
 		". /tmp/t.sh; r=\$(rpc $pkg check); [ \"\$(echo \"\$r\" | jsonfilter -e '@.ok')\" = false ] && echo \"\$r\" | jsonfilter -e '@.output' | grep -q '$says'"
 	check "a reload with $option=$bad leaves $pkg running on its earlier settings" \
 		". /tmp/t.sh; /etc/init.d/$pkg reload; sleep 2; running $pkg && [ \"\$(pid $pkg)\" = \"\$(cat /tmp/$pkg.pid)\" ] && grep -q '$says' /tmp/$pkg.check"
-	check "a restart with $option=$bad doesn't start $pkg, and LuCI says why" \
-		". /tmp/t.sh; /etc/init.d/$pkg restart; sleep 1; ! running $pkg && rpc $pkg status | jsonfilter -e '@.check_error' | grep -q '$says'"
+	check "a restart with $option=$bad doesn't start $pkg, and LuCI says why, without the file the init script wrote" \
+		". /tmp/t.sh; /etc/init.d/$pkg restart; sleep 1; ! running $pkg && e=\$(rpc $pkg status | jsonfilter -e '@.check_error') && echo \"\$e\" | grep -q '$says' && ! echo \"\$e\" | grep -q '\\.toml\\|/tmp/\\|line [0-9]'"
 	x "if [ -s /tmp/$pkg.good ]; then uci set $pkg.main.$option=\"\$(cat /tmp/$pkg.good)\"; else uci delete $pkg.main.$option; fi; uci commit $pkg; /etc/init.d/$pkg restart"
 	eventually "$pkg runs again with $option restored, and the refusal is gone" \
+		". /tmp/t.sh; running $pkg && [ ! -e /tmp/$pkg.check ]"
+}
+
+# refuses_data_dir <package>: a data folder in memory, or one holding
+# another's files, is refused with its reason for LuCI: a reload keeps
+# the service on its earlier settings, a restart doesn't start it.
+refuses_data_dir() {
+	pkg=$1
+	x ". /tmp/t.sh; pid $pkg >/tmp/$pkg.pid; uci set $pkg.main.data_dir=/tmp/$pkg-data; uci commit $pkg"
+	check "a reload with its data folder in memory leaves $pkg running on its earlier settings, and LuCI says why" \
+		". /tmp/t.sh; /etc/init.d/$pkg reload; sleep 2; running $pkg && [ \"\$(pid $pkg)\" = \"\$(cat /tmp/$pkg.pid)\" ] && rpc $pkg status | jsonfilter -e '@.check_error' | grep -q 'in memory'"
+	check "a restart with its data folder in memory doesn't start $pkg, and LuCI says why" \
+		". /tmp/t.sh; /etc/init.d/$pkg restart; sleep 1; ! running $pkg && rpc $pkg status | jsonfilter -e '@.check_error' | grep -q 'in memory'"
+	x "mkdir -p /root/$pkg-other && touch /root/$pkg-other/theirs && uci set $pkg.main.data_dir=/root/$pkg-other && uci commit $pkg"
+	check "a restart with a data folder holding another's files doesn't start $pkg nor take the folder, and LuCI says why" \
+		". /tmp/t.sh; /etc/init.d/$pkg restart; sleep 1; ! running $pkg && [ \"\$(ls -ldn /root/$pkg-other | awk '{ print \$3 }')\" = 0 ] && rpc $pkg status | jsonfilter -e '@.check_error' | grep -q 'holds other files'"
+	x "rm -r /root/$pkg-other; uci set $pkg.main.data_dir=/srv/$pkg; uci commit $pkg; /etc/init.d/$pkg restart"
+	eventually "$pkg runs again in its own data folder, and the refusal is gone" \
 		". /tmp/t.sh; running $pkg && [ ! -e /tmp/$pkg.check ]"
 }
 
@@ -248,6 +270,7 @@ check "the relay's status says APNs is ready, for its app" \
 refuses_bad_value monokulo-push-relay public_uri 'http://relay.example.org' https
 # A value TOML would choke on reaches the relay as written: its own error.
 refuses_bad_value monokulo-push-relay log_level 'info,"x\y' logging.level
+refuses_data_dir monokulo-push-relay
 upgrade_keeps monokulo-push-relay public_uri
 
 # The relay refuses to run beside monokulo's own (relay.enabled).
@@ -278,6 +301,7 @@ check "the Bell's options file holds the UCI settings, Square's in its table" \
 check "the Bell's status says Square is on and Clover off" \
 	"s=\$(uclient-fetch -q -O - http://127.0.0.1:8447/status); [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.square')\" = ready ] && [ \"\$(echo \"\$s\" | jsonfilter -e '@.points_of_sale.clover')\" = off ]"
 refuses_bad_value monokulo-bell timeout_ms 50 bell.timeout_ms
+refuses_data_dir monokulo-bell
 check "LuCI clears a secret" \
 	". /tmp/t.sh; [ \"\$(rpc monokulo-bell clear_secret '{\"name\":\"MONOKULO_BELL_SQUARE_WEBHOOK_KEY\"}' | jsonfilter -e '@.ok')\" = true ] && [ ! -e /etc/monokulo-bell/secrets/MONOKULO_BELL_SQUARE_WEBHOOK_KEY ] && [ \"\$(rpc monokulo-bell check | jsonfilter -e '@.ok')\" = false ]"
 x '. /tmp/t.sh; rpc monokulo-bell set_secret "{\"name\":\"MONOKULO_BELL_SQUARE_WEBHOOK_KEY\",\"value\":\"a-signature-key\"}" >/dev/null'

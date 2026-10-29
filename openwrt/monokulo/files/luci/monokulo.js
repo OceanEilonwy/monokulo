@@ -19,10 +19,11 @@ var callStatus = rpc.declare({
 	expect: { '': {} }
 });
 
-var callInitAction = rpc.declare({
-	object: 'luci',
-	method: 'setInitAction',
-	params: [ 'name', 'action' ],
+// Its own restart, through its backend: the page's ACL grants that, not
+// LuCI's setInitAction, which takes any service.
+var callRestart = rpc.declare({
+	object: 'monokulo',
+	method: 'restart',
 	expect: { result: false }
 });
 
@@ -112,7 +113,7 @@ return view.extend({
 		o.inputtitle = _('Restart monokulo');
 		o.inputstyle = 'reload';
 		o.onclick = function() {
-			return callInitAction('monokulo', 'restart').then(function(ok) {
+			return callRestart().then(function(ok) {
 				if (!ok)
 					throw new Error(_('the restart was refused'));
 				window.location.reload();

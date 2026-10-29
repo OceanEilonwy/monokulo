@@ -24,9 +24,10 @@
 # succeeds, or fails).
 #
 # A bad setting never stops a running service: a reload (a save in LuCI,
-# `uci commit`) that fails --check leaves it running on its last good
-# options file, and the reason is in /tmp/<package>.check for LuCI to
-# show. A start or restart that fails --check doesn't start it.
+# `uci commit`) that fails --check, or finds the data folder refused,
+# leaves it running on its last good options file. A start or restart
+# that is refused doesn't start it. Either way the reason is in
+# /tmp/<package>.check for LuCI to show.
 
 BIN=/usr/bin/$NAME
 RUN_AS=$NAME
@@ -124,21 +125,22 @@ with_secrets() {
 }
 
 # Use the data folder only if it is the service's own: new, empty, or
-# already owned by its user. Never take over some other directory.
+# already owned by its user. Never take over some other directory. A
+# refusal says why on stdout.
 prepare_data_dir() {
 	local dir="$1"
 	case "$dir" in
-	/tmp/* | /var/*) log "the data folder $dir is in memory and would be lost on reboot; choose one on storage"; return 1 ;;
+	/tmp/* | /var/*) echo "the data folder $dir is in memory and would be lost on reboot: choose one on storage in $PAGE"; return 1 ;;
 	/*) ;;
-	*) log "the data folder must be an absolute path, not '$dir'"; return 1 ;;
+	*) echo "the data folder must be an absolute path, not '$dir'"; return 1 ;;
 	esac
 	[ -e "$dir" ] || mkdir -p "$dir" || return 1
 	if [ ! -d "$dir" ]; then
-		log "the data folder $dir is not a folder"
+		echo "the data folder $dir is not a folder: choose another in $PAGE"
 		return 1
 	fi
 	if [ "$(ls -ldn "$dir" | awk '{ print $3 }')" != "$(id -u "$RUN_AS")" ] && [ -n "$(ls -A "$dir")" ]; then
-		log "not using $dir: it holds other files and isn't $NAME's own folder; choose a new or empty folder in $PAGE"
+		echo "not using the data folder $dir: it holds other files and isn't $NAME's own; choose a new or empty folder in $PAGE"
 		return 1
 	fi
 	chown -R "$RUN_AS:$RUN_AS" "$dir"
@@ -179,9 +181,15 @@ render_options() {
 	} >"$1"
 }
 
-# check_options <file>: the binary's --check on that file, with the secrets.
+# check_options <file>: the binary's --check on that file, with the
+# secrets, its words without the file's name and lines: the file is one
+# this script writes, never the operator's, whose settings are UCI's.
 check_options() {
-	with_secrets "$BIN" --options "$1" --check 2>&1
+	local output ok=0 file
+	output=$(with_secrets "$BIN" --options "$1" --check 2>&1) || ok=1
+	file=$(printf '%s' "$1" | sed 's/[][\\.*^$/]/\\&/g')
+	printf '%s\n' "$output" | sed -E "s/$file: (line [0-9]+: )?//g; s/; line [0-9]+: /; /g"
+	return $ok
 }
 
 # check: what the next start would refuse, in the binary's own words (or
@@ -208,7 +216,7 @@ check() {
 
 # refuse <why>: logged, and kept for LuCI.
 refuse() {
-	log "not started: $1"
+	log "$1"
 	printf '%s\n' "$1" >"$CHECK_FILE"
 }
 
@@ -219,9 +227,14 @@ running_now() {
 		jsonfilter -q -e "@['$NAME'].instances.*.running" | grep -q true
 }
 
+# start_service: the options file and the instance, unless something
+# refuses them; then the reason, for LuCI (refuse), and the service kept
+# on its last good options file if a reload finds it running.
 start_service() {
-	local enabled listen data_dir output secret keep_running=0
+	local enabled listen data_dir refused ok=0 waiting=0 secret keep_running=0
 
+	# Each start says afresh what refuses or blocks it.
+	rm -f "$CHECK_FILE" "$BLOCKED_FILE"
 	config_load "$NAME"
 	config_get_bool enabled main enabled 1
 	[ "$enabled" = 1 ] || return 0
@@ -232,29 +245,35 @@ start_service() {
 	# are refused; a start (a restart's included) doesn't start it.
 	[ "${RELOADING:-0}" = 1 ] && running_now && keep_running=1
 
-	rm -f "$BLOCKED_FILE"
-	if output=$(blocked); then
-		refuse "$output"
-		echo "$output" >"$BLOCKED_FILE"
+	if refused=$(blocked); then
+		refuse "$refused"
+		echo "$refused" >"$BLOCKED_FILE"
 		return 1
 	fi
 	if [ "$listen" = lan ] && ! listen_addr lan >/dev/null; then
-		log "the lan interface has no address yet; waiting for it"
-		return 0
-	fi
-	secrets || return 1
-	prepare_data_dir "$data_dir" || return 1
-
-	mkdir -p "${OPTIONS%/*}"
-	if output=$(render_options "$OPTIONS.new" 2>&1) && output=$(check_options "$OPTIONS.new"); then
+		# Not a refusal: the LAN's interface trigger starts it.
+		waiting=1
+		refused="waiting for the lan interface's address: it starts once the LAN is up"
+	elif ! refused=$(secrets 2>&1); then
+		refused="couldn't keep its secrets in $SECRETS_DIR: $refused"
+	elif ! refused=$(prepare_data_dir "$data_dir" 2>&1); then
+		:
+	elif ! mkdir -p "${OPTIONS%/*}" ||
+		! refused=$(render_options "$OPTIONS.new" 2>&1) ||
+		! refused=$(check_options "$OPTIONS.new"); then
+		:
+	else
 		chmod 644 "$OPTIONS.new"
 		mv "$OPTIONS.new" "$OPTIONS"
-		rm -f "$CHECK_FILE"
-	else
+		ok=1
+	fi
+	if [ "$ok" = 0 ]; then
 		rm -f "$OPTIONS.new"
-		refuse "$output"
+		refuse "${refused:-it was not started: logread -e $NAME says why}"
 		if [ "$keep_running" = 1 ] && [ -s "$OPTIONS" ]; then
 			log "keeps running on its last good settings"
+		elif [ "$waiting" = 1 ]; then
+			return 0
 		else
 			return 1
 		fi

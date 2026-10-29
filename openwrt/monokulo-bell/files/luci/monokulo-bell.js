@@ -20,12 +20,10 @@ var callCheck = rpc.declare({ object: NAME, method: 'check', expect: { '': {} } 
 var callSetSecret = rpc.declare({ object: NAME, method: 'set_secret', params: [ 'name', 'value' ], expect: { '': {} } });
 var callClearSecret = rpc.declare({ object: NAME, method: 'clear_secret', params: [ 'name' ], expect: { '': {} } });
 var callUciCommit = rpc.declare({ object: 'uci', method: 'commit', params: [ 'config' ] });
-var callInitAction = rpc.declare({
-	object: 'luci',
-	method: 'setInitAction',
-	params: [ 'name', 'action' ],
-	expect: { result: false }
-});
+// Its own init script's actions, through its backend: the page's ACL
+// grants these, not LuCI's setInitAction, which takes any service.
+var callRestart = rpc.declare({ object: NAME, method: 'restart', expect: { result: false } });
+var callReload = rpc.declare({ object: NAME, method: 'reload', expect: { result: false } });
 
 // Each secret, by its variable. The VAPID key is made on install and never
 // set here.
@@ -78,7 +76,7 @@ function checkThenReload() {
 			], 'danger');
 			return false;
 		}
-		return callInitAction(NAME, 'reload').then(function() {
+		return callReload().then(function() {
 			window.setTimeout(function() { window.location.reload(); }, 1500);
 			return true;
 		});
@@ -174,7 +172,7 @@ return view.extend({
 			else if (st.check_error)
 				nodes.push(E('p', {}, st.running
 					? _('It runs on its earlier settings: it refused the ones saved last.')
-					: _('It refused its settings:')),
+					: _('It didn’t start:')),
 					E('pre', {}, [ text(st.check_error) ]));
 			else if (!st.running && uci.get(NAME, 'main', 'enabled') === '0')
 				nodes.push(' · ' + _('turned off below'));
@@ -258,7 +256,7 @@ return view.extend({
 		o.inputtitle = _('Restart the Bell');
 		o.inputstyle = 'reload';
 		o.onclick = function() {
-			return callInitAction(NAME, 'restart').then(function() {
+			return callRestart().then(function() {
 				window.location.reload();
 			}).catch(function(e) {
 				showError(_('Couldn’t restart the Bell'), e);
