@@ -50,8 +50,9 @@ use crate::db::UserRow;
 use crate::views;
 use crate::views::admin::{
     Access, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Failure, Group,
-    NodeRowView, NodeStatusView, Notice, OptionsFileView, SaveOutcome, SettingKindView,
-    SettingOwner, SettingSourceView, SettingsTab, Toast, ToastKind,
+    NodeRowView, NodeStatusView, Notice, OptionsFileView, RelayAppField, RelayAppRow,
+    RelayCardView, SaveOutcome, SettingKindView, SettingOwner, SettingSourceView, SettingsTab,
+    Toast, ToastKind,
 };
 
 use super::fx::FxRequest;
@@ -92,9 +93,13 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
         .options_file()
         .filter(|file| !file.writable)
         .map(|file| read_only_file(&file, "monokulo"));
+    // Without a relay to run, its switch has no place on the page: it can
+    // only stop the next start.
+    let no_relay = state.relay.registry().is_none();
     registry
         .describe()
         .into_iter()
+        .filter(|view| !(no_relay && view.key == crate::settings::RELAY_ENABLED.key))
         .map(|view| {
             // Given at start, or in a file monokulo can't write: shown,
             // with a padlock and the reason, never saved here.
@@ -124,6 +129,57 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 pending_restart: view.pending_restart,
                 problem,
                 saved_value: None,
+                // The relay's switch applies as a save restarts the relay.
+                applies_with_relay: view.key == crate::settings::RELAY_ENABLED.key,
+                env_var: view.env_var.to_string(),
+            }
+        })
+        .collect()
+}
+
+/// The name a relay setting's control is sent under: `relay:<key>`, its
+/// key being the relay's own (`server.listen`, which monokulo has a
+/// `server.bind` beside).
+fn relay_form_name(key: &str) -> String {
+    format!("relay:{key}")
+}
+
+/// Every setting of the push relay inside monokulo, from its registry's
+/// description of them, named as the card shows them ("relay server
+/// listen"); none without a relay. Each applies when the relay restarts,
+/// which saving does, so none waits for monokulo's restart.
+fn relay_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
+    let Some(registry) = state.relay.registry() else {
+        return Vec::new();
+    };
+    let read_only = registry
+        .options_file()
+        .filter(|file| !file.writable)
+        .map(|file| read_only_file(&file, "monokulo"));
+    registry
+        .describe()
+        .into_iter()
+        .map(|view| {
+            let locked = view
+                .locked
+                .or_else(|| read_only.clone().filter(|_| view.sources.toml));
+            let kind = SettingKindView::from(view.kind);
+            AdminScalarFieldView {
+                access: Access::of(locked, &kind, false),
+                key: view.key.to_string(),
+                name: relay_form_name(view.key),
+                label: humanize_key(&format!("{}.{}", crate::settings::RELAY_TABLE, view.key)),
+                value: view.value,
+                source: live_source(view.source),
+                help: Some(view.description.to_string()),
+                kind,
+                example: view.example.map(str::to_string),
+                restart_only: false,
+                pending_restart: false,
+                problem: view.problem.map(|p| p.message),
+                saved_value: None,
+                applies_with_relay: true,
+                env_var: view.env_var.to_string(),
             }
         })
         .collect()
@@ -255,6 +311,8 @@ async fn fetch_engine_settings(
                 pending_restart: s.pending_restart,
                 problem: s.problem,
                 saved_value: None,
+                applies_with_relay: false,
+                env_var: String::new(),
             }
         })
         .collect();
@@ -343,6 +401,12 @@ struct SaveResult {
     /// A refusal's word on particular settings, by form name (an engine
     /// setting monokulo also has is `engine:<key>`), beside each.
     field_errors: Vec<(String, String)>,
+    /// The Push relay card opened: a refused save of it, or a button of
+    /// its app rows.
+    relay_open: bool,
+    /// The relay's app rows as sent (and changed by a row's button), to
+    /// show again unsaved.
+    relay_apps: Option<Vec<RelayAppRow>>,
 }
 
 /// A refused save's node rows, as sent, each matched to the saved node at
@@ -417,6 +481,8 @@ async fn build_view_model(
         posted,
         nodes,
         field_errors,
+        relay_open,
+        relay_apps,
     } = result;
     let clock = views::time::Clock::for_user(admin);
     // By form name: monokulo and the engine both have `logging.level`.
@@ -435,6 +501,12 @@ async fn build_view_model(
         show_posted(field, &posted);
     }
     with_time_limits(&mut monokulo_fields, &clock);
+    let mut relay_fields = relay_fields(state);
+    for field in &mut relay_fields {
+        problem(field);
+        show_posted(field, &posted);
+    }
+    let relay = relay_card(state, &clock, relay_open, relay_apps, &field_errors).await;
     let options_files = state
         .settings
         .registry
@@ -456,6 +528,8 @@ async fn build_view_model(
         monokulo_fields,
         options_files,
         tor,
+        relay_fields,
+        relay,
         ..Default::default()
     };
     match fetch_engine_settings(&state.engine.client).await {
@@ -520,6 +594,68 @@ async fn build_view_model(
         view.unreachable_networks = unreachable_networks(unserved);
     }
     view
+}
+
+/// The Push relay card, when monokulo has a relay: its state from the
+/// relay's handle, opened or not, its app rows as saved or as `sent`, each
+/// with what a refusal said of it.
+async fn relay_card(
+    state: &AppState,
+    clock: &views::time::Clock,
+    open: bool,
+    sent: Option<Vec<RelayAppRow>>,
+    field_errors: &[(String, String)],
+) -> Option<RelayCardView> {
+    let relay = state.relay.view().await?;
+    let saved = state.relay.saved_apps();
+    let apps = match sent {
+        Some(sent) => rows_shown_again_apps(sent, &saved),
+        None => saved.clone(),
+    };
+    let since = match &relay.state {
+        crate::relay::RelayState::Running { since, .. }
+        | crate::relay::RelayState::Failed { since, .. } => Some(clock.relative(*since)),
+        crate::relay::RelayState::Off => None,
+    };
+    // A refusal of `handles.apps` as a whole (an app's iOS bundle ID
+    // without the APNs key) opens the card too.
+    let apps_refused = field_errors
+        .iter()
+        .any(|(name, _)| *name == relay_form_name(views::admin::RELAY_APPS_KEY));
+    Some(RelayCardView {
+        relay,
+        open: open || apps_refused,
+        saved_apps: saved.len(),
+        apps,
+        since,
+    })
+}
+
+/// App rows as sent, each matched with the saved app of its name (each
+/// once), so the page's script counts only what changed and Discard knows
+/// what was saved.
+fn rows_shown_again_apps(sent: Vec<RelayAppRow>, saved: &[RelayAppRow]) -> Vec<RelayAppRow> {
+    let mut taken = vec![false; saved.len()];
+    sent.into_iter()
+        .map(|mut row| {
+            let at = saved
+                .iter()
+                .enumerate()
+                .position(|(i, s)| !taken[i] && !row.name.is_empty() && s.name == row.name.trim());
+            if let Some(at) = at {
+                taken[at] = true;
+                let mut was = saved[at].clone();
+                was.errors.clear();
+                row.is_saved = true;
+                if (&was.name, &was.apns_topic, &was.fcm_project_id)
+                    != (&row.name, &row.apns_topic, &row.fcm_project_id)
+                {
+                    row.saved = Some(Box::new(was));
+                }
+            }
+            row
+        })
+        .collect()
 }
 
 /// Networks stores use that no node answers for, from the engine's
@@ -589,6 +725,8 @@ pub struct SettingsPageQuery {
     /// The flash a save without JavaScript left for the page it redirected
     /// to ([`FLASHES`]).
     saved: Option<String>,
+    /// `edit` opens the Push relay card (its Edit settings link).
+    relay: Option<String>,
 }
 
 /// `GET /admin/settings?tab=<id>` - one tab of the page
@@ -601,7 +739,7 @@ pub async fn page(
     Query(query): Query<SettingsPageQuery>,
 ) -> Response {
     let tab = SettingsTab::from_id(query.tab.as_deref());
-    let result = match query.saved.as_deref().and_then(take_flash) {
+    let mut result = match query.saved.as_deref().and_then(take_flash) {
         Some(flash) => flash.result,
         None => SaveResult {
             notices: query
@@ -613,6 +751,7 @@ pub async fn page(
             ..Default::default()
         },
     };
+    result.relay_open |= tab == SettingsTab::Server && query.relay.as_deref() == Some("edit");
     let view = build_view_model(&state, &admin_user, tab, result).await;
     if fx.0 {
         return axum::response::Html(views::admin::settings_fragment(&view, true).into_string())
@@ -683,17 +822,75 @@ struct SubmittedTab {
     /// The networks whose rows have something to fix: refused before
     /// anything is asked.
     bad_networks: Vec<monero::Network>,
+    /// The push relay's part, by its own keys (`relay:<key>` sent), its
+    /// app rows folded into `handles.apps`.
+    relay: HashMap<String, String>,
+    /// The relay's app rows as sent, when they were.
+    relay_apps: Option<Vec<RelayAppRow>>,
+    /// What the rows' problems are, by row, when they don't make apps.
+    relay_app_errors: Vec<(usize, RelayAppField, String)>,
+}
+
+/// The relay's app rows on a form (`relay_app_<n>_<part>`), in the order
+/// of their numbers; `None` when they weren't on it.
+fn relay_app_rows(form: &HashMap<String, String>) -> Option<Vec<RelayAppRow>> {
+    form.get(views::admin::RELAY_APPS_SENT)?;
+    let mut at: Vec<usize> = form
+        .keys()
+        .filter_map(|name| name.strip_prefix("relay_app_"))
+        .filter_map(|rest| rest.split_once('_'))
+        .filter_map(|(n, _)| n.parse().ok())
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    Some(
+        at.into_iter()
+            .map(|n| {
+                let part = |field| {
+                    form.get(&views::admin::relay_app_field_name(n, field))
+                        .map(|value| value.trim().to_string())
+                        .unwrap_or_default()
+                };
+                RelayAppRow {
+                    name: part(RelayAppField::Name),
+                    apns_topic: part(RelayAppField::ApnsTopic),
+                    fcm_project_id: part(RelayAppField::FcmProjectId),
+                    ..RelayAppRow::default()
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Whether `name` is one of the relay app rows' fields (not a setting).
+fn is_relay_app_field(name: &str) -> bool {
+    name == views::admin::RELAY_APPS_SENT
+        || name == views::admin::RELAY_APP_ACTION
+        || name.starts_with("relay_app_")
 }
 
 fn split_tab(
     form: &HashMap<String, String>,
     monokulo_fields: &[AdminScalarFieldView],
     engine_fields: &[AdminScalarFieldView],
+    relay_fields: &[AdminScalarFieldView],
 ) -> SubmittedTab {
     let mut tab = SubmittedTab::default();
     let editable = |f: &&AdminScalarFieldView| f.access == Access::Editable;
     for (name, value) in form {
-        if name == "tab" || admin_nodes::is_node_field(name) {
+        if name == "tab" || admin_nodes::is_node_field(name) || is_relay_app_field(name) {
+            continue;
+        }
+        if let Some(key) = name.strip_prefix("relay:") {
+            tab.relay.insert(key.to_string(), value.clone());
+            if relay_fields
+                .iter()
+                .find(|f| f.key == key)
+                .filter(editable)
+                .is_some()
+            {
+                tab.posted.insert(name.clone(), value.clone());
+            }
             continue;
         }
         // A secret setting's Remove box goes with it.
@@ -733,6 +930,16 @@ fn split_tab(
             }
         }
         tab.nodes = Some(nodes);
+    }
+    if let Some(rows) = relay_app_rows(form) {
+        match crate::relay::apps_setting(&rows) {
+            Ok(apps) => {
+                tab.relay
+                    .insert(views::admin::RELAY_APPS_KEY.to_string(), apps);
+            }
+            Err(errors) => tab.relay_app_errors = errors,
+        }
+        tab.relay_apps = Some(rows);
     }
     tab
 }
@@ -1061,6 +1268,109 @@ async fn check_snp_entry_against_engine(
     })
 }
 
+/// The relay's part of a tab as its registry takes it.
+fn relay_changes(form: &HashMap<String, String>) -> live_settings::Changes {
+    form.iter()
+        .map(|(key, value)| (key.clone(), Some(value.clone())))
+        .collect()
+}
+
+/// Checks the push relay's part of a tab through its registry, as its
+/// save would save it, saving nothing; and, when the relay would be on
+/// after the save (`enabled`), that it could start: its public address
+/// (as the save leaves it) and its handle key. A refused setting is named
+/// on the Push relay card.
+fn check_relay_startable(
+    state: &AppState,
+    relay: &HashMap<String, String>,
+    enabled: bool,
+) -> Result<(), Vec<(SettingOwner, Refusal)>> {
+    if !enabled || state.relay.registry().is_none() {
+        return Ok(());
+    }
+    let missing = state.relay.missing(
+        relay
+            .get(crate::relay::Missing::PublicUri.key())
+            .map(String::as_str),
+    );
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut refusals = Vec::new();
+    let why: Vec<&str> = missing.iter().map(|m| m.sentence()).collect();
+    let message = format!("is on, but the relay can't start: {}", why.join(" "));
+    refusals.push((
+        SettingOwner::Monokulo,
+        Refusal {
+            fields: vec![live_settings::FieldError::new(
+                crate::settings::RELAY_ENABLED.key,
+                message.clone(),
+            )],
+            message,
+        },
+    ));
+    if missing.contains(&crate::relay::Missing::PublicUri) {
+        let message =
+            "must be set while relay.enabled is on: it is the address every endpoint the relay hands out is under.".to_string();
+        refusals.push((
+            SettingOwner::Relay,
+            Refusal {
+                fields: vec![live_settings::FieldError::new(
+                    crate::relay::Missing::PublicUri.key(),
+                    message.clone(),
+                )],
+                message,
+            },
+        ));
+    }
+    Err(refusals)
+}
+
+/// Checks the relay's part of a tab through its registry: what a save
+/// would change, or why it would be refused.
+async fn check_relay(
+    state: &AppState,
+    relay: &HashMap<String, String>,
+) -> Result<live_settings::CheckReport, Refusal> {
+    if relay.is_empty() {
+        return Ok(live_settings::CheckReport::default());
+    }
+    let Some(registry) = state.relay.registry() else {
+        return Err(Refusal::new(
+            "Nothing was saved: this monokulo has no push relay.".to_string(),
+        ));
+    };
+    registry
+        .check(relay_changes(relay))
+        .await
+        .map_err(registry_refusal)
+}
+
+/// Saves the relay's part of a tab through its registry, after its check,
+/// into the `[relay.*]` tables of monokulo's options file.
+async fn commit_relay(state: &AppState, relay: &HashMap<String, String>) -> Result<(), Refusal> {
+    let Some(registry) = state.relay.registry() else {
+        return Err(Refusal::new(
+            "Nothing was saved: this monokulo has no push relay.".to_string(),
+        ));
+    };
+    match registry.save(relay_changes(relay)).await {
+        Ok(_) => Ok(()),
+        Err(e) => Err(registry_refusal(e)),
+    }
+}
+
+/// What restarting the relay after a save or a reload leaves to say: a
+/// failed start waits to be fixed (amber, like a restart to do), the rest
+/// is a remark.
+fn restart_note(restarted: &crate::relay::Restarted) -> Option<SaveNote> {
+    let sentence = restarted.sentence()?;
+    Some(match restarted {
+        crate::relay::Restarted::Failed(_) => SaveNote::Restart(sentence),
+        _ => SaveNote::Remark(sentence),
+    })
+}
+
 #[derive(serde::Serialize, Default)]
 struct RemoteUpdateRequest {
     scalars: HashMap<String, String>,
@@ -1307,6 +1617,9 @@ struct TabSave {
     posted: HashMap<String, String>,
     nodes: Option<NodeForm>,
     field_errors: Vec<(String, String)>,
+    /// The relay's app rows as sent, shown again when the save was
+    /// refused.
+    relay_apps: Option<Vec<RelayAppRow>>,
 }
 
 /// One process's refusal, as failures on the cards holding the settings it
@@ -1328,9 +1641,16 @@ fn failures_of(
     for field in refusal.fields {
         let group = Group::of(&field.key, owner);
         // Named, so the card and the toast say which setting; a network's
-        // card is the network.
-        let said = match group {
-            Group::Network(_) => field.message.clone(),
+        // card is the network. A relay setting by its key in monokulo's
+        // file (`relay.server.listen`).
+        let said = match (group, owner) {
+            (Group::Network(_), _) => field.message.clone(),
+            (_, SettingOwner::Relay) => format!(
+                "{}.{}: {}",
+                crate::settings::RELAY_TABLE,
+                field.key,
+                field.message
+            ),
             _ => format!("{}: {}", field.key, field.message),
         };
         match failures.iter_mut().find(|f| f.group == Some(group)) {
@@ -1347,6 +1667,7 @@ fn failures_of(
             SettingOwner::Engine if is_monokulo_key(&field.key) => {
                 format!("engine:{}", field.key)
             }
+            SettingOwner::Relay => relay_form_name(&field.key),
             _ => field.key,
         };
         field_errors.push((name, field.message));
@@ -1366,20 +1687,24 @@ fn groups_of<'a>(keys: impl IntoIterator<Item = &'a str>, owner: SettingOwner) -
 }
 
 /// Saves a tab, all of it or nothing (the save bar). The whole tab goes to
-/// both checks at once, monokulo's registry's and the engine's, which say
-/// what changed or why it would be refused; anything refused, by either,
-/// and nothing is saved, and every card a refusal names shows it. With
-/// every check passed, the engine's part is saved first, then monokulo's:
-/// the engine's is the likelier to fail now, and when it does nothing has
-/// been saved yet. Monokulo's can still be refused after its check passed
-/// (its options file changed on disk), which leaves the engine's saved and
-/// says so. Nothing changed, and nothing is sent to be saved. `at` is when,
-/// in the admin's clock, for the cards saved.
+/// every check at once, monokulo's registry's, the push relay's and the
+/// engine's, which say what changed or why it would be refused; anything
+/// refused, by any, and nothing is saved, and every card a refusal names
+/// shows it. With every check passed, the engine's part is saved first,
+/// then the relay's, then monokulo's: the engine's is the likelier to fail
+/// now, and when it does nothing has been saved yet. Monokulo's (or the
+/// relay's) can still be refused after its check passed (the options file
+/// changed on disk), which leaves what was saved before it saved and says
+/// so. Nothing changed, and nothing is sent to be saved. Once saved, a
+/// change to the relay's settings or its switch restarts the relay, which
+/// is how they apply. `at` is when, in the admin's clock, for the cards
+/// saved.
 async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) -> TabSave {
     let monokulo_fields = monokulo_fields(state);
+    let relay_fields = relay_fields(state);
     let engine = fetch_engine_settings(&state.engine.client).await.ok();
     let engine_fields = engine.as_ref().map(|e| e.fields.as_slice()).unwrap_or(&[]);
-    let tab = split_tab(form, &monokulo_fields, engine_fields);
+    let tab = split_tab(form, &monokulo_fields, engine_fields, &relay_fields);
     let mut failures: Vec<Failure> = tab
         .bad_networks
         .iter()
@@ -1389,7 +1714,25 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
         })
         .collect();
     let mut field_errors = Vec::new();
-    let (monokulo_check, engine_check) = futures_util::future::join(
+    if !tab.relay_app_errors.is_empty() {
+        failures.push(Failure {
+            group: Some(Group::Relay),
+            message: "Some apps need fixing (marked below).".to_string(),
+        });
+        field_errors.push((
+            relay_form_name(views::admin::RELAY_APPS_KEY),
+            "Some apps need fixing.".to_string(),
+        ));
+    }
+    let relay_apps = tab.relay_apps.clone().map(|mut rows| {
+        for (at, field, message) in &tab.relay_app_errors {
+            if let Some(row) = rows.get_mut(*at) {
+                row.errors.push((*field, message.clone()));
+            }
+        }
+        rows
+    });
+    let (monokulo_check, engine_check, relay_check) = futures_util::future::join3(
         check_monokulo(
             state,
             &tab.monokulo,
@@ -1399,6 +1742,7 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
                 .map(String::as_str),
         ),
         check_engine(state, &tab.engine),
+        check_relay(state, &tab.relay),
     )
     .await;
     let monokulo_changed = match monokulo_check {
@@ -1414,6 +1758,39 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
                 &mut field_errors,
             );
             Vec::new()
+        }
+    };
+    // Whether the relay would be on once saved: the switch as sent, or as
+    // it is.
+    let enabled_key = crate::settings::RELAY_ENABLED.key;
+    let switch_changed = monokulo_changed.contains(&Group::Relay)
+        && tab
+            .monokulo
+            .get(enabled_key)
+            .is_some_and(|sent| *sent != state.settings.relay.load().enabled.to_string());
+    let relay_changed = match relay_check {
+        Ok(report) => {
+            if let Err(refusals) = check_relay_startable(
+                state,
+                &tab.relay,
+                tab.monokulo
+                    .get(enabled_key)
+                    .map_or(state.settings.relay.load().enabled, |sent| sent == "true"),
+            ) {
+                for (owner, refusal) in refusals {
+                    failures_of(owner, refusal, &mut failures, &mut field_errors);
+                }
+            }
+            report.has_changes()
+        }
+        Err(refusal) => {
+            failures_of(
+                SettingOwner::Relay,
+                refusal,
+                &mut failures,
+                &mut field_errors,
+            );
+            false
         }
     };
     let engine_changed = match engine_check {
@@ -1433,6 +1810,7 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
     };
     let changed: Vec<Group> = engine_changed
         .iter()
+        .chain(relay_changed.then_some(&Group::Relay))
         .chain(&monokulo_changed)
         .copied()
         .fold(Vec::new(), |mut all, group| {
@@ -1441,16 +1819,24 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
             }
             all
         });
-    let refused = |failures: Vec<Failure>, posted, nodes, field_errors, notes| TabSave {
-        outcome: SaveOutcome::Refused { failures },
-        notes,
-        posted,
-        nodes,
-        field_errors,
-    };
+    let refused =
+        |failures: Vec<Failure>, posted, nodes, field_errors, notes, relay_apps| TabSave {
+            outcome: SaveOutcome::Refused { failures },
+            notes,
+            posted,
+            nodes,
+            field_errors,
+            relay_apps,
+        };
     if !failures.is_empty() {
-        let nodes = tab.nodes;
-        return refused(failures, tab.posted, nodes, field_errors, Vec::new());
+        return refused(
+            failures,
+            tab.posted,
+            tab.nodes,
+            field_errors,
+            Vec::new(),
+            relay_apps,
+        );
     }
     if changed.is_empty() {
         return TabSave {
@@ -1459,12 +1845,18 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
             posted: HashMap::new(),
             nodes: None,
             field_errors,
+            relay_apps: None,
         };
     }
     let mut notes = Vec::new();
+    // What was saved so far, should a later part be refused.
+    let mut saved: Vec<Group> = Vec::new();
     if !engine_changed.is_empty() {
         match commit_engine(state, tab.engine).await {
-            Ok(said) => notes.extend(said),
+            Ok(said) => {
+                notes.extend(said);
+                saved.extend(&engine_changed);
+            }
             Err(refusal) => {
                 failures_of(
                     SettingOwner::Engine,
@@ -1472,43 +1864,79 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
                     &mut failures,
                     &mut field_errors,
                 );
-                let nodes = tab.nodes;
-                return refused(failures, tab.posted, nodes, field_errors, notes);
+                return refused(
+                    failures,
+                    tab.posted,
+                    tab.nodes,
+                    field_errors,
+                    notes,
+                    relay_apps,
+                );
             }
         }
     }
+    // Only what isn't saved yet is shown again to fix.
+    let unsaved = |posted: HashMap<String, String>, keep: &dyn Fn(&str) -> bool| {
+        posted
+            .into_iter()
+            .filter(|(name, _)| keep(name))
+            .collect::<HashMap<_, _>>()
+    };
+    let partly = |saved: Vec<Group>, failures, notes, posted, field_errors, relay_apps| TabSave {
+        outcome: SaveOutcome::PartlySaved {
+            saved,
+            at: at.clone(),
+            failures,
+        },
+        notes,
+        posted,
+        nodes: None,
+        field_errors,
+        relay_apps,
+    };
+    if relay_changed {
+        if let Err(refusal) = commit_relay(state, &tab.relay).await {
+            failures_of(
+                SettingOwner::Relay,
+                refusal,
+                &mut failures,
+                &mut field_errors,
+            );
+            let posted = unsaved(tab.posted, &|name| {
+                name.starts_with("relay:") || tab.monokulo.contains_key(name)
+            });
+            if saved.is_empty() {
+                return refused(failures, posted, None, field_errors, notes, relay_apps);
+            }
+            return partly(saved, failures, notes, posted, field_errors, relay_apps);
+        }
+        saved.push(Group::Relay);
+    }
+    let mut monokulo_refused = None;
     if !monokulo_changed.is_empty() {
         match commit_monokulo(state, &tab.monokulo).await {
             Ok(said) => notes.extend(said),
-            Err(refusal) => {
-                failures_of(
-                    SettingOwner::Monokulo,
-                    refusal,
-                    &mut failures,
-                    &mut field_errors,
-                );
-                // Only monokulo's typed values are still unsaved.
-                let posted = tab
-                    .posted
-                    .into_iter()
-                    .filter(|(name, _)| tab.monokulo.contains_key(name))
-                    .collect();
-                if engine_changed.is_empty() {
-                    return refused(failures, posted, None, field_errors, notes);
-                }
-                return TabSave {
-                    outcome: SaveOutcome::PartlySaved {
-                        saved: engine_changed,
-                        at,
-                        failures,
-                    },
-                    notes,
-                    posted,
-                    nodes: None,
-                    field_errors,
-                };
-            }
+            Err(refusal) => monokulo_refused = Some(refusal),
         }
+    }
+    // The relay applies what was saved by starting again, whatever else
+    // was refused after it.
+    if relay_changed || (switch_changed && monokulo_refused.is_none()) {
+        notes.extend(restart_note(&state.relay.restart().await));
+    }
+    if let Some(refusal) = monokulo_refused {
+        failures_of(
+            SettingOwner::Monokulo,
+            refusal,
+            &mut failures,
+            &mut field_errors,
+        );
+        // Only monokulo's typed values are still unsaved.
+        let posted = unsaved(tab.posted, &|name| tab.monokulo.contains_key(name));
+        if saved.is_empty() {
+            return refused(failures, posted, None, field_errors, notes, None);
+        }
+        return partly(saved, failures, notes, posted, field_errors, None);
     }
     TabSave {
         outcome: SaveOutcome::Saved {
@@ -1519,6 +1947,7 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
         posted: HashMap::new(),
         nodes: None,
         field_errors,
+        relay_apps: None,
     }
 }
 
@@ -1595,7 +2024,18 @@ fn save_toast(outcome: &SaveOutcome, notes: &[SaveNote]) -> Toast {
 
 impl From<TabSave> for SaveResult {
     fn from(save: TabSave) -> SaveResult {
+        // A refused save of the opened Push relay card (its rows were
+        // sent), or one refusing a setting of it, comes back opened, with
+        // what was typed.
+        let relay_open = save.relay_apps.is_some()
+            || save
+                .outcome
+                .failures()
+                .iter()
+                .any(|failure| failure.group == Some(Group::Relay));
         SaveResult {
+            relay_open,
+            relay_apps: save.relay_apps,
             toast: Some(save_toast(&save.outcome, &save.notes)),
             notices: save
                 .notes
@@ -1610,6 +2050,57 @@ impl From<TabSave> for SaveResult {
             nodes: save.nodes,
             field_errors: save.field_errors,
         }
+    }
+}
+
+/// A button of the Push relay card's app rows (`remove-app:<n>`,
+/// `add-app`): the tab shown again with the rows changed and everything
+/// typed kept, nothing saved, the card opened.
+fn relay_row_action(state: &AppState, form: &HashMap<String, String>, action: &str) -> SaveResult {
+    let mut rows = relay_app_rows(form).unwrap_or_default();
+    match action.strip_prefix("remove-app:") {
+        Some(at) => {
+            // The row's number on the form, which its place among the rows
+            // sent is found by.
+            let mut numbers: Vec<usize> = form
+                .keys()
+                .filter_map(|name| name.strip_prefix("relay_app_"))
+                .filter_map(|rest| rest.split_once('_'))
+                .filter_map(|(n, _)| n.parse().ok())
+                .collect();
+            numbers.sort_unstable();
+            numbers.dedup();
+            if let Some(place) = at
+                .parse::<usize>()
+                .ok()
+                .and_then(|at| numbers.iter().position(|n| *n == at))
+            {
+                rows.remove(place);
+            }
+        }
+        None if action == "add-app" => rows.push(RelayAppRow::default()),
+        None => {}
+    }
+    let monokulo_fields = monokulo_fields(state);
+    let relay_fields = relay_fields(state);
+    let tab = split_tab(form, &monokulo_fields, &[], &relay_fields);
+    // The engine's fields aren't known here: kept as typed by their names.
+    let mut posted = tab.posted;
+    for (name, value) in form {
+        let engine_field = !is_monokulo_key(name)
+            && !name.starts_with("relay:")
+            && !is_relay_app_field(name)
+            && !admin_nodes::is_node_field(name)
+            && name != "tab";
+        if engine_field {
+            posted.insert(name.clone(), value.clone());
+        }
+    }
+    SaveResult {
+        posted,
+        relay_open: true,
+        relay_apps: Some(rows),
+        ..SaveResult::default()
     }
 }
 
@@ -1672,6 +2163,22 @@ pub async fn save(
 ) -> Response {
     let form = joined(pairs);
     let tab = SettingsTab::from_id(form.get("tab").map(String::as_str));
+    if let Some(action) = form.get(views::admin::RELAY_APP_ACTION) {
+        let result = relay_row_action(&state, &form, action);
+        if !fx.0 {
+            let token = put_flash(Flash {
+                result,
+                created: std::time::Instant::now(),
+            });
+            return crate::base::see_other(format!(
+                "{}&relay=edit&saved={token}#card-relay",
+                tab.href()
+            ));
+        }
+        let view = build_view_model(&state, &admin_user, tab, result).await;
+        return axum::response::Html(views::admin::settings_fragment(&view, false).into_string())
+            .into_response();
+    }
     let at = views::time::Clock::for_user(&admin_user).text(crate::now_unix());
     let result = SaveResult::from(save_tab(&state, &form, at).await);
     let (refused, card) = match &result.outcome {
@@ -1724,31 +2231,74 @@ fn reload_success(process: &str, changed: Option<&[String]>) -> String {
     }
 }
 
-/// Reads monokulo's options file again and applies it; `Err` is why
-/// nothing changed. What it leaves to say is what a save of the same
-/// values would.
+/// Reads monokulo's options file again and applies it, the push relay's
+/// `[relay.*]` tables with it; `Err` is why nothing changed. What it leaves
+/// to say is what a save of the same values would: a change to the relay's
+/// settings or its switch restarts the relay. The relay's tables are read
+/// first, so a mistake in them reloads nothing.
 async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), String> {
+    let relay_changed: Vec<String> = match state.relay.registry() {
+        Some(registry) => match registry.reload().await {
+            Ok(report) => report
+                .changed
+                .iter()
+                .map(|key| format!("{}.{key}", crate::settings::RELAY_TABLE))
+                .collect(),
+            Err(e) => {
+                return Err(format!(
+                    "Nothing was reloaded: the push relay's settings in monokulo's options file have problems. {e}"
+                ))
+            }
+        },
+        None => Vec::new(),
+    };
+    let restart = |switch_changed: bool| {
+        let restart = !relay_changed.is_empty() || switch_changed;
+        async move {
+            match restart {
+                true => restart_note(&state.relay.restart().await),
+                false => None,
+            }
+        }
+    };
     let registry = &state.settings.registry;
     match registry.reload().await {
         Ok(report) => {
-            let changed: Vec<String> = report.changed.iter().map(ToString::to_string).collect();
-            Ok((
-                reload_success("monokulo", Some(&changed)),
-                monokulo_notes(&report, "Reloaded"),
-            ))
+            let switch_changed = report.changed.contains(&crate::settings::RELAY_ENABLED.key);
+            let changed: Vec<String> = report
+                .changed
+                .iter()
+                .map(ToString::to_string)
+                .chain(relay_changed.iter().cloned())
+                .collect();
+            let mut notes = monokulo_notes(&report, "Reloaded");
+            notes.extend(restart(switch_changed).await);
+            Ok((reload_success("monokulo", Some(&changed)), notes))
         }
         // Read and stored, but applying them failed: a reload that read
         // nothing wrong in the file, so not one to fix and retry.
         Err(live_settings::SaveError::Install(message)) => {
             tracing::error!(error = %message, "monokulo's options file was reloaded but applying it failed");
-            Ok((
-                reload_success("monokulo", None),
-                vec![install_failed_note(&message, "Reloaded")],
-            ))
+            let mut notes = vec![install_failed_note(&message, "Reloaded")];
+            notes.extend(restart(false).await);
+            Ok((reload_success("monokulo", None), notes))
         }
-        Err(e) => Err(format!(
+        Err(e) if relay_changed.is_empty() => Err(format!(
             "Nothing was reloaded: monokulo's options file has problems. {e}"
         )),
+        // The relay's tables were reloaded already: applied, and said.
+        Err(e) => {
+            let restarted = restart(false).await;
+            let mut message = format!(
+                "Only the push relay's settings were reloaded ({}): the rest of monokulo's options file has problems. {e}",
+                relay_changed.join(", ")
+            );
+            if let Some(SaveNote::Restart(text) | SaveNote::Remark(text)) = restarted {
+                message.push(' ');
+                message.push_str(&text);
+            }
+            Err(message)
+        }
     }
 }
 
@@ -1846,6 +2396,8 @@ pub async fn reload(
 #[cfg(test)]
 mod tests {
     mod coinmarketcap_key;
+    #[cfg(feature = "relay")]
+    mod relay_card;
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

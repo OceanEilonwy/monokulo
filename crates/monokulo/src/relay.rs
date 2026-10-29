@@ -131,11 +131,12 @@ mod embedded {
     use std::sync::Arc;
 
     use live_settings::{Env, FileStore, Live, Registry};
-    use push_relay::settings::{self, Host, RelayConfig, STORE_PATH};
+    use push_relay::settings::{self, AppField, AppRow, Apps, Host, RelayConfig, STORE_PATH};
     use push_relay::Relay;
 
     use super::*;
     use crate::settings::RelaySwitch;
+    use crate::views::admin::{RelayAppField, RelayAppRow};
 
     /// The relay's database file beside monokulo's, unless `store.path`
     /// is set.
@@ -259,6 +260,36 @@ mod embedded {
         /// This run's stop, a child of the process's.
         stop: CancellationToken,
         served: tokio::task::JoinHandle<std::io::Result<()>>,
+    }
+
+    /// `handles.apps` as the card's rows give it, or each row's problem,
+    /// by its place.
+    pub fn apps_setting(
+        rows: &[RelayAppRow],
+    ) -> Result<String, Vec<(usize, RelayAppField, String)>> {
+        let rows: Vec<AppRow> = rows
+            .iter()
+            .map(|row| AppRow {
+                name: row.name.clone(),
+                apns_topic: row.apns_topic.clone(),
+                fcm_project_id: row.fcm_project_id.clone(),
+            })
+            .collect();
+        Apps::from_rows(&rows)
+            .map(|apps| apps.to_setting())
+            .map_err(|errors| {
+                errors
+                    .into_iter()
+                    .map(|error| {
+                        let field = match error.field {
+                            AppField::Name => RelayAppField::Name,
+                            AppField::ApnsTopic => RelayAppField::ApnsTopic,
+                            AppField::FcmProjectId => RelayAppField::FcmProjectId,
+                        };
+                        (error.row, field, error.message)
+                    })
+                    .collect()
+            })
     }
 
     /// Starts a relay on `config` with its own stop under `parent`, and
@@ -452,6 +483,25 @@ mod embedded {
             outcome
         }
 
+        /// The apps devices may register for, as saved, as the card's rows.
+        pub fn saved_apps(&self) -> Vec<RelayAppRow> {
+            let Some(embedded) = self.0.as_ref() else {
+                return Vec::new();
+            };
+            settings::config(&embedded.registry)
+                .map(|config| config.apps.rows())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|row| RelayAppRow {
+                    name: row.name,
+                    apns_topic: row.apns_topic,
+                    fcm_project_id: row.fcm_project_id,
+                    is_saved: true,
+                    ..RelayAppRow::default()
+                })
+                .collect()
+        }
+
         /// Stops the relay for good, as monokulo shuts down.
         pub async fn stop(&self) {
             if let Some(embedded) = self.0.as_ref() {
@@ -526,7 +576,18 @@ mod without {
             Restarted::StillOff
         }
 
+        pub fn saved_apps(&self) -> Vec<crate::views::admin::RelayAppRow> {
+            Vec::new()
+        }
+
         pub async fn stop(&self) {}
+    }
+
+    /// Never asked: without a relay there are no app rows.
+    pub fn apps_setting(
+        _rows: &[crate::views::admin::RelayAppRow],
+    ) -> Result<String, Vec<(usize, crate::views::admin::RelayAppField, String)>> {
+        Ok(String::new())
     }
 }
 
