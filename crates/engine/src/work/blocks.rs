@@ -143,6 +143,7 @@ impl BlockState {
     /// A copy of this state for [`super::ScanState::fork_for_tests`]. The
     /// progress is copied too, not shared: its sizing and headers-first
     /// window steer the next round's fetches.
+    #[cfg(test)]
     pub(crate) fn fork(&self) -> Self {
         let Self {
             catch_up_turn,

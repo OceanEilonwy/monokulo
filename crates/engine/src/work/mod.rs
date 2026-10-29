@@ -248,6 +248,7 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
 
     /// A copy of this backoff for [`ScanState::fork_for_tests`], `started`
     /// included, so every delay stands as it was.
+    #[cfg(test)]
     pub(crate) fn fork(&self) -> Self {
         let Self { failures, started } = self;
         Self {
@@ -353,8 +354,9 @@ impl ScanState {
     /// round. `node_wakes` and `activity` stay shared with this state: a
     /// round only records into the activity and numbers itself from it,
     /// and never reads the node wakes.
+    #[cfg(test)]
     #[must_use = "the copy is returned; this state is left as it was"]
-    pub fn fork_for_tests(&self) -> Self {
+    pub(crate) fn fork_for_tests(&self) -> Self {
         let Self {
             node_wakes,
             mempool,
