@@ -97,7 +97,7 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
     let dir = dir("invalid");
     let store = dir.join("bell.db");
     let ready = format!(
-        "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = \"{}\"\n\n[bell.square]\napplication_id = \"sq0idp-Test\"\n",
+        "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = '{}'\n\n[bell.square]\napplication_id = \"sq0idp-Test\"\n",
         store.display()
     );
     // The options file, the environment, and what the Bell says.
@@ -244,7 +244,7 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], lines: &[&
     std::fs::write(
         &path,
         format!(
-            "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = \"{}\"\n\n{section}",
+            "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = '{}'\n\n{section}",
             store.display()
         ),
     )
