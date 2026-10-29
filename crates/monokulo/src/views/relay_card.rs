@@ -321,7 +321,7 @@ fn secret_field(field: &AdminScalarFieldView, note: &str) -> Markup {
         None => locked,
     };
     setting.render(html! {
-        span class="relay-secret" data-set=(if set { "true" } else { "false" }) { (locked) }
+        (locked)
         @if set {
             (ui::FieldNote::new(note))
         } @else {
