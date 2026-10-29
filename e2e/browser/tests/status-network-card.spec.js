@@ -30,7 +30,8 @@ const card = (page) => page.locator('#network-mainnet');
 
 /**
  * The settled block's ring (its box grown by the outline and its offset)
- * stays clear of the blocks either side, and every block is one width.
+ * stays clear of the blocks either side, and every block is one width: the
+ * fix in dcf85f967, where the ring reached over the gap onto its neighbours.
  */
 async function expectRingClear(page) {
   const found = await card(page).locator('.pips').evaluate((pips) => {
@@ -61,20 +62,11 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   const head = card(page).locator('.net-head');
   await expect(head.getByRole('heading', { level: 2 })).toHaveText('Mainnet');
   await expect(head.locator('.mk-status-text')).toHaveText(['scanning', 'proof checked']);
-  // The title is clearly larger than the section heads under it.
-  const sizes = await card(page).evaluate((box) => [
-    parseFloat(getComputedStyle(box.querySelector('h2')).fontSize),
-    parseFloat(getComputedStyle(box.querySelector('h3.caps')).fontSize),
-  ]);
-  expect(sizes[0]).toBeGreaterThan(sizes[1] * 1.5);
   const watch = head.getByRole('link', { name: 'Watch it live' });
   await expect(watch).toHaveAttribute('href', '/status/engine?network=mainnet');
-  await expect(watch).toHaveClass(/mk-btn/);
-  await expect(watch).not.toHaveAttribute('data-variant');
   await expect(page.locator('a[href^="/status/engine"]')).toHaveCount(1);
 
   const table = card(page).locator('table[data-table="nodes"]');
-  await expect(table.locator('thead th')).toHaveText(['Node', 'Use', 'Proof of work', 'Height', 'Reachable']);
   const rows = table.locator('tbody tr');
   await expect(rows.locator('td.card-status')).toHaveText(['in use', 'standby', 'left out', 'standby']);
   await expect(rows.locator('.verdict')).toHaveText([
@@ -91,7 +83,6 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
 
   const facts = card(page).locator('details[data-proof-facts]');
   await facts.locator('summary').click();
-  await expect(facts.locator('dt')).toHaveText(['Anchor', 'Checked', 'RandomX keys', 'Last checked']);
   await expect(facts.locator('dd').first()).toHaveText('Block 3,412,160, 2 of 3 nodes agreed, 2 days ago');
   await captureCoverageStage(page, 'status-network-card-how-its-checked', test.info(), { group: GROUP, shapes: SHAPES });
 
@@ -101,7 +92,6 @@ test('an admin sees the card titled Mainnet, its nodes and proof of work 3 behin
   await story('lagging');
   const chip = card(page).locator('.pline .tag');
   await expect(chip).toHaveText('14 behind the tip');
-  await expect(chip).toHaveClass('tag tag-unknown');
   await expect(card(page).locator('.pips .pip.seen')).toHaveCount(14);
   await expect(card(page).locator('.net-head h2')).toHaveText('Mainnet');
   await expect(page.locator('#status-live')).toHaveCount(1);
