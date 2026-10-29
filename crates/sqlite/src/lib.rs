@@ -399,7 +399,7 @@ mod tests {
         // The production wait is 30 seconds; this one is short so the test is.
         let pool = Pool::Inline {
             shared: shared.clone(),
-            lock_wait: Duration::from_millis(200),
+            lock_wait: Duration::from_millis(10),
         };
         assert_eq!(pool.run(|v| Ok::<_, Error>(*v)).await, Ok(5));
         let _held = shared.lock();
