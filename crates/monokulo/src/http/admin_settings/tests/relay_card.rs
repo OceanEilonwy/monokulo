@@ -588,14 +588,14 @@ async fn a_restart_that_fails_is_shown_on_the_card_and_monokulo_carries_on() {
     let toast = toast_text(&page);
     assert!(page.contains(r#"class="toast toast-warning""#), "{toast}");
     // Plain words, the same in the toast and on the card: no "(os error
-    // 98)", no capital mid-sentence.
-    let fix = format!(
-        "It failed to listen on {listen}: address already in use. Fix it and save again, or restart monokulo."
-    );
-    assert!(
-        toast.contains(&format!("The push relay isn't running. {fix}")),
-        "{toast}"
-    );
+    // 98)", no capital mid-sentence. The words are the system's ("address
+    // already in use" here, a sentence on Windows), so not spelt out.
+    let said = format!("The push relay isn't running. It failed to listen on {listen}: ");
+    let fix = ". Fix it and save again, or restart monokulo.";
+    let after = &toast[toast.find(&said).unwrap_or_else(|| panic!("{toast}")) + said.len()..];
+    let words = &after[..after.find(fix).unwrap_or_else(|| panic!("{toast}"))];
+    assert!(!words.contains("(os error"), "{toast}");
+    assert!(words.starts_with(|c: char| c.is_lowercase()), "{toast}");
     let shown = card(&page);
     assert!(
         shown.contains("relay-state-words\">Not running<"),
@@ -603,7 +603,7 @@ async fn a_restart_that_fails_is_shown_on_the_card_and_monokulo_carries_on() {
     );
     assert!(
         shown.contains(&format!(
-            "<strong>The push relay isn't running.</strong> {fix}"
+            "<strong>The push relay isn't running.</strong> It failed to listen on {listen}: {words}{fix}"
         )),
         "{shown}"
     );

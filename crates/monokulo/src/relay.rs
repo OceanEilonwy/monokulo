@@ -994,11 +994,15 @@ mod tests {
         let Restarted::Failed(error) = handle.restart().await else {
             panic!("the port is taken");
         };
-        // Plain words: no "(os error 98)", no capital mid-sentence.
-        assert_eq!(
-            error,
-            format!("failed to listen on 127.0.0.1:{taken}: address already in use")
-        );
+        // Plain words: no "(os error 98)", no capital mid-sentence. The
+        // words are the system's ("address already in use" here, a sentence
+        // on Windows), so not spelt out.
+        let prefix = format!("failed to listen on 127.0.0.1:{taken}: ");
+        let words = error
+            .strip_prefix(&prefix)
+            .unwrap_or_else(|| panic!("{error}"));
+        assert!(!words.contains("(os error"), "{error}");
+        assert!(words.starts_with(|c: char| c.is_lowercase()), "{error}");
         nothing_listens(first);
         let view = handle.view().await.unwrap();
         assert!(matches!(&view.state, RelayState::Failed { error: shown, .. } if *shown == error));
