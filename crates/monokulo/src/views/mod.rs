@@ -86,6 +86,7 @@ pub fn font_faces() -> String {
 
 pub mod account;
 pub mod admin;
+pub mod app_page;
 pub mod auth;
 pub mod challenge;
 pub mod checkout;

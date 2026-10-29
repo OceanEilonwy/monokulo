@@ -80,14 +80,22 @@ pub fn backoff_seconds(attempts_made: u32) -> i64 {
 /// What pushes are sent with: this instance's VAPID key, a sender for each
 /// [`Reach`] over the outbound clients (each sender reuses its signed
 /// tokens per push service), the `sub` claim they carry, and what each
-/// store has been sent this minute (`push.per_store_per_minute`).
+/// store has been sent this minute (`push.per_store_per_minute`). One for
+/// the process (`super::Push::client`), shared by the delivery worker and
+/// a test push sent from a page, so both are signed, sent and counted
+/// alike.
 pub struct PushClient {
     outbound: Outbound,
     vapid: Arc<::push::VapidKey>,
-    contact: Option<::push::Contact>,
-    public: Sender,
-    any_address: Sender,
+    senders: parking_lot::RwLock<Senders>,
     budget: RateLimiter<ConnectionId>,
+}
+
+/// The senders, and the `sub` claim they sign with.
+struct Senders {
+    contact: Option<::push::Contact>,
+    public: Arc<Sender>,
+    any_address: Arc<Sender>,
 }
 
 impl PushClient {
@@ -97,47 +105,53 @@ impl PushClient {
         contact: Option<::push::Contact>,
     ) -> reqwest::Result<Self> {
         let outbound = Outbound::build(concat!("monokulo-push/", env!("CARGO_PKG_VERSION")))?;
-        let sender = |reach| {
-            Sender::new(
-                outbound.client(reach).clone(),
-                Arc::clone(&vapid),
-                contact.clone(),
-            )
-        };
+        let senders = Senders::new(&outbound, &vapid, contact);
         Ok(PushClient {
-            public: sender(Reach::Public),
-            any_address: sender(Reach::AnyAddress),
             outbound,
             vapid,
-            contact,
+            senders: parking_lot::RwLock::new(senders),
             budget: RateLimiter::new(PushConfig::default().per_store_per_minute),
         })
     }
 
     /// Signs with `contact` from now on, when it isn't what is signed with
     /// already: `server.public_uri` changed. Tokens signed before are
-    /// dropped with the senders that kept them.
-    pub fn set_contact(&mut self, contact: Option<::push::Contact>) {
-        if contact == self.contact {
+    /// dropped with the senders that kept them; a push being sent finishes
+    /// with the sender it started with.
+    pub fn set_contact(&self, contact: Option<::push::Contact>) {
+        if contact == self.senders.read().contact {
             return;
         }
-        for (reach, sender) in [
-            (Reach::Public, &mut self.public),
-            (Reach::AnyAddress, &mut self.any_address),
-        ] {
-            *sender = Sender::new(
-                self.outbound.client(reach).clone(),
-                Arc::clone(&self.vapid),
-                contact.clone(),
-            );
-        }
-        self.contact = contact;
+        let senders = Senders::new(&self.outbound, &self.vapid, contact);
+        *self.senders.write() = senders;
     }
 
-    fn sender(&self, reach: Reach) -> &Sender {
-        match reach {
-            Reach::Public => &self.public,
-            Reach::AnyAddress => &self.any_address,
+    fn sender(&self, reach: Reach) -> Arc<Sender> {
+        let senders = self.senders.read();
+        Arc::clone(match reach {
+            Reach::Public => &senders.public,
+            Reach::AnyAddress => &senders.any_address,
+        })
+    }
+}
+
+impl Senders {
+    fn new(
+        outbound: &Outbound,
+        vapid: &Arc<::push::VapidKey>,
+        contact: Option<::push::Contact>,
+    ) -> Self {
+        let sender = |reach| {
+            Arc::new(Sender::new(
+                outbound.client(reach).clone(),
+                Arc::clone(vapid),
+                contact.clone(),
+            ))
+        };
+        Senders {
+            public: sender(Reach::Public),
+            any_address: sender(Reach::AnyAddress),
+            contact,
         }
     }
 }
@@ -231,19 +245,9 @@ pub async fn run_delivery_tick(
                 pushes.into_iter(),
                 move |mut pushes| async move {
                     let push = pushes.next()?;
-                    let span = tracing::info_span!(
-                        "push delivery",
-                        otel.kind = "client",
-                        store.id = %push.target.store_id,
-                        push_target.id = %push.target.id,
-                        push_target.kind = push.target.kind.name().as_str(),
-                        push.event = push.event.as_str(),
-                        push.host = push.target.endpoint.host(),
-                        attempt = push.attempt_count.saturating_add(1),
-                    );
                     let done = tracing::Instrument::instrument(
                         deliver(client, &push, config, reach, clock),
-                        span,
+                        span(&push),
                     )
                     .await;
                     if done.holds_back_the_rest() {
@@ -259,56 +263,7 @@ pub async fn run_delivery_tick(
     // the batch doesn't hold the others' outcomes back, and a later write
     // failing doesn't lose the earlier ones.
     while let Some((push, done)) = attempts.next().await {
-        let (id, target) = (push.id, push.target.clone());
-        let written = match done {
-            Done::GaveUp(reason) => {
-                let at = clock.now();
-                db.write(move |db| db.give_up_push(id, at, &reason)).await
-            }
-            Done::Deferred(until) => {
-                tracing::info!(
-                    store.id = %push.target.store_id,
-                    push_target.id = %target.id,
-                    "the store's pushes for this minute are spent; put off"
-                );
-                db.write(move |db| db.defer_push(id, until)).await
-            }
-            Done::Gone => {
-                let deleted = db
-                    .write(move |db| db.delete_dead_push_target(&target))
-                    .await;
-                match deleted {
-                    Ok(true) => tracing::info!(
-                        push_target.id = %push.target.id,
-                        push.host = push.target.endpoint.host(),
-                        "the push service says the subscription is gone; push target deleted"
-                    ),
-                    Ok(false) => tracing::info!(
-                        push_target.id = %push.target.id,
-                        push.host = push.target.endpoint.host(),
-                        "the push service says a subscription is gone that its target no longer has; kept"
-                    ),
-                    Err(_) => {}
-                }
-                deleted.map(|_| ())
-            }
-            Done::Attempted(attempt) => {
-                let after = db
-                    .write(move |db| db.record_push_attempt(id, &target, &attempt))
-                    .await;
-                if let Ok(TargetAfter::Deleted) = after {
-                    tracing::warn!(
-                        push_target.id = %push.target.id,
-                        push.host = push.target.endpoint.host(),
-                        failures = config.target_failure_limit,
-                        "a push target failed too many times in a row; deleted"
-                    );
-                }
-                after.map(|_| ())
-            }
-        };
-        if let Err(e) = written {
-            tracing::warn!(push_target.id = %push.target.id, error = %e, "a push's attempt could not be recorded");
+        if let Err(e) = record(db, &push, done, config, clock).await {
             first_error.get_or_insert(e);
         }
     }
@@ -337,6 +292,104 @@ fn by_target(due: Vec<DuePush>) -> Vec<Vec<DuePush>> {
         pushes.sort_by_key(|push| push.id);
     }
     groups
+}
+
+/// Sends `push` now, whenever it was due, and records what came of it:
+/// one attempt made exactly as the worker makes each of a batch's
+/// ([`run_delivery_tick`]), through the same client, budget and outbound
+/// rules. For a test push from the store's app page, sent while the
+/// merchant waits; one that fails is tried again by the worker.
+pub async fn send_now(
+    db: &Database,
+    client: &PushClient,
+    push: &DuePush,
+    config: &PushConfig,
+    reach: Reach,
+    clock: &dyn Clock,
+) -> Result<(), DbError> {
+    client.budget.set_limit(config.per_store_per_minute);
+    let done =
+        tracing::Instrument::instrument(deliver(client, push, config, reach, clock), span(push))
+            .await;
+    record(db, push, done, config, clock).await
+}
+
+/// The span one push's attempt is made in: its store, target, event and
+/// host, never its endpoint.
+fn span(push: &DuePush) -> tracing::Span {
+    tracing::info_span!(
+        "push delivery",
+        otel.kind = "client",
+        store.id = %push.target.store_id,
+        push_target.id = %push.target.id,
+        push_target.kind = push.target.kind.name().as_str(),
+        push.event = push.event.as_str(),
+        push.host = push.target.endpoint.host(),
+        attempt = push.attempt_count.saturating_add(1),
+    )
+}
+
+/// Records what became of `push`: given up on, put off, its target gone,
+/// or its attempt (which may drop its target at the failure limit).
+async fn record(
+    db: &Database,
+    push: &DuePush,
+    done: Done,
+    config: &PushConfig,
+    clock: &dyn Clock,
+) -> Result<(), DbError> {
+    let (id, target) = (push.id, push.target.clone());
+    let written = match done {
+        Done::GaveUp(reason) => {
+            let at = clock.now();
+            db.write(move |db| db.give_up_push(id, at, &reason)).await
+        }
+        Done::Deferred(until) => {
+            tracing::info!(
+                store.id = %push.target.store_id,
+                push_target.id = %target.id,
+                "the store's pushes for this minute are spent; put off"
+            );
+            db.write(move |db| db.defer_push(id, until)).await
+        }
+        Done::Gone => {
+            let deleted = db
+                .write(move |db| db.delete_dead_push_target(&target))
+                .await;
+            match deleted {
+                Ok(true) => tracing::info!(
+                    push_target.id = %push.target.id,
+                    push.host = push.target.endpoint.host(),
+                    "the push service says the subscription is gone; push target deleted"
+                ),
+                Ok(false) => tracing::info!(
+                    push_target.id = %push.target.id,
+                    push.host = push.target.endpoint.host(),
+                    "the push service says a subscription is gone that its target no longer has; kept"
+                ),
+                Err(_) => {}
+            }
+            deleted.map(|_| ())
+        }
+        Done::Attempted(attempt) => {
+            let after = db
+                .write(move |db| db.record_push_attempt(id, &target, &attempt))
+                .await;
+            if let Ok(TargetAfter::Deleted) = after {
+                tracing::warn!(
+                    push_target.id = %push.target.id,
+                    push.host = push.target.endpoint.host(),
+                    failures = config.target_failure_limit,
+                    "a push target failed too many times in a row; deleted"
+                );
+            }
+            after.map(|_| ())
+        }
+    };
+    if let Err(e) = &written {
+        tracing::warn!(push_target.id = %push.target.id, error = %e, "a push's attempt could not be recorded");
+    }
+    written
 }
 
 /// One due push: given up on, or attempted once.
@@ -381,13 +434,12 @@ async fn deliver(
         topic: Some(push.topic.clone()),
     };
     let started = std::time::Instant::now();
+    let sender = client.sender(reach);
     let sent = match check_host(push.target.endpoint.as_url(), reach) {
         Err(refused) => Err(Failure::counted(refused.to_string())),
         Ok(()) => match tokio::time::timeout(
             config.delivery_timeout,
-            client
-                .sender(reach)
-                .send(&push.target.endpoint, &message, &options, at),
+            sender.send(&push.target.endpoint, &message, &options, at),
         )
         .await
         {
@@ -412,6 +464,7 @@ async fn deliver(
             PushAttempt {
                 at,
                 status: Some(status),
+                duration_ms,
                 result: PushResult::Delivered,
             }
         }
@@ -450,6 +503,7 @@ async fn deliver(
             PushAttempt {
                 at,
                 status: failure.status,
+                duration_ms,
                 result: PushResult::Failed {
                     error: failure.error,
                     retry_at,
@@ -597,8 +651,8 @@ pub async fn run_delivery_loop(
     settings: Arc<crate::settings::MonokuloSettings>,
     push: Arc<super::Push>,
 ) {
-    let mut client = loop {
-        match PushClient::build(push.vapid(), contact(&settings)) {
+    let client = loop {
+        match push.client().await {
             Ok(client) => break client,
             Err(e) => {
                 tracing::error!(error = %e, "could not build the push HTTP client; trying again in 30 s");
@@ -618,7 +672,7 @@ pub async fn run_delivery_loop(
                 tracing::warn!(error = %e, "old pushes could not be deleted");
             }
         }
-        let picked = match run_delivery_tick(&db, &client, &config, reach, &SystemClock).await {
+        let picked = match run_delivery_tick(&db, client, &config, reach, &SystemClock).await {
             Ok(picked) => picked,
             Err(e) => {
                 tracing::warn!(error = %e, "a push delivery batch failed");

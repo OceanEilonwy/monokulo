@@ -582,3 +582,47 @@ table[data-table="wallets"] .card-unit { display: none; }
   .relay-app { grid-template-columns: minmax(0, 1fr); }
   .relay-app [data-relay-app-remove] { justify-self: end; }
 }
+/* Connected app page (views::app_page) and the Apps card's line about an
+   app's pushes (views::connected_apps): Connect an app in the card's head,
+   "Connect" on a phone; under each app a bell, its pushes in words, the
+   health in its status colour and a link to its page. */
+#card-apps .card-head > .mk-btn { margin-left: auto; display: inline-flex; align-items: center; gap: var(--space-xs); }
+#card-apps .card-head .label-short, .app-pushes .label-short { display: none; }
+.app-connect-icon, .app-test-icon { display: inline-flex; }
+.app-connect-icon svg, .app-test-icon svg { width: 1rem; height: 1rem; }
+.app-pushes { display: block; margin-top: var(--space-xs); font-size: var(--text-sm); }
+.app-pushes > * { margin-right: var(--space-xs); }
+.app-pushes-icon { display: inline-flex; vertical-align: -0.2em; color: var(--muted); }
+.app-pushes-words { color: var(--muted); }
+.app-pushes-ok { color: var(--success); font-weight: 600; }
+.app-pushes-bad { color: var(--error); }
+.app-pushes-link { color: var(--ink); font-weight: 600; }
+.app-page-meta { margin: 0 0 var(--space-lg); color: var(--muted); }
+.app-page .facts dd .muted { font-weight: 400; }
+.app-page-intro { margin: 0 0 var(--space-md); color: var(--muted); font-size: var(--text-sm); }
+.app-page .mk-item-card-meta code, .app-page [data-facts] code { font-family: var(--font-mono); font-weight: 700; }
+[data-facts="push-target"], [data-facts="app"] { margin: 0; }
+.app-test-head { margin: var(--space-lg) 0 var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--line); }
+.app-test-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: var(--space-sm) var(--space-md); align-items: end; }
+.app-test-field { display: grid; gap: var(--space-xs); min-width: 0; }
+.app-test-field label { font-weight: 700; }
+.app-test-form + .hint { margin: var(--space-sm) 0 0; }
+.app-test-form .mk-btn { display: inline-flex; align-items: center; gap: var(--space-xs); }
+[data-table="app-pushes"] { font-size: var(--text-sm); }
+[data-table="app-pushes"] td, [data-table="app-pushes"] th { white-space: nowrap; }
+[data-table="app-pushes"] .app-push-result { white-space: normal; }
+.app-pushes-foot { margin: var(--space-sm) 0 0; }
+@media (max-width: 640px) {
+  #card-apps .card-head .label-long, .app-pushes .label-long { display: none; }
+  #card-apps .card-head .label-short, .app-pushes .label-short { display: inline; }
+  .app-page .mk-page-actions { flex-basis: 100%; justify-content: flex-end; }
+  .app-test-form { grid-template-columns: minmax(0, 1fr); }
+  .app-test-form .mk-btn { justify-content: center; }
+  /* A push on a phone is a compact two-column card, as a webhook's delivery is. */
+  #card-apps .int-rows li > form { grid-column: 1 / -1; }
+  #card-apps .int-rows li > form .mk-btn { width: 100%; }
+  #card-apps .int-rows li > .int-mark { align-self: start; }
+  table.table-stack[data-table="app-pushes"] tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--space-md); }
+  table.table-stack[data-table="app-pushes"] td.app-push-result { grid-column: 1 / -1; }
+  [data-table="app-pushes"] td, [data-table="app-pushes"] th { white-space: normal; }
+}

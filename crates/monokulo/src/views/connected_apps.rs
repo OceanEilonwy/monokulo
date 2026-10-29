@@ -32,6 +32,33 @@ pub struct AppRow {
     pub version: String,
     pub connected: String,
     pub last_seen: Option<String>,
+    /// How its pushes are doing: the line under it on the Apps card.
+    pub pushes: PushLine,
+}
+
+/// The Apps card's line about an app's pushes, its times already words
+/// ("2 min ago", "25 Oct, 14:02").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PushLine {
+    /// No push targets: the app hasn't registered any.
+    NoTargets,
+    /// No target's last attempt failed (or none was made yet).
+    Healthy {
+        targets: u32,
+        /// When a push was last delivered; `None` before any was.
+        last_push: Option<String>,
+    },
+    /// `failing` targets' last attempts failed.
+    Failing {
+        targets: u32,
+        last_push: Option<String>,
+        failing: u32,
+        /// The longest run of failures among them.
+        in_a_row: u32,
+        /// That target's last answer, briefly ("502", "timed out"), and
+        /// how long ago, while its pushes are still kept.
+        last_failure: Option<(String, String)>,
+    },
 }
 
 impl AppsView {
@@ -52,10 +79,83 @@ impl AppsView {
             self.store_id, app.id
         ))
     }
+
+    /// The app's own page: its details, push targets and pushes.
+    pub fn app_path(&self, app: &AppRow) -> String {
+        crate::base::url(app_path(&self.store_id, &app.id))
+    }
+}
+
+/// Where the store's app `app_id`'s page is, before the path prefix.
+pub fn app_path(store_id: &str, app_id: &str) -> String {
+    format!("/stores/{store_id}/settings/apps/{app_id}")
+}
+
+/// A bell: an app's pushes (inline, in the text's colour).
+pub const BELL: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>"#;
+/// A bell struck through: no pushes.
+pub const BELL_OFF: &str = r#"<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/><path d="M4 4l16 16"/></svg>"#;
+
+/// `1 push target`, `2 push targets`.
+pub fn push_targets(n: u32) -> String {
+    if n == 1 {
+        "1 push target".to_owned()
+    } else {
+        format!("{n} push targets")
+    }
+}
+
+/// The line under an app on the Apps card: its bell, how its pushes are
+/// doing in words (the health in its status colour), and a link to its
+/// page.
+fn push_line(view: &AppsView, app: &AppRow) -> Markup {
+    let href = view.app_path(app);
+    let link = |words: &str| {
+        let label = format!("{words} of {}", app.title());
+        html! { a class="app-pushes-link" href=(href) aria-label=(label) { (words) " " span aria-hidden="true" { "\u{203a}" } } }
+    };
+    let last = |last_push: &Option<String>| match last_push {
+        Some(at) => format!("last push {at}"),
+        None => "no push yet".to_owned(),
+    };
+    html! {
+        @match &app.pushes {
+            PushLine::NoTargets => {
+                span class="app-pushes" data-pushes="none" {
+                    span class="app-pushes-icon" { (PreEscaped(BELL_OFF)) }
+                    span class="app-pushes-words" {
+                        span class="label-long" { "No push targets: the app registers one once it's set up for pushes." }
+                        span class="label-short" aria-hidden="true" { "No push targets yet." }
+                    }
+                    (link("Details"))
+                }
+            }
+            PushLine::Healthy { targets, last_push } => {
+                span class="app-pushes" data-pushes="healthy" {
+                    span class="app-pushes-icon" { (PreEscaped(BELL)) }
+                    span class="app-pushes-words" { (push_targets(*targets)) " · " (last(last_push)) " ·" }
+                    span class="app-pushes-ok" { "healthy" }
+                    (link("Pushes"))
+                }
+            }
+            PushLine::Failing { targets, last_push, failing, in_a_row, last_failure } => {
+                span class="app-pushes" data-pushes="failing" {
+                    span class="app-pushes-icon app-pushes-bad" { (PreEscaped(BELL)) }
+                    span class="app-pushes-words" { (push_targets(*targets)) " · " (last(last_push)) " ·" }
+                    span class="app-pushes-bad" {
+                        (failing) " failing (" (in_a_row) " in a row"
+                        @if let Some((answer, ago)) = last_failure { ", last " (answer) " " (ago) }
+                        ")"
+                    }
+                    (link("Pushes"))
+                }
+            }
+        }
+    }
 }
 
 impl AppRow {
-    fn title(&self) -> String {
+    pub fn title(&self) -> String {
         if self.device_name.is_empty() {
             self.app.clone()
         } else {
@@ -63,7 +163,7 @@ impl AppRow {
         }
     }
 
-    fn meta(&self) -> String {
+    pub fn meta(&self) -> String {
         let mut parts = Vec::new();
         if !self.platform.is_empty() {
             parts.push(self.platform.clone());
@@ -90,7 +190,18 @@ pub fn apps_card(view: &AppsView) -> Markup {
     };
     html! {
         section id="card-apps" class="settings-card" aria-labelledby="card-apps-title" {
-            header class="card-head" { h3 id="card-apps-title" { "Apps" } span class="card-meta" { (meta) } }
+            header class="card-head" {
+                h3 id="card-apps-title" { "Connected apps" }
+                span class="card-meta" { (meta) }
+                // "Connect" on a phone, named in full for a screen reader.
+                (ui::LinkButton::new(html! {
+                    span class="app-connect-icon" aria-hidden="true" { (PreEscaped(ui::assets::icons::PLUS)) }
+                    span class="label-long" { "Connect an app" }
+                    span class="label-short" aria-hidden="true" { "Connect" }
+                }, view.connect_path())
+                    .attr("aria-label", "Connect an app")
+                    .attr("data-connect-app", ""))
+            }
             div class="card-body" {
                 @if view.apps.is_empty() {
                     (ui::Hint::new(
@@ -105,6 +216,7 @@ pub fn apps_card(view: &AppsView) -> Markup {
                                 span {
                                     span class="int-name" { (app.title()) }
                                     span class="int-meta" { (app.meta()) }
+                                    (push_line(view, app))
                                 }
                                 form method="post" action=(view.disconnect_path(app)) {
                                     (ui::Button::new("Disconnect").kind(ui::ButtonType::Submit)
@@ -114,7 +226,6 @@ pub fn apps_card(view: &AppsView) -> Markup {
                         }
                     }
                 }
-                (ui::LinkButton::new("Connect an app", view.connect_path()))
             }
         }
     }
@@ -244,7 +355,7 @@ pub enum CodeState {
     Waiting {
         remaining: u64,
     },
-    Connected(AppRow),
+    Connected(Box<AppRow>),
     /// Not used, and too old to be now.
     RanOut,
 }

@@ -58,6 +58,272 @@ async fn webhook_receiver(
     (status, "ok")
 }
 
+/// `POST /__coverage/push-receiver?status=N`: a push service for the
+/// fixture store's apps' push targets, answering every push with `N`
+/// (`201` without it) after a moment, so a push takes a little while.
+async fn push_receiver(
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> StatusCode {
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    query
+        .get("status")
+        .and_then(|s| s.parse::<u16>().ok())
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .unwrap_or(StatusCode::CREATED)
+}
+
+/// `POST /__coverage/apps`: the fixture store's connected apps as the
+/// design shows them (store-apps-pushes.spec.js): Monokular · Front
+/// counter with two healthy push targets (an encrypted one and a Live
+/// Activity) and pushes in every state, Monokular · Back office iPad with
+/// none, Tillwatch · Kitchen with one failing 12 times in a row (502).
+/// Their targets push to this fixture's own receiver. `?empty`: none.
+/// Answers the apps' ids.
+async fn seed_apps(
+    State(control): State<Controls>,
+    Query(query): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    use monokulo::apps::SaleKind;
+    use monokulo::db::{
+        AppOrder, NewApp, NewPushTarget, PushAttempt, PushResult, Registration, TargetKind,
+        TestPush,
+    };
+    fn failed<E: std::fmt::Display>(e: E) -> StatusCode {
+        eprintln!("seeding apps failed: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+    let store = engine_protocol::ids::ConnectionId::new("coverage-store");
+    let db = control.db.lock();
+    for app in db.list_apps(&store).map_err(failed)? {
+        db.delete_app(&store, &app.id).map_err(failed)?;
+    }
+    if query.contains_key("empty") {
+        return Ok(Json(serde_json::json!({})));
+    }
+    let now = monokulo::now_unix();
+    let connect =
+        |slug: &str, name: &str, device: &str, platform: &str, version: &str, ago: i64| {
+            let raw = credentials::auth::generate_app_connect_token();
+            db.create_app_connect_token(&raw.hash(), &store, device, now - ago)?;
+            let app = db
+                .redeem_app_connect_token(
+                    &raw.hash(),
+                    now - ago,
+                    600,
+                    &NewApp {
+                        slug,
+                        name,
+                        device_name: "",
+                        platform,
+                        version,
+                        key_hash: &credentials::auth::generate_app_key().hash(),
+                    },
+                )?
+                .expect("a fresh code");
+            Ok::<_, monokulo::db::DbError>(app.id)
+        };
+    let front = connect(
+        "monokular",
+        "Monokular",
+        "Front counter",
+        "ios",
+        "1.4.0",
+        16 * 86_400,
+    )
+    .map_err(failed)?;
+    let back = connect(
+        "monokular",
+        "Monokular",
+        "Back office iPad",
+        "ipados",
+        "1.4.0",
+        8 * 86_400,
+    )
+    .map_err(failed)?;
+    let kitchen = connect(
+        "tillwatch",
+        "Tillwatch",
+        "Kitchen",
+        "android",
+        "0.9.2",
+        3 * 86_400,
+    )
+    .map_err(failed)?;
+    let receiver = format!("{}/__coverage/push-receiver", control.url);
+    let register =
+        |app: &monokulo::db::AppId, client_id: &str, kind: TargetKind, endpoint: &str| {
+            let registered = db.register_push_target(
+                &NewPushTarget {
+                    app_id: app,
+                    client_id: &monokulo::api::runtime::scalars::ClientId::parse(client_id)
+                        .expect("a client id"),
+                    kind: &kind,
+                    endpoint: &::push::Endpoint::parse(endpoint).expect("an endpoint"),
+                    events: &SaleKind::ALL,
+                },
+                now - 16 * 86_400 + 60,
+            )?;
+            match registered {
+                Registration::Registered(target) => Ok::<_, monokulo::db::DbError>(*target),
+                _ => panic!("the fixture's apps have room"),
+            }
+        };
+    let keys = ::push::encrypt::ReceiverKeys::generate().subscription_keys();
+    let alerts = register(
+        &front,
+        "alerts",
+        TargetKind::Encrypted {
+            p256dh: keys.p256dh,
+            auth: keys.auth,
+        },
+        &receiver,
+    )
+    .map_err(failed)?;
+    let island = register(
+        &front,
+        "island",
+        TargetKind::LiveActivity {
+            include_payment_uri: true,
+        },
+        &format!("{receiver}?kind=live-activity"),
+    )
+    .map_err(failed)?;
+    let kitchen_alerts = register(
+        &kitchen,
+        "alerts",
+        TargetKind::Encrypted {
+            p256dh: ::push::encrypt::ReceiverKeys::generate()
+                .subscription_keys()
+                .p256dh,
+            auth: ::push::encrypt::ReceiverKeys::generate()
+                .subscription_keys()
+                .auth,
+        },
+        &format!("{receiver}?status=502"),
+    )
+    .map_err(failed)?;
+    // A test push queued `ago` seconds ago to `target`, then attempted as
+    // `outcome` says (none: still queued).
+    let push = |target: &monokulo::db::PushTarget,
+                event: SaleKind,
+                ago: i64,
+                outcome: Option<(Option<u16>, bool, Option<i64>)>| {
+        let id = db
+            .queue_test_push(&TestPush {
+                store_id: &store,
+                app_id: &target.app_id,
+                target_id: &target.id,
+                event,
+                at: now - ago,
+                ttl: ::push::Ttl::seconds(1800),
+                due_at: now - ago,
+            })?
+            .expect("the app's target");
+        if let Some((status, delivered, retry_at)) = outcome {
+            let target = db
+                .get_push_target(&target.app_id, &target.id)?
+                .expect("there");
+            db.record_push_attempt(
+                id,
+                &target,
+                &PushAttempt {
+                    at: now - ago,
+                    status,
+                    duration_ms: 240,
+                    result: if delivered {
+                        PushResult::Delivered
+                    } else {
+                        PushResult::Failed {
+                            error: match status {
+                                Some(status) => format!("the push service answered {status}"),
+                                None => "timed out: no answer within 5s".into(),
+                            },
+                            retry_at,
+                            failure_limit: Some(20),
+                        }
+                    },
+                },
+            )?;
+        }
+        Ok::<_, monokulo::db::DbError>(id)
+    };
+    // Kitchen: 12 failures in a row, the last 14 minutes ago.
+    for n in 0..12 {
+        push(
+            &kitchen_alerts,
+            SaleKind::Paid,
+            14 * 60 + (11 - n) * 300,
+            Some((Some(502), false, Some(now + 300))),
+        )
+        .map_err(failed)?;
+    }
+    // Front counter: a sale's pushes (an order Kitchen's till made, which
+    // the store's other tills hear of), and tests in every state.
+    let order = AppOrder {
+        order_id: engine_protocol::ids::OrderId::new(control.order_id.clone()),
+        store_id: store.clone(),
+        app_id: kitchen.clone(),
+        device_name: "Kitchen".into(),
+        amount: "24.50".into(),
+        currency: "USD".into(),
+        address: "8".repeat(95),
+        xmr_amount_piconero: pricing::xmr_amount::Piconero(141_900_000_000),
+        merchant_order_id: Some("#1042".into()),
+        expires_at: now + 900,
+        created_at: now - 300,
+    };
+    db.record_app_order(&order).map_err(failed)?;
+    db.queue_waiting_push(
+        &order,
+        now - 300,
+        &monokulo::push::Queueing::now(&monokulo::settings::MonokuloSettings::defaults()),
+    )
+    .map_err(failed)?;
+    for row in db.push_deliveries_of_app(&front, 10).map_err(failed)? {
+        let target = db
+            .get_push_target(&front, &row.push_target_id)
+            .map_err(failed)?
+            .expect("there");
+        db.record_push_attempt(
+            row.id,
+            &target,
+            &PushAttempt {
+                at: now - 299,
+                status: Some(201),
+                duration_ms: 236,
+                result: PushResult::Delivered,
+            },
+        )
+        .map_err(failed)?;
+    }
+    push(
+        &island,
+        SaleKind::Paid,
+        3 * 86_400,
+        Some((None, false, None)),
+    )
+    .map_err(failed)?;
+    push(
+        &alerts,
+        SaleKind::Expired,
+        33 * 60,
+        Some((Some(429), false, Some(now + 80))),
+    )
+    .map_err(failed)?;
+    push(
+        &island,
+        SaleKind::Confirming,
+        240,
+        Some((Some(201), true, None)),
+    )
+    .map_err(failed)?;
+    push(&alerts, SaleKind::Paid, 120, Some((Some(201), true, None))).map_err(failed)?;
+    Ok(Json(serde_json::json!({
+        "front": front, "back": back, "kitchen": kitchen,
+        "alerts": alerts.id, "island": island.id,
+    })))
+}
+
 async fn ready() -> &'static str {
     "ready"
 }
@@ -1295,6 +1561,8 @@ async fn main() {
         .route("/__coverage/status/{story}", post(status_story))
         .route("/__coverage/webhooks", post(seed_webhooks))
         .route("/__coverage/webhook-receiver", post(webhook_receiver))
+        .route("/__coverage/apps", post(seed_apps))
+        .route("/__coverage/push-receiver", post(push_receiver))
         .with_state(Controls {
             engine,
             client: state.engine.client.clone(),

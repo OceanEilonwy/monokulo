@@ -42,6 +42,10 @@ use crate::db::{Database, DbError, StoredVapidKey};
 pub struct Push {
     vapid: Arc<::push::VapidKey>,
     wake: tokio::sync::Notify,
+    client: tokio::sync::OnceCell<delivery::PushClient>,
+    /// How many test pushes each store has sent in its current minute
+    /// ("Send a test push" on its app's page): as many as test webhooks.
+    pub tests: rate_limit::RateLimiter<crate::db::ConnectionId>,
 }
 
 /// What queueing a sale's pushes reads from the settings, read as each
@@ -105,19 +109,22 @@ impl Push {
             }
         };
         let vapid = decrypt_private(key, &stored)?;
-        Ok(Push {
+        Ok(Push::with_key(vapid))
+    }
+
+    fn with_key(vapid: ::push::VapidKey) -> Push {
+        Push {
             vapid: Arc::new(vapid),
             wake: tokio::sync::Notify::new(),
-        })
+            client: tokio::sync::OnceCell::new(),
+            tests: rate_limit::RateLimiter::new(crate::webhooks::test_delivery::TESTS_PER_MINUTE),
+        }
     }
 
     /// A push with a key of its own, never stored: for a test's state.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_tests() -> Push {
-        Push {
-            vapid: Arc::new(::push::VapidKey::generate()),
-            wake: tokio::sync::Notify::new(),
-        }
+        Push::with_key(::push::VapidKey::generate())
     }
 
     /// The public half of the key, which apps hand their push service.
@@ -128,6 +135,16 @@ impl Push {
     /// The key pushes are signed with, for the delivery worker's senders.
     pub(crate) fn vapid(&self) -> Arc<::push::VapidKey> {
         Arc::clone(&self.vapid)
+    }
+
+    /// What pushes are sent with, built the first time it's asked for
+    /// (with no `sub` claim: its user sets the one it signs with, from the
+    /// settings, before sending). Fails only if TLS can't be set up; asked
+    /// again, it tries again.
+    pub async fn client(&self) -> reqwest::Result<&delivery::PushClient> {
+        self.client
+            .get_or_try_init(|| async { delivery::PushClient::build(self.vapid(), None) })
+            .await
     }
 
     /// Wakes the delivery worker (it also looks every few seconds).
@@ -184,6 +201,11 @@ pub enum PushTargetKind {
 
 impl PushTargetKind {
     pub const ALL: [PushTargetKind; 2] = [PushTargetKind::Encrypted, PushTargetKind::LiveActivity];
+
+    /// The kind named `name`, as [`Self::as_str`] writes it.
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
 
     /// Its name, as the API and `push_targets.kind` write it.
     pub fn as_str(self) -> &'static str {

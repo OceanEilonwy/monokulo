@@ -23,15 +23,14 @@ mod order_changes;
 mod order_requests;
 mod push;
 mod webhooks;
-pub use apps::{AppConnection, AppId, AppOrder, ConnectCode, DeletedApp, NewApp};
+pub use apps::{AppConnection, AppId, AppOrder, AppOrderStats, ConnectCode, DeletedApp, NewApp};
 pub use order_requests::{OrderPrice, Reserved};
 // `self::`: `push` is also the Web Push crate.
-#[cfg(test)]
-pub use self::push::PushDeliveryRow;
 pub use self::push::{
-    DuePush, NewPushTarget, PushAttempt, PushResult, PushTarget, PushTargetId, Registration,
-    StoredVapidKey, TargetAfter, TargetKind, UnreadablePush, EXPIRED_UNSENT, MAX_TARGETS_PER_APP,
-    REREGISTERED,
+    AppPushSummary, DuePush, LastAttempt, NewPushTarget, PushAttempt, PushDeliveryRow, PushResult,
+    PushState, PushTarget, PushTargetId, PushTargetSummary, Registration, StoredVapidKey,
+    TargetAfter, TargetKind, TargetPushStats, TestPush, UnreadablePush, EXPIRED_UNSENT,
+    MAX_TARGETS_PER_APP, REREGISTERED,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 pub use webhooks::{
@@ -199,6 +198,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     ),
     (52, include_str!("../migrations/0052_push_targets.sql")),
     (53, include_str!("../migrations/0053_push_deliveries.sql")),
+    (
+        54,
+        include_str!("../migrations/0054_push_delivery_duration_and_tests.sql"),
+    ),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
