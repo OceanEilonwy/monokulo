@@ -7,18 +7,15 @@ use std::process::{Command, Output, Stdio};
 const BINARY: &str = env!("CARGO_BIN_EXE_monokulo-bell");
 
 const SECRETS: [(&str, &str); 2] = [
+    ("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", "Ibxx_5AKakO-3qeNVR61Dw"),
     (
-        "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
-        "Ibxx_5AKakO-3qeNVR61Dw",
-    ),
-    (
-        "MONOKULAR_BELL_VAPID_KEY",
+        "MONOKULO_BELL_VAPID_KEY",
         "4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d4b1d",
     ),
 ];
 
 const CLOVER_CODE: (&str, &str) = (
-    "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+    "MONOKULO_BELL_CLOVER_AUTH_CODE",
     "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d",
 );
 
@@ -61,9 +58,9 @@ fn init_writes_the_options_file_and_never_over_one() {
     assert!(output.status.success(), "{}", text(&output));
     let written = std::fs::read_to_string(&path).unwrap();
     for line in [
-        "#   MONOKULAR_BELL_SQUARE_WEBHOOK_KEY\n",
-        "#   MONOKULAR_BELL_CLOVER_AUTH_CODE\n",
-        "#   MONOKULAR_BELL_VAPID_KEY (required)\n",
+        "#   MONOKULO_BELL_SQUARE_WEBHOOK_KEY\n",
+        "#   MONOKULO_BELL_CLOVER_AUTH_CODE\n",
+        "#   MONOKULO_BELL_VAPID_KEY (required)\n",
         "[bell]\n",
         "# listen = \"127.0.0.1:8445\"\n",
         "# registration_failure_limit = 20\n",
@@ -86,9 +83,9 @@ fn the_help_names_the_three_secrets() {
     assert!(output.status.success());
     let help = text(&output);
     for secret in [
-        "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
-        "MONOKULAR_BELL_CLOVER_AUTH_CODE",
-        "MONOKULAR_BELL_VAPID_KEY",
+        "MONOKULO_BELL_SQUARE_WEBHOOK_KEY",
+        "MONOKULO_BELL_CLOVER_AUTH_CODE",
+        "MONOKULO_BELL_VAPID_KEY",
     ] {
         assert!(help.contains(secret), "{secret}: {help}");
     }
@@ -111,21 +108,26 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
     );
     let with_clover_code = [SECRETS[0], SECRETS[1], CLOVER_CODE];
     let clover_only = [SECRETS[1], CLOVER_CODE];
-    let cases: [Case; 11] = [
+    let both_names = [
+        SECRETS[0],
+        SECRETS[1],
+        ("MONOKULAR_BELL_VAPID_KEY", &"02".repeat(32)),
+    ];
+    let cases: [Case; 12] = [
         (
             ready.clone(),
             &SECRETS[1..],
-            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set",
+            "MONOKULO_BELL_SQUARE_WEBHOOK_KEY must be set",
         ),
         (
             clover.clone(),
             &SECRETS[1..],
-            "MONOKULAR_BELL_CLOVER_AUTH_CODE must be set",
+            "MONOKULO_BELL_CLOVER_AUTH_CODE must be set",
         ),
         (
             ready.clone(),
             &with_clover_code,
-            "MONOKULAR_BELL_CLOVER_AUTH_CODE is set but bell.clover.application_id isn't",
+            "MONOKULO_BELL_CLOVER_AUTH_CODE is set but bell.clover.application_id isn't",
         ),
         (
             clover.replace("[bell.clover]", "[bell.clover]\nenvironment = \"mars\""),
@@ -148,7 +150,7 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
         (
             ready.clone(),
             &SECRETS[..1],
-            "MONOKULAR_BELL_VAPID_KEY must be set",
+            "MONOKULO_BELL_VAPID_KEY must be set",
         ),
         (
             ready.replace("public_uri = \"https://bell.example.org\"\n", ""),
@@ -158,7 +160,7 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
         (
             ready.replace("application_id = \"sq0idp-Test\"\n", ""),
             &SECRETS,
-            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY is set but bell.square.application_id isn't",
+            "MONOKULO_BELL_SQUARE_WEBHOOK_KEY is set but bell.square.application_id isn't",
         ),
         (
             ready.replace("sq0idp-Test", "sandbox-sq0idb-Test"),
@@ -169,6 +171,11 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
             format!("{ready}\n[bell.unknown]\nkey = 1\n"),
             &SECRETS,
             "bell.unknown.key",
+        ),
+        (
+            ready.clone(),
+            &both_names,
+            "MONOKULAR_BELL_VAPID_KEY and MONOKULO_BELL_VAPID_KEY are both set, to different values",
         ),
     ];
     for (file, vars, expected) in cases {
@@ -195,18 +202,40 @@ fn the_bell_listens_and_stops_on_sigterm() {
         "listen-square",
         "[bell.square]\napplication_id = \"sq0idp-Test\"\n",
         &SECRETS,
-        "serving Square",
+        &["serving Square"],
+    );
+    // A service file written for monokular-bell: its secrets' old names
+    // are read for a release, each said at start.
+    let old: Vec<(String, &str)> = SECRETS
+        .iter()
+        .map(|(var, value)| (var.replace("MONOKULO_", "MONOKULAR_"), *value))
+        .collect();
+    let old: Vec<(&str, &str)> = old
+        .iter()
+        .map(|(var, value)| (var.as_str(), *value))
+        .collect();
+    listens_and_stops(
+        "listen-old-names",
+        "[bell.square]\napplication_id = \"sq0idp-Test\"\n",
+        &old,
+        &[
+            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY was renamed MONOKULO_BELL_SQUARE_WEBHOOK_KEY",
+            "MONOKULAR_BELL_VAPID_KEY was renamed MONOKULO_BELL_VAPID_KEY",
+            "serving Square",
+        ],
     );
     listens_and_stops(
         "listen-clover",
         "[bell.clover]\napplication_id = \"MONOKULARBELL\"\nenvironment = \"sandbox\"\n\n[logging]\nformat = \"json\"\n",
         &[SECRETS[1], CLOVER_CODE],
-        "serving Clover",
+        &["serving Clover"],
     );
 }
 
 #[cfg(unix)]
-fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], serving: &str) {
+/// The Bell started with `section` and `vars` says each of `lines` in
+/// order, then that it is listening, and stops cleanly on SIGTERM.
+fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], lines: &[&str]) {
     use std::io::{BufRead as _, BufReader};
 
     let dir = dir(tag);
@@ -231,7 +260,7 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], serving: &
         .unwrap();
     // Log lines go to stderr; read on a thread, so a Bell that never says
     // it is listening fails the test instead of hanging it.
-    let (sent, lines) = std::sync::mpsc::channel();
+    let (sent, said_lines) = std::sync::mpsc::channel();
     let stderr = BufReader::new(child.stderr.take().unwrap());
     std::thread::spawn(move || {
         for line in stderr.lines().map_while(Result::ok) {
@@ -240,13 +269,16 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], serving: &
     });
     let wait = std::time::Duration::from_secs(30);
     let said = |what: &str| loop {
-        match lines.recv_timeout(wait) {
+        match said_lines.recv_timeout(wait) {
             Ok(line) if line.contains(what) => return Some(line),
             Ok(_) => {}
             Err(_) => return None,
         }
     };
-    let listening = said(serving).and_then(|_| said("the Bell is listening"));
+    let listening = lines
+        .iter()
+        .try_for_each(|line| said(line).map(|_| ()))
+        .and_then(|()| said("the Bell is listening"));
     if listening.is_none() {
         let _ = child.kill();
     }

@@ -29,7 +29,7 @@ use crate::settings::{CloverApplicationId, CloverEnvironment, ServiceUrl};
 /// The header carrying the app's Auth Code on every webhook.
 pub const AUTH_HEADER: &str = "x-clover-auth";
 
-/// The Clover app's Auth Code (`MONOKULAR_BELL_CLOVER_AUTH_CODE`): the
+/// The Clover app's Auth Code (`MONOKULO_BELL_CLOVER_AUTH_CODE`): the
 /// whole of a webhook's authentication, as Clover signs nothing (decision 49).
 #[derive(Clone, PartialEq)]
 pub struct AuthCode(Secret);

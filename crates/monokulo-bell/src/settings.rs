@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use abuse::TrustedProxies;
 use live_settings::{
-    AnySetting, BindAddr, Env, FieldError, MemoryStore, Registry, Secret, Section, SettingKind,
-    SettingValue, Snapshot, settings,
+    AnySetting, BindAddr, Env, FieldError, MemoryStore, Registry, Renamed, Secret, Section,
+    SettingKind, SettingValue, Snapshot, settings,
 };
 use push::{Contact, Endpoint, VapidKey};
 
@@ -101,7 +101,7 @@ settings! {
     SQUARE_APPLICATION_ID: Option<ApplicationId> {
         key: "bell.square.application_id",
         default: None,
-        description: "The Square application whose webhooks this Bell receives, and which the tills using it sign in through: sq0idp-… in production, sandbox-sq0idb-… in the sandbox. Set, the Bell serves Square tills (and MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set too); unset, it serves none.",
+        description: "The Square application whose webhooks this Bell receives, and which the tills using it sign in through: sq0idp-… in production, sandbox-sq0idb-… in the sandbox. Set, the Bell serves Square tills (and MONOKULO_BELL_SQUARE_WEBHOOK_KEY must be set too); unset, it serves none.",
         example: "sq0idp-Monokular0Bell0Example",
         applies: Restart,
     },
@@ -121,7 +121,7 @@ settings! {
     },
     SQUARE_WEBHOOK_KEY: Secret {
         key: "bell.square.webhook_key",
-        env: "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
+        env: "MONOKULO_BELL_SQUARE_WEBHOOK_KEY",
         default: Secret::default(),
         description: "The signature key of the Square application's webhook subscription, from the Developer Console's Webhooks page: a webhook whose signature it doesn't check is answered 401 and dropped. Set when, and only when, bell.square.application_id is.",
         applies: Restart,
@@ -130,7 +130,7 @@ settings! {
     CLOVER_APPLICATION_ID: Option<CloverApplicationId> {
         key: "bell.clover.application_id",
         default: None,
-        description: "The Clover app whose webhooks this Bell receives, and which the tills using it sign in through: its App ID, 13 letters and digits, from the developer dashboard of the environment below. Set, the Bell serves Clover tills (and MONOKULAR_BELL_CLOVER_AUTH_CODE must be set too); unset, it serves none.",
+        description: "The Clover app whose webhooks this Bell receives, and which the tills using it sign in through: its App ID, 13 letters and digits, from the developer dashboard of the environment below. Set, the Bell serves Clover tills (and MONOKULO_BELL_CLOVER_AUTH_CODE must be set too); unset, it serves none.",
         example: "MONOKULARBELL",
         applies: Restart,
     },
@@ -150,7 +150,7 @@ settings! {
     },
     CLOVER_AUTH_CODE: Secret {
         key: "bell.clover.auth_code",
-        env: "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+        env: "MONOKULO_BELL_CLOVER_AUTH_CODE",
         default: Secret::default(),
         description: "The Clover app's Auth Code, from the developer dashboard's Webhooks page: Clover sends it as the X-Clover-Auth header of every webhook, and one without it is answered 401 and dropped. Set when, and only when, bell.clover.application_id is.",
         applies: Restart,
@@ -158,7 +158,7 @@ settings! {
     },
     VAPID_KEY: Secret {
         key: "bell.vapid_key",
-        env: "MONOKULAR_BELL_VAPID_KEY",
+        env: "MONOKULO_BELL_VAPID_KEY",
         default: Secret::default(),
         check: check_vapid_key,
         description: "The Bell's VAPID private key (RFC 8292), which signs every ding: 32 bytes as 64 hex digits, such as `openssl rand -hex 32` makes. Its public key is what the tills' push subscriptions are made for (GET /v1/info), so keep it: a new key leaves every registration's subscription refusing the Bell's dings.",
@@ -182,6 +182,29 @@ settings! {
         applies: Restart,
     },
 }
+
+/// The secrets' variables as they were named in the monokular repository,
+/// read in place of their new names, with a warning at start, for one
+/// release (decision 68): a service file written for monokular-bell still
+/// starts monokulo-bell. The first version tag after the one that ships
+/// this removes it.
+pub const RENAMED_ENV: &[Renamed] = &[
+    Renamed {
+        old: "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
+        new: "MONOKULO_BELL_SQUARE_WEBHOOK_KEY",
+        since: "2026-10-29",
+    },
+    Renamed {
+        old: "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+        new: "MONOKULO_BELL_CLOVER_AUTH_CODE",
+        since: "2026-10-29",
+    },
+    Renamed {
+        old: "MONOKULAR_BELL_VAPID_KEY",
+        new: "MONOKULO_BELL_VAPID_KEY",
+        since: "2026-10-29",
+    },
+];
 
 /// Why the settings can't be used: every problem, one per line.
 #[derive(Debug, thiserror::Error)]
@@ -735,37 +758,31 @@ pub(crate) mod tests {
 
     /// The VAPID key alone: what a Bell needs whichever point of sale it
     /// serves.
-    const SECRETS: &[(&str, &str)] = &[("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX)];
+    const SECRETS: &[(&str, &str)] = &[("MONOKULO_BELL_VAPID_KEY", VAPID_HEX)];
 
     /// The VAPID key and Square's webhook key: for a Square Bell.
     const SQUARE_SECRETS: &[(&str, &str)] = &[
-        (
-            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
-            "Ibxx_5AKakO-3qeNVR61Dw",
-        ),
-        ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+        ("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", "Ibxx_5AKakO-3qeNVR61Dw"),
+        ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
     ];
 
     /// The VAPID key and Clover's auth code: for a Clover Bell.
     const CLOVER_SECRETS: &[(&str, &str)] = &[
         (
-            "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+            "MONOKULO_BELL_CLOVER_AUTH_CODE",
             "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d",
         ),
-        ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+        ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
     ];
 
     /// Both points of sale's secrets and the VAPID key.
     const BOTH_SECRETS: &[(&str, &str)] = &[
+        ("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", "Ibxx_5AKakO-3qeNVR61Dw"),
         (
-            "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
-            "Ibxx_5AKakO-3qeNVR61Dw",
-        ),
-        (
-            "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+            "MONOKULO_BELL_CLOVER_AUTH_CODE",
             "9f2d4a8c-6b1e-4f3a-9c7d-2e5b8a1f4c6d",
         ),
-        ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+        ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
     ];
 
     const SQUARE_ON: (&str, &str) = ("bell.square.application_id", "sq0idp-Test");
@@ -876,39 +893,39 @@ pub(crate) mod tests {
             (
                 &[SQUARE_ON],
                 SECRETS,
-                "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set when bell.square.application_id is",
+                "MONOKULO_BELL_SQUARE_WEBHOOK_KEY must be set when bell.square.application_id is",
             ),
             (
                 &[CLOVER_ON],
                 SECRETS,
-                "MONOKULAR_BELL_CLOVER_AUTH_CODE must be set when bell.clover.application_id is",
+                "MONOKULO_BELL_CLOVER_AUTH_CODE must be set when bell.clover.application_id is",
             ),
             (
                 &[SQUARE_ON],
                 BOTH_SECRETS,
-                "MONOKULAR_BELL_CLOVER_AUTH_CODE is set but bell.clover.application_id isn't",
+                "MONOKULO_BELL_CLOVER_AUTH_CODE is set but bell.clover.application_id isn't",
             ),
             (
                 &[CLOVER_ON],
                 BOTH_SECRETS,
-                "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY is set but bell.square.application_id isn't",
+                "MONOKULO_BELL_SQUARE_WEBHOOK_KEY is set but bell.square.application_id isn't",
             ),
-            (&[], &[], "MONOKULAR_BELL_VAPID_KEY must be set"),
+            (&[], &[], "MONOKULO_BELL_VAPID_KEY must be set"),
             (
                 &[],
-                &[("MONOKULAR_BELL_VAPID_KEY", "abc")],
-                "MONOKULAR_BELL_VAPID_KEY",
+                &[("MONOKULO_BELL_VAPID_KEY", "abc")],
+                "MONOKULO_BELL_VAPID_KEY",
             ),
             (
                 &[],
                 &[
                     // The curve's order: not a private key.
                     (
-                        "MONOKULAR_BELL_VAPID_KEY",
+                        "MONOKULO_BELL_VAPID_KEY",
                         "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551",
                     ),
                 ],
-                "MONOKULAR_BELL_VAPID_KEY",
+                "MONOKULO_BELL_VAPID_KEY",
             ),
             (
                 &[("bell.public_uri", "http://bell.example.org")],
@@ -954,18 +971,18 @@ pub(crate) mod tests {
             (
                 &[SQUARE_ON],
                 &[
-                    ("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", ""),
-                    ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+                    ("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", ""),
+                    ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
                 ],
-                "MONOKULAR_BELL_SQUARE_WEBHOOK_KEY",
+                "MONOKULO_BELL_SQUARE_WEBHOOK_KEY",
             ),
             (
                 &[CLOVER_ON],
                 &[
-                    ("MONOKULAR_BELL_CLOVER_AUTH_CODE", ""),
-                    ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+                    ("MONOKULO_BELL_CLOVER_AUTH_CODE", ""),
+                    ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
                 ],
-                "MONOKULAR_BELL_CLOVER_AUTH_CODE",
+                "MONOKULO_BELL_CLOVER_AUTH_CODE",
             ),
             (
                 &[("bell.clover.environment", "mars")],
@@ -989,24 +1006,24 @@ pub(crate) mod tests {
             ),
             (
                 &[],
-                &[("MONOKULAR_BELL_VAPID_KEY", "")],
-                "MONOKULAR_BELL_VAPID_KEY",
+                &[("MONOKULO_BELL_VAPID_KEY", "")],
+                "MONOKULO_BELL_VAPID_KEY",
             ),
             (
                 &[],
                 &[
                     // Zero is no private key.
-                    ("MONOKULAR_BELL_VAPID_KEY", ZERO_KEY),
+                    ("MONOKULO_BELL_VAPID_KEY", ZERO_KEY),
                 ],
-                "MONOKULAR_BELL_VAPID_KEY",
+                "MONOKULO_BELL_VAPID_KEY",
             ),
             (
                 &[],
                 &[
                     // 64 characters, not all hex.
-                    ("MONOKULAR_BELL_VAPID_KEY", not_hex.as_str()),
+                    ("MONOKULO_BELL_VAPID_KEY", not_hex.as_str()),
                 ],
-                "MONOKULAR_BELL_VAPID_KEY",
+                "MONOKULO_BELL_VAPID_KEY",
             ),
             (&[("bell.timeout_ms", "0")], SECRETS, "bell.timeout_ms"),
             (&[("bell.timeout_ms", "120001")], SECRETS, "bell.timeout_ms"),
@@ -1099,21 +1116,82 @@ pub(crate) mod tests {
         let error = load_with(
             &[SQUARE_ON],
             &[
-                ("MONOKULAR_BELL_CLOVER_AUTH_CODE", "c"),
-                ("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX),
+                ("MONOKULO_BELL_CLOVER_AUTH_CODE", "c"),
+                ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
             ],
         )
         .await
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY must be set"),
+            error.contains("MONOKULO_BELL_SQUARE_WEBHOOK_KEY must be set"),
             "{error}"
         );
         assert!(
-            error.contains("MONOKULAR_BELL_CLOVER_AUTH_CODE is set"),
+            error.contains("MONOKULO_BELL_CLOVER_AUTH_CODE is set"),
             "{error}"
         );
+    }
+
+    /// A service file written for monokular-bell still starts the Bell for
+    /// a release: each secret is read under its old name, and said.
+    #[tokio::test]
+    async fn the_secrets_old_names_are_read_for_one_release() {
+        let old: Vec<(String, &str)> = BOTH_SECRETS
+            .iter()
+            .map(|(var, value)| (var.replace("MONOKULO_BELL_", "MONOKULAR_BELL_"), *value))
+            .collect();
+        let env = Env::fixed(old.iter().map(|(var, value)| (var.as_str(), *value)))
+            .with_renamed(RENAMED_ENV);
+        let config = load(
+            [SQUARE_ON, CLOVER_ON]
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+            env.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(config.square.webhook_key.is_some());
+        assert!(config.clover.auth_code.is_some());
+        assert!(config.vapid_key.is_some());
+        let warnings = env.renamed_given().unwrap();
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(
+            warnings[2].starts_with(
+                "MONOKULAR_BELL_VAPID_KEY was renamed MONOKULO_BELL_VAPID_KEY on 2026-10-29"
+            ),
+            "{warnings:?}"
+        );
+        // Every new name is a secret's variable here, and every secret has
+        // its old name.
+        let secrets: Vec<&str> = ALL
+            .iter()
+            .filter(|setting| setting.sources().env)
+            .map(|setting| setting.env_var())
+            .collect();
+        let renamed: Vec<&str> = RENAMED_ENV.iter().map(|renamed| renamed.new).collect();
+        assert_eq!(renamed, secrets);
+        for Renamed { old, new, .. } in RENAMED_ENV {
+            assert_eq!(*old, new.replace("MONOKULO_BELL_", "MONOKULAR_BELL_"));
+        }
+    }
+
+    /// Under both names with different values, which was meant can't be
+    /// told: the Bell stops, naming both and neither value.
+    #[test]
+    fn a_secret_under_both_names_must_agree() {
+        let env = Env::fixed([
+            ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
+            ("MONOKULAR_BELL_VAPID_KEY", "02".repeat(32).as_str()),
+        ])
+        .with_renamed(RENAMED_ENV);
+        let error = env.renamed_given().unwrap_err();
+        assert!(
+            error.starts_with("MONOKULAR_BELL_VAPID_KEY and MONOKULO_BELL_VAPID_KEY are both set, to different values"),
+            "{error}"
+        );
+        assert!(!error.contains(VAPID_HEX), "{error}");
     }
 
     /// The secrets never show in the settings' `Debug`.

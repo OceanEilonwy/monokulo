@@ -9,7 +9,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::json;
 use support::*;
 
-/// The public key `/v1/info` gives is the one `MONOKULAR_BELL_VAPID_KEY`'s
+/// The public key `/v1/info` gives is the one `MONOKULO_BELL_VAPID_KEY`'s
 /// private key makes, with the application and its environment.
 #[tokio::test]
 async fn info_shows_the_application_and_the_public_key_of_the_vapid_key() {

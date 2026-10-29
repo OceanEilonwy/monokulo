@@ -578,6 +578,19 @@ pub struct Env {
     /// `server.listen`), so what the admin page says names the option as
     /// it is typed ([`Env::cli_flag`]).
     cli_table: Option<Arc<str>>,
+    /// Variables read under an old name too ([`Env::with_renamed`]).
+    renamed: &'static [Renamed],
+}
+
+/// An environment variable that was renamed: `new` is the name, and `old`
+/// is still read in its place, with a warning, until the release after
+/// `since` removes it ([`Env::with_renamed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Renamed {
+    pub old: &'static str,
+    pub new: &'static str,
+    /// The day it was renamed, as the warning says it.
+    pub since: &'static str,
 }
 
 /// Names only: a variable's value may be a secret (an admin token).
@@ -721,12 +734,61 @@ impl Env {
         self.cli.get(key).cloned()
     }
 
+    /// This environment reading each [`Renamed`] variable's old name when
+    /// its new one isn't set, so a service file written before the rename
+    /// still starts the process; [`Env::renamed_given`] says which old
+    /// names are set.
+    pub fn with_renamed(mut self, renamed: &'static [Renamed]) -> Self {
+        self.renamed = renamed;
+        self
+    }
+
+    /// One warning for each old name ([`Env::with_renamed`]) set in the
+    /// environment, saying to rename it: for the process to log at start.
+    /// An old name and its new one both set to different values is an
+    /// error, naming both but neither value (either may be a secret): which
+    /// one was meant can't be told, so the process stops.
+    pub fn renamed_given(&self) -> Result<Vec<String>, String> {
+        let mut warnings = Vec::new();
+        for Renamed { old, new, since } in self.renamed {
+            let Some(old_value) = self.lookup(old) else {
+                continue;
+            };
+            match self.lookup(new) {
+                Some(new_value) if new_value != old_value => {
+                    return Err(format!(
+                        "{old} and {new} are both set, to different values: {old} was renamed {new} on {since}, so unset {old} and keep the one meant in {new}"
+                    ));
+                }
+                Some(_) => warnings.push(format!(
+                    "{old} is set as well as {new}, to the same value: {old} was renamed {new} on {since}, so unset it"
+                )),
+                None => warnings.push(format!(
+                    "{old} was renamed {new} on {since} and is read in its place until the next release: rename it"
+                )),
+            }
+        }
+        Ok(warnings)
+    }
+
     /// The variable's value. Unset and blank are the same: a blank
-    /// variable must not hide a saved value.
+    /// variable must not hide a saved value. A renamed variable
+    /// ([`Env::with_renamed`]) that isn't set is read under its old name.
     pub fn get(&self, var: &str) -> Option<String> {
         if let Some(value) = self.given.get(var) {
             return Some(value.clone());
         }
+        self.lookup(var).or_else(|| {
+            self.renamed
+                .iter()
+                .find(|renamed| renamed.new == var)
+                .and_then(|renamed| self.lookup(renamed.old))
+        })
+    }
+
+    /// The variable's value in the environment itself (fixed or the
+    /// process's), blank as unset.
+    fn lookup(&self, var: &str) -> Option<String> {
         let value = match &self.fixed {
             Some(vars) => vars.get(var).cloned(),
             None => std::env::var(var).ok(),
