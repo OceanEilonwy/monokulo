@@ -4362,49 +4362,83 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
 #[tokio::test]
 async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
     let (_logs, _) = crate::test_log::capture();
+    // The network with its void due a recheck is set up once; each fault
+    // runs on a copy of it, from a fresh scan state as a run from scratch
+    // would. The custody is shared: this story never fails it, and nothing
+    // here counts its attempts.
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    voided_payments(&store, &orders[0], 1);
+    void_recheck_due(&store);
+    let network = (&store, &custody, &fake, tenants.as_slice(), &orders[0]);
     let mut faults = 0;
     for fault in 0.. {
-        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
-        voided_payments(&store, &orders[0], 1);
-        void_recheck_due(&store);
-        let db = Db::over_shared(Arc::clone(&store));
-        let state = ScanState::default();
-        let seen = store.lock().fail_nth_access(Some(fault));
-        run_round(
-            &state,
-            &inputs(&db, &custody, &fake, &tenants),
-            ScanTuning::DEFAULT.round_budget,
-        )
-        .await;
-        store.lock().fail_nth_access(None);
-        if seen.load(Ordering::Relaxed) <= fault {
+        if !recheck_a_void(network, Some(fault)).await {
             break;
         }
         faults += 1;
-        void_recheck_due(&store);
-        run_round(
-            &state,
-            &inputs(&db, &custody, &fake, &tenants),
-            ScanTuning::DEFAULT.round_budget,
-        )
-        .await
-        .into_result()
-        .unwrap();
-        let payment = &store
-            .lock()
-            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
-            .unwrap()[0];
-        assert_eq!(payment.voided_at, None, "fault {fault}");
-        let reversed = store
-            .lock()
-            .order_events_for_test()
-            .unwrap()
-            .into_iter()
-            .filter(|d| d.event_type == "order.double_spend_reversed")
-            .count();
-        assert_eq!(reversed, 1, "fault {fault}: told {reversed} times");
     }
     assert!(faults > 10, "reached {faults}");
+    assert!(
+        recheck_a_void(network, None).await,
+        "a copy of the network, run clean, restores the void as the sweep's runs do"
+    );
+}
+
+/// One run of the void-recheck sweep on a copy of `network`, with a fault
+/// at SQL access `fault` in its first round; false if the round ran fewer
+/// statements than that.
+async fn recheck_a_void(
+    (store, custody, fake, tenants, order): (
+        &SharedStore,
+        &FlakyKeyCustody,
+        &FakeDaemonClient,
+        &[(crate::store::TenantId, LiveWallet)],
+        &crate::store::OrderId,
+    ),
+    fault: Option<usize>,
+) -> bool {
+    let store = store
+        .lock()
+        .copy_in_memory_for_test()
+        .unwrap()
+        .into_shared();
+    let fake = fake.snapshot();
+    let db = Db::over_shared(Arc::clone(&store));
+    let state = ScanState::default();
+    let seen = store.lock().fail_nth_access(fault);
+    run_round(
+        &state,
+        &inputs(&db, custody, &fake, tenants),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await;
+    store.lock().fail_nth_access(None);
+    if fault.is_some_and(|fault| seen.load(Ordering::Relaxed) <= fault) {
+        return false;
+    }
+    void_recheck_due(&store);
+    run_round(
+        &state,
+        &inputs(&db, custody, &fake, tenants),
+        ScanTuning::DEFAULT.round_budget,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    let payment = &store
+        .lock()
+        .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
+        .unwrap()[0];
+    assert_eq!(payment.voided_at, None, "fault {fault:?}");
+    let reversed = store
+        .lock()
+        .order_events_for_test()
+        .unwrap()
+        .into_iter()
+        .filter(|d| d.event_type == "order.double_spend_reversed")
+        .count();
+    assert_eq!(reversed, 1, "fault {fault:?}: told {reversed} times");
+    true
 }
 
 // -- More edge cases: settlement pages, block commits, job failures -----------
@@ -4582,118 +4616,152 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
 /// failed in turn: the payment is recorded once, at the block's height.
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_0_to_17() {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::part(0, 18)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::part(0, 18)).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_18_to_35() {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::part(18, 36)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::part(18, 36)).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_36_to_53() {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::part(36, 54)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::part(36, 54)).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_54_to_71() {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::part(54, 72)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::part(54, 72)).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_72_to_89() {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::part(72, 90)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::part(72, 90)).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_90_to_107()
 {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::part(90, 108)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::part(90, 108)).await;
 }
 
 #[tokio::test]
 async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from_statements_108_on() {
-    let (_logs, _) = crate::test_log::capture();
-    Faults::rest(108)
-        .sweep(10, commit_a_checkpointed_block_with_a_fault)
-        .await;
+    sweep_a_checkpointed_block(Faults::rest(108)).await;
 }
 
-async fn commit_a_checkpointed_block_with_a_fault(fault: usize) -> bool {
-    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
-    // One transaction more than a unit scans before it looks at the clock.
-    let mut txs = vec![fixture_tx()];
-    txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
-    fake.push_block("big", txs);
-    let db = Db::over_shared(Arc::clone(&store));
-    let state = ScanState::default();
-    run_round(
-        &state,
-        &inputs(&db, &custody, &fake, &tenants),
-        Duration::ZERO,
-    )
-    .await
-    .into_result()
-    .unwrap();
-    assert!(store
-        .lock()
-        .block_checkpoint(
-            monero::Network::Mainnet,
-            &engine_protocol::ids::TenantId::new(tenants[0].0.to_string())
-        )
-        .unwrap()
-        .is_some());
-    let seen = store.lock().fail_nth_access(Some(fault));
-    run_round(
-        &state,
-        &inputs(&db, &custody, &fake, &tenants),
-        ScanTuning::DEFAULT.round_budget,
-    )
-    .await;
-    store.lock().fail_nth_access(None);
-    if seen.load(Ordering::Relaxed) <= fault {
-        return false;
-    }
-    for _ in 0..3 {
+/// A store left part way through a block one transaction bigger than a
+/// unit scans before it looks at the clock, by a round with no time to
+/// spare: what the checkpointed-block sweep faults the next round of.
+struct CheckpointedBlock {
+    store: SharedStore,
+    /// Shared by every fork: this story never fails custody, and nothing
+    /// here counts its attempts.
+    custody: FlakyKeyCustody,
+    fake: FakeDaemonClient,
+    tenants: Vec<(crate::store::TenantId, LiveWallet)>,
+    order: crate::store::OrderId,
+    state: ScanState,
+}
+
+impl CheckpointedBlock {
+    async fn new() -> Self {
+        let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+        // One transaction more than a unit scans before it looks at the clock.
+        let mut txs = vec![fixture_tx()];
+        txs.extend((0..ScanTuning::DEFAULT.txs_per_scan as u8).map(|i| unrelated_tx(100 + i)));
+        fake.push_block("big", txs);
+        let db = Db::over_shared(Arc::clone(&store));
+        let state = ScanState::default();
         run_round(
             &state,
             &inputs(&db, &custody, &fake, &tenants),
-            ScanTuning::DEFAULT.round_budget,
+            Duration::ZERO,
         )
         .await
         .into_result()
         .unwrap();
+        assert!(store
+            .lock()
+            .block_checkpoint(
+                monero::Network::Mainnet,
+                &engine_protocol::ids::TenantId::new(tenants[0].0.to_string())
+            )
+            .unwrap()
+            .is_some());
+        Self {
+            store,
+            custody,
+            fake,
+            tenants,
+            order: orders[0].clone(),
+            state,
+        }
     }
-    let payments = store
-        .lock()
-        .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
-        .unwrap();
-    assert_eq!(payments.len(), 1, "fault {fault}");
-    assert_eq!(payments[0].block_height, Some(21), "fault {fault}");
-    assert_eq!(
-        cursor_of(&store, tenants[0].0.as_str()),
-        Some(21),
-        "fault {fault}"
-    );
-    true
+
+    /// Commits the block on a fork of this store, with a fault at SQL
+    /// access `fault` in the committing round; false if that round ran
+    /// fewer statements than that.
+    async fn commit_with_a_fault(&self, fault: Option<usize>) -> bool {
+        let store = self
+            .store
+            .lock()
+            .copy_in_memory_for_test()
+            .unwrap()
+            .into_shared();
+        let fake = self.fake.snapshot();
+        let state = self.state.fork_for_tests();
+        let (custody, tenants) = (&self.custody, &self.tenants);
+        let db = Db::over_shared(Arc::clone(&store));
+        let seen = store.lock().fail_nth_access(fault);
+        run_round(
+            &state,
+            &inputs(&db, custody, &fake, tenants),
+            ScanTuning::DEFAULT.round_budget,
+        )
+        .await;
+        store.lock().fail_nth_access(None);
+        if fault.is_some_and(|fault| seen.load(Ordering::Relaxed) <= fault) {
+            return false;
+        }
+        for _ in 0..3 {
+            run_round(
+                &state,
+                &inputs(&db, custody, &fake, tenants),
+                ScanTuning::DEFAULT.round_budget,
+            )
+            .await
+            .into_result()
+            .unwrap();
+        }
+        let payments = store
+            .lock()
+            .get_all_payments(&engine_protocol::ids::OrderId::new(self.order.to_string()))
+            .unwrap();
+        assert_eq!(payments.len(), 1, "fault {fault:?}");
+        assert_eq!(payments[0].block_height, Some(21), "fault {fault:?}");
+        assert_eq!(
+            cursor_of(&store, tenants[0].0.as_str()),
+            Some(21),
+            "fault {fault:?}"
+        );
+        true
+    }
+}
+
+/// Fails each SQL statement in `faults` of the round that commits a
+/// checkpointed block, each on a fork of the store left checkpointed (set
+/// up once), and then checks that a clean fork, the last one taken, ends
+/// where every faulted one must.
+async fn sweep_a_checkpointed_block(faults: Faults) {
+    let (_logs, _) = crate::test_log::capture();
+    let checkpointed = &CheckpointedBlock::new().await;
+    faults
+        .sweep(10, async move |fault| {
+            checkpointed.commit_with_a_fault(Some(fault)).await
+        })
+        .await;
+    assert!(checkpointed.commit_with_a_fault(None).await);
 }
 
 /// Every SQL statement of a round working an open reorg job, failed in
@@ -4701,20 +4769,42 @@ async fn commit_a_checkpointed_block_with_a_fault(fault: usize) -> bool {
 #[tokio::test]
 async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
     let (_logs, _) = crate::test_log::capture();
-    Faults::rest(0)
-        .sweep(5, work_a_reorg_job_with_a_fault)
-        .await;
-}
-
-async fn work_a_reorg_job_with_a_fault(fault: usize) -> bool {
+    // The open job and the node's new chain are set up once; each fault
+    // runs on a copy of them, from a fresh scan state as a run from scratch
+    // would.
     let tx = fixture_tx();
     let txid = engine_daemon::fake::tx_id_hex(&tx);
     let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
     fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx.clone()])]);
+    let reorg = (&store, &fake, &orders[0]);
+    Faults::rest(0)
+        .sweep(5, async move |fault| {
+            work_a_reorg_job_with_a_fault(reorg, Some(fault)).await
+        })
+        .await;
+    assert!(
+        work_a_reorg_job_with_a_fault(reorg, None).await,
+        "a copy of the open job, run clean, finishes as the sweep's runs do"
+    );
+}
+
+/// One run of the reorg-job sweep on a copy of `reorg`, with a fault at
+/// SQL access `fault` in its first round; false if the round ran fewer
+/// statements than that.
+async fn work_a_reorg_job_with_a_fault(
+    (store, fake, order): (&SharedStore, &FakeDaemonClient, &crate::store::OrderId),
+    fault: Option<usize>,
+) -> bool {
+    let store = store
+        .lock()
+        .copy_in_memory_for_test()
+        .unwrap()
+        .into_shared();
+    let fake = fake.snapshot();
     let custody = FlakyKeyCustody::default();
     let db = Db::over_shared(Arc::clone(&store));
     let state = ScanState::default();
-    let seen = store.lock().fail_nth_access(Some(fault));
+    let seen = store.lock().fail_nth_access(fault);
     run_round(
         &state,
         &inputs(&db, &custody, &fake, &[]),
@@ -4722,7 +4812,7 @@ async fn work_a_reorg_job_with_a_fault(fault: usize) -> bool {
     )
     .await;
     store.lock().fail_nth_access(None);
-    if seen.load(Ordering::Relaxed) <= fault {
+    if fault.is_some_and(|fault| seen.load(Ordering::Relaxed) <= fault) {
         return false;
     }
     for _ in 0..4 {
@@ -4739,16 +4829,16 @@ async fn work_a_reorg_job_with_a_fault(fault: usize) -> bool {
             .reorg_job(monero::Network::Mainnet)
             .unwrap()
             .is_none(),
-        "fault {fault}: the job finished"
+        "fault {fault:?}: the job finished"
     );
     assert_eq!(
         store
             .lock()
-            .get_all_payments(&engine_protocol::ids::OrderId::new(orders[0].to_string()))
+            .get_all_payments(&engine_protocol::ids::OrderId::new(order.to_string()))
             .unwrap()[0]
             .block_height,
         Some(10),
-        "fault {fault}"
+        "fault {fault:?}"
     );
     true
 }
