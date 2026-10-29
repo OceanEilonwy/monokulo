@@ -70,6 +70,7 @@ fn init_writes_the_options_file_and_never_over_one() {
         "# square.environment = \"production\"\n",
         "# clover.environment = \"north_america\"\n",
         "[logging]\n",
+        "# format = \"auto\"\n",
     ] {
         assert!(written.contains(line), "{line:?} in {written}");
     }
@@ -198,7 +199,7 @@ fn the_bell_listens_and_stops_on_sigterm() {
     );
     listens_and_stops(
         "listen-clover",
-        "[bell.clover]\napplication_id = \"MONOKULARBELL\"\nenvironment = \"sandbox\"\n",
+        "[bell.clover]\napplication_id = \"MONOKULARBELL\"\nenvironment = \"sandbox\"\n\n[logging]\nformat = \"json\"\n",
         &[SECRETS[1], CLOVER_CODE],
         "serving Clover",
     );
@@ -240,23 +241,29 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], serving: &
     let wait = std::time::Duration::from_secs(30);
     let said = |what: &str| loop {
         match lines.recv_timeout(wait) {
-            Ok(line) if line.contains(what) => return true,
+            Ok(line) if line.contains(what) => return Some(line),
             Ok(_) => {}
-            Err(_) => return false,
+            Err(_) => return None,
         }
     };
-    let listening = said(serving) && said("the Bell is listening");
-    if !listening {
+    let listening = said(serving).and_then(|_| said("the Bell is listening"));
+    if listening.is_none() {
         let _ = child.kill();
     }
-    assert!(listening, "the Bell never said it was listening");
+    let line = listening.expect("the Bell never said it was listening");
+    // `logging.format`: JSON lines when asked, readable text otherwise
+    // (`auto` away from a terminal is JSON, so the default isn't asked).
+    if section.contains("format = \"json\"") {
+        let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert!(parsed.is_object(), "{line}");
+    }
     assert!(store.exists(), "its database is made at bell.store_path");
     let killed = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status()
         .unwrap();
     assert!(killed.success());
-    assert!(said("shut down cleanly"));
+    assert!(said("shut down cleanly").is_some());
     let status = child.wait().unwrap();
     assert!(status.success(), "{status}");
     let _ = std::fs::remove_dir_all(dir);

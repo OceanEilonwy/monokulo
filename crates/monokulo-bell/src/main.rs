@@ -9,20 +9,25 @@
 //! environment only. Anything invalid stops the Bell before it listens.
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+// A failure before logging is set up is told on stderr, and ends the
+// process with a failing status.
+#![expect(
+    clippy::print_stderr,
+    clippy::exit,
+    reason = "boot failures are reported on stderr and end the process"
+)]
 
-use std::io::IsTerminal as _;
 use std::time::Instant;
 
 use live_settings::{OptionsFile, Snapshot};
 use monokulo_bell::Bell;
-use monokulo_bell::settings::{self, LOGGING_LEVEL};
-use service_runtime::shutdown::GRACE;
-use tracing_subscriber::EnvFilter;
+use monokulo_bell::settings::{self, LOGGING_FORMAT, LOGGING_LEVEL};
+use service_runtime::shutdown::{GRACE, LOG_FLUSH};
 
 /// Ends the process at start, saying why: in the log once it is set up,
 /// on stderr before.
 fn stop(message: impl std::fmt::Display) -> ! {
-    if tracing::dispatcher::has_been_set() {
+    if telemetry::global().is_some() {
         tracing::error!("{message}");
     } else {
         eprintln!("{message}");
@@ -45,16 +50,12 @@ fn main() {
         .unwrap_or_else(|e| stop(e));
     let early = Snapshot::new(values.clone(), start.env.clone());
     // A level that doesn't parse is reported by the registry below; until
-    // then the default stands in.
-    let filter = EnvFilter::builder()
-        .parse(early.get(&LOGGING_LEVEL).trim())
-        .unwrap_or_else(|_| EnvFilter::new(LOGGING_LEVEL.default_value()));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
-        // Colours at a terminal only, not in a service manager's journal.
-        .with_ansi(std::io::stderr().is_terminal())
-        .init();
+    // then telemetry's default stands in.
+    let telemetry = telemetry::init_with(
+        "monokulo-bell",
+        &early.get(&LOGGING_LEVEL),
+        telemetry::Format::chosen(early.get(&LOGGING_FORMAT)),
+    );
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -95,5 +96,6 @@ fn main() {
             Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
             Err(_) => tracing::warn!(grace = ?GRACE, "requests or dings still running after the grace period, exiting anyway"),
         }
+        telemetry.flush(LOG_FLUSH).await;
     });
 }
