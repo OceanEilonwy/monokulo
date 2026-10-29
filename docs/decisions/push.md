@@ -1378,3 +1378,12 @@ after group 2's last entry (150).
      The Bell, the stable git consumer it was for, is now
      `crates/monokulo-bell` here, built on nightly with everything else
      from path dependencies (`docs/decisions/bell.md` 69).
+
+162. **The standalone relay has `--check` and a status listener on
+     loopback (`status.listen`, `127.0.0.1:8446`, standalone only); TLS
+     stays a proxy's job.** Recorded with the Bell's in
+     `docs/decisions/packaging.md` 1 to 12: `Relay::check` is the first
+     half of `Relay::start`, the status is a listener of its own that
+     takes a loopback address only and refuses another host, it carries
+     counts, readiness and the last delivery's outcome, never a token or
+     an endpoint, and inside monokulo the admin card stays the status.

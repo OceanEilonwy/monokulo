@@ -622,3 +622,10 @@ is final; these are the calls it left open.
 73. **The stand-ins stay stdlib Python under `tools/`, run by no CI job
     here**, as in monokular: the Bell's own tests have stand-ins of their
     own in Rust. Their docstrings name the new variables.
+74. **The Bell has `--check` and a status listener on loopback
+    (`status.listen`, `127.0.0.1:8447`); TLS stays its proxy's.** Recorded
+    with the relay's in `docs/decisions/packaging.md` 1 to 12: `Bell::check`
+    is the first half of `Bell::start`, so the adapters' log lines now come
+    after every check passes rather than as each adapter is built; the
+    status counts registrations, says which points of sale are on and how
+    the last ding went, never a merchant, location, token or endpoint.
