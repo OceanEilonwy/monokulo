@@ -35,6 +35,27 @@ pub struct PageQuery {
     /// A push target was just removed.
     #[serde(default)]
     removed: Option<u8>,
+    /// A test push's attempt just deleted its target, and the push with
+    /// it: why (`gone`, `limit`), from which host, and what answered.
+    #[serde(default)]
+    dropped: Option<String>,
+    #[serde(default)]
+    host: Option<String>,
+    #[serde(default)]
+    status: Option<u16>,
+    #[serde(default)]
+    trouble: Option<String>,
+}
+
+impl PageQuery {
+    fn dropped(&self) -> Option<app_page::DroppedTest> {
+        app_page::DroppedTest::from_query(
+            self.dropped.as_deref()?,
+            self.host.as_deref()?,
+            self.status,
+            self.trouble.as_deref(),
+        )
+    }
 }
 
 /// The page's data for the store's app `app_id`; `None` when the store
@@ -157,8 +178,9 @@ pub async fn app_page(
     if fixi {
         return app_page::recent_card(&view).into_response();
     }
-    view.toast = match (tested, query.removed) {
-        (Some(push), _) => {
+    view.toast = match (query.dropped(), tested, query.removed) {
+        (Some(dropped), _, _) => Some(app_page::dropped_toast(&dropped, view.limits.failure_limit)),
+        (None, Some(push), _) => {
             let host = view
                 .targets
                 .iter()
@@ -166,8 +188,8 @@ pub async fn app_page(
                 .map_or_else(|| "The push service".to_owned(), |t| t.target.host.clone());
             Some(app_page::tested_toast(&push, &host, &view.clock))
         }
-        (None, Some(_)) => Some(app_page::removed_toast()),
-        (None, None) => None,
+        (None, None, Some(_)) => Some(app_page::removed_toast()),
+        (None, None, None) => None,
     };
     app_page::page(&chrome, &view).into_response()
 }
@@ -349,6 +371,7 @@ pub async fn test_push(
             .await;
         }
     };
+    let path = crate::views::connected_apps::app_path(id.as_str(), app_id.as_str());
     match due {
         Ok(push) => {
             let sent = crate::push::delivery::send_now(
@@ -369,14 +392,20 @@ pub async fn test_push(
                 recorded = sent.is_ok(),
                 "test push sent from the dashboard"
             );
+            // Its target, and so the push, are gone: the toast can only
+            // come from the redirect.
+            if let Ok(Some(dropped)) = sent {
+                let dropped = app_page::DroppedTest::of(push.target.endpoint.host(), dropped);
+                return crate::base::see_other(format!(
+                    "{path}?{}#card-push-targets",
+                    dropped.query()
+                ));
+            }
         }
         // Its target can't be read: the worker gives it up when it comes due.
         Err(unreadable) => {
             tracing::error!(push_target.id = %unreadable.target_id, error = %unreadable.error, "a test push's target can't be read");
         }
     }
-    crate::base::see_other(format!(
-        "{}?tested={push_id}#card-recent-pushes",
-        crate::views::connected_apps::app_path(id.as_str(), app_id.as_str())
-    ))
+    crate::base::see_other(format!("{path}?tested={push_id}#card-recent-pushes"))
 }

@@ -404,3 +404,16 @@ Numbered from 41.
     instance's own relay's public host** (read from `relay::Handle::view()`
     when stream 1's relay runs; `None` before then and without the
     feature), the only place stream 2 reads the relay seam.
+52. **A test push that deletes its target says so from the redirect, in
+    closed words** (QA round 1). Its 20th failure in a row, or a push
+    service saying the subscription is gone, deletes the target and its
+    pushes, the test's row with them, so `?tested=<id>` had nothing to
+    read back and the page came back without a toast. `send_now` now says
+    whether the attempt dropped its target (`TargetDropped`), and the
+    redirect carries `?dropped=limit|gone&host=…&status=…|trouble=…`
+    instead: `trouble` is one of `app_page::Trouble`'s keys (the words
+    `short_answer` says), never the error's own text, and `host` must
+    parse as a host, so a crafted link can't make the toast say anything
+    the page wouldn't. Not an in-memory flash (decision 12's reason) and
+    not a row kept past the delete (that would keep a dropped target's
+    history the delete is there to end).
