@@ -11,7 +11,14 @@ description = "What a long-running service process needs around its own work: su
 # (resolver 2 keeps it out of every normal build), never in production.
 test-support = []
 
+# The local-only status listener of a standalone service (`status`): the
+# push relay's and the Bell's.
+status = ["dep:axum"]
+
 [dependencies]
+# `status`'s one route. The features the relay and the Bell already build
+# axum with.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"], optional = true }
 parking_lot = "0.12.5"
 serde = { version = "1.0.229", features = ["derive"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
@@ -24,8 +31,14 @@ tokio-util = "0.7.20"
 tracing = "0.1.44"
 
 [dev-dependencies]
+# `status`, for its own tests.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+# `status`'s router called in-process, and its JSON read back.
+http-body-util = "0.1.5"
+serde_json = "1.0.151"
 # Paused time, so supervise's restart backoff is tested without waiting it out.
 tokio = { version = "1.53.1", features = ["full", "test-util"] }
+tower = { version = "0.5.3", features = ["util"] }
 
 [lints]
 workspace = true

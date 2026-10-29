@@ -151,6 +151,7 @@ async fn push(
         .map_err(rate_limited)?;
 
     let delivery = hand_on(&shared, &handle, &request, now).await?;
+    shared.last_delivery.record(delivery.into());
     tracing::debug!(handle = %handle.id.tag(), platform = %handle.platform, app = %handle.app, outcome = ?delivery, "push handed on");
     // Past here the push is handed on or the token is gone: the answer
     // says so even when the bookkeeping fails, since a 500 would have the

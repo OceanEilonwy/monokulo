@@ -31,6 +31,7 @@ mod limits;
 mod problem;
 mod routes;
 pub mod settings;
+pub mod status;
 mod upstream;
 
 use std::future::Future;
@@ -44,9 +45,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::apns::Apns;
 use crate::fcm::Fcm;
-use crate::handles::{HandleStore, StoreError};
+use crate::handles::{HandleKey, HandleStore, StoreError};
 use crate::limits::Limits;
 use crate::settings::{Apps, PublicUri, RelayConfig};
+use crate::status::Delivered;
 
 /// How often expired handles are deleted. Until then they are already
 /// unknown to every route; the sweep only stops their tokens lingering in
@@ -75,6 +77,49 @@ pub(crate) struct Shared {
     limits: Limits,
     apns: Option<Apns>,
     fcm: Option<Fcm>,
+    /// How the last push handed to APNs or FCM went: the status says.
+    last_delivery: service_runtime::status::Last<Delivered>,
+}
+
+/// A relay's settings, checked as a start checks them, with the clients it
+/// would hand pushes on with: [`Relay::check`], the half of a start that
+/// opens no file and reaches nothing (`--check`), whose result the other
+/// half ([`Relay::start`]) runs on.
+pub struct Checked<'a> {
+    config: &'a RelayConfig,
+    public_uri: PublicUri,
+    handle_key: HandleKey,
+    apns: Option<Apns>,
+    fcm: Option<Fcm>,
+}
+
+impl Checked<'_> {
+    /// What the relay would run on, a line each, as `--check` says it:
+    /// addresses, apps and which platforms are ready, never a key.
+    pub fn facts(&self) -> Vec<String> {
+        let ready = |ready: bool| if ready { "ready" } else { "not configured" };
+        let apps: Vec<&str> = self
+            .config
+            .apps
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect();
+        vec![
+            format!("listens on {}", self.config.listen),
+            format!("public address {}", self.public_uri.origin()),
+            format!(
+                "apps: {}",
+                if apps.is_empty() {
+                    "none".to_owned()
+                } else {
+                    apps.join(", ")
+                }
+            ),
+            format!("APNs: {}", ready(self.apns.is_some())),
+            format!("FCM: {}", ready(self.fcm.is_some())),
+            format!("handles in {}", self.config.store_path.display()),
+        ]
+    }
 }
 
 /// A relay, ready to serve.
@@ -87,24 +132,13 @@ pub struct Relay {
 }
 
 impl Relay {
-    /// Opens the handles' database at `store.path` (making it if need
-    /// be), builds the APNs and FCM clients the settings ask for, and
-    /// starts the hourly sweep of expired handles on this runtime, until
-    /// `stop`: a relay that is started again (monokulo's admin page saving
-    /// its settings) leaves no sweep of the old one behind.
-    pub async fn start(config: &RelayConfig, stop: CancellationToken) -> Result<Relay, StartError> {
+    /// Everything a start checks that needs no file and no network: the
+    /// address and the handle key are set, and the APNs and FCM clients the
+    /// settings ask for can be built. `--check` stops here; [`Relay::start`]
+    /// begins here, so the two can't disagree.
+    pub fn check(config: &RelayConfig) -> Result<Checked<'_>, StartError> {
         let public_uri = config.public_uri.clone().ok_or(StartError::NoPublicUri)?;
-        let path = config.store_path.clone();
-        let key = config.handle_key.clone().ok_or(StartError::NoHandleKey)?;
-        let lifetimes = config.handle_lifetimes;
-        let store = tokio::task::spawn_blocking(move || HandleStore::open(&path, lifetimes, key))
-            .await
-            .map_err(|error| {
-                StartError::Store(StoreError::Open {
-                    path: config.store_path.display().to_string(),
-                    error: error.to_string(),
-                })
-            })??;
+        let handle_key = config.handle_key.clone().ok_or(StartError::NoHandleKey)?;
         let apns = config
             .apns
             .as_ref()
@@ -117,6 +151,39 @@ impl Relay {
             .map(|fcm| Fcm::new(fcm, config.upstream_timeout))
             .transpose()
             .map_err(|error| StartError::Client("FCM", error))?;
+        Ok(Checked {
+            config,
+            public_uri,
+            handle_key,
+            apns,
+            fcm,
+        })
+    }
+
+    /// [`Relay::check`]s the settings, opens the handles' database at
+    /// `store.path` (making it if need be) and starts the hourly sweep of
+    /// expired handles on this runtime, until `stop`: a relay that is
+    /// started again (monokulo's admin page saving its settings) leaves no
+    /// sweep of the old one behind.
+    pub async fn start(config: &RelayConfig, stop: CancellationToken) -> Result<Relay, StartError> {
+        let Checked {
+            public_uri,
+            handle_key,
+            apns,
+            fcm,
+            ..
+        } = Relay::check(config)?;
+        let path = config.store_path.clone();
+        let lifetimes = config.handle_lifetimes;
+        let store =
+            tokio::task::spawn_blocking(move || HandleStore::open(&path, lifetimes, handle_key))
+                .await
+                .map_err(|error| {
+                    StartError::Store(StoreError::Open {
+                        path: config.store_path.display().to_string(),
+                        error: error.to_string(),
+                    })
+                })??;
         tracing::info!(
             relay.origin = %public_uri.origin(),
             relay.apns = apns.is_some(),
@@ -145,6 +212,7 @@ impl Relay {
                 limits: Limits::new(config.limits),
                 apns,
                 fcm,
+                last_delivery: Default::default(),
             }),
         })
     }

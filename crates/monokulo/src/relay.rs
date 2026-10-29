@@ -744,17 +744,27 @@ mod tests {
         .err()
         .unwrap();
         assert!(error.contains("relay.server.public_uri"), "{error}");
-        let error = prepare(
-            &file("[relay.logging]\nlevel = \"debug\"\n"),
-            HashMap::new(),
-            false,
-        )
-        .err()
-        .unwrap();
-        assert!(
-            error.contains("there is no setting called relay.logging.level"),
-            "{error}"
-        );
+        // The standalone relay's own process settings: its logging, and
+        // its status listener (the admin page's card is the status here).
+        for (table, key) in [
+            ("logging", "level = \"debug\""),
+            ("status", "listen = \"127.0.0.1:8446\""),
+        ] {
+            let error = prepare(
+                &file(&format!("[relay.{table}]\n{key}\n")),
+                HashMap::new(),
+                false,
+            )
+            .err()
+            .unwrap();
+            let setting = key.split(' ').next().unwrap();
+            assert!(
+                error.contains(&format!(
+                    "there is no setting called relay.{table}.{setting}"
+                )),
+                "{error}"
+            );
+        }
     }
 
     /// Off, the settings are still checked together, and nothing listens.

@@ -279,6 +279,42 @@ impl SettingValue for BindAddr {
     }
 }
 
+/// An address and port on this machine alone (`127.0.0.0/8` or `[::1]`),
+/// like `127.0.0.1:8446`: for a listener only this machine may reach, such
+/// as a standalone service's status. Any other address is refused as it is
+/// parsed, so a listener bound to one can't be reached from the network
+/// whatever the options file says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopbackAddr(SocketAddr);
+
+impl LoopbackAddr {
+    pub fn addr(self) -> SocketAddr {
+        self.0
+    }
+}
+
+impl SettingValue for LoopbackAddr {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let address: SocketAddr = raw.trim().parse().map_err(|_| {
+            "Enter a loopback address and port, like 127.0.0.1:8446 or [::1]:8446.".to_string()
+        })?;
+        if !address.ip().is_loopback() {
+            return Err(format!(
+                "{address} isn't a loopback address: enter one such as 127.0.0.1:8446, as this is for this machine only."
+            ));
+        }
+        Ok(LoopbackAddr(address))
+    }
+
+    fn render(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn kind() -> SettingKind {
+        SettingKind::Address
+    }
+}
+
 /// An absolute `http` or `https` URL with a host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpUrl(url::Url);

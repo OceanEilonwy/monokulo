@@ -60,7 +60,9 @@ pub use setting::{
     Problem, Renamed, Setting, SettingSource, Snapshot, Source, Sources,
 };
 pub use store::{MemoryStore, SettingsStore, StoreError};
-pub use value::{BindAddr, CommaList, HttpUrl, Json, Secret, SettingKind, SettingValue, MASK};
+pub use value::{
+    BindAddr, CommaList, HttpUrl, Json, LoopbackAddr, Secret, SettingKind, SettingValue, MASK,
+};
 
 /// Re-exported so implementations of [`Reloadable`] don't need their own
 /// dependency on it.

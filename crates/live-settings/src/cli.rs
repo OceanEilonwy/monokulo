@@ -120,6 +120,23 @@ fn with_environment(command: Command, declared: &[&'static dyn AnySetting]) -> C
         .after_long_help(add(after_long, entries(true)))
 }
 
+/// `command` with `--check`, under the options file's heading: read the
+/// options file and the environment, check every setting as a start would,
+/// say what is wrong, and exit, opening and binding nothing. Only a process
+/// that does that adds it (a standalone service: its `main` reads
+/// [`Start::check`]), so no other advertises a flag it would ignore.
+pub fn with_check(command: Command) -> Command {
+    command.arg(
+        Arg::new("check")
+            .long("check")
+            .action(ArgAction::SetTrue)
+            .conflicts_with("init")
+            .help_heading(OPTIONS_FILE)
+            .help("Check the options file and the environment as a start would, say what is wrong, then exit")
+            .long_help("Read the options file and the environment, check every setting as a start would, and exit: 0 with what it would run on, one fact a line and then OK, when it would start; 1 with the reason it wouldn't, on stderr, otherwise. Nothing is opened, made or bound, so it can be run as another user than the service's."),
+    )
+}
+
 /// `command` still accepting the option of each `(key, since)` in
 /// `retired`, a setting removed on `since`, hidden from the help: a
 /// service file that still passes one doesn't stop the process.
@@ -164,12 +181,14 @@ pub fn default_options_path(file: &str) -> PathBuf {
 
 /// What the command line asks of a process before it starts: the settings
 /// it gave (over the environment), the options file to read, and whether
-/// to write that file instead (`--init`).
+/// to write that file instead (`--init`) or only check it (`--check`,
+/// always false for a command without [`with_check`]).
 #[derive(Debug)]
 pub struct Start {
     pub env: crate::Env,
     pub options: PathBuf,
     pub init: bool,
+    pub check: bool,
 }
 
 /// [`Start`] from parsed arguments.
@@ -181,6 +200,12 @@ pub fn start(matches: &ArgMatches, declared: &[&'static dyn AnySetting], file: &
             .cloned()
             .unwrap_or_else(|| default_options_path(file)),
         init: matches.get_flag("init"),
+        check: matches
+            .try_get_one::<bool>("check")
+            .ok()
+            .flatten()
+            .copied()
+            .unwrap_or(false),
     }
 }
 

@@ -1492,6 +1492,34 @@ fn bind_addr_round_trips_and_refuses_an_address_without_a_port() {
     assert_eq!(BindAddr::kind(), SettingKind::Address);
 }
 
+/// A loopback address is taken, IPv4 or IPv6; any other is refused as it
+/// is parsed, so a listener on one can't be reached from elsewhere.
+#[test]
+fn loopback_addr_takes_this_machine_only() {
+    for raw in ["127.0.0.1:8446", "[::1]:8446", " 127.0.0.2:0 "] {
+        let v = LoopbackAddr::parse(raw).unwrap();
+        assert!(v.addr().ip().is_loopback());
+        assert_eq!(LoopbackAddr::parse(&v.render()).unwrap(), v);
+    }
+    for raw in [
+        "0.0.0.0:8446",
+        "[::]:8446",
+        "192.168.1.1:8446",
+        "10.0.0.1:80",
+    ] {
+        let refused = LoopbackAddr::parse(raw).unwrap_err();
+        assert!(
+            refused.contains("isn't a loopback address"),
+            "{raw}: {refused}"
+        );
+    }
+    assert_eq!(
+        LoopbackAddr::parse("localhost:8446").unwrap_err(),
+        "Enter a loopback address and port, like 127.0.0.1:8446 or [::1]:8446."
+    );
+    assert_eq!(LoopbackAddr::kind(), SettingKind::Address);
+}
+
 /// A renamed variable is read under its old name when its new one isn't
 /// set, with a warning to rename it; set under both names it must agree,
 /// or which was meant can't be told and the process stops. Neither the
@@ -2616,6 +2644,25 @@ mod sources {
         assert_eq!(start.env.cli("scan.limit_per_min").as_deref(), Some("50"));
         assert_eq!(start.options, std::path::PathBuf::from("/etc/app.toml"));
         assert!(start.init);
+        // A command without `with_check` has no `--check`, and never checks.
+        assert!(!start.check);
+        assert!(command
+            .clone()
+            .try_get_matches_from(["app", "--check"])
+            .is_err());
+        let checking = crate::cli::with_check(command.clone());
+        let matches = checking
+            .clone()
+            .try_get_matches_from(["app", "--check"])
+            .unwrap();
+        let start = crate::cli::start(&matches, ALL, "app.toml");
+        assert!(start.check && !start.init);
+        assert!(
+            checking
+                .try_get_matches_from(["app", "--check", "--init"])
+                .is_err(),
+            "--check writes nothing, so it can't be asked with --init"
+        );
         let refused = command
             .try_get_matches_from(["app", "--scan-limit-per-min", "500"])
             .unwrap_err()

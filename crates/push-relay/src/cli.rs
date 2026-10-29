@@ -4,6 +4,8 @@
 //! (`live_settings::cli`). Its secrets are listed after the options, with
 //! their environment variables.
 
+use std::sync::LazyLock;
+
 use clap::Command;
 
 const ABOUT: &str = "The push relay of Monokulo, a self-hosted Monero payment gateway: it hands \
@@ -28,6 +30,8 @@ run a relay inside monokulo, under its options file's [relay.*] tables.";
 const EXAMPLES: &str = "Examples:
   monokulo-push-relay --init
       Write the options file, with every setting described, and say where.
+  MONOKULO_RELAY_HANDLE_KEY=\"$(cat handle.key)\" monokulo-push-relay --check
+      Say whether the relay would start on the options file and the environment, and on what.
   MONOKULO_RELAY_HANDLE_KEY=\"$(cat handle.key)\" MONOKULO_RELAY_APNS_KEY=\"$(cat AuthKey_ABCDE12345.p8)\" monokulo-push-relay --server-public-uri https://relay.example.org
       Start the relay, handing pushes on to APNs.";
 
@@ -35,14 +39,24 @@ const EXAMPLES: &str = "Examples:
 /// names another.
 pub const OPTIONS_FILE: &str = "relay.toml";
 
-/// The command line: the options file, then an option per setting.
+/// `--version`: the version, and the commit it was built from when the
+/// build said.
+static VERSION: LazyLock<String> =
+    LazyLock::new(|| service_runtime::status::version(env!("CARGO_PKG_VERSION")));
+
+/// The command line: the options file (`--check` too), then an option per
+/// setting.
 pub fn command() -> Command {
     let command = Command::new("monokulo-push-relay")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(VERSION.as_str())
         .about(ABOUT)
         .long_about(LONG_ABOUT)
         .after_help(EXAMPLES);
-    live_settings::cli::with_settings(command, crate::settings::ALL, OPTIONS_FILE)
+    live_settings::cli::with_check(live_settings::cli::with_settings(
+        command,
+        crate::settings::ALL,
+        OPTIONS_FILE,
+    ))
 }
 
 /// Parses the full argument list, argv[0] included, into the settings it
