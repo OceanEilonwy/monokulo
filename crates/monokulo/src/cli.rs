@@ -355,7 +355,11 @@ mod tests {
             )])
         );
         assert_eq!(args.start.env.cli("relay.enabled").as_deref(), Some("true"));
-        for standalone in ["--relay-logging-level", "--relay-apns-key"] {
+        for standalone in [
+            "--relay-logging-level",
+            "--relay-status-listen",
+            "--relay-apns-key",
+        ] {
             assert!(
                 parse_args(["monokulo", standalone, "x"]).is_err(),
                 "{standalone}"

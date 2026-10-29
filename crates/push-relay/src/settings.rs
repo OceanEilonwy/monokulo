@@ -21,8 +21,8 @@ use std::time::Duration;
 
 use abuse::TrustedProxies;
 use live_settings::{
-    settings, AnySetting, BindAddr, Env, FieldError, Json, MemoryStore, Registry, Secret, Section,
-    SettingKind, SettingValue, SettingsStore, Snapshot,
+    settings, AnySetting, BindAddr, Env, FieldError, Json, LoopbackAddr, MemoryStore, Registry,
+    Secret, Section, SettingKind, SettingValue, SettingsStore, Snapshot,
 };
 use push::jwt::Es256Key;
 use push::{Endpoint, Origin};
@@ -173,6 +173,13 @@ settings! {
         applies: Restart,
         sources: [Env],
     },
+    STATUS_LISTEN: Option<LoopbackAddr> {
+        key: "status.listen",
+        default: live_settings::parsed_default("127.0.0.1:8446"),
+        description: "The loopback address and port the relay answers GET /status on, for this machine only: what it listens on, how many handles it holds, how the last push it handed on went and whether APNs and FCM are ready, as JSON, never a token or an endpoint. A loopback address alone is taken. Empty for none.",
+        example: "127.0.0.1:8446",
+        applies: Restart,
+    },
     LOGGING_LEVEL: String {
         key: "logging.level",
         default: telemetry::DEFAULT_LEVEL.to_owned(),
@@ -191,10 +198,12 @@ settings! {
 }
 
 /// Settings that only mean something for `monokulo-push-relay`: its own
-/// process's logging. Inside monokulo the relay logs through monokulo's
-/// logger, so these aren't among its `--relay-…` options or `[relay.*]`
-/// keys, and given there they stop monokulo as unknown.
-pub const STANDALONE_ONLY: &[&'static dyn AnySetting] = &[&LOGGING_LEVEL, &LOGGING_FORMAT];
+/// process's status listener and logging. Inside monokulo the admin page's
+/// card is the relay's status and it logs through monokulo's logger, so
+/// these aren't among its `--relay-…` options or `[relay.*]` keys, and
+/// given there they stop monokulo as unknown.
+pub const STANDALONE_ONLY: &[&'static dyn AnySetting] =
+    &[&STATUS_LISTEN, &LOGGING_LEVEL, &LOGGING_FORMAT];
 
 /// Every setting a relay inside monokulo has: [`ALL`] less
 /// [`STANDALONE_ONLY`]. What monokulo offers as `--relay-…` and reads from
@@ -238,6 +247,30 @@ pub async fn load(
     config(&registry)
 }
 
+/// `monokulo-push-relay`'s settings: the relay's, and its own process's,
+/// from what [`load`] reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Standalone {
+    pub relay: RelayConfig,
+    pub status: StatusConfig,
+}
+
+/// [`load`] for `monokulo-push-relay`: the relay's settings and its status
+/// listener's.
+pub async fn load_standalone(
+    stored: HashMap<String, String>,
+    env: Env,
+) -> Result<Standalone, LoadError> {
+    let registry = registry(Arc::new(MemoryStore::with(stored)), env, Host::Standalone).await?;
+    let status = registry
+        .read::<StatusConfig>()
+        .map_err(|errors| LoadError(joined(&errors)))?;
+    Ok(Standalone {
+        relay: config(&registry)?,
+        status,
+    })
+}
+
 /// Every relay setting `host` has, over `store` and `env`, checked as
 /// [`load`] checks them (anything wrong is the error) and booted, so it
 /// can describe, check and save them: what monokulo's admin page edits
@@ -256,6 +289,7 @@ pub async fn registry(
     let mut builder = Registry::builder_with_env(store, &declared, env).await;
     builder.section::<RelayConfig>();
     if host == Host::Standalone {
+        builder.section::<StatusConfig>();
         // Read before the registry (logging starts first); registered so
         // a bad value there stops the relay like any other.
         builder.section::<LoggingConfig>();
@@ -273,15 +307,17 @@ pub async fn registry(
 /// The settings a relay started now runs on: what `registry` holds,
 /// saves included.
 pub fn config(registry: &Registry) -> Result<RelayConfig, LoadError> {
-    registry.read::<RelayConfig>().map_err(|errors| {
-        LoadError(
-            errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; "),
-        )
-    })
+    registry
+        .read::<RelayConfig>()
+        .map_err(|errors| LoadError(joined(&errors)))
+}
+
+fn joined(errors: &[FieldError]) -> String {
+    errors
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// The settings the relay runs on, checked together.
@@ -517,6 +553,27 @@ fn fcm(snapshot: &Snapshot, errors: &mut Vec<FieldError>) -> Option<FcmConfig> {
 
 fn days(days: u32) -> Duration {
     Duration::from_secs(u64::from(days) * 86_400)
+}
+
+/// `monokulo-push-relay`'s status listener (`GET /status`), when it has
+/// one: a loopback address by its type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusConfig {
+    pub listen: Option<SocketAddr>,
+}
+
+impl Section for StatusConfig {
+    const NAME: &'static str = "status";
+
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&STATUS_LISTEN]
+    }
+
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(StatusConfig {
+            listen: snapshot.get(&STATUS_LISTEN).map(LoopbackAddr::addr),
+        })
+    }
 }
 
 /// `monokulo-push-relay`'s own logging, read before anything else.
@@ -1300,10 +1357,41 @@ pub(crate) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn the_status_listens_on_this_machine_alone_and_only_on_its_own() {
+        let standalone = |values: &[(&str, &str)]| {
+            let stored = values
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            load_standalone(stored, Env::fixed::<&str, &str>([]))
+        };
+        let status = standalone(&[]).await.unwrap().status;
+        assert_eq!(status.listen, Some("127.0.0.1:8446".parse().unwrap()));
+        let status = standalone(&[("status.listen", "[::1]:9000")])
+            .await
+            .unwrap()
+            .status;
+        assert_eq!(status.listen, Some("[::1]:9000".parse().unwrap()));
+        let off = standalone(&[("status.listen", "")]).await.unwrap().status;
+        assert_eq!(off.listen, None);
+        let error = standalone(&[("status.listen", "0.0.0.0:8446")])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("status.listen") && error.contains("isn't a loopback address"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn the_embedded_relay_has_no_logging_of_its_own() {
         let embedded: Vec<&str> = embedded_settings().iter().map(|s| s.key()).collect();
         assert!(!embedded.contains(&"logging.level"));
+        // Inside monokulo the admin page's card is the status: a
+        // `[relay.status]` table there is unknown, and stops monokulo.
+        assert!(!embedded.contains(&"status.listen"));
         assert!(embedded.contains(&"server.listen"));
         assert_eq!(embedded.len(), ALL.len() - STANDALONE_ONLY.len());
         // Every key has two parts: inside monokulo only tables under

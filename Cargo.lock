@@ -5820,11 +5820,15 @@ dependencies = [
 name = "service-runtime"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "http-body-util",
  "parking_lot",
  "serde",
+ "serde_json",
  "sysinfo 0.39.6",
  "tokio",
  "tokio-util",
+ "tower",
  "tracing",
 ]
 

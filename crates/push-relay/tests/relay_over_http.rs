@@ -1079,3 +1079,101 @@ async fn the_log_carries_no_token_endpoint_or_body_when_pushes_fail_over_http() 
         assert!(!text.contains(secret), "{secret} is in the log: {text}");
     }
 }
+
+/// The status says what the relay listens on, its apps, how many handles
+/// it holds, which platforms are ready and how the last push handed on
+/// went: never a token, an endpoint or a body. Served on a loopback
+/// listener of its own, it answers this machine and refuses a page that
+/// points another name at it.
+#[tokio::test]
+async fn the_status_says_how_the_last_push_went_and_nothing_private_over_http() {
+    let apns = Stub::accepting().await;
+    let fcm = Stub::accepting().await;
+    let relay = TestRelay::start(&apns, &fcm, &[]).await;
+    let listen: std::net::SocketAddr = "0.0.0.0:8444".parse().unwrap();
+    let started_at = now();
+    let report =
+        || async { serde_json::to_value(relay.relay.report(listen, started_at).await).unwrap() };
+    let before = report().await;
+    assert_eq!(
+        before,
+        json!({
+            "service": "monokulo-push-relay",
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": service_runtime::status::commit(),
+            "started_at": started_at,
+            "listen": "0.0.0.0:8444",
+            "public_uri": PUBLIC_URI,
+            "apps": [APP],
+            "handles": { "stored": 0 },
+            "platforms": { "apns": "ready", "fcm": "ready" },
+            "last_delivery": null,
+        })
+    );
+
+    let sender = Arc::new(VapidKey::generate());
+    let keys = ReceiverKeys::generate();
+    let token = apns_token();
+    let endpoint = relay.register("apns", &token, &sender).await;
+    let answered = relay
+        .push(
+            &endpoint,
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    assert_eq!(answered.status, StatusCode::CREATED, "{}", answered.text());
+    let after = report().await;
+    assert_eq!(after["handles"], json!({ "stored": 1 }));
+    assert_eq!(after["last_delivery"]["outcome"], "sent");
+    assert!(within(
+        after["last_delivery"]["at"].as_i64().unwrap(),
+        now()
+    ));
+
+    apns.answer(|_| Answer::status(429).json(json!({"reason": "TooManyRequests"})));
+    relay
+        .push(
+            &endpoint,
+            PushBuilder::new(&sender, encrypted(&keys, b"{}")),
+        )
+        .await;
+    let limited = report().await;
+    assert_eq!(limited["last_delivery"]["outcome"], "unavailable");
+    let text = limited.to_string();
+    let handle = endpoint.rsplit('/').next().unwrap();
+    for private in [token.as_str(), handle, endpoint.as_str()] {
+        assert!(!text.contains(private), "{private} in {text}");
+    }
+
+    // Served as the binary serves it, on loopback.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let at = listener.local_addr().unwrap();
+    let served = relay.relay.clone();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let serving = tokio::spawn(service_runtime::status::serve(
+        listener,
+        move || {
+            let relay = served.clone();
+            async move { relay.report(listen, started_at).await }
+        },
+        stop.clone().cancelled_owned(),
+    ));
+    let client = reqwest::Client::new();
+    let answer = client
+        .get(format!("http://{at}/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), 200);
+    let served: Value = serde_json::from_str(&answer.text().await.unwrap()).unwrap();
+    assert_eq!(served, report().await);
+    let rebound = client
+        .get(format!("http://{at}/status"))
+        .header("host", format!("relay-status.example:{}", at.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rebound.status(), 403);
+    stop.cancel();
+    serving.await.unwrap().unwrap();
+}
