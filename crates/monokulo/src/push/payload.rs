@@ -18,6 +18,7 @@ use serde::Serialize;
 use crate::api::runtime::auth::{self, Key};
 use crate::api::v1::events::Sale;
 use crate::apps::{SaleEvent, SaleKind};
+use crate::push::PushTargetKind;
 use pricing::xmr_amount::format_xmr_trimmed;
 
 /// An `encrypted` target's push: the sale event, at the body version
@@ -131,6 +132,33 @@ impl LiveActivityState {
     }
 }
 
+/// A test push's payload ("Send a test push" on the store's app page,
+/// `Db::queue_test_push`), in the shape of `kind`'s pushes, with
+/// `"test": true` and nothing of a sale: no order, amount, currency,
+/// address, label, link or payment URI.
+///
+/// - `encrypted`: `{api_version, event, test, at}`, the event's name as a
+///   sale's push has it, when it was sent;
+/// - `live-activity`: the state of the event's phase, `test`, `expiresAt`
+///   (when the push's TTL ends) and `waitingCount` 0.
+pub fn test_payload(kind: PushTargetKind, event: SaleKind, at: i64, expires_at: i64) -> String {
+    let json = match kind {
+        PushTargetKind::Encrypted => serde_json::json!({
+            "api_version": crate::webhooks::body::API_VERSION,
+            "event": event.as_str(),
+            "test": true,
+            "at": at,
+        }),
+        PushTargetKind::LiveActivity => serde_json::json!({
+            "phase": Phase::of(event),
+            "test": true,
+            "expiresAt": expires_at,
+            "waitingCount": 0,
+        }),
+    };
+    json.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +268,58 @@ mod tests {
         };
         let json = LiveActivityState::of(&unlabelled, 0, false).to_json();
         assert!(!json.contains("\"sale\""), "{json}");
+    }
+
+    /// A test push says it is one, in the shape of its target's kind, and
+    /// carries nothing of a sale, whatever the event.
+    #[test]
+    fn a_test_push_says_test_and_carries_nothing_of_a_sale() {
+        for event in SaleKind::ALL {
+            let encrypted: serde_json::Value = serde_json::from_str(&test_payload(
+                PushTargetKind::Encrypted,
+                event,
+                1_500,
+                3_300,
+            ))
+            .unwrap();
+            assert_eq!(
+                encrypted,
+                serde_json::json!({
+                    "api_version": crate::webhooks::body::API_VERSION,
+                    "event": event.as_str(), "test": true, "at": 1_500,
+                })
+            );
+            let state: serde_json::Value = serde_json::from_str(&test_payload(
+                PushTargetKind::LiveActivity,
+                event,
+                1_500,
+                3_300,
+            ))
+            .unwrap();
+            assert_eq!(
+                state,
+                serde_json::json!({
+                    "phase": Phase::of(event), "test": true, "expiresAt": 3_300, "waitingCount": 0,
+                })
+            );
+            for json in [&encrypted, &state] {
+                for sale in [
+                    "order_id",
+                    "amount",
+                    "currency",
+                    "address",
+                    "xmr",
+                    "xmr_amount_piconero",
+                    "sale",
+                    "merchant_order_id",
+                    "paymentURI",
+                    "_links",
+                    "device_name",
+                ] {
+                    assert!(json.get(sale).is_none(), "{sale} in {json}");
+                }
+            }
+        }
     }
 
     /// The largest sale an app can make fits a push with room to spare, as

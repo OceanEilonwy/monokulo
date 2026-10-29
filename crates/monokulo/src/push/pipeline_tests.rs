@@ -16,12 +16,14 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use super::delivery::{run_delivery_tick, PushClient, NO_ATTEMPTS_LEFT, OVER_BUDGET};
+use super::delivery::{run_delivery_tick, send_now, PushClient, NO_ATTEMPTS_LEFT, OVER_BUDGET};
+use super::policy;
 use super::Queueing;
 use crate::api::runtime::recording::{connect_app, fixture, Fixture, Recorder, PUBLIC_URI};
+use crate::apps::SaleKind;
 use crate::db::{
-    AppId, LoggedEvent, OrderId, PushAttempt, PushDeliveryRow, PushResult, PushTargetId, Queued,
-    EXPIRED_UNSENT,
+    AppId, ConnectionId, LoggedEvent, OrderId, PushAttempt, PushDeliveryRow, PushResult,
+    PushTargetId, Queued, TestPush, EXPIRED_UNSENT,
 };
 use crate::http::test_support::{api_request, body_json, store_with_keys};
 use crate::settings::PushConfig;
@@ -144,13 +146,29 @@ impl World {
             .unwrap()
     }
 
+    /// Every push queued for `target`, oldest first: its app's, as its
+    /// page reads them, of this target.
     fn pushes(&self, target: &PushTargetId) -> Vec<PushDeliveryRow> {
-        self.fixture
-            .state
-            .db
-            .lock()
-            .push_deliveries(target)
+        let db = self.fixture.state.db.lock();
+        let app: Option<AppId> = db
+            .conn_for_test()
+            .query_row(
+                "SELECT app_id FROM push_targets WHERE id = ?1",
+                [target.as_str()],
+                |row| row.get(0),
+            )
+            .ok();
+        let Some(app) = app else {
+            return Vec::new();
+        };
+        let mut pushes: Vec<PushDeliveryRow> = db
+            .push_deliveries_of_app(&app, u32::MAX)
             .unwrap()
+            .into_iter()
+            .filter(|push| push.push_target_id == *target)
+            .collect();
+        pushes.sort_by_key(|push| push.id);
+        pushes
     }
 
     fn position(&self) -> i64 {
@@ -228,6 +246,7 @@ fn live_activity(client_id: &str, endpoint: &str, include_payment_uri: bool) -> 
 }
 
 /// What the stub push service was sent.
+#[derive(Clone)]
 struct Received {
     path: String,
     headers: HeaderMap,
@@ -428,10 +447,10 @@ async fn an_app_orders_paid_event_queues_a_push_for_each_target_that_wants_it() 
             paid.event_seq,
             paid.event_id.as_str(),
             paid.event_type.as_str(),
-            &paid.order_id,
+            paid.order_id.as_ref(),
             paid.urgency.as_str()
         ),
-        (1, "evt_1", "sale.paid", &order, "high")
+        (1, "evt_1", "sale.paid", Some(&order), "high")
     );
     assert_eq!(paid.topic, policy_topic(&wants_all, &order));
     assert_eq!(paid.next_attempt_at, Some(world.clock.now()));
@@ -553,7 +572,7 @@ async fn sale_waiting_is_queued_for_the_other_apps_when_an_app_makes_an_order() 
         "{}",
         waiting.event_id
     );
-    assert_eq!(waiting.order_id, order);
+    assert_eq!(waiting.order_id.as_ref(), Some(&order));
     // The engine's log wasn't read for it.
     assert_eq!(world.position(), 0);
     // A sale in progress lasts until it expires, at most the default.
@@ -655,7 +674,7 @@ async fn each_target_gets_its_own_topic_for_an_order() {
     for target in [&mine, &theirs] {
         let pushes = world.pushes(target);
         let last = pushes.last().unwrap();
-        assert_eq!(last.order_id, next);
+        assert_eq!(last.order_id.as_ref(), Some(&next));
         assert_ne!(last.topic, topic(target, 0), "{target}");
         assert_eq!(last.topic, policy_topic(target, &next));
     }
@@ -905,13 +924,15 @@ async fn a_live_activity_is_pushed_only_its_own_apps_sales() {
             phase("expired", false),
         ]
     );
-    assert!(y_pushes.iter().all(|p| p.order_id == y_sale));
+    assert!(y_pushes
+        .iter()
+        .all(|p| p.order_id.as_ref() == Some(&y_sale)));
 
     // X's own sale reaches X's island, and not Y's.
     world.queue(&world.event(8, &x_sale, "order.unconfirmed"));
     let x_pushes = world.pushes(&x_island);
     assert_eq!(x_pushes.len(), 1);
-    assert_eq!(x_pushes[0].order_id, x_sale);
+    assert_eq!(x_pushes[0].order_id, Some(x_sale));
     assert_eq!(world.pushes(&y_island).len(), 7);
 }
 
@@ -988,7 +1009,7 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
     let pushes: Vec<(String, i64)> = world
         .pushes(&target)
         .into_iter()
-        .filter(|push| push.order_id == fresh && push.event_type != "sale.waiting")
+        .filter(|push| push.order_id.as_ref() == Some(&fresh) && push.event_type != "sale.waiting")
         .map(|push| (push.event_type, push.expires_at))
         .collect();
     let seen_until = sale_expires_at.clamp(now + 60, now + default_ttl);
@@ -1011,7 +1032,9 @@ async fn a_backlog_read_late_is_pushed_nothing_past_its_ttl() {
     let pushes: Vec<(String, i64)> = world
         .pushes(&target)
         .into_iter()
-        .filter(|push| push.order_id == expired && push.event_type != "sale.waiting")
+        .filter(|push| {
+            push.order_id.as_ref() == Some(&expired) && push.event_type != "sale.waiting"
+        })
         .map(|push| (push.event_type, push.expires_at))
         .collect();
     assert_eq!(pushes, [("sale.seen".to_owned(), expired_at + 90)]);
@@ -1034,6 +1057,7 @@ impl World {
         PushAttempt {
             at: self.clock.now(),
             status: Some(status),
+            duration_ms: 40,
             result: PushResult::Failed {
                 error: format!("{status}"),
                 retry_at,
@@ -1135,6 +1159,7 @@ async fn old_pushes_are_pruned_after_push_keep_days() {
     let delivered = PushAttempt {
         at: start,
         status: Some(201),
+        duration_ms: 40,
         result: PushResult::Delivered,
     };
     for push in [0, 2] {
@@ -1586,7 +1611,7 @@ async fn a_retried_order_is_pushed_as_waiting_once_and_a_shops_order_not_at_all(
     assert_eq!(first, again);
     let pushes = world.pushes(&target);
     assert_eq!(pushes.len(), 1, "{pushes:?}");
-    assert_eq!(pushes[0].order_id, first);
+    assert_eq!(pushes[0].order_id, Some(first));
 
     world.order(&world.fixture.sk.clone()).await;
     assert_eq!(world.pushes(&target).len(), 1);
@@ -1644,7 +1669,7 @@ async fn an_unreadable_push_target_costs_only_its_own_pushes() {
     let pushed: Vec<(OrderId, String)> = world
         .pushes(&fine)
         .into_iter()
-        .map(|push| (push.order_id, push.event_type))
+        .map(|push| (push.order_id.unwrap(), push.event_type))
         .collect();
     assert_eq!(
         pushed,
@@ -2649,3 +2674,244 @@ async fn a_store_over_its_push_budget_leaves_the_relay_to_the_others_over_http()
 // goes over real HTTP.
 #[cfg(feature = "relay")]
 mod relay_tests;
+
+// -- Test pushes (the store's app page) ----------------------------------------
+
+impl World {
+    /// Queues a test push of `event` to the app's `target` now, as the
+    /// app page's form does: its id.
+    fn queue_test(&self, app: &AppId, target: &PushTargetId, event: SaleKind) -> i64 {
+        let now = self.clock.now();
+        self.fixture
+            .state
+            .db
+            .lock()
+            .queue_test_push(&TestPush {
+                store_id: &ConnectionId::new(self.fixture.store_id.clone()),
+                app_id: app,
+                target_id: target,
+                event,
+                at: now,
+                ttl: PushConfig::default().default_ttl,
+                due_at: now + 60,
+            })
+            .unwrap()
+            .expect("the app's target")
+    }
+
+    /// Sends the test push `id` at once, as the app page does, reaching
+    /// what `reach` allows.
+    async fn send_test(&self, id: i64, config: &PushConfig, reach: Reach) {
+        let due = self
+            .fixture
+            .state
+            .db
+            .lock()
+            .waiting_push(id)
+            .unwrap()
+            .expect("waiting")
+            .expect("readable");
+        send_now(
+            &self.fixture.state.db,
+            &self.client,
+            &due,
+            config,
+            reach,
+            &self.clock,
+        )
+        .await
+        .unwrap();
+    }
+
+    fn failures(&self, app: &AppId, target: &PushTargetId) -> u32 {
+        self.fixture
+            .state
+            .db
+            .lock()
+            .get_push_target(app, target)
+            .unwrap()
+            .expect("still there")
+            .failures
+    }
+}
+
+/// A test push goes out as a sale's push does: signed with the instance's
+/// VAPID key, encrypted to the device (`aes128gcm`), with the event's
+/// urgency, its TTL and a topic of its own; the device reads `test: true`
+/// and nothing of a sale. Its row has no order, and says how long the
+/// attempt took.
+#[tokio::test]
+async fn a_test_push_lands_as_a_sales_push_does_and_says_it_is_a_test_over_http() {
+    let world = world().await;
+    let (stub, origin) = Stub::start(201).await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("alerts", &format!("{origin}/up/1"), &device, None),
+        )
+        .await;
+
+    let id = world.queue_test(&app, &target, SaleKind::Paid);
+    world
+        .send_test(id, &PushConfig::default(), Reach::AnyAddress)
+        .await;
+
+    let push = {
+        let received = stub.received.lock();
+        assert_eq!(received.len(), 1);
+        received[0].clone()
+    };
+    assert_eq!(push.path, "/up/1");
+    let header = |name: &str| push.headers.get(name).unwrap().to_str().unwrap().to_owned();
+    assert_eq!(header("content-encoding"), "aes128gcm");
+    assert!(
+        header("authorization").starts_with("vapid t="),
+        "{}",
+        header("authorization")
+    );
+    assert_eq!(header("urgency"), "high");
+    assert_eq!(
+        header("ttl"),
+        PushConfig::default().default_ttl.as_secs().to_string()
+    );
+    let row = world.pushes(&target).pop().unwrap();
+    assert_eq!(
+        header("topic"),
+        policy::test_topic(&target, &row.event_id).as_str()
+    );
+    let plain: Value =
+        serde_json::from_slice(&::push::encrypt::decrypt(&device, &push.body).unwrap()).unwrap();
+    assert_eq!(plain["test"], true);
+    assert_eq!(plain["event"], "sale.paid");
+    for sale in [
+        "order_id",
+        "amount",
+        "address",
+        "_links",
+        "merchant_order_id",
+    ] {
+        assert!(plain.get(sale).is_none(), "{sale} in {plain}");
+    }
+
+    assert!(row.is_test());
+    assert_eq!(row.order_id, None);
+    assert_eq!(row.event_seq, 0);
+    assert!(row.event_id.starts_with("test_"), "{}", row.event_id);
+    assert_eq!(row.event_type, "sale.paid");
+    assert_eq!(row.state(), crate::db::PushState::Delivered);
+    assert_eq!(row.last_status_code, Some(201));
+    assert!(row.last_duration_ms.is_some());
+    assert_eq!(row.next_attempt_at, None);
+    // Sent once: the worker finds nothing left.
+    assert_eq!(world.tick().await, 0);
+    assert_eq!(stub.count(), 1);
+}
+
+/// The privacy rule holds for a test push exactly as for a sale's: a
+/// target on a private address is refused before any request unless
+/// `webhooks.allow_private_urls`, with the same words, counted against
+/// the target the same way, and tried again by the worker; and no
+/// target can be on an onion address at all.
+#[tokio::test]
+async fn a_test_push_to_a_private_address_is_refused_exactly_as_a_sales_push() {
+    let world = world().await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("alerts", "https://10.20.30.40/up/1", &device, None),
+        )
+        .await;
+    let config = PushConfig::default();
+
+    let order = world.order(&ak).await;
+    world.queue(&world.event(1, &order, "order.paid"));
+    run_delivery_tick(
+        &world.fixture.state.db,
+        &world.client,
+        &config,
+        Reach::Public,
+        &world.clock,
+    )
+    .await
+    .unwrap();
+    let sale = world.pushes(&target).pop().unwrap();
+    assert_eq!(world.failures(&app, &target), 1);
+
+    let id = world.queue_test(&app, &target, SaleKind::Paid);
+    world.send_test(id, &config, Reach::Public).await;
+    let test = world
+        .pushes(&target)
+        .into_iter()
+        .find(|push| push.id == id)
+        .unwrap();
+    assert_eq!(world.failures(&app, &target), 2);
+
+    for push in [&sale, &test] {
+        assert_eq!(push.state(), crate::db::PushState::Retrying, "{push:?}");
+        assert_eq!(push.attempt_count, 1);
+        assert_eq!(push.last_status_code, None);
+        assert!(push.next_attempt_at.is_some());
+    }
+    assert_eq!(test.last_error, sale.last_error);
+    let error = test.last_error.unwrap();
+    assert!(error.contains("private or loopback"), "{error}");
+    assert!(!error.contains("10.20.30.40"), "{error}");
+
+    let onion = world
+        .fixture
+        .router
+        .clone()
+        .oneshot(api_request(
+            "POST",
+            "/api/v1/push-targets",
+            Some(&ak),
+            Some(encrypted(
+                "onion",
+                "https://pushexampleqzbqkqmhqkqoniontestonionaddressxxxxxxxxxx.onion/up/1",
+                &device,
+                None,
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(onion.status(), StatusCode::BAD_REQUEST);
+}
+
+/// A test push counts against its store's pushes for the minute, as any
+/// push does: past them it waits, unattempted, for the next minute.
+#[tokio::test]
+async fn a_test_push_counts_against_its_stores_budget() {
+    let world = world().await;
+    let ak = world.fixture.ak.clone();
+    let app = world.app_id(&ak).await;
+    let device = ::push::encrypt::ReceiverKeys::generate();
+    let target = world
+        .register(
+            &ak,
+            encrypted("alerts", "https://10.20.30.40/up/1", &device, None),
+        )
+        .await;
+    let one = PushConfig {
+        per_store_per_minute: 1,
+        ..PushConfig::default()
+    };
+    let first = world.queue_test(&app, &target, SaleKind::Paid);
+    world.send_test(first, &one, Reach::Public).await;
+    let second = world.queue_test(&app, &target, SaleKind::Expired);
+    world.send_test(second, &one, Reach::Public).await;
+
+    let pushes = world.pushes(&target);
+    let first = pushes.iter().find(|p| p.id == first).unwrap();
+    let second = pushes.iter().find(|p| p.id == second).unwrap();
+    assert_eq!(first.attempt_count, 1);
+    assert_eq!(second.attempt_count, 0, "put off, not attempted");
+    assert_eq!(second.state(), crate::db::PushState::Queued);
+    assert!(second.next_attempt_at.unwrap() > world.clock.now());
+    assert_eq!(world.failures(&app, &target), 1);
+}

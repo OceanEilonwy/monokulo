@@ -581,6 +581,18 @@ pub fn build_router(state: AppState) -> Router {
             post(apps::disconnect_submit),
         )
         .route(
+            "/stores/{id}/settings/apps/{app_id}",
+            axum::routing::get(apps::app_page),
+        )
+        .route(
+            "/stores/{id}/settings/apps/{app_id}/push-targets/{target_id}/remove",
+            post(apps::remove_push_target),
+        )
+        .route(
+            "/stores/{id}/settings/apps/{app_id}/test-push",
+            post(apps::test_push),
+        )
+        .route(
             "/stores/{id}/settings/plugins/{integration}/disconnect",
             axum::routing::get(store_site::disconnect_form).post(store_site::disconnect_submit),
         )

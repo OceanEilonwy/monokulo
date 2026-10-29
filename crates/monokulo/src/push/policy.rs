@@ -73,10 +73,24 @@ pub fn ttl(kind: SaleKind, expires_at: i64, now: i64, default_ttl: Ttl) -> Ttl {
 /// for the relay, Apple, Google or a UnifiedPush distributor, however many
 /// stores share this instance's one VAPID key.
 pub fn topic(target: &PushTargetId, order_id: &OrderId) -> Topic {
+    hashed(target, order_id.as_str())
+}
+
+/// The topic of the test push `event_id` (`test_…`, `Db::queue_test_push`)
+/// to `target`: SHA-256(target id ‖ 0x00 ‖ `test:` ‖ event id), as
+/// [`topic`]. Its own, so a test never collapses a sale's push, and an
+/// order's id can never be spelled to collide with it (none starts with
+/// `test:`).
+pub fn test_topic(target: &PushTargetId, event_id: &str) -> Topic {
+    hashed(target, &format!("test:{event_id}"))
+}
+
+/// The first 32 hex digits of SHA-256(target id ‖ 0x00 ‖ `of`).
+fn hashed(target: &PushTargetId, of: &str) -> Topic {
     let digest = Sha256::new()
         .chain_update(target.as_str().as_bytes())
         .chain_update([0])
-        .chain_update(order_id.as_str().as_bytes())
+        .chain_update(of.as_bytes())
         .finalize();
     let hex = hex::encode(&digest[..Topic::MAX_LEN / 2]);
     Topic::parse(&hex).unwrap_or_else(|_| unreachable!("32 hex digits are a topic"))
@@ -166,6 +180,13 @@ mod tests {
         assert_ne!(super::topic(&sibling, &order), topic);
         let order_alone = hex::encode(&Sha256::digest(order.as_str().as_bytes())[..16]);
         assert_ne!(topic.as_str(), order_alone);
+        // A test's topic is its own: never an order's, never another test's.
+        let test = test_topic(&target, "test_1");
+        assert_eq!(test.as_str().len(), 32);
+        assert_ne!(test, topic);
+        assert_ne!(test, super::topic(&target, &OrderId::new("test_1")));
+        assert_ne!(test, test_topic(&target, "test_2"));
+        assert_ne!(test, test_topic(&sibling, "test_1"));
         // The separator: no id's end can run into the other's start.
         assert_ne!(
             super::topic(&PushTargetId::new("pt_a"), &OrderId::new("border")),
