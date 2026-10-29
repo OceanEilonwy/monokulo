@@ -392,14 +392,14 @@ impl TestBell {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
         .collect();
-        let mut vars = vec![("MONOKULAR_BELL_VAPID_KEY", VAPID_HEX)];
+        let mut vars = vec![("MONOKULO_BELL_VAPID_KEY", VAPID_HEX)];
         if let Some(square_url) = points.square {
             stored.insert(
                 "bell.square.application_id".to_owned(),
                 APPLICATION_ID.to_owned(),
             );
             stored.insert("bell.square.api_url".to_owned(), square_url.to_owned());
-            vars.push(("MONOKULAR_BELL_SQUARE_WEBHOOK_KEY", WEBHOOK_KEY));
+            vars.push(("MONOKULO_BELL_SQUARE_WEBHOOK_KEY", WEBHOOK_KEY));
         }
         if let Some(clover_url) = points.clover {
             stored.insert(
@@ -407,7 +407,7 @@ impl TestBell {
                 CLOVER_APP_ID.to_owned(),
             );
             stored.insert("bell.clover.api_url".to_owned(), clover_url.to_owned());
-            vars.push(("MONOKULAR_BELL_CLOVER_AUTH_CODE", CLOVER_AUTH_CODE));
+            vars.push(("MONOKULO_BELL_CLOVER_AUTH_CODE", CLOVER_AUTH_CODE));
         }
         for (key, value) in values {
             stored.insert((*key).to_owned(), (*value).to_owned());
