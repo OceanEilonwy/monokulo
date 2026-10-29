@@ -2105,6 +2105,7 @@
           }
         ]
       },
+      "actions_last": false,
       "icon": {
         "$slot": [
           "🌐"
@@ -2177,6 +2178,7 @@
           }
         ]
       },
+      "actions_last": false,
       "body": {
         "$slot": [
           {
@@ -2247,6 +2249,91 @@
       }
     },
     "title": "Waiting, with what it needs"
+  },
+  {
+    "component": "ItemCard",
+    "html": "<article class=\"mk-item-card\" data-actions-last><div class=\"mk-item-card-head\"><div class=\"mk-item-card-name\"><h4 class=\"mk-item-card-title\"><span class=\"mk-item-card-icon\" aria-hidden=\"true\">🔔</span><span>Encrypted push</span></h4><span class=\"tag tag-ok\">Healthy</span></div><div class=\"mk-item-card-actions\"><button class=\"mk-btn\" type=\"button\" data-variant=\"danger\" data-size=\"compact\">Remove</button></div></div><p class=\"mk-item-card-meta\">To relay.monokulo.com · since 3 Oct</p><div class=\"mk-item-card-body\"><dl class=\"facts\"><dt>Last push</dt><dd>2 min ago · 201 in 240 ms</dd><dt>Failed in a row</dt><dd>0 · dropped at 20</dd></dl></div></article>",
+    "props": {
+      "actions": {
+        "$slot": [
+          {
+            "$component": "Button",
+            "props": {
+              "block": false,
+              "busy": false,
+              "children": {
+                "$slot": [
+                  "Remove"
+                ]
+              },
+              "disabled": false,
+              "kind": "button",
+              "size": "compact",
+              "variant": "danger"
+            }
+          }
+        ]
+      },
+      "actions_last": true,
+      "body": {
+        "$slot": [
+          {
+            "$component": "Facts",
+            "props": {
+              "facts": [
+                {
+                  "term": "Last push",
+                  "value": {
+                    "$slot": [
+                      "2 min ago · 201 in 240 ms"
+                    ]
+                  }
+                },
+                {
+                  "term": "Failed in a row",
+                  "value": {
+                    "$slot": [
+                      "0 · dropped at 20"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "icon": {
+        "$slot": [
+          "🔔"
+        ]
+      },
+      "meta": {
+        "$slot": [
+          "To relay.monokulo.com · since 3 Oct"
+        ]
+      },
+      "status": {
+        "$slot": [
+          {
+            "$component": "Tag",
+            "props": {
+              "children": {
+                "$slot": [
+                  "Healthy"
+                ]
+              },
+              "tone": "ok"
+            }
+          }
+        ]
+      },
+      "title": {
+        "$slot": [
+          "Encrypted push"
+        ]
+      }
+    },
+    "title": "Actions last on a phone"
   },
   {
     "component": "DnsRecord",

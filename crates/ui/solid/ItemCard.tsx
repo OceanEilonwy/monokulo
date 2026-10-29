@@ -11,7 +11,7 @@ import type { JSX } from '@solidjs/web';
  * below (a record to publish). Cards follow each other with a small
  * gap.
  */
-export interface ItemCardProps extends Omit<JSX.IntrinsicElements["article"], "actions" | "body" | "class" | "classList" | "icon" | "meta" | "status" | "style" | "title"> {
+export interface ItemCardProps extends Omit<JSX.IntrinsicElements["article"], "actions" | "actions_last" | "body" | "class" | "classList" | "data-actions-last" | "icon" | "meta" | "status" | "style" | "title"> {
   /**
    * Its name: a heading (`h4`).
    */
@@ -36,6 +36,13 @@ export interface ItemCardProps extends Omit<JSX.IntrinsicElements["article"], "a
    * Under a line: what it needs next.
    */
   body?: JSX.Element;
+  /**
+   * On a phone the actions come last, under the body and right-aligned,
+   * for a card whose body is what they act on; wider, they stay at
+   * the head's right.
+   * @default false
+   */
+  actions_last?: boolean;
 }
 
 /**
@@ -46,9 +53,9 @@ export interface ItemCardProps extends Omit<JSX.IntrinsicElements["article"], "a
  * gap.
  */
 export function ItemCard(props: ItemCardProps): JSX.Element {
-  const rest = omit(props, "title", "icon", "status", "actions", "meta", "body");
+  const rest = omit(props, "title", "icon", "status", "actions", "meta", "body", "actions_last");
   return (
-    <article class="mk-item-card" {...rest}>
+    <article class="mk-item-card" data-actions-last={(props.actions_last ?? false)} {...rest}>
       <div class="mk-item-card-head">
         <div class="mk-item-card-name">
           <h4 class="mk-item-card-title">

@@ -83,10 +83,15 @@ component! {
         meta: Option<Slot>,
         /// Under a line: what it needs next.
         body: Option<Slot>,
+        /// On a phone the actions come last, under the body and right-aligned,
+        /// for a card whose body is what they act on; wider, they stay at
+        /// the head's right.
+        #[default(false)]
+        actions_last: bool,
         rest: Attrs,
     }
     html {
-        article class="mk-item-card" ..rest {
+        article class="mk-item-card" data-actions-last[actions_last] ..rest {
             div class="mk-item-card-head" {
                 div class="mk-item-card-name" {
                     h4 class="mk-item-card-title" {
@@ -138,6 +143,25 @@ pub(super) fn item_card_examples() -> Vec<(&'static str, ItemCard)> {
                     crate::CopyValue::new("monokulo-verify=6c168c735d314966ac858a7a71de5eaf")
                         .copy_label("Copy the value"),
                 )),
+        ),
+        (
+            "Actions last on a phone",
+            ItemCard::new("Encrypted push")
+                .icon("🔔")
+                .status(crate::Tag::new("Healthy").tone(crate::TagTone::Ok))
+                .actions(remove())
+                .actions_last(true)
+                .meta("To relay.monokulo.com · since 3 Oct")
+                .body(crate::Facts::new(vec![
+                    crate::Fact {
+                        term: "Last push".into(),
+                        value: "2 min ago · 201 in 240 ms".into(),
+                    },
+                    crate::Fact {
+                        term: "Failed in a row".into(),
+                        value: "0 · dropped at 20".into(),
+                    },
+                ])),
         ),
     ]
 }

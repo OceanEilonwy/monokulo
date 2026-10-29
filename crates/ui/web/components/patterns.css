@@ -86,6 +86,12 @@ nav.mk-tabs { margin-block-end: var(--space-lg); }
 .mk-item-card-body > :last-child { margin-bottom: 0; }
 @media (max-width: 640px) {
   .mk-item-card-actions { flex-basis: 100%; justify-content: flex-end; }
+  /* actions_last: the card becomes a column, the head's children join it,
+     and the actions come after the body, right-aligned. */
+  .mk-item-card[data-actions-last] { display: flex; flex-direction: column; }
+  .mk-item-card[data-actions-last] > .mk-item-card-head { display: contents; }
+  .mk-item-card[data-actions-last] .mk-item-card-name { flex: none; }
+  .mk-item-card[data-actions-last] .mk-item-card-actions { order: 1; flex-basis: auto; margin-top: var(--space-md); }
 }
 
 /* A DNS record to publish (DnsRecord): Type, Host, Value, the value taking

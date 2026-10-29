@@ -465,6 +465,7 @@ fn target_card(view: &AppPageView, target: &TargetView, first: bool) -> Markup {
             " · the app calls it " code class="app-code" { (t.client_id) }
         })
         .body(ui::Facts::new(facts).attr("data-facts", "push-target"))
+        .actions_last(true)
         .attr("data-push-target", t.kind.as_str())
         .render()
 }
