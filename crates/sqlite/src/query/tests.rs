@@ -249,7 +249,7 @@ fn rows_values_and_time_have_limits() {
         run(
             &conn,
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n",
-            Limits { timeout: Duration::from_millis(200), ..Limits::PAGE },
+            Limits { timeout: Duration::from_millis(20), ..Limits::PAGE },
             &CLASSES,
         ),
         Err(QueryError::Timeout { seconds: 1 })
@@ -274,14 +274,17 @@ fn a_blob_shows_its_size_and_first_bytes() {
 fn the_connection_is_left_as_it_was() {
     let conn = db();
     let _ = run_page(&conn, "SELECT password_hash FROM users");
-    let _ = run(
-        &conn,
-        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n",
-        Limits {
-            timeout: Duration::from_millis(50),
-            ..Limits::PAGE
-        },
-        &CLASSES,
+    assert_eq!(
+        run(
+            &conn,
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n",
+            Limits {
+                timeout: Duration::from_millis(10),
+                ..Limits::PAGE
+            },
+            &CLASSES,
+        ),
+        Err(QueryError::Timeout { seconds: 1 })
     );
     // No authorizer: the pool's own reads see every column, and PRAGMA works.
     let hash: String = conn
@@ -291,8 +294,8 @@ fn the_connection_is_left_as_it_was() {
         .unwrap();
     assert_eq!(hash, "$argon2id$secret-one");
     conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
-    // No time limit left over either.
-    std::thread::sleep(Duration::from_millis(60));
+    // No time limit left over either: the run above timed out, so its deadline
+    // is already past.
     let n: i64 = conn
         .query_row(
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n LIMIT 200000) SELECT count(*) FROM n",
