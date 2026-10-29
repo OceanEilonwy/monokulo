@@ -1,5 +1,5 @@
-//! `monokulo-bell` as a process: its options file, its help, and what
-//! stops it before it listens.
+//! `monokulo-bell` as a process: its options file, its help, its
+//! version, `--check`, what stops it before it listens, and its status.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -91,7 +91,72 @@ fn the_help_names_the_three_secrets() {
     }
 }
 
-/// Every one of these stops the Bell at start, saying why.
+#[test]
+fn the_version_names_the_binary() {
+    let output = run(&["--version"], &[]);
+    assert!(output.status.success());
+    let version = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        version.starts_with(&format!("monokulo-bell {}", env!("CARGO_PKG_VERSION"))),
+        "{version}"
+    );
+}
+
+/// `--check` says what the Bell would run on, then OK, a secret still
+/// under its old name said first, and opens, makes and binds nothing: not
+/// the database, not its directory, not the ports (taken here, which a
+/// start would fail on).
+#[test]
+fn check_says_what_the_bell_would_run_on_and_touches_nothing() {
+    let dir = dir("check");
+    let store = dir.join("data").join("bell.db");
+    let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port();
+    let path = dir.join("bell.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[bell]\nlisten = \"127.0.0.1:{port}\"\npublic_uri = \"https://bell.example.org\"\nstore_path = '{}'\n\n[bell.square]\napplication_id = \"sq0idp-Test\"\n\n[status]\nlisten = \"127.0.0.1:{port}\"\n",
+            store.display()
+        ),
+    )
+    .unwrap();
+    let vars = [SECRETS[0], ("MONOKULAR_BELL_VAPID_KEY", SECRETS[1].1)];
+    let output = run(&["--options", path.to_str().unwrap(), "--check"], &vars);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output));
+    let said = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = said.lines().collect();
+    assert_eq!(lines.len(), 9, "{said}");
+    assert!(
+        lines[0]
+            .starts_with("warning: MONOKULAR_BELL_VAPID_KEY was renamed MONOKULO_BELL_VAPID_KEY"),
+        "{said}"
+    );
+    assert_eq!(
+        lines[1..4],
+        [
+            format!("listens on 127.0.0.1:{port}").as_str(),
+            "public address https://bell.example.org",
+            "Square: on, application sq0idp-Test (production), webhooks to https://bell.example.org/v1/square/webhook",
+        ]
+    );
+    assert_eq!(lines[4], "Clover: off");
+    assert!(lines[5].starts_with("VAPID public key B"), "{said}");
+    assert_eq!(lines[6], format!("registrations in {}", store.display()));
+    assert_eq!(lines[7], format!("status on 127.0.0.1:{port}"));
+    assert_eq!(lines[8], "OK");
+    // No secret is said.
+    for (_, value) in vars {
+        assert!(!said.contains(value), "{said}");
+    }
+    assert!(output.stderr.is_empty(), "{}", text(&output));
+    assert!(!store.parent().unwrap().exists(), "nothing was made");
+    drop(taken);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Every one of these stops the Bell at start, saying why, and `--check`
+/// says the same, with the same status.
 #[test]
 fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
     let dir = dir("invalid");
@@ -113,7 +178,7 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
         SECRETS[1],
         ("MONOKULAR_BELL_VAPID_KEY", &"02".repeat(32)),
     ];
-    let cases: [Case; 12] = [
+    let cases: [Case; 13] = [
         (
             ready.clone(),
             &SECRETS[1..],
@@ -177,27 +242,44 @@ fn missing_or_invalid_settings_stop_the_bell_before_it_listens() {
             &both_names,
             "MONOKULAR_BELL_VAPID_KEY and MONOKULO_BELL_VAPID_KEY are both set, to different values",
         ),
+        (
+            format!("{ready}\n[status]\nlisten = \"0.0.0.0:8447\"\n"),
+            &SECRETS,
+            "isn't a loopback address",
+        ),
     ];
     for (file, vars, expected) in cases {
         let path = dir.join("bell.toml");
         std::fs::write(&path, &file).unwrap();
-        let output = run(&["--options", path.to_str().unwrap()], vars);
-        assert_eq!(output.status.code(), Some(1), "{file}: {}", text(&output));
-        assert!(
-            text(&output).contains(expected),
-            "{expected}: {}",
-            text(&output)
-        );
+        for check in [false, true] {
+            let options = path.to_str().unwrap();
+            let args: &[&str] = if check {
+                &["--options", options, "--check"]
+            } else {
+                &["--options", options]
+            };
+            let output = run(args, vars);
+            assert_eq!(output.status.code(), Some(1), "{file}: {}", text(&output));
+            assert!(
+                text(&output).contains(expected),
+                "{expected}: {}",
+                text(&output)
+            );
+            if check {
+                assert!(output.stdout.is_empty(), "{}", text(&output));
+            }
+        }
     }
     assert!(!store.exists(), "nothing was opened");
     let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Started with what it needs, for Square or for Clover alone, it opens
-/// its database, listens, and stops cleanly on SIGTERM.
+/// its database, listens, answers its status on loopback, and stops
+/// cleanly on SIGTERM.
 #[cfg(unix)]
 #[test]
-fn the_bell_listens_and_stops_on_sigterm() {
+fn the_bell_listens_serves_its_status_and_stops_on_sigterm_over_http() {
     listens_and_stops(
         "listen-square",
         "[bell.square]\napplication_id = \"sq0idp-Test\"\n",
@@ -244,7 +326,7 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], lines: &[&
     std::fs::write(
         &path,
         format!(
-            "[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = '{}'\n\n{section}",
+            "[status]\nlisten = \"127.0.0.1:0\"\n\n[bell]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://bell.example.org\"\nstore_path = '{}'\n\n{section}",
             store.display()
         ),
     )
@@ -290,6 +372,13 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], lines: &[&
         assert!(parsed.is_object(), "{line}");
     }
     assert!(store.exists(), "its database is made at bell.store_path");
+    let status = said("the Bell's status is listening").expect("the status never listened");
+    let status = status_of(&status);
+    assert!(status.contains("\"service\":\"monokulo-bell\""), "{status}");
+    assert!(
+        status.contains("\"registrations\":{\"stored\":0}"),
+        "{status}"
+    );
     let killed = Command::new("kill")
         .args(["-TERM", &child.id().to_string()])
         .status()
@@ -299,4 +388,30 @@ fn listens_and_stops(tag: &str, section: &str, vars: &[(&str, &str)], lines: &[&
     let status = child.wait().unwrap();
     assert!(status.success(), "{status}");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The body of `GET /status` from the address the log `line` names, over
+/// a plain socket, as the router's status page asks it.
+#[cfg(unix)]
+fn status_of(line: &str) -> String {
+    use std::io::{Read as _, Write as _};
+
+    let parsed: serde_json::Value = serde_json::from_str(line).unwrap();
+    let address = parsed["attributes"]["status.address"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no status.address in {line}"))
+        .to_owned();
+    let mut stream = std::net::TcpStream::connect(&address).unwrap();
+    write!(
+        stream,
+        "GET /status HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    answer
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_owned())
+        .unwrap_or_default()
 }

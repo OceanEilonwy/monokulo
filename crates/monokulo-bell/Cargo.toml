@@ -41,8 +41,8 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 # The shutdown signal and its grace period, and the clock, as monokulo's
-# services have them.
-service-runtime = { path = "../service-runtime" }
+# services have them; its status for this machine (`status`).
+service-runtime = { path = "../service-runtime", features = ["status"] }
 sha2 = "0.11.0"
 # A registration moved to another merchant only by its auth secret, and
 # Clover's Auth Code, each compared in constant time.

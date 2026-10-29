@@ -37,6 +37,7 @@ mod registrations;
 mod routes;
 pub mod settings;
 mod square;
+pub mod status;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -44,14 +45,14 @@ use std::sync::Arc;
 
 use abuse::{ClientIdentity, TrustedProxies};
 use outbound::Reach;
-use push::{Sender, VapidKey};
+use push::{Sender, Topic, VapidKey};
 use rate_limit::RateLimiter;
 
 use crate::clover::Clover;
 use crate::dings::Dings;
 use crate::pos::PointOfSale;
 use crate::registrations::{RegistrationStore, StoreError};
-use crate::settings::BellConfig;
+use crate::settings::{BellConfig, PublicUri};
 use crate::square::Square;
 
 /// The `User-Agent` of every request the Bell makes.
@@ -99,6 +100,8 @@ impl Adapters {
 pub(crate) struct Shared {
     adapters: Adapters,
     vapid_key: Arc<VapidKey>,
+    /// `bell.public_uri`, for the status.
+    public_uri: PublicUri,
     trusted_proxies: TrustedProxies,
     reach: Reach,
     registrations: RateLimiter<ClientIdentity>,
@@ -112,11 +115,63 @@ pub struct Bell {
     shared: Arc<Shared>,
 }
 
+/// A Bell's settings, checked as a start checks them, with the adapters
+/// and the push client it would run on: [`Bell::check`], the half of a
+/// start that opens no file and reaches nothing (`--check`), whose result
+/// the other half ([`Bell::start`]) runs on.
+pub struct Checked<'a> {
+    config: &'a BellConfig,
+    public_uri: PublicUri,
+    adapters: Adapters,
+    vapid_key: Arc<VapidKey>,
+    reach: Reach,
+    sender: Sender,
+    topic: Topic,
+}
+
+impl Checked<'_> {
+    /// What the Bell would run on, a line each, as `--check` says it: its
+    /// addresses, its points of sale and their webhook URLs, and the VAPID
+    /// public key the tills subscribe for. Never a secret.
+    pub fn facts(&self) -> Vec<String> {
+        let mut facts = vec![
+            format!("listens on {}", self.config.listen),
+            format!("public address {}", self.public_uri.as_str()),
+        ];
+        facts.push(match &self.adapters.square {
+            Some(square) => format!(
+                "Square: on, application {} ({}), webhooks to {}",
+                square.application_id().as_str(),
+                square.environment().as_str(),
+                square.notification_url()
+            ),
+            None => "Square: off".to_owned(),
+        });
+        facts.push(match &self.adapters.clover {
+            Some(clover) => format!(
+                "Clover: on, app {} ({}), webhooks to {}",
+                clover.application_id().as_str(),
+                clover.environment().as_str(),
+                self.public_uri.notification_url(PointOfSale::Clover)
+            ),
+            None => "Clover: off".to_owned(),
+        });
+        facts.push(format!("VAPID public key {}", self.vapid_key.public()));
+        facts.push(format!(
+            "registrations in {}",
+            self.config.store_path.display()
+        ));
+        facts
+    }
+}
+
 impl Bell {
-    /// Builds the adapters of the points of sale that are on, opens the
-    /// registrations' database at `bell.store_path` (making it if need be)
-    /// and builds the client for the push services.
-    pub async fn start(config: &BellConfig) -> Result<Bell, StartError> {
+    /// Everything a start checks that needs no file and no network: the
+    /// address, the points of sale that are on and their secrets, the VAPID
+    /// key, and the clients for the points of sale and the push services.
+    /// `--check` stops here; [`Bell::start`] begins here, so the two can't
+    /// disagree.
+    pub fn check(config: &BellConfig) -> Result<Checked<'_>, StartError> {
         let public_uri = config.public_uri.clone().ok_or(StartError::Unset(
             settings::PUBLIC_URI.key,
             "the Bell's address, which the points of sale send their webhooks to",
@@ -131,8 +186,8 @@ impl Bell {
                     "the Square webhook subscription's signature key",
                 ));
             }
-            (Some(application_id), Some(webhook_key)) => {
-                let square = Square::new(
+            (Some(application_id), Some(webhook_key)) => Some(Arc::new(
+                Square::new(
                     config.square.api_url.clone(),
                     application_id.clone(),
                     config.square.environment,
@@ -140,15 +195,8 @@ impl Bell {
                     webhook_key.clone(),
                     config.timeout,
                 )
-                .map_err(|error| StartError::Client("Square", error))?;
-                tracing::info!(
-                    bell.webhook_url = square.notification_url(),
-                    square.application = square.application_id().as_str(),
-                    square.environment = square.environment().as_str(),
-                    "serving Square"
-                );
-                Some(Arc::new(square))
-            }
+                .map_err(|error| StartError::Client("Square", error))?,
+            )),
         };
         let clover = match (&config.clover.application_id, &config.clover.auth_code) {
             (None, _) => None,
@@ -158,23 +206,16 @@ impl Bell {
                     "the Clover app's Auth Code",
                 ));
             }
-            (Some(application_id), Some(auth_code)) => {
-                let clover = Clover::new(
+            (Some(application_id), Some(auth_code)) => Some(Arc::new(
+                Clover::new(
                     config.clover.api_url.clone(),
                     application_id.clone(),
                     config.clover.environment,
                     auth_code.clone(),
                     config.timeout,
                 )
-                .map_err(|error| StartError::Client("Clover", error))?;
-                tracing::info!(
-                    bell.webhook_url = public_uri.notification_url(PointOfSale::Clover),
-                    clover.application = clover.application_id().as_str(),
-                    clover.environment = clover.environment().as_str(),
-                    "serving Clover"
-                );
-                Some(Arc::new(clover))
-            }
+                .map_err(|error| StartError::Client("Clover", error))?,
+            )),
         };
         if square.is_none() && clover.is_none() {
             return Err(StartError::NoPointOfSale);
@@ -187,15 +228,6 @@ impl Bell {
                 settings::VAPID_KEY.env_var,
                 "the key every ding is signed with",
             ))?;
-        let path = config.store_path.clone();
-        let store = tokio::task::spawn_blocking(move || RegistrationStore::open(&path))
-            .await
-            .map_err(|error| {
-                StartError::Store(StoreError::Open {
-                    path: config.store_path.display().to_string(),
-                    error: error.to_string(),
-                })
-            })??;
         let reach = Reach::allowing_private(config.allow_private_endpoints);
         // Redirects off, no proxy and the checking resolver, as monokulo
         // sends its webhooks and pushes: a ding endpoint could name an
@@ -206,18 +238,68 @@ impl Bell {
             .build()
             .map_err(|error| StartError::Client("push", error))?;
         let sender = Sender::new(client, Arc::clone(&vapid_key), public_uri.contact());
+        Ok(Checked {
+            config,
+            public_uri,
+            adapters: Adapters { square, clover },
+            vapid_key,
+            reach,
+            sender,
+            topic: Dings::topic()?,
+        })
+    }
+
+    /// [`Bell::check`]s the settings, then opens the registrations'
+    /// database at `bell.store_path` (making it if need be).
+    pub async fn start(config: &BellConfig) -> Result<Bell, StartError> {
+        let Checked {
+            public_uri,
+            adapters,
+            vapid_key,
+            reach,
+            sender,
+            topic,
+            ..
+        } = Bell::check(config)?;
+        if let Some(square) = &adapters.square {
+            tracing::info!(
+                bell.webhook_url = square.notification_url(),
+                square.application = square.application_id().as_str(),
+                square.environment = square.environment().as_str(),
+                "serving Square"
+            );
+        }
+        if let Some(clover) = &adapters.clover {
+            tracing::info!(
+                bell.webhook_url = public_uri.notification_url(PointOfSale::Clover),
+                clover.application = clover.application_id().as_str(),
+                clover.environment = clover.environment().as_str(),
+                "serving Clover"
+            );
+        }
+        let path = config.store_path.clone();
+        let store = tokio::task::spawn_blocking(move || RegistrationStore::open(&path))
+            .await
+            .map_err(|error| {
+                StartError::Store(StoreError::Open {
+                    path: config.store_path.display().to_string(),
+                    error: error.to_string(),
+                })
+            })??;
         let dings = Dings::new(
             sender,
+            topic,
             store.clone(),
             reach,
             config.registration_failure_limit,
             config.dings_per_merchant_per_minute,
-        )?;
+        );
         tracing::info!(vapid_public_key = %vapid_key.public(), "the Bell is ready");
         Ok(Bell {
             shared: Arc::new(Shared {
-                adapters: Adapters { square, clover },
+                adapters,
                 vapid_key,
+                public_uri,
                 trusted_proxies: config.trusted_proxies.clone(),
                 reach,
                 registrations: RateLimiter::new(config.registrations_per_minute),

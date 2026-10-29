@@ -20,8 +20,8 @@ use std::time::Duration;
 
 use abuse::TrustedProxies;
 use live_settings::{
-    AnySetting, BindAddr, Env, FieldError, MemoryStore, Registry, Renamed, Secret, Section,
-    SettingKind, SettingValue, Snapshot, settings,
+    AnySetting, BindAddr, Env, FieldError, LoopbackAddr, MemoryStore, Registry, Renamed, Secret,
+    Section, SettingKind, SettingValue, Snapshot, settings,
 };
 use push::{Contact, Endpoint, VapidKey};
 
@@ -166,6 +166,13 @@ settings! {
         sources: [Env],
         required: true,
     },
+    STATUS_LISTEN: Option<LoopbackAddr> {
+        key: "status.listen",
+        default: live_settings::parsed_default("127.0.0.1:8447"),
+        description: "The loopback address and port the Bell answers GET /status on, for this machine only: what it listens on, how many registrations it holds, which points of sale are on and how the last ding went, as JSON, never a token, an endpoint or a payment. A loopback address alone is taken. Empty for none.",
+        example: "127.0.0.1:8447",
+        applies: Restart,
+    },
     LOGGING_LEVEL: String {
         key: "logging.level",
         default: telemetry::DEFAULT_LEVEL.to_owned(),
@@ -211,22 +218,33 @@ pub const RENAMED_ENV: &[Renamed] = &[
 #[error("the Bell's settings: {0}")]
 pub struct LoadError(String);
 
+/// What [`load`] reads: the Bell's settings, and its status listener's.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Loaded {
+    pub bell: BellConfig,
+    pub status: StatusConfig,
+}
+
 /// The Bell's settings from `stored` (what its options file holds, by key,
 /// already checked line by line) and `env` (the command line and the
 /// environment). Every value is checked again where it came from, then
 /// together ([`BellConfig`]'s rules); anything wrong is the error, never a
 /// default in its place.
-pub async fn load(stored: HashMap<String, String>, env: Env) -> Result<BellConfig, LoadError> {
+pub async fn load(stored: HashMap<String, String>, env: Env) -> Result<Loaded, LoadError> {
     let store = Arc::new(MemoryStore::with(stored));
     let mut builder = Registry::builder_with_env(store, ALL, env).await;
     let bell = builder.section::<BellConfig>();
+    let status = builder.section::<StatusConfig>();
     // Read before the registry (logging starts first); registered so a bad
     // value there stops the Bell like any other.
     builder.section::<LoggingConfig>();
     builder
         .build()
         .map_err(|error| LoadError(error.to_string()))?;
-    Ok((*bell.load()).clone())
+    Ok(Loaded {
+        bell: (*bell.load()).clone(),
+        status: *status.load(),
+    })
 }
 
 /// The settings the Bell runs on, checked together.
@@ -447,6 +465,27 @@ fn secret_matches_application<T: live_settings::SettingValue>(
     }
 }
 
+/// The Bell's status listener (`GET /status`), when it has one: a
+/// loopback address by its type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusConfig {
+    pub listen: Option<SocketAddr>,
+}
+
+impl Section for StatusConfig {
+    const NAME: &'static str = "status";
+
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&STATUS_LISTEN]
+    }
+
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(StatusConfig {
+            listen: snapshot.get(&STATUS_LISTEN).map(LoopbackAddr::addr),
+        })
+    }
+}
+
 /// `monokulo-bell`'s logging, read before anything else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoggingConfig {
@@ -562,6 +601,11 @@ pub struct PublicUri {
 }
 
 impl PublicUri {
+    /// The address, as set: an origin, `https://bell.example.org`.
+    pub fn as_str(&self) -> &str {
+        &self.base
+    }
+
     /// The URL `pos` sends webhooks to (and Square signs them for).
     pub fn notification_url(&self, pos: PointOfSale) -> String {
         format!("{}{}", self.base, pos.webhook_path())
@@ -753,7 +797,9 @@ pub(crate) mod tests {
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
             .collect();
-        load(stored, Env::fixed(vars.iter().copied())).await
+        load(stored, Env::fixed(vars.iter().copied()))
+            .await
+            .map(|loaded| loaded.bell)
     }
 
     /// The VAPID key alone: what a Bell needs whichever point of sale it
@@ -784,6 +830,34 @@ pub(crate) mod tests {
         ),
         ("MONOKULO_BELL_VAPID_KEY", VAPID_HEX),
     ];
+
+    /// The status listens on this machine alone, on 8447 unless set; set
+    /// empty, nowhere.
+    #[tokio::test]
+    async fn the_status_listens_on_this_machine_alone() {
+        let status = |values: &[(&str, &str)]| {
+            let stored = values
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect();
+            load(stored, Env::fixed(SECRETS.iter().copied()))
+        };
+        let listen = |values| async move { status(values).await.unwrap().status.listen };
+        assert_eq!(listen(&[]).await, Some("127.0.0.1:8447".parse().unwrap()));
+        assert_eq!(
+            listen(&[("status.listen", "[::1]:9000")]).await,
+            Some("[::1]:9000".parse().unwrap())
+        );
+        assert_eq!(listen(&[("status.listen", "")]).await, None);
+        let error = status(&[("status.listen", "0.0.0.0:8447")])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("status.listen") && error.contains("isn't a loopback address"),
+            "{error}"
+        );
+    }
 
     const SQUARE_ON: (&str, &str) = ("bell.square.application_id", "sq0idp-Test");
     const CLOVER_ON: (&str, &str) = ("bell.clover.application_id", "MONOKULARBELL");
@@ -1151,7 +1225,8 @@ pub(crate) mod tests {
             env.clone(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .bell;
         assert!(config.square.webhook_key.is_some());
         assert!(config.clover.auth_code.is_some());
         assert!(config.vapid_key.is_some());

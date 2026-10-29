@@ -415,7 +415,7 @@ impl TestBell {
         // A store of another Bell's, when `values` names one.
         let store_path = PathBuf::from(&stored["bell.store_path"]);
         let env = live_settings::Env::fixed(vars);
-        let config = settings::load(stored, env).await.unwrap();
+        let config = settings::load(stored, env).await.unwrap().bell;
         let bell = Bell::start(&config).await.unwrap();
         TestBell {
             router: bell.router(),

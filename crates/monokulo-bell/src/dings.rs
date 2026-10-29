@@ -32,10 +32,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use outbound::Reach;
 use push::{Message, Options, SendError, Sender, Topic, Ttl, Urgency};
 use rate_limit::RateLimiter;
+use service_runtime::status::{Event, Last};
 use tokio::sync::watch;
 
 use crate::pos::{MerchantId, PaymentId, PointOfSale, Ring};
 use crate::registrations::{Failed, Registration, RegistrationStore};
+use crate::status::Dinged;
 
 /// A ding's time to live.
 pub const TTL: Ttl = Ttl::seconds(60);
@@ -64,17 +66,26 @@ pub struct Dings {
     rung: Mutex<Rung>,
     /// How many rings are running, for [`Dings::idle`].
     running: watch::Sender<usize>,
+    /// The last ding sent, and how it went.
+    last: Last<Dinged>,
 }
 
 impl Dings {
+    /// The topic every ding is sent under, [`TOPIC`]: what a start checks
+    /// before it opens anything.
+    pub fn topic() -> Result<Topic, push::message::TopicError> {
+        Topic::parse(TOPIC)
+    }
+
     pub fn new(
         sender: Sender,
+        topic: Topic,
         store: RegistrationStore,
         reach: Reach,
         failure_limit: u32,
         dings_per_merchant_per_minute: u32,
-    ) -> Result<Self, push::message::TopicError> {
-        Ok(Dings {
+    ) -> Self {
+        Dings {
             sender,
             store,
             reach,
@@ -82,12 +93,19 @@ impl Dings {
             options: Options {
                 urgency: Urgency::High,
                 ttl: TTL,
-                topic: Some(Topic::parse(TOPIC)?),
+                topic: Some(topic),
             },
             per_merchant: RateLimiter::new(dings_per_merchant_per_minute),
             rung: Mutex::new(Rung::default()),
             running: watch::Sender::new(0),
-        })
+            last: Last::default(),
+        }
+    }
+
+    /// How the last ding sent went, since the Bell started: what its
+    /// status says.
+    pub fn last(&self) -> Option<Event<Dinged>> {
+        self.last.get()
     }
 
     /// Dings every till registered at `ring`'s point of sale for its
@@ -174,11 +192,17 @@ impl Dings {
             },
             Err(error) => {
                 tracing::warn!(registration = %registration.id, host = endpoint.host(), error = %error, "a ding wasn't sent");
+                self.last.record(Dinged::Failed);
                 self.failed(&registration).await;
                 return;
             }
         };
         let (id, host) = (&registration.id, endpoint.host());
+        self.last.record(match &outcome {
+            Ok(_) => Dinged::Sent,
+            Err(SendError::Gone) => Dinged::Gone,
+            Err(_) => Dinged::Failed,
+        });
         match outcome {
             Ok(_) => {
                 if let Err(error) = self.store.delivered(id, now).await {

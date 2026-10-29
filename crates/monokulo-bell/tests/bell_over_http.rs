@@ -1630,3 +1630,102 @@ async fn a_square_till_moves_to_clover_only_with_its_keys_over_http() {
     let ding = push.next().await;
     assert_eq!(wake(&ding, &till), br#"{"wake":"clover"}"#);
 }
+
+/// The status says what the Bell listens on, how many registrations it
+/// holds, which points of sale are on and how the last ding went: never a
+/// token, an endpoint, a merchant, a location or a payment. Served on a
+/// loopback listener of its own, it answers this machine and refuses a
+/// page that points another name at it.
+#[tokio::test]
+async fn the_status_says_how_the_last_ding_went_and_nothing_private_over_http() {
+    let square = Stub::square().await;
+    let push = Stub::start(|received| {
+        if received.path.ends_with("/gone") {
+            Answer::status(410)
+        } else {
+            Answer::status(201)
+        }
+    })
+    .await;
+    let bell = TestBell::start(&square.url(), &[]).await;
+    let listen: std::net::SocketAddr = "127.0.0.1:8445".parse().unwrap();
+    let started_at = now();
+    let report =
+        || async { serde_json::to_value(bell.bell.report(listen, started_at).await).unwrap() };
+    assert_eq!(
+        report().await,
+        serde_json::json!({
+            "service": "monokulo-bell",
+            "version": env!("CARGO_PKG_VERSION"),
+            "commit": service_runtime::status::commit(),
+            "started_at": started_at,
+            "listen": "127.0.0.1:8445",
+            "public_uri": PUBLIC_URI,
+            "registrations": { "stored": 0 },
+            "points_of_sale": { "square": "ready", "clover": "off" },
+            "last_ding": null,
+        })
+    );
+
+    let till = Till::at(&push, "till-1");
+    bell.registered(TOKEN, LOCATION, &till).await;
+    let payment = payment_webhook("payment.created", "COMPLETED", MERCHANT, LOCATION);
+    bell.webhook(&payment).await;
+    let rung = report().await;
+    assert_eq!(rung["registrations"], serde_json::json!({ "stored": 1 }));
+    assert_eq!(rung["last_ding"]["outcome"], "sent");
+    let at = rung["last_ding"]["at"].as_i64().unwrap();
+    assert!((now() - 5..=now()).contains(&at), "{at}");
+
+    bell.registered(TOKEN, OTHER_LOCATION, &Till::at(&push, "gone"))
+        .await;
+    bell.webhook(&payment_webhook(
+        "payment.created",
+        "COMPLETED",
+        MERCHANT,
+        OTHER_LOCATION,
+    ))
+    .await;
+    let gone = report().await;
+    assert_eq!(gone["last_ding"]["outcome"], "gone");
+    assert_eq!(gone["registrations"], serde_json::json!({ "stored": 1 }));
+    let text = gone.to_string();
+    let endpoint = till.subscription()["endpoint"].as_str().unwrap().to_owned();
+    for private in [TOKEN, MERCHANT, LOCATION, endpoint.as_str(), WEBHOOK_KEY] {
+        assert!(!text.contains(private), "{private} in {text}");
+    }
+
+    // Served as the binary serves it, on loopback.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let served = bell.bell.clone();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(service_runtime::status::serve(
+        listener,
+        move || {
+            let bell = served.clone();
+            async move { bell.report(listen, started_at).await }
+        },
+        async {
+            let _ = stopped.await;
+        },
+    ));
+    let client = reqwest::Client::new();
+    let answer = client
+        .get(format!("http://{address}/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status(), 200);
+    let body: serde_json::Value = serde_json::from_str(&answer.text().await.unwrap()).unwrap();
+    assert_eq!(body, report().await);
+    let rebound = client
+        .get(format!("http://{address}/status"))
+        .header("host", format!("bell-status.example:{}", address.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rebound.status(), 403);
+    let _ = stop.send(());
+    serving.await.unwrap().unwrap();
+}

@@ -4,6 +4,8 @@
 //! (`live_settings::cli`). Its secrets are listed after the options, with
 //! their environment variables.
 
+use std::sync::LazyLock;
+
 use clap::Command;
 
 const ABOUT: &str = "The Monokular Bell: it turns a point of sale's payment webhooks (Square's, \
@@ -30,6 +32,8 @@ after the options): every user on the machine can read the process list.";
 const EXAMPLES: &str = "Examples:
   monokulo-bell --init
       Write the options file, with every setting described, and say where.
+  MONOKULO_BELL_SQUARE_WEBHOOK_KEY=… MONOKULO_BELL_VAPID_KEY=… monokulo-bell --check
+      Say whether the Bell would start on the options file and the environment, and on what.
   MONOKULO_BELL_SQUARE_WEBHOOK_KEY=… MONOKULO_BELL_VAPID_KEY=$(openssl rand -hex 32) \\
     monokulo-bell --bell-public-uri https://bell.example.org --bell-square-application-id sq0idp-…
       Start a Bell for Square tills. Keep the VAPID key: the tills' subscriptions are made for it.
@@ -42,20 +46,30 @@ const EXAMPLES: &str = "Examples:
 /// names another.
 pub const OPTIONS_FILE: &str = "bell.toml";
 
-/// The command line: the options file, then an option per setting.
+/// `--version`: the version, and the commit it was built from when the
+/// build said.
+static VERSION: LazyLock<String> =
+    LazyLock::new(|| service_runtime::status::version(env!("CARGO_PKG_VERSION")));
+
+/// The command line: the options file (`--check` too), then an option per
+/// setting.
 pub fn command() -> Command {
     let command = Command::new("monokulo-bell")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(VERSION.as_str())
         .about(ABOUT)
         .long_about(LONG_ABOUT)
         .after_help(EXAMPLES);
-    live_settings::cli::with_settings(command, crate::settings::ALL, OPTIONS_FILE)
+    live_settings::cli::with_check(live_settings::cli::with_settings(
+        command,
+        crate::settings::ALL,
+        OPTIONS_FILE,
+    ))
 }
 
 /// Parses the full argument list, argv[0] included, into the settings it
 /// gives (the environment read under the secrets' old names too,
 /// [`crate::settings::RENAMED_ENV`]), the options file to read, and
-/// whether to write one instead (`--init`). Help, the version and mistakes come back as clap's error,
+/// whether to write one instead (`--init`) or only check it (`--check`). Help, the version and mistakes come back as clap's error,
 /// which the caller prints and exits on (`clap::Error::exit`).
 pub fn parse_args<I, T>(args: I) -> Result<live_settings::cli::Start, clap::Error>
 where
