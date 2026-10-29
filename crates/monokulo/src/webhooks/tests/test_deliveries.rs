@@ -287,23 +287,19 @@ async fn the_api_form_sends_a_signed_test_and_answers_how_it_went() {
 async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
     let shop =
         shop_with("[webhooks]\nallow_private_urls = true\ndelivery_timeout_ms = 300\n").await;
-    // Windows answers a connection to a closed local port only after
-    // retrying it for about 2 seconds, so the receiver that's down is
-    // tried from a shop with the default timeout, where that's still a
-    // refused connection rather than a timeout.
-    let patient = shop_with("[webhooks]\nallow_private_urls = true\n").await;
 
-    // Down: nothing listens there any more, so the connection is refused.
-    // A socket kept bound but never listening would hold the port, but
-    // macOS drops a connection to one unanswered until the timeout instead
-    // of refusing it; and `service_runtime::unreachable` accepts and hangs
-    // up, which is a receiver that's up and drops the request, not one
-    // that can't be reached. The kernel picks the next free port for a bind
-    // from across its whole range, so it's very unlikely to hand this one
-    // straight out again.
-    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let down = format!("http://{}/hook", closed.local_addr().unwrap());
-    drop(closed);
+    // Down: port 0, which nothing can listen on, so the connection fails
+    // at once on every system without a single packet sent: Linux refuses
+    // it (ECONNREFUSED), macOS and Windows reject the address
+    // (EADDRNOTAVAIL, WSAEADDRNOTAVAIL), none of them retrying the way
+    // Windows retries a closed port for about 2 seconds. A port bound and
+    // let go could be handed to another process before the delivery
+    // tries it; a socket kept bound but never listening is dropped
+    // unanswered on macOS until the timeout; and
+    // `service_runtime::unreachable` accepts and hangs up, which is a
+    // receiver that's up and drops the request, not one that can't be
+    // reached.
+    let down = "http://127.0.0.1:0/hook";
     // An error.
     let status = Arc::new(AtomicU16::new(500));
     let failing = endpoint(status.clone(), Received::default()).await;
@@ -314,7 +310,7 @@ async fn a_failed_test_says_why_and_is_retried_like_any_delivery() {
     let slow = format!("http://{}/hook", silent.local_addr().unwrap());
 
     for (shop, url, answered, error) in [
-        (&patient, down.as_str(), None, "could not connect"),
+        (&shop, down, None, "could not connect"),
         (&shop, failing.as_str(), Some(500u16), "answered 500"),
         (&shop, slow.as_str(), None, "timed out"),
     ] {
