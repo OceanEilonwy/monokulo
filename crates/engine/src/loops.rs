@@ -692,6 +692,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
         };
         let router = crate::http::build_router(state, 1 << 20);
         let db = Db::over_shared(Arc::clone(&store));
+        let running = RunningNetworks::default();
         let manager = tokio::spawn(manage_network_loops(
             db,
             key_custody,
@@ -699,7 +700,7 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             wallet_handles,
             Arc::clone(&status),
             settings,
-            RunningNetworks::default(),
+            running.clone(),
         ));
 
         let save = |body: serde_json::Value| {
@@ -741,9 +742,20 @@ testnet = '{"host":"2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.oni
             !status.read().contains_key(&Network::Stagenet)
         })
         .await;
-        // And it stays gone: the stopped loop doesn't record another tick.
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        // And it stays gone: the manager removes the status row only after
+        // every task of the generation was awaited (manage_network_loops,
+        // the `removed` loop), so nothing is left to tick. A few turns give
+        // a leaked task its chance; the join itself is pinned by
+        // loops::properties::dropping_a_manager_generation_stops_its_children
+        // and generations_stop_before_replacement_and_recover_from_panics.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
         assert!(!status.read().contains_key(&Network::Stagenet));
+        assert!(
+            running.0.lock().is_empty(),
+            "the stagenet generation is gone"
+        );
         manager.abort();
     }
 
