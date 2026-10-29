@@ -62,9 +62,14 @@ proptest! {
             assert!(counts.iter().all(|c| c.load(Ordering::SeqCst) == 0));
         });
     }
+}
 
-    #[test]
-    fn dropping_a_manager_generation_stops_its_children(tasks in 1usize..5) {
+/// Every number of children from 1 to 4. This replaced the property
+/// `dropping_a_manager_generation_stops_its_children` (tasks in 1..5): the
+/// loop runs its whole input space, so do not add the random draws back.
+#[test]
+fn dropping_a_manager_generation_stops_its_children() {
+    for tasks in 1usize..5 {
         runtime().block_on(async {
             let active = Arc::new(AtomicUsize::new(0));
             let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -73,20 +78,36 @@ proptest! {
                 let active = Arc::clone(&active);
                 let (entered, ready) = tokio::sync::oneshot::channel();
                 let entered = Arc::new(parking_lot::Mutex::new(Some(entered)));
-                handles.push(supervise_until("property manager dropped", stopped.clone(), move || {
-                    let guard = Active(Arc::clone(&active));
-                    active.fetch_add(1, Ordering::SeqCst);
-                    let sender = entered.lock().take();
-                    if let Some(s) = sender { let _ = s.send(()); }
-                    async move { let _guard = guard; std::future::pending::<()>().await; }
-                }));
+                handles.push(supervise_until(
+                    "property manager dropped",
+                    stopped.clone(),
+                    move || {
+                        let guard = Active(Arc::clone(&active));
+                        active.fetch_add(1, Ordering::SeqCst);
+                        let sender = entered.lock().take();
+                        if let Some(s) = sender {
+                            let _ = s.send(());
+                        }
+                        async move {
+                            let _guard = guard;
+                            std::future::pending::<()>().await;
+                        }
+                    },
+                ));
                 ready.await.unwrap();
             }
-            assert_eq!(active.load(Ordering::SeqCst), tasks);
-            drop(RunningNetwork { stop, tasks: handles });
+            assert_eq!(active.load(Ordering::SeqCst), tasks, "tasks {tasks}");
+            drop(RunningNetwork {
+                stop,
+                tasks: handles,
+            });
             tokio::time::timeout(Duration::from_secs(10), async {
-                while active.load(Ordering::SeqCst) != 0 { tokio::task::yield_now().await; }
-            }).await.unwrap();
+                while active.load(Ordering::SeqCst) != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("tasks {tasks}: a child outlived its generation"));
         });
     }
 }
@@ -185,30 +206,44 @@ proptest! {
     }
 }
 
-proptest! {
-    #![proptest_config(persisted_config(config()))]
-    #[test]
-    fn stopping_during_factory_or_loop_restart_backoff_is_immediate(factory_panic in any::<bool>(), failures in 1usize..8) {
-        runtime().block_on(async {
-            tokio::time::pause();
-            let (stop, stopped) = tokio::sync::watch::channel(false);
-            let (entered, mut ready) = tokio::sync::mpsc::unbounded_channel();
-            let task = supervise_until("property stopping backoff",stopped,move || {
-                entered.send(()).unwrap();
-                assert!(!factory_panic, "injected factory panic");
-                async { panic!("injected loop panic"); }
+/// A factory panic or a loop panic, after 1 to 7 failures. This replaced the
+/// property `stopping_during_factory_or_loop_restart_backoff_is_immediate`
+/// (`factory_panic` x `failures` in 1..8): the loop runs its whole input space,
+/// so do not add the random draws back.
+#[test]
+fn stopping_during_factory_or_loop_restart_backoff_is_immediate() {
+    for factory_panic in [false, true] {
+        for failures in 1usize..8 {
+            let row = format!("factory_panic {factory_panic} failures {failures}");
+            // A runtime per row: each pauses its own clock.
+            runtime().block_on(async {
+                tokio::time::pause();
+                let (stop, stopped) = tokio::sync::watch::channel(false);
+                let (entered, mut ready) = tokio::sync::mpsc::unbounded_channel();
+                let task = supervise_until("property stopping backoff", stopped, move || {
+                    entered.send(()).unwrap();
+                    assert!(!factory_panic, "injected factory panic");
+                    async {
+                        panic!("injected loop panic");
+                    }
+                });
+                for _ in 0..failures {
+                    ready.recv().await.unwrap();
+                    // Let the supervisor enter its restart wait. Receiver waiting
+                    // for the next iteration advances paused time automatically.
+                    for _ in 0..4 {
+                        tokio::task::yield_now().await;
+                    }
+                }
+                let started = tokio::time::Instant::now();
+                stop.send(true).unwrap();
+                task.await.unwrap_or_else(|e| panic!("{row}: {e}"));
+                assert!(
+                    started.elapsed() < Duration::from_secs(1),
+                    "{row}: stop waited through restart backoff"
+                );
             });
-            for _ in 0..failures {
-                ready.recv().await.unwrap();
-                // Let the supervisor enter its restart wait. Receiver waiting
-                // for the next iteration advances paused time automatically.
-                for _ in 0..4 { tokio::task::yield_now().await; }
-            }
-            let started = tokio::time::Instant::now();
-            stop.send(true).unwrap();
-            task.await.unwrap();
-            assert!(started.elapsed() < Duration::from_secs(1), "stop waited through restart backoff");
-        });
+        }
     }
 }
 
