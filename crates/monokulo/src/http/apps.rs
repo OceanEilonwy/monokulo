@@ -23,16 +23,20 @@ use serde::{Deserialize, Serialize};
 use crate::api::runtime::extract::JsonBody;
 use crate::api::runtime::problem::{internal, Problem, ProblemDetails};
 use crate::apps::{clean_device_name, CONNECT_TOKEN_TTL_SECONDS};
-use crate::db::{AppConnection, ConnectionId, UserRow};
+use crate::db::{AppConnection, AppPushSummary, ConnectionId, UserRow};
 use crate::now_unix;
 use crate::plugins::{Plugin, PluginName, PluginSlug};
-use crate::views::connected_apps::{AppRow, AppsView};
+use crate::views::connected_apps::{AppRow, AppsView, PushLine};
 
 use super::orders::load_owned_connection;
 use super::{AppState, AuthedUser, OwnedStore};
 
-/// What the Apps card shows for an app.
-pub(super) fn app_row(app: &AppConnection, clock: &crate::views::time::Clock) -> AppRow {
+/// What the Apps card shows for an app, `pushes` its line about pushes.
+pub(super) fn app_row(
+    app: &AppConnection,
+    clock: &crate::views::time::Clock,
+    pushes: Option<&AppPushSummary>,
+) -> AppRow {
     AppRow {
         id: app.id.to_string(),
         app: Plugin::stored(&app.slug, &app.name).to_string(),
@@ -40,27 +44,65 @@ pub(super) fn app_row(app: &AppConnection, clock: &crate::views::time::Clock) ->
         platform: app.platform.clone(),
         version: app.version.clone(),
         connected: clock.text(app.connected_at),
-        last_seen: app.last_seen_at.map(|at| clock.text(at)),
+        last_seen: app.last_seen_at.map(|at| clock.relative(at)),
+        pushes: push_line(pushes, clock),
     }
 }
 
-/// The store's Apps card, for its settings page.
+/// The Apps card's line about an app's pushes, from its summary (none for
+/// an app with no push targets).
+fn push_line(summary: Option<&AppPushSummary>, clock: &crate::views::time::Clock) -> PushLine {
+    let Some(summary) = summary.filter(|s| s.targets > 0) else {
+        return PushLine::NoTargets;
+    };
+    let last_push = summary
+        .last_delivered_at
+        .map(|at| crate::views::app_page::when(clock, at));
+    if summary.failing == 0 {
+        return PushLine::Healthy {
+            targets: summary.targets,
+            last_push,
+        };
+    }
+    PushLine::Failing {
+        targets: summary.targets,
+        last_push,
+        failing: summary.failing,
+        in_a_row: summary.worst_failures,
+        last_failure: summary.worst_last.as_ref().map(|last| {
+            (
+                crate::views::app_page::short_answer(last.status, last.error.as_deref()),
+                clock.relative(last.at),
+            )
+        }),
+    }
+}
+
+/// The store's Apps card, for its settings page: its apps, each with how
+/// its pushes are doing (one more query for every app's).
 pub(super) async fn apps_view(
     state: &AppState,
     row: &crate::db::StoreConnectionRow,
     clock: &crate::views::time::Clock,
 ) -> AppsView {
     let id = row.id.clone();
-    let apps = state
+    let (apps, pushes) = state
         .db
-        .read(move |db| db.list_apps(&id))
+        .read(move |db| Ok::<_, crate::db::DbError>((db.list_apps(&id)?, db.app_push_summaries(&id)?)))
         .await
         .inspect_err(|e| tracing::warn!(store.id = %row.id, error = %e, "the store's apps could not be read"))
         .unwrap_or_default();
+    let pushes: std::collections::HashMap<_, _> = pushes
+        .iter()
+        .map(|summary| (&summary.app_id, summary))
+        .collect();
     AppsView {
         store_id: row.id.to_string(),
         store_name: row.name.clone(),
-        apps: apps.iter().map(|app| app_row(app, clock)).collect(),
+        apps: apps
+            .iter()
+            .map(|app| app_row(app, clock, pushes.get(&app.id).copied()))
+            .collect(),
     }
 }
 
@@ -228,7 +270,7 @@ pub async fn connect_status(
         Some(code) => {
             let age = now_unix().saturating_sub(code.created_at);
             let code_state = match code.app {
-                Some(app) => CodeState::Connected(app_row(&app, &chrome.clock)),
+                Some(app) => CodeState::Connected(Box::new(app_row(&app, &chrome.clock, None))),
                 None if age < CONNECT_TOKEN_TTL_SECONDS => CodeState::Waiting {
                     remaining: (CONNECT_TOKEN_TTL_SECONDS - age.max(0)).unsigned_abs(),
                 },
@@ -446,6 +488,9 @@ pub async fn redeem(
         onion_api,
     }))
 }
+
+mod page;
+pub use page::{app_page, remove_push_target, test_push};
 
 #[cfg(test)]
 mod tests;

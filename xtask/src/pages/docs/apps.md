@@ -300,6 +300,33 @@ service's `Retry-After` says), five times at most. A store's apps are sent
 at most 120 pushes a minute (the admin's `push.per_store_per_minute`),
 retries included; the rest wait for the next minute.
 
+#### Test pushes
+
+The store's merchant can send one of your targets a test push from the
+dashboard (store settings, Apps, the app's page, Send a test push), to see
+a push reach the device without a sale. It is a push like any other (the
+same signing, encryption, `Urgency` for its event, retries, and it counts
+towards the store's pushes and the target's failures), with `"test": true`
+and nothing of a sale: no order, amount, currency, address, label, link or
+payment URI. Show it as a test, and never as a sale. Its `TTL` is the
+admin's `push.default_ttl_secs` whatever the event (there is no sale to
+expire), and its `Topic` is its own, so it never replaces a sale's push.
+
+An `encrypted` target gets the event's name and when it was sent:
+
+```json
+{ "api_version": 2, "event": "sale.paid", "test": true, "at": 1761310260 }
+```
+
+A `live-activity` target gets the event's `phase`, with `expiresAt` when
+its `TTL` ends and `waitingCount` 0:
+
+```json
+{ "phase": "paid", "test": true, "expiresAt": 1761312060, "waitingCount": 0 }
+```
+
+A sale's pushes never carry `test`.
+
 A push service answering `404` or `410` has dropped the subscription:
 Monokulo deletes the target. So it does after 20 failures in a row. Read
 your targets (`mk:push-targets`) when the app starts, and register again

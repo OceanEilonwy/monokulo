@@ -649,3 +649,552 @@ async fn an_app_is_given_the_onion_entry_while_there_is_one() {
     assert_eq!(creds["api"], "/api/v1");
     assert_eq!(creds["onion_api"], format!("{ONION}/api/v1"));
 }
+
+// -- An app's page: its push targets, Remove, Send a test push ------------------
+
+/// An app connected to the store `store_id`, made as a redeemed code makes
+/// one: its id.
+fn connected_app(state: &AppState, store_id: &str, slug: &str, device: &str) -> crate::db::AppId {
+    let db = state.db.lock();
+    let raw = credentials::auth::generate_app_connect_token();
+    let store = crate::db::ConnectionId::new(store_id);
+    let now = crate::now_unix();
+    db.create_app_connect_token(&raw.hash(), &store, device, now)
+        .unwrap();
+    let key = credentials::auth::generate_app_key();
+    db.redeem_app_connect_token(
+        &raw.hash(),
+        now,
+        600,
+        &crate::db::NewApp {
+            slug,
+            name: "Monokular",
+            device_name: "",
+            platform: "ios",
+            version: "1.4.0",
+            key_hash: &key.hash(),
+        },
+    )
+    .unwrap()
+    .unwrap()
+    .id
+}
+
+/// The two kinds of target, as an app registers them.
+enum Kind {
+    Encrypted,
+    LiveActivity,
+}
+
+/// What a page must never show of the targets registered here.
+const SECRETS: [&str; 3] = ["/v1/push/ph_", "secret-path", "/la/"];
+
+/// Registers a push target of `kind` at `endpoint` for `app`.
+fn target(
+    state: &AppState,
+    app: &crate::db::AppId,
+    client_id: &str,
+    kind: Kind,
+    endpoint: &str,
+) -> crate::db::PushTargetId {
+    let keys = ::push::encrypt::ReceiverKeys::generate().subscription_keys();
+    let kind = match kind {
+        Kind::Encrypted => crate::db::TargetKind::Encrypted {
+            p256dh: keys.p256dh,
+            auth: keys.auth,
+        },
+        Kind::LiveActivity => crate::db::TargetKind::LiveActivity {
+            include_payment_uri: true,
+        },
+    };
+    let registered = state
+        .db
+        .lock()
+        .register_push_target(
+            &crate::db::NewPushTarget {
+                app_id: app,
+                client_id: &crate::api::runtime::scalars::ClientId::parse(client_id).unwrap(),
+                kind: &kind,
+                endpoint: &::push::Endpoint::parse(endpoint).unwrap(),
+                events: &crate::apps::SaleKind::ALL,
+            },
+            crate::now_unix(),
+        )
+        .unwrap();
+    match registered {
+        crate::db::Registration::Registered(target) => target.id,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// Records an attempt at a test push to `target`: answered `status`
+/// (delivered when 2xx), counting against it otherwise.
+fn attempted(
+    state: &AppState,
+    store: &str,
+    app: &crate::db::AppId,
+    target: &crate::db::PushTargetId,
+    status: u16,
+) {
+    let db = state.db.lock();
+    let now = crate::now_unix();
+    let id = db
+        .queue_test_push(&crate::db::TestPush {
+            store_id: &crate::db::ConnectionId::new(store),
+            app_id: app,
+            target_id: target,
+            event: crate::apps::SaleKind::Paid,
+            at: now,
+            ttl: ::push::Ttl::seconds(1800),
+            due_at: now + 60,
+        })
+        .unwrap()
+        .unwrap();
+    let row = db.get_push_target(app, target).unwrap().unwrap();
+    let result = if (200..300).contains(&status) {
+        crate::db::PushResult::Delivered
+    } else {
+        crate::db::PushResult::Failed {
+            error: format!("the push service answered {status}"),
+            retry_at: Some(now + 5),
+            failure_limit: Some(20),
+        }
+    };
+    db.record_push_attempt(
+        id,
+        &row,
+        &crate::db::PushAttempt {
+            at: now,
+            status: Some(status),
+            duration_ms: 240,
+            result,
+        },
+    )
+    .unwrap();
+}
+
+fn app_page(store: &str, app: &crate::db::AppId) -> String {
+    format!("/stores/{store}/settings/apps/{app}")
+}
+
+fn location(response: &axum::response::Response) -> String {
+    response.headers()["location"].to_str().unwrap().to_owned()
+}
+
+/// The page shows the app's details, each target by its host alone (with
+/// "(the push relay)" for the relay's), its health and its pushes, and
+/// nothing of an endpoint or its keys; only the store's members see it,
+/// and only for the store's own apps.
+#[tokio::test]
+async fn an_apps_page_shows_its_targets_by_host_only_to_its_store_alone() {
+    let (state, _engine) = state_with_engine("[signup]\nmode = \"public\"\n").await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let app = connected_app(&state, &id, "monokular", "Front counter");
+    let alerts = target(
+        &state,
+        &app,
+        "alerts",
+        Kind::Encrypted,
+        "https://relay.monokulo.com/v1/push/ph_6f1c2d3e4f5a69788796a5b4c3d2e1f0",
+    );
+    target(
+        &state,
+        &app,
+        "island",
+        Kind::LiveActivity,
+        "https://push.example.test/la/secret-path",
+    );
+    attempted(&state, &id, &app, &alerts, 201);
+    let keys: Vec<String> = {
+        let db = state.db.lock();
+        db.list_push_targets(&app)
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| match t.kind {
+                crate::db::TargetKind::Encrypted { p256dh, auth } => {
+                    Some([p256dh.to_base64url(), auth.to_base64url()])
+                }
+                crate::db::TargetKind::LiveActivity { .. } => None,
+            })
+            .flatten()
+            .collect()
+    };
+
+    let response = get(&router, &app_page(&id, &app), &cookie).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    for shown in [
+        "Monokular · Front counter",
+        "card-app-details",
+        "2 of 8 · both healthy",
+        "relay.monokulo.com</strong> (the push relay)",
+        "push.example.test</strong> · since",
+        "Encrypted push",
+        "Live Activity",
+        "Shown in the island",
+        "201 in 240 ms",
+        "Send a test push",
+        "data-test-push",
+        "dropped at 20",
+        "(<code>push.keep_days</code>)",
+    ] {
+        assert!(html.contains(shown), "{shown} missing");
+    }
+    for secret in SECRETS.iter().map(|s| s.to_string()).chain(keys) {
+        assert!(!html.contains(&secret), "{secret} on the page");
+    }
+    // The key's prefix is named, never a key.
+    assert!(
+        html.match_indices("ak_")
+            .all(|(at, _)| html[at + 3..].starts_with("</code>")),
+        "no app key"
+    );
+
+    // Another store's app: not on this store's pages.
+    let token = cookie
+        .split(';')
+        .next()
+        .and_then(|pair| pair.strip_prefix("session="))
+        .unwrap();
+    let other = store_with_keys(&router, &state, token, "", "USD").await.id;
+    assert_eq!(
+        get(&router, &app_page(&other, &app), &cookie)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let gone = crate::db::AppId::new("app_00000000000000000000000000000000");
+    assert_eq!(
+        get(&router, &app_page(&id, &gone), &cookie).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    // Someone else's store: as if it weren't there.
+    let stranger = crate::http::test_support::signed_up_and_logged_in_session_token(
+        &router,
+        "stranger@example.com",
+        "correct horse battery staple",
+    )
+    .await;
+    let stranger = format!("session={stranger}");
+    assert_eq!(
+        get(&router, &app_page(&id, &app), &stranger).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    // Signed out: refused, as every store page is.
+    let signed_out = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(app_page(&id, &app))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        signed_out.status() == StatusCode::UNAUTHORIZED || signed_out.status().is_redirection(),
+        "{}",
+        signed_out.status()
+    );
+}
+
+/// Each app on the Apps card has its line: healthy, failing with its run
+/// and its last answer, or no targets, each linking to the app's page;
+/// and Connect an app is the card's head.
+#[tokio::test]
+async fn the_apps_card_says_how_each_apps_pushes_are_doing() {
+    let (state, _engine) = state_with_engine("").await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let healthy = connected_app(&state, &id, "monokular", "Front counter");
+    let fine = target(
+        &state,
+        &healthy,
+        "alerts",
+        Kind::Encrypted,
+        "https://relay.monokulo.com/v1/push/ph_1",
+    );
+    target(
+        &state,
+        &healthy,
+        "island",
+        Kind::LiveActivity,
+        "https://relay.monokulo.com/v1/push/ph_2",
+    );
+    attempted(&state, &id, &healthy, &fine, 201);
+    let failing = connected_app(&state, &id, "tillwatch", "Kitchen");
+    let bad = target(
+        &state,
+        &failing,
+        "alerts",
+        Kind::Encrypted,
+        "https://push.example.test/secret-path",
+    );
+    for _ in 0..3 {
+        attempted(&state, &id, &failing, &bad, 502);
+    }
+    let none = connected_app(&state, &id, "monokular", "Back office iPad");
+
+    let response = get(&router, &format!("/stores/{id}/settings?tab=apps"), &cookie).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains("Connected apps"), "the card's title");
+    assert!(
+        html.contains(r#"aria-label="Connect an app""#),
+        "its head's action"
+    );
+    let line = |app: &crate::db::AppId| {
+        let link = format!(r#"href="{}""#, app_page(&id, app));
+        let at = html
+            .find(&link)
+            .unwrap_or_else(|| panic!("a link to {app}"));
+        let start = html[..at].rfind(r#"<span class="app-pushes""#).unwrap();
+        html[start..at].to_owned()
+    };
+    let healthy = line(&healthy);
+    assert!(healthy.contains(r#"data-pushes="healthy""#), "{healthy}");
+    assert!(
+        healthy.contains("2 push targets · last push just now ·"),
+        "{healthy}"
+    );
+    let failing = line(&failing);
+    assert!(failing.contains(r#"data-pushes="failing""#), "{failing}");
+    assert!(
+        failing.contains("1 push target · no push yet ·"),
+        "{failing}"
+    );
+    assert!(
+        failing.contains("1 failing (3 in a row, last 502 just now)"),
+        "{failing}"
+    );
+    let none = line(&none);
+    assert!(none.contains(r#"data-pushes="none""#), "{none}");
+    assert!(
+        none.contains("No push targets: the app registers one once it"),
+        "{none}"
+    );
+    for secret in SECRETS {
+        assert!(!html.contains(secret), "{secret} on the card");
+    }
+}
+
+/// Remove deletes the one target named, of that store's app, with its
+/// pushes, and comes back to the page saying so; a target that isn't the
+/// app's (another app's, gone already) is 404 and stays.
+#[tokio::test]
+async fn remove_deletes_only_the_named_target_of_that_app() {
+    let (state, _engine) = state_with_engine("").await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let app = connected_app(&state, &id, "monokular", "Front counter");
+    let other = connected_app(&state, &id, "monokular", "Back office");
+    let gone = target(
+        &state,
+        &app,
+        "alerts",
+        Kind::Encrypted,
+        "https://relay.monokulo.com/v1/push/ph_1",
+    );
+    attempted(&state, &id, &app, &gone, 201);
+    let kept = target(
+        &state,
+        &app,
+        "island",
+        Kind::LiveActivity,
+        "https://relay.monokulo.com/v1/push/ph_2",
+    );
+    let theirs = target(
+        &state,
+        &other,
+        "alerts",
+        Kind::Encrypted,
+        "https://relay.monokulo.com/v1/push/ph_3",
+    );
+    let remove = |app: &crate::db::AppId, target: &crate::db::PushTargetId| {
+        form_post(
+            &format!("{}/push-targets/{target}/remove", app_page(&id, app)),
+            Some(&cookie),
+            &[],
+        )
+    };
+
+    let removed = router.clone().oneshot(remove(&app, &gone)).await.unwrap();
+    assert_eq!(removed.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        location(&removed),
+        format!("{}?removed=1#card-push-targets", app_page(&id, &app))
+    );
+    {
+        let db = state.db.lock();
+        assert!(db.get_push_target(&app, &gone).unwrap().is_none());
+        assert!(db.get_push_target(&app, &kept).unwrap().is_some());
+        assert!(db.get_push_target(&other, &theirs).unwrap().is_some());
+        assert_eq!(
+            db.push_delivery_count_of_app(&app).unwrap(),
+            0,
+            "its pushes went with it"
+        );
+    }
+    let html = body_text(get(&router, &location(&removed), &cookie).await).await;
+    assert!(html.contains("Push target removed."), "the toast");
+    assert!(html.contains("1 of 8"), "one left");
+
+    // Again: it's gone. Another app's target through this app's page: not this app's.
+    for (app, target) in [(&app, &gone), (&app, &theirs)] {
+        let refused = router.clone().oneshot(remove(app, target)).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::NOT_FOUND);
+    }
+    assert!(state
+        .db
+        .lock()
+        .get_push_target(&other, &theirs)
+        .unwrap()
+        .is_some());
+}
+
+/// Send a test push from the page: queued and sent at once by the worker's
+/// own code, refused on a private address as any push is (no request is
+/// made), shown under Recent pushes as a test with no order, its toast
+/// saying how it went; the store's 7th in a minute is refused, nothing
+/// queued.
+#[tokio::test]
+async fn a_test_push_from_the_page_is_sent_recorded_and_limited() {
+    let (state, _engine) = state_with_engine("").await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let app = connected_app(&state, &id, "monokular", "Front counter");
+    let alerts = target(
+        &state,
+        &app,
+        "alerts",
+        Kind::Encrypted,
+        "https://10.1.2.3/secret-path",
+    );
+    let send = |event: &str| {
+        form_post(
+            &format!("{}/test-push", app_page(&id, &app)),
+            Some(&cookie),
+            &[("target", alerts.as_str()), ("event", event)],
+        )
+    };
+
+    let sent = router.clone().oneshot(send("sale.expired")).await.unwrap();
+    assert_eq!(sent.status(), StatusCode::SEE_OTHER);
+    let to = location(&sent);
+    assert!(
+        to.starts_with(&format!("{}?tested=", app_page(&id, &app))),
+        "{to}"
+    );
+    let html = body_text(get(&router, &to, &cookie).await).await;
+    assert!(html.contains("Test push failed."), "the toast");
+    assert!(
+        html.contains("10.1.2.3: refused: a private address; it is tried again"),
+        "why"
+    );
+    assert!(html.contains("data-test-push"), "the test tag");
+    assert!(html.contains("<code class=\"event-name\">sale.expired</code>"));
+    assert!(!html.contains("secret-path"), "no endpoint");
+    {
+        let db = state.db.lock();
+        let pushes = db.push_deliveries_of_app(&app, 10).unwrap();
+        assert_eq!(pushes.len(), 1);
+        assert!(pushes[0].is_test());
+        assert_eq!(pushes[0].attempt_count, 1);
+        assert_eq!(
+            db.get_push_target(&app, &alerts).unwrap().unwrap().failures,
+            1,
+            "it counts"
+        );
+    }
+
+    for _ in 1..crate::webhooks::test_delivery::TESTS_PER_MINUTE {
+        let sent = router.clone().oneshot(send("sale.paid")).await.unwrap();
+        assert_eq!(sent.status(), StatusCode::SEE_OTHER);
+    }
+    let refused = router.clone().oneshot(send("sale.paid")).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    let html = body_text(refused).await;
+    assert!(
+        html.contains("This store has sent 6 test pushes in the last minute. Try again in"),
+        "{html}"
+    );
+    assert_eq!(
+        state.db.lock().push_delivery_count_of_app(&app).unwrap(),
+        6,
+        "nothing more queued"
+    );
+
+    // An event that isn't one, a target that isn't the app's: refused.
+    let wrong = router.clone().oneshot(send("order.paid")).await.unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// The test push lands on a push service (a stub on this machine, which
+/// `webhooks.allow_private_urls` lets it reach) and the page's toast says
+/// it was delivered, by whom and how fast.
+#[tokio::test]
+async fn a_test_push_from_the_page_is_delivered_over_http() {
+    let (state, _engine) = state_with_engine("[webhooks]\nallow_private_urls = true\n").await;
+    let router = build_router(state.clone());
+    let (id, cookie) = store(&router).await;
+    let received =
+        std::sync::Arc::new(parking_lot::Mutex::new(Vec::<axum::http::HeaderMap>::new()));
+    let stub = {
+        let received = received.clone();
+        axum::Router::new().fallback(move |headers: axum::http::HeaderMap| {
+            let received = received.clone();
+            async move {
+                received.lock().push(headers);
+                StatusCode::CREATED
+            }
+        })
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+    let app = connected_app(&state, &id, "monokular", "Front counter");
+    let island = target(
+        &state,
+        &app,
+        "island",
+        Kind::LiveActivity,
+        &format!("http://{addr}/la/secret-path"),
+    );
+
+    let sent = router
+        .clone()
+        .oneshot(form_post(
+            &format!("{}/test-push", app_page(&id, &app)),
+            Some(&cookie),
+            &[("target", island.as_str()), ("event", "sale.paid")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sent.status(), StatusCode::SEE_OTHER);
+    let html = body_text(get(&router, &location(&sent), &cookie).await).await;
+    assert!(html.contains("Test push delivered."), "the toast");
+    assert!(
+        html.contains("127.0.0.1 answered 201 in "),
+        "who and how fast"
+    );
+    assert!(!html.contains("secret-path"));
+    let received = received.lock();
+    assert_eq!(received.len(), 1, "sent once");
+    assert!(received[0]["authorization"]
+        .to_str()
+        .unwrap()
+        .starts_with("vapid "));
+    assert_eq!(received[0]["urgency"], "high");
+    let row = state
+        .db
+        .lock()
+        .push_deliveries_of_app(&app, 1)
+        .unwrap()
+        .remove(0);
+    assert!(row.last_duration_ms.is_some());
+    assert!(row.delivered_at.is_some());
+    let payload: serde_json::Value = serde_json::from_str(&row.payload).unwrap();
+    assert_eq!(payload["test"], true);
+    assert_eq!(payload["phase"], "paid");
+}

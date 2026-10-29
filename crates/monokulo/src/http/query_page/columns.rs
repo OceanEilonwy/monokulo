@@ -132,6 +132,7 @@ pub const COLUMNS: Classification = Classification {
         ("push_deliveries", "last_attempt_at_utc", Visible),
         ("push_deliveries", "last_status_code", Visible),
         ("push_deliveries", "last_error", Visible),
+        ("push_deliveries", "last_duration_ms", Visible),
         ("push_deliveries", "delivered_at_utc", Visible),
         ("push_deliveries", "gave_up_at_utc", Visible),
         ("push_deliveries", "superseded_at_utc", Visible),

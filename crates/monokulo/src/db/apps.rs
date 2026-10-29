@@ -63,6 +63,18 @@ pub struct AppOrder {
     pub created_at: i64,
 }
 
+/// What an app's orders came to, for its page ([`Db::app_order_stats`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppOrderStats {
+    /// Every order it made.
+    pub total: u64,
+    /// Those made since the time asked about.
+    pub recent: u64,
+    /// The newest: its id, its own reference when it has one, when it
+    /// was made and its latest sale event (`sale.paid`) once it has one.
+    pub last: Option<(OrderId, Option<String>, i64, Option<String>)>,
+}
+
 /// An app [`Db::delete_app`] took off its store. Only made there, so an
 /// app's open streams are ended (its key revoked, `crate::revocation`) only
 /// once it really was disconnected from the store that asked.
@@ -241,6 +253,43 @@ impl Db {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    /// The store's app `app_id`; `None` for another store's, or one gone.
+    pub fn app(&self, store_id: &ConnectionId, app_id: &AppId) -> Result<Option<AppConnection>> {
+        self.conn
+            .query_row(
+                "SELECT * FROM app_connections WHERE store_id = ?1 AND id = ?2",
+                params![store_id, app_id],
+                app_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// What the app's orders came to: how many, how many made since
+    /// `since`, and the newest.
+    pub fn app_order_stats(&self, app_id: &AppId, since: i64) -> Result<AppOrderStats> {
+        let (total, recent): (sqlite::Unsigned<u64>, sqlite::Unsigned<u64>) = self.conn.query_row(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE created_at_utc >= ?2)
+             FROM app_orders WHERE app_id = ?1",
+            params![app_id, since],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let last = self
+            .conn
+            .query_row(
+                "SELECT order_id, merchant_order_id, created_at_utc, last_sale_event FROM app_orders
+                 WHERE app_id = ?1 ORDER BY created_at_utc DESC, rowid DESC LIMIT 1",
+                params![app_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        Ok(AppOrderStats {
+            total: total.0,
+            recent: recent.0,
+            last,
+        })
     }
 
     /// A store's connected apps, newest first.

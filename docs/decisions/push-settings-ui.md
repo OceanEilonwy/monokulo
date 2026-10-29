@@ -300,3 +300,73 @@ Numbered from 21.
 ## The Apps card, the app's page, Remove and the test push (rust-engineer-2)
 
 Numbered from 41.
+
+41. **Migration 0054 is data-changing: it rebuilds `push_deliveries`.**
+    SQLite can't drop a `NOT NULL`, so the table is created anew with
+    `order_id` nullable and `last_duration_ms`, every row copied with its
+    id, the two indexes made again, and `sqlite_sequence` carried over so
+    an id (a page's `?tested=<id>`) is never handed out twice, a pruned
+    row's included. A third index, `(push_target_id, created_at_utc)`,
+    serves Recent pushes. Rows from before it have no duration (NULL);
+    the page then says "201" without "in N ms" for them, which only old
+    rows can be. Flagged for the owner's production instance in the PR.
+42. **A test push is queued due a little later and sent by the request at
+    once.** `queue_test_push` writes the row with `next_attempt_at` =
+    now + `push.delivery_timeout` + 6 s, then the handler reads it back as
+    the worker does (`Db::waiting_push`) and calls
+    `push::delivery::send_now`, the worker's own `deliver` then `record`
+    (split out of `run_delivery_tick`, which calls the same two). So the
+    worker never races the request for it, and if the request dies before
+    the attempt is recorded the worker sends it when it falls due. The
+    toast reads the row back (`?tested=<id>`): Delivered, failed (with the
+    next try), or "Test push queued." when the store's budget put it off.
+    No second sender exists: `PushClient` is built once on `Push`
+    (`Push::client()`, a `OnceCell`), its senders behind a
+    `parking_lot::RwLock` so `set_contact` (now `&self`) swaps them while
+    a push in flight keeps the `Arc<Sender>` it started with.
+43. **The test limit is webhooks' own constant.** `Push::tests` is a
+    `RateLimiter<ConnectionId>` built from
+    `webhooks::test_delivery::TESTS_PER_MINUTE` (no second 6), checked on
+    the abuse protection's clock as test webhooks are; it is spent before
+    the target is looked up, so a refused or mistyped post still counts.
+    Past it the page comes back `429` with the form as sent and the
+    refusal in the form and the toast; nothing is queued.
+44. **A test push's TTL is `push.default_ttl_secs`, its urgency the
+    event's.** There is no sale whose end could shorten it; `policy::urgency`
+    gives the event's header as a sale's push has. Its payload's
+    `live-activity` `expiresAt` is that TTL's end.
+45. **Health on the page and the card come from `push_targets.failures`.**
+    Failing is `failures > 0`; "Not pushed yet" is no `last_ok_at` and no
+    attempted push kept; otherwise Healthy. The card's "last 502 14 min
+    ago" is the newest attempt of the target with the longest run (ties to
+    the oldest target); "last push" is the newest `delivered_at` of any of
+    the app's targets, "no push yet" before one.
+46. **Times say "N min ago" within a day, the day and time beyond**
+    (`app_page::when`), on the card and in the target facts; the table
+    shows the clock time today and "24 Oct, 09:12" before, both in the
+    merchant's zone (`views::time::Clock`). The Apps card's meta line's
+    "last order" became relative ("2 min ago") as the board shows.
+47. **What an attempt answered is said briefly and never with an
+    address** (`app_page::short_answer`): the status code, else "timed
+    out", "refused: a private address", "could not connect"… Recorded
+    errors are already URL-free (`outbound::request_error_text` strips it,
+    `check_host`'s refusal names no address); the short form also keeps
+    the page's columns narrow.
+48. **"Device" shows the stored device name without "(named here when it
+    was connected)".** The row keeps one name and not who gave it (the
+    merchant's name on the code wins over the app's at redeem time), so
+    the page can't say which it is; adding a column for one parenthesis
+    is not worth a second data-changing migration.
+49. **Remove answers `404` for a target that isn't that store's app's** (a
+    second post, another app's id), with no page: the only way to post it
+    is the page's own form, which only lists the app's own targets.
+50. **The page's tables show the last 50 pushes** (`RECENT_PUSHES`) with
+    a footer "The last N of M" and the live `push.keep_days`; the fixi
+    poll on Recent pushes (every 3 s, as the connect status polls) runs
+    only while the newest row is Queued or Retrying and under a minute
+    old, and is absent from the HTML otherwise, so the page without
+    JavaScript is point-in-time and complete.
+51. **"(the push relay)" is said for `relay.monokulo.com` and for this
+    instance's own relay's public host** (read from `relay::Handle::view()`
+    when stream 1's relay runs; `None` before then and without the
+    feature), the only place stream 2 reads the relay seam.
