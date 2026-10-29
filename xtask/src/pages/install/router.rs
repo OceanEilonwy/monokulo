@@ -215,6 +215,23 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
             a href="../backups/" { "Backups and updates" }
             "."
         }
+        p {
+            "The same repository holds the two services that run beside Monokulo, each one package with its own LuCI page under "
+            em { "Services" }
+            ": "
+            strong { "monokulo-push-relay" }
+            ", the push relay for iPhone and Android tills, and "
+            strong { "monokulo-bell" }
+            ", the Monokular Bell for Square and Clover payments. Install them from "
+            span.path.inline { (path(&["System", "Software"])) }
+            " as above, or:"
+        }
+        (command("apk add monokulo-push-relay   # the push relay\napk add monokulo-bell         # the Monokular Bell", "Copy the services' install commands"))
+        p {
+            "Both need an https address and a TLS proxy in front: "
+            a href="../services/" { "Run the push relay and the Bell" }
+            " has the steps."
+        }
         h2 id="optional-let-customers-outside-your-home-pay" { "Optional: let customers outside your home pay" }
         p { "By default Monokulo listens on your LAN only. For checkouts on the internet, it needs to listen on every interface, and the firewall needs to let its port in." }
         p.path { (path(&["Services", "Monokulo"])) }

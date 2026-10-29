@@ -7,7 +7,9 @@
 //! shell the docs and the API reference share (`shell`): the
 //! map of every page down the left, grouped as `PAGES` groups them, and the
 //! page's sections beside it. A fenced `diff` block becomes the
-//! walkthrough's added and kept lines.
+//! walkthrough's added and kept lines. `/services/` (`install::services`)
+//! is the push relay's and the Bell's install guide, which their LuCI
+//! pages and READMEs link.
 //!
 //! Every page is a folder at the site's top level (docs.monokulo.com):
 //! `/introduction/` is the front page, `/guide/`, `/webhooks/` and the rest
@@ -141,7 +143,7 @@ pub(super) enum Layout {
 /// The docs, in the map's order, which is also Previous and Next's: each
 /// group's pages together, the groups in `Group::ALL`'s order. The first is
 /// where the bar's Docs and Get started go.
-pub(super) const PAGES: [Page; 14] = [
+pub(super) const PAGES: [Page; 15] = [
     Page {
         source: Source::Markdown("introduction.md"),
         dir: "introduction",
@@ -270,6 +272,19 @@ pub(super) const PAGES: [Page; 14] = [
         },
         dir: "backups",
         label: "Backups and updates",
+        group: Group::RunMonokulo,
+        old: None,
+        layout: Layout::Guide,
+    },
+    Page {
+        source: Source::Rust {
+            file: "install/services.rs",
+            title: install::services::TITLE,
+            lead: install::services::LEAD,
+            render: install::services::render,
+        },
+        dir: "services",
+        label: "The push relay and the Bell",
         group: Group::RunMonokulo,
         old: None,
         layout: Layout::Guide,
