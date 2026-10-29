@@ -777,7 +777,15 @@ async fn setting_up_a_website_store_brings_a_wallet_in_and_ends_on_done() {
     .await;
     assert!(done.contains("Bakery is set up"), "{done}");
     assert!(done.contains("Not taking payments yet"));
-    assert!(done.contains("Open the guide"));
+    // One orange button: with a site and no plugin, the guide.
+    let guide = &done[..done.find("Open the guide").unwrap()];
+    let guide = &guide[guide.rfind("<a ").unwrap()..];
+    assert!(guide.contains(r#"data-variant="primary""#), "{guide}");
+    assert_eq!(
+        done.matches(r#"data-variant="primary""#).count(),
+        1,
+        "{done}"
+    );
 
     // The dashboard calls it by its name.
     let dashboard = body_text(cookie_get(&router, "/", &cookie).await).await;
@@ -1061,6 +1069,12 @@ async fn a_store_with_no_site_has_a_name_only() {
     )
     .await;
     assert!(done.contains("Saturday market stall is set up"), "{done}");
+    // One orange button: with no site, the till.
+    assert_eq!(
+        done.matches(r#"data-variant="primary""#).count(),
+        1,
+        "{done}"
+    );
     assert!(done.contains(&format!(
         r#"<a class="mk-btn" href="/stores/{store_id}/pos" data-variant="primary">Open the till</a>"#
     )), "{done}");
