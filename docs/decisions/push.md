@@ -1354,3 +1354,19 @@ after group 2's last entry (150).
      default covers it too. A 30 s hold means one failed exchange holds
      every FCM push for 30 s even if the endpoint is back sooner; that is
      what the senders are told to wait anyway.
+
+160. **A security fix wins over the two-week rule; `crypto-bigint` moves
+     to 0.7.10 now** (the owner, 2026-10-29; replaces 136's date). New
+     dependencies and upgrades still wait until a release is two weeks
+     old, except when a version in use is yanked or has a RUSTSEC
+     advisory. Then it moves at once to the fixed release, after its
+     changelog is read, and anything the fix pulls in is held at the
+     oldest version that release accepts. So `crypto-bigint` goes 0.7.5
+     (yanked, RUSTSEC-2026-0387: constant-time leaks in subtraction, zero
+     counting, division and Montgomery multiplication, which `p256` uses
+     for VAPID signing and each push's key agreement) to 0.7.10, in both
+     `Cargo.lock` and `fuzz/Cargo.lock`. The changelog from 0.7.6 to
+     0.7.10 holds the advisory's fixes, correctness fixes, the undoing of
+     the breaking change that had 0.7.6 to 0.7.8 yanked, and a faster
+     Montgomery carry. `ctutils` goes 0.4.2 to 0.4.6, the oldest 0.7.10
+     accepts (`^0.4.6`; 0.4.7 came out the same day and is left).
