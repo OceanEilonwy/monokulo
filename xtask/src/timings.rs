@@ -423,8 +423,8 @@ fn run_browser(db: &mut Connection) -> io::Result<()> {
     let root = root();
     let out = target_dir().join("test-timings");
     fs::create_dir_all(&out).map_err(|e| at(&out, e))?;
-    // Every binary the suites run, with the command the Playwright run's
-    // global setup repeats (real-stack.js BUILD_ARGS), so their build stays
+    // Every binary the suites run, with the commands the Playwright run's
+    // global setup repeats (real-stack.js buildBinaries), so their build stays
     // out of the times.
     build_first(
         Command::new("node")
