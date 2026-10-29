@@ -138,6 +138,37 @@ pub use embedded::*;
 #[cfg(not(feature = "relay"))]
 pub use without::*;
 
+/// A port nothing listens on, for a relay a test is to start there.
+///
+/// Picked below every system's ephemeral range (Linux hands a `:0` bind
+/// 32768 and up, macOS and Windows 49152 and up), so a `:0` bind in another
+/// test's process never gets it between here and the relay's own bind, as
+/// one did; from the test's name, so two tests running side by side don't
+/// share one; and checked free, so nothing else on the machine is fought
+/// over.
+#[cfg(all(test, feature = "relay"))]
+pub(crate) fn free_port() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static HANDED_OUT: AtomicU16 = AtomicU16::new(0);
+    let thread = std::thread::current();
+    let hash = thread
+        .name()
+        .unwrap_or("")
+        .bytes()
+        .fold(0u32, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(u32::from(byte))
+        });
+    // 10000 to 29999 in slots of 8 ports, one slot a test.
+    let slot = 10_000 + (hash % 2_500) * 8;
+    loop {
+        let port = slot + u32::from(HANDED_OUT.fetch_add(1, Ordering::Relaxed));
+        let port = u16::try_from(port).expect("a port below 30000, and a few more");
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+}
+
 #[cfg(feature = "relay")]
 mod embedded {
     use std::net::SocketAddr;
@@ -649,15 +680,6 @@ mod tests {
     fn with_key(cli: HashMap<String, String>) -> Env {
         Env::fixed([("MONOKULO_RELAY_HANDLE_KEY", "0123456789abcdef".repeat(4))])
             .with_nested_cli(RELAY_TABLE, cli)
-    }
-
-    /// A port nothing listens on, for a relay that is to listen there.
-    fn free_port() -> u16 {
-        std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
     }
 
     /// monokulo's `relay.enabled` as its registry keeps it, `enabled` to

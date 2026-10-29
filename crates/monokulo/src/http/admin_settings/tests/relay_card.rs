@@ -10,6 +10,7 @@ use live_settings::{Env, OptionsFile};
 use tokio_util::sync::CancellationToken;
 
 use super::*;
+use crate::relay::free_port;
 use crate::settings::RELAY_TABLE;
 
 const HANDLE_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -48,15 +49,6 @@ fn with_every_secret() -> Env {
     with_key(&[])
         .with_var("MONOKULO_RELAY_APNS_KEY", APNS_KEY)
         .with_var("MONOKULO_RELAY_FCM_CREDENTIALS", &fcm_account())
-}
-
-/// A port nothing listens on.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
 }
 
 /// monokulo over the options file `text` (written to a file of its own),
