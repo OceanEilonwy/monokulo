@@ -207,6 +207,7 @@ test('a help tip opens over the page and closes on Escape', async ({ page }) => 
 
 test('a grouped value copies the whole value, says so for a while, and stays whole on screen', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.clock.install();
   await page.goto('/#component-grouped-value');
   const example = page.locator('#component-grouped-value-1');
   const shown = example.locator('.mk-grouped-value');
@@ -220,7 +221,8 @@ test('a grouped value copies the whole value, says so for a while, and stays who
   await expect(example.getByRole('button', { name: 'Copied' })).toBeVisible();
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(whole);
   expect(await shown.innerHTML()).toBe(before);
-  await expect(example.getByRole('button', { name: 'Copy address' })).toBeVisible({ timeout: 6000 });
+  await page.clock.runFor(4000);
+  await expect(example.getByRole('button', { name: 'Copy address' })).toBeVisible();
   // A value no longer to be used has nothing to copy it with.
   await expect(page.locator('#component-grouped-value-2 button')).toHaveCount(0);
 });
@@ -267,12 +269,20 @@ test('a countdown counts on from the seconds it was given, and turns as time run
   await expect(first.locator('.mk-countdown-clock')).toHaveText('29:11');
   const low = page.locator('#component-countdown-2 .mk-countdown');
   await expect(low).toHaveAttribute('data-tone', 'soon');
-  await page.clock.runFor(235_000);
+  // Each tick reads the clock rather than counting ticks
+  // (countdown.behaviour.ts), so a jump that fires the timer once, then one
+  // real tick, lands on the right second. A countdown that counts its ticks
+  // would need runFor here.
+  await page.clock.fastForward(235_000);
+  await page.clock.runFor(1000);
   await expect(low).toHaveAttribute('data-tone', 'urgent');
   await expect(low.getByRole('status')).toHaveText('1 minute left.');
-  const ended = low.evaluate(el => new Promise(resolve => el.addEventListener('mk-countdown-end', () => resolve(true), { once: true })));
-  await page.clock.runFor(60_000);
-  expect(await ended).toBe(true);
+  // Awaited, so the listener is in place before the jump: an instant jump
+  // beats a listener still on its way to the page.
+  await low.evaluate(el => el.addEventListener('mk-countdown-end', () => { el.dataset.ended = 'yes'; }, { once: true }));
+  await page.clock.fastForward(60_000);
+  await page.clock.runFor(2000);
+  await expect(low).toHaveAttribute('data-ended', 'yes');
   await expect(low.getByRole('status')).toHaveText('Time is up.');
   await expect(low.locator('progress')).toHaveAttribute('value', '0');
 });
