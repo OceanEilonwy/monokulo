@@ -161,8 +161,13 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
     let writer_stop = Arc::clone(&stop);
     // Counts the inserts that committed, not the attempts: an attempt that
     // failed (the database locked by the backup, say) proves nothing about
-    // a backup taken mid-write.
+    // a backup taken mid-write. The writer reports its first attempt, so
+    // the backup starts only after an insert has committed; nothing else
+    // writes the file before then, so a failed first insert is a real
+    // failure, not contention.
+    let (first_insert, started) = std::sync::mpsc::channel::<Result<(), String>>();
     let writer = std::thread::spawn(move || {
+        let mut first_insert = Some(first_insert);
         let mut i = 1000u32;
         let mut inserted = 0u32;
         while !writer_stop.load(Ordering::Relaxed) {
@@ -181,14 +186,22 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
             if created.is_ok() {
                 inserted += 1;
             }
+            if let Some(first_insert) = first_insert.take() {
+                let _ = first_insert.send(created.map(|_| ()).map_err(|e| e.to_string()));
+            }
             i += 1;
         }
         inserted
     });
 
-    // Give the writer a head start so the backup genuinely lands mid-stream
-    // rather than possibly racing ahead of the first insert.
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // The backup starts after the writer's first committed insert, so it
+    // genuinely lands mid-stream rather than racing ahead of it.
+    if let Err(error) = started
+        .recv()
+        .expect("the concurrent writer thread ended before its first insert")
+    {
+        panic!("the concurrent writer's first insert failed: {error}");
+    }
 
     let backup_output = Command::new(script("monokulo-backup.sh"))
         .arg(&data_dir)
