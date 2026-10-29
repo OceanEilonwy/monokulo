@@ -1049,9 +1049,12 @@ mod tests {
 
         #[tokio::test]
         async fn an_unreachable_base_url_is_a_clean_error() {
-            // Port 0 is never a valid connection target - a deterministic
-            // "nothing is listening" without racing a real bind/drop.
-            let provider = CoingeckoRateProvider::new("http://127.0.0.1:0");
+            // An upstream that accepts and hangs up at once, so the failure is
+            // the same on every OS and never waits on a refused-connect retry.
+            let provider = CoingeckoRateProvider::new(format!(
+                "http://{}",
+                service_runtime::unreachable::address()
+            ));
             let err = provider
                 .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
                 .await
