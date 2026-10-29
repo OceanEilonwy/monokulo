@@ -47,7 +47,7 @@ fn default_fake_timestamp(height: u64) -> u64 {
     FAKE_GENESIS_TIMESTAMP + height * FAKE_BLOCK_TIME_SECS
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct State {
     blocks: HashMap<u64, FakeBlock>,
     height: u64,
@@ -105,6 +105,19 @@ impl FakeDaemonClient {
             .online
             .store(true, std::sync::atomic::Ordering::Relaxed);
         client
+    }
+
+    /// A copy of this node as it stands, its chain and pool from then on
+    /// its own: for a test that runs a story once and branches from it.
+    #[must_use = "the copy is returned; this node is left as it was"]
+    pub fn snapshot(&self) -> Self {
+        let Self { state, online } = self;
+        Self {
+            state: Mutex::new(state.lock().clone()),
+            online: std::sync::atomic::AtomicBool::new(
+                online.load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        }
     }
 
     /// Simulates this node going unreachable (`online = false`) or coming back

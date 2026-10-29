@@ -1314,6 +1314,20 @@ impl Store {
         &self.conn
     }
 
+    /// A new in-memory store holding a copy of this one's database, made
+    /// the way [`Self::open_in_memory`] copies its migrated template: for
+    /// the SQL-fault sweeps, which fault each statement of a step on a copy
+    /// of the story before it. Only the database is copied; the copy has
+    /// its own order-change channels and no fault set.
+    #[cfg(test)]
+    pub(crate) fn copy_in_memory_for_test(&self) -> Result<Self> {
+        let image = self.conn.serialize(rusqlite::MAIN_DB)?;
+        let mut conn = Connection::open_in_memory()?;
+        conn.deserialize_read_exact(rusqlite::MAIN_DB, &*image, image.len(), false)?;
+        configure_connection(&conn)?;
+        Ok(Self::from_connection(conn))
+    }
+
     /// Every row of every table, as text, for comparing whole-database
     /// states in tests.
     #[cfg(test)]

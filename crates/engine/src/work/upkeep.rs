@@ -35,6 +35,16 @@ pub(crate) struct UpkeepState {
 }
 
 impl UpkeepState {
+    /// A copy of this state for [`super::ScanState::fork_for_tests`].
+    pub(crate) fn fork(&self) -> Self {
+        let Self { last_checkpoint } = self;
+        Self {
+            last_checkpoint: parking_lot::Mutex::new(*last_checkpoint.lock()),
+        }
+    }
+}
+
+impl UpkeepState {
     /// Whether a checkpoint is due (and, if so, marks it done now).
     fn checkpoint_due(&self) -> bool {
         let mut last = self.last_checkpoint.lock();

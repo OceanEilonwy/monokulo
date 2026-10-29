@@ -245,6 +245,16 @@ impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
             .get(key)
             .is_some_and(|retry| retry.waiting(self.started.elapsed()))
     }
+
+    /// A copy of this backoff for [`ScanState::fork_for_tests`], `started`
+    /// included, so every delay stands as it was.
+    pub(crate) fn fork(&self) -> Self {
+        let Self { failures, started } = self;
+        Self {
+            failures: parking_lot::Mutex::new(failures.lock().clone()),
+            started: *started,
+        }
+    }
 }
 
 /// What a network's scheduler keeps in memory between rounds. Everything
@@ -323,6 +333,50 @@ impl ScanState {
     /// node subscriber pokes it.
     pub fn node_wakes(&self) -> &std::sync::Arc<crate::node_events::NodeWakes> {
         &self.node_wakes
+    }
+
+    /// A copy of this state that the next round treats exactly as it would
+    /// treat this one: for the SQL-fault sweeps (`work::tests`, the
+    /// `every_sql_failure_*` tests), which run a story's clean steps once
+    /// and fault each statement of the next step on a copy, instead of
+    /// replaying the clean steps for every fault.
+    ///
+    /// Every cache a round reads is copied: the pool's bodies, ownership and
+    /// rotation, the block being paged and the carried block cache, the
+    /// block scan's progress (its sizing and headers-first window steer the
+    /// next fetch), the settlement and upkeep cursors and both backoffs.
+    /// Their `Instant`s (the settlement's sync check, good for a minute; the
+    /// upkeep checkpoint, ten minutes; the backoffs' start; the pool windows,
+    /// a second, which only the fast path reads) are copied unchanged, so a
+    /// copy taken a few seconds before it runs sees them a few seconds
+    /// older: a sweep part runs well inside the minute that would change a
+    /// round. `node_wakes` and `activity` stay shared with this state: a
+    /// round only records into the activity and numbers itself from it,
+    /// and never reads the node wakes.
+    #[must_use = "the copy is returned; this state is left as it was"]
+    pub fn fork_for_tests(&self) -> Self {
+        let Self {
+            node_wakes,
+            mempool,
+            blocks,
+            settlement,
+            upkeep,
+            backoff,
+            order_backoff,
+            tuning,
+            activity,
+        } = self;
+        Self {
+            node_wakes: std::sync::Arc::clone(node_wakes),
+            mempool: mempool.fork(),
+            blocks: blocks.fork(),
+            settlement: settlement.fork(),
+            upkeep: upkeep.fork(),
+            backoff: backoff.fork(),
+            order_backoff: order_backoff.fork(),
+            tuning: *tuning,
+            activity: std::sync::Arc::clone(activity),
+        }
     }
 }
 
