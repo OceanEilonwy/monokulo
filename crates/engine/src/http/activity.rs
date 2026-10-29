@@ -344,7 +344,7 @@ mod tests {
     /// A reader asking from `from` gets the record from there, in order,
     /// then each event the scan loop records after, as it records it; the
     /// scanner's tuning comes with every message.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_record_is_replayed_from_from_then_new_events_are_pushed() {
         let (state, activity) = state(TEST_TUNING);
         activity.record(Event::Snapshot(Box::default()));
@@ -415,7 +415,7 @@ mod tests {
 
     /// Hundreds of events recorded at once arrive in a few messages, not
     /// one each.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_burst_arrives_in_a_few_messages() {
         let (state, activity) = state(TEST_TUNING);
         activity.record(Event::Snapshot(Box::default()));
@@ -444,7 +444,7 @@ mod tests {
     /// A reader that stops reading is cut off once its buffer is full,
     /// after what was buffered; reconnecting with the last id it got, it
     /// carries on from there without losing an event.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_slow_reader_is_cut_off_then_resumes_without_loss() {
         let (state, activity) = state(StreamTuning {
             coalesce: Duration::from_millis(20),
@@ -483,7 +483,7 @@ mod tests {
     }
 
     /// A quiet stream sends a keep-alive comment.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_quiet_stream_sends_keep_alives() {
         let (state, activity) = state(StreamTuning {
             keepalive: Duration::from_millis(100),
