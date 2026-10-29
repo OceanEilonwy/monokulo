@@ -352,12 +352,9 @@ warnings`, on stable, against the pinned monokulo commit: all passed.
 
 ## 8. Risks
 
-- **`crypto-bigint` 0.7.5 is yanked** (RUSTSEC-2026-0387, constant-time
-  issues) and both locks hold it, under the two-week rule (decisions 136,
-  B30). The fixed 0.7.9/0.7.10 are from 2026-10-25/26. Exposure: VAPID
-  signing once per origin every 11 h and one ECDH per push, none timed from
-  outside. Move both repositories on 2026-11-09, or now if the fix should
-  win over the rule.
+- **`crypto-bigint` 0.7.5 was yanked** (RUSTSEC-2026-0387, constant-time
+  issues). Both repositories moved to 0.7.10 on 2026-10-29, under the
+  security exception to the two-week rule (decision 160; the Bell's decision 58).
 - **Real APNs, FCM and Square have not been reached.** Every provider test
   runs against a stand-in built from the public documentation (APNs's
   headers and reasons, FCM HTTP v1's message and OAuth, Square's signature
