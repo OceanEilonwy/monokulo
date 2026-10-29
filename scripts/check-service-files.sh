@@ -126,7 +126,10 @@ MINGW* | MSYS*)
 	# none; the secrets go in as files, all but the first (the one the
 	# script makes on install).
 	starter > "$dir/$options"
-	data="$(cygpath -u "$PROGRAMDATA")/monokulo/$name"
+	# Where the script keeps the data (%ProgramData%, which Git Bash
+	# doesn't name in upper case).
+	programdata=$(powershell -NoProfile -Command '[Environment]::GetFolderPath("CommonApplicationData")' | tr -d '\r')
+	data="$(cygpath -u "$programdata")/monokulo/$name"
 	mkdir -p "$data/secrets"
 	for secret in "${secrets[@]:1}"; do
 		printf '%s' "${secret#*=}" > "$data/secrets/${secret%%=*}"
