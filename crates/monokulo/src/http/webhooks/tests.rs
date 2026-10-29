@@ -452,6 +452,44 @@ async fn send_again_and_retry_failed_work_as_plain_form_posts() {
     assert!(!html.contains("Retry failed"));
 }
 
+/// A webhook's health line says after how many attempts it gave up and
+/// with what; once nothing has given up, which attempt failed with what and
+/// when the next try is. The card's table shows a delivery still being
+/// tried as "4 of 8" and a delivered one as its bare count.
+#[tokio::test]
+async fn a_webhooks_health_line_says_which_attempt_failed_with_what_and_when_the_next_try_is() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let (router, session, store, webhook, [_, _, gave_up]) =
+        store_with_deliveries(&state, "health@example.com").await;
+    let card = format!("/stores/{store}/settings?tab=webhooks");
+    let page = body_text(get(&router, &card, &session).await).await;
+    assert!(page.contains(" after 8 attempts (503)"), "{page}");
+    assert!(
+        page.contains(r#"<td data-label="Attempt">4 of 8</td>"#),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"<td data-label="Attempt">1</td>"#),
+        "{page}"
+    );
+
+    // Sent again, nothing has given up: the line is about the retrying one.
+    let response = router
+        .clone()
+        .oneshot(form_post_request(
+            &format!("/stores/{store}/settings/webhooks/{webhook}/deliveries/{gave_up}/send-again"),
+            &session,
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let page = body_text(get(&router, &card, &session).await).await;
+    assert!(!page.contains(" after 8 attempts ("), "{page}");
+    assert!(page.contains("next try at "), "{page}");
+    assert!(page.contains(" · attempt 4 of 8 failed (503)"), "{page}");
+}
+
 /// Without JavaScript a delivery's detail is a page: its attempts, newest
 /// first, the request with the signature header (and a custom header's
 /// name, never its value; never the secret), and a plain form to send it
