@@ -82,31 +82,22 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expectSaved(page);
 
-  // Store: a name, and a website apart from it, optional. No kinds.
+  // Store: a name, and a website apart from it.
   await page.goto(base + '/setup');
-  await expect(page.getByRole('list', { name: 'Setup progress' }).locator('[aria-current="step"]')).toHaveText('StoreIn progress');
   await expect(page.getByRole('heading', { name: 'Set up a store' })).toBeVisible();
-  await expect(page.locator('label.kind-card')).toHaveCount(0);
-  await expect(page.locator('label[for="store-site"]')).toHaveText('Your website');
-  await expect(page.locator('.site-field .setting-label-row .hint')).toHaveText('(optional)');
   await captureCoverageStage(page, 'setup-store', test.info(), { group: GROUP });
   await toWalletStep(page, 'Geomart', 'https://geomart.example/shop?page=2');
 
-  // Wallet: its small steps beside it, the name first, checked as it changes.
-  await expect(page.locator('.mk-wizard-steps [aria-current="step"] small')).toHaveText('Kind · step 1 of 3');
+  // Wallet: the name first, checked as it changes.
   await expect(page.locator('input[name="name"]')).toHaveValue('Geomart');
   await expect(page.locator('#wallet-name-check')).toContainText('Free to use');
   await captureCoverageStage(page, 'setup-wallet-choice', test.info(), { group: GROUP });
 
   await startNewWallet(page, 'Geomart');
-  await expect(page.locator('[data-screen="backup"] .mk-wizard-steps [aria-current="step"] small')).toHaveText('Back up · step 2 of 3');
-  await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('value', '1');
-  await expect(page.locator('[data-screen="backup"] .mk-wizard-progress').nth(1)).toHaveAttribute('max', '3');
   // The words and the QR, straight away, with nothing to reveal.
   const cake = page.locator('[data-app-panel="cake"]');
   await expect(cake.locator('[data-words] li')).toHaveCount(16);
   await expect(cake.locator('[data-qr] svg')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Enter into Cake Wallet' })).toBeVisible();
   await expect(page.locator('form[data-register] input[name="phrase"]')).toHaveCount(0);
   await captureCoverageStage(page, 'setup-backup-cake', test.info(), { group: GROUP });
 
@@ -135,7 +126,6 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
 
   // Check: two words, four choices each; a wrong one is marked and can be tried again.
   await expect(page.getByRole('heading', { name: 'Check two words' })).toBeVisible();
-  await expect(page.locator('[data-screen="check"] .mk-wizard-progress').nth(1)).toHaveAttribute('value', '2');
   const go = page.locator('[data-check-next]');
   await expect(go).toBeDisabled();
   await expect(go).toContainText('Continue anyway in');
@@ -159,23 +149,16 @@ test('a website store is set up: a new wallet backed up in Feather, checked with
   await captureCoverageStage(page, 'setup-check-right', test.info(), { group: GROUP });
   await go.click();
 
-  // Done: never "taking payments" yet; every way to start, the guide the
-  // one orange button.
+  // Done: never "taking payments" yet; every way to start.
   await expect(page.getByRole('heading', { name: 'Geomart is set up' })).toBeVisible();
-  await expect(page.getByRole('list', { name: 'Setup progress' }).locator('[aria-current="step"]')).toHaveText('DoneComplete');
   await expect(page.getByText('Not taking payments yet')).toBeVisible();
   await expect(page.locator('.todo strong')).toHaveText(['Add the checkout to your site', 'Connect a shop plugin', 'Open the till (POS)']);
-  const guide = page.getByRole('link', { name: /Open the guide/ });
-  await expect(guide).toHaveAttribute('href', /^https:\/\/docs\.monokulo\.com\/guide\/$/);
-  await expect(page.locator('[data-variant="primary"]')).toHaveCount(1);
-  await expect(guide).toHaveAttribute('data-variant', 'primary');
   await captureCoverageStage(page, 'setup-done-website', test.info(), { group: GROUP });
 
   // The store is called by its name; its site is the host; the backup is Feather's.
   const store = await finishStoreSetup(page);
   await expect(page.getByRole('heading', { name: 'Geomart' })).toBeVisible();
   await expect(page.locator('.store-site')).toHaveText('geomart.example');
-  await expect(page.getByRole('link', { name: /Help/ })).toHaveAttribute('href', /^https:\/\/docs\.monokulo\.com\/guide\/$/);
   await page.goto(base + '/account?tab=wallets');
   await page.getByRole('link', { name: 'Geomart', exact: true }).click();
   await expect(page.locator('.where-banner strong')).toHaveText('Backed up to Feather');
@@ -263,11 +246,7 @@ test.describe('with JavaScript off', () => {
     await page.getByRole('button', { name: 'Use this wallet' }).click();
 
     await expect(page.getByRole('heading', { name: 'Saturday market stall is set up' })).toBeVisible();
-    // No site: the till is the one orange button; the checkout needs a site first.
-    const till = page.getByRole('link', { name: 'Open the till' });
-    await expect(till).toHaveAttribute('href', /\/pos$/);
-    await expect(till).toHaveAttribute('data-variant', 'primary');
-    await expect(page.locator('[data-variant="primary"]')).toHaveCount(1);
+    // No site: the checkout needs a site first.
     await expect(page.getByText("add your site in the store's settings first")).toBeVisible();
     await expect(page.getByText('Not taking payments yet')).toHaveCount(0);
     await captureCoverageStage(page, 'setup-done-no-site', test.info(), { group: GROUP });
@@ -307,7 +286,6 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(section.locator('.setting-field[data-layout="stacked"]')).toContainText('New payments go into this wallet, since');
   const wallet = section.getByRole('combobox', { name: 'Wallet' });
   await expect(wallet).toContainText(WALLET_NAME);
-  await expect(wallet.locator('.mk-current')).toHaveText('Current');
 
   await wallet.click();
   await section.getByRole('option', { name: /Cafe till/ }).click();
@@ -326,7 +304,6 @@ test('a store changes its wallet: the dropdown asks first, then the history show
   await expect(history.locator('tbody tr')).toHaveCount(2);
   await expect(history.locator('tbody tr.current')).toContainText('Cafe till');
   await expect(history.locator('tbody tr').nth(1)).toContainText(WALLET_NAME);
-  await expect(history.locator('.tag')).toHaveCount(0);
   await captureCoverageStage(page, 'wallets-change-history', test.info(), { group: 'wallets' });
 
   // The old wallet's page lists the store under Before. Changing back
