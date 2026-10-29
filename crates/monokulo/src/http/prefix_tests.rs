@@ -503,7 +503,10 @@ fn every_redirect_goes_through_the_base_path() {
             {
                 continue;
             }
-            let source = std::fs::read_to_string(&path).unwrap();
+            // A Windows checkout may have CRLF line endings.
+            let source = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("\r\n", "\n");
             // The code, not its unit tests.
             let code = source.split("#[cfg(test)]\nmod tests").next().unwrap();
             for (number, line) in code.lines().enumerate() {
