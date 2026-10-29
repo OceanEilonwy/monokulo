@@ -749,14 +749,6 @@ mod properties {
             }
 
             #[test]
-            fn settlement_queue_wraparound_recomputes_every_order_once(
-                count in prop_oneof![Just(63usize), Just(64usize), Just(65usize), Just(127usize), Just(128usize), Just(129usize)],
-                threshold in 1u64..5, restart in any::<bool>(),
-            ) {
-        settlement_queue_wraparound_recomputes_every_order_once_case(count, threshold, restart);
-    }
-
-            #[test]
             fn repeated_multi_order_forks_faults_and_restarts_preserve_money(
                 amounts in proptest::collection::vec(1u64..1000, 3..10),
                 thresholds in proptest::array::uniform3(0u64..6),
@@ -765,6 +757,29 @@ mod properties {
         repeated_multi_order_forks_faults_and_restarts_preserve_money_case(amounts, thresholds, phases);
     }
         }
+    /// Every (count, threshold, restart) once; the generated form drew 64 of
+    /// these 48 with replacement and missed about 13 a run.
+    #[test]
+    fn settlement_queue_wraparound_recomputes_every_order_once() {
+        for count in [63, 64, 65, 127, 128, 129] {
+            for threshold in 1..5 {
+                for restart in [false, true] {
+                    let row = std::panic::catch_unwind(|| {
+                        settlement_queue_wraparound_recomputes_every_order_once_case(
+                            count, threshold, restart,
+                        );
+                    });
+                    if let Err(error) = row {
+                        eprintln!(
+                            "failed at count {count}, threshold {threshold}, restart {restart}"
+                        );
+                        std::panic::resume_unwind(error);
+                    }
+                }
+            }
+        }
+    }
+
     // The slowest property, split by where the payment was first seen so its
     // two halves run side by side.
     proptest! {
