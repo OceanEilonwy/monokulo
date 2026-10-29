@@ -40,18 +40,23 @@ fn islands() -> Asset {
     let inputs = fingerprint(&ui);
     let fresh = || fs::read_to_string(&stamp).is_ok_and(|s| s == inputs) && file.is_file();
     if !fresh() {
-        let lock = root().join("target/pages-islands.lock");
+        // An OS file lock, not a directory: it blocks rather than polls, and
+        // the OS releases it when its holder exits or dies (flock on Unix,
+        // LockFileEx on Windows), so a build killed half way never leaves
+        // one to break in on. Std opens files close-on-exec, so vite does not
+        // inherit it. The file is never removed (a waiter would lock a fresh
+        // one beside the holder) and sits beside `target/pages-islands`, not
+        // in it, as vite empties that folder.
         fs::create_dir_all(root().join("target")).expect("target/");
-        while fs::create_dir(&lock).is_err() {
-            // One a build that died left behind.
-            let stale = fs::metadata(&lock)
-                .and_then(|m| m.modified())
-                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age.as_secs() > 300));
-            if stale {
-                let _ = fs::remove_dir(&lock);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
+        let path = root().join("target/pages-islands.build-lock");
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        lock.lock()
+            .unwrap_or_else(|e| panic!("locking {}: {e}", path.display()));
         if !fresh() {
             let vite = root().join("node_modules/vite/bin/vite.js");
             let status = Command::new("node")
@@ -74,10 +79,8 @@ fn islands() -> Asset {
             if built {
                 fs::write(&stamp, &inputs).expect("the islands build's stamp");
             }
-            let _ = fs::remove_dir(&lock);
+            drop(lock);
             assert!(built, "the islands build failed (npm ci first?)");
-        } else {
-            let _ = fs::remove_dir(&lock);
         }
     }
     let bytes: &'static [u8] = fs::read(&file)
