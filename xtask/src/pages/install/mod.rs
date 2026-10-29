@@ -2,8 +2,10 @@
 //! rather than from Markdown: their steps carry the `ui` package's tabs
 //! and copyable commands, and the router's follow the apk repositories the
 //! site holds. `computer` installs the desktop builds, `router` the OpenWrt
-//! package, and `run` says where the config and data live and how to back
-//! them up, update and remove Monokulo.
+//! package, `run` says where the config and data live and how to back
+//! them up, update and remove Monokulo, and `services` installs the push
+//! relay and the Bell, on a router (from the same repositories) or a
+//! computer (the release zips and their service files).
 //!
 //! The OpenWrt workflow publishes one signed apk repository per OpenWrt
 //! release and architecture, `openwrt/<release>/<arch>/` in the site, each
@@ -15,6 +17,7 @@
 pub(super) mod computer;
 pub(super) mod router;
 pub(super) mod run;
+pub(super) mod services;
 
 use crate::support::{at, files_under};
 use maud::{html, Markup};

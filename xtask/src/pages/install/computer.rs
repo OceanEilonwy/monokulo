@@ -164,5 +164,14 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
             a href="../backups/" { "Backups and updates" }
             " what to keep safe."
         }
+        p {
+            "The push relay and the Monokular Bell are separate downloads on the same release page ("
+            code { "monokulo-push-relay-…" }
+            ", "
+            code { "monokulo-bell-…" }
+            "), each with a service file for Linux, macOS and Windows: "
+            a href="../services/" { "Run the push relay and the Bell" }
+            "."
+        }
     }
 }
