@@ -244,8 +244,8 @@ fn panel(relay: &RelayView) -> Markup {
         items.push(item(
             "Apple (APNs) key not set.",
             // The relay's settings refuse a team or key ID without the key,
-            // so none is saved while it isn't set.
-            "iOS registrations are refused until MONOKULO_RELAY_APNS_KEY is set in the environment and monokulo restarts. No team ID or key ID is saved for it yet: set them under Edit settings.",
+            // so none is saved while it isn't set, and none can be until it is.
+            "iOS registrations are refused until MONOKULO_RELAY_APNS_KEY is set in the environment and monokulo restarts. No team ID or key ID is saved for it yet: once the key is set, set them under Edit settings.",
         ));
     }
     if !relay.fcm_ready {
@@ -278,8 +278,8 @@ fn subheading(key: &str) -> Option<&'static str> {
 }
 
 /// A secret of the relay's, from the environment alone: set (dots, never
-/// its value) or not set (in the warning tone), with the variable to set. No `name`, so never
-/// sent.
+/// its value) or not set (in the warning tone), with the variable to set.
+/// No `name`, so never sent.
 fn secret_field(field: &AdminScalarFieldView, note: &str) -> Markup {
     let control = field_id(field.form_name());
     let help = help_id(field);
