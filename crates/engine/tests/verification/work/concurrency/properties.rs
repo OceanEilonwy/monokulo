@@ -597,6 +597,9 @@ async fn proof_overlap(ordering: usize, cancelled: u8, proof_mode: u8, replace_c
     let reopened = Store::open_file(&path.0).unwrap();
     assert_eq!(reopened.get_all_payments(&order).unwrap()[0].id, identity);
 }
+/// Runs every input the deleted property
+/// `proof_config_and_generation_histories_preserve_settlement` could draw,
+/// so the random draws were removed.
 #[test]
 fn every_proof_config_shutdown_admission_schedule_recovers() {
     runtime().block_on(async {
@@ -632,13 +635,6 @@ mod properties {
         #[test]
         fn combined_worker_histories_preserve_money(ordering in 0usize..6,cancelled in 0u8..4,change in 0u8..4,repeats in 1usize..5) {
             runtime().block_on(overlap(ordering,cancelled,change,repeats));
-        }
-    }
-    proptest! {
-        #![proptest_config(persisted_config(config()))]
-        #[test]
-        fn proof_config_and_generation_histories_preserve_settlement(ordering in 0usize..6,cancelled in 0u8..4,proof_mode in 0u8..3,replace_custody in any::<bool>()) {
-            runtime().block_on(proof_overlap(ordering,cancelled,proof_mode,replace_custody));
         }
     }
 }
