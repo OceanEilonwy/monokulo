@@ -440,3 +440,41 @@ Numbered from 41.
     component from site.css, which `npm run lint:ui` refuses, so the `ak_`
     prefix and a target's client id get the page's own class and the rule
     sets only the weight; the global `code` rule already sets the face.
+
+## QA round 3 and the review (the principal Rust engineer)
+
+61. **`ui::ItemCard` gains `actions_last`, and the app page's target cards
+    set it.** The phone board (targets-d-app-page-phone) puts a target's
+    Remove last in its card, under the facts, while the desktop board keeps
+    it in the head. Where the actions go inside a component is the
+    component's business (site.css may not restyle `.mk-item-card-actions`),
+    so the flag is on the component: `data-actions-last` on the article,
+    and under the phone width the card becomes a column, the head's children
+    join it (`display: contents`) and the actions take `order: 1` after the
+    body. It is opt-in, not the component's phone rule, because the domains
+    page's record cards have no approved phone board saying the same, and
+    changing them unasked is not this stack's call. Every ItemCard without
+    the flag renders exactly as before; the stylebook gains the example
+    "Actions last on a phone", which the Solid equivalence fixtures cover.
+62. **Every relay app row shares its grid rows, not only a refused one.**
+    Decision 38's subgrid alignment was scoped to `.relay-app.is-failed`, so
+    on an unrefused row the Firebase label wrapping to two lines sat its
+    label higher than the others' while the inputs lined up. The row now
+    always has two shared rows (label, input) and Remove on the inputs'
+    row; a refused row adds the third (error). A phone stacks as before.
+63. **A refused relay save focuses the save bar's message, as every other
+    card's does; no change.** QA round 3 read X19 as "the first refused
+    control takes focus" and saw `document.activeElement` on a `<p>` after
+    switching the relay on without a public address. That `<p>` is the save
+    bar's message (`data-save-bar-message tabindex="-1" data-fx-focus`),
+    which says "Nothing saved." with the refusal and a Show link to the
+    card: the page's convention for a refused save (decided with the admin
+    settings layout, `answers_save` in `views::admin`). QA's own
+    measurements show the same for the engine's and monokulo's refusals
+    (`server.bind`, `relay.handles.unused_ttl_days`: `focused: false`); the
+    one field that was focused (`upstream_timeout_ms` at 50) was the
+    browser's own `min` validation, which never reaches the server. The
+    refused field's error still stands inline under it, in the card the
+    message's Show link opens. Changing where focus lands after a refusal
+    would change every card on the page and is a question for the owner,
+    not this stack.

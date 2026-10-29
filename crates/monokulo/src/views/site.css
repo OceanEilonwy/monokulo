@@ -570,26 +570,25 @@ table[data-table="wallets"] .card-unit { display: none; }
 .relay-card [data-relay-panel] p + p { margin-top: var(--space-xs); }
 .relay-card .card-body > .hint { margin-top: var(--space-md); }
 .relay-apps { display: grid; gap: var(--space-sm); width: 100%; }
-.relay-app { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper); }
-.relay-app .mk-field { margin: 0; min-width: 0; }
+/* A row's fields share grid rows through subgrid, label and input (and,
+   refused, error), so a label wrapping to two lines or one field's error
+   doesn't stagger the others' labels and inputs; Remove sits on the
+   inputs' row. A refused row (.is-failed, set by the view) has the third
+   row and a red border that wins over a changed row's. */
+.relay-app { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; grid-template-rows: auto auto; gap: var(--space-sm); padding: var(--space-sm) var(--space-md); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper); }
+.relay-app .mk-field { margin: 0; min-width: 0; display: grid; grid-row: span 2; grid-template-rows: subgrid; }
 .relay-app input[type="text"] { width: 100%; }
+.relay-app [data-relay-app-remove] { grid-area: 2 / 4; align-self: end; }
 .relay-app.is-changed { border-color: var(--card-changed); }
-/* A refused row (.is-failed, set by the view) lines its fields up on
-   three shared rows, label, input and error, so one field's error doesn't
-   stagger the others; Remove sits on the inputs' row. Its red border
-   wins over a changed row's. */
 .relay-app.is-failed { border-color: var(--card-failed); grid-template-rows: auto auto auto; }
-.relay-app.is-failed .mk-field { display: grid; grid-row: span 3; grid-template-rows: subgrid; }
-.relay-app.is-failed [data-relay-app-remove] { grid-area: 2 / 4; align-self: end; }
+.relay-app.is-failed .mk-field { grid-row: span 3; }
 .relay-apps [data-relay-app-add] { justify-self: stretch; justify-content: flex-start; border-style: dashed; }
 .relay-apps-locked { margin: 0; padding-left: var(--space-lg); }
 @media (max-width: 640px) {
   .relay-head { width: 100%; }
-  .relay-app { grid-template-columns: minmax(0, 1fr); }
-  .relay-app [data-relay-app-remove] { justify-self: end; }
-  .relay-app.is-failed { grid-template-rows: none; }
-  .relay-app.is-failed .mk-field { display: flex; grid-row: auto; }
-  .relay-app.is-failed [data-relay-app-remove] { grid-area: auto; }
+  .relay-app, .relay-app.is-failed { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .relay-app .mk-field, .relay-app.is-failed .mk-field { display: flex; grid-row: auto; }
+  .relay-app [data-relay-app-remove] { grid-area: auto; justify-self: end; }
 }
 /* Connected app page (views::app_page) and the Apps card's line about an
    app's pushes (views::connected_apps): Connect an app in the card's head,
