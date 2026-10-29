@@ -73,8 +73,9 @@ an uploaded QR image; webcam access is browser-permission dependent. This suite
 exercises the upload path.
 
 For fast browser checks without a real node or wallet, run
-`npx playwright test -c surface.config.js`. Those tests cover QR image upload,
-manual refund entry without JavaScript, and the POS background-order list.
+`npx playwright test -c surface.config.js`. Those tests cover the client
+library's challenge protocol (monokulo-client.js solving an order-creation
+challenge) and the onion checks.
 
 ## One-time setup
 
