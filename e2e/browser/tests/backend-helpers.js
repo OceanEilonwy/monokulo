@@ -184,7 +184,7 @@ async function reloadUntil(page, url, check) {
     .poll(async () => {
       await page.goto(url);
       return check(await page.content());
-    }, { timeout: 30_000, intervals: [1000] })
+    }, { timeout: 30_000, intervals: [100, 250, 500, 1000] })
     .toBe(true);
 }
 
