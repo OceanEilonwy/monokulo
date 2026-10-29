@@ -120,14 +120,15 @@ pub enum Restarted {
 }
 
 impl Restarted {
-    /// What the toast says about it, if anything.
-    pub fn sentence(&self) -> Option<String> {
+    /// What the toast says about it: every save that touches the relay
+    /// says what it does now, off after a failed start too.
+    pub fn sentence(&self) -> String {
         match self {
-            Restarted::Started(_) => Some("The push relay started its listener.".to_owned()),
-            Restarted::Restarted(_) => Some("The push relay restarted its listener.".to_owned()),
-            Restarted::Stopped => Some("The push relay stopped its listener.".to_owned()),
-            Restarted::StillOff => None,
-            Restarted::Failed(error) => Some(format!("{NOT_RUNNING} {}", failure_fix(error))),
+            Restarted::Started(_) => "The push relay started its listener.".to_owned(),
+            Restarted::Restarted(_) => "The push relay restarted its listener.".to_owned(),
+            Restarted::Stopped => "The push relay stopped its listener.".to_owned(),
+            Restarted::StillOff => "The push relay is off.".to_owned(),
+            Restarted::Failed(error) => format!("{NOT_RUNNING} {}", failure_fix(error)),
         }
     }
 }

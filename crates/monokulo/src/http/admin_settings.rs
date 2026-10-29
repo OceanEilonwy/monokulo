@@ -1366,12 +1366,12 @@ async fn commit_relay(state: &AppState, relay: &HashMap<String, String>) -> Resu
 /// What restarting the relay after a save or a reload leaves to say: a
 /// failed start waits to be fixed (amber, like a restart to do), the rest
 /// is a remark.
-fn restart_note(restarted: &crate::relay::Restarted) -> Option<SaveNote> {
-    let sentence = restarted.sentence()?;
-    Some(match restarted {
+fn restart_note(restarted: &crate::relay::Restarted) -> SaveNote {
+    let sentence = restarted.sentence();
+    match restarted {
         crate::relay::Restarted::Failed(_) => SaveNote::Restart(sentence),
         _ => SaveNote::Remark(sentence),
-    })
+    }
 }
 
 #[derive(serde::Serialize, Default)]
@@ -1925,7 +1925,7 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>, at: String) 
     // The relay applies what was saved by starting again, whatever else
     // was refused after it.
     if relay_changed || (switch_changed && monokulo_refused.is_none()) {
-        notes.extend(restart_note(&state.relay.restart().await));
+        notes.push(restart_note(&state.relay.restart().await));
     }
     if let Some(refusal) = monokulo_refused {
         failures_of(
@@ -2259,7 +2259,7 @@ async fn reload_monokulo(state: &AppState) -> Result<(String, Vec<SaveNote>), St
         let restart = !relay_changed.is_empty() || switch_changed;
         async move {
             match restart {
-                true => restart_note(&state.relay.restart().await),
+                true => Some(restart_note(&state.relay.restart().await)),
                 false => None,
             }
         }

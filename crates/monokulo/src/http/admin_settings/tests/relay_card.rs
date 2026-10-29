@@ -639,6 +639,47 @@ async fn a_restart_that_fails_is_shown_on_the_card_and_monokulo_carries_on() {
     relay.stop().await;
 }
 
+/// Turning the relay off after its start failed says it is off now, as a
+/// save that stops a running one says it stopped.
+#[tokio::test]
+async fn turning_a_relay_off_after_a_failed_start_says_it_is_off() {
+    let taken = free_port();
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", taken)).unwrap();
+    let (_dir, _path, state) = relay_on_file(&relay_file(free_port(), true), with_key(&[])).await;
+    let relay = state.relay.clone();
+    let router = build_router(state);
+    let cookie = admin_session_cookie(&router).await;
+    let listen = format!("127.0.0.1:{taken}");
+    let save = post_settings(
+        &router,
+        &cookie,
+        &[("tab", "server"), ("relay:server.listen", &listen)],
+    )
+    .await;
+    let page = follow(&router, &cookie, save).await;
+    assert!(card(&page).contains("Not running"), "{}", card(&page));
+    let save = post_settings(
+        &router,
+        &cookie,
+        &[("tab", "server"), ("relay.enabled", "false")],
+    )
+    .await;
+    let page = follow(&router, &cookie, save).await;
+    assert!(is_saved(&page), "{}", toast_text(&page));
+    assert!(
+        toast_text(&page).contains("The push relay is off."),
+        "{}",
+        toast_text(&page)
+    );
+    assert!(
+        card(&page).contains("relay-state-words\">Off<"),
+        "{}",
+        card(&page)
+    );
+    drop(occupied);
+    relay.stop().await;
+}
+
 /// A change to the relay's tables by hand is applied by Reload options
 /// file, as a save would: the listener moves, the toast names the key.
 #[tokio::test]
