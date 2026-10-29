@@ -120,7 +120,8 @@ fn invalid_settings_stop_the_relay_before_it_listens() {
     ];
     for (file, vars, expected) in cases {
         let path = dir.join("relay.toml");
-        std::fs::write(&path, format!("[store]\npath = \"{store}\"\n{file}")).unwrap();
+        // A literal string, so a Windows path's backslashes are not escapes.
+        std::fs::write(&path, format!("[store]\npath = '{store}'\n{file}")).unwrap();
         let output = run(&["--options", path.to_str().unwrap()], vars);
         assert_eq!(output.status.code(), Some(1), "{file}: {}", text(&output));
         assert!(
@@ -145,7 +146,7 @@ fn the_relay_listens_and_stops_on_sigterm() {
     std::fs::write(
         &path,
         format!(
-            "[server]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://relay.example.org\"\n\n[store]\npath = \"{}\"\n\n[logging]\nformat = \"json\"\n",
+            "[server]\nlisten = \"127.0.0.1:0\"\npublic_uri = \"https://relay.example.org\"\n\n[store]\npath = '{}'\n\n[logging]\nformat = \"json\"\n",
             store.display()
         ),
     )
