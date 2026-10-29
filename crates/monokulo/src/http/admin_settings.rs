@@ -164,6 +164,9 @@ fn relay_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 .locked
                 .or_else(|| read_only.clone().filter(|_| view.sources.toml));
             let kind = SettingKindView::from(view.kind);
+            // A secret is read from the environment when the process starts:
+            // saving never applies one.
+            let applies_with_relay = !matches!(kind, SettingKindView::Secret);
             AdminScalarFieldView {
                 access: Access::of(locked, &kind, false),
                 key: view.key.to_string(),
@@ -178,7 +181,7 @@ fn relay_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
                 pending_restart: false,
                 problem: view.problem.map(|p| p.message),
                 saved_value: None,
-                applies_with_relay: true,
+                applies_with_relay,
                 env_var: view.env_var.to_string(),
             }
         })

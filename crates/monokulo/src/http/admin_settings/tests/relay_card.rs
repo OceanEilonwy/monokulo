@@ -209,6 +209,13 @@ async fn every_relay_setting_is_on_the_opened_card_and_saves_into_the_relay_tabl
             )),
             "{secret}: {relay}"
         );
+        // Saving never applies a secret: its block doesn't say it does.
+        let note = relay.find(&format!("This is set with {secret}")).unwrap();
+        let block = &relay[note..];
+        let block = &block[..block
+            .find(r#"class="setting-field""#)
+            .unwrap_or(block.len())];
+        assert!(!block.contains("which saving does"), "{secret}: {block}");
     }
     assert!(!opened.contains(&HANDLE_KEY[..8]));
     assert!(!opened.contains("BEGIN PRIVATE KEY"));
