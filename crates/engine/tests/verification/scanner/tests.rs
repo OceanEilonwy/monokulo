@@ -8660,7 +8660,10 @@ async fn tenants_are_scanned_concurrently_not_one_after_another() {
     let mut tenants = vec![];
     for _ in 0..20 {
         let (id, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
-        custody.delays.lock().insert(handle, Duration::from_secs(1));
+        custody
+            .delays
+            .lock()
+            .insert(handle, Duration::from_millis(250));
         tenants.push((id, handle));
     }
     let store = store.into_shared();
@@ -8676,11 +8679,11 @@ async fn tenants_are_scanned_concurrently_not_one_after_another() {
     run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
         .await
         .unwrap();
-    // 20 tenants x 1s each: about 1s at once (plus the mempool pass),
-    // not 20s in a row. The bound is half the serial time, so a loaded
+    // 20 tenants x 250ms each: about 250ms at once (plus the mempool pass),
+    // not 5s in a row. The bound is half the serial time, so a loaded
     // machine's slowness can't fail it, only scanning one by one can.
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        started.elapsed() < Duration::from_millis(2500),
         "took {:?}",
         started.elapsed()
     );
