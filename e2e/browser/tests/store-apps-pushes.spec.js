@@ -118,6 +118,14 @@ test('a failing app stays failing after a test, and one with no targets has no t
   await expect(targets.locator('.mk-item-card .tag').first()).toHaveText('Failing · 13 in a row');
   await captureCoverageStage(page, 'store-app-page-failing', test.info(), { group: GROUP });
 
+  // On a phone the test push's card says it has no order, in words.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const order = page.locator('#card-recent-pushes tbody tr').first().locator('td[data-label="Order"]');
+  await expect(order.locator('.no-value-card')).toBeVisible();
+  await expect(order.locator('.no-value-card')).toHaveText('no order');
+  await expect(order.locator('.no-value-table')).toBeHidden();
+  await page.setViewportSize({ width: 1280, height: 800 });
+
   await page.goto(appPage(apps.back));
   await expect(page.locator('#card-push-targets .card-meta')).toHaveText('none of 8');
   await expect(page.locator('#card-push-targets')).toContainText('No push targets yet');

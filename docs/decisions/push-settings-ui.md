@@ -420,3 +420,7 @@ Numbered from 41.
 53. **"none delivered yet" on a failing app's line, "no push yet" on a
     healthy one's.** A failing line's "last 502 14 min ago" says pushes
     were tried, which "no push yet" contradicted.
+54. **A test push's Order on a phone card is "no order"**: the page's
+    pushes table is `.table-stack`, which the shared `.table-cards` rule
+    for `views::no_reference` doesn't reach, so the page's own CSS block
+    swaps the dash for the words under the phone width.
