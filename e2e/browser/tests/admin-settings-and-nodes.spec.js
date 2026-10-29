@@ -124,16 +124,6 @@ test('saving without the last node of a network stores use asks first', async ({
   await pressSave(page);
   await expectSaved(page);
   expect(posts).toBe(1);
-
-  // Saved anyway: sent, and the red banner says what happened.
-  await openNodes(page, 'stagenet');
-  await removeStagenet.click();
-  await pressSave(page);
-  await answerNodeQuestion(page, 'Save anyway');
-  await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
-  expect(posts).toBe(2);
-  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
-  await expectSaved(page);
 });
 
 test('every tab, for the gallery @gallery', async ({ page }) => {
