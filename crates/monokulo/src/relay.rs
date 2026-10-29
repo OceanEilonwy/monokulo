@@ -58,8 +58,23 @@ pub enum RelayState {
         since: i64,
     },
     /// Enabled, but its last start (at `since`) failed: nothing listens
-    /// until the next save or start fixes `error`.
+    /// until the next save or start fixes `error`, said with the relay as
+    /// its subject and without it ("failed to listen on …: address
+    /// already in use").
     Failed { error: String, since: i64 },
+}
+
+/// What the card's panel and the toast say when the relay is on but isn't
+/// running, in bold.
+pub const NOT_RUNNING: &str = "The push relay isn't running.";
+
+/// What follows [`NOT_RUNNING`]: why ([`RelayState::Failed`]'s `error`),
+/// and what to do.
+pub fn failure_fix(error: &str) -> String {
+    format!(
+        "It {}. Fix it and save again, or restart monokulo.",
+        error.trim_end_matches('.')
+    )
 }
 
 /// Something the relay can't start without.
@@ -112,9 +127,7 @@ impl Restarted {
             Restarted::Restarted(_) => Some("The push relay restarted its listener.".to_owned()),
             Restarted::Stopped => Some("The push relay stopped its listener.".to_owned()),
             Restarted::StillOff => None,
-            Restarted::Failed(error) => Some(format!(
-                "The push relay didn't start: {error}. Fix it and save again."
-            )),
+            Restarted::Failed(error) => Some(format!("{NOT_RUNNING} {}", failure_fix(error))),
         }
     }
 }
@@ -221,7 +234,7 @@ mod embedded {
             }),
         })));
         if let Restarted::Failed(error) = handle.restart().await {
-            return Err(error);
+            return Err(format!("the push relay {error}"));
         }
         Ok(handle)
     }
@@ -292,6 +305,21 @@ mod embedded {
             })
     }
 
+    /// An I/O error as words in a sentence: the system's message without
+    /// its "(os error 98)" and capital ("address already in use").
+    fn io_words(error: &std::io::Error) -> String {
+        let text = error.to_string();
+        let text = match (error.raw_os_error(), text.rfind(" (os error ")) {
+            (Some(_), Some(at)) => &text[..at],
+            _ => text.as_str(),
+        };
+        let mut chars = text.chars();
+        match chars.next() {
+            Some(first) => first.to_lowercase().chain(chars).collect(),
+            None => String::new(),
+        }
+    }
+
     /// Starts a relay on `config` with its own stop under `parent`, and
     /// its listener: where it listens, or why it didn't start.
     async fn start_one(
@@ -301,15 +329,16 @@ mod embedded {
         let stop = parent.child_token();
         let relay = Relay::start(config, stop.clone())
             .await
-            .map_err(|error| format!("the push relay didn't start: {error}"))?;
+            .map_err(|error| format!("didn't start: {error}"))?;
         let listener = match tokio::net::TcpListener::bind(config.listen).await {
             Ok(listener) => listener,
             Err(error) => {
                 stop.cancel();
                 relay.stopped().await;
                 return Err(format!(
-                    "the push relay failed to listen on {}: {error}",
-                    config.listen
+                    "failed to listen on {}: {}",
+                    config.listen,
+                    io_words(&error)
                 ));
             }
         };
@@ -455,7 +484,7 @@ mod embedded {
             } else {
                 let started = match settings::config(&embedded.registry) {
                     Ok(config) => start_one(&config, &embedded.stop).await,
-                    Err(error) => Err(error.to_string()),
+                    Err(error) => Err(format!("can't read its settings: {error}")),
                 };
                 match started {
                     Ok((running, address)) => {
@@ -943,11 +972,10 @@ mod tests {
         let Restarted::Failed(error) = handle.restart().await else {
             panic!("the port is taken");
         };
-        assert!(
-            error.starts_with(&format!(
-                "the push relay failed to listen on 127.0.0.1:{taken}: "
-            )),
-            "{error}"
+        // Plain words: no "(os error 98)", no capital mid-sentence.
+        assert_eq!(
+            error,
+            format!("failed to listen on 127.0.0.1:{taken}: address already in use")
         );
         nothing_listens(first);
         let view = handle.view().await.unwrap();

@@ -9,6 +9,9 @@
 //     a new order counts as one change however many rows it moves;
 //   - "Add another" adds a blank row;
 //   - the Push relay card's apps: Remove and Add an app act in place;
+//   - after a save the address bar says whether the Push relay card is
+//     opened (?relay=edit) as the page now shows it, so a reload shows
+//     the same;
 //   - a row's self-signed box shows only while its Use TLS box is ticked;
 //   - the question (a ui dialog) before a save leaves a network stores use with no
 //     node;
@@ -349,6 +352,22 @@
     appsAtLoad = apps ? apps.cloneNode(true) : null;
     showSelfSigned(document);
     followSwitches(document);
+    followRelayCard();
+  }
+
+  // A saved change closes the Push relay card, a refused one keeps it
+  // opened; the save is a POST, so fixi doesn't change the address
+  // (fx-push-url is for links). Same history entry, its fx state kept.
+  function followRelayCard() {
+    var card = document.getElementById("card-relay");
+    if (!card || !window.history || !history.replaceState) return;
+    var url = new URL(location.href);
+    var open = card.classList.contains("is-open");
+    if (open === (url.searchParams.get("relay") === "edit")) return;
+    if (open) url.searchParams.set("relay", "edit");
+    else url.searchParams.delete("relay");
+    url.hash = "card-relay";
+    history.replaceState(history.state, "", url.href);
   }
 
   // After fixi's glue has finished with a swap (fx-glue.js "fx:settled").

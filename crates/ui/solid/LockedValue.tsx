@@ -7,7 +7,8 @@ import type { JSX } from '@solidjs/web';
  * A value the page shows but can't change (set on the command line,
  * by a connected plugin): a disabled box with a padlock, and no
  * `name`, so it is never sent with a form. A secret shows as dots,
- * never its value.
+ * never its value. One that needs seeing to ("Not set", where nothing
+ * works until it is) is in the warning tone, a triangle before it.
  */
 export interface LockedValueProps {
   value: string;
@@ -24,17 +25,29 @@ export interface LockedValueProps {
    * @default false
    */
   secret?: boolean;
+  /**
+   * @default false
+   */
+  warning?: boolean;
 }
 
 /**
  * A value the page shows but can't change (set on the command line,
  * by a connected plugin): a disabled box with a padlock, and no
  * `name`, so it is never sent with a form. A secret shows as dots,
- * never its value.
+ * never its value. One that needs seeing to ("Not set", where nothing
+ * works until it is) is in the warning tone, a triangle before it.
  */
 export function LockedValue(props: LockedValueProps): JSX.Element {
   return (
-    <span class="locked-input">
+    <span class="locked-input" data-warning={(props.warning ?? false)}>
+      {(props.warning ?? false) ? (
+        <svg class="locked-warning-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m12 3 10 18H2Z M12 9v5M12 17v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      ) : (
+        null
+      )}
       {(props.secret ?? false) ? (
         <input class="mk-input" type="password" value="locked" id={props.id} aria-labelledby={props.labelled_by} aria-describedby={props.described_by} disabled />
       ) : (

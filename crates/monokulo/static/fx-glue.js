@@ -27,6 +27,8 @@
 // Everywhere:
 //   - the target is marked aria-busy while a request runs;
 //   - forms post urlencoded, as without JavaScript;
+//   - a link asks for its own URL alone, as without JavaScript, even
+//     inside a form (fixi would add the form's fields to it);
 //   - a failed request (a network error, or any status but 2xx and 422)
 //     shows a banner instead of swapping in an error page;
 //   - an element marked data-fx-oob in a response replaces the page's
@@ -88,6 +90,10 @@
       evt.detail.requests.forEach(function (other) { other.abort(); });
       cfg.drop = 0;
     }
+    // A link inside a form (the Push relay card's Edit settings) asks for
+    // its URL and nothing else: fixi would put the form's fields in it,
+    // and fx-push-url would show them in the address bar.
+    if (elt.matches("a[href]")) cfg.body = new URLSearchParams();
     // Forms post as application/x-www-form-urlencoded, as they do without
     // JavaScript (fixi would send FormData as multipart), unless the form
     // asks for multipart itself.

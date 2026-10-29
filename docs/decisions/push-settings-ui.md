@@ -296,6 +296,38 @@ Numbered from 21.
     seam's new `AppState` field broke `crates/e2e-harness`, which builds an
     `AppState` by hand; the workspace clippy run caught it. Its monokulo has
     no relay to show, as a test state's.
+33. **A link sends its own URL alone, with JavaScript too** (QA round 1).
+    Edit settings and Close sit inside the settings form, and fixi adds a
+    form's fields to any request from inside it, so `fx-push-url` put every
+    setting of the tab in the address bar and broke the `#card-relay`
+    anchor. `fx-glue.js` now sends no form body for an `a[href]`, as a
+    browser without JavaScript does, for every page, not one attribute
+    for these links: no link of ours means to carry a form.
+34. **After a save the page's script makes the address follow the card.**
+    A save is a POST, so nothing pushes a URL; a saved change closes the
+    card (decision 10) while the address kept `relay=edit`. On each swap
+    `admin-settings.js` replaces the history entry with `?relay=edit`
+    added or dropped (and `#card-relay`) to match the card as shown, so a
+    reload shows the same. Keeping the card open after a save that left
+    the relay alone was the other way; it would make decision 10 depend
+    on what was saved.
+35. **A failed start is said in plain words, the same in the toast and on
+    the card:** "The push relay isn't running. It failed to listen on
+    127.0.0.1:8444: address already in use. Fix it and save again, or
+    restart monokulo." `RelayState::Failed`'s error is a phrase with the
+    relay as its subject (`relay::failure_fix` words it); an I/O error
+    loses its "(os error 98)" and capital. At start monokulo stops on "the
+    push relay failed to listen on …".
+36. **The APNs panel line has one wording.** The board's state 5 ("Team ID
+    X is saved for it; its key ID isn't") can't happen: the relay's
+    settings refuse `apns.team_id` or `apns.key_id` without
+    `MONOKULO_RELAY_APNS_KEY`, at start (monokulo stops) and on save (on
+    the field), so with the key unset no id is saved and the panel says
+    "No team ID or key ID is saved for it yet". The other three arms went.
+37. **A secret that isn't set shows "Not set" in the warning tone** with a
+    triangle before it and the padlock kept, as the board draws it:
+    `ui::LockedValue` gained `warning`, its border and icon on the
+    `--warning` role.
 
 ## The Apps card, the app's page, Remove and the test push (rust-engineer-2)
 
