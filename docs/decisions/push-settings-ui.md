@@ -323,7 +323,9 @@ Numbered from 21.
     settings refuse `apns.team_id` or `apns.key_id` without
     `MONOKULO_RELAY_APNS_KEY`, at start (monokulo stops) and on save (on
     the field), so with the key unset no id is saved and the panel says
-    "No team ID or key ID is saved for it yet". The other three arms went.
+    "No team ID or key ID is saved for it yet: once the key is set, set
+    them under Edit settings" (setting them first would be refused). The
+    other three arms went.
 37. **A secret that isn't set shows "Not set" in the warning tone** with a
     triangle before it and the padlock kept, as the board draws it:
     `ui::LockedValue` gained `warning`, its border and icon on the
