@@ -2161,11 +2161,15 @@ async fn an_endpoint_on_a_private_address_is_refused_without_a_request() {
 async fn a_push_service_that_cant_be_reached_is_retried_without_its_url_over_http() {
     let (lines, _guard) = Lines::capture();
     let world = world().await;
-    // A port nothing listens on: bound, then let go.
-    let closed = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap()
-    };
+    // Port 0, which nothing can listen on, so the connection fails at
+    // once on every system without a single packet sent: Linux refuses it
+    // (ECONNREFUSED), macOS and Windows reject the address (EADDRNOTAVAIL,
+    // WSAEADDRNOTAVAIL), none of them retrying the way Windows retries a
+    // closed port for about 2 seconds. A port bound and let go could be
+    // handed to another process before the push tries it, and
+    // `service_runtime::unreachable` accepts and hangs up, which is a push
+    // service that's up and drops the push, not one that can't be reached.
+    let closed = "127.0.0.1:0";
     let ak = world.fixture.ak.clone();
     let device = ::push::encrypt::ReceiverKeys::generate();
     let secret = "upUnreachableCapability";
