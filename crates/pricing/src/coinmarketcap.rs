@@ -826,7 +826,14 @@ mod tests {
             KeyCheck::Unchecked(_)
         ));
         assert!(matches!(
-            check_api_key("http://127.0.0.1:1/public-api", &ApiKey::new(KEY)).await,
+            check_api_key(
+                &format!(
+                    "http://{}/public-api",
+                    service_runtime::unreachable::address()
+                ),
+                &ApiKey::new(KEY)
+            )
+            .await,
             KeyCheck::Unchecked(_)
         ));
     }
