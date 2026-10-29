@@ -1,5 +1,6 @@
 #!/bin/sh /etc/rc.common
-# shellcheck disable=SC2034
+# shellcheck shell=ash
+# shellcheck disable=SC2034,SC3043
 # monokulo-bell, the Monokular Bell: a point of sale's payments as dings
 # to its tills. Its settings are in /etc/config/monokulo-bell, or LuCI:
 # Services > Bell; each start writes them into the options file the Bell

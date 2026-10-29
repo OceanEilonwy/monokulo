@@ -12,7 +12,7 @@
 		},
 		"write": {
 			"ubus": {
-				"luci": [ "setInitAction" ]
+				"monokulo": [ "restart" ]
 			},
 			"uci": [ "monokulo" ]
 		}

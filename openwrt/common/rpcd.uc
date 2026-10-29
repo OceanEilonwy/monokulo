@@ -2,7 +2,7 @@
 // that monokulo-push-relay and monokulo-bell each install as
 // /usr/share/rpcd/ucode/<package>, exposing the object <package> (named by
 // the file it is installed as). monokulo installs it too, for `status`
-// alone (its settings are on its own admin page):
+// and `restart` alone (its settings are on its own admin page):
 //   status        whether it runs, its build, why it didn't start, which
 //                 secrets are set (never their values) and the service's own
 //                 GET /status from its loopback status listener
@@ -11,6 +11,9 @@
 //                 `check`)
 //   set_secret    {name, value}: a secret's file in /etc/<package>/secrets/
 //   clear_secret  {name}
+//   restart, reload  the service's own init script's, as LuCI's
+//                 setInitAction would run it: the pages' ACLs grant these
+//                 instead of setInitAction, which takes any init script
 // LuCI can't read the root-only secrets folder, nor run a command, without
 // this; its ACL grants the page these methods alone. Nor need it procd's
 // `service list`, whose instances hold every secret in their environment:
@@ -84,6 +87,12 @@ function own_status() {
 	}
 }
 
+// The service's init script run with action, as LuCI's setInitAction
+// runs one: whether it succeeded.
+function init_action(action) {
+	return { result: system(`/etc/init.d/${name} ${action} >/dev/null 2>&1`) == 0 };
+}
+
 function known_secret(secret) {
 	return type(secret) == 'string' && index(service.secrets, secret) >= 0;
 }
@@ -100,13 +109,11 @@ const methods = {
 				secrets[secret] = length(readfile(`${secrets_dir}/${secret}`) ?? '') > 0;
 			return {
 				running,
-				pid: running ? instance.pid : null,
 				running_build: running ? { version: instance.data?.version, commit: instance.data?.commit } : null,
 				installed: build(readfile(`/usr/share/${name}/version`)),
 				check_error: first_line_file(`/tmp/${name}.check`),
 				blocked_by: first_line_file(`/tmp/${name}.blocked`),
 				secrets,
-				generated_secret: service.generated,
 				status: running && service.status_url ? own_status() : null
 			};
 		}
@@ -142,6 +149,18 @@ const methods = {
 		}
 	},
 
+	restart: {
+		call: function() {
+			return init_action('restart');
+		}
+	},
+
+	reload: {
+		call: function() {
+			return init_action('reload');
+		}
+	},
+
 	clear_secret: {
 		args: { name: 'name' },
 		call: function(request) {
@@ -158,4 +177,4 @@ const methods = {
 
 if (!service)
 	return {};
-return { [name]: configured ? methods : { status: methods.status } };
+return { [name]: configured ? methods : { status: methods.status, restart: methods.restart } };

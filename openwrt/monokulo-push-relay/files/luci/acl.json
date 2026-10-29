@@ -9,8 +9,7 @@
 		},
 		"write": {
 			"ubus": {
-				"monokulo-push-relay": [ "check", "set_secret", "clear_secret" ],
-				"luci": [ "setInitAction" ],
+				"monokulo-push-relay": [ "check", "set_secret", "clear_secret", "restart", "reload" ],
 				"uci": [ "commit" ]
 			},
 			"uci": [ "monokulo-push-relay" ]
