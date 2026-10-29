@@ -1,7 +1,9 @@
 # The Monokular Bell
 
 The Bell turns a point of sale's payment webhooks into dings for the tills
-registered at that location (`docs/design.md` §3). It serves Square, Clover,
+registered at that location: the tills of the
+[Monokular](https://github.com/OceanEilonwy/monokular) app, which take
+Monero at a Square or Clover counter. It serves Square, Clover,
 or both: each point of sale is an adapter, on when the Bell's settings name
 an application for it (`[bell.square]`, `[bell.clover]`). A ding is a Web
 Push whose only content is an encrypted `{"wake":"square"}` or
@@ -10,19 +12,22 @@ payments itself, so a lost, late, repeated or forged one costs one request
 to the point of sale at most.
 
 This page is the Bell's API, as a till (or anyone writing one) uses it, and
-what each of its errors means. How to run one is in the
-[README](../README.md#running-a-bell); the choices behind it are in
-[decisions/bell.md](decisions/bell.md).
+what each of its errors means, then [how to run one](#run-one). The choices
+behind it are in its
+[decision log](https://github.com/OceanEilonwy/monokulo/blob/main/docs/decisions/bell.md);
+its code is `crates/monokulo-bell`, the `monokulo-bell` binary. A till far
+from Google's services, or on an iPhone, takes its dings through
+[the push relay](../push-relay/).
 
 A point of sale is named by its wire name, the one spelling everywhere:
 `square` or `clover`, in a registration's `point_of_sale`, `/v1/info`'s
 keys, a ding's `wake`, the webhook path `/v1/<pos>/webhook` and the problems
 `<pos>-refused` and `<pos>-unavailable`.
 
-This is the Bell's second API (version 0.2.0). The first, Square's alone,
-took `square_access_token` and answered `square_application_id`; those
-names are gone, with no shim: no Bell was deployed and the till that spoke
-to it was unreleased (decision 44).
+This is the Bell's second API. The first, Square's alone, took
+`square_access_token` and answered `square_application_id`; those names are
+gone, with no shim: no Bell was deployed and the till that spoke to it was
+unreleased (decision 44).
 
 ## What the Bell sees and keeps
 
@@ -38,7 +43,7 @@ The Bell checks the `X-Clover-Auth` header, reads `appId`, each merchant
 key, and each update's `objectId` (its id only when it is a payment's,
 `P:…`) and `type`, and nothing else. The one value of a body it ever logs is
 Clover's verification code, once, for the operator
-([below](#post-v1cloverwebhook)).
+([below](#post-v1-clover-webhook)).
 
 Neither body is stored, logged or put into an answer. The ids of the payments
 it rang, with their point of sale, are kept in memory for 10 minutes (10,000
@@ -74,7 +79,7 @@ What a till needs to choose this Bell:
 { "points_of_sale": {
     "square": { "application_id": "sq0idp-…", "environment": "production" },
     "clover": { "application_id": "ABCDEFGHIJKLM", "environment": "north_america" } },
-  "vapid_public_key": "BOS-CZ1F…", "version": "0.2.0" }
+  "vapid_public_key": "BOS-CZ1F…", "version": "0.1.0" }
 ```
 
 `points_of_sale` has a key for each point of sale this Bell serves, and
@@ -173,7 +178,7 @@ Problems: [`invalid-signature`](#invalid-signature),
 
 Clover's, when this Bell serves Clover (otherwise `404`, the body unread).
 Clover signs nothing: every webhook carries the app's Auth Code as its
-`X-Clover-Auth` header, which must be `MONOKULAR_BELL_CLOVER_AUTH_CODE` byte
+`X-Clover-Auth` header, which must be `MONOKULO_BELL_CLOVER_AUTH_CODE` byte
 for byte (compared in constant time). That static header is the whole of the
 authentication: whoever holds the code can send the Bell webhooks, which
 costs each till one request to Clover, within the merchant's ding share.
@@ -190,15 +195,15 @@ handshake**: a body that is exactly `{"verificationCode": "<UUID>"}` is
 answered `200` and the code logged at `info`:
 
 ```
-INFO monokular_bell::routes: Clover webhook verification code: 5a237ce7-… (enter it on the Webhooks page of the app's developer dashboard, then Verify)
+INFO monokulo_bell::routes: Clover webhook verification code: 5a237ce7-… (enter it on the Webhooks page of the app's developer dashboard, then Verify)
 ```
 
 Anything else without the header (any other value, any other body, more
 than 1 KiB) is [`invalid-signature`](#invalid-signature) with nothing logged,
-so nobody can write into the Bell's log. The operator's steps are in the
-README ([Running a Bell](../README.md#running-a-bell)): start the Bell, press
-Send Verification Code in Clover's dashboard, read the code in the log,
-paste it, Verify, Save, then subscribe to Payments.
+so nobody can write into the Bell's log. The operator's steps are
+[below](#clover-s-app): start the Bell, press Send Verification Code in
+Clover's dashboard, read the code in the log, paste it, Verify, Save, then
+subscribe to Payments.
 
 Problems: [`invalid-signature`](#invalid-signature),
 [`payload-too-large`](#payload-too-large).
@@ -292,3 +297,129 @@ webhook).
 ### internal
 
 `500`: something went wrong on the Bell. Try again in a moment.
+
+## Run one
+
+A Bell serves Square, Clover, or both, each with an application of its own
+(the one the tills sign in through) whose webhooks come to it, and needs an
+https address they can reach.
+
+```sh
+monokulo-bell --init      # writes ~/.config/monokulo/bell.toml, every setting described
+```
+
+In `bell.toml` set the Bell's address and the application of each point of
+sale it serves: a point of sale is on when its `application_id` is set.
+
+```toml
+[bell]
+public_uri = "https://bell.example.org"   # each webhook URL is this + /v1/square/webhook or /v1/clover/webhook
+
+[bell.square]
+application_id = "sq0idp-…"               # sandbox-sq0idb-… with environment = "sandbox"
+
+[bell.clover]
+application_id = "ABCDEFGHIJKLM"          # the App ID
+environment = "north_america"             # or sandbox, europe, latin_america: one Bell, one Clover region
+```
+
+The secrets come from the environment only, each point of sale's set when,
+and only when, it is on (one set for a point of sale that is off stops the
+Bell, as it is most likely a section misnamed):
+
+```sh
+export MONOKULO_BELL_SQUARE_WEBHOOK_KEY=…               # Square: the subscription's signature key (Developer Console › Webhooks)
+export MONOKULO_BELL_CLOVER_AUTH_CODE=…                 # Clover: the app's Auth Code (developer dashboard › Webhooks)
+export MONOKULO_BELL_VAPID_KEY=$(openssl rand -hex 32)  # once; keep it: the tills' subscriptions are made for its public key
+monokulo-bell
+```
+
+Until the release after the one that renamed them, the old names
+`MONOKULAR_BELL_SQUARE_WEBHOOK_KEY`, `MONOKULAR_BELL_CLOVER_AUTH_CODE` and
+`MONOKULAR_BELL_VAPID_KEY` (from when the Bell was `monokular-bell`) are
+still read, each with a warning at start; set under both names with
+different values, the Bell stops.
+
+It listens on `127.0.0.1:8445` (`bell.listen`): put an https reverse proxy
+in front, serving `bell.public_uri`, as the Bell serves no TLS itself; a
+proxy on the same machine is trusted for `X-Forwarded-For` by default
+(`bell.trusted_proxies`). Registrations are kept in
+`~/.local/share/monokulo/bell.db` (`bell.store_path`). Any setting can be
+given on the command line too (`monokulo-bell --help`); anything invalid or
+missing, or no point of sale on, stops it before it listens. Stopping it
+(SIGTERM) lets requests and dings in flight finish.
+
+### Square's application
+
+It needs a webhook subscription to `{public_uri}/v1/square/webhook` for
+`payment.created` and `payment.updated`; the tills' sign-in asks for
+`MERCHANT_PROFILE_READ`.
+
+### Clover's app
+
+In the developer dashboard of the Bell's Clover environment (Clover's
+sandbox and each region are dashboards of their own):
+
+1. Platform **Web**, so it has REST Configuration: Site URL
+   `https://monokular.monokulo.com/clover` (the tills' sign-in returns
+   there, an App Link of the Monokular app, as Square's does to `/square`),
+   Default OAuth Response **Code**.
+2. Permissions: Merchant read and write (write lets the till add the Monero
+   payment type), Payments read, Orders read.
+3. Start the Bell. Under Webhooks, set the callback URL
+   `{public_uri}/v1/clover/webhook` and press **Send Verification Code**:
+   the Bell answers and logs `Clover webhook verification code: …` at info.
+   Paste the code, **Verify**, **Save**, then subscribe to **Payments**.
+4. Copy the App ID to `bell.clover.application_id` and the Auth Code to
+   `MONOKULO_BELL_CLOVER_AUTH_CODE`, and restart the Bell.
+
+Clover's webhooks carry no signature, only the Auth Code as a header, and
+don't say how a payment was paid: keep the code as secret as a key, and know
+that every payment at a Clover merchant, card or Monero, dings its tills
+(the till asks Clover and finds nothing new for a card).
+
+### Through a push relay
+
+An iPhone till, or an Android one with only Google's services, takes its
+dings through a push relay ([`monokulo-push-relay`](../push-relay/)), and a
+relay counts pushes per sender, which is the Bell's VAPID key: every
+merchant's tills behind it are one sender. A payment dings each till
+registered at its location once, so at its busiest a Bell sends about the
+payments a minute across all its merchants times the tills at each location;
+whoever runs the relay sizes its `limits.per_sender_per_minute` (600 by
+default) above that, or the relay answers `429` and those dings are lost: a
+ding is never sent again, as a minute late it is worth nothing. Its
+`limits.per_handle_per_minute` (60) is per till and is never what a Bell
+reaches. So that one busy merchant can't spend the relay's budget for all of
+them, the Bell sends each merchant's tills (a Square merchant and a Clover
+merchant are two) at most `bell.dings_per_merchant_per_minute` dings a
+minute (120 by default), across its locations, and drops the rest: keep it
+well below the relay's per-sender limit.
+
+### On one machine
+
+To try it against the stand-in Square and the stand-in Clover in this
+repository's `tools/`, with any Web Push endpoint on loopback as the till's:
+
+```sh
+FAKE_SQUARE_WEBHOOK_URL=http://127.0.0.1:8445/v1/square/webhook FAKE_SQUARE_WEBHOOK_KEY=dev \
+  python3 -I tools/fake-square/fake_square.py                          # :8738
+FAKE_CLOVER_WEBHOOK_URL=http://127.0.0.1:8445/v1/clover/webhook \
+  FAKE_CLOVER_AUTH_CODE=11111111-2222-3333-4444-555555555555 FAKE_CLOVER_APP_ID=DEVCLOVERAPP1 \
+  python3 -I tools/fake-clover/fake_clover.py                          # :8740
+MONOKULO_BELL_SQUARE_WEBHOOK_KEY=dev MONOKULO_BELL_CLOVER_AUTH_CODE=11111111-2222-3333-4444-555555555555 \
+  MONOKULO_BELL_VAPID_KEY=$(openssl rand -hex 32) \
+  cargo run -p monokulo-bell -- --bell-public-uri http://127.0.0.1:8445 \
+  --bell-square-environment sandbox --bell-square-application-id sandbox-sq0idb-dev \
+  --bell-square-api-url http://127.0.0.1:8738 \
+  --bell-clover-environment sandbox --bell-clover-application-id DEVCLOVERAPP1 \
+  --bell-clover-api-url http://127.0.0.1:8740 --bell-allow-private-endpoints true
+curl -X POST localhost:8740/fake/verify    # Clover's handshake: the Bell logs the code
+# register a subscription: Square for L-DEV with the token EAAA-dev-…, Clover for
+# MCLOVERDEV001 with the test token fake-clover prints (fake-clover-test-token-0001);
+# with no till, "add_tender": true adds the Monero tender as the merchant would
+# in Clover's dashboard. Then:
+curl -X POST localhost:8738/fake/sale -d '{"items":[["Flat white",2,450]]}'   # dings {"wake":"square"}
+curl -X POST localhost:8740/fake/sale -d '{"items":[["Flat white",2,450]],"add_tender":true}'   # dings {"wake":"clover"}
+curl -X POST localhost:8740/fake/refund -d '{"payment_id":"…"}'              # a P: UPDATE: no ding
+```

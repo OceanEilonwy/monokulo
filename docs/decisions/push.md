@@ -4,7 +4,8 @@ Made on 2026-10-27 without the owner to ask, while building Monokulo's
 push system (the `push` crate, push targets and deliveries, the push
 relay) and the Monokular Bell. Each says what was chosen, why, and what
 else was possible, so any of them can be reversed knowingly. The Bell's
-own entries are also in monokular's `docs/decisions/bell.md`.
+own entries are in `docs/decisions/bell.md` (moved here from monokular with
+the Bell on 2026-10-29).
 
 Design: monokular `docs/design.md` §3 (wake-ups, the Bell), §5 (push),
 §8 (monokulo code layout), §10 (delivery plan), §11 (open questions).
@@ -1370,3 +1371,10 @@ after group 2's last entry (150).
      the breaking change that had 0.7.6 to 0.7.8 yanked, and a faster
      Montgomery carry. `ctutils` goes 0.4.2 to 0.4.6, the oldest 0.7.10
      accepts (`^0.4.6`; 0.4.7 came out the same day and is left).
+
+## After the Bell moved in (2026-10-29)
+
+161. **CI no longer checks `push` and `outbound` on stable** (retires 43).
+     The Bell, the stable git consumer it was for, is now
+     `crates/monokulo-bell` here, built on nightly with everything else
+     from path dependencies (`docs/decisions/bell.md` 69).

@@ -176,4 +176,32 @@ mod tests {
             assert!(Problem::Unavailable(pos).title().contains(pos.title()));
         }
     }
+
+    /// Each problem's `type` leads to a section of the Bell's page on the
+    /// docs site, whose source is in this repository.
+    #[test]
+    fn every_problem_type_is_a_section_of_the_api_page() {
+        const PAGE: &str = include_str!("../../../xtask/src/pages/docs/bell.md");
+        let mut problems = vec![
+            Problem::InvalidRequest,
+            Problem::UnknownRegistration,
+            Problem::TooManyRegistrations,
+            Problem::EndpointRegistered,
+            Problem::PayloadTooLarge,
+            Problem::RateLimited,
+            Problem::Internal,
+        ];
+        for pos in PointOfSale::ALL {
+            problems.extend([
+                Problem::Refused(pos),
+                Problem::Unavailable(pos),
+                Problem::InvalidSignature(pos),
+            ]);
+        }
+        assert_eq!(DOCS, "https://docs.monokulo.com/bell/");
+        for problem in problems {
+            let heading = format!("\n### {}\n", problem.slug());
+            assert!(PAGE.contains(&heading), "{heading:?}");
+        }
+    }
 }

@@ -21,7 +21,7 @@ it in Clover's dashboard would (FAKE_CLOVER_DENY_TENDER_WRITE doesn't stop it).
 
 With FAKE_CLOVER_WEBHOOK_URL (a Bell's bell.public_uri followed by
 /v1/clover/webhook) and FAKE_CLOVER_AUTH_CODE (its
-MONOKULAR_BELL_CLOVER_AUTH_CODE) set, each sale is sent there as a P: CREATE
+MONOKULO_BELL_CLOVER_AUTH_CODE) set, each sale is sent there as a P: CREATE
 webhook with X-Clover-Auth, and each refund as a P: UPDATE. The Bell's
 bell.clover.application_id must be FAKE_CLOVER_APP_ID (default FAKECLOVERAPP).
 

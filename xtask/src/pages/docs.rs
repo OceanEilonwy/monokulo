@@ -141,7 +141,7 @@ pub(super) enum Layout {
 /// The docs, in the map's order, which is also Previous and Next's: each
 /// group's pages together, the groups in `Group::ALL`'s order. The first is
 /// where the bar's Docs and Get started go.
-pub(super) const PAGES: [Page; 13] = [
+pub(super) const PAGES: [Page; 14] = [
     Page {
         source: Source::Markdown("introduction.md"),
         dir: "introduction",
@@ -228,6 +228,14 @@ pub(super) const PAGES: [Page; 13] = [
         source: Source::Markdown("push-relay.md"),
         dir: "push-relay",
         label: "The push relay",
+        group: Group::Integrations,
+        old: None,
+        layout: Layout::Guide,
+    },
+    Page {
+        source: Source::Markdown("bell.md"),
+        dir: "bell",
+        label: "The Monokular Bell",
         group: Group::Integrations,
         old: None,
         layout: Layout::Guide,

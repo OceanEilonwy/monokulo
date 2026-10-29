@@ -1,10 +1,18 @@
-# Decisions: the Monokular Bell, first build
+# Decisions: the Monokular Bell
 
 Made while building the Bell (`crates/monokular-bell`) on 2026-10-27, without
 the owner to ask, as package 5 of the push plan whose decisions are logged in
 monokulo's `docs/decisions/push.md` ("plan" below means that log's part C).
 Each says what was chosen, why, and what else was possible, so any of them can
-be reversed knowingly. The Bell's API is in [../bell.md](../bell.md).
+be reversed knowingly.
+
+**Moved 2026-10-29.** This log came with the Bell from the monokular
+repository into monokulo, where the Bell is now `crates/monokulo-bell`
+(crate and binary `monokulo-bell`); its numbering continues (59 and on, under
+"The move into monokulo"). Entries 1 to 58 are as they were written, so the
+paths, names and repository they mention are monokular's at the time. The
+Bell's API and how to run it are at <https://docs.monokulo.com/bell/>
+(`xtask/src/pages/docs/bell.md`), its design note in [../bell.md](../bell.md).
 
 ## From the plan
 
@@ -519,3 +527,98 @@ named in the decision.
     and each ding's key agreement) to 0.7.10, and `ctutils` 0.4.2 to
     0.4.6, the oldest 0.7.10 accepts. monokulo's lock moves in the same
     step (its decision 160).
+
+## The move into monokulo (2026-10-29)
+
+Made by the packaging team (principal, two Rust engineers, an OpenWrt
+engineer, QA) on the owner's plan: the Bell moves into monokulo with its
+history, named `monokulo-bell`, as one PR merged by rebase. The owner's plan
+is final; these are the calls it left open.
+
+59. **The Bell's history moves, replayed linearly onto monokulo's `main`.**
+    Its five commits in monokular (`49f8544`, `f274ad7` #14, `13d020a` #19,
+    `54ac16f` #17, `cc72561` #21; monokular squash-merges, so none is a
+    merge) are rebuilt with only the Bell's paths in them, each on the one
+    before, the first on monokulo's `main` (`a5845fce4`): the result of
+    `git filter-repo` followed by `git rebase --root --onto origin/main`.
+    The plan named `git filter-repo` (v2.47.0, downloaded as its single
+    script, sha256 `67447413…7d94`); running downloaded code was refused in
+    the session that did the move, so the same filter was done with git's
+    own plumbing (a temporary index per commit, `read-tree --prefix` for
+    each kept path under its new name, `commit-tree` with the original
+    author, email and date), and every moved path's tree checked identical
+    to monokular's at `cc72561`. A merge of the unrelated history was the
+    alternative; monokulo takes rebase merges only, so a PR can't hold one.
+60. **The moved paths are `crates/monokular-bell`, `tools/fake-clover`,
+    `tools/fake-square`, `docs/bell.md` and `docs/decisions/bell.md`.** Both
+    stand-ins move whole: they are what the Bell's dev loop and the till's
+    end-to-end run talk to, and `49f8544`'s other 13 files (the app's) fall
+    away, which is "the Bell-relevant parts of fake-square" at the history
+    level; splitting the 155-line script would break the one-process loop.
+    monokular's `docs/reports/bell.md` stays there (a report on that
+    repository's work), and its `docs/design.md` isn't filtered (it is the
+    app's design): its Bell part is copied by hand into this repository's
+    `docs/bell.md`.
+61. **Authors and dates are kept; each message is rewritten only to point
+    its PR number at monokular (`(monokular #14)`) and to name its source
+    commit.** The replayed commits aren't buildable states of monokulo's
+    workspace (the Bell isn't a member until the commits after them): a
+    bisect that lands on one should skip it.
+62. **Paths are renamed as they are replayed** (`crates/monokular-bell` to
+    `crates/monokulo-bell`, `docs/bell.md` to `xtask/src/pages/docs/bell.md`),
+    so `git log --follow` works from the new paths.
+63. **The Bell takes the workspace's version, 0.1.0, not its own 0.2.0.**
+    One version for every crate here, and a release tag names it.
+    `GET /v1/info`'s `version` says `0.1.0` from now on; the till only
+    shows it. The API page's "second API" note loses its version number.
+64. **The crate keeps edition 2024** (the others here are on 2021):
+    changing it is churn with no gain, and nightly builds both.
+65. **No `license` field.** monokulo's crates have none and the repository
+    has no LICENSE file; monokular's was `GPL-3.0-only`. The owner owns
+    both; flagged in `docs/reports/packaging.md` so a licence can be added
+    to monokulo if wanted.
+66. **The Bell logs through the `telemetry` crate**, as the push relay
+    does: `logging.level` with telemetry's check, and a new
+    `logging.format` (`auto`, `json`, `pretty`), so the two standalone
+    services here write one log shape. `tracing-subscriber` stays a
+    dev-dependency only, for the tests' captured log.
+67. **Setting keys stay `bell.*` and the options file `bell.toml`**
+    (already under `~/.config/monokulo/`); only the crate, the binary, the
+    environment variables and the `User-Agent` (`monokulo-bell/<version>`)
+    change name.
+68. **The secrets are `MONOKULO_BELL_SQUARE_WEBHOOK_KEY`,
+    `MONOKULO_BELL_CLOVER_AUTH_CODE` and `MONOKULO_BELL_VAPID_KEY`; the
+    `MONOKULAR_BELL_*` names are still read for one release.** Through
+    `live_settings::Env::with_renamed` (generic, as `with_retired` is for
+    options): an unset new name is read under its old one, each old name
+    set is one warning at start, and old and new set to different values
+    stop the Bell, naming both and neither value, since which was meant
+    can't be told. The Bell's `settings::RENAMED_ENV` lists them; the first
+    version tag after the one that ships them removes it. Reading both
+    silently, or the new name only, were the alternatives; the owner asked
+    for one release's grace.
+69. **lint.yml's stable-toolchain clippy of `push` and `outbound` goes, a
+    production clippy of the Bell and a boundary check come.** The stable
+    step existed for the Bell as a stable git consumer in another
+    repository, which it no longer is (monokulo's `push.md` 161 retires
+    its 43); it can come back the day another appears. `cargo clippy -p
+    monokulo-bell --lib --bins` checks it without its tests'
+    `test-support`. "Monokulo never depends on the Bell" fails the build
+    when `cargo tree -p monokulo --all-features` (normal, build and dev
+    edges; the engine and everything under it) holds `monokulo-bell`, after
+    making sure the crate exists so it can't pass for the wrong reason
+    (tried both ways: a dev-dependency on the Bell fails it).
+70. **The Docker image builds `monokulo-bell` too**, beside
+    `monokulo-push-relay`, for setups that run it as a container of its
+    own.
+71. **The problem types are `https://docs.monokulo.com/bell/#<slug>`**,
+    sections of the API page on the docs site, as the relay's are
+    `…/push-relay/#<slug>`; they were monokular's GitHub file. The till
+    reads only what follows the `#`, so it is unchanged.
+72. **How to run a Bell is a "Run one" part of the `/bell/` page** (the
+    monokular README's "Running a Bell", brought to the new names), as the
+    relay's page has its own; the install guides for a computer and a
+    router that come with the packaging link it.
+73. **The stand-ins stay stdlib Python under `tools/`, run by no CI job
+    here**, as in monokular: the Bell's own tests have stand-ins of their
+    own in Rust. Their docstrings name the new variables.
