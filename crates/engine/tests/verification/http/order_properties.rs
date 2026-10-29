@@ -212,6 +212,65 @@ fn order_creation_crash_child() {
     });
 }
 
+/// Replaced the property `process_death_at_order_commit_preserves_atomic_allocation`
+/// (amount 1..10000 x after): which side of the commit the process dies on
+/// is the only input that steers the crash, and the amount only reaches the
+/// request body, so these four rows (both points, the old range's edges)
+/// run every case it could tell apart.
+#[test]
+fn process_death_before_or_after_an_order_commits_never_burns_or_doubles_an_address() {
+    for after in [false, true] {
+        for amount in [1u64, 9999] {
+            runtime().block_on(async {
+                let mut w = World::new(1, false).await;
+                let point = if after {
+                    "orders.after_commit"
+                } else {
+                    "orders.before_commit"
+                };
+                let row = format!("{point} amount {amount}");
+                let mut child = crate::property_support::CrashChild(Some(
+                    std::process::Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "http::tests::boundaries::order_creation_crash_child",
+                            "--nocapture",
+                        ])
+                        .env("MONOKULO_ORDER_CRASH_PATH", &w.path.0)
+                        .env("MONOKULO_ORDER_CRASH_TOKEN", &w.tenants[0].secret_token)
+                        .env("MONOKULO_ORDER_CRASH_AMOUNT", amount.to_string())
+                        .env("MONOKULO_PROPERTY_CRASH_PATH", &w.path.0)
+                        .env("MONOKULO_PROPERTY_CRASH_POINT", point)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::piped())
+                        .spawn()
+                        .unwrap(),
+                ));
+                child.rendezvous(&w.path.0, point).await;
+                assert!(!child.finish().status.success(), "{row}: the child lived");
+                w.restart();
+                assert_eq!(w.snapshot()[0].1.len(), usize::from(after), "{row}");
+                w.invariants();
+                assert_eq!(
+                    w.store
+                        .lock()
+                        .conn_for_test()
+                        .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
+                        .unwrap(),
+                    "ok",
+                    "{row}"
+                );
+                let payload = body(Some("crash".to_owned()), amount, 0, None);
+                let (status, first) = create(&w, 0, payload.clone()).await;
+                assert_eq!(status, StatusCode::OK, "{row}");
+                assert_eq!(create(&w, 0, payload).await.1, first, "{row}");
+                w.invariants();
+                assert_eq!(w.snapshot()[0].1.len(), 1, "{row}");
+            });
+        }
+    }
+}
+
 #[test]
 fn exhausted_counter_still_allows_idempotent_replays_and_never_wraps() {
     runtime().block_on(async {
@@ -404,24 +463,6 @@ mod properties {
     }
     proptest! {
         #![proptest_config(persisted_config(config()))]
-        #[test]
-        fn process_death_at_order_commit_preserves_atomic_allocation(amount in 1u64..10000,after in any::<bool>()) {
-            runtime().block_on(async {
-                let mut w=World::new(1,false).await;
-                let point=if after {"orders.after_commit"} else {"orders.before_commit"};
-                let mut child=crate::property_support::CrashChild(Some(std::process::Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact","http::tests::boundaries::order_creation_crash_child","--nocapture"])
-                    .env("MONOKULO_ORDER_CRASH_PATH",&w.path.0).env("MONOKULO_ORDER_CRASH_TOKEN",&w.tenants[0].secret_token)
-                    .env("MONOKULO_ORDER_CRASH_AMOUNT",amount.to_string()).env("MONOKULO_PROPERTY_CRASH_PATH",&w.path.0)
-                    .env("MONOKULO_PROPERTY_CRASH_POINT",point).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap()));
-                child.rendezvous(&w.path.0,point).await;assert!(!child.finish().status.success());w.restart();
-                assert_eq!(w.snapshot()[0].1.len(),usize::from(after));w.invariants();
-                assert_eq!(w.store.lock().conn_for_test().query_row("PRAGMA integrity_check",[],|r|r.get::<_,String>(0)).unwrap(),"ok");
-                let payload=body(Some("crash".to_owned()),amount,0,None);
-                let (status,first)=create(&w,0,payload.clone()).await;assert_eq!(status,StatusCode::OK);
-                assert_eq!(create(&w,0,payload).await.1,first);w.invariants();assert_eq!(w.snapshot()[0].1.len(),1);
-            });
-        }
         #[test]
         fn disabling_a_tenant_during_derivation_cannot_publish_an_order(amount in 1u64..10000, action in 0u8..3) {
             runtime().block_on(async {
