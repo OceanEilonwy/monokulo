@@ -961,8 +961,12 @@ async fn the_apps_card_says_how_each_apps_pushes_are_doing() {
     let failing = line(&failing);
     assert!(failing.contains(r#"data-pushes="failing""#), "{failing}");
     assert!(
-        failing.contains("1 push target · no push yet ·"),
+        failing.contains("1 push target · none delivered yet ·"),
         "{failing}"
+    );
+    assert!(
+        !failing.contains("no push yet"),
+        "pushes were tried, so not 'no push yet': {failing}"
     );
     assert!(
         failing.contains("1 failing (3 in a row, last 502 just now)"),

@@ -53,6 +53,7 @@ test('the Apps card says how each app\'s pushes are doing', async ({ page, conte
   await expect(front.getByRole('link', { name: 'Pushes of Monokular · Front counter' })).toHaveAttribute('href', new RegExp(`/apps/${apps.front}$`));
 
   const kitchen = row(page, 'Tillwatch · Kitchen');
+  await expect(kitchen.locator('.app-pushes-words')).toHaveText('1 push target · none delivered yet ·');
   await expect(kitchen.locator('.app-pushes-bad').last()).toHaveText('1 failing (12 in a row, last 502 14 min ago)');
 
   const back = row(page, 'Monokular · Back office iPad');
