@@ -415,6 +415,10 @@ async fn a_mistake_on_the_relay_card_is_refused_with_the_settings_own_words() {
         assert!(!is_saved(&page), "{sent:?}: {}", toast_text(&page));
         let relay = unescaped(card(&page));
         assert!(relay.contains(said), "{sent:?}, {said}: {relay}");
+        // A row with an error of its own is marked by the page's class.
+        if said.starts_with("needs an iOS bundle ID") {
+            assert!(relay.contains(r#"class="relay-app is-failed""#), "{relay}");
+        }
         // Opened, with what was typed.
         assert!(
             relay.contains(r#"name="relay:server.listen""#),

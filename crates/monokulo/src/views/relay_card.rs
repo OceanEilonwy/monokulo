@@ -380,7 +380,7 @@ fn app_row(at: usize, row: &RelayAppRow) -> Markup {
         format!("the app {}", row.name)
     };
     html! {
-        div class="relay-app" data-relay-app=(index) data-relay-app-saved[row.is_saved] {
+        div.relay-app.is-failed[!row.errors.is_empty()] data-relay-app=(index) data-relay-app-saved[row.is_saved] {
             @for field in RelayAppField::ALL {
                 @let error = row.errors.iter().find(|(f, _)| *f == field).map(|(_, e)| e.clone());
                 @let saved = row.saved.as_ref().map(|saved| saved.value(field).to_owned());

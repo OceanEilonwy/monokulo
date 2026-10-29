@@ -330,6 +330,12 @@ Numbered from 21.
     triangle before it and the padlock kept, as the board draws it:
     `ui::LockedValue` gained `warning`, its border and icon on the
     `--warning` role.
+38. **A refused app row is marked `.relay-app.is-failed` by the view**, not
+    by a selector on the ui library's `.mk-error` (the components lint
+    refuses site.css restyling a component). On a refused row the fields
+    share three grid rows (label, input, error) through `subgrid`, so one
+    field's error doesn't stagger the others' labels and inputs, and Remove
+    stays on the inputs' row; a phone stacks as before.
 
 ## The Apps card, the app's page, Remove and the test push (rust-engineer-2)
 
