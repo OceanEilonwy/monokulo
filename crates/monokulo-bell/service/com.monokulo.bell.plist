@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  monokulo-bell as a macOS LaunchDaemon: started at boot as the user nobody,
+  and again whenever it stops with an error. Its registrations and its log
+  are in /Library/Application Support/monokulo/bell/, its options in
+  /Library/Application Support/monokulo/bell.toml.
+
+  The README beside this folder says how to install it (Run it as a service,
+  macOS). Put the secrets in place of the REPLACE values below and delete the
+  lines of a point of sale that is off: this file is root's alone (mode 600)
+  because it holds them. Every setting: https://docs.monokulo.com/bell/
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.monokulo.bell</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/monokulo-bell</string>
+		<string>--options</string>
+		<string>/Library/Application Support/monokulo/bell.toml</string>
+		<string>--bell-store-path</string>
+		<string>/Library/Application Support/monokulo/bell/bell.db</string>
+	</array>
+	<key>UserName</key>
+	<string>nobody</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>MONOKULO_BELL_VAPID_KEY</key>
+		<string>REPLACE: 64 hex characters</string>
+		<key>MONOKULO_BELL_SQUARE_WEBHOOK_KEY</key>
+		<string>REPLACE: the Square subscription's signature key</string>
+		<key>MONOKULO_BELL_CLOVER_AUTH_CODE</key>
+		<string>REPLACE: the Clover app's Auth Code</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Again after a failure; not after a clean stop. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<!-- SIGTERM lets requests and dings in flight finish. -->
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>/Library/Application Support/monokulo/bell/bell.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Library/Application Support/monokulo/bell/bell.log</string>
+</dict>
+</plist>

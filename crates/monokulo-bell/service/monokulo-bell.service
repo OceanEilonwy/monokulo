@@ -1,0 +1,72 @@
+# monokulo-bell as a systemd service, under a user systemd makes for it
+# (DynamicUser), its registrations in /var/lib/monokulo/bell/.
+#
+# Install, as root, from the unzipped folder:
+#   install -m 755 monokulo-bell /usr/local/bin/
+#   install -d /etc/monokulo
+#   install -m 644 bell.toml /etc/monokulo/bell.toml    # then set bell.public_uri and a point of sale
+#   install -m 600 /dev/null /etc/monokulo/monokulo-bell.env
+#   printf "MONOKULO_BELL_VAPID_KEY='%s'\n" "$(openssl rand -hex 32)" >> /etc/monokulo/monokulo-bell.env
+#   install -m 644 service/monokulo-bell.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now monokulo-bell
+#
+# The environment file (root's alone: systemd reads it before the service
+# starts) holds the secrets, one VARIABLE='value' each (single quotes keep a
+# value as it is), each point of sale's set when, and only when, it is on:
+#   MONOKULO_BELL_VAPID_KEY='<64 hex characters>'     # required; keep it: the tills' subscriptions are made for it
+#   MONOKULO_BELL_SQUARE_WEBHOOK_KEY='<the subscription's signature key>'   # Square
+#   MONOKULO_BELL_CLOVER_AUTH_CODE='<the app's Auth Code>'                  # Clover
+#
+# Each start runs --check first, so a bad setting stops it with the reason:
+# `systemctl status monokulo-bell` and `journalctl -u monokulo-bell` show
+# it. The status for this machine: `curl -s http://127.0.0.1:8447/status`.
+# The Bell listens on 127.0.0.1:8445 and serves no TLS: put an https reverse
+# proxy on this machine in front, serving bell.public_uri. Every setting:
+# https://docs.monokulo.com/bell/
+
+[Unit]
+Description=monokulo-bell, the Monokular Bell: point of sale payments as dings to its tills
+Documentation=https://docs.monokulo.com/bell/
+After=network-online.target
+Wants=network-online.target
+# A setting --check refuses is not retried for ever.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=monokulo/bell
+StateDirectoryMode=0700
+EnvironmentFile=/etc/monokulo/monokulo-bell.env
+ExecStartPre=/usr/local/bin/monokulo-bell --options /etc/monokulo/bell.toml --bell-store-path %S/monokulo/bell/bell.db --check
+ExecStart=/usr/local/bin/monokulo-bell --options /etc/monokulo/bell.toml --bell-store-path %S/monokulo/bell/bell.db
+Restart=on-failure
+RestartSec=5
+# SIGTERM lets requests and dings in flight finish.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# AF_NETLINK for getaddrinfo, which asks the kernel for the addresses it sorts by.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

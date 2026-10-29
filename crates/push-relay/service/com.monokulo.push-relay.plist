@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  monokulo-push-relay as a macOS LaunchDaemon: started at boot as the user
+  nobody, and again whenever it stops with an error. Its handles and its log
+  are in /Library/Application Support/monokulo/push-relay/, its options in
+  /Library/Application Support/monokulo/relay.toml.
+
+  The README beside this folder says how to install it (Run it as a service,
+  macOS). Put the secrets in place of the REPLACE values below and delete the
+  lines of any you don't use: this file is root's alone (mode 600) because
+  it holds them. Every setting: https://docs.monokulo.com/push-relay/
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.monokulo.push-relay</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/monokulo-push-relay</string>
+		<string>--options</string>
+		<string>/Library/Application Support/monokulo/relay.toml</string>
+		<string>--store-path</string>
+		<string>/Library/Application Support/monokulo/push-relay/push-relay.db</string>
+	</array>
+	<key>UserName</key>
+	<string>nobody</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>MONOKULO_RELAY_HANDLE_KEY</key>
+		<string>REPLACE: 64 hex characters</string>
+		<key>MONOKULO_RELAY_APNS_KEY</key>
+		<string>REPLACE: the AuthKey_….p8 file, whole</string>
+		<key>MONOKULO_RELAY_FCM_CREDENTIALS</key>
+		<string>REPLACE: the service account JSON, whole (&amp; as &amp;amp;, &lt; as &amp;lt;)</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<!-- Again after a failure; not after a clean stop. -->
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<!-- SIGTERM lets pushes in flight finish. -->
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>/Library/Application Support/monokulo/push-relay/push-relay.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Library/Application Support/monokulo/push-relay/push-relay.log</string>
+</dict>
+</plist>

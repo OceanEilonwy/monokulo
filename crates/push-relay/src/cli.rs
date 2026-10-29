@@ -118,4 +118,81 @@ mod tests {
         );
         assert!(args.options.ends_with(OPTIONS_FILE), "{:?}", args.options);
     }
+
+    /// The files in `service/` (shipped in the release zip) start the
+    /// relay with options it takes, its options file and its database at
+    /// fixed places, and name each of its secrets by its variable and no
+    /// other: a renamed option or variable can't leave them behind.
+    #[test]
+    fn the_service_files_start_it_with_its_own_options_and_secrets() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("service");
+        let read = |file: &str| std::fs::read_to_string(dir.join(file)).unwrap();
+        let unit = read("monokulo-push-relay.service");
+        let plist = read("com.monokulo.push-relay.plist");
+        let task = read("install-windows-task.ps1");
+        let started = |args: &[&str]| {
+            assert!(args[0].ends_with("monokulo-push-relay"), "{args:?}");
+            let start = parse_args(args).unwrap();
+            assert!(start.options.ends_with(OPTIONS_FILE), "{args:?}");
+            assert!(start.env.cli("store.path").is_some(), "{args:?}");
+            start
+        };
+
+        // systemd: the same command line with --check before each start.
+        let exec = |key: &str| {
+            let line = unit.lines().find_map(|line| line.strip_prefix(key));
+            line.unwrap().split_whitespace().collect::<Vec<_>>()
+        };
+        let (check, run) = (exec("ExecStartPre="), exec("ExecStart="));
+        assert!(started(&check).check && !started(&run).check);
+        assert_eq!(check, [run.as_slice(), &["--check"]].concat());
+
+        // launchd: ProgramArguments, one <string> each.
+        let arguments = plist.split("<key>ProgramArguments</key>").nth(1).unwrap();
+        let arguments = &arguments[..arguments.find("</array>").unwrap()];
+        let arguments: Vec<&str> = arguments
+            .split("<string>")
+            .skip(1)
+            .map(|rest| &rest[..rest.find("</string>").unwrap()])
+            .collect();
+        assert!(!started(&arguments).check);
+
+        // Windows: the runner's own values.
+        let value = |name: &str| {
+            let line = task
+                .lines()
+                .find_map(|line| line.strip_prefix(&format!("${name} = '")));
+            line.unwrap().trim_end_matches('\'').to_owned()
+        };
+        assert_eq!(value("Name"), "monokulo-push-relay");
+        assert_eq!(value("OptionsFile"), OPTIONS_FILE);
+        let store = value("StoreFlag");
+        started(&[
+            "monokulo-push-relay",
+            "--options",
+            OPTIONS_FILE,
+            &store,
+            "push-relay.db",
+        ]);
+
+        let secrets: std::collections::BTreeSet<&str> = crate::settings::ALL
+            .iter()
+            .filter(|setting| setting.sources().env && !setting.sources().cli)
+            .map(|setting| setting.env_var())
+            .collect();
+        assert!(secrets.contains(value("GeneratedSecret").as_str()));
+        for (file, text) in [("unit", &unit), ("plist", &plist), ("task", &task)] {
+            let named: std::collections::BTreeSet<&str> = text
+                .match_indices("MONOKULO_")
+                .map(|(at, _)| {
+                    let rest = &text[at..];
+                    let end = rest
+                        .find(|c: char| !(c.is_ascii_uppercase() || c == '_'))
+                        .unwrap_or(rest.len());
+                    &rest[..end]
+                })
+                .collect();
+            assert_eq!(named, secrets, "{file}");
+        }
+    }
 }
