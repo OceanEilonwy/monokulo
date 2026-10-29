@@ -201,3 +201,68 @@ are dinged with the Bell's. Size it for the busiest sender you serve: a
 hosted Monokulo holds each store to `push.per_store_per_minute`, so a few
 stores at their busiest at once is the mark. A push a handle's own limit
 (`limits.per_handle_per_minute`) refuses doesn't count against its sender.
+
+### Check before starting
+
+`monokulo-push-relay --check` reads the options file and the environment
+and checks every setting exactly as a start would, then exits without
+opening its database, making a directory or binding a port, so it can be
+run as another user than the relay's (a service file's pre-start step, a
+router's settings page):
+
+```sh
+$ MONOKULO_RELAY_HANDLE_KEY="$(cat handle.key)" monokulo-push-relay --check
+listens on 0.0.0.0:8444
+public address https://relay.example.org
+apps: monokular
+APNs: not configured
+FCM: ready
+handles in /home/relay/.local/share/monokulo/push-relay.db
+status on 127.0.0.1:8446
+OK
+```
+
+It exits 0 when the relay would start. Otherwise it exits 1 with the words
+a start would stop with, on stderr (`the push relay didn't start:
+MONOKULO_RELAY_HANDLE_KEY must be set …`). No line names a secret.
+
+### Status
+
+The relay on its own answers `GET /status` on a second listener,
+`status.listen` (`127.0.0.1:8446` by default; empty for none), with what
+it is doing as JSON:
+
+```sh
+$ curl -s http://127.0.0.1:8446/status
+{"service":"monokulo-push-relay","version":"0.1.0","commit":"51dfea123…",
+ "started_at":1761700000,"listen":"0.0.0.0:8444","public_uri":"https://relay.example.org",
+ "apps":["monokular"],"handles":{"stored":12},
+ "platforms":{"apns":"ready","fcm":"not-configured"},
+ "last_delivery":{"at":1761700100,"outcome":"sent"}}
+```
+
+`commit` is `null` for a build that didn't name one, `handles.stored` is
+`null` when the database couldn't be read, and `last_delivery` is `null`
+until a push has been handed on since the start. `outcome` is how APNs or
+FCM took it: `sent`, `gone` (the device's token is dead and its handle
+forgotten), `refused` (the relay's own credentials or settings),
+`unavailable` or `too-large`. It never carries a token, an endpoint, a
+handle or a push.
+
+The listener is for this machine alone: `status.listen` takes a loopback
+address only, and a request naming any other host is refused (403), so a
+web page can't read it through a name pointed at `127.0.0.1`. It is a
+listener of its own, never a route on `server.listen`, so the https proxy
+in front of the relay doesn't publish it. Inside Monokulo there is none:
+the admin page's Push relay card is the status, and `[relay.status]` is an
+unknown table there.
+
+### TLS
+
+The relay serves plain HTTP only; its TLS is a reverse proxy's, on the
+same machine or in front of it, serving `server.public_uri` over https
+(and naming itself in `server.trusted_proxies` when it is elsewhere). It
+uses TLS only as a client, to APNs, FCM and Google's token endpoint,
+trusting the machine's certificate store, so that store must be there
+(`ca-certificates`, or `ca-bundle` on OpenWrt).
+

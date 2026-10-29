@@ -349,6 +349,67 @@ given on the command line too (`monokulo-bell --help`); anything invalid or
 missing, or no point of sale on, stops it before it listens. Stopping it
 (SIGTERM) lets requests and dings in flight finish.
 
+### Check before starting
+
+`monokulo-bell --check` reads the options file and the environment and
+checks every setting exactly as a start would, then exits without opening
+its database, making a directory or binding a port, so it can be run as
+another user than the Bell's (a service file's pre-start step, a router's
+settings page):
+
+```sh
+$ monokulo-bell --check
+listens on 127.0.0.1:8445
+public address https://bell.example.org
+Square: on, application sq0idp-… (production), webhooks to https://bell.example.org/v1/square/webhook
+Clover: off
+VAPID public key BEl6…
+registrations in /home/bell/.local/share/monokulo/bell.db
+status on 127.0.0.1:8447
+OK
+```
+
+It exits 0 when the Bell would start, a secret still under its
+`MONOKULAR_BELL_*` name said first as a `warning:` line. Otherwise it
+exits 1 with the words a start would stop with, on stderr (`the Bell
+didn't start: bell.square.application_id or bell.clover.application_id
+(or both) must be set …`). No line names a secret.
+
+### Status
+
+The Bell answers `GET /status` on a second listener, `status.listen`
+(`127.0.0.1:8447` by default; empty for none), with what it is doing as
+JSON:
+
+```sh
+$ curl -s http://127.0.0.1:8447/status
+{"service":"monokulo-bell","version":"0.1.0","commit":"51dfea123…",
+ "started_at":1761700000,"listen":"127.0.0.1:8445","public_uri":"https://bell.example.org",
+ "registrations":{"stored":4},"points_of_sale":{"square":"ready","clover":"off"},
+ "last_ding":{"at":1761700100,"outcome":"sent"}}
+```
+
+`commit` is `null` for a build that didn't name one,
+`registrations.stored` (every point of sale's) is `null` when the database
+couldn't be read, and `last_ding` is `null` until a ding has been sent
+since the start. `outcome` is `sent`, `gone` (the push service says the
+subscription is gone, and its registration was deleted) or `failed`. It
+never carries a token, an endpoint, a merchant, a location or a payment.
+
+The listener is for this machine alone: `status.listen` takes a loopback
+address only, and a request naming any other host is refused (403), so a
+web page can't read it through a name pointed at `127.0.0.1`. It is a
+listener of its own, never a route on `bell.listen`, so the https proxy in
+front of the Bell doesn't publish it.
+
+### TLS
+
+The Bell serves plain HTTP only, on this machine by default: its TLS is
+the reverse proxy's in front of it, serving `bell.public_uri` over https.
+It uses TLS only as a client, to Square, Clover and the tills' push
+services, trusting the machine's certificate store, so that store must be
+there (`ca-certificates`, or `ca-bundle` on OpenWrt).
+
 ### Square's application
 
 It needs a webhook subscription to `{public_uri}/v1/square/webhook` for
