@@ -174,7 +174,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
       await page.goto(`${base}/admin/logs/trace/${traceId}`);
       const spans = await page.locator('.trace-span').allTextContents();
       return spans.some((s) => s.includes('monokulo')) && spans.some((s) => s.includes('engine'));
-    }, { timeout: 15_000, intervals: [500] })
+    }, { timeout: 15_000, intervals: [100, 250, 500] })
     .toBe(true);
 });
 
