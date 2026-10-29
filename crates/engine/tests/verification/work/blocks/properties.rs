@@ -158,6 +158,9 @@ async fn late_commit(change: u8, cancelled: bool, staged: bool) {
     }
 }
 
+/// Runs every input the deleted property
+/// `accepted_block_effects_recheck_durable_prerequisites` could draw, so the
+/// random draws were removed.
 #[test]
 fn every_late_commit_boundary_is_exercised_with_and_without_staging() {
     runtime().block_on(async {
@@ -188,11 +191,6 @@ mod properties {
 
     proptest! {
         #![proptest_config(persisted_config(config()))]
-        #[test]
-        fn accepted_block_effects_recheck_durable_prerequisites(change in 0u8..6, cancelled in any::<bool>(), staged in any::<bool>()) {
-            runtime().block_on(late_commit(change, cancelled, staged));
-        }
-
         #[test]
         fn cache_histories_preserve_accounting_and_protected_blocks(events in prop::collection::vec((0u8..5, 0u64..32, 0usize..1_000_000), 1..256)) {
             let mut cache = BlockCache { blocks: BTreeMap::new(), bytes: 0 };
