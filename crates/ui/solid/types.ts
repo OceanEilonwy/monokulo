@@ -144,7 +144,7 @@ export type TableLook = "plain" | "cards" | "stack" | "facts";
 /**
  * How a tag reads, beside its words.
  */
-export type TagTone = "ok" | "error" | "unknown" | "syncing" | "stalled" | "slow" | "muted" | "dashed";
+export type TagTone = "ok" | "error" | "unknown" | "syncing" | "stalled" | "slow" | "warning" | "muted" | "dashed";
 
 /**
  * A colour theme.

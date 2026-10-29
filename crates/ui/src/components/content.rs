@@ -235,6 +235,8 @@ pub enum TagTone {
     Syncing,
     Stalled,
     Slow,
+    /// Something to see to, though it works ("APNs key not set").
+    Warning,
     /// Information beside a label, not a state: muted, light.
     Muted,
     /// Muted, with a dashed edge: what nothing has chosen (a default).
@@ -295,6 +297,10 @@ pub(super) fn tag_examples() -> Vec<(&'static str, Tag)> {
         ),
         ("Syncing", Tag::new("Syncing").tone(TagTone::Syncing)),
         ("Slow", Tag::new("Slow").tone(TagTone::Slow)),
+        (
+            "Needs seeing to",
+            Tag::new("APNs key not set").tone(TagTone::Warning),
+        ),
         (
             "Muted, with an icon",
             Tag::new("Options file")

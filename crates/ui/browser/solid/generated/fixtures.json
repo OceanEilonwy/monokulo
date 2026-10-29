@@ -634,6 +634,19 @@
   },
   {
     "component": "Tag",
+    "html": "<span class=\"tag tag-warning\">APNs key not set</span>",
+    "props": {
+      "children": {
+        "$slot": [
+          "APNs key not set"
+        ]
+      },
+      "tone": "warning"
+    },
+    "title": "Needs seeing to"
+  },
+  {
+    "component": "Tag",
     "html": "<span class=\"tag tag-muted\"><span class=\"tag-icon\" aria-hidden=\"true\">⚙</span>Options file</span>",
     "props": {
       "children": {

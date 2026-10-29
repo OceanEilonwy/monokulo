@@ -79,6 +79,7 @@
 .tag-syncing { background: var(--accent); color: var(--accent-ink); }
 .tag-stalled { background: var(--tint-warning); }
 .tag-slow { background: var(--tint-warning); }
+.tag-warning { background: var(--tint-warning); }
 .tag-muted, .tag-dashed { font-weight: 500; text-transform: none; color: var(--muted); border-color: var(--line); background: var(--paper); }
 .tag-dashed { border-style: dashed; background: transparent; }
 .tag:has(> .tag-icon) { display: inline-flex; align-items: center; gap: var(--pill-gap); }
