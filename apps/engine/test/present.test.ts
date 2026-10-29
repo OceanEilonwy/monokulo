@@ -79,6 +79,23 @@ test('an open reorg draws attention, and a diverged chain too', () => {
   assert.ok(diverged.side.reorg.alert);
 });
 
+test("each scan group's pill says whether it is the frontier and how many stores, with their pages past one", () => {
+  const pills = (scenario: string) => presented(scenario).chain.groups.map((g) => [g.label, g.frontier]);
+  assert.deepEqual(pills('caught_up'), [['Frontier, 41 stores', true]]);
+  assert.deepEqual(pills('catching_up'), [['Frontier, 600 stores (3 pages)', true], ['Catching up, 3 stores', false]]);
+});
+
+test("the next block says what waits in the node's pool and how much of a block it fills", () => {
+  const titles: [string, string][] = [
+    ['pool_quarter', "The next block: 23 transactions waiting in the node's pool, 75 kB of the 300 kB a miner can fill at full reward (25 %)."],
+    ['pool_full', "The next block: 1,234 transactions waiting in the node's pool, 450 kB of the 300 kB a miner can fill at full reward (150 %): more than one block takes without a smaller reward."],
+    ['pool_sizeless', "The next block: 1 transaction waiting in the node's pool (the node didn't say their size)."],
+  ];
+  for (const [scenario, title] of titles) {
+    assert.equal(presented(scenario).chain.next_block?.title, title, scenario);
+  }
+});
+
 test('every mark reads as a sentence, each as the machine sends it', () => {
   const sentences = [
     'The node has a new block: 101.',
