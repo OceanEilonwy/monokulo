@@ -8,7 +8,7 @@
 //! Only the tests where a push has to land go over real HTTP (to a stub
 //! UnifiedPush endpoint on `127.0.0.1:0`), and say `over_http`.
 
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use axum::http::{HeaderMap, StatusCode};
@@ -254,8 +254,9 @@ struct Received {
 }
 
 /// A push service on this machine answering every push with `status`
-/// (and `Retry-After`, when set), after `delay`, all changeable while it
-/// runs; it counts the pushes it holds at once.
+/// (and `Retry-After`, when set), after `delay` or once the test lets it
+/// go, all changeable while it runs; it counts the pushes it holds at
+/// once.
 #[derive(Clone, Default)]
 struct Stub {
     received: Arc<Mutex<Vec<Received>>>,
@@ -268,6 +269,11 @@ struct Stub {
     sender_limit: Arc<Mutex<Option<usize>>>,
     /// Pushes still to be answered `500` before `answer` again.
     failing: Arc<Mutex<usize>>,
+    /// Whether each push waits for `release` before it's answered,
+    /// saying so on `arrived` once it's in flight.
+    gated: Arc<AtomicBool>,
+    arrived: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 impl Stub {
@@ -300,6 +306,10 @@ impl Stub {
             stub.most_in_flight.fetch_max(held, Ordering::SeqCst);
             let delay = *stub.delay.lock();
             tokio::time::sleep(delay).await;
+            if stub.gated.load(Ordering::SeqCst) {
+                stub.arrived.notify_one();
+                stub.release.notified().await;
+            }
             stub.in_flight.fetch_sub(1, Ordering::SeqCst);
             let failing = {
                 let mut left = stub.failing.lock();
@@ -357,6 +367,22 @@ impl Stub {
     /// Answers each push only after `delay`.
     fn hold(&self, delay: std::time::Duration) {
         *self.delay.lock() = delay;
+    }
+
+    /// Holds each push, once it's in flight, until [`Stub::release`]
+    /// lets it go (or answers at once again with `false`).
+    fn gate(&self, gated: bool) {
+        self.gated.store(gated, Ordering::SeqCst);
+    }
+
+    /// Returns once a held push is in flight.
+    async fn arrived(&self) {
+        self.arrived.notified().await;
+    }
+
+    /// Lets the held push be answered.
+    fn release(&self) {
+        self.release.notify_one();
     }
 }
 
@@ -1692,7 +1718,7 @@ async fn an_unreadable_push_target_costs_only_its_own_pushes() {
 async fn an_answer_from_a_replaced_subscription_leaves_the_new_one_alone_over_http() {
     let world = world().await;
     let (old_stub, old_origin) = Stub::start(410).await;
-    old_stub.hold(std::time::Duration::from_millis(300));
+    old_stub.gate(true);
     let (new_stub, new_origin) = Stub::start(201).await;
     let ak = world.fixture.ak.clone();
     let app = world.app_id(&ak).await;
@@ -1707,11 +1733,12 @@ async fn an_answer_from_a_replaced_subscription_leaves_the_new_one_alone_over_ht
             world.register(&ak, at(&old_origin, 3)).await;
         }
         world.queue(&world.event(seq, order, "order.paid"));
+        // The old endpoint answers only once the target has moved.
         let (sent, moved) = tokio::join!(world.tick(), async {
-            while old_stub.in_flight.load(Ordering::SeqCst) == 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-            world.register(&ak, at(&new_origin, moved_to)).await
+            old_stub.arrived().await;
+            let moved = world.register(&ak, at(&new_origin, moved_to)).await;
+            old_stub.release();
+            moved
         });
         assert_eq!((sent, &moved), (1, &target));
         let kept = world
@@ -2513,7 +2540,7 @@ async fn each_push_service_gets_a_token_for_its_own_origin_only_over_http() {
 async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
     let world = world().await;
     let (stub, origin) = Stub::start(503).await;
-    stub.hold(std::time::Duration::from_millis(300));
+    stub.gate(true);
     let ak = world.fixture.ak.clone();
     let device = ::push::encrypt::ReceiverKeys::generate();
     let target = world
@@ -2525,11 +2552,11 @@ async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
     let order = world.order(&ak).await;
     world.queue(&world.event(1, &order, "order.unconfirmed"));
 
+    // The push is answered only once a newer one has superseded it.
     let (sent, ()) = tokio::join!(world.tick(), async {
-        while stub.in_flight.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        stub.arrived().await;
         world.queue(&world.event(2, &order, "order.confirming"));
+        stub.release();
     });
     assert_eq!(sent, 1);
     let pushes = world.pushes(&target);
@@ -2546,7 +2573,7 @@ async fn a_push_superseded_while_it_is_sent_is_not_tried_again_over_http() {
     );
     assert_eq!(pushes[1].next_attempt_at, Some(world.clock.now()));
 
-    stub.hold(std::time::Duration::ZERO);
+    stub.gate(false);
     stub.answer(201, None);
     assert_eq!(world.tick().await, 1);
     assert_eq!(stub.count(), 2);
