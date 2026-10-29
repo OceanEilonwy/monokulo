@@ -161,31 +161,42 @@ impl Walk {
         }
     }
 
-    fn check(&mut self, at: &str, what: &str, value: &str) {
+    fn check(&self, problems: &mut Vec<String>, at: &str, what: &str, value: &str) {
         if escapes_prefix(value, self.prefix) {
-            self.problems.push(format!(
+            problems.push(format!(
                 "{at}: {what} = {value:?} is not under {}",
                 self.prefix
             ));
         }
         if self.over_tor && value.starts_with("/monokulo") {
-            self.problems.push(format!(
+            problems.push(format!(
                 "{at}: {what} = {value:?} carries the web prefix over Tor"
             ));
         }
     }
 
+    /// Visits the queue in waves: every queued path at once (up to `limit`
+    /// pages in all), then the paths they found. The visits are read-only
+    /// `GET`s on one in-process router, so they are independent and may run
+    /// together; their results are applied in queue order, so the seen set,
+    /// the queue and the problems are those of a walk one page at a time.
     async fn run(&mut self, limit: usize) {
-        while let Some(path) = self.queue.pop_front() {
-            if self.pages >= limit {
-                break;
+        while !self.queue.is_empty() && self.pages < limit {
+            let take = self.queue.len().min(limit - self.pages);
+            let wave: Vec<String> = self.queue.drain(..take).collect();
+            self.pages += wave.len();
+            let visits = futures_util::future::join_all(wave.iter().map(|path| self.visit(path)));
+            for visited in visits.await {
+                self.problems.extend(visited.problems);
+                for path in visited.found {
+                    self.push(path);
+                }
             }
-            self.pages += 1;
-            self.visit(&path).await;
         }
     }
 
-    async fn visit(&mut self, path: &str) {
+    async fn visit(&self, path: &str) -> Visited {
+        let mut visited = Visited::default();
         let mut request = Request::builder()
             .uri(path)
             .header(header::COOKIE, &self.cookie)
@@ -207,20 +218,24 @@ impl Walk {
         {
             Ok(response) => response.unwrap(),
             Err(_) => {
-                self.problems.push(format!("{path}: no answer"));
-                return;
+                visited.problems.push(format!("{path}: no answer"));
+                return visited;
             }
         };
         // A URL that, its prefix taken off, names no route: a link given
         // with the prefix twice, or not at all where one was due.
         if response.status() == StatusCode::NOT_FOUND {
-            self.problems.push(format!("{path}: not found"));
+            visited.problems.push(format!("{path}: not found"));
+        }
+        // A page the abuse protection turned away is a page not walked.
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            visited.problems.push(format!("{path}: rate limited"));
         }
         if let Some(location) = response.headers().get(header::LOCATION) {
             let location = location.to_str().unwrap().to_owned();
-            self.check(path, "Location", &location);
+            self.check(&mut visited.problems, path, "Location", &location);
             if let Some(next) = site_path(&location, self.prefix) {
-                self.push(next);
+                visited.found.push(next);
             }
         }
         for cookie in response.headers().get_all(header::SET_COOKIE) {
@@ -235,7 +250,8 @@ impl Walk {
                     self.prefix
                 };
                 if cookie_path != wanted {
-                    self.problems
+                    visited
+                        .problems
                         .push(format!("{path}: cookie {cookie:?} not on Path={wanted}"));
                 }
             }
@@ -252,15 +268,23 @@ impl Walk {
             let bytes = response.into_body().collect().await.unwrap().to_bytes();
             String::from_utf8_lossy(&bytes).into_owned()
         } else {
-            return;
+            return visited;
         };
         for (what, value) in urls_in(&text) {
-            self.check(path, &what, &value);
+            self.check(&mut visited.problems, path, &what, &value);
             if let Some(next) = site_path(&value, self.prefix) {
-                self.push(next);
+                visited.found.push(next);
             }
         }
+        visited
     }
+}
+
+/// What one visit found: its problems, and the site paths its answer gives.
+#[derive(Default)]
+struct Visited {
+    problems: Vec<String>,
+    found: Vec<String>,
 }
 
 /// What a stream sends in its first moments: its first events, fragments
