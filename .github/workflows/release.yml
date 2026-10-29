@@ -9,7 +9,8 @@ name: release
 #   coverage           once they pass: every Linux suite through its
 #                      coverage collector, and the one report and artifact
 #                      (coverage-<sha>) they make
-#   Build ...          monokulo zips for Linux, macOS and Windows,
+#   Build ...          monokulo zips for Linux, macOS and Windows, the same
+#                      for monokulo-push-relay and monokulo-bell,
 #                      key-custody-cli for every computer merchants use, the
 #                      Docker image and the OpenWrt package
 #   Pages              on main: the GitHub Pages site's release part (the
@@ -156,6 +157,111 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
+  services:
+    # The two services that run without monokulo, for the same computers as
+    # monokulo: monokulo-push-relay and monokulo-bell, each as
+    # {name}-{version}-{target}.zip with its SHA-256. A zip holds the
+    # binary, its README, the starter options file its own --init wrote on
+    # that runner, and service/ (a systemd unit, a launchd plist and a
+    # Windows startup task script, each saying how to install it), which is
+    # installed and started on that runner before the zip is kept. Unsigned
+    # on macOS, as monokulo is.
+    name: build ${{ matrix.bin.name }} (${{ matrix.target }})
+    needs: [lint, coverage]
+    strategy:
+      fail-fast: false
+      matrix:
+        bin:
+          - { crate: push-relay, name: monokulo-push-relay, options: relay.toml }
+          - { crate: monokulo-bell, name: monokulo-bell, options: bell.toml }
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-msvc
+        include:
+          # Ubuntu 22.04's glibc, as monokulo's.
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          # On Intel, as monokulo's: the checks below run the binary, and its
+          # service, on the computer it is for.
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-rust
+        with:
+          targets: ${{ matrix.target }}
+          cache: 'false'
+          pos-app: 'false'
+      - name: Check the tag names this version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          # The workspace version (no Python on every runner).
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME doesn't match the workspace version $version"; exit 1; }
+      - name: Build ${{ matrix.bin.name }}
+        env:
+          # --version and the status name the commit.
+          MONOKULO_GIT_COMMIT: ${{ github.sha }}
+        run: cargo build --release --locked -p ${{ matrix.bin.crate }} --bin ${{ matrix.bin.name }} --target ${{ matrix.target }}
+      - name: Check it runs
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/${{ matrix.bin.name }}"
+          "$bin" --version
+          # The zip's starter options file is this one: --init, on a runner
+          # of the computer it was built for.
+          mkdir -p "$RUNNER_TEMP/options"
+          "$bin" --options "$RUNNER_TEMP/options/${{ matrix.bin.options }}" --init
+          test -s "$RUNNER_TEMP/options/${{ matrix.bin.options }}"
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          # Named as monokulo's zips are: a tag's version, main, or dev-<sha>.
+          if test "$GITHUB_REF_TYPE" = tag; then version="${GITHUB_REF_NAME#v}"
+          elif test "$GITHUB_REF" = refs/heads/main; then version=main
+          else version="dev-${GITHUB_SHA::7}"; fi
+          name="${{ matrix.bin.name }}-${version}-${{ matrix.target }}"
+          bin=${{ matrix.bin.name }}
+          if test "$RUNNER_OS" = Windows; then bin="$bin.exe"; fi
+          mkdir -p "dist/$name"
+          cp "target/${{ matrix.target }}/release/$bin" "crates/${{ matrix.bin.crate }}/README.md" \
+            "$RUNNER_TEMP/options/${{ matrix.bin.options }}" "dist/$name/"
+          cp -R "crates/${{ matrix.bin.crate }}/service" "dist/$name/service"
+          cd dist
+          # zip keeps the executable bit, for unzip and macOS's Archive Utility.
+          if test "$RUNNER_OS" = Windows; then 7z a "$name.zip" "$name" > /dev/null; else zip -qr "$name.zip" "$name"; fi
+          if command -v sha256sum > /dev/null; then sha256sum "$name.zip" > "$name.zip.sha256"; else shasum -a 256 "$name.zip" > "$name.zip.sha256"; fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "## ${{ matrix.bin.name }} (${{ matrix.target }})"
+            echo
+            echo "| File | Size |"
+            echo "| --- | ---: |"
+            echo "| \`$bin\` | $(du -h "$name/$bin" | cut -f1) |"
+            echo "| \`$name.zip\` | $(du -h "$name.zip" | cut -f1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check its service file starts it
+        # Installed as the file's header says (systemd, launchd, the Windows
+        # task) from the folder that was zipped, started, its status read,
+        # then stopped and removed.
+        shell: bash
+        run: scripts/check-service-files.sh ${{ matrix.bin.name }} "dist/${{ steps.package.outputs.name }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
   key-custody-cli:
     # key-custody-cli, for every computer a merchant might run it on: the
     # files monokulo's key entry forms link
@@ -294,7 +400,7 @@ jobs:
     # A version tag's binaries as a GitHub release, for merchants to download
     # (the repository's Releases page, and releases/latest).
     name: github release
-    needs: [monokulo, key-custody-cli]
+    needs: [monokulo, services, key-custody-cli]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -306,6 +412,16 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           pattern: monokulo-[0-9]*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-push-relay-[0-9]*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-bell-[0-9]*
           path: dist
           merge-multiple: true
       # Never removed once released: every monokulo of this version links
@@ -329,7 +445,7 @@ jobs:
     # download links never change. A prerelease, so releases/latest stays
     # the newest version tag.
     name: update the latest-main prerelease
-    needs: [monokulo, key-custody-cli]
+    needs: [monokulo, services, key-custody-cli]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
@@ -348,6 +464,16 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           pattern: monokulo-main-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-push-relay-main-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-bell-main-*
           path: dist
           merge-multiple: true
       - uses: actions/download-artifact@v8

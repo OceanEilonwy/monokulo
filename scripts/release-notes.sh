@@ -12,9 +12,18 @@ tag=$1
 version=$2
 base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 
+link() {
+	local file="$1-${version}-$2.zip"
+	echo "[\`$file\`]($base/$file) ([SHA-256]($base/$file.sha256))"
+}
+
 row() {
-	local file="monokulo-${version}-$2.zip"
-	echo "| $1 | [\`$file\`]($base/$file) ([SHA-256]($base/$file.sha256)) |"
+	echo "| $1 | $(link monokulo "$2") |"
+}
+
+# The push relay's and the Bell's zips, side by side.
+services() {
+	echo "| $1 | $(link monokulo-push-relay "$2") | $(link monokulo-bell "$2") |"
 }
 
 cat <<EOF
@@ -57,4 +66,22 @@ Then open http://127.0.0.1:8081 to create the admin account.
 
 \`key-custody-cli\` (encrypting keys for an SEV-SNP engine without a browser)
 is attached too, for each of the same computers.
+
+## The push relay and the Monokular Bell
+
+Two services that run without monokulo, each its own zip for the same
+computers: \`monokulo-push-relay\` hands a till app's pushes on to APNs and
+FCM ([the push relay](https://docs.monokulo.com/push-relay/)), and
+\`monokulo-bell\` wakes Monokular tills at a Square or Clover counter when a
+payment lands ([the Monokular Bell](https://docs.monokulo.com/bell/)). Each
+zip holds the binary, its README, a starter options file and service files
+for systemd, launchd and a Windows startup task.
+
+| Computer | Push relay | Bell |
+| --- | --- | --- |
+$(services 'Windows (x86_64)' x86_64-pc-windows-msvc)
+$(services 'macOS (Apple silicon)' aarch64-apple-darwin)
+$(services 'macOS (Intel)' x86_64-apple-darwin)
+$(services 'Linux (x86_64)' x86_64-unknown-linux-gnu)
+$(services 'Linux (ARM64)' aarch64-unknown-linux-gnu)
 EOF

@@ -111,3 +111,89 @@ entries in `docs/decisions/push.md` point here (162).
     in the binaries (rustls with certificate files, or ACME) was the
     alternative: it would mean certificate renewal inside each service,
     which a proxy already does for everything else on the host.
+
+## Release zips and service files (2026-10-29)
+
+13. **The two services' zips are one matrix job in release.yml,
+    `services`** (`bin` × `target`, the runner by `include`): ten jobs
+    beside `monokulo`'s five, after the same lint and coverage, named as
+    monokulo's zips are (`<name>-<version>-<target>.zip`, `main` on main,
+    `dev-<sha>` on a manual run of a branch) with a `.sha256` each.
+    `github-release` and `latest-main` download `monokulo-push-relay-[0-9]*`
+    and `monokulo-bell-[0-9]*` (`-main-*` on main), which the OpenWrt
+    artifacts (`monokulo-openwrt-*`, `openwrt-repo-*`) can't match, and
+    wait for the job; `scripts/release-notes.sh` lists the zips in a table
+    of their own. x86_64 macOS is built on `macos-15-intel`, as monokulo's
+    is, not cross-built on Apple silicon as the plan had it: neither
+    service needs it for RandomX, but the checks below run the binary and
+    its service, so they run on the computer the zip is for. Otherwise:
+    a job per binary (twice the YAML for the same steps), or the services
+    inside monokulo's job (one failure would hold back all three).
+14. **The zip's starter options file is the binary's own `--init` on the
+    runner that built it** (`relay.toml`, `bell.toml`), so the "check
+    `--init` per runner" step and the shipped file are one thing, and the
+    file always describes the settings of the binary beside it.
+15. **The service files live in the crate, `crates/<crate>/service/`, and
+    go in the zip as `service/`**, with the crate's `README.md` (what it
+    is, its secrets, `--check`, the status, TLS, each service file). A
+    unit test in each crate's `cli.rs`
+    (`the_service_files_start_it_with_its_own_options_and_secrets`) parses
+    the systemd `ExecStartPre`/`ExecStart`, the plist's
+    `ProgramArguments` and the Windows script's store option with the
+    binary's own parser, and holds the variables each file names to the
+    binary's secrets exactly, so a renamed option or variable fails a test
+    instead of a merchant's start.
+16. **systemd: `DynamicUser`, `StateDirectory=monokulo/<push-relay|bell>`,
+    the options in `/etc/monokulo/<relay|bell>.toml`, the secrets in a
+    root-only `EnvironmentFile` (`/etc/monokulo/<name>.env`), and
+    `ExecStartPre=… --check`.** The database path is given on the command
+    line (`--store-path %S/monokulo/push-relay/push-relay.db`,
+    `--bell-store-path …`), as a dynamic user has no home for the default.
+    Secrets are written `VARIABLE='value'`: single quotes keep a value as
+    it is over several lines (checked with systemd 261), so the APNs `.p8`
+    and the FCM JSON go in whole. A setting `--check` refuses stops the
+    start with its words in the journal, and `StartLimitBurst` keeps that
+    from looping for ever. The usual sandboxing (`ProtectSystem=strict`,
+    no capabilities, `MemoryDenyWriteExecute`: neither binary has a JIT).
+    Otherwise: a fixed `monokulo` user (the installer would have to make
+    it), or `LoadCredential` (it fails a start when an optional secret's
+    file is missing, and the binaries read only the environment).
+17. **launchd: a LaunchDaemon (`com.monokulo.<push-relay|bell>`) running
+    as `nobody`, with the secrets as `EnvironmentVariables` in the plist
+    (root's alone, 600)**, its data and log in
+    `/Library/Application Support/monokulo/<push-relay|bell>/`,
+    `KeepAlive` on an unsuccessful exit only. The placeholders read
+    `REPLACE: …`, which the binary refuses, so a plist installed without
+    its secrets stops with the reason rather than running half set up.
+    The install steps are in the README, not the plist's comment: an XML
+    comment can't hold `--`.
+18. **Windows: `install-windows-task.ps1` registers a startup task as
+    LOCAL SERVICE (decision 20 of the plan: the binaries speak no service
+    control protocol) and is also the task's runner (`-Run`).** The
+    program goes to `C:\Program Files\monokulo\<name>\`; the options file,
+    the secrets, the database and the log to
+    `C:\ProgramData\monokulo\<name>\`, which only administrators and
+    SYSTEM change and LOCAL SERVICE reads (writing only its database and
+    log). Each secret is a file named for its variable, as on the router
+    (the `.p8` and the JSON are files already); the install makes the
+    handle key or the VAPID key when there is none, as the OpenWrt
+    packages do. The runner restarts the binary itself five seconds after
+    an exit with an error (Task Scheduler's restart is for a task that
+    fails, which a runner still running isn't) and stops a binary a killed
+    runner left behind before starting it, so `Stop-ScheduledTask;
+    Start-ScheduledTask` restarts it. `-Uninstall` removes the task and
+    the program and keeps the data. Running it again upgrades in place.
+19. **Every release runner installs and starts the service file from the
+    folder it zipped** (`scripts/check-service-files.sh`): systemd on
+    Linux, launchd on macOS, the task script on Windows, each as its
+    header or the README says, with the least settings that start on
+    loopback (a sandbox Square application for the Bell); it reads
+    `/status` until it names the service, then stops and removes it and
+    checks the status is gone (and on Windows that the generated secret
+    was made and the task is gone). A zip whose service file can't start
+    its binary isn't kept. Otherwise: checking the files' syntax only,
+    which would miss a wrong path, user or permission.
+20. **The zips are unsigned on macOS and Windows, as monokulo's are**; each
+    README says how to clear macOS's quarantine (`xattr -d
+    com.apple.quarantine`) and SmartScreen's question, as the release
+    notes do for monokulo.
