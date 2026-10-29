@@ -3832,6 +3832,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "monokulo-bell"
+version = "0.1.0"
+dependencies = [
+ "abuse",
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "hex",
+ "hmac 0.13.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "live-settings",
+ "outbound",
+ "push",
+ "rand 0.10.2",
+ "rate-limit",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "service-runtime",
+ "sha2 0.11.0",
+ "sqlite",
+ "subtle",
+ "thiserror 2.0.20",
+ "tokio",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
