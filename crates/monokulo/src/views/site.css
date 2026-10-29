@@ -624,5 +624,8 @@ table[data-table="wallets"] .card-unit { display: none; }
   #card-apps .int-rows li > .int-mark { align-self: start; }
   table.table-stack[data-table="app-pushes"] tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 var(--space-md); }
   table.table-stack[data-table="app-pushes"] td.app-push-result { grid-column: 1 / -1; }
+  /* A test push's Order on its card: words, not the table's dash. */
+  [data-table="app-pushes"] .no-value-table { display: none; }
+  [data-table="app-pushes"] .no-value-card { display: inline; }
   [data-table="app-pushes"] td, [data-table="app-pushes"] th { white-space: normal; }
 }
