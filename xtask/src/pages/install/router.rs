@@ -278,9 +278,11 @@ pub(in crate::pages) fn render(site: &Site) -> Markup {
         }
         (per_repo(&|r| html! {
             ul.apk-files {
-                li {
-                    a href=(format!("../{}/{}", r.path, r.apk)) { (r.apk) }
-                    " (" (r.size()) "): monokulo (the engine inside it) and the LuCI page"
+                @for apk in &r.apks {
+                    li {
+                        a href=(format!("../{}/{}", r.path, apk.file)) { (apk.file) }
+                        " (" (apk.size()) "): " (apk.what)
+                    }
                 }
                 li {
                     a href=(format!("../{}/packages.adb", r.path)) { "packages.adb" }

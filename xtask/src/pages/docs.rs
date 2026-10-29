@@ -878,12 +878,7 @@ mod tests {
     fn built(name: &str) -> Scratch {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let scratch = Scratch::new(name);
-        install::tests::repo(
-            scratch.path(),
-            "25.12",
-            "aarch64_cortex-a53",
-            "monokulo-0.1.0-r1.apk",
-        );
+        install::tests::repo(scratch.path(), "25.12", "aarch64_cortex-a53", "0.1.0-r1");
         write(root, scratch.path(), SITE_URL, GITHUB_URL).unwrap();
         scratch
     }
@@ -1202,19 +1197,9 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
         let scratch = Scratch::new("docs-router");
         let site = scratch.path();
-        install::tests::repo(
-            site,
-            "25.12",
-            "aarch64_cortex-a53",
-            "monokulo-0.1.0-r42.apk",
-        );
-        install::tests::repo(site, "26.06", "x86_64", "monokulo-0.2.0-r50.apk");
-        install::tests::repo(
-            site,
-            "26.06",
-            "aarch64_cortex-a53",
-            "monokulo-0.2.0-r50.apk",
-        );
+        install::tests::repo(site, "25.12", "aarch64_cortex-a53", "0.1.0-r42");
+        install::tests::repo(site, "26.06", "x86_64", "0.2.0-r50");
+        install::tests::repo(site, "26.06", "aarch64_cortex-a53", "0.2.0-r50");
         write(
             root,
             site,
@@ -1265,13 +1250,18 @@ mod tests {
             fs::read_to_string(site.join("openwrt/monokulo.pem")).unwrap(),
             key
         );
-        // Every package file it links is in the site.
+        // Every package file it links is in the site: each repository's
+        // three packages and its index, and the key.
         let href = regex::Regex::new(r#"href="\.\./(openwrt/[^"]+)""#).unwrap();
         let files: Vec<&str> = href
             .captures_iter(&page)
             .map(|c| c.get(1).unwrap().as_str())
             .collect();
-        assert_eq!(files.len(), 3 * 2 + 1, "{files:?}");
+        assert_eq!(
+            files.len(),
+            3 * (install::PACKAGES.len() + 1) + 1,
+            "{files:?}"
+        );
         for file in files {
             assert!(site.join(file).is_file(), "{file}");
         }

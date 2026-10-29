@@ -6,7 +6,8 @@
 //! them up, update and remove Monokulo.
 //!
 //! The OpenWrt workflow publishes one signed apk repository per OpenWrt
-//! release and architecture, `openwrt/<release>/<arch>/` in the site, and
+//! release and architecture, `openwrt/<release>/<arch>/` in the site, each
+//! holding every package in [`PACKAGES`], and
 //! `pages fetch` puts them there before the docs are built ([`repos`]). The
 //! router's steps name one per repository; the docs' build publishes the
 //! key that signs them beside them, as `openwrt/monokulo.pem`.
@@ -60,13 +61,37 @@ impl Site {
     }
 }
 
+/// The packages every apk repository holds (scripts/build-openwrt.sh
+/// builds them together), by name, with what each is, in the order the
+/// router's page lists them.
+pub(super) const PACKAGES: [(&str, &str); 3] = [
+    (
+        "monokulo",
+        "monokulo (the engine inside it) and its LuCI page",
+    ),
+    (
+        "monokulo-push-relay",
+        "the push relay on its own, and its LuCI page",
+    ),
+    ("monokulo-bell", "the Monokular Bell, and its LuCI page"),
+];
+
 /// One apk repository in the site: `openwrt/<release>/<arch>/`.
 pub(in crate::pages) struct Repo {
     pub(super) release: String,
     pub(super) arch: String,
     /// Its address in the site, `openwrt/<release>/<arch>`.
     pub(super) path: String,
-    pub(super) apk: String,
+    /// Each of [`PACKAGES`], in its order.
+    pub(super) apks: Vec<Apk>,
+}
+
+/// One package's file in a repository.
+pub(super) struct Apk {
+    /// What the package is ([`PACKAGES`]).
+    pub(super) what: &'static str,
+    /// Its file name, `<package>-<version>.apk`.
+    pub(super) file: String,
     pub(super) size: u64,
 }
 
@@ -75,10 +100,23 @@ impl Repo {
     pub(super) fn id(&self) -> String {
         format!("{}-{}", self.release, self.arch)
     }
+}
 
+impl Apk {
     fn size(&self) -> String {
         format!("{} MB", self.size / 1024 / 1024)
     }
+}
+
+/// Whether `file` is a version of `package`: `<package>-<version>.apk`,
+/// the version starting with a digit (so `monokulo-push-relay-…` isn't
+/// monokulo's).
+fn is_package_file(file: &str, package: &str) -> bool {
+    file.strip_prefix(package)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .is_some_and(|version| {
+            version.starts_with(|c: char| c.is_ascii_digit()) && version.ends_with(".apk")
+        })
 }
 
 /// The values in order of first appearance, joined: the releases or
@@ -116,26 +154,38 @@ fn repos(site: &Path) -> io::Result<Vec<Repo>> {
                 format!("{} is not openwrt/<release>/<arch>/", dir.display()),
             ));
         };
-        let (apk, size) = fs::read_dir(dir)
+        let files: Vec<(String, u64)> = fs::read_dir(dir)
             .map_err(|e| at(dir, e))?
             .filter_map(Result::ok)
-            .find_map(|entry| {
+            .map(|entry| {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                (name.starts_with("monokulo-") && name.ends_with(".apk"))
-                    .then(|| (name, entry.metadata().map_or(0, |m| m.len())))
+                (name, entry.metadata().map_or(0, |m| m.len()))
             })
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("no monokulo-*.apk in {}", dir.display()),
-                )
-            })?;
+            .collect();
+        let apks = PACKAGES
+            .iter()
+            .map(|&(package, what)| {
+                files
+                    .iter()
+                    .find(|(file, _)| is_package_file(file, package))
+                    .map(|(file, size)| Apk {
+                        what,
+                        file: file.clone(),
+                        size: *size,
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("no {package}-<version>.apk in {}", dir.display()),
+                        )
+                    })
+            })
+            .collect::<io::Result<Vec<Apk>>>()?;
         found.push(Repo {
             release: release.clone(),
             arch: arch.clone(),
             path: format!("openwrt/{release}/{arch}"),
-            apk,
-            size,
+            apks,
         });
     }
     if found.is_empty() {
@@ -197,10 +247,13 @@ pub(super) mod tests {
         fs::write(path, text).unwrap();
     }
 
-    /// An apk repository in the site at `site`, holding `apk`.
-    pub(in crate::pages) fn repo(site: &Path, release: &str, arch: &str, apk: &str) {
+    /// An apk repository in the site at `site`, holding every package at
+    /// `version`, as the OpenWrt workflow builds them.
+    pub(in crate::pages) fn repo(site: &Path, release: &str, arch: &str, version: &str) {
         let dir = site.join("openwrt").join(release).join(arch);
-        put(&dir.join(apk), "apk");
+        for (package, _) in PACKAGES {
+            put(&dir.join(format!("{package}-{version}.apk")), "apk");
+        }
         put(&dir.join("packages.adb"), "index");
     }
 
@@ -215,19 +268,9 @@ pub(super) mod tests {
         let scratch = Scratch::new("install-site");
         let root = checkout(&scratch);
         let site = scratch.join("site");
-        repo(
-            &site,
-            "25.12",
-            "aarch64_cortex-a53",
-            "monokulo-0.1.0-r42.apk",
-        );
-        repo(&site, "26.06", "x86_64", "monokulo-0.2.0-r50.apk");
-        repo(
-            &site,
-            "26.06",
-            "aarch64_cortex-a53",
-            "monokulo-0.2.0-r50.apk",
-        );
+        repo(&site, "25.12", "aarch64_cortex-a53", "0.1.0-r42");
+        repo(&site, "26.06", "x86_64", "0.2.0-r50");
+        repo(&site, "26.06", "aarch64_cortex-a53", "0.2.0-r50");
 
         let loaded = Site::load(
             &root,
@@ -264,5 +307,61 @@ pub(super) mod tests {
         .err()
         .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    /// Each package is found by its own name, never by another's prefix,
+    /// and a repository without one of them is an error.
+    #[test]
+    fn each_package_is_found_by_its_own_name_and_none_may_be_missing() {
+        assert!(is_package_file("monokulo-0.1.0-r42.apk", "monokulo"));
+        assert!(!is_package_file(
+            "monokulo-push-relay-0.1.0-r42.apk",
+            "monokulo"
+        ));
+        assert!(is_package_file(
+            "monokulo-push-relay-0.1.0-r42.apk",
+            "monokulo-push-relay"
+        ));
+        assert!(!is_package_file(
+            "monokulo-bell-0.1.0-r42.adb",
+            "monokulo-bell"
+        ));
+
+        let scratch = Scratch::new("install-packages");
+        let root = checkout(&scratch);
+        let site = scratch.join("site");
+        repo(&site, "25.12", "x86_64", "0.1.0-r42");
+        let loaded = Site::load(
+            &root,
+            &site,
+            "https://example.org",
+            "https://github.com/o/m",
+        )
+        .unwrap();
+        let files: Vec<&str> = loaded.repos[0]
+            .apks
+            .iter()
+            .map(|a| a.file.as_str())
+            .collect();
+        assert_eq!(
+            files,
+            [
+                "monokulo-0.1.0-r42.apk",
+                "monokulo-push-relay-0.1.0-r42.apk",
+                "monokulo-bell-0.1.0-r42.apk"
+            ]
+        );
+
+        fs::remove_file(site.join("openwrt/25.12/x86_64/monokulo-bell-0.1.0-r42.apk")).unwrap();
+        let error = Site::load(
+            &root,
+            &site,
+            "https://example.org",
+            "https://github.com/o/m",
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(error.to_string().contains("monokulo-bell"), "{error}");
     }
 }

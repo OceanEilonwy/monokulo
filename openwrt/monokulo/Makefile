@@ -28,7 +28,7 @@ define Package/monokulo
   # services checks certificates against the system's CA store. taskset
   # (the init script's check of the engine's CPUs) is a BusyBox applet on
   # OpenWrt 25.12.
-  DEPENDS:=@(aarch64) +ca-bundle
+  DEPENDS:=@(aarch64||x86_64) +ca-bundle
   # monokulo runs as this user; created on install by the package scripts.
   USERID:=monokulo:monokulo
 endef
