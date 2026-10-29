@@ -199,9 +199,14 @@ mod tests {
             ]);
         }
         assert_eq!(DOCS, "https://docs.monokulo.com/bell/");
+        // Line by line, so a checkout with CRLF endings (Windows) reads the
+        // same as one with LF.
         for problem in problems {
-            let heading = format!("\n### {}\n", problem.slug());
-            assert!(PAGE.contains(&heading), "{heading:?}");
+            let heading = format!("### {}", problem.slug());
+            assert!(
+                PAGE.lines().any(|line| line == heading),
+                "{heading:?} isn't a heading of the /bell/ page"
+            );
         }
     }
 }
