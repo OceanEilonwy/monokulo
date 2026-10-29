@@ -279,7 +279,8 @@ entries in `docs/decisions/push.md` point here (162).
 30. **The page's backend is an rpcd ucode plugin, not a shell one**: rpcd's
     ucode support ships with LuCI (luci-base needs it), and ucode builds
     the JSON (the check's output, the service's own status) without shell
-    quoting. Methods: `status`, `check`, `set_secret`, `clear_secret`; it
+    quoting. Methods: `status`, `check`, `set_secret`, `clear_secret` (and
+    `restart`, `reload`: 40); it
     reads procd's state itself, so the page's ACL grants no `service list`,
     whose instances hold each secret in their environment. It never sets or
     clears the generated secret (restoring one is a file copied in by
@@ -318,3 +319,26 @@ entries in `docs/decisions/push.md` point here (162).
     and its ACL grants that instead of `service list` and the version
     file. The rootfs test holds all three pages' ACLs to refusing `service
     list`.
+38. **Every refused start says why on the page, not only `--check`'s**
+    (QA, stage 4): a data folder in memory, not absolute, not a folder or
+    holding another's files, a secrets folder that can't be made, and the
+    wait for the LAN's address all go through the same refusal as a bad
+    setting: the reason in `/tmp/<package>.check`, cleared at each start,
+    so the page never shows a stale one, and a reload of a running
+    service keeps it on its last good options file (28) whatever refused
+    the new one. The page's label is "It didn't start:" (the LAN wait is
+    not a refusal of a setting). The rootfs test drives each case.
+39. **The refusal names the operator's settings, not the file the init
+    script wrote**: `check_options` drops `<file>: line N: ` from
+    `--check`'s words, as that file is generated (and, refused, already
+    removed); the setting's key and the binary's message stay, and UCI is
+    what the operator edits.
+40. **The pages restart and reload only their own service**: each
+    package's backend has `restart` and `reload` (monokulo's `restart`),
+    which run its own init script, and the three ACLs grant those instead
+    of LuCI's `setInitAction`, which takes any init script's name (a
+    login granted only the relay's page could stop the Bell, the firewall
+    or uhttpd). LuCI's own pages grant `setInitAction` to admins, but a
+    page's ACL is its whole grant, so it holds the least that page needs.
+    The rootfs test holds the three ACLs to refusing `setInitAction` and
+    starts each service through its own `restart`.
