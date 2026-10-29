@@ -496,13 +496,15 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
             version as i64
         } else {
             MIGRATIONS.len() as i64
-        }
+        },
+        "version {version} point {point}: migrations recorded"
     );
     drop(conn);
     let store = Store::open_file(&path.0).unwrap();
     assert_eq!(
         store.get_all_payments(&OrderId::new("order")).unwrap()[0].amount_piconero,
-        Piconero(amount as u64)
+        Piconero(amount as u64),
+        "version {version} point {point}: the payment's amount"
     );
     assert_order_events_kept(&store, version, payload);
     assert_eq!(
@@ -510,19 +512,32 @@ async fn crash_upgrade(version: usize, amount: i64, payload: &str, point: &str) 
             .conn_for_test()
             .query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
             .unwrap(),
-        "ok"
+        "ok",
+        "version {version} point {point}: integrity check"
     );
 }
 
 #[test]
 fn migration_process_death_before_and_after_commit_preserves_money_and_schema() {
-    crate::property_support::runtime().block_on(async {
-        for version in 1..MIGRATIONS.len() {
-            for point in ["migration.before_commit", "migration.after_commit"] {
-                crash_upgrade(version, 42, "crash payload", point).await;
-            }
-        }
-    });
+    // Every row owns its file and its child process, so they run side by
+    // side, each on a runtime of its own.
+    let rows: Vec<(usize, &str)> = (1..MIGRATIONS.len())
+        .flat_map(|version| {
+            ["migration.before_commit", "migration.after_commit"].map(|point| (version, point))
+        })
+        .collect();
+    on_threads(
+        &rows,
+        |(version, point)| format!("version {version} point {point}"),
+        |&(version, point)| {
+            crate::property_support::runtime().block_on(crash_upgrade(
+                version,
+                42,
+                "crash payload",
+                point,
+            ));
+        },
+    );
 }
 
 fn persisted_config(config: proptest::test_runner::Config) -> proptest::test_runner::Config {
