@@ -182,6 +182,18 @@ handed out keep working until they expire, and each device gets a new one
 at its next registration. `monokulo-push-relay --help` describes every
 setting.
 
+Inside Monokulo, the admin page's Server tab has a Push relay card: the
+switch, whether the relay is listening and where, its public address, its
+apps, the handles it holds, whether APNs and FCM are ready, and what it is
+missing, with the fix. Edit settings opens every `[relay.*]` setting there,
+the apps as rows; saving checks them with the relay's own rules, writes
+them to Monokulo's options file, and restarts the relay's listener with
+them, Monokulo itself carrying on (Reload options file does the same after
+an edit by hand). A setting given as a `--relay-…` option is shown locked,
+and the three secrets only as set or not set: they are the environment's.
+If the relay can't start again with what was saved (its port is taken, say),
+the card says why and nothing listens until the next save or start.
+
 A relay's fairness limit is per sender, `limits.per_sender_per_minute`
 (600 by default), and a sender is a VAPID key: every store of one Monokulo
 signs with the same key, as every merchant's tills of one Monokular Bell
