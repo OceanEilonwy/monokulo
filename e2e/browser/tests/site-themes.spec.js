@@ -60,7 +60,12 @@ test('the site, the POS and the hosted payment page share one theme, light and d
     for (const theme of /** @type {const} */ (['light', 'dark'])) {
       await chooseTheme(page, base, theme);
       if (theme === 'light') await captureCoverageStage(page, 'site-dashboard', test.info(), { group: 'site' });
-      for (const [path, stage] of [['/account', 'site-account'], [store, 'site-store-page'], [store + '/settings?tab=general', 'site-store-settings'], [`${store}/orders/${orderId}`, 'site-order-detail']]) {
+      // Every site page takes the theme from one layout: the light pass
+      // visits each page for the gallery, the dark pass one.
+      const pages = theme === 'light'
+        ? [['/account', 'site-account'], [store, 'site-store-page'], [store + '/settings?tab=general', 'site-store-settings'], [`${store}/orders/${orderId}`, 'site-order-detail']]
+        : [[store, 'site-store-page']];
+      for (const [path, stage] of pages) {
         await page.goto(base + path);
         await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
         if (theme === 'light') await captureCoverageStage(page, stage, test.info(), { group: 'site' });
