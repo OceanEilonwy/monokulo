@@ -246,6 +246,7 @@ async fn live_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         webhooks: Arc::default(),
         apps: Default::default(),
         push: Arc::new(monokulo::push::Push::for_tests()),
+        relay: monokulo::relay::Handle::default(),
         revocations: Default::default(),
         stopping: Default::default(),
         // Public signup: `signup.mode` defaults to invite-only, which would

@@ -349,6 +349,7 @@ async fn main() {
         webhooks: Arc::default(),
         apps: Default::default(),
         push: Arc::new(monokulo::push::Push::for_tests()),
+        relay: monokulo::relay::Handle::default(),
         revocations: Default::default(),
         stopping: Default::default(),
     };
