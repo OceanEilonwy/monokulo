@@ -25,7 +25,7 @@ use axum::extract::connect_info::Connected;
 use axum::serve::{IncomingStream, Listener};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::identity::{group_address, ClientIdentity};
 
@@ -145,6 +145,7 @@ pub fn validate_onion_listener(value: &str) -> Result<Option<SocketAddr>, String
 pub struct OnionListener {
     local_addr: SocketAddr,
     ready: mpsc::Receiver<(TcpStream, OnionPeer)>,
+    released: watch::Receiver<bool>,
 }
 
 impl OnionListener {
@@ -152,7 +153,8 @@ impl OnionListener {
         let listener = TcpListener::bind(address).await?;
         let local_addr = listener.local_addr()?;
         let (sender, ready) = mpsc::channel(256);
-        tokio::spawn(async move {
+        let (release, released) = watch::channel(false);
+        let accepting = async move {
             loop {
                 // Ends as soon as the `OnionListener` is dropped, which
                 // frees the address for a new listener straight away rather
@@ -184,8 +186,17 @@ impl OnionListener {
                     }
                 });
             }
+        };
+        tokio::spawn(async move {
+            accepting.await;
+            // The TCP listener went with `accepting`: the address is free.
+            release.send_replace(true);
         });
-        Ok(OnionListener { local_addr, ready })
+        Ok(OnionListener {
+            local_addr,
+            ready,
+            released,
+        })
     }
 }
 
@@ -228,6 +239,14 @@ impl OnionListener {
     /// The address actually bound (useful when binding port 0 in tests).
     pub fn bound_address(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// Turns `true` once the address is free again, which is soon after
+    /// this listener is dropped (whatever connections it handed over are
+    /// still open), so whoever stops it can wait for that before binding
+    /// the address again.
+    pub fn released(&self) -> watch::Receiver<bool> {
+        self.released.clone()
     }
 }
 

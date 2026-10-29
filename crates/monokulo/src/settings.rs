@@ -1437,7 +1437,16 @@ pub struct OnionReloadable {
 #[derive(Default)]
 struct OnionInner {
     router: OnceLock<axum::Router>,
-    running: parking_lot::Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    /// The running listener's stop signal, and what says its address is
+    /// free again ([`OnionListener::released`]).
+    ///
+    /// [`OnionListener::released`]: abuse::proxy_protocol::OnionListener::released
+    running: parking_lot::Mutex<
+        Option<(
+            tokio::sync::watch::Sender<bool>,
+            tokio::sync::watch::Receiver<bool>,
+        )>,
+    >,
     waiting: parking_lot::Mutex<Option<abuse::proxy_protocol::OnionListener>>,
 }
 
@@ -1459,13 +1468,14 @@ impl OnionReloadable {
         };
         let (stop, stopped) = tokio::sync::watch::channel(false);
         let address = listener.bound_address();
+        let released = listener.released();
         tokio::spawn(async move {
             if let Err(e) = tor_service::serve(listener, router, stopped).await {
                 tracing::error!(server.address = %address, error = %e, "onion listener stopped");
             }
         });
         tracing::info!(server.address = %address, "onion listener (PROXY protocol, for tor) started");
-        *self.inner.running.lock() = Some(stop);
+        *self.inner.running.lock() = Some((stop, released));
     }
 }
 
@@ -1503,35 +1513,22 @@ impl live_settings::Reloadable for OnionReloadable {
         }
         match new.address {
             None => Ok((OnionChange::Off, Vec::new())),
-            Some(address) => {
-                // Moving back to an address this listener just left: the old
-                // one lets go of it moments after it's stopped.
-                let mut attempts = 0;
-                loop {
-                    match abuse::proxy_protocol::OnionListener::bind(address).await {
-                        Ok(listener) => return Ok((OnionChange::Start(listener), Vec::new())),
-                        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 20 => {
-                            attempts += 1;
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                        }
-                        Err(e) => {
-                            return Err(FieldError::new(
-                                ABUSE_ONION_LISTENER.key,
-                                format!("Can't listen on {address}: {e}."),
-                            ))
-                        }
-                    }
-                }
-            }
+            Some(address) => match abuse::proxy_protocol::OnionListener::bind(address).await {
+                Ok(listener) => Ok((OnionChange::Start(listener), Vec::new())),
+                Err(e) => Err(FieldError::new(
+                    ABUSE_ONION_LISTENER.key,
+                    format!("Can't listen on {address}: {e}."),
+                )),
+            },
         }
     }
 
     async fn install(&self, change: OnionChange) {
         match change {
             OnionChange::Keep => {}
-            OnionChange::Off => self.stop(),
+            OnionChange::Off => self.stop().await,
             OnionChange::Start(listener) => {
-                self.stop();
+                self.stop().await;
                 self.start(listener);
             }
         }
@@ -1543,11 +1540,24 @@ impl live_settings::Reloadable for OnionReloadable {
 }
 
 impl OnionReloadable {
-    fn stop(&self) {
-        if let Some(stop) = self.inner.running.lock().take() {
+    /// Stops the listener, running or waiting, and returns once its
+    /// address is free, so the next save can bind it again at once. Its
+    /// open connections aren't waited for.
+    async fn stop(&self) {
+        let mut releases = Vec::new();
+        let running = self.inner.running.lock().take();
+        if let Some((stop, released)) = running {
             let _ = stop.send(true);
+            releases.push(released);
         }
-        self.inner.waiting.lock().take();
+        let waiting = self.inner.waiting.lock().take();
+        if let Some(listener) = waiting {
+            releases.push(listener.released());
+        }
+        for mut released in releases {
+            // An accept task that panicked has let go of it too.
+            let _ = released.wait_for(|free| *free).await;
+        }
     }
 }
 
@@ -2448,10 +2458,9 @@ mod tests {
         onion.router_ready(axum::Router::new().route("/", axum::routing::get(|| async { "ok" })));
         let registry = &settings.registry;
 
-        let free = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        // Addresses this test names and comes back to, so not `:0` ones
+        // (`free_port` says why).
+        let free = std::net::SocketAddr::from(([127, 0, 0, 1], crate::relay::free_port()));
         registry
             .save(external_tor(&free.to_string()))
             .await
@@ -2465,10 +2474,7 @@ mod tests {
 
         // Moved away and straight back: the first address is free again at
         // once, with no connection needed to let go of it.
-        let other = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let other = std::net::SocketAddr::from(([127, 0, 0, 1], crate::relay::free_port()));
         registry
             .save(external_tor(&other.to_string()))
             .await
@@ -2483,18 +2489,11 @@ mod tests {
         );
 
         registry.save(tor_off()).await.unwrap();
-        // The old listener goes as its task is stopped: waited for, with a
-        // deadline that bounds only a hung stop.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let mut closed = false;
-        while std::time::Instant::now() < deadline {
-            if tokio::net::TcpStream::connect(free).await.is_err() {
-                closed = true;
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert!(closed, "cleared: no longer listening");
+        // The save returns once the old listener has let go.
+        assert!(
+            tokio::net::TcpStream::connect(free).await.is_err(),
+            "cleared: no longer listening"
+        );
 
         let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let refused = registry

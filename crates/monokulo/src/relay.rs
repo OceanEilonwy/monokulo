@@ -139,7 +139,8 @@ pub use embedded::*;
 #[cfg(not(feature = "relay"))]
 pub use without::*;
 
-/// A port nothing listens on, for a relay a test is to start there.
+/// A port nothing listens on, for a relay (or another listener) a test is
+/// to start there.
 ///
 /// Picked below every system's ephemeral range (Linux hands a `:0` bind
 /// 32768 and up, macOS and Windows 49152 and up), so a `:0` bind in another
@@ -147,7 +148,7 @@ pub use without::*;
 /// one did; from the test's name, so two tests running side by side don't
 /// share one; and checked free, so nothing else on the machine is fought
 /// over.
-#[cfg(all(test, feature = "relay"))]
+#[cfg(test)]
 pub(crate) fn free_port() -> u16 {
     use std::sync::atomic::{AtomicU16, Ordering};
     static HANDED_OUT: AtomicU16 = AtomicU16::new(0);
