@@ -140,6 +140,24 @@ impl BlockState {
         })
     }
 
+    /// A copy of this state for [`super::ScanState::fork_for_tests`]. The
+    /// progress is copied too, not shared: its sizing and headers-first
+    /// window steer the next round's fetches.
+    pub(crate) fn fork(&self) -> Self {
+        let Self {
+            catch_up_turn,
+            progress,
+            paged,
+            carried,
+        } = self;
+        Self {
+            catch_up_turn: AtomicBool::new(catch_up_turn.load(Ordering::Relaxed)),
+            progress: Arc::new(parking_lot::Mutex::new(progress.lock().clone())),
+            paged: parking_lot::Mutex::new(paged.lock().clone()),
+            carried: parking_lot::Mutex::new(carried.lock().clone()),
+        }
+    }
+
     /// State whose progress (sizing, the block in progress, recent blocks)
     /// is `progress`, which `/status` reads.
     pub(crate) fn with_progress(progress: crate::scaling::SharedProgress) -> Self {
@@ -468,12 +486,13 @@ impl Rotation {
 /// isn't fetched again because a round ended. Each block carries its own id
 /// and is checked against the recorded chain before it is scanned, so a
 /// cached body can never be paired with another block's hash.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BlockCache {
     blocks: BTreeMap<u64, Cached>,
     bytes: usize,
 }
 
+#[derive(Clone)]
 struct Cached {
     block: Arc<ChainBlock>,
     /// Its size on the wire: what the memory budget counts.
@@ -595,6 +614,7 @@ fn budget_bytes(budget_mb: u32) -> usize {
 
 /// A block cache left by one round for the next, with the node its blocks
 /// came from.
+#[derive(Clone)]
 struct Carried {
     cache: BlockCache,
     node: engine_daemon::NodeKey,

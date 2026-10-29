@@ -2078,7 +2078,9 @@ async fn the_fast_path_leaves_the_node_alone_while_no_store_has_an_order_in_scop
 /// that each step of the story changes before its round.
 struct Story {
     store: SharedStore,
-    custody: FlakyKeyCustody,
+    /// Shared by a story and its forks ([`Story::fork`]): the stories the
+    /// sweeps run never fail custody, and no sweep asserts on its attempts.
+    custody: Arc<FlakyKeyCustody>,
     daemon: FakeDaemonClient,
     tenants: Vec<(crate::store::TenantId, LiveWallet)>,
     order: crate::store::OrderId,
@@ -2088,9 +2090,9 @@ struct Story {
 impl Story {
     async fn new() -> Self {
         let store = Store::open_in_memory().unwrap();
-        let custody = FlakyKeyCustody::default();
+        let custody = Arc::new(FlakyKeyCustody::default());
         let (tenant, handle, order) =
-            fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            fixture_tenant(&store, &*custody, crate::now_unix() + 3600).await;
         let daemon = FakeDaemonClient::new();
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
@@ -2105,6 +2107,24 @@ impl Story {
         }
     }
 
+    /// A copy of the story as it stands, which goes on from here on its own:
+    /// its database, chain, pool and scan state copied, its custody shared.
+    fn fork(&self) -> Self {
+        Self {
+            store: self
+                .store
+                .lock()
+                .copy_in_memory_for_test()
+                .unwrap()
+                .into_shared(),
+            custody: Arc::clone(&self.custody),
+            daemon: self.daemon.snapshot(),
+            tenants: self.tenants.clone(),
+            order: self.order.clone(),
+            state: self.state.fork_for_tests(),
+        }
+    }
+
     fn confirm(&self) {
         for i in 0..10 {
             self.daemon.push_block(&format!("c{i}"), vec![]);
@@ -2115,7 +2135,7 @@ impl Story {
         let db = Db::over_shared(Arc::clone(&self.store));
         let report = run_round(
             &self.state,
-            &inputs(&db, &self.custody, &self.daemon, &self.tenants),
+            &inputs(&db, &*self.custody, &self.daemon, &self.tenants),
             ScanTuning::DEFAULT.round_budget,
         )
         .await;
@@ -2233,15 +2253,15 @@ const DOUBLE_SPENT: &Steps = &[
     Story::confirm,
 ];
 
-/// The story with a fault at SQL access `fault` during step `faulted`'s
-/// round. Returns the outcome and whether the fault was reached.
-async fn run_story(steps: &Steps, faulted: Option<(usize, usize)>) -> (String, bool) {
-    let story = Story::new().await;
-    let mut reached = faulted.is_none();
-    for (step, stage) in steps.iter().enumerate() {
-        stage(&story);
-        match faulted {
-            Some((at, fault)) if at == step => {
+/// Runs `steps` on `story`, each a round and then clean rounds until it
+/// settles, with a fault at SQL access `fault` during the first step's
+/// round. Returns whether the fault was reached.
+async fn run_steps(story: &Story, steps: &Steps, fault: Option<usize>) -> bool {
+    let mut reached = fault.is_none();
+    for (i, stage) in steps.iter().enumerate() {
+        stage(story);
+        match fault {
+            Some(fault) if i == 0 => {
                 let seen = story.store.lock().fail_nth_access(Some(fault));
                 // The round may report the failure or wait it out; what
                 // matters is where the story ends.
@@ -2255,13 +2275,14 @@ async fn run_story(steps: &Steps, faulted: Option<(usize, usize)>) -> (String, b
         }
         story.settle().await;
     }
-    (story.outcome(), reached)
+    reached
 }
 
 /// The fault indices one part of a sweep takes. A sweep fails each SQL
-/// statement of a round in turn, every fault on a fresh story, so it is
-/// split into parts that run side by side as tests of their own; each part
-/// recovers in-process from its faults exactly as the whole sweep did.
+/// statement of a round in turn, every fault on its own fork of the story,
+/// so it is split into parts that run side by side as tests of their own;
+/// each part recovers in-process from its faults exactly as the whole sweep
+/// did.
 #[derive(Clone, Copy, Debug)]
 struct Faults {
     from: usize,
@@ -2305,27 +2326,49 @@ impl Faults {
 /// Fails each SQL statement in `faults` of step `step`'s round in turn;
 /// the story must end where it ends without a fault, whose orders are
 /// `ending`.
+///
+/// The steps before `step` are clean and deterministic, so they run once:
+/// each fault runs on a fork of the story taken before `step`, and the
+/// story itself goes on clean to give the ending every fork must reach.
 async fn sweep_step(steps: &Steps, step: usize, ending: &str, faults: Faults) {
     // Every event enabled, so the failure paths' log lines run too.
     let (_logs, _) = crate::test_log::capture();
-    let (expected, _) = run_story(steps, None).await;
+    let (before, after) = steps.split_at(step);
+    let story = Story::new().await;
+    run_steps(&story, before, None).await;
+    let prefix = story.fork();
+    run_steps(&story, after, None).await;
+    let expected = story.outcome();
     assert!(
         expected.contains(ending),
         "the story ends {ending}: {expected}"
     );
     let expected = &expected;
+    let prefix = &prefix;
     faults
         .sweep(10, async move |fault| {
-            let (outcome, reached) = run_story(steps, Some((step, fault))).await;
+            let story = prefix.fork();
+            let reached = run_steps(&story, after, Some(fault)).await;
             if reached {
                 assert_eq!(
-                    &outcome, expected,
+                    &story.outcome(),
+                    expected,
                     "a fault at SQL statement {fault} in step {step} changed the outcome"
                 );
             }
             reached
         })
         .await;
+    // A fork is the story it was taken from: the last fork taken, the
+    // furthest in time from the story it copies, run clean, ends where the
+    // story ends.
+    let clean = prefix.fork();
+    run_steps(&clean, after, None).await;
+    assert_eq!(
+        &clean.outcome(),
+        expected,
+        "a fork of the story before step {step}, run clean, ended elsewhere than the story"
+    );
 }
 
 const PAID_ENDING: &str = "orders [\"overpaid|7000000000|0\"]";

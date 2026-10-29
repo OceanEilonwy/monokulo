@@ -10,7 +10,7 @@ use crate::store::TenantId;
 use std::collections::{HashMap, HashSet};
 
 /// Completed windows and live owners are independent of transaction-body caching.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Reservations {
     pub(crate) scanned: HashMap<String, HashMap<TenantId, u64>>,
     pub(crate) in_flight: HashSet<(String, TenantId)>,

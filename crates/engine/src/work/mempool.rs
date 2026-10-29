@@ -85,7 +85,7 @@ pub(crate) struct MempoolState {
 }
 
 /// Mempool bodies kept between rounds, with their serialized size.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Bodies {
     by_txid: HashMap<String, (Arc<Transaction>, usize)>,
     bytes: usize,
@@ -139,7 +139,7 @@ impl Bodies {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Remembered {
     bodies: Bodies,
     ownership: super::reservations::Reservations,
@@ -157,6 +157,26 @@ impl std::ops::DerefMut for Remembered {
 }
 
 impl MempoolState {
+    /// A copy of this state for [`super::ScanState::fork_for_tests`].
+    pub(crate) fn fork(&self) -> Self {
+        let Self {
+            inner,
+            rotation,
+            tenant_page_after,
+            windows,
+            last_tip,
+            watched,
+        } = self;
+        Self {
+            inner: parking_lot::Mutex::new(inner.lock().clone()),
+            rotation: parking_lot::Mutex::new(rotation.lock().clone()),
+            tenant_page_after: parking_lot::Mutex::new(tenant_page_after.lock().clone()),
+            windows: parking_lot::Mutex::new(windows.lock().clone()),
+            last_tip: AtomicU64::new(last_tip.load(Ordering::Relaxed)),
+            watched: AtomicBool::new(watched.load(Ordering::Relaxed)),
+        }
+    }
+
     /// Forgets what left the pool.
     fn retain_pool(&self, in_pool: &HashSet<String>) {
         {
@@ -612,7 +632,7 @@ fn readable(
 /// Stable FIFO membership prevents new arrivals from displacing transactions
 /// already waiting for a rescan. IDs cost O(current pool size), separately from
 /// the count/byte-bounded body cache. No bodies or tenant windows live here.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PoolRotation {
     queue: std::collections::VecDeque<String>,
     members: HashSet<String>,

@@ -44,6 +44,22 @@ pub(crate) struct SettlementState {
     sync_checked: parking_lot::Mutex<Option<(u64, Instant)>>,
 }
 
+impl SettlementState {
+    /// A copy of this state for [`super::ScanState::fork_for_tests`].
+    pub(crate) fn fork(&self) -> Self {
+        let Self {
+            obligations_after,
+            unresolved,
+            sync_checked,
+        } = self;
+        Self {
+            obligations_after: parking_lot::Mutex::new(obligations_after.lock().clone()),
+            unresolved: unresolved.fork(),
+            sync_checked: parking_lot::Mutex::new(*sync_checked.lock()),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SettlementRound {
     tip_observed: bool,
