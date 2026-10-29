@@ -756,33 +756,36 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         send(earlier).await.unwrap().status(),
         StatusCode::NO_CONTENT
     );
+    // The route logs its lines before it answers, and the store writes
+    // lines in the order they are logged: once a line logged after the last
+    // answer is stored, every POS line is, and any it stored twice.
+    tracing::dispatcher::with_default(&s.dispatch, || {
+        tracing::info!(
+            test.marker = "pos-batches-sent",
+            "the POS batches were sent"
+        )
+    });
     let store = s.state.log_store.clone().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while store
-        .query(&telemetry::store::LogQuery {
-            limit: 1000,
-            ..Default::default()
-        })
-        .unwrap()
-        .iter()
-        .filter(|r| r.attributes.contains_key("pos.seq"))
-        .count()
-        < 9
-    {
+    let stored = loop {
+        let stored = store
+            .query(&telemetry::store::LogQuery {
+                limit: 1000,
+                ..Default::default()
+            })
+            .unwrap();
+        if stored
+            .iter()
+            .any(|r| r.attributes.contains_key("test.marker"))
+        {
+            break stored;
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "the POS lines were never stored"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let stored = store
-        .query(&telemetry::store::LogQuery {
-            limit: 1000,
-            ..Default::default()
-        })
-        .unwrap();
+    };
     assert_eq!(
         stored
             .iter()
