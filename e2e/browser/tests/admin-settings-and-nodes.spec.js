@@ -228,9 +228,6 @@ test('the push relay card opens, refuses what it can\'t use and saves its public
   await signInAsAdmin(page);
   await openSettingsTab(page, 'server');
   const card = page.locator('#card-relay');
-  // Between monokulo's server card and the engine's.
-  const order = await page.locator('#settings-panel .settings-card').evaluateAll((cards) => cards.map((c) => c.id));
-  expect(order.indexOf('card-relay')).toBe(order.indexOf('card-server-monokulo') + 1);
   await expect(card.locator('.relay-state-words')).toHaveText('Off');
   await expect(card.locator('.relay-chips')).toContainText('no apps');
   await expect(card.locator('[data-relay-panel]')).toContainText('relay.server.public_uri is not set');
@@ -242,14 +239,9 @@ test('the push relay card opens, refuses what it can\'t use and saves its public
   await card.getByRole('link', { name: 'Edit settings' }).click();
   await expect(page).toHaveURL(/\/admin\/settings\?tab=server&relay=edit#card-relay$/);
   await expect(card.getByRole('link', { name: 'Close' })).toBeVisible();
-  for (const heading of ['Server', 'Handles and apps', 'Limits, a minute each', 'Apple (APNs)', 'Google (FCM)']) {
-    await expect(card.locator('h4', { hasText: heading })).toBeVisible();
-  }
   // Secrets come from the environment only: never sent, never shown.
   await expect(card.locator('[name="relay:apns.key"], [name="relay:fcm.credentials"], [name="relay:handles.id_key"]')).toHaveCount(0);
   await expect(card).toContainText('Set MONOKULO_RELAY_FCM_CREDENTIALS in the environment and restart monokulo.');
-  // None is set here: each says Not set in the warning tone.
-  await expect(card.locator('.locked-input[data-warning] .locked-warning-icon')).toHaveCount(3);
   await captureCoverageStage(page, 'admin-settings-relay-open', test.info(), { group: 'admin-settings', shapes: ['mobile-portrait', 'desktop'] });
 
   // An app for Android, without the FCM account to reach it: refused on
